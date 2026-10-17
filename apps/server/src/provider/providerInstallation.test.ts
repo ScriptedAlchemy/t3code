@@ -80,10 +80,11 @@ const makeHarness = Effect.fn("providerInstallation.test.makeHarness")(function*
         }),
         Layer.mock(CodexInstallation.CodexInstallation)({
           managedDirectory: "/unused-managed-codex",
-          start: Effect.sync(() => {
-            calls.push("codex-start");
-            return { ...state, driver: ProviderDriverKind.make("codex") };
-          }),
+          start: (options) =>
+            Effect.sync(() => {
+              calls.push(options?.managedOnly ? "codex-start-managed-only" : "codex-start");
+              return { ...state, driver: ProviderDriverKind.make("codex") };
+            }),
           cancel: () =>
             Effect.sync(() => {
               calls.push("codex-cancel");
@@ -186,6 +187,28 @@ describe("provider installation routing", () => {
       assert.equal(Array.from(observed)[0]?.driver, "codex");
       yield* harness.router.remove({ instanceId: codexId });
       assert.deepEqual(harness.calls, ["codex-start", "codex-cancel", "codex-remove", "refresh"]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("lets native Codex CLI accounts install before authentication", () =>
+    Effect.gen(function* () {
+      const codexId = ProviderInstanceId.make("codex-cli");
+      const harness = yield* makeHarness({
+        instance: instance(ProviderDriverKind.make("codex"), codexId),
+        settings: {
+          providerInstances: {
+            [codexId]: {
+              driver: ProviderDriverKind.make("codex"),
+              config: { setupMode: "cli" },
+            },
+          },
+        },
+      });
+      assert.equal((yield* harness.router.start({ instanceId: codexId })).driver, "codex");
+      const observed = yield* Stream.runCollect(harness.router.subscribe({ instanceId: codexId }));
+      assert.equal(Array.from(observed)[0]?.driver, "codex");
+      yield* harness.router.cancel({ instanceId: codexId, operationId: "operation" });
+      assert.deepEqual(harness.calls, ["codex-start-managed-only", "codex-cancel"]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

@@ -886,6 +886,7 @@ export function EnvironmentProviderSettings({
   };
 
   const renderProviderInstance = (row: InstanceRow, mode: "list" | "editor") => {
+    const codexSetupMode = readCodexSetupMode(row.instance.config);
     const driverOption = providerClients.get(row.driver);
     const liveProvider = serverProviders.find(
       (candidate) => candidate.instanceId === row.instanceId,
@@ -950,13 +951,12 @@ export function EnvironmentProviderSettings({
         onSelect={mode === "list" ? () => setSelectedInstanceId(row.instanceId) : undefined}
         readOnly={readOnly}
         runtime={
-          mode === "editor" &&
-          row.driver === "codex" &&
-          readCodexSetupMode(row.instance.config) !== "existing" ? (
+          mode === "editor" && row.driver === "codex" && codexSetupMode !== "existing" ? (
             <CodexManagedRuntimeFields
               environmentId={environmentId}
               instanceId={row.instanceId}
               provider={liveProvider}
+              setupMode={codexSetupMode}
             />
           ) : undefined
         }
@@ -974,9 +974,7 @@ export function EnvironmentProviderSettings({
               readOnly={readOnly}
               onEnable={() => updateProviderInstance(row, { ...row.instance, enabled: true })}
             />
-          ) : mode === "editor" &&
-            row.driver === "codex" &&
-            readCodexSetupMode(row.instance.config) === "managed" ? (
+          ) : mode === "editor" && row.driver === "codex" && codexSetupMode === "managed" ? (
             <CodexSetupSection
               environmentId={environmentId}
               instanceId={row.instanceId}
@@ -1002,6 +1000,7 @@ export function EnvironmentProviderSettings({
             !readOnly &&
             liveProvider &&
             (liveProvider.setup?.canAuthenticate ||
+              liveProvider.setup?.canInstall ||
               (liveProvider.driver === "acpRegistry" && liveProvider.installed)) ? (
             <ProviderAuthenticationSection
               key={`${environmentId}:${row.instanceId}`}

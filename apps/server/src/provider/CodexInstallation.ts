@@ -124,10 +124,12 @@ export interface CodexExecutable {
 interface CodexInstallationService {
   readonly managedDirectory: string;
   readonly resolve: () => Effect.Effect<CodexExecutable, CodexInstallationError>;
-  readonly acquire: (options?: {
-    readonly managedOnly?: boolean;
-  }) => Effect.Effect<CodexExecutable, CodexInstallationError, Scope.Scope>;
-  readonly start: Effect.Effect<ProviderInstallState, CodexInstallationError>;
+  readonly acquire: (
+    options?: CodexRuntimeOptions,
+  ) => Effect.Effect<CodexExecutable, CodexInstallationError, Scope.Scope>;
+  readonly start: (
+    options?: CodexRuntimeOptions,
+  ) => Effect.Effect<ProviderInstallState, CodexInstallationError>;
   readonly cancel: (
     operationId: string,
   ) => Effect.Effect<ProviderInstallState, CodexInstallationError>;
@@ -136,6 +138,9 @@ interface CodexInstallationService {
   readonly remove: (
     protectedBinaryPaths?: ReadonlyArray<string>,
   ) => Effect.Effect<void, CodexInstallationError>;
+}
+interface CodexRuntimeOptions {
+  readonly managedOnly?: boolean;
 }
 export class CodexInstallation extends Context.Service<
   CodexInstallation,
@@ -289,9 +294,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
       wrapFailure("resolve", "Codex is not installed in T3 Code. Install it to continue."),
     ),
   );
-  const acquire = Effect.fn("CodexInstallation.acquire")(function* (options?: {
-    readonly managedOnly?: boolean;
-  }) {
+  const acquire = Effect.fn("CodexInstallation.acquire")(function* (options?: CodexRuntimeOptions) {
     return yield* Effect.acquireRelease(
       gate.withPermit(
         (options?.managedOnly === true ? resolveManaged() : resolve()).pipe(
@@ -575,64 +578,66 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
       ),
     ),
   );
-  const start = gate
-    .withPermit(
-      Effect.gen(function* () {
-        const current = yield* SubscriptionRef.get(state);
-        if (isRunning(current)) return current;
-        if (yield* reuseLocal()) return yield* SubscriptionRef.get(state);
-        if (!asset) {
-          return yield* installationError(
-            "start",
-            `OpenAI does not publish a Codex runtime for ${platform}-${arch}. Use a supported remote environment or a custom executable.`,
+  const start = (options?: CodexRuntimeOptions) =>
+    gate
+      .withPermit(
+        Effect.gen(function* () {
+          const current = yield* SubscriptionRef.get(state);
+          if (isRunning(current)) return current;
+          if (!options?.managedOnly && (yield* reuseLocal()))
+            return yield* SubscriptionRef.get(state);
+          if (!asset) {
+            return yield* installationError(
+              "start",
+              `OpenAI does not publish a Codex runtime for ${platform}-${arch}. Use a supported remote environment or a custom executable.`,
+            );
+          }
+          const operationId = yield* crypto.randomUUIDv4();
+          const next: ProviderInstallState = {
+            driver: DRIVER,
+            operationId,
+            phase: "downloading",
+            downloadedBytes: 0,
+            totalBytes: asset.archiveBytes,
+            version: asset.version,
+            installedVersion: current.installedVersion,
+            canRemove: current.canRemove,
+            message: "Downloading Codex.",
+          };
+          yield* SubscriptionRef.set(state, next);
+          const work = install(asset).pipe(
+            Effect.onExit((exit) =>
+              Exit.isFailure(exit)
+                ? SubscriptionRef.update(state, (value) => {
+                    if (value.operationId !== operationId || value.phase === "succeeded")
+                      return value;
+                    const error = Cause.findErrorOption(exit.cause);
+                    const cancelled = Cause.hasInterruptsOnly(exit.cause);
+                    return {
+                      ...value,
+                      phase: cancelled ? "cancelled" : "failed",
+                      message: cancelled
+                        ? "Installation cancelled. The previous runtime is unchanged."
+                        : Option.isSome(error)
+                          ? error.value.detail
+                          : "Could not finish the Codex installation. Check disk space and directory access.",
+                    } satisfies ProviderInstallState;
+                  })
+                : Effect.void,
+            ),
+            Effect.ignoreCause,
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (running?.operationId === operationId) running = undefined;
+              }),
+            ),
           );
-        }
-        const operationId = yield* crypto.randomUUIDv4();
-        const next: ProviderInstallState = {
-          driver: DRIVER,
-          operationId,
-          phase: "downloading",
-          downloadedBytes: 0,
-          totalBytes: asset.archiveBytes,
-          version: asset.version,
-          installedVersion: current.installedVersion,
-          canRemove: current.canRemove,
-          message: "Downloading Codex.",
-        };
-        yield* SubscriptionRef.set(state, next);
-        const work = install(asset).pipe(
-          Effect.onExit((exit) =>
-            Exit.isFailure(exit)
-              ? SubscriptionRef.update(state, (value) => {
-                  if (value.operationId !== operationId || value.phase === "succeeded")
-                    return value;
-                  const error = Cause.findErrorOption(exit.cause);
-                  const cancelled = Cause.hasInterruptsOnly(exit.cause);
-                  return {
-                    ...value,
-                    phase: cancelled ? "cancelled" : "failed",
-                    message: cancelled
-                      ? "Installation cancelled. The previous runtime is unchanged."
-                      : Option.isSome(error)
-                        ? error.value.detail
-                        : "Could not finish the Codex installation. Check disk space and directory access.",
-                  } satisfies ProviderInstallState;
-                })
-              : Effect.void,
-          ),
-          Effect.ignoreCause,
-          Effect.ensuring(
-            Effect.sync(() => {
-              if (running?.operationId === operationId) running = undefined;
-            }),
-          ),
-        );
-        const fiber = yield* Effect.forkIn(Effect.interruptible(work), serviceScope);
-        running = { operationId, fiber };
-        return next;
-      }).pipe(Effect.uninterruptible),
-    )
-    .pipe(Effect.mapError(wrapFailure("start", "Could not start the Codex installation.")));
+          const fiber = yield* Effect.forkIn(Effect.interruptible(work), serviceScope);
+          running = { operationId, fiber };
+          return next;
+        }).pipe(Effect.uninterruptible),
+      )
+      .pipe(Effect.mapError(wrapFailure("start", "Could not start the Codex installation.")));
 
   const cancel = Effect.fn("CodexInstallation.cancel")(function* (operationId: string) {
     return yield* gate.withPermit(

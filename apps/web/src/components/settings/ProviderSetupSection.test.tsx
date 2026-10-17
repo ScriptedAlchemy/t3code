@@ -25,6 +25,7 @@ const setup = vi.hoisted(() => ({
   startInstall: vi.fn(),
   cancelInstall: vi.fn(),
   removeInstall: vi.fn(),
+  refreshProviders: vi.fn(),
   confirm: vi.fn(),
   openExternal: vi.fn(),
   effects: [] as Array<() => void | (() => void)>,
@@ -48,6 +49,11 @@ vi.mock("react/compiler-runtime", async () => {
   return { c: reactHookHarness.useMemoCache };
 });
 
+vi.mock("@effect/atom-react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@effect/atom-react")>();
+  return { ...actual, useAtomValue: () => true };
+});
+
 vi.mock("../../state/server", () => ({
   serverEnvironment: {
     providerAuthState: setup.authState,
@@ -57,9 +63,16 @@ vi.mock("../../state/server", () => ({
     respondProviderAuth: setup.respondAuth,
     cancelProviderAuth: setup.cancelAuth,
     logoutProviderAuth: setup.logoutAuth,
-    startProviderInstall: setup.startInstall,
-    cancelProviderInstall: setup.cancelInstall,
-    removeProviderInstallation: setup.removeInstall,
+    startProviderInstall: Object.assign(setup.startInstall, {
+      permissionAtom: () => "can-install",
+    }),
+    cancelProviderInstall: Object.assign(setup.cancelInstall, {
+      permissionAtom: () => "can-install",
+    }),
+    removeProviderInstallation: Object.assign(setup.removeInstall, {
+      permissionAtom: () => "can-install",
+    }),
+    refreshProviders: setup.refreshProviders,
   },
 }));
 
@@ -84,6 +97,7 @@ vi.mock("../../localApi", () => ({
 }));
 
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
+import { CodexManagedRuntimeFields } from "./CodexSetupSection";
 import { ProviderSetupSection } from "./ProviderSetupSection";
 
 const environmentId = EnvironmentId.make("remote-google");
@@ -468,7 +482,7 @@ describe("Antigravity setup", () => {
 });
 
 const nativeInstanceId = ProviderInstanceId.make("codex_personal");
-function renderNativeAuth(autoOpenBrowser = true) {
+function renderNativeAuth(autoOpenBrowser = true, providerOverrides: Partial<ServerProvider> = {}) {
   hooks.beginRender();
   const view = ProviderAuthenticationSection({
     environmentId,
@@ -476,6 +490,7 @@ function renderNativeAuth(autoOpenBrowser = true) {
     instanceId: nativeInstanceId,
     provider: {
       ...provider,
+      ...providerOverrides,
       instanceId: nativeInstanceId,
       driver: ProviderDriverKind.make("codex"),
     },
@@ -501,7 +516,70 @@ describe("Native Codex sign-in browser", () => {
       _tag: "Success",
       value: { ...setup.auth, phase: "starting", flowId: "native-flow" },
     });
+    setup.installation = {
+      driver: ProviderDriverKind.make("codex"),
+      operationId: null,
+      phase: "idle",
+      downloadedBytes: 0,
+      totalBytes: null,
+      version: null,
+      installedVersion: null,
+      canRemove: false,
+      message: null,
+    };
+    setup.startInstall.mockReset().mockResolvedValue({
+      _tag: "Success",
+      value: setup.installation,
+    });
+    setup.cancelInstall
+      .mockReset()
+      .mockResolvedValue({ _tag: "Success", value: setup.installation });
+    setup.refreshProviders.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
     setup.openExternal.mockResolvedValue(undefined);
+  });
+
+  it("installs Codex before sign-in and waits for the instance to report it installed", async () => {
+    const missingProvider = {
+      installed: false,
+      setup: { canAuthenticate: true, canInstall: true },
+    } satisfies Partial<ServerProvider>;
+    setup.installation = {
+      ...setup.installation!,
+      phase: "succeeded",
+      installedVersion: "0.156.1",
+      executablePath: "/host/bin/codex",
+      source: "local",
+    };
+    let view = renderNativeAuth(false, missingProvider);
+    expect(button(view, "Sign in")?.props.disabled).toBe(true);
+    expect(button(view, "Install Codex CLI")).toBeDefined();
+
+    click(view, "Install Codex CLI");
+    await flushPromises();
+    expect(setup.startInstall).toHaveBeenCalledWith({
+      environmentId,
+      input: { instanceId: nativeInstanceId },
+    });
+
+    setup.installation = {
+      ...setup.installation!,
+      operationId: "managed-install",
+      phase: "succeeded",
+      installedVersion: "0.156.1",
+      executablePath: "/managed/codex/bin/codex",
+      source: "managed",
+    };
+    view = renderNativeAuth(false, missingProvider);
+    expect(setup.refreshProviders).toHaveBeenCalledWith({
+      environmentId,
+      input: { instanceId: nativeInstanceId },
+    });
+    expect(button(view, "Sign in")?.props.disabled).toBe(true);
+    view = renderNativeAuth(false, missingProvider);
+    expect(setup.refreshProviders).toHaveBeenCalledTimes(1);
+
+    view = renderNativeAuth(false, { ...missingProvider, installed: true });
+    expect(button(view, "Sign in")?.props.disabled).toBe(false);
   });
 
   it("opens the initiating flow's page and leaves a passive subscription alone", async () => {
@@ -585,5 +663,64 @@ describe("Native Codex sign-in browser", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("Codex runtime path", () => {
+  beforeEach(() => {
+    hooks.reset();
+    setup.installation = {
+      driver: ProviderDriverKind.make("codex"),
+      operationId: null,
+      phase: "succeeded",
+      downloadedBytes: 0,
+      totalBytes: null,
+      version: "0.156.1",
+      installedVersion: "0.156.1",
+      executablePath: "/managed/codex/bin/codex",
+      canRemove: true,
+      message: null,
+    };
+  });
+
+  it("shows the executable resolved for the native CLI account", () => {
+    const selectedPath = "/instance-tools/codex/bin/codex";
+    hooks.beginRender();
+    const view = CodexManagedRuntimeFields({
+      environmentId,
+      instanceId: nativeInstanceId,
+      setupMode: "cli",
+      provider: {
+        ...provider,
+        driver: ProviderDriverKind.make("codex"),
+        runtimePaths: {
+          homePath: "/home/user/.codex",
+          shadowHomePath: "/home/user/.t3/providers/codex/personal/cli",
+          binaryPath: selectedPath,
+        },
+      },
+    });
+
+    const binary = visitElements(
+      view,
+      (element) => element.props["aria-label"] === "Codex binary path",
+    );
+    expect(binary?.props.value).toBe(selectedPath);
+  });
+
+  it("uses the installation path for managed Codex accounts", () => {
+    hooks.beginRender();
+    const view = CodexManagedRuntimeFields({
+      environmentId,
+      instanceId: nativeInstanceId,
+      setupMode: "managed",
+      provider: { ...provider, driver: ProviderDriverKind.make("codex") },
+    });
+
+    const binary = visitElements(
+      view,
+      (element) => element.props["aria-label"] === "Codex binary path",
+    );
+    expect(binary?.props.value).toBe("/managed/codex/bin/codex");
   });
 });

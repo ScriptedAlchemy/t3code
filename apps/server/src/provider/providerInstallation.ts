@@ -21,6 +21,7 @@ import * as ProviderRegistry from "./ProviderRegistry.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 
 const ANTIGRAVITY = ProviderDriverKind.make("antigravity");
+const CODEX = ProviderDriverKind.make("codex");
 const hasBinaryPath = Schema.is(Schema.Struct({ binaryPath: Schema.String }));
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
 const decodeAntigravitySettings = Schema.decodeUnknownEffect(AntigravitySettings);
@@ -55,7 +56,7 @@ export const makeProviderInstallation = Effect.fn("makeProviderInstallation")(fu
     managedOnly = false,
   ) {
     const instance = yield* instances.getInstance(instanceId);
-    const isCodex = instance?.driverKind === ProviderDriverKind.make("codex");
+    const isCodex = instance?.driverKind === CODEX;
     if (instance?.driverKind !== ANTIGRAVITY && !isCodex) {
       return yield* new ProviderSetupError({
         instanceId,
@@ -78,11 +79,11 @@ export const makeProviderInstallation = Effect.fn("makeProviderInstallation")(fu
       : yield* decodeAntigravitySettings(entries[instanceId]?.config ?? {}).pipe(
           Effect.mapError(invalidConfig),
         );
-    if (isCodex && (!("setupMode" in config) || config.setupMode !== "managed")) {
+    if (isCodex && config.setupMode !== "managed" && config.setupMode !== "cli") {
       return yield* new ProviderSetupError({
         instanceId,
         operation,
-        detail: "Choose managed setup to install Codex in T3 Code.",
+        detail: "Choose managed setup or a native Codex CLI setup to install Codex in T3 Code.",
       });
     }
     if (managedOnly && config.binaryPath && (!isCodex || config.binaryPath !== "codex")) {
@@ -93,7 +94,11 @@ export const makeProviderInstallation = Effect.fn("makeProviderInstallation")(fu
           "This instance uses a custom executable. Clear its binary path to manage installation in T3 Code.",
       });
     }
-    return { installation, driver: instance.driverKind };
+    return {
+      installation,
+      driver: instance.driverKind,
+      managedOnly: isCodex && "setupMode" in config && config.setupMode === "cli",
+    };
   });
 
   const failure =
@@ -106,8 +111,10 @@ export const makeProviderInstallation = Effect.fn("makeProviderInstallation")(fu
       new ProviderSetupError({ instanceId, operation: error.operation, detail: error.detail });
 
   const start = Effect.fn("ProviderInstallation.start")(function* (input: ProviderSetupInput) {
-    const { installation } = yield* requireInstance(input.instanceId, "install", true);
-    return yield* installation.start.pipe(Effect.mapError(failure(input.instanceId)));
+    const { driver, managedOnly } = yield* requireInstance(input.instanceId, "install", true);
+    const start =
+      driver === CODEX ? codexInstallation.start({ managedOnly }) : antigravityInstallation.start;
+    return yield* start.pipe(Effect.mapError(failure(input.instanceId)));
   });
 
   const cancel = Effect.fn("ProviderInstallation.cancel")(function* (
