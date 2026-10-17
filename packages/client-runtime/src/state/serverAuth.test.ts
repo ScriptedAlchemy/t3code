@@ -247,5 +247,51 @@ it.effect("waits for a newly configured provider and preserves its active auth s
         detail: "This provider instance is no longer available.",
       });
     }
+
+    yield* Queue.offer(events, {
+      version: 1,
+      type: "settingsUpdated",
+      payload: { settings },
+    });
+    yield* AtomRegistry.toStream(registry, atoms.settingsValueAtom(target.environmentId)).pipe(
+      Stream.filter((value) => value === settings),
+      Stream.runHead,
+    );
+    registered = true;
+    yield* Queue.offer(events, {
+      version: 1,
+      type: "providerStatuses",
+      payload: { providers: [provider] },
+    });
+    expect((yield* nextSuccess).value).toEqual(idle);
+    expect(requests).toBe(3);
+
+    yield* Queue.offer(events, {
+      version: 1,
+      type: "settingsUpdated",
+      payload: { settings: DEFAULT_SERVER_SETTINGS },
+    });
+    yield* AtomRegistry.toStream(registry, atoms.settingsValueAtom(target.environmentId)).pipe(
+      Stream.filter((value) => value === DEFAULT_SERVER_SETTINGS),
+      Stream.runHead,
+    );
+    expect(registry.get(authAtom)).toMatchObject({ _tag: "Success", value: idle });
+    registered = false;
+    yield* Queue.offer(events, {
+      version: 1,
+      type: "providerStatuses",
+      payload: { providers: [] },
+    });
+    yield* Queue.take(closed);
+    const deletedAfterStatusRemoval = registry.get(authAtom);
+    expect(AsyncResult.isFailure(deletedAfterStatusRemoval)).toBe(true);
+    if (AsyncResult.isFailure(deletedAfterStatusRemoval)) {
+      expect(Cause.squash(deletedAfterStatusRemoval.cause)).toMatchObject({
+        _tag: "ProviderSetupError",
+        instanceId,
+        operation: "subscribe",
+        detail: "This provider instance is no longer available.",
+      });
+    }
   }),
 );
