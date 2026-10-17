@@ -1028,11 +1028,10 @@ export const make = Effect.gen(function* () {
       const homes: Array<{ homePath: string; providerInstanceId: ProviderInstanceId }> = [];
       const seenHomes = new Set<string>();
       for (const { instanceId, config: instance } of instances) {
-        const homeVariable = source === "claudeAgent" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME";
-        const environmentHome =
-          instance.environment?.findLast((variable) => variable.name === homeVariable)?.value ??
-          hostEnvironment[homeVariable];
-
+        const environment = yield* mergeProviderInstanceEnvironment(
+          instance.environment,
+          hostEnvironment,
+        );
         let homePath: string;
         if (source === "claudeAgent") {
           const config = decodeClaudeSettings(instance.config ?? {});
@@ -1040,22 +1039,13 @@ export const make = Effect.gen(function* () {
           homePath = (yield* resolveClaudeRuntime({
             instanceId,
             config: config.value,
-            environment: yield* mergeProviderInstanceEnvironment(
-              instance.environment,
-              hostEnvironment,
-            ),
+            environment,
             stateDir: serverConfig.stateDir,
           }).pipe(Effect.provideService(Path.Path, path))).configDir;
         } else {
           const config = decodeCodexSettings(instance.config ?? {});
           if (Option.isNone(config)) continue;
-          const codexSettings =
-            config.value.homePath.trim().length === 0 &&
-            config.value.shadowHomePath.trim().length === 0 &&
-            environmentHome?.trim()
-              ? { ...config.value, homePath: environmentHome }
-              : config.value;
-          const layout = yield* resolveCodexHomeLayout(codexSettings).pipe(
+          const layout = yield* resolveCodexHomeLayout(config.value, environment).pipe(
             Effect.provideService(Path.Path, path),
           );
           homePath = layout.sharedHomePath;

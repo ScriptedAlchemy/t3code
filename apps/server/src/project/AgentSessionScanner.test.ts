@@ -730,6 +730,35 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
       }),
     );
 
+    it.effect(
+      "discovers the environment home for a native Codex account with an auth overlay",
+      () =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+          const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const workspace = yield* makeTempDir("t3code-codex-workspace-");
+          yield* writeTranscript({
+            filePath: path.join(sharedHome, "sessions", "2026", "01", "01", "rollout-session.jsonl"),
+            contents: codexRolloutLine(workspace),
+            mtimeMs: Date.parse("2026-01-02T00:00:00.000Z"),
+          });
+          const result = yield* runScan({
+            claudeHomePath,
+            codexHomePath,
+            providerInstances: {
+              [ProviderInstanceId.make("codex")]: {
+                driver: ProviderDriverKind.make("codex"),
+                environment: [{ name: "CODEX_HOME", value: sharedHome, sensitive: false }],
+                config: { setupMode: "cli", shadowHomePath: path.join(codexHomePath, "ignored") },
+              },
+            },
+          });
+          expect(result.candidates.map((candidate) => candidate.path)).toEqual([workspace]);
+        }),
+    );
+
     it.effect("ignores invalid provider instances while scanning the remaining providers", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;

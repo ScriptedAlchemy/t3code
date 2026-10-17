@@ -12,30 +12,6 @@ import { withCodexAppServerClient } from "./CodexProvider.ts";
 
 const isProviderSetupError = Schema.is(ProviderSetupError);
 
-export const codexCliLaunchArgs = (launchArgs: string) =>
-  [
-    launchArgs,
-    ...[
-      'cli_auth_credentials_store="file"',
-      'model_provider="openai"',
-      'chatgpt_base_url="https://chatgpt.com/backend-api/"',
-    ].map((value) => `-c '${value}'`),
-  ].join(" ");
-
-export function codexCliEnvironment(environment: NodeJS.ProcessEnv, homePath: string) {
-  const next: NodeJS.ProcessEnv = { ...environment, CODEX_HOME: homePath };
-  for (const key of [
-    "OPENAI_API_KEY",
-    "CODEX_API_KEY",
-    "OPENAI_BASE_URL",
-    "ACCESS_TOKEN",
-    "T3CODE_CODEX_LAUNCH_ARGS",
-  ]) {
-    delete next[key];
-  }
-  return next;
-}
-
 export const makeCodexCliAuth = Effect.fn("makeCodexCliAuth")(function* (options: {
   readonly instanceId: ProviderInstanceId;
   readonly homePath: string;

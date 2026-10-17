@@ -12,12 +12,35 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 
-import { codexCliEnvironment, codexCliLaunchArgs, makeCodexCliAuth } from "./CodexCliAuth.ts";
+import { makeCodexCliAuth } from "./CodexCliAuth.ts";
+import { codexCliEnvironment, codexCliLaunchArgs } from "./Drivers/CodexRuntime.ts";
 import { materializeCodexShadowHome, resolveCodexHomeLayout } from "./Drivers/CodexHomeLayout.ts";
 
 import { codexCliFixtureSource } from "./CodexCliAuth.testkit.ts";
 
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
+
+it("removes mixed-case credentials before selecting the private Codex home", () => {
+  expect(
+    codexCliEnvironment(
+      {
+        OpenAI_Api_Key: "inherited-key",
+        Codex_Api_Key: "configured-key",
+        OpenAI_Base_Url: "https://other-provider.example",
+        Access_Token: "inherited-token",
+        T3code_Codex_Launch_Args: "--other-account",
+        Codex_Home: "/other-account",
+        PATH: "/tools",
+        AWS_PROFILE: "project-tools",
+      },
+      "/private-account",
+    ),
+  ).toEqual({
+    PATH: "/tools",
+    AWS_PROFILE: "project-tools",
+    CODEX_HOME: "/private-account",
+  });
+});
 
 const makeFixture = Effect.fnUntraced(function* (mode: string, email = "one@example.test") {
   const fs = yield* FileSystem.FileSystem;
