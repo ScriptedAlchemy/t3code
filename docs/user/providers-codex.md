@@ -9,6 +9,9 @@ Codex CLI**. Name the account and continue to sign-in. T3 Code keeps this accoun
 separate from your existing CLI login while sharing Codex skills, plugins, and
 thread history.
 
+If Codex is unavailable, install it from the account's setup panel before signing
+in. Installation runs on the selected environment, including when you connect remotely.
+
 Device-code sign-in works from any device, including when the environment runs
 remotely. Enter the displayed code on the OpenAI page and choose the intended
 account. For browser sign-in, use a browser on the environment's machine.
