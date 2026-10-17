@@ -79,7 +79,10 @@ export const makeProviderInstallation = Effect.fn("makeProviderInstallation")(fu
       : yield* decodeAntigravitySettings(entries[instanceId]?.config ?? {}).pipe(
           Effect.mapError(invalidConfig),
         );
-    if (isCodex && config.setupMode !== "managed" && config.setupMode !== "cli") {
+    if (
+      isCodex &&
+      (!("setupMode" in config) || (config.setupMode !== "managed" && config.setupMode !== "cli"))
+    ) {
       return yield* new ProviderSetupError({
         instanceId,
         operation,
