@@ -24,6 +24,7 @@ export function spawnClaudeProcess(
     signal: options.signal,
     stdio: ["pipe", "pipe", "ignore"],
     detached: platform !== "win32",
+    windowsHide: true,
   });
   child.once("exit", () => {
     if (platform === "win32") return;
