@@ -40,6 +40,7 @@ import {
   makePackageManagedProviderMaintenanceResolver,
   normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
+  type ProviderMaintenanceCapabilitiesResolver,
 } from "@t3tools/provider-core/server/maintenanceResolver";
 import {
   haveProviderSnapshotSettingsChanged,
@@ -70,8 +71,11 @@ function isCodexStandaloneCommandPath(commandPath: string): boolean {
  * (the overlay only carries auth and a few local entries), so the updater
  * runs against `sharedHomePath` rather than the instance's effective home.
  */
-function makeCodexMaintenanceResolver(sharedHomePath: string) {
-  return makePackageManagedProviderMaintenanceResolver({
+function makeCodexMaintenanceResolver(
+  sharedHomePath: string,
+  managedDirectory: string,
+): ProviderMaintenanceCapabilitiesResolver {
+  const resolver = makePackageManagedProviderMaintenanceResolver({
     provider: DRIVER_KIND,
     npmPackageName: "@openai/codex",
     nativeUpdate: {
@@ -80,6 +84,23 @@ function makeCodexMaintenanceResolver(sharedHomePath: string) {
       env: { CODEX_HOME: sharedHomePath },
     },
   });
+  return {
+    resolve: (context) =>
+      Effect.gen(function* () {
+        if (context) {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const realManaged = yield* fs
+            .realPath(managedDirectory)
+            .pipe(Effect.orElseSucceed(() => managedDirectory));
+          // T3 owns this versioned package; Codex's self-updater only handles its own installs.
+          if (context.realCommandPath.startsWith(`${realManaged}${path.sep}`)) {
+            return { provider: DRIVER_KIND, packageName: null, update: null };
+          }
+        }
+        return yield* resolver.resolve(context);
+      }),
+  };
 }
 
 export type CodexDriverEnv =
@@ -180,7 +201,10 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
         resolveRuntime.pipe(
           Effect.flatMap((runtime) =>
             resolveProviderMaintenanceCapabilitiesEffect(
-              makeCodexMaintenanceResolver(homeLayout.sharedHomePath),
+              makeCodexMaintenanceResolver(
+                homeLayout.sharedHomePath,
+                installation.managedDirectory,
+              ),
               {
                 binaryPath: runtime.config.binaryPath,
                 env: runtime.environment,
