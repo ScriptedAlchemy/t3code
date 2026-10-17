@@ -35,6 +35,7 @@ import {
   resolveLatestProviderVersion,
 } from "@t3tools/provider-core/server/maintenanceResolver";
 import { CodexDriver } from "./CodexDriver.ts";
+import { codexCliFixtureSource } from "../CodexCliAuth.testkit.ts";
 import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -96,6 +97,112 @@ const noSpawn = ChildProcessSpawner.make(() =>
 const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 it.layer(layerTest)("CodexDriver", (it) => {
+  it.effect.skipIf(windowsHost)(
+    "guards native account consumers and refreshes after cancellation",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig.ServerConfig;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-cli-driver-" });
+        const binaryPath = NodePath.join(root, "codex");
+        const sharedHome = NodePath.join(root, "shared");
+        const ignoredShadow = NodePath.join(root, "user-shadow");
+        const instanceId = ProviderInstanceId.make("codex-cli-driver");
+        const ownedHome = NodePath.join(config.stateDir, "providers", "codex", instanceId, "cli");
+        const source = codexCliFixtureSource
+          .replace(
+            'if (method === "account/login/start") {',
+            'if (method === "account/login/start") { fs.writeFileSync(path.join(home, "login-started"), "yes");',
+          )
+          .replace(
+            'if (method === "account/read") return',
+            'if (method === "account/read" && !fs.existsSync(path.join(home, "login-started"))) return; if (method === "account/read") return',
+          );
+        yield* fs.writeFileString(binaryPath, `#!${process.execPath}\n${source}`, { mode: 0o755 });
+        const firstSpawn = yield* Deferred.make<void>();
+        const children: Array<ChildProcessSpawner.ChildProcessHandle> = [];
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const instance = yield* CodexDriver.create({
+          instanceId,
+          displayName: "Native account",
+          enabled: true,
+          environment: [{ name: "T3_TEST_MODE", value: "waiting", sensitive: false }],
+          config: {
+            ...CodexDriver.defaultConfig(),
+            setupMode: "cli",
+            binaryPath,
+            homePath: sharedHome,
+            shadowHomePath: ignoredShadow,
+          },
+        }).pipe(
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make((command) =>
+              Effect.gen(function* () {
+                const child = yield* spawner.spawn(command);
+                children.push(child);
+                yield* Deferred.succeed(firstSpawn, undefined);
+                return child;
+              }),
+            ),
+          ),
+        );
+        expect(instance.auth?.credentialBinding).toEqual({ owner: "provider", key: ownedHome });
+        const checking = yield* instance.snapshot.refresh.pipe(Effect.forkScoped);
+        yield* Deferred.await(firstSpawn);
+        yield* instance.auth!.start("owner");
+        const waiting = yield* instance.auth!.subscribe("owner").pipe(
+          Stream.filter((state) => state.phase === "waiting"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect((yield* Fiber.join(checking)).auth.status).toBe("unknown");
+        expect(yield* children[0]!.isRunning).toBe(false);
+        const beforeBlockedCalls = children.length;
+        expect((yield* instance.snapshot.refresh).auth.status).toBe("unknown");
+        expect(
+          yield* instance.snapshotForCwd!(root).pipe(
+            Effect.flip,
+            Effect.map((error) => error._tag),
+          ),
+        ).toBe("ProviderDriverError");
+        expect(
+          yield* instance.consumeResetCredit!().pipe(
+            Effect.flip,
+            Effect.map((error) => error._tag),
+          ),
+        ).toBe("ProviderDriverError");
+        expect(
+          yield* instance.textGeneration
+            .generateThreadTitle({
+              cwd: root,
+              message: "Title",
+              modelSelection: { instanceId, model: "gpt-5.4" },
+            })
+            .pipe(
+              Effect.flip,
+              Effect.map((error) => error._tag),
+            ),
+        ).toBe("TextGenerationError");
+        expect(children.length).toBe(beforeBlockedCalls);
+        const automaticRefresh = yield* instance.snapshot.streamChanges.pipe(
+          Stream.filter((value) => value.installed && value.auth.status === "unauthenticated"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+          Effect.forkScoped,
+        );
+        yield* instance.auth!.cancel("owner", waiting.flowId!);
+        const refreshed = yield* Fiber.join(automaticRefresh);
+        expect(refreshed).toMatchObject({
+          installed: true,
+          auth: { status: "unauthenticated" },
+          setup: { canAuthenticate: true },
+          runtimePaths: { homePath: sharedHome, shadowHomePath: ownedHome },
+        });
+        expect(yield* fs.exists(ignoredShadow)).toBe(false);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect.each([true, false])(
     "keeps the instance PATH boundary when host Codex exists and managed installation is %s",
     (managedInstalled) =>

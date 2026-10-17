@@ -952,7 +952,7 @@ export function EnvironmentProviderSettings({
         runtime={
           mode === "editor" &&
           row.driver === "codex" &&
-          readCodexSetupMode(row.instance.config) === "managed" ? (
+          readCodexSetupMode(row.instance.config) !== "existing" ? (
             <CodexManagedRuntimeFields
               environmentId={environmentId}
               instanceId={row.instanceId}
@@ -981,7 +981,7 @@ export function EnvironmentProviderSettings({
               environmentId={environmentId}
               instanceId={row.instanceId}
               provider={liveProvider}
-              mode={readCodexSetupMode(row.instance.config)}
+              mode="managed"
               enabled={resolveProviderInstanceEnabled(row.instance)}
               readOnly={readOnly}
               onModeChange={(setupMode) =>
@@ -1010,6 +1010,9 @@ export function EnvironmentProviderSettings({
               instanceId={row.instanceId}
               provider={liveProvider}
               readOnly={readOnly}
+              autoOpenBrowser={
+                row.driver === "codex" && readCodexSetupMode(row.instance.config) === "cli"
+              }
             />
           ) : mode === "editor" &&
             !readOnly &&

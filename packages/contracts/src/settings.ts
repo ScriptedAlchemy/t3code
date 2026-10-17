@@ -551,7 +551,7 @@ export function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fi
 
 export const CodexSettings = makeProviderSettingsSchema(
   {
-    setupMode: Schema.optionalKey(Schema.Literals(["managed", "existing"])).pipe(
+    setupMode: Schema.optionalKey(Schema.Literals(["managed", "existing", "cli"])).pipe(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     enabled: Schema.Boolean.pipe(

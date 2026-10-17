@@ -1,10 +1,12 @@
-import { CodexSettings, ProviderDriverKind } from "@t3tools/contracts";
+import { CodexSettings, ProviderDriverKind, TextGenerationError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import { codexCliEnvironment, codexCliLaunchArgs, makeCodexCliAuth } from "../CodexCliAuth.ts";
 import type { CodexEffectiveRuntime } from "../CodexManagedRuntime.ts";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
@@ -148,11 +150,29 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
       const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
       const modelCatalog = yield* ModelCatalog.ModelCatalog;
       const currentCatalog = modelCatalog.current(DRIVER_KIND);
-      const processEnv = yield* mergeProviderInstanceEnvironment(environment);
+      const instanceEnvironment = yield* mergeProviderInstanceEnvironment(environment);
+      const cliAccount = config.setupMode === "cli";
       const binaryPath =
         expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory) || "codex";
       const installation = yield* CodexInstallation.CodexInstallation;
-      const homeLayout = yield* resolveCodexHomeLayout(config);
+      const homeLayout = yield* resolveCodexHomeLayout(
+        cliAccount
+          ? {
+              ...config,
+              shadowHomePath: pathService.join(
+                (yield* ServerConfig.ServerConfig).stateDir,
+                "providers",
+                "codex",
+                instanceId,
+                "cli",
+              ),
+            }
+          : config,
+      );
+      const accountKey = homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath;
+      const processEnv = cliAccount
+        ? codexCliEnvironment(instanceEnvironment, accountKey)
+        : instanceEnvironment;
       const continuationIdentity = codexContinuationIdentity(homeLayout);
       const stampIdentity = withInstanceIdentity({
         instanceId,
@@ -177,6 +197,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
         enabled,
         binaryPath,
         homePath: homeLayout.effectiveHomePath ?? "",
+        ...(cliAccount ? { launchArgs: codexCliLaunchArgs(config.launchArgs) } : {}),
       } satisfies CodexSettings;
       const resolveRuntime = Effect.gen(function* () {
         const executablePath =
@@ -197,6 +218,27 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, pathService),
       );
+      const auth = cliAccount
+        ? yield* makeCodexCliAuth({ instanceId, homePath: accountKey, resolveRuntime })
+        : undefined;
+      const withAccess = <A, E, R>(task: Effect.Effect<A, E, R>) =>
+        auth?.withAccess ? auth.withAccess(task) : task;
+      const stampSnapshot = (draft: Parameters<typeof stampIdentity>[0]) =>
+        stampIdentity({
+          ...draft,
+          ...(cliAccount
+            ? {
+                setup: { ...draft.setup, canAuthenticate: true, canInstall: true },
+                ...(draft.auth.status === "unauthenticated"
+                  ? { message: "Sign in with Codex CLI in provider settings." }
+                  : {}),
+                runtimePaths: {
+                  homePath: homeLayout.sharedHomePath,
+                  shadowHomePath: accountKey,
+                },
+              }
+            : {}),
+        });
       const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
         resolveRuntime.pipe(
           Effect.flatMap((runtime) =>
@@ -225,7 +267,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
           accentColor,
           environment,
           enabled,
-          config,
+          config: cliAccount ? { ...config, shadowHomePath: accountKey } : config,
         },
         { onUsageLimits: (update) => snapshot.applyUsageLimits(update), resolveRuntime },
       ).pipe(
@@ -245,14 +287,20 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
       const checkProvider = modelCatalog.refreshInBackground.pipe(
         Effect.andThen(
           Effect.zipWith(
-            resolveRuntime.pipe(
-              Effect.flatMap((runtime) =>
-                checkCodexProviderStatus(runtime.config, undefined, runtime.environment),
+            withAccess(
+              resolveRuntime.pipe(
+                Effect.flatMap((runtime) =>
+                  checkCodexProviderStatus(runtime.config, undefined, runtime.environment),
+                ),
               ),
+            ).pipe(
               Effect.scoped,
+              Effect.catchTags({
+                ProviderSetupError: () => makePendingCodexProvider(effectiveConfig),
+              }),
             ),
             currentCatalog,
-            (draft, catalog) => stampIdentity(applyCodexModelCatalog(draft, catalog)),
+            (draft, catalog) => stampSnapshot(applyCodexModelCatalog(draft, catalog)),
             { concurrent: true },
           ),
         ),
@@ -270,7 +318,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
           Effect.zipWith(
             makePendingCodexProvider(settings.provider),
             currentCatalog,
-            (draft, catalog) => stampIdentity(applyCodexModelCatalog(draft, catalog)),
+            (draft, catalog) => stampSnapshot(applyCodexModelCatalog(draft, catalog)),
           ),
         checkProvider,
         enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
@@ -295,30 +343,70 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
             }),
         ),
       );
-      const textGeneration = yield* makeCodexTextGeneration(
+      if (auth) {
+        yield* auth.subscribe("codex-cli-snapshot").pipe(
+          Stream.filter(
+            (state) =>
+              ["succeeded", "failed", "cancelled"].includes(state.phase) ||
+              (state.phase === "idle" && state.message !== null),
+          ),
+          Stream.runForEach(() => snapshot.refresh.pipe(Effect.ignoreCause)),
+          Effect.forkScoped,
+        );
+      }
+      const nativeGeneration = yield* makeCodexTextGeneration(
         effectiveConfig,
         processEnv,
         snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
         resolveRuntime,
       );
+      const protect = <A>(operation: string, task: Effect.Effect<A, TextGenerationError>) =>
+        withAccess(task).pipe(
+          Effect.scoped,
+          Effect.mapError(
+            (cause) =>
+              new TextGenerationError({
+                operation,
+                detail: cause.detail,
+              }),
+          ),
+        );
+      const textGeneration: ProviderInstance["textGeneration"] = auth
+        ? {
+            generateCommitMessage: (input) =>
+              protect("generateCommitMessage", nativeGeneration.generateCommitMessage(input)),
+            generatePrContent: (input) =>
+              protect("generatePrContent", nativeGeneration.generatePrContent(input)),
+            generateBranchName: (input) =>
+              protect("generateBranchName", nativeGeneration.generateBranchName(input)),
+            generateThreadTitle: (input) =>
+              protect("generateThreadTitle", nativeGeneration.generateThreadTitle(input)),
+            generateReviewGuide: (input) =>
+              protect("generateReviewGuide", nativeGeneration.generateReviewGuide(input)),
+          }
+        : nativeGeneration;
       const snapshotForCwd = (cwd: string) =>
         !effectiveConfig.enabled
           ? snapshot.getSnapshot
           : Effect.all([
               snapshot.getSnapshot,
-              resolveRuntime.pipe(
-                Effect.flatMap((runtime) =>
-                  probeCodexSkillsForCwd({
-                    binaryPath: runtime.config.binaryPath,
-                    homePath: runtime.config.homePath,
-                    launchArgs: resolveCodexLaunchArgs(
-                      runtime.config.launchArgs,
-                      runtime.environment,
-                    ),
-                    cwd,
-                    environment: runtime.environment,
-                  }),
+              withAccess(
+                resolveRuntime.pipe(
+                  Effect.flatMap((runtime) =>
+                    probeCodexSkillsForCwd({
+                      binaryPath: runtime.config.binaryPath,
+                      homePath: runtime.config.homePath,
+                      launchArgs: resolveCodexLaunchArgs(
+                        runtime.config.launchArgs,
+                        runtime.environment,
+                      ),
+                      cwd,
+                      environment: runtime.environment,
+                      ...(cliAccount ? { extendEnv: false } : {}),
+                    }),
+                  ),
                 ),
+              ).pipe(
                 Effect.scoped,
                 Effect.timeout("20 seconds"),
                 Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -343,24 +431,29 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
       // Keyed on the directory holding auth.json: an auth-overlay instance has
       // its own account under `effectiveHomePath`, while plain instances share
       // the common home. The continuation key would conflate the two.
-      const accountKey = homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath;
       const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = () =>
         resetCreditCoordinator
           .redeem(accountKey, (idempotencyKey) =>
-            Effect.gen(function* () {
-              const runtime = yield* resolveRuntime;
-              const { client } = yield* withCodexAppServerClient({
-                binaryPath: runtime.config.binaryPath,
-                homePath: runtime.config.homePath,
-                launchArgs: resolveCodexLaunchArgs(runtime.config.launchArgs, runtime.environment),
-                cwd: process.cwd(),
-                environment: runtime.environment,
-              });
-              const response = yield* client.request("account/rateLimitResetCredit/consume", {
-                idempotencyKey,
-              });
-              return response.outcome;
-            }).pipe(Effect.scoped, Effect.timeout("20 seconds")),
+            withAccess(
+              Effect.gen(function* () {
+                const runtime = yield* resolveRuntime;
+                const { client } = yield* withCodexAppServerClient({
+                  binaryPath: runtime.config.binaryPath,
+                  homePath: runtime.config.homePath,
+                  launchArgs: resolveCodexLaunchArgs(
+                    runtime.config.launchArgs,
+                    runtime.environment,
+                  ),
+                  cwd: process.cwd(),
+                  environment: runtime.environment,
+                  ...(cliAccount ? { extendEnv: false } : {}),
+                });
+                const response = yield* client.request("account/rateLimitResetCredit/consume", {
+                  idempotencyKey,
+                });
+                return response.outcome;
+              }),
+            ).pipe(Effect.scoped, Effect.timeout("20 seconds")),
           )
           .pipe(
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -411,6 +504,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
         consumeResetCredit,
         orchestrationAdapter,
         textGeneration,
+        ...(auth ? { auth } : {}),
       } satisfies ProviderInstance;
     }),
 };

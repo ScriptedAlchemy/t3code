@@ -120,7 +120,7 @@ export function AddProviderInstanceDialog({
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
 
   const [wizardStep, setWizardStep] = useState(0);
-  const [addingChatGptAccount, setAddingChatGptAccount] = useState(false);
+  const [codexSetupMode, setCodexSetupMode] = useState<"cli" | "existing" | "managed" | null>(null);
   const [selection, setSelection] = useState<string>(DEFAULT_DRIVER_KIND);
   const driver =
     selection === TRAEX_BRIDGE_PRESET ? DEFAULT_DRIVER_KIND : ProviderDriverKind.make(selection);
@@ -148,6 +148,7 @@ export function AddProviderInstanceDialog({
 
   const driverOption = providerClients.get(driver) ?? DEFAULT_DRIVER_OPTION;
   const isAcpRegistry = driver === ACP_REGISTRY_DRIVER_KIND;
+  const isCliAccount = selection === "codex" && codexSetupMode === "cli";
   const defaultIdentity: ProviderIdentityDraft = {
     label: selection === TRAEX_BRIDGE_PRESET ? "Traex" : driverOption.label,
     accentColor: "",
@@ -234,7 +235,11 @@ export function AddProviderInstanceDialog({
     if (navigation.kind === "blocked") {
       setHasAttemptedSubmit(true);
     }
-    if (isAcpRegistry && !isLocalAcp && navigation.kind === "navigate" && navigation.step === 2) {
+    if (
+      ((isAcpRegistry && !isLocalAcp) || isCliAccount) &&
+      navigation.kind === "navigate" &&
+      navigation.step === 2
+    ) {
       void handleSave();
       return;
     }
@@ -330,7 +335,11 @@ export function AddProviderInstanceDialog({
     setHasAttemptedSubmit(true);
     if (instanceIdError !== null || (isAcpRegistry && acpSelectionError !== null)) return;
 
-    const config = driver === "codex" ? { ...configDraft, setupMode: "existing" } : configDraft;
+    const config = isCliAccount
+      ? { setupMode: "cli" }
+      : driver === "codex"
+        ? { ...configDraft, setupMode: "existing" }
+        : configDraft;
     const hasConfig = Object.keys(config).length > 0;
     const normalizedAccentColor = normalizeProviderAccentColor(accentColor);
 
@@ -360,7 +369,7 @@ export function AddProviderInstanceDialog({
       return;
     }
     onCreated?.(brandedId);
-    if (isAcpRegistry && !isLocalAcp) {
+    if ((isAcpRegistry && !isLocalAcp) || isCliAccount) {
       setCreatedInstanceId(brandedId);
       setIsSaving(false);
       setWizardStep(2);
@@ -374,7 +383,7 @@ export function AddProviderInstanceDialog({
     onOpenChange(false);
   };
 
-  if (addingChatGptAccount) {
+  if (codexSetupMode === "managed") {
     return (
       <AddManagedCodexAccountDialog
         environmentId={environmentId}
@@ -406,7 +415,8 @@ export function AddProviderInstanceDialog({
               currentStep={wizardStep}
               summaries={wizardStepSummaries}
               instanceIdError={instanceIdError}
-              disabled={isSaving || isPreparingRegistryAgent}
+              disabled={isSaving || isPreparingRegistryAgent || createdInstanceId !== null}
+              steps={isCliAccount ? ACP_REGISTRY_WIZARD_STEPS : ADD_PROVIDER_WIZARD_STEPS}
               onNavigation={applyWizardNavigation}
             />
           )}
@@ -417,6 +427,7 @@ export function AddProviderInstanceDialog({
             environmentId={environmentId}
             environmentLabel={environmentLabel}
             instanceId={createdInstanceId}
+            autoOpenBrowser={isCliAccount}
             onFinish={() => onOpenChange(false)}
           />
         ) : (
@@ -434,6 +445,7 @@ export function AddProviderInstanceDialog({
                   value={selection}
                   onValueChange={(value) => {
                     setSelection(value);
+                    setCodexSetupMode(null);
                     setIsManualAcpConfiguration(false);
                     setHasAttemptedSubmit(false);
                   }}
@@ -471,6 +483,54 @@ export function AddProviderInstanceDialog({
                   })}
                 </RadioGroup>
               </div>
+
+              {wizardStep === 0 && selection === "codex" ? (
+                <div className="grid gap-3 pt-4">
+                  <div className="grid gap-1.5">
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setCodexSetupMode("cli");
+                        navigateToStep(1);
+                      }}
+                    >
+                      Sign in with Codex CLI
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      Add an independent Codex account. Keep your shared skills, plugins, and thread
+                      history.
+                    </p>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setCodexSetupMode("existing");
+                        navigateToStep(1);
+                      }}
+                    >
+                      Use existing Codex CLI
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      Use the CLI account and runtime already configured on {environmentLabel}.
+                    </p>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <ChatGptConnectionButton
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCodexSetupMode("managed")}
+                    >
+                      Use ChatGPT sharing
+                    </ChatGptConnectionButton>
+                    <p className="text-xs text-muted-foreground">
+                      Connect through ChatGPT subscription sharing. Some native Codex features are
+                      unavailable.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
 
               {wizardStep === 0 ? (
                 <div className="space-y-4 pt-4">
@@ -650,7 +710,7 @@ export function AddProviderInstanceDialog({
                 />
               </SettingsGroup>
 
-              {!isAcpRegistry && driverSettingsFields.length > 0 ? (
+              {!isAcpRegistry && !isCliAccount && driverSettingsFields.length > 0 ? (
                 <SettingsGroup variant="plain" className={cn(wizardStep !== 2 && "hidden")}>
                   <ProviderSettingsForm
                     definition={driverOption}
@@ -660,7 +720,7 @@ export function AddProviderInstanceDialog({
                     onChange={setConfigDraft}
                   />
                 </SettingsGroup>
-              ) : !isAcpRegistry && wizardStep === 2 ? (
+              ) : !isAcpRegistry && !isCliAccount && wizardStep === 2 ? (
                 <div className="grid gap-2">
                   <p className="text-sm text-muted-foreground">
                     This driver has no required configuration. You can add the instance now.
@@ -684,17 +744,8 @@ export function AddProviderInstanceDialog({
               >
                 {wizardStep === 0 ? "Cancel" : "Back"}
               </Button>
-              {wizardStep === 0 && selection === "codex" ? (
-                <>
-                  <Button variant="outline" size="sm" onClick={() => navigateToStep(1)}>
-                    Configure manually
-                  </Button>
-                  <ChatGptConnectionButton
-                    size="sm"
-                    onClick={() => setAddingChatGptAccount(true)}
-                  />
-                </>
-              ) : wizardStep < (isAcpRegistry ? 1 : 2) ? (
+              {wizardStep === 0 && selection === "codex" ? null : wizardStep <
+                (isAcpRegistry || isCliAccount ? 1 : 2) ? (
                 <Button
                   size="sm"
                   disabled={isPreparingRegistryAgent}
@@ -710,7 +761,7 @@ export function AddProviderInstanceDialog({
                 >
                   {isSaving
                     ? "Adding..."
-                    : isAcpRegistry && !isLocalAcp
+                    : (isAcpRegistry && !isLocalAcp) || isCliAccount
                       ? "Continue to sign-in"
                       : "Add instance"}
                 </Button>

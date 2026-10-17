@@ -1,8 +1,24 @@
 # Codex
 
-Use your ChatGPT plan or an existing Codex CLI login to code in T3 Code.
+Use a Codex CLI account or ChatGPT subscription sharing to code in T3 Code.
 
-## Connect with ChatGPT
+## Sign in with Codex CLI
+
+In **Settings → Providers → Add provider**, choose **Codex**, then **Sign in with
+Codex CLI**. Name the account and continue to sign-in. T3 Code keeps this account
+separate from your existing CLI login while sharing Codex skills, plugins, and
+thread history.
+
+Device-code sign-in works from any device, including when the environment runs
+remotely. Enter the displayed code on the OpenAI page and choose the intended
+account. For browser sign-in, use a browser on the environment's machine.
+
+Use **Open browser** if the sign-in page does not open. You can cancel and retry,
+change accounts, or sign out in the provider's settings. Signing out stops this
+account's running threads and keeps their history. Mobile **Provider accounts**
+provides the same sign-in and sign-out controls for configured accounts.
+
+## Connect with ChatGPT sharing
 
 Connect during onboarding or in **Settings → Providers**. For a remote machine,
 select that environment first. T3 Code handles Codex installation; sign in on
@@ -21,7 +37,8 @@ localhost page into the sign-in panel, even if that page could not load.
 
 ## Use an existing Codex login
 
-T3 Code can use your installed Codex and its existing login. Run `codex login`
+Choose **Use existing Codex CLI** when adding the provider to keep using its
+existing login and runtime configuration. Run `codex login`
 on the environment's machine to sign in. [Provider setup](./install.md#providers)
 covers installation and custom configuration.
 

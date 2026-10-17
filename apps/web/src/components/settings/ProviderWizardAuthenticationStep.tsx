@@ -14,11 +14,13 @@ export function ProviderWizardAuthenticationStep({
   environmentLabel,
   instanceId,
   onFinish,
+  autoOpenBrowser = false,
 }: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
   readonly instanceId: ProviderInstanceId;
   readonly onFinish: () => void;
+  readonly autoOpenBrowser?: boolean;
 }) {
   const providers =
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
@@ -53,6 +55,7 @@ export function ProviderWizardAuthenticationStep({
                 },
               }}
               readOnly={false}
+              autoOpenBrowser={autoOpenBrowser}
             />
           ) : (
             <SettingsRow

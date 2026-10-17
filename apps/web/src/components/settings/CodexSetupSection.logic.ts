@@ -1,8 +1,6 @@
-export function readCodexSetupMode(config: unknown): "managed" | "existing" {
-  return config !== null &&
-    typeof config === "object" &&
-    "setupMode" in config &&
-    config.setupMode === "managed"
-    ? "managed"
-    : "existing";
+export function readCodexSetupMode(config: unknown): "managed" | "existing" | "cli" {
+  if (config !== null && typeof config === "object" && "setupMode" in config) {
+    if (config.setupMode === "managed" || config.setupMode === "cli") return config.setupMode;
+  }
+  return "existing";
 }

@@ -1202,7 +1202,7 @@ export function ProviderInstanceCard({
         </SettingsSection>
       ) : null}
 
-      {instance.driver === "codex" && readCodexSetupMode(instance.config) === "managed" ? (
+      {instance.driver === "codex" && readCodexSetupMode(instance.config) !== "existing" ? (
         <div
           inert={readOnly}
           aria-disabled={readOnly || undefined}

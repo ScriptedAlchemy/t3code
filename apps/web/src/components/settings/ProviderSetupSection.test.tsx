@@ -26,6 +26,8 @@ const setup = vi.hoisted(() => ({
   cancelInstall: vi.fn(),
   removeInstall: vi.fn(),
   confirm: vi.fn(),
+  openExternal: vi.fn(),
+  effects: [] as Array<() => void | (() => void)>,
 }));
 
 vi.mock("react", async (importOriginal) => {
@@ -34,6 +36,9 @@ vi.mock("react", async (importOriginal) => {
   return {
     ...actual,
     useRef: reactHookHarness.useRef,
+    useEffect: (effect: () => void | (() => void)) => {
+      setup.effects.push(effect);
+    },
     useState: reactHookHarness.useState,
   };
 });
@@ -72,7 +77,10 @@ vi.mock("../../state/query", () => ({
 }));
 
 vi.mock("../../localApi", () => ({
-  ensureLocalApi: () => ({ dialogs: { confirm: setup.confirm } }),
+  ensureLocalApi: () => ({
+    dialogs: { confirm: setup.confirm },
+    shell: { openExternal: setup.openExternal },
+  }),
 }));
 
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
@@ -209,6 +217,7 @@ async function flushPromises() {
 describe("Antigravity setup", () => {
   beforeEach(() => {
     hooks.reset();
+    setup.effects = [];
     vi.clearAllMocks();
     setup.auth = authState();
     setup.installation = {
@@ -423,4 +432,125 @@ describe("Antigravity setup", () => {
       expect(setup.startAuth).not.toHaveBeenCalled();
     },
   );
+});
+
+const nativeInstanceId = ProviderInstanceId.make("codex_personal");
+function renderNativeAuth(autoOpenBrowser = true) {
+  hooks.beginRender();
+  const view = ProviderAuthenticationSection({
+    environmentId,
+    environmentLabel: "Remote device",
+    instanceId: nativeInstanceId,
+    provider: {
+      ...provider,
+      instanceId: nativeInstanceId,
+      driver: ProviderDriverKind.make("codex"),
+    },
+    readOnly: false,
+    autoOpenBrowser,
+  });
+  for (const effect of setup.effects.splice(0)) effect();
+  return view;
+}
+
+describe("Native Codex sign-in browser", () => {
+  beforeEach(() => {
+    hooks.reset();
+    setup.effects = [];
+    vi.clearAllMocks();
+    setup.auth = authState({
+      instanceId: nativeInstanceId,
+      phase: "idle",
+      flowId: null,
+      authorizationUrl: null,
+    });
+    setup.startAuth.mockResolvedValue({
+      _tag: "Success",
+      value: { ...setup.auth, phase: "starting", flowId: "native-flow" },
+    });
+    setup.openExternal.mockResolvedValue(undefined);
+  });
+
+  it("opens the initiating flow's page and leaves a passive subscription alone", async () => {
+    const tab = { location: { href: "" }, opener: {}, close: vi.fn(), closed: false };
+    const open = vi.fn(() => tab);
+    vi.stubGlobal("window", { open });
+    try {
+      click(renderNativeAuth(), "Sign in");
+      expect(open).toHaveBeenCalledWith("", "_blank");
+      await flushPromises();
+      setup.auth = authState({
+        instanceId: nativeInstanceId,
+        phase: "waiting",
+        flowId: "native-flow",
+        interaction: {
+          type: "deviceCode",
+          id: "native-flow",
+          url: "https://auth.openai.com/device",
+          userCode: "TEST-CODE",
+        },
+      });
+      const view = renderNativeAuth();
+      expect(tab.location.href).toBe("https://auth.openai.com/device");
+      expect(setup.startAuth).toHaveBeenCalledWith({
+        environmentId,
+        input: { instanceId: nativeInstanceId },
+      });
+      expect(button(view, "Open browser")?.props.disabled).toBe(false);
+      hooks.reset();
+      renderNativeAuth();
+      expect(open.mock.calls).toEqual([["", "_blank"]]);
+      expect(setup.openExternal.mock.calls).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("opens the native browser method on desktop only after a deliberate sign-in", async () => {
+    vi.stubGlobal("window", { desktopBridge: {} });
+    try {
+      click(renderNativeAuth(), "Sign in");
+      await flushPromises();
+      setup.auth = authState({
+        instanceId: nativeInstanceId,
+        phase: "waiting",
+        flowId: "native-flow",
+        interaction: {
+          type: "browser",
+          id: "native-flow",
+          url: "https://auth.openai.com/test",
+          requiresConsent: false,
+        },
+      });
+      renderNativeAuth();
+      expect(setup.openExternal).toHaveBeenCalledWith("https://auth.openai.com/test");
+      renderNativeAuth();
+      expect(setup.openExternal.mock.calls).toEqual([["https://auth.openai.com/test"]]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("closes a reserved tab when sign-in fails before a URL arrives", async () => {
+    const close = vi.fn();
+    const tab = { location: { href: "" }, opener: {}, close, closed: false };
+    vi.stubGlobal("window", { open: () => tab });
+    try {
+      click(renderNativeAuth(), "Sign in");
+      await flushPromises();
+      setup.auth = authState({
+        instanceId: nativeInstanceId,
+        phase: "failed",
+        flowId: "native-flow",
+        authorizationUrl: null,
+        message: "Could not start Codex.",
+      });
+      const view = renderNativeAuth();
+      expect(close.mock.calls).toEqual([[]]);
+      expect(button(view, "Retry sign-in")?.props.disabled).toBe(false);
+      expect(tab.location.href).toBe("");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

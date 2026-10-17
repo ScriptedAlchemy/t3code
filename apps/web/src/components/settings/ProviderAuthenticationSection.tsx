@@ -10,7 +10,7 @@ import type {
   ProviderInstanceId,
   ServerProvider,
 } from "@t3tools/contracts";
-import { lazy, Suspense, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { CopyIcon } from "lucide-react";
 
 import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
@@ -33,12 +33,14 @@ export function ProviderAuthenticationSection({
   instanceId,
   provider,
   readOnly,
+  autoOpenBrowser = false,
 }: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
   readonly instanceId: ProviderInstanceId;
   readonly provider: ServerProvider;
   readonly readOnly: boolean;
+  readonly autoOpenBrowser?: boolean;
 }) {
   const target = { environmentId, input: { instanceId } };
   const query = useEnvironmentQuery(serverEnvironment.providerAuthState(target));
@@ -53,6 +55,9 @@ export function ProviderAuthenticationSection({
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
+  const reservedBrowser = useRef<Window | null>(null);
+  const [browserFlowId, setBrowserFlowId] = useState<string | null>(null);
+  const handledBrowserFlow = useRef<string | null>(null);
   const terminalQueue = useRef<ProviderAuthRespondInput[]>([]);
   const terminalSending = useRef(false);
   const auth = query.data;
@@ -98,6 +103,60 @@ export function ProviderAuthenticationSection({
     interaction?.type === "browser" || interaction?.type === "deviceCode"
       ? interaction.url
       : auth?.authorizationUrl;
+
+  useEffect(() => () => reservedBrowser.current?.close(), []);
+  useEffect(() => {
+    if (!browserFlowId || handledBrowserFlow.current === browserFlowId) return;
+    if (query.error || (auth?.flowId === browserFlowId && !active)) {
+      reservedBrowser.current?.close();
+      reservedBrowser.current = null;
+      handledBrowserFlow.current = browserFlowId;
+      return;
+    }
+    if (auth?.flowId !== browserFlowId || !url || !interaction) return;
+    if (
+      interaction.type !== "deviceCode" &&
+      (interaction.type !== "browser" || interaction.requiresConsent)
+    )
+      return;
+    const tab = reservedBrowser.current;
+    reservedBrowser.current = null;
+    handledBrowserFlow.current = browserFlowId;
+    if (tab && !tab.closed) {
+      tab.location.href = url;
+    } else {
+      void ensureLocalApi()
+        .shell.openExternal(url)
+        .catch(() => {
+          setError("Could not open the sign-in page. Use Open browser or copy the link.");
+        });
+    }
+  }, [active, auth?.flowId, browserFlowId, interaction, query.error, url]);
+
+  async function beginSignIn() {
+    if (pendingRef.current) return;
+    if (autoOpenBrowser && !window.desktopBridge) {
+      reservedBrowser.current = window.open("", "_blank");
+      if (reservedBrowser.current) reservedBrowser.current.opener = null;
+    }
+    const succeeded = await run(async () => {
+      const result = await start({
+        environmentId,
+        input: {
+          instanceId,
+          ...(methodId && auth?.methods?.some((method) => method.id === methodId)
+            ? { methodId }
+            : {}),
+        },
+      });
+      if (autoOpenBrowser && result._tag === "Success") setBrowserFlowId(result.value.flowId);
+      return result;
+    });
+    if (!succeeded) {
+      reservedBrowser.current?.close();
+      reservedBrowser.current = null;
+    }
+  }
 
   async function run(command: () => Promise<AtomCommandResult<unknown, unknown>>) {
     if (pendingRef.current) return false;
@@ -275,19 +334,7 @@ export function ProviderAuthenticationSection({
                 size="sm"
                 variant="outline"
                 disabled={disabled || !provider.enabled || !provider.installed || !auth}
-                onClick={() =>
-                  void run(() =>
-                    start({
-                      environmentId,
-                      input: {
-                        instanceId,
-                        ...(methodId && auth?.methods?.some((method) => method.id === methodId)
-                          ? { methodId }
-                          : {}),
-                      },
-                    }),
-                  )
-                }
+                onClick={() => void beginSignIn()}
               >
                 {signedIn
                   ? "Change account"

@@ -429,13 +429,6 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
         const flow = yield* lock.withPermit(
           Effect.gen(function* () {
             const flow = yield* requireFlow(owner, id);
-            yield* publish(flow, {
-              phase: "cancelled",
-              interaction: null,
-              authorizationUrl: null,
-              expiresAt: null,
-              message: "Sign-in cancelled.",
-            });
             active = undefined;
             operation = "stopping";
             return flow;
@@ -443,7 +436,22 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
         );
         if (flow.responseFiber) yield* Fiber.interrupt(flow.responseFiber);
         if (flow.fiber) yield* Fiber.interrupt(flow.fiber);
-        operation = "idle";
+        yield* lock.withPermit(
+          Effect.gen(function* () {
+            operation = "idle";
+            yield* SubscriptionRef.update(snapshot, (current) => ({
+              ...current,
+              state: {
+                ...current.state,
+                phase: "cancelled" as const,
+                interaction: null,
+                authorizationUrl: null,
+                expiresAt: null,
+                message: "Sign-in cancelled.",
+              },
+            }));
+          }),
+        );
         return snapshot.value.state;
       }).pipe(Effect.uninterruptible),
     logout: (stopSessions) =>

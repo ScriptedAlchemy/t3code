@@ -78,6 +78,7 @@ import { getProviderSummary } from "../settings/providerStatus";
 import { providerClients } from "../settings/providerDriverMeta";
 import { ChatGptWelcomeCoordinator } from "../settings/ChatGptWelcomeCoordinator";
 import { AddManagedCodexAccountDialog, CodexSetupSection } from "../settings/CodexSetupSection";
+import { ProviderAuthenticationSection } from "../settings/ProviderAuthenticationSection";
 import { readCodexSetupMode } from "../settings/CodexSetupSection.logic";
 import { buildProviderInstanceUpdatePatch } from "../settings/SettingsPanels.logic";
 import { TerminalViewport } from "../ThreadTerminalDrawer";
@@ -911,7 +912,16 @@ function OnboardingCodexSetup({
       },
     });
   };
-  return existingChosen ? (
+  return mode === "cli" && provider ? (
+    <ProviderAuthenticationSection
+      environmentId={environmentId}
+      environmentLabel="this environment"
+      instanceId={instanceId}
+      provider={provider}
+      readOnly={false}
+      autoOpenBrowser
+    />
+  ) : existingChosen || mode === "cli" ? (
     <AgentCard
       driver="codex"
       provider={provider}
@@ -928,7 +938,7 @@ function OnboardingCodexSetup({
       environmentId={environmentId}
       instanceId={instanceId}
       provider={provider}
-      mode={mode}
+      mode={mode === "managed" ? "managed" : "existing"}
       enabled={provider?.enabled ?? true}
       onModeChange={changeMode}
     />

@@ -136,7 +136,7 @@ function button(dialog: unknown, label: string) {
 
 function prepareInstance() {
   let dialog = renderDialog();
-  (button(dialog, "Configure manually").props.onClick as () => void)();
+  (button(dialog, "Use existing Codex CLI").props.onClick as () => void)();
   dialog = renderDialog();
   const label = visitElements(dialog, (entry) => entry.props.placeholder === "e.g. Work");
   if (!label) throw new Error("Missing instance label input.");
@@ -187,7 +187,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
       },
     });
     let tree = render();
-    (findByChildren(tree, "Configure manually").props.onClick as () => void)();
+    (findByChildren(tree, "Use existing Codex CLI").props.onClick as () => void)();
     tree = render();
     (findByChildren(tree, "Next").props.onClick as () => void)();
     tree = render();
@@ -210,6 +210,59 @@ describe("AddProviderInstanceDialog environment routing", () => {
 
     expect(settingsHooks.read).toHaveBeenCalledWith(remoteEnvironmentId);
     expect(settingsHooks.useMutation).toHaveBeenCalledWith(remoteEnvironmentId);
+  });
+
+  it("creates a native Codex account without runtime overrides and continues to sign-in", async () => {
+    (button(renderDialog(), "Sign in with Codex CLI").props.onClick as () => void)();
+    let tree = renderDialog();
+    const label = visitElements(tree, (entry) => entry.props.placeholder === "e.g. Work")!;
+    (label.props.onChange as (event: { target: { value: string } }) => void)({
+      target: { value: "Personal" },
+    });
+    tree = renderDialog();
+    (button(tree, "Continue to sign-in").props.onClick as () => void)();
+    await Promise.resolve();
+    expect(settingsHooks.mutate).toHaveBeenCalledWith({
+      operation: "create",
+      instanceId: "codex_personal",
+      instance: {
+        driver: "codex",
+        enabled: true,
+        displayName: "Personal",
+        config: { setupMode: "cli" },
+      },
+    });
+    const authentication = visitElements(
+      renderDialog(),
+      (entry) =>
+        typeof entry.type === "function" && entry.type.name === "ProviderWizardAuthenticationStep",
+    );
+    expect(authentication?.props).toMatchObject({
+      environmentId: remoteEnvironmentId,
+      instanceId: "codex_personal",
+      autoOpenBrowser: true,
+    });
+    expect(actions.onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("preserves the existing CLI configuration after leaving the native account path", async () => {
+    (button(renderDialog(), "Sign in with Codex CLI").props.onClick as () => void)();
+    (button(renderDialog(), "Back").props.onClick as () => void)();
+    (button(renderDialog(), "Use existing Codex CLI").props.onClick as () => void)();
+    (button(renderDialog(), "Next").props.onClick as () => void)();
+    (button(renderDialog(), "Add instance").props.onClick as () => void)();
+    await Promise.resolve();
+    expect(settingsHooks.mutate).toHaveBeenCalledWith({
+      operation: "create",
+      instanceId: "codex_2",
+      instance: {
+        driver: "codex",
+        enabled: true,
+        displayName: "Codex",
+        config: { setupMode: "existing" },
+      },
+    });
+    expect(actions.onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it("persists a Traex preset as an isolated Codex instance in the selected environment", async () => {
@@ -419,7 +472,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
 
   it("restores the manual Codex draft after choosing Traex and switching back", async () => {
     let tree = render();
-    (findByChildren(tree, "Configure manually").props.onClick as () => void)();
+    (findByChildren(tree, "Use existing Codex CLI").props.onClick as () => void)();
     tree = render();
     const label = visitElements(tree, (element) => element.props.id === "add-provider-label");
     (label!.props.onChange as (event: { target: { value: string } }) => void)({
@@ -449,7 +502,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
     );
     (group!.props.onValueChange as (value: string) => void)("codex");
     tree = render();
-    (findByChildren(tree, "Configure manually").props.onClick as () => void)();
+    (findByChildren(tree, "Use existing Codex CLI").props.onClick as () => void)();
     tree = render();
     (findByChildren(tree, "Next").props.onClick as () => void)();
     tree = render();
