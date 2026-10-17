@@ -272,7 +272,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
         (element) =>
           element.props.value === "managed" &&
           element.props["aria-label"] ===
-            "Use ChatGPT sharing. Share through ChatGPT; some native Codex features are unavailable.",
+            "Use ChatGPT sharing. Use your ChatGPT plan. Some Codex features are unavailable.",
       ),
     ).not.toBeNull();
     expect(

@@ -228,7 +228,7 @@ describe("provider installation routing", () => {
       });
       assert.include(
         (yield* Effect.flip(harness.router.start({ instanceId: codexId }))).detail,
-        "Choose managed setup",
+        "Choose ChatGPT sharing",
       );
       assert.deepEqual(harness.calls, []);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

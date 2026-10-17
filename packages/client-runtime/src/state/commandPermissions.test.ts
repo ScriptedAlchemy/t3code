@@ -107,7 +107,7 @@ describe("command permissions", () => {
     ),
   );
 
-  it.effect("requires the destination provider-management grant for installation actions", () =>
+  it.effect("requires provider management permission on the destination for installation", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const registry = yield* setup;

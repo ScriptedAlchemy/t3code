@@ -582,7 +582,7 @@ describe("Native Codex sign-in browser", () => {
     expect(button(view, "Sign in")?.props.disabled).toBe(false);
   });
 
-  it("opens the initiating flow's page and leaves a passive subscription alone", async () => {
+  it("opens the sign-in page only in the client that started sign-in", async () => {
     const tab = { location: { href: "" }, opener: {}, close: vi.fn(), closed: false };
     const open = vi.fn(() => tab);
     vi.stubGlobal("window", { open });
@@ -617,7 +617,7 @@ describe("Native Codex sign-in browser", () => {
     }
   });
 
-  it("opens the native browser method on desktop only after a deliberate sign-in", async () => {
+  it("opens the desktop browser after the user starts sign-in", async () => {
     vi.stubGlobal("window", { desktopBridge: {} });
     try {
       click(renderNativeAuth(), "Sign in");

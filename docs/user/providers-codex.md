@@ -4,22 +4,22 @@ Use a Codex CLI account or ChatGPT subscription sharing to code in T3 Code.
 
 ## Sign in with Codex CLI
 
-In **Settings → Providers → Add provider**, choose **Codex**, then **Sign in with
-Codex CLI**. Name the account and continue to sign-in. T3 Code keeps this account
-separate from your existing CLI login while sharing Codex skills, plugins, and
+In **Settings > Providers**, choose **Add provider**, then **Codex** and **Sign in
+with Codex CLI**. Name the account and continue to sign-in. T3 Code stores this
+account's login separately. The account shares your Codex skills, plugins, and
 thread history.
 
 If Codex is unavailable, install it from the account's setup panel before signing
-in. Installation runs on the selected environment, including when you connect remotely.
+in. T3 Code installs it on the selected environment's machine.
 
-Device-code sign-in works from any device, including when the environment runs
-remotely. Enter the displayed code on the OpenAI page and choose the intended
-account. For browser sign-in, use a browser on the environment's machine.
+Choose **Device code** to sign in from any device. Enter the displayed code on the
+OpenAI page and choose your account. Choose **Browser on server machine** to sign
+in with a browser on the machine running the T3 Code environment.
 
 Use **Open browser** if the sign-in page does not open. You can cancel and retry,
 change accounts, or sign out in the provider's settings. Signing out stops this
-account's running threads and keeps their history. Mobile **Provider accounts**
-provides the same sign-in and sign-out controls for configured accounts.
+account's running threads and keeps their history. On mobile, open **Provider
+accounts** to sign in or out of an account you have configured.
 
 ## Connect with ChatGPT sharing
 
@@ -40,21 +40,19 @@ localhost page into the sign-in panel, even if that page could not load.
 
 ## Use an existing Codex login
 
-Choose **Use existing Codex CLI** when adding the provider to keep using its
-existing login and runtime configuration. Run `codex login`
-on the environment's machine to sign in. [Provider setup](./install.md#providers)
-covers installation and custom configuration.
+Choose **Use existing Codex CLI** when adding the provider to use the CLI's current
+login and settings. Run `codex login` on the environment's machine to sign in.
+[Provider setup](./install.md#providers) covers installation and custom configuration.
 
 ## Use Traex bridge
 
-Run traex-bridge on the selected environment's macOS or Linux machine at
-`127.0.0.1:8317`, with its API key in `~/.traex-bridge/api-key` on that machine.
-In **Settings → Providers → Add provider**, choose **Traex**.
-The preset uses Codex from that machine's PATH or an existing T3-managed installation.
-You can also set a custom binary path in Config.
+Run traex-bridge at `127.0.0.1:8317` on the selected environment's macOS or Linux
+machine. Store its API key in `~/.traex-bridge/api-key` on that machine.
+In **Settings > Providers**, choose **Add provider**, then **Traex**.
+The preset uses Codex from that machine's PATH or a copy T3 Code has installed.
+To use another executable, set its path in **Config**.
 
-Traex uses a separate Codex home so its sessions and configuration stay isolated
-from your other Codex accounts.
+Traex stores its sessions and configuration in a separate Codex home.
 
 ## Use multiple accounts
 

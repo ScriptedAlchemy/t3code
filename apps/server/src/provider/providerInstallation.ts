@@ -86,7 +86,8 @@ export const makeProviderInstallation = Effect.fn("makeProviderInstallation")(fu
       return yield* new ProviderSetupError({
         instanceId,
         operation,
-        detail: "Choose managed setup or a native Codex CLI setup to install Codex in T3 Code.",
+        detail:
+          "Choose ChatGPT sharing or the Codex CLI sign-in option to install Codex through T3 Code.",
       });
     }
     if (managedOnly && config.binaryPath && (!isCodex || config.binaryPath !== "codex")) {

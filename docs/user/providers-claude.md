@@ -7,19 +7,22 @@ shared provider settings.
 ## Add another account
 
 In **Settings > Providers**, add Claude and choose **Sign in with Claude Code**.
-Name the account, continue to sign-in, and open the browser link. Paste the code
-from Claude into T3 Code. This also works when the environment runs on another
-machine. Sign out from that account's provider settings.
+Name the account and continue to sign-in. Open the browser link, then paste the
+code from Claude into T3 Code. You can sign in from another device when the
+T3 Code environment runs remotely. To sign out, open that account's provider
+settings.
 
-Each account has its own Claude configuration and conversation history. Global
-settings, skills, and plugins from your existing Claude installation are not
-copied. Project instructions and project skills remain available. Existing
-threads can switch only between Claude instances with the same config directory.
+Each account has its own Claude configuration and conversation history. T3 Code
+does not copy global settings, skills, or plugins from your existing Claude
+installation. The account can still use project instructions and project skills.
+Existing threads can switch only between Claude instances with the same config
+directory.
 
 To reuse an installed CLI account, choose **Use existing Claude Code**. Leave
-**CLAUDE_CONFIG_DIR path** empty for its normal configuration, or set the directory
-where you signed in with `CLAUDE_CONFIG_DIR=/path/to/config claude auth login`.
-Keep `HOME` unchanged so Claude can find the system keychain.
+**CLAUDE_CONFIG_DIR path** empty to use the CLI's default configuration. For a
+custom directory, sign in with `CLAUDE_CONFIG_DIR=/path/to/config claude auth login`
+and enter that directory in the provider settings. Keep `HOME` unchanged so Claude
+can find the system keychain.
 
 For API keys, custom endpoints, and routers, choose **Use existing Claude Code**
 and configure its **Environment variables**. Independent subscription accounts
@@ -66,7 +69,7 @@ tool, which refuses skills reserved for manual invocation.
 
 ## OpenRouter
 
-Choose **Use existing Claude Code** and set its own config directory, such as
+Choose **Use existing Claude Code**. Set a separate config directory, such as
 `~/.claude_openrouter`, and keep **Binary path** set to `claude`. In that instance's
 **Environment variables**, use:
 

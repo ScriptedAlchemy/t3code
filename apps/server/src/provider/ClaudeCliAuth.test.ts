@@ -221,7 +221,7 @@ it.effect("expires sign-in and closes its native process", () =>
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("logs out only one private account and repeated logout converges", () =>
+it.effect("signs out one private account and accepts repeated sign-out requests", () =>
   Effect.gen(function* () {
     const fixture = yield* makeFixture();
     const second = yield* fixture.create("two");

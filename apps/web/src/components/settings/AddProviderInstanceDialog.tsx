@@ -89,19 +89,19 @@ const CODEX_CONNECTION_OPTIONS = [
   {
     value: "cli",
     label: "Sign in with Codex CLI",
-    description: "Independent account with shared skills, plugins, and history.",
+    description: "Add an account that shares your Codex skills, plugins, and history.",
     icon: TerminalIcon,
   },
   {
     value: "existing",
     label: "Use existing Codex CLI",
-    description: "Reuse the CLI account and runtime configured here.",
+    description: "Use the CLI account and settings on this environment.",
     icon: HardDriveIcon,
   },
   {
     value: "managed",
     label: "Use ChatGPT sharing",
-    description: "Share through ChatGPT; some native Codex features are unavailable.",
+    description: "Use your ChatGPT plan. Some Codex features are unavailable.",
     icon: MessageCircleIcon,
   },
 ] as const;
@@ -111,13 +111,13 @@ const CONNECTION_OPTIONS = {
     {
       value: "cli",
       label: "Sign in with Claude Code",
-      description: "Independent Claude account with its own configuration.",
+      description: "Add an account with its own Claude settings and history.",
       icon: TerminalIcon,
     },
     {
       value: "existing",
       label: "Use existing Claude Code",
-      description: "Reuse the CLI account and runtime configured here.",
+      description: "Use the CLI account and settings on this environment.",
       icon: HardDriveIcon,
     },
   ],

@@ -243,7 +243,7 @@ function ProviderAccount({
           : installation?.phase === "succeeded" && installation.source === "local"
             ? "This provider cannot use the environment's Codex executable. Install Codex CLI for this provider."
             : installation?.phase === "succeeded"
-              ? "Installation finished. Checking this provider's Codex runtime."
+              ? "Codex CLI is installed. Checking whether this provider can run it."
               : installation?.phase === "failed" || installation?.phase === "cancelled"
                 ? (installation.message ?? "Codex CLI installation failed.")
                 : `Install Codex CLI on ${environment.label} before signing in.`;
