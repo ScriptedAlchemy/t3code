@@ -3,7 +3,7 @@
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
-import { CheckIcon } from "lucide-react";
+import { CheckIcon, HardDriveIcon, MessageCircleIcon, TerminalIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -25,7 +25,6 @@ import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { Button } from "../ui/button";
-import { ChatGptConnectionButton } from "./ChatGptConnectionButton";
 import { Dialog } from "../ui/dialog";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
@@ -85,6 +84,27 @@ const PROVIDER_OPTIONS = [
     .map((option) => ({ ...option, value: option.driverKind })),
   { ...DEFAULT_DRIVER_OPTION, value: TRAEX_BRIDGE_PRESET, label: "Traex" },
 ];
+type CodexConnectionChoice = "cli" | "existing" | "managed";
+const CODEX_CONNECTION_OPTIONS = [
+  {
+    value: "cli",
+    label: "Sign in with Codex CLI",
+    description: "Independent account with shared skills, plugins, and history.",
+    icon: TerminalIcon,
+  },
+  {
+    value: "existing",
+    label: "Use existing Codex CLI",
+    description: "Reuse the CLI account and runtime configured here.",
+    icon: HardDriveIcon,
+  },
+  {
+    value: "managed",
+    label: "Use ChatGPT sharing",
+    description: "Share through ChatGPT; some native Codex features are unavailable.",
+    icon: MessageCircleIcon,
+  },
+] as const;
 const EMPTY_CONFIG_DRAFT: Record<string, unknown> = {};
 /**
  * Validate an instance id against the same slug rules the server applies in
@@ -120,6 +140,8 @@ export function AddProviderInstanceDialog({
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
 
   const [wizardStep, setWizardStep] = useState(0);
+  const [providerView, setProviderView] = useState<"catalog" | "codexConnection">("catalog");
+  const [codexConnectionChoice, setCodexConnectionChoice] = useState<CodexConnectionChoice>("cli");
   const [codexSetupMode, setCodexSetupMode] = useState<"cli" | "existing" | "managed" | null>(null);
   const [selection, setSelection] = useState<string>(DEFAULT_DRIVER_KIND);
   const driver =
@@ -394,10 +416,16 @@ export function AddProviderInstanceDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <WizardPopup size="wide">
+      <WizardPopup size={providerView === "codexConnection" ? "default" : "wide"}>
         <WizardHeader
-          title="Add provider"
-          description={<>Add an account or configure a provider on {environmentLabel}.</>}
+          title={providerView === "codexConnection" ? "Connect Codex" : "Add provider"}
+          description={
+            providerView === "codexConnection" ? (
+              <>Choose how Codex connects to {environmentLabel}.</>
+            ) : (
+              <>Add an account or configure a provider on {environmentLabel}.</>
+            )
+          }
         >
           {isAcpRegistry ? (
             <AddProviderInstanceWizardSteps
@@ -415,8 +443,21 @@ export function AddProviderInstanceDialog({
               currentStep={wizardStep}
               summaries={wizardStepSummaries}
               instanceIdError={instanceIdError}
-              disabled={isSaving || isPreparingRegistryAgent || createdInstanceId !== null}
-              steps={isCliAccount ? ACP_REGISTRY_WIZARD_STEPS : ADD_PROVIDER_WIZARD_STEPS}
+              disabled={
+                isSaving ||
+                isPreparingRegistryAgent ||
+                createdInstanceId !== null ||
+                (selection === "codex" && wizardStep === 0)
+              }
+              steps={
+                (
+                  providerView === "codexConnection"
+                    ? codexConnectionChoice === "cli"
+                    : isCliAccount
+                )
+                  ? ACP_REGISTRY_WIZARD_STEPS
+                  : ADD_PROVIDER_WIZARD_STEPS
+              }
               onNavigation={applyWizardNavigation}
             />
           )}
@@ -436,7 +477,12 @@ export function AddProviderInstanceDialog({
               className={cn(isAcpRegistry && wizardStep === identityStep && "min-h-72")}
               holdHeight={wizardStep === 0 && !isManualAcpConfiguration && isRegistryLoading}
             >
-              <div className={cn("grid gap-2", wizardStep !== 0 && "hidden")}>
+              <div
+                className={cn(
+                  "grid gap-2",
+                  (wizardStep !== 0 || providerView !== "catalog") && "hidden",
+                )}
+              >
                 <div id="add-instance-driver-label" className="text-sm font-medium text-foreground">
                   Provider
                 </div>
@@ -484,55 +530,56 @@ export function AddProviderInstanceDialog({
                 </RadioGroup>
               </div>
 
-              {wizardStep === 0 && selection === "codex" ? (
-                <div className="grid gap-3 pt-4">
-                  <div className="grid gap-1.5">
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        setCodexSetupMode("cli");
-                        navigateToStep(1);
-                      }}
-                    >
-                      Sign in with Codex CLI
-                    </Button>
-                    <p className="text-xs text-muted-foreground">
-                      Add an independent Codex account. Keep your shared skills, plugins, and thread
-                      history.
-                    </p>
+              {wizardStep === 0 && providerView === "codexConnection" ? (
+                <div className="grid gap-2">
+                  <div
+                    id="add-codex-connection-label"
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Connection method
                   </div>
-                  <div className="grid gap-1.5">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setCodexSetupMode("existing");
-                        navigateToStep(1);
-                      }}
-                    >
-                      Use existing Codex CLI
-                    </Button>
-                    <p className="text-xs text-muted-foreground">
-                      Use the CLI account and runtime already configured on {environmentLabel}.
-                    </p>
-                  </div>
-                  <div className="grid gap-1.5">
-                    <ChatGptConnectionButton
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCodexSetupMode("managed")}
-                    >
-                      Use ChatGPT sharing
-                    </ChatGptConnectionButton>
-                    <p className="text-xs text-muted-foreground">
-                      Connect through ChatGPT subscription sharing. Some native Codex features are
-                      unavailable.
-                    </p>
-                  </div>
+                  <RadioGroup
+                    aria-labelledby="add-codex-connection-label"
+                    value={codexConnectionChoice}
+                    onValueChange={(value) => {
+                      if (value === "cli" || value === "existing" || value === "managed") {
+                        setCodexConnectionChoice(value);
+                      }
+                    }}
+                  >
+                    {CODEX_CONNECTION_OPTIONS.map((option) => {
+                      const Icon = option.icon;
+                      return (
+                        <RadioPrimitive.Root
+                          key={option.value}
+                          value={option.value}
+                          aria-label={`${option.label}. ${option.description}`}
+                          className="flex min-w-0 cursor-pointer items-center gap-3 rounded-lg bg-card px-3 py-2.5 text-left outline-none ring-1 ring-black/5 hover:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring data-checked:bg-primary/8 data-checked:ring-2 data-checked:ring-inset data-checked:ring-primary dark:bg-white/3 dark:ring-white/5 dark:hover:bg-white/5 dark:data-checked:bg-primary/15 dark:data-checked:ring-primary"
+                        >
+                          <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-foreground">
+                              {option.label}
+                            </span>
+                            <span className="block text-xs text-muted-foreground">
+                              {option.description}
+                            </span>
+                          </span>
+                          <span aria-hidden className="size-4.5 shrink-0">
+                            <RadioPrimitive.Indicator className="grid size-4.5 place-items-center rounded-full border border-input bg-background data-checked:border-primary data-checked:bg-primary">
+                              {codexConnectionChoice === option.value ? (
+                                <span className="size-1.5 rounded-full bg-primary-foreground" />
+                              ) : null}
+                            </RadioPrimitive.Indicator>
+                          </span>
+                        </RadioPrimitive.Root>
+                      );
+                    })}
+                  </RadioGroup>
                 </div>
               ) : null}
 
-              {wizardStep === 0 ? (
+              {wizardStep === 0 && providerView === "catalog" ? (
                 <div className="space-y-4 pt-4">
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
                     <div aria-hidden className="flex-1 border-t border-border/70" />
@@ -731,21 +778,45 @@ export function AddProviderInstanceDialog({
 
             <WizardFooter>
               <Button
-                variant={wizardStep === 0 ? "ghost-muted" : "outline"}
+                variant={wizardStep === 0 && providerView === "catalog" ? "ghost-muted" : "outline"}
                 size="sm"
                 disabled={isSaving || isPreparingRegistryAgent}
                 onClick={() => {
                   if (wizardStep === 0) {
+                    if (providerView === "codexConnection") {
+                      setProviderView("catalog");
+                      return;
+                    }
                     onOpenChange(false);
                     return;
                   }
                   setWizardStep((step) => Math.max(0, step - 1));
                 }}
               >
-                {wizardStep === 0 ? "Cancel" : "Back"}
+                {wizardStep === 0 && providerView === "catalog" ? "Cancel" : "Back"}
               </Button>
-              {wizardStep === 0 && selection === "codex" ? null : wizardStep <
-                (isAcpRegistry || isCliAccount ? 1 : 2) ? (
+              {wizardStep === 0 ? (
+                <Button
+                  size="sm"
+                  disabled={isPreparingRegistryAgent}
+                  onClick={() => {
+                    if (providerView === "codexConnection") {
+                      setCodexSetupMode(codexConnectionChoice);
+                      if (codexConnectionChoice !== "managed") {
+                        setWizardStep(1);
+                      }
+                      return;
+                    }
+                    if (selection === "codex") {
+                      setProviderView("codexConnection");
+                      return;
+                    }
+                    navigateToStep(wizardStep + 1);
+                  }}
+                >
+                  {providerView === "codexConnection" ? "Continue" : "Next"}
+                </Button>
+              ) : wizardStep < (isAcpRegistry || isCliAccount ? 1 : 2) ? (
                 <Button
                   size="sm"
                   disabled={isPreparingRegistryAgent}
