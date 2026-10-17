@@ -96,6 +96,7 @@ function ProviderAccount({
   const [draft, setDraft] = useState({ id: "", values: {} as Record<string, string> });
   const state = auth.data;
   const interaction = state?.interaction;
+  const acceptsCode = interaction?.type === "browser" && interaction.callbackInputKind === "code";
   const draftId = `${state?.flowId ?? ""}:${interaction?.id ?? ""}`;
   const values = draft.id === draftId ? draft.values : {};
   const active =
@@ -157,9 +158,17 @@ function ProviderAccount({
         placeholder={label}
         secureTextEntry={secret}
         autoCapitalize="none"
+        autoComplete="off"
+        keyboardType={name === "callback" && !acceptsCode ? "url" : "default"}
         autoCorrect={false}
         editable={!disabled}
-        maxLength={secret && interaction?.type === "terminal" ? 4_095 : 16_384}
+        maxLength={
+          name === "callback" && acceptsCode
+            ? 4096
+            : secret && interaction?.type === "terminal"
+              ? 4_095
+              : 16_384
+        }
         value={values[name] ?? ""}
         onChangeText={(value) => setDraft({ id: draftId, values: { ...values, [name]: value } })}
       />
@@ -237,7 +246,11 @@ function ProviderAccount({
         ) : null}
         {url && (interaction?.type === "browser" ? interaction.acceptsCallback : !interaction) ? (
           <>
-            {field("callback", "Final localhost URL", false)}
+            {field(
+              "callback",
+              acceptsCode ? "Paste the code from Claude" : "Final localhost URL",
+              false,
+            )}
             <SettingsActionRow
               icon="arrow.right"
               label="Continue"

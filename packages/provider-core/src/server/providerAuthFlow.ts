@@ -418,7 +418,7 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
             return yield* new ProviderSetupError({
               instanceId: options.instanceId,
               operation: "complete",
-              detail: "This sign-in does not accept a redirect URL.",
+              detail: "This sign-in does not accept a response.",
             });
           yield* flow.complete(input.callbackUrl);
           return snapshot.value.state;

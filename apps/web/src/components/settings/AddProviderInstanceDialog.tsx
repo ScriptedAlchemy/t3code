@@ -84,7 +84,7 @@ const PROVIDER_OPTIONS = [
     .map((option) => ({ ...option, value: option.driverKind })),
   { ...DEFAULT_DRIVER_OPTION, value: TRAEX_BRIDGE_PRESET, label: "Traex" },
 ];
-type CodexConnectionChoice = "cli" | "existing" | "managed";
+type ConnectionChoice = "cli" | "existing" | "managed";
 const CODEX_CONNECTION_OPTIONS = [
   {
     value: "cli",
@@ -105,6 +105,23 @@ const CODEX_CONNECTION_OPTIONS = [
     icon: MessageCircleIcon,
   },
 ] as const;
+const CONNECTION_OPTIONS = {
+  codex: CODEX_CONNECTION_OPTIONS,
+  claudeAgent: [
+    {
+      value: "cli",
+      label: "Sign in with Claude Code",
+      description: "Independent Claude account with its own configuration.",
+      icon: TerminalIcon,
+    },
+    {
+      value: "existing",
+      label: "Use existing Claude Code",
+      description: "Reuse the CLI account and runtime configured here.",
+      icon: HardDriveIcon,
+    },
+  ],
+} as const;
 const EMPTY_CONFIG_DRAFT: Record<string, unknown> = {};
 /**
  * Validate an instance id against the same slug rules the server applies in
@@ -140,9 +157,10 @@ export function AddProviderInstanceDialog({
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
 
   const [wizardStep, setWizardStep] = useState(0);
-  const [providerView, setProviderView] = useState<"catalog" | "codexConnection">("catalog");
-  const [codexConnectionChoice, setCodexConnectionChoice] = useState<CodexConnectionChoice>("cli");
-  const [codexSetupMode, setCodexSetupMode] = useState<"cli" | "existing" | "managed" | null>(null);
+  const [providerView, setProviderView] = useState<"catalog" | "connection" | "managed">("catalog");
+  const [connectionChoices, setConnectionChoices] = useState<
+    Partial<Record<string, ConnectionChoice>>
+  >({});
   const [selection, setSelection] = useState<string>(DEFAULT_DRIVER_KIND);
   const driver =
     selection === TRAEX_BRIDGE_PRESET ? DEFAULT_DRIVER_KIND : ProviderDriverKind.make(selection);
@@ -170,7 +188,11 @@ export function AddProviderInstanceDialog({
 
   const driverOption = providerClients.get(driver) ?? DEFAULT_DRIVER_OPTION;
   const isAcpRegistry = driver === ACP_REGISTRY_DRIVER_KIND;
-  const isCliAccount = selection === "codex" && codexSetupMode === "cli";
+  const hasConnectionChoice = selection === "codex" || selection === "claudeAgent";
+  const connectionChoice = connectionChoices[selection] ?? "cli";
+  const connectionOptions =
+    selection === "claudeAgent" ? CONNECTION_OPTIONS.claudeAgent : CONNECTION_OPTIONS.codex;
+  const isCliAccount = hasConnectionChoice && connectionChoice === "cli";
   const defaultIdentity: ProviderIdentityDraft = {
     label: selection === TRAEX_BRIDGE_PRESET ? "Traex" : driverOption.label,
     accentColor: "",
@@ -359,7 +381,7 @@ export function AddProviderInstanceDialog({
 
     const config = isCliAccount
       ? { setupMode: "cli" }
-      : driver === "codex"
+      : driver === "codex" || driver === "claudeAgent"
         ? { ...configDraft, setupMode: "existing" }
         : configDraft;
     const hasConfig = Object.keys(config).length > 0;
@@ -405,7 +427,7 @@ export function AddProviderInstanceDialog({
     onOpenChange(false);
   };
 
-  if (codexSetupMode === "managed") {
+  if (providerView === "managed") {
     return (
       <AddManagedCodexAccountDialog
         environmentId={environmentId}
@@ -416,12 +438,14 @@ export function AddProviderInstanceDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <WizardPopup size={providerView === "codexConnection" ? "default" : "wide"}>
+      <WizardPopup size={providerView === "connection" ? "default" : "wide"}>
         <WizardHeader
-          title={providerView === "codexConnection" ? "Connect Codex" : "Add provider"}
+          title={providerView === "connection" ? `Connect ${driverOption.label}` : "Add provider"}
           description={
-            providerView === "codexConnection" ? (
-              <>Choose how Codex connects to {environmentLabel}.</>
+            providerView === "connection" ? (
+              <>
+                Choose how {driverOption.label} connects to {environmentLabel}.
+              </>
             ) : (
               <>Add an account or configure a provider on {environmentLabel}.</>
             )
@@ -447,14 +471,10 @@ export function AddProviderInstanceDialog({
                 isSaving ||
                 isPreparingRegistryAgent ||
                 createdInstanceId !== null ||
-                (selection === "codex" && wizardStep === 0)
+                (hasConnectionChoice && wizardStep === 0)
               }
               steps={
-                (
-                  providerView === "codexConnection"
-                    ? codexConnectionChoice === "cli"
-                    : isCliAccount
-                )
+                (providerView === "connection" ? connectionChoice === "cli" : isCliAccount)
                   ? ACP_REGISTRY_WIZARD_STEPS
                   : ADD_PROVIDER_WIZARD_STEPS
               }
@@ -491,7 +511,6 @@ export function AddProviderInstanceDialog({
                   value={selection}
                   onValueChange={(value) => {
                     setSelection(value);
-                    setCodexSetupMode(null);
                     setIsManualAcpConfiguration(false);
                     setHasAttemptedSubmit(false);
                   }}
@@ -530,24 +549,24 @@ export function AddProviderInstanceDialog({
                 </RadioGroup>
               </div>
 
-              {wizardStep === 0 && providerView === "codexConnection" ? (
+              {wizardStep === 0 && providerView === "connection" ? (
                 <div className="grid gap-2">
                   <div
-                    id="add-codex-connection-label"
+                    id="add-provider-connection-label"
                     className="text-sm font-medium text-foreground"
                   >
                     Connection method
                   </div>
                   <RadioGroup
-                    aria-labelledby="add-codex-connection-label"
-                    value={codexConnectionChoice}
+                    aria-labelledby="add-provider-connection-label"
+                    value={connectionChoice}
                     onValueChange={(value) => {
                       if (value === "cli" || value === "existing" || value === "managed") {
-                        setCodexConnectionChoice(value);
+                        setConnectionChoices((current) => ({ ...current, [selection]: value }));
                       }
                     }}
                   >
-                    {CODEX_CONNECTION_OPTIONS.map((option) => {
+                    {connectionOptions.map((option) => {
                       const Icon = option.icon;
                       return (
                         <RadioPrimitive.Root
@@ -567,7 +586,7 @@ export function AddProviderInstanceDialog({
                           </span>
                           <span aria-hidden className="size-4.5 shrink-0">
                             <RadioPrimitive.Indicator className="grid size-4.5 place-items-center rounded-full border border-input bg-background data-checked:border-primary data-checked:bg-primary">
-                              {codexConnectionChoice === option.value ? (
+                              {connectionChoice === option.value ? (
                                 <span className="size-1.5 rounded-full bg-primary-foreground" />
                               ) : null}
                             </RadioPrimitive.Indicator>
@@ -783,7 +802,7 @@ export function AddProviderInstanceDialog({
                 disabled={isSaving || isPreparingRegistryAgent}
                 onClick={() => {
                   if (wizardStep === 0) {
-                    if (providerView === "codexConnection") {
+                    if (providerView === "connection") {
                       setProviderView("catalog");
                       return;
                     }
@@ -800,21 +819,19 @@ export function AddProviderInstanceDialog({
                   size="sm"
                   disabled={isPreparingRegistryAgent}
                   onClick={() => {
-                    if (providerView === "codexConnection") {
-                      setCodexSetupMode(codexConnectionChoice);
-                      if (codexConnectionChoice !== "managed") {
-                        setWizardStep(1);
-                      }
+                    if (providerView === "connection") {
+                      if (connectionChoice === "managed") setProviderView("managed");
+                      else setWizardStep(1);
                       return;
                     }
-                    if (selection === "codex") {
-                      setProviderView("codexConnection");
+                    if (hasConnectionChoice) {
+                      setProviderView("connection");
                       return;
                     }
                     navigateToStep(wizardStep + 1);
                   }}
                 >
-                  {providerView === "codexConnection" ? "Continue" : "Next"}
+                  {providerView === "connection" ? "Continue" : "Next"}
                 </Button>
               ) : wizardStep < (isAcpRegistry || isCliAccount ? 1 : 2) ? (
                 <Button

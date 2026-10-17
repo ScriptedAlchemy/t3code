@@ -1883,6 +1883,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       });
 
       const environment = yield* resolveProviderInstanceTerminalEnvironment({
+        stateDir: "/state",
         serverSettings,
         path,
         rawProviderInstanceId: instanceId,

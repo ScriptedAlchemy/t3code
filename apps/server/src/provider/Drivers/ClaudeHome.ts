@@ -1,4 +1,5 @@
-import type { ClaudeSettings } from "@t3tools/contracts";
+import type { Settings as ClaudeSdkSettings } from "@anthropic-ai/claude-agent-sdk";
+import type { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -8,6 +9,97 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 const quotePath = Schema.encodeSync(Schema.fromJsonString(Schema.String));
+
+const CLAUDE_BACKEND_ENVIRONMENT = [
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+  "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+  "CLAUDE_CODE_USE_MANTLE",
+  "CLAUDE_CODE_USE_GATEWAY",
+] as const;
+
+const CLAUDE_ACCOUNT_ENVIRONMENT = [
+  ...CLAUDE_BACKEND_ENVIRONMENT,
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "ANTHROPIC_PROFILE",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+  "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+  "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+  "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+  "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+  "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_FOUNDRY_RESOURCE",
+] as const;
+
+export function claudeCliEnvironment(environment: NodeJS.ProcessEnv, configDir: string) {
+  const next = { ...environment };
+  for (const key of Object.keys(next)) {
+    const name = key.toUpperCase();
+    if (
+      name.startsWith("ANTHROPIC_") ||
+      CLAUDE_ACCOUNT_ENVIRONMENT.some((entry) => entry === name) ||
+      name === "CLAUDE_CONFIG_DIR" ||
+      name === "CLAUDE_SECURESTORAGE_CONFIG_DIR"
+    ) {
+      delete next[key];
+    }
+  }
+  return { ...next, CLAUDE_CONFIG_DIR: configDir, CLAUDE_SECURESTORAGE_CONFIG_DIR: configDir };
+}
+
+export function claudeAccountSettings(
+  config: Pick<ClaudeSettings, "setupMode" | "homePath">,
+): ClaudeSdkSettings | undefined {
+  if (config.setupMode !== "cli") return undefined;
+  return {
+    forceLoginMethod: "claudeai",
+    apiKeyHelper: "",
+    awsAuthRefresh: "",
+    awsCredentialExport: "",
+    env: {
+      ...Object.fromEntries(CLAUDE_ACCOUNT_ENVIRONMENT.map((key) => [key, ""])),
+      ...Object.fromEntries(CLAUDE_BACKEND_ENVIRONMENT.map((key) => [key, "0"])),
+      CLAUDE_CONFIG_DIR: config.homePath,
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: config.homePath,
+    },
+  };
+}
+
+export interface ClaudeRuntime {
+  readonly mode: "existing" | "cli";
+  readonly config: ClaudeSettings;
+  readonly configDir: string;
+  readonly environment: NodeJS.ProcessEnv;
+}
+
+export const resolveClaudeRuntime = Effect.fn("resolveClaudeRuntime")(function* (input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly config: ClaudeSettings;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly stateDir: string;
+}): Effect.fn.Return<ClaudeRuntime, never, Path.Path> {
+  const path = yield* Path.Path;
+  const mode = input.config.setupMode ?? "existing";
+  const configDir =
+    mode === "cli"
+      ? path.join(input.stateDir, "providers", "claude", input.instanceId, "cli")
+      : yield* resolveClaudeHomePath(input.config, input.environment);
+  const config = mode === "cli" ? { ...input.config, homePath: configDir } : input.config;
+  const environment =
+    mode === "cli"
+      ? claudeCliEnvironment(input.environment, configDir)
+      : yield* makeClaudeEnvironment(config, input.environment);
+  return { mode, config, configDir, environment };
+});
 
 export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function* (
   config: Pick<ClaudeSettings, "homePath">,

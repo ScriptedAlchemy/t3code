@@ -4,38 +4,26 @@ T3 Code uses Claude Code's login and configuration. Start with the default provi
 for one account; [provider setup](./install.md#providers) covers installation and
 shared provider settings.
 
-## Separate accounts or configurations
+## Add another account
 
-Use a separate Claude config directory for each account. This also works for named
-presets that need different Claude settings or a router connection.
+In **Settings > Providers**, add Claude and choose **Sign in with Claude Code**.
+Name the account, continue to sign-in, and open the browser link. Paste the code
+from Claude into T3 Code. This also works when the environment runs on another
+machine. Sign out from that account's provider settings.
 
-Keep your existing account in the default directory. On the environment's machine,
-create the second login:
-
-```bash
-mkdir -p ~/.claude_personal
-CLAUDE_CONFIG_DIR=~/.claude_personal claude auth login
-```
-
-Add another Claude instance in **Settings > Providers**:
-
-| Instance        | Binary path | CLAUDE_CONFIG_DIR path |
-| --------------- | ----------- | ---------------------- |
-| Claude Work     | `claude`    | Leave empty            |
-| Claude Personal | `claude`    | `~/.claude_personal`   |
-
-An empty config-directory setting uses Claude Code's normal configuration. The
-custom setting changes `CLAUDE_CONFIG_DIR`, leaving `HOME` and the system keychain
-location intact. Use the same variable for the login command. Setting `HOME`
-instead can put credentials where this provider will not find them.
-
-Check the account reported in provider settings after signing in. Existing
+Each account has its own Claude configuration and conversation history. Global
+settings, skills, and plugins from your existing Claude installation are not
+copied. Project instructions and project skills remain available. Existing
 threads can switch only between Claude instances with the same config directory.
-Separate account directories stay isolated, including their local conversation
-state. Claude does not have Codex's shared-home and shadow-home arrangement.
 
-For presets that differ only in API keys or endpoints, use the instance's
-**Environment variables**. Variable assignments do not belong in **Launch arguments**.
+To reuse an installed CLI account, choose **Use existing Claude Code**. Leave
+**CLAUDE_CONFIG_DIR path** empty for its normal configuration, or set the directory
+where you signed in with `CLAUDE_CONFIG_DIR=/path/to/config claude auth login`.
+Keep `HOME` unchanged so Claude can find the system keychain.
+
+For API keys, custom endpoints, and routers, choose **Use existing Claude Code**
+and configure its **Environment variables**. Independent subscription accounts
+use their own Claude login and ignore credential and endpoint overrides.
 
 Claude Code's verbose mode can stay enabled when you use Claude for text generation, including
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
@@ -78,7 +66,7 @@ tool, which refuses skills reserved for manual invocation.
 
 ## OpenRouter
 
-Create a Claude instance with its own config directory, such as
+Choose **Use existing Claude Code** and set its own config directory, such as
 `~/.claude_openrouter`, and keep **Binary path** set to `claude`. In that instance's
 **Environment variables**, use:
 

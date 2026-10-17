@@ -1,3 +1,5 @@
+import { resolveClaudeRuntime } from "../provider/Drivers/ClaudeHome.ts";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as NodeOS from "node:os";
 
 import {
@@ -829,18 +831,6 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const resolveClaudeConfigDir = (homePath: string, environmentHome?: string): string => {
-    const configured = homePath.trim();
-    if (configured.length > 0) {
-      return path.resolve(expandHomePath(configured, homeDir));
-    }
-    const fromEnvironment = environmentHome?.trim() ?? "";
-    if (fromEnvironment.length > 0) {
-      return path.resolve(expandHomePath(fromEnvironment, homeDir));
-    }
-    return path.join(homeDir, ".claude");
-  };
-
   const discoverClaudeTranscripts = Effect.fn("AgentSessionScanner.discoverClaudeTranscripts")(
     function* (homePath: string, providerInstanceId: ProviderInstanceId, operationBudget: number) {
       const projectsDir = path.join(homePath, "projects");
@@ -1047,7 +1037,15 @@ export const make = Effect.gen(function* () {
         if (source === "claudeAgent") {
           const config = decodeClaudeSettings(instance.config ?? {});
           if (Option.isNone(config)) continue;
-          homePath = resolveClaudeConfigDir(config.value.homePath, environmentHome);
+          homePath = (yield* resolveClaudeRuntime({
+            instanceId,
+            config: config.value,
+            environment: yield* mergeProviderInstanceEnvironment(
+              instance.environment,
+              hostEnvironment,
+            ),
+            stateDir: serverConfig.stateDir,
+          }).pipe(Effect.provideService(Path.Path, path))).configDir;
         } else {
           const config = decodeCodexSettings(instance.config ?? {});
           if (Option.isNone(config)) continue;

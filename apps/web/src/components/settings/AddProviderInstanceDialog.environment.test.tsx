@@ -137,7 +137,7 @@ function button(dialog: unknown, label: string) {
 function selectCodexConnection(dialog: unknown, choice: "cli" | "existing" | "managed") {
   const group = visitElements(
     dialog,
-    (element) => element.props["aria-labelledby"] === "add-codex-connection-label",
+    (element) => element.props["aria-labelledby"] === "add-provider-connection-label",
   );
   expect(group).not.toBeNull();
   (group!.props.onValueChange as (value: string) => void)(choice);
@@ -244,7 +244,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
     expect(
       visitElements(
         tree,
-        (element) => element.props["aria-labelledby"] === "add-codex-connection-label",
+        (element) => element.props["aria-labelledby"] === "add-provider-connection-label",
       ),
     ).toBeNull();
     expect(
@@ -263,7 +263,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
     expect(header?.props.title).toBe("Connect Codex");
     const connectionGroup = visitElements(
       tree,
-      (element) => element.props["aria-labelledby"] === "add-codex-connection-label",
+      (element) => element.props["aria-labelledby"] === "add-provider-connection-label",
     );
     expect(connectionGroup?.props.value).toBe("cli");
     expect(
@@ -296,11 +296,50 @@ describe("AddProviderInstanceDialog environment routing", () => {
     tree = openCodexConnection(tree);
     const rememberedGroup = visitElements(
       tree,
-      (element) => element.props["aria-labelledby"] === "add-codex-connection-label",
+      (element) => element.props["aria-labelledby"] === "add-provider-connection-label",
     );
     expect(rememberedGroup?.props.value).toBe("existing");
     expect(button(tree, "Continue").props.disabled).not.toBe(true);
   });
+
+  it.each(["cli", "existing"] as const)(
+    "creates a Claude %s account through its connection choice",
+    async (choice) => {
+      let tree = renderDialog();
+      const providers = visitElements(
+        tree,
+        (element) => element.props["aria-labelledby"] === "add-instance-driver-label",
+      )!;
+      (providers.props.onValueChange as (value: string) => void)("claudeAgent");
+      tree = openCodexConnection(renderDialog());
+      const choices = visitElements(
+        tree,
+        (element) => element.props["aria-labelledby"] === "add-provider-connection-label",
+      )!;
+      expect(choices.props.value).toBe("cli");
+      selectCodexConnection(tree, choice);
+      tree = continueCodexConnection(renderDialog());
+      if (choice === "existing") {
+        (button(tree, "Next").props.onClick as () => void)();
+        tree = renderDialog();
+      }
+      (
+        button(tree, choice === "cli" ? "Continue to sign-in" : "Add instance").props
+          .onClick as () => void
+      )();
+      await Promise.resolve();
+      expect(settingsHooks.mutate).toHaveBeenCalledWith({
+        operation: "create",
+        instanceId: "claudeAgent_2",
+        instance: {
+          driver: "claudeAgent",
+          enabled: true,
+          displayName: "Claude",
+          config: { setupMode: choice },
+        },
+      });
+    },
+  );
 
   it("opens ChatGPT sharing only after Continue", () => {
     let tree = openCodexConnection();

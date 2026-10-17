@@ -610,6 +610,9 @@ const CLAUDE_AUTO_COMPACT_WINDOW_PATTERN = /^(?:|[1-9]\d{5}|1000000)$/;
 
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
+    setupMode: Schema.optionalKey(Schema.Literals(["existing", "cli"])).pipe(
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),

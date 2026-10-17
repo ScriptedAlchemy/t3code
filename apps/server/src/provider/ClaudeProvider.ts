@@ -35,7 +35,13 @@ import {
   type ServerProviderDraft,
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { resolveClaudeSdkExecutablePath } from "./Drivers/ClaudeExecutable.ts";
-import { hasClaudeManagedMcpConfig, makeClaudeEnvironment } from "./Drivers/ClaudeHome.ts";
+import {
+  claudeAccountSettings,
+  hasClaudeManagedMcpConfig,
+  makeClaudeEnvironment,
+} from "./Drivers/ClaudeHome.ts";
+import { spawnClaudeProcess } from "./Drivers/ClaudeProcess.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { discoverClaudeSkills } from "./Drivers/ClaudeSkills.ts";
 import type { ProviderWorkspaceSnapshot } from "@t3tools/provider-core/server/driver";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
@@ -201,11 +207,13 @@ export const CLAUDE_CAPABILITIES_PROBE_SETTING_SOURCES = [
 ] as const satisfies ReadonlyArray<SettingSource>;
 
 export function buildClaudeCapabilitiesProbeQueryOptions(input: {
+  readonly platform: NodeJS.Platform;
   readonly executablePath: string;
   readonly abortController: AbortController;
   readonly environment: NodeJS.ProcessEnv;
   readonly cwd: string | undefined;
   readonly managedMcpConfig: boolean;
+  readonly config?: ClaudeSettings;
 }): ClaudeQueryOptions {
   return {
     persistSession: false,
@@ -215,7 +223,16 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
     // The probe keeps filesystem setting sources for slash-command discovery,
     // but must not run the user's hooks: it fires every few minutes, so
     // SessionStart hooks would run on every health check.
-    settings: { disableAllHooks: true },
+    settings: {
+      disableAllHooks: true,
+      ...(input.config ? claudeAccountSettings(input.config) : {}),
+    },
+    ...(input.config?.setupMode === "cli"
+      ? {
+          spawnClaudeCodeProcess: (options: Parameters<typeof spawnClaudeProcess>[0]) =>
+            spawnClaudeProcess(options, input.platform, input.config!.homePath),
+        }
+      : {}),
     allowedTools: [],
     // Ignore MCP definitions from every filesystem setting source above. The
     // SDK combines this empty explicit map with --strict-mcp-config, which
@@ -350,6 +367,7 @@ const probeClaudeCapabilities = (
 ) => {
   const abort = new AbortController();
   return Effect.gen(function* () {
+    const platform = yield* HostProcess.Platform;
     const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
     const executablePath = yield* resolveClaudeSdkExecutablePath(
       claudeSettings.binaryPath,
@@ -365,11 +383,13 @@ const probeClaudeCapabilities = (
           await waitForAbortSignal(abort.signal);
         })(),
         options: buildClaudeCapabilitiesProbeQueryOptions({
+          platform,
           executablePath,
           abortController: abort,
           environment: claudeEnvironment,
           cwd,
           managedMcpConfig,
+          config: claudeSettings,
         }),
       });
       const init = await q.initializationResult();
@@ -436,6 +456,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   });
   const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
     env: claudeEnvironment,
+    extendEnv: false,
     shell: spawnCommand.shell,
     ...(cwd ? { cwd } : {}),
   });

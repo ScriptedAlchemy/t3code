@@ -1581,6 +1581,7 @@ async function recordClaudeStreamingQuery(input: {
         }
       : undefined;
   const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+    platform: await Effect.runPromise(HostProcess.Platform),
     modelSelection: input.modelSelection,
     nativeThreadId: input.sessionId,
     resume: false,
@@ -1765,6 +1766,7 @@ async function recordClaudeActiveSteeringQuery(input: {
         }
       : undefined;
   const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+    platform: await Effect.runPromise(HostProcess.Platform),
     modelSelection: input.modelSelection,
     nativeThreadId: input.sessionId,
     resume: false,
@@ -1844,6 +1846,7 @@ async function recordClaudeRestartingQueries(input: {
   for (const [index, prompt] of input.prompts.entries()) {
     const promptQueue = new RecordingPromptQueue();
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      platform: await Effect.runPromise(HostProcess.Platform),
       modelSelection: input.modelSelection,
       nativeThreadId: input.sessionId,
       resume: index > 0,
@@ -1937,6 +1940,7 @@ async function recordClaudeResumeAtCursorQuery(input: {
 
   const sourcePromptQueue = new RecordingPromptQueue();
   const sourceOptions = ClaudeAdapterV2.makeClaudeQueryOptions({
+    platform: await Effect.runPromise(HostProcess.Platform),
     modelSelection: input.modelSelection,
     nativeThreadId: input.sessionId,
     resume: false,
@@ -2007,6 +2011,7 @@ async function recordClaudeResumeAtCursorQuery(input: {
     const resumedPromptQueue = new RecordingPromptQueue();
     const resumedOptions = {
       ...ClaudeAdapterV2.makeClaudeQueryOptions({
+        platform: await Effect.runPromise(HostProcess.Platform),
         modelSelection: input.modelSelection,
         nativeThreadId: input.sessionId,
         resume: true,
@@ -2120,6 +2125,7 @@ async function recordClaudeForkSessionQuery(input: {
 
   const sourcePromptQueue = new RecordingPromptQueue();
   const sourceOptions = ClaudeAdapterV2.makeClaudeQueryOptions({
+    platform: await Effect.runPromise(HostProcess.Platform),
     modelSelection: input.modelSelection,
     nativeThreadId: input.sessionId,
     resume: false,
@@ -2228,6 +2234,7 @@ async function recordClaudeForkSessionQuery(input: {
 
       const targetPromptQueue = new RecordingPromptQueue();
       const targetOptions = ClaudeAdapterV2.makeClaudeQueryOptions({
+        platform: await Effect.runPromise(HostProcess.Platform),
         modelSelection: input.modelSelection,
         nativeThreadId: forked.sessionId,
         resume: true,
@@ -2286,6 +2293,7 @@ async function recordClaudeForkSessionQuery(input: {
     if (sourceContinuationPromptCount > 0) {
       const continuationPromptQueue = new RecordingPromptQueue();
       const continuationOptions = ClaudeAdapterV2.makeClaudeQueryOptions({
+        platform: await Effect.runPromise(HostProcess.Platform),
         modelSelection: input.modelSelection,
         nativeThreadId: input.sessionId,
         resume: true,
@@ -2376,6 +2384,7 @@ async function recordInterruptedClaudeQuery(input: {
 }): Promise<void> {
   const promptQueue = new RecordingPromptQueue();
   const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+    platform: await Effect.runPromise(HostProcess.Platform),
     modelSelection: input.modelSelection,
     nativeThreadId: input.sessionId,
     resume: input.resume,
@@ -2557,6 +2566,7 @@ async function recordClaudeInterruptRestartQuery(input: {
 
   const secondPromptQueue = new RecordingPromptQueue();
   const secondOptions = ClaudeAdapterV2.makeClaudeQueryOptions({
+    platform: await Effect.runPromise(HostProcess.Platform),
     modelSelection: input.modelSelection,
     nativeThreadId: input.sessionId,
     resume: true,

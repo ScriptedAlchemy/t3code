@@ -109,6 +109,12 @@ export function deriveProviderSettingsFields(
       const fieldSchema = definition.settingsSchema.fields[key]!;
       const formAnnotation = readProviderSettingsFormAnnotation(fieldSchema);
       if (formAnnotation.hidden) return [];
+      if (
+        definition.driverKind === "claudeAgent" &&
+        readProviderConfigString(value, "setupMode") === "cli" &&
+        key === "homePath"
+      )
+        return [];
       if (isLocalAcp && key !== "source" && key !== "commandPath") return [];
 
       const annotatedTitle = readFieldAnnotationString(fieldSchema, "title");
@@ -250,7 +256,7 @@ function ProviderCommandArguments({
   );
 }
 
-function readProviderConfigString(config: unknown, key: string): string {
+export function readProviderConfigString(config: unknown, key: string): string {
   if (config === null || typeof config !== "object") return "";
   const value = (config as Record<string, unknown>)[key];
   return typeof value === "string" ? value : "";

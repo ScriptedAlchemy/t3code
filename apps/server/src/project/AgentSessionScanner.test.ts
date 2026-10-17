@@ -527,6 +527,56 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
       }),
     );
 
+    it.effect(
+      "discovers private Claude transcripts without importing the overridden existing home",
+      () =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const claudeHomePath = yield* makeTempDir("t3code-claude-existing-");
+          const codexHomePath = yield* makeTempDir("t3code-codex-empty-");
+          const configBaseDir = yield* makeTempDir("t3code-private-scanner-");
+          const ownWorkspace = yield* makeTempDir("t3code-own-workspace-");
+          const otherWorkspace = yield* makeTempDir("t3code-other-workspace-");
+          yield* writeTranscript({
+            filePath: path.join(claudeHomePath, "projects", "host", "host.jsonl"),
+            contents: claudeSessionLine(otherWorkspace),
+            mtimeMs: 1000,
+          });
+          yield* writeTranscript({
+            filePath: path.join(
+              configBaseDir,
+              "userdata",
+              "providers",
+              "claude",
+              "private",
+              "cli",
+              "projects",
+              "own",
+              "own.jsonl",
+            ),
+            contents: claudeSessionLine(ownWorkspace),
+            mtimeMs: 2000,
+          });
+          const input = {
+            claudeHomePath,
+            codexHomePath,
+            configBaseDir,
+            providerInstances: {
+              claudeAgent: { driver: ProviderDriverKind.make("claudeAgent"), enabled: false },
+              private: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                config: { setupMode: "cli", homePath: claudeHomePath },
+                environment: [
+                  { name: "CLAUDE_CONFIG_DIR", value: claudeHomePath, sensitive: false },
+                ],
+              },
+            },
+          };
+          const result = yield* runScan(input);
+          expect(result.candidates.map((candidate) => candidate.path)).toEqual([ownWorkspace]);
+        }),
+    );
+
     it.effect("uses explicit default-slot homes instead of the fixture homes", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;

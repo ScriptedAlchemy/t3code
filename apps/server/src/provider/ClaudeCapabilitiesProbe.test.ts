@@ -33,6 +33,7 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 it("isolates Claude capability probes without dropping workspace setting sources", () => {
   const abortController = new AbortController();
   const options = buildClaudeCapabilitiesProbeQueryOptions({
+    platform: "linux",
     executablePath: "/usr/bin/claude",
     abortController,
     environment: {
@@ -62,6 +63,7 @@ it("isolates Claude capability probes without dropping workspace setting sources
 
 it("drops strict MCP mode, and only that, next to an administrator's managed-mcp.json", () => {
   const options = buildClaudeCapabilitiesProbeQueryOptions({
+    platform: "linux",
     executablePath: "/usr/bin/claude",
     abortController: new AbortController(),
     environment: { HOME: "/home/user" },

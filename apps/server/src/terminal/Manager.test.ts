@@ -2338,6 +2338,7 @@ it.layer(
       });
 
       const error = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+        stateDir: "/state",
         serverSettings,
         path,
         rawProviderInstanceId: providerInstanceId,
@@ -2381,6 +2382,7 @@ it.layer(
       const path = yield* Path.Path;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const environment = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+        stateDir: "/state",
         serverSettings,
         path,
         rawProviderInstanceId: "configured_home",
@@ -2408,6 +2410,7 @@ it.layer(
       const path = yield* Path.Path;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const environment = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+        stateDir: "/state",
         serverSettings,
         path,
         rawProviderInstanceId: "codex",
@@ -2434,6 +2437,7 @@ it.layer(
       const path = yield* Path.Path;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const environment = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+        stateDir: "/state",
         serverSettings,
         path,
         rawProviderInstanceId: "claudeAgent",
@@ -2460,6 +2464,7 @@ it.layer(
       const path = yield* Path.Path;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const environment = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+        stateDir: "/state",
         serverSettings,
         path,
         rawProviderInstanceId: "codex",
@@ -2477,6 +2482,7 @@ it.layer(
       const path = yield* Path.Path;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const error = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+        stateDir: "/state",
         serverSettings,
         path,
         rawProviderInstanceId: "codex_unknown",
@@ -2509,6 +2515,52 @@ it.layer(
     }),
   );
 
+  it.effect("keeps a private Claude account through the final terminal environment merge", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const path = yield* Path.Path;
+      const providerInstanceId = ProviderInstanceId.make("claude_private");
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: {
+          ...process.env,
+          ANTHROPIC_API_KEY: "ambient-key",
+          CLAUDE_CODE_OAUTH_TOKEN: "ambient-token",
+          CLAUDE_CODE_USE_GATEWAY: "1",
+          CLAUDE_SECURESTORAGE_CONFIG_DIR: "/ambient-keychain",
+          AWS_PROFILE: "project-tools",
+        },
+        resolveProviderInstanceEnvironment: (rawProviderInstanceId, env) =>
+          TerminalManager.resolveProviderInstanceTerminalEnvironment({
+            serverSettings,
+            path,
+            rawProviderInstanceId,
+            env,
+            stateDir: "/state",
+          }),
+      });
+      yield* manager.open(openInput({ providerInstanceId }));
+      expect(ptyAdapter.spawnInputs[0]!.env).toMatchObject({
+        CLAUDE_CONFIG_DIR: "/state/providers/claude/claude_private/cli",
+        CLAUDE_SECURESTORAGE_CONFIG_DIR: "/state/providers/claude/claude_private/cli",
+        ANTHROPIC_API_KEY: "",
+        CLAUDE_CODE_OAUTH_TOKEN: "",
+        CLAUDE_CODE_USE_GATEWAY: "0",
+        AWS_PROFILE: "project-tools",
+      });
+    }).pipe(
+      Effect.provide(
+        ServerSettings.layerTest({
+          providerInstances: {
+            [ProviderInstanceId.make("claude_private")]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              config: { setupMode: "cli", homePath: "/ignored" },
+            },
+          },
+        }),
+      ),
+    ),
+  );
+
   it.effect("restarts with current provider secrets and clears bounded history", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -2518,6 +2570,7 @@ it.layer(
         historyByteLimit: 8,
         resolveProviderInstanceEnvironment: (rawProviderInstanceId, env) =>
           TerminalManager.resolveProviderInstanceTerminalEnvironment({
+            stateDir: "/state",
             serverSettings,
             path,
             rawProviderInstanceId,

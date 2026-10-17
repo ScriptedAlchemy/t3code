@@ -292,6 +292,39 @@ describe("Antigravity setup", () => {
     ).toBeNull();
   });
 
+  it("sends a pasted Claude code to the selected remote environment and clears it", async () => {
+    setup.auth = authState({
+      interaction: {
+        type: "browser",
+        id: "code",
+        url: "https://claude.com/cai/oauth/authorize?state=fixture",
+        requiresConsent: false,
+        acceptsCallback: true,
+        callbackInputKind: "code",
+      },
+    });
+    let tree = renderSetup();
+    const field = visitElements(
+      tree,
+      (element) => element.props.id === `provider-callback-${instanceId}`,
+    )!;
+    expect(field.props.type).toBe("text");
+    setCallback(tree, "fixture-code#state");
+    tree = renderSetup();
+    submitCallback(tree);
+    await flushPromises();
+    expect(setup.completeAuth).toHaveBeenCalledWith({
+      environmentId,
+      input: { instanceId, flowId: "flow-1", callbackUrl: "fixture-code#state" },
+    });
+    expect(
+      visitElements(
+        renderSetup(),
+        (element) => element.props.id === `provider-callback-${instanceId}`,
+      )!.props.value,
+    ).toBe("");
+  });
+
   it("does not send a callback left over from a replaced sign-in flow", async () => {
     const interaction = {
       type: "browser" as const,

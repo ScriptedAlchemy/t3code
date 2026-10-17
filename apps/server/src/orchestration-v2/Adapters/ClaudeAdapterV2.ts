@@ -30,8 +30,6 @@ import {
   type PermissionUpdate,
   type Query as ClaudeQuery,
   type Settings as ClaudeSdkSettings,
-  type SpawnOptions as ClaudeSpawnOptions,
-  type SpawnedProcess as ClaudeSpawnedProcess,
   type SDKAssistantMessage,
   type SDKAPIRetryMessage,
   type SDKMessage,
@@ -43,8 +41,6 @@ import type {
   AskUserQuestionInput,
   WebSearchOutput,
 } from "@anthropic-ai/claude-agent-sdk/sdk-tools";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- the SDK takes a Node ChildProcess for the CLI.
-import * as NodeChildProcess from "node:child_process";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -118,10 +114,12 @@ import {
 } from "../../claudeModelOptions.ts";
 import * as ServerConfig from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { spawnClaudeProcess } from "../../provider/Drivers/ClaudeProcess.ts";
 import {
   claudeSignedOutMessage,
-  makeClaudeEnvironment,
+  claudeAccountSettings,
+  resolveClaudeRuntime,
+  type ClaudeRuntime,
 } from "../../provider/Drivers/ClaudeHome.ts";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
@@ -232,28 +230,6 @@ const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
 // The SDK puts no deadline on control requests. The CLI answers
 // mcp_set_servers once each server connected or hit its own 30 s timeout.
 const CLAUDE_MCP_REGISTRATION_TIMEOUT = "90 seconds";
-
-/**
- * When the CLI exits it stops the MCP servers it started, but not their children: a plugin's
- * `bun run start` wrapper dies and its `bun server.ts` keeps running, writing to a pipe nobody
- * reads (#3089). Those stay in the CLI's group, so the rest of the group gets SIGKILL once the
- * CLI exits for any reason.
- */
-function spawnClaudeProcessGroup(options: ClaudeSpawnOptions): ClaudeSpawnedProcess {
-  const child = NodeChildProcess.spawn(options.command, options.args, {
-    cwd: options.cwd,
-    env: options.env,
-    signal: options.signal,
-    stdio: ["pipe", "pipe", "ignore"],
-    detached: true,
-  });
-  child.once("exit", () => {
-    try {
-      signalProcessGroup(child.pid ?? 0, "SIGKILL");
-    } catch {}
-  });
-  return child;
-}
 
 export const ClaudeProviderCapabilitiesV2 = {
   sessions: {
@@ -764,7 +740,10 @@ export const layerQueryRunner: Layer.Layer<
         // Windows has no process groups, so there the SDK spawns the CLI itself.
         const spawnClaudeCodeProcess =
           options.spawnClaudeCodeProcess ??
-          (platform === "win32" ? undefined : spawnClaudeProcessGroup);
+          (platform === "win32"
+            ? undefined
+            : (spawnOptions: Parameters<typeof spawnClaudeProcess>[0]) =>
+                spawnClaudeProcess(spawnOptions, platform));
         const queryRuntime = yield* Effect.uninterruptibleMask((restore) =>
           Effect.try({
             try: () =>
@@ -1056,6 +1035,7 @@ function claudeLiveSelectionFlagSettings(
 }
 
 export function makeClaudeQueryOptions(input: {
+  readonly platform: NodeJS.Platform;
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
   readonly resume: boolean;
@@ -1081,6 +1061,7 @@ export function makeClaudeQueryOptions(input: {
     "dangerously-skip-permissions": launchArgSkipPermissions,
     ...extraArgs
   } = input.settings === undefined ? {} : parseCliArgs(input.settings.launchArgs).flags;
+  if (input.settings?.setupMode === "cli") delete extraArgs.settings;
   const requestThinkingSummaries =
     compiledSelection.settings.alwaysThinkingEnabled !== false &&
     extraArgs["thinking-display"] !== "omitted";
@@ -1108,6 +1089,7 @@ export function makeClaudeQueryOptions(input: {
           ...(typeof querySettings === "object" && querySettings !== null ? querySettings : {}),
           autoCompactWindow: Number(input.settings.autoCompactWindow),
         } as ClaudeSdkSettings);
+  const accountSettings = input.settings ? claudeAccountSettings(input.settings) : undefined;
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
     tools: claudeAgentSdkQueryToolsForSdk(selectedTools),
@@ -1144,6 +1126,17 @@ export function makeClaudeQueryOptions(input: {
       : effectiveQuerySettings === undefined
         ? {}
         : { settings: effectiveQuerySettings }),
+    ...(accountSettings === undefined
+      ? {}
+      : {
+          settings: {
+            ...(typeof effectiveQuerySettings === "object" ? effectiveQuerySettings : {}),
+            ...(requestThinkingSummaries ? { showThinkingSummaries: true } : {}),
+            ...accountSettings,
+          },
+          spawnClaudeCodeProcess: (options) =>
+            spawnClaudeProcess(options, input.platform, input.settings!.homePath),
+        }),
     ...(input.onUserDialog === undefined ? {} : { onUserDialog: input.onUserDialog }),
     ...(input.supportedDialogKinds === undefined
       ? {}
@@ -3343,6 +3336,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   adapterOptions: ClaudeAdapterV2Options,
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+  const platform = yield* HostProcess.Platform;
   const { attachmentsDir, fileSystem, path, crypto, idAllocator, queryRunner } = adapterOptions;
   const subagentModelCatalog = scopeClaudeModelCatalog(
     BUNDLED_CLAUDE_MODEL_CATALOG,
@@ -8100,6 +8094,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
           const queryOptions = makeClaudeQueryOptions({
+            platform,
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
             resume: shouldResume,
@@ -9110,18 +9105,19 @@ export type ClaudeAdapterV2DriverEnv =
 
 export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
   function* (
-    input: ProviderAdapterDriverCreateInput<ClaudeSettings>,
+    input: Pick<ProviderAdapterDriverCreateInput<ClaudeSettings>, "instanceId">,
+    runtime: ClaudeRuntime,
     hooks: Pick<ClaudeAdapterV2Options, "scopedLimitNames" | "onUsageLimits"> = {},
   ) {
-    const { instanceId, environment, enabled, config } = input;
+    const { instanceId } = input;
+    const { config, environment: claudeEnvironment } = runtime;
     const fileSystem = yield* FileSystem.FileSystem;
-    const hostEnvironment = yield* HostProcess.Environment;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const queryRunner = yield* ClaudeAgentSdkQueryRunner;
     const serverConfig = yield* ServerConfig.ServerConfig;
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
-    const baseEnvironment = yield* mergeProviderInstanceEnvironment(environment, hostEnvironment);
-    const claudeEnvironment = yield* makeClaudeEnvironment(config, baseEnvironment);
+    if (runtime.mode === "cli")
+      yield* fileSystem.makeDirectory(runtime.configDir, { recursive: true, mode: 0o700 });
     const path = yield* Path.Path;
     const crypto = yield* Crypto.Crypto;
     const binaryPath = yield* resolveClaudeSdkExecutablePath(
@@ -9130,7 +9126,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     );
     return yield* makeClaudeAdapterV2({
       instanceId,
-      settings: { ...config, enabled, binaryPath },
+      settings: { ...config, binaryPath },
       environment: claudeEnvironment,
       attachmentsDir: serverConfig.attachmentsDir,
       fileSystem,
@@ -9142,7 +9138,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
       ...hooks,
     });
   },
-  (effect, input, _hooks) =>
+  (effect, input, _runtime, _hooks) =>
     effect.pipe(
       Effect.mapError(
         (cause) =>
@@ -9163,7 +9159,20 @@ export const ClaudeAdapterV2Driver: ProviderAdapterDriver<
   driverKind: CLAUDE_PROVIDER,
   configSchema: ClaudeSettings,
   defaultConfig: (): ClaudeSettings => DEFAULT_CLAUDE_SETTINGS,
-  create: (input) => createClaudeAdapterV2(input, {}),
+  create: (input) =>
+    Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const runtime = yield* resolveClaudeRuntime({
+        instanceId: input.instanceId,
+        config: { ...input.config, enabled: input.enabled },
+        environment: yield* mergeProviderInstanceEnvironment(
+          input.environment,
+          yield* HostProcess.Environment,
+        ),
+        stateDir,
+      });
+      return yield* createClaudeAdapterV2(input, runtime, {});
+    }),
 };
 
 const makeDefaultClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2.layer")(function* () {

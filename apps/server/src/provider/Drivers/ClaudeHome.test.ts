@@ -4,6 +4,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
 
 import {
   claudeSignedOutMessage,
@@ -11,10 +13,66 @@ import {
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
   resolveClaudeHomePath,
+  resolveClaudeRuntime,
+  claudeAccountSettings,
+  claudeCliEnvironment,
 } from "./ClaudeHome.ts";
+
+const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
   describe("Claude home resolution", () => {
+    it.effect("keeps private accounts separate from each other and the existing profile", () =>
+      Effect.gen(function* () {
+        const environment = {
+          HOME: "/real-home",
+          CLAUDE_CONFIG_DIR: "/existing",
+          CLAUDE_SECURESTORAGE_CONFIG_DIR: "/existing-keychain",
+          ANTHROPIC_API_KEY: "host-key",
+          CLAUDE_CODE_OAUTH_TOKEN: "host-token",
+          CLAUDE_CODE_USE_BEDROCK: "1",
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+          HTTPS_PROXY: "http://proxy:8080",
+        };
+        const resolve = (id: string, setupMode?: "cli") =>
+          resolveClaudeRuntime({
+            instanceId: ProviderInstanceId.make(id),
+            config: decodeClaudeSettings(setupMode ? { setupMode } : {}),
+            environment,
+            stateDir: "/state",
+          });
+        const first = yield* resolve("first", "cli");
+        const second = yield* resolve("second", "cli");
+        const existing = yield* resolve("existing");
+        expect([first.configDir, second.configDir, existing.configDir]).toEqual([
+          "/state/providers/claude/first/cli",
+          "/state/providers/claude/second/cli",
+          "/existing",
+        ]);
+        expect(first.environment).toEqual({
+          HOME: "/real-home",
+          CLAUDE_CONFIG_DIR: "/state/providers/claude/first/cli",
+          CLAUDE_SECURESTORAGE_CONFIG_DIR: "/state/providers/claude/first/cli",
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+          HTTPS_PROXY: "http://proxy:8080",
+        });
+        expect(existing.environment).toEqual(environment);
+        expect(
+          claudeCliEnvironment({ ...environment, ...first.environment }, first.configDir),
+        ).toEqual(first.environment);
+        expect(claudeAccountSettings(first.config)).toMatchObject({
+          forceLoginMethod: "claudeai",
+          apiKeyHelper: "",
+          env: {
+            CLAUDE_CONFIG_DIR: "/state/providers/claude/first/cli",
+            CLAUDE_SECURESTORAGE_CONFIG_DIR: "/state/providers/claude/first/cli",
+            ANTHROPIC_API_KEY: "",
+            CLAUDE_CODE_OAUTH_TOKEN: "",
+            CLAUDE_CODE_USE_BEDROCK: "0",
+          },
+        });
+      }),
+    );
     it.effect("treats empty, ~/.claude, and the expanded default as the same Claude home", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;

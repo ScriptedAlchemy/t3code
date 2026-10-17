@@ -217,6 +217,7 @@ function makeClaudeTestTurnInput(input: {
 describe("ClaudeAdapterV2 runtime query policy", () => {
   it.each([false, true])("requests thinking summaries with resume=%s", (resume) => {
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      platform: "linux",
       modelSelection: CLAUDE_TEST_MODEL_SELECTION,
       nativeThreadId: "thinking-thread",
       resume,
@@ -229,6 +230,7 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
 
   it("preserves an explicit omitted thinking display", () => {
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      platform: "linux",
       modelSelection: CLAUDE_TEST_MODEL_SELECTION,
       nativeThreadId: "thinking-thread",
       resume: false,
@@ -242,6 +244,7 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
 
   it("does not enable thinking when the model option disables it", () => {
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      platform: "linux",
       modelSelection: {
         ...CLAUDE_TEST_MODEL_SELECTION,
         model: "claude-haiku-4-5",
@@ -262,6 +265,7 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     ["--dangerously-skip-permissions --permission-mode plan", "plan"],
   ])("folds %s into the SDK permission mode", (launchArgs, expected) => {
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      platform: "linux",
       modelSelection: CLAUDE_TEST_MODEL_SELECTION,
       nativeThreadId: "native-permission-override",
       resume: false,
@@ -280,6 +284,7 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
       result: "continue" as const,
     });
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      platform: "linux",
       modelSelection: CLAUDE_TEST_MODEL_SELECTION,
       nativeThreadId: "native-thread-auto-compact",
       resume: true,
@@ -742,6 +747,7 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
     });
 
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      platform: "linux",
       modelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
         model: "claude-sonnet-4-6",
@@ -1163,16 +1169,13 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
 ) {
   const executablePaths: Array<string | undefined> = [];
   const taskToolEnvironment: Array<string | undefined> = [];
-  const adapter = yield* ClaudeAdapterV2.createClaudeAdapterV2(
-    {
-      instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
-      displayName: undefined,
-      environment,
-      enabled: true,
-      config: { ...DEFAULT_CLAUDE_SETTINGS, binaryPath },
-    },
-    {},
-  ).pipe(
+  const adapter = yield* ClaudeAdapterV2.ClaudeAdapterV2Driver.create({
+    instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+    displayName: undefined,
+    environment,
+    enabled: true,
+    config: { ...DEFAULT_CLAUDE_SETTINGS, binaryPath },
+  }).pipe(
     Effect.provide(
       ServerConfig.layerTest(process.cwd(), {
         prefix: "t3-claude-binary-path-",
@@ -1997,6 +2000,7 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
         providerSessionId: ProviderSessionId.make("provider-session-claude-mcp-channel"),
         options: {
           ...ClaudeAdapterV2.makeClaudeQueryOptions({
+            platform: "linux",
             modelSelection: CLAUDE_TEST_MODEL_SELECTION,
             nativeThreadId: "native-thread-claude-mcp-channel",
             resume: false,

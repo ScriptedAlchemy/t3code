@@ -33,7 +33,6 @@ import {
 } from "@t3tools/shared/backgroundActivitySettings";
 import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
-import * as Equal from "effect/Equal";
 import * as Result from "effect/Result";
 import { PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -97,6 +96,7 @@ import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
 import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSection";
+import { readProviderConfigString } from "./ProviderSettingsForm";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import { providerClients } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
@@ -1011,7 +1011,8 @@ export function EnvironmentProviderSettings({
               provider={liveProvider}
               readOnly={readOnly}
               autoOpenBrowser={
-                row.driver === "codex" && readCodexSetupMode(row.instance.config) === "cli"
+                (row.driver === "codex" || row.driver === "claudeAgent") &&
+                readProviderConfigString(row.instance.config, "setupMode") === "cli"
               }
             />
           ) : mode === "editor" &&

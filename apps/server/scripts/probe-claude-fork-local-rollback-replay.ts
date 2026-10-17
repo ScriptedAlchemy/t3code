@@ -9,6 +9,7 @@ import { ProviderInstanceId, type ProviderReplayEntry } from "@t3tools/contracts
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import {
   makeClaudeQueryOptions,
@@ -141,6 +142,7 @@ function queryOptions(input: {
 }): ClaudeAgentSdkQueryOptions {
   return {
     ...makeClaudeQueryOptions({
+      platform: Effect.runSync(HostProcess.Platform),
       modelSelection: MODEL_SELECTION,
       cwd: input.cwd,
       nativeThreadId: input.nativeThreadId,

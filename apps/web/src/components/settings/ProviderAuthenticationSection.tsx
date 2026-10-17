@@ -62,6 +62,7 @@ export function ProviderAuthenticationSection({
   const terminalSending = useRef(false);
   const auth = query.data;
   const interaction = auth?.interaction;
+  const acceptsCode = interaction?.type === "browser" && interaction.callbackInputKind === "code";
   const active =
     auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying";
   const signedIn =
@@ -485,15 +486,19 @@ export function ProviderAuthenticationSection({
               }}
             >
               <label className="grid gap-1">
-                If the final localhost page does not load, paste its full URL here.
+                {acceptsCode
+                  ? "Paste the code from Claude"
+                  : "If the final localhost page does not load, paste its full URL here."}
                 <Input
                   size="sm"
                   id={`provider-callback-${instanceId}`}
-                  type="url"
+                  type={acceptsCode ? "text" : "url"}
+                  autoCapitalize="none"
+                  spellCheck={false}
                   autoComplete="off"
                   value={values.callback ?? ""}
                   disabled={disabled}
-                  maxLength={16_384}
+                  maxLength={acceptsCode ? 4096 : 16_384}
                   onChange={(event) => updateDraft("callback", event.target.value)}
                 />
               </label>

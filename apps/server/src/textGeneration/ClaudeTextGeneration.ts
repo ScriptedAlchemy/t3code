@@ -29,6 +29,7 @@ import {
   scopeClaudeModelCatalog,
 } from "../provider/ClaudeModelCatalog.ts";
 import {
+  claudeAccountSettings,
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
 } from "../provider/Drivers/ClaudeHome.ts";
@@ -176,6 +177,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
       ...(ultracode ? { ultracode: true } : {}),
+      ...claudeAccountSettings(claudeSettings),
     };
     const settingsJson = yield* encodeJsonForOperation(
       operation,
@@ -229,6 +231,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       );
       const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         env: claudeEnvironment,
+        extendEnv: false,
         cwd: workingDirectory,
         shell: spawnCommand.shell,
         stdin: {
