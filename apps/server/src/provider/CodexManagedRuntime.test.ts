@@ -17,7 +17,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as CodexInstallation from "./CodexInstallation.ts";
 import { makeCodexManagedRuntime } from "./CodexManagedRuntime.ts";
 import * as ProviderCredentialStore from "./ProviderCredentialStore.ts";
-import { codexAppServerArgs } from "./codexLaunchArgs.ts";
+import { codexAppServerArgs, codexExecLaunchArgs } from "./codexLaunchArgs.ts";
 import { resolveManagedCodexHomeLayout } from "./CodexManagedHome.ts";
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -165,6 +165,8 @@ it.effect.each(
           assert.include(args, "features.api_key_model_discovery=true");
           assert.include(args, "features.multi_agent=false");
           assert.include(args, "features.multi_agent_v2=false");
+          assert.include(args, "agents.enabled=false");
+          assert.include(codexExecLaunchArgs(effective.config.launchArgs), "agents.enabled=false");
           assert.notInclude(effective.config.launchArgs, "model_catalog_json");
           assert.notInclude(effective.config.launchArgs, "x-openai-chatpass-test");
           assert.include(args, "model_providers.openai_token_sharing.supports_websockets=false");
