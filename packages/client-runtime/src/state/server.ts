@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type ProviderInstanceId,
   type ServerConfig,
   type ServerConfigStreamEvent,
   type ServerLifecycleWelcomePayload,
@@ -935,6 +936,27 @@ export function createServerEnvironmentAtoms<R, E>(
       Atom.withLabel(`environment-data:server:providers:${environmentId}`),
     ),
   );
+  const providerAuthSubscription = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:provider:auth-subscription",
+    tag: WS_METHODS.providerAuthSubscribe,
+    idleTtlMs: 0,
+  });
+  const providerAuthStateFamily = Atom.family((environmentId: EnvironmentId) =>
+    Atom.family((instanceId: ProviderInstanceId) =>
+      Atom.make((get) => {
+        // Settings save before the server finishes creating the provider's auth controller.
+        const available = get(providersValueAtom(environmentId))?.some(
+          (provider) => provider.instanceId === instanceId,
+        );
+        return available
+          ? get(providerAuthSubscription({ environmentId, input: { instanceId } }))
+          : AsyncResult.initial();
+      }).pipe(
+        Atom.setIdleTTL(0),
+        Atom.withLabel(`environment-data:provider:auth-state:${environmentId}:${instanceId}`),
+      ),
+    ),
+  );
   const welcomeStateFamily = Atom.family((environmentId: EnvironmentId) =>
     runtime
       .atom(serverWelcomeStateChanges(environmentId), { initialValue: null })
@@ -983,11 +1005,10 @@ export function createServerEnvironmentAtoms<R, E>(
     updateStateAtom,
     settingsValueAtom,
     providersValueAtom,
-    providerAuthState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:provider:auth-state",
-      tag: WS_METHODS.providerAuthSubscribe,
-      idleTtlMs: 0,
-    }),
+    providerAuthState: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: EnvironmentRpcInput<typeof WS_METHODS.providerAuthSubscribe>;
+    }) => providerAuthStateFamily(target.environmentId)(target.input.instanceId),
     startProviderAuth: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:provider:auth-start",
       tag: WS_METHODS.providerAuthStart,
