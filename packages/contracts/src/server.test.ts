@@ -115,6 +115,19 @@ describe("ServerProvider", () => {
     expect(parsed.continuation?.groupKey).toBe("codex:home:/Users/julius/.codex");
   });
 
+  it("decodes the executable selected for a Codex runtime", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      runtimePaths: {
+        homePath: "/home/user/.codex",
+        shadowHomePath: "/home/user/.t3/providers/codex/personal/cli",
+        binaryPath: "/opt/codex/bin/codex",
+      },
+    });
+
+    expect(parsed.runtimePaths?.binaryPath).toBe("/opt/codex/bin/codex");
+  });
+
   it("decodes optional legacy model metadata", () => {
     const parsed = decodeServerProvider({
       instanceId: "codex",
