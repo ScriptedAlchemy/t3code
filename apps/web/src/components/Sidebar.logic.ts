@@ -151,13 +151,15 @@ export type SidebarListItem =
 
 export function useStableSidebarListItems(
   freshItems: readonly SidebarListItem[],
-): readonly SidebarListItem[] {
+): { readonly key: string; readonly items: readonly SidebarListItem[] } {
   const key = freshItems
     .map((item) => (item.kind === "thread" ? `${item.section}:${item.key}` : item.marker))
     .join("\n");
   const [retained, setRetained] = React.useState({ key, items: freshItems });
-  if (retained.key !== key) setRetained({ key, items: freshItems });
-  return retained.items;
+  if (retained.key === key) return retained;
+  const next = { key, items: freshItems };
+  setRetained(next);
+  return next;
 }
 
 export function sidebarListItemId(item: SidebarListItem): string {

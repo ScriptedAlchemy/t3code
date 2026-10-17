@@ -3463,7 +3463,8 @@ export default function Sidebar() {
   // Thread shells update on every streamed event without moving rows. Keep the
   // list's identity until its order changes, so the sorting strategy, the
   // sortable context and every sortable row stay memoized meanwhile.
-  const sidebarListItems = useStableSidebarListItems(sidebarListItemsFresh);
+  const { key: sidebarListItemsKey, items: sidebarListItems } =
+    useStableSidebarListItems(sidebarListItemsFresh);
   useEffect(() => {
     if (
       dragState !== null &&

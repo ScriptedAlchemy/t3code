@@ -230,10 +230,10 @@ function ThreadRows({
   readonly threads: ReadonlyMap<string, { readonly title: string }>;
   readonly committedItems: (readonly SidebarListItem[])[];
 }) {
-  const visibleItems = useStableSidebarListItems(items);
+  const { items: visibleItems } = useStableSidebarListItems(items);
   useLayoutEffect(() => {
     committedItems.push(visibleItems);
-  }, [committedItems, items, visibleItems]);
+  });
   return createElement(
     "div",
     null,
