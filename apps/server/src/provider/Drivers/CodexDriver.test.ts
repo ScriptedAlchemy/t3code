@@ -196,7 +196,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(refreshed).toMatchObject({
           installed: true,
           auth: { status: "unauthenticated" },
-          setup: { canAuthenticate: true },
+          setup: { canAuthenticate: true, canInstall: false },
           runtimePaths: { homePath: sharedHome, shadowHomePath: ownedHome },
         });
         expect(yield* fs.exists(ignoredShadow)).toBe(false);
@@ -242,6 +242,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
         );
         expect(yield* instance.snapshot.refresh).toMatchObject({
           installed: true,
+          setup: { canInstall: true },
           runtimePaths: { binaryPath: executablePath },
         });
       }),
