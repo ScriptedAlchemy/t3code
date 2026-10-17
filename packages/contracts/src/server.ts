@@ -251,6 +251,7 @@ export const ServerProvider = Schema.Struct({
     Schema.Struct({
       homePath: TrimmedNonEmptyString,
       shadowHomePath: Schema.NullOr(TrimmedNonEmptyString),
+      binaryPath: Schema.optionalKey(TrimmedNonEmptyString),
     }),
   ),
   enabled: Schema.Boolean,
