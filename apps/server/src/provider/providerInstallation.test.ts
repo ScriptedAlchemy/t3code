@@ -189,6 +189,28 @@ describe("provider installation routing", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("lets native Codex CLI accounts install before authentication", () =>
+    Effect.gen(function* () {
+      const codexId = ProviderInstanceId.make("codex-cli");
+      const harness = yield* makeHarness({
+        instance: instance(ProviderDriverKind.make("codex"), codexId),
+        settings: {
+          providerInstances: {
+            [codexId]: {
+              driver: ProviderDriverKind.make("codex"),
+              config: { setupMode: "cli" },
+            },
+          },
+        },
+      });
+      assert.equal((yield* harness.router.start({ instanceId: codexId })).driver, "codex");
+      const observed = yield* Stream.runCollect(harness.router.subscribe({ instanceId: codexId }));
+      assert.equal(Array.from(observed)[0]?.driver, "codex");
+      yield* harness.router.cancel({ instanceId: codexId, operationId: "operation" });
+      assert.deepEqual(harness.calls, ["codex-start", "codex-cancel"]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("keeps native Codex installation outside managed setup", () =>
     Effect.gen(function* () {
       const codexId = ProviderInstanceId.make("codex");
