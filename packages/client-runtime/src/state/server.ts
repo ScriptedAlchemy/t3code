@@ -944,19 +944,18 @@ export function createServerEnvironmentAtoms<R, E>(
     Atom.family((instanceId: ProviderInstanceId) =>
       Atom.make((get): ProviderAuthAvailability => {
         const providers = get(providersValueAtom(environmentId));
-        const available = providers?.some(
-          (provider) => provider.instanceId === instanceId,
-        );
+        const available = providers?.some((provider) => provider.instanceId === instanceId);
         if (available) return "available";
 
         const settings = get(settingsValueAtom(environmentId));
         const previous = Option.getOrUndefined(get.self<ProviderAuthAvailability>());
-        // A missing snapshot can be startup or reconnect; deletion requires a known instance.
         if (providers === null || settings === null) return previous ?? "pending";
         if (Object.hasOwn(settings.providerInstances, instanceId)) return "registering";
         return previous === undefined || previous === "pending" ? "pending" : "deleted";
       }).pipe(
-        Atom.withLabel(`environment-data:provider:auth-availability:${environmentId}:${instanceId}`),
+        Atom.withLabel(
+          `environment-data:provider:auth-availability:${environmentId}:${instanceId}`,
+        ),
       ),
     ),
   );
