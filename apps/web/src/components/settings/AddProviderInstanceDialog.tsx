@@ -79,6 +79,12 @@ const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 const TRAEX_BRIDGE_PRESET = "traexBridge";
 const ACP_REGISTRY_DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
 const DEFAULT_DRIVER_OPTION = providerClients.definitions[0]!;
+const PROVIDER_OPTIONS = [
+  ...providerClients.definitions
+    .filter((option) => option.driverKind !== ACP_REGISTRY_DRIVER_KIND)
+    .map((option) => ({ ...option, value: option.driverKind })),
+  { ...DEFAULT_DRIVER_OPTION, value: TRAEX_BRIDGE_PRESET, label: "Traex" },
+];
 const EMPTY_CONFIG_DRAFT: Record<string, unknown> = {};
 /**
  * Validate an instance id against the same slug rules the server applies in
@@ -197,7 +203,7 @@ export function AddProviderInstanceDialog({
         null,
       ] as const)
     : ([
-        selection === TRAEX_BRIDGE_PRESET ? "Traex bridge" : driverOption.label,
+        selection === TRAEX_BRIDGE_PRESET ? "Traex" : driverOption.label,
         previewLabel,
         null,
       ] as const);
@@ -278,13 +284,6 @@ export function AddProviderInstanceDialog({
         ...(registryIconUrl ? { registryIconUrl } : {}),
       },
     }));
-    setHasAttemptedSubmit(false);
-    setWizardStep(1);
-  };
-
-  const handleTraexBridgePreset = () => {
-    setSelection(TRAEX_BRIDGE_PRESET);
-    setIsManualAcpConfiguration(false);
     setHasAttemptedSubmit(false);
     setWizardStep(1);
   };
@@ -441,62 +440,40 @@ export function AddProviderInstanceDialog({
                   aria-labelledby="add-instance-driver-label"
                   className="grid grid-cols-1 sm:grid-cols-2"
                 >
-                  {providerClients.definitions
-                    .filter((option) => option.driverKind !== ACP_REGISTRY_DRIVER_KIND)
-                    .map((option) => {
-                      return (
-                        <RadioPrimitive.Root
-                          key={option.driverKind}
-                          value={option.driverKind}
-                          className="relative flex cursor-pointer items-center gap-3 rounded-lg bg-card px-3 py-3 text-left text-muted-foreground outline-none ring-1 ring-black/5 hover:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring data-checked:bg-primary/8 data-checked:text-foreground data-checked:ring-2 data-checked:ring-inset data-checked:ring-primary data-checked:hover:bg-primary/8 dark:bg-white/3 dark:ring-white/5 dark:hover:bg-white/5 dark:data-checked:bg-primary/15 dark:data-checked:ring-primary dark:data-checked:hover:bg-primary/15"
+                  {PROVIDER_OPTIONS.map((option) => {
+                    return (
+                      <RadioPrimitive.Root
+                        key={option.value}
+                        value={option.value}
+                        className="relative flex cursor-pointer items-center gap-3 rounded-lg bg-card px-3 py-3 text-left text-muted-foreground outline-none ring-1 ring-black/5 hover:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring data-checked:bg-primary/8 data-checked:text-foreground data-checked:ring-2 data-checked:ring-inset data-checked:ring-primary data-checked:hover:bg-primary/8 dark:bg-white/3 dark:ring-white/5 dark:hover:bg-white/5 dark:data-checked:bg-primary/15 dark:data-checked:ring-primary dark:data-checked:hover:bg-primary/15"
+                      >
+                        <ProviderInstanceIcon
+                          driverKind={option.driverKind}
+                          displayName={option.label}
+                          iconClassName="size-4"
+                        />
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+                          {option.label}
+                        </span>
+                        <RadioPrimitive.Indicator
+                          className="grid size-5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground"
+                          aria-hidden
                         >
-                          <ProviderInstanceIcon
-                            driverKind={option.driverKind}
-                            displayName={option.label}
-                            iconClassName="size-4"
-                          />
-                          <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-                            {option.label}
-                          </span>
-                          <RadioPrimitive.Indicator
-                            className="grid size-5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground"
-                            aria-hidden
-                          >
-                            <CheckIcon className="size-3.5 shrink-0" />
-                          </RadioPrimitive.Indicator>
-                          {option.badgeLabel ? (
-                            <Badge variant="warning" size="sm">
-                              {option.badgeLabel}
-                            </Badge>
-                          ) : null}
-                        </RadioPrimitive.Root>
-                      );
-                    })}
+                          <CheckIcon className="size-3.5 shrink-0" />
+                        </RadioPrimitive.Indicator>
+                        {option.badgeLabel ? (
+                          <Badge variant="warning" size="sm">
+                            {option.badgeLabel}
+                          </Badge>
+                        ) : null}
+                      </RadioPrimitive.Root>
+                    );
+                  })}
                 </RadioGroup>
               </div>
 
               {wizardStep === 0 ? (
                 <div className="space-y-4 pt-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-medium text-foreground">Traex bridge</h3>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        Run Codex against a traex-bridge container on {environmentLabel} at
-                        127.0.0.1:8317. Requires macOS or Linux. Uses Codex from that server's PATH
-                        or an existing T3-managed installation. Set a custom binary path in Config.
-                        The bridge key is read from ~/.traex-bridge/api-key on that server, not this
-                        client.
-                      </p>
-                    </div>
-                    <Button
-                      disabled={isPreparingRegistryAgent}
-                      onClick={handleTraexBridgePreset}
-                      size="xs"
-                      variant="outline"
-                    >
-                      Use Traex
-                    </Button>
-                  </div>
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
                     <div aria-hidden className="flex-1 border-t border-border/70" />
                     <span>Or choose from ACP Registry</span>

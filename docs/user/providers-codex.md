@@ -29,7 +29,7 @@ covers installation and custom configuration.
 
 Run traex-bridge on the selected environment's macOS or Linux machine at
 `127.0.0.1:8317`, with its API key in `~/.traex-bridge/api-key` on that machine.
-In **Settings → Providers → Add provider**, choose **Use Traex**.
+In **Settings → Providers → Add provider**, choose **Traex**.
 The preset uses Codex from that machine's PATH or an existing T3-managed installation.
 You can also set a custom binary path in Config.
 

@@ -90,6 +90,18 @@ function findByChildren(tree: ReturnType<typeof render>, children: string) {
   return result!;
 }
 
+function selectTraex(tree: ReturnType<typeof render>) {
+  const group = visitElements(
+    tree,
+    (element) => element.props["aria-labelledby"] === "add-instance-driver-label",
+  );
+  expect(group).not.toBeNull();
+  const option = visitElements(group, (element) => element.props.value === "traexBridge");
+  expect(option).not.toBeNull();
+  (group!.props.onValueChange as (value: string) => void)(option!.props.value as string);
+  (findByChildren(render(), "Next").props.onClick as () => void)();
+}
+
 async function selectPreparedAcp() {
   const searchStep = render();
   const search = visitElements(
@@ -205,7 +217,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
       providerInstances: { codex_traex: { driver: "codex", enabled: true } },
     });
     let tree = render();
-    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    selectTraex(tree);
     tree = render();
     (findByChildren(tree, "Next").props.onClick as () => void)();
     tree = render();
@@ -243,7 +255,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
     { name: "custom home", editConfig: true, homePath: "~/.traex-personal" },
   ])("preserves isolation after changing the Traex ID with $name", async (fixture) => {
     let tree = render();
-    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    selectTraex(tree);
     tree = render();
     if (fixture.editConfig) {
       (findByChildren(tree, "Next").props.onClick as () => void)();
@@ -292,7 +304,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
 
   it("derives the Traex home from the final ID after clearing a custom home", async () => {
     let tree = render();
-    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    selectTraex(tree);
     tree = render();
     (findByChildren(tree, "Next").props.onClick as () => void)();
     tree = render();
@@ -349,7 +361,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
 
   it("preserves the edited Traex draft after returning to provider selection", async () => {
     let tree = render();
-    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    selectTraex(tree);
     tree = render();
     const label = visitElements(tree, (element) => element.props.id === "add-provider-label");
     (label!.props.onChange as (event: { target: { value: string } }) => void)({
@@ -381,7 +393,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
     tree = render();
     (findByChildren(tree, "Back").props.onClick as () => void)();
     tree = render();
-    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    selectTraex(tree);
     tree = render();
     (findByChildren(tree, "Next").props.onClick as () => void)();
     tree = render();
@@ -427,7 +439,7 @@ describe("AddProviderInstanceDialog environment routing", () => {
     tree = render();
     (findByChildren(tree, "Back").props.onClick as () => void)();
     tree = render();
-    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    selectTraex(tree);
     tree = render();
     (findByChildren(tree, "Back").props.onClick as () => void)();
     tree = render();
