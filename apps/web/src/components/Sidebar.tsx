@@ -223,6 +223,7 @@ import {
   sortWorkingThreadsBySend,
   useThreadJumpHintVisibility,
   useRetainedValue,
+  useStableSidebarListItems,
   useSidebarRowSubscriptionLease,
   type SidebarListItem,
   type SidebarListMarker,
@@ -3462,15 +3463,8 @@ export default function Sidebar() {
   // Thread shells update on every streamed event without moving rows. Keep the
   // list's identity until its order changes, so the sorting strategy, the
   // sortable context and every sortable row stay memoized meanwhile.
-  const sidebarListItemsKey = sidebarListItemsFresh
-    .map((item) => (item.kind === "thread" ? item.section + ":" + item.key : item.marker))
-    .join("\n");
-  const [sidebarListItems, setSidebarListItems] = useState(sidebarListItemsFresh);
-  const [sidebarListItemsKeyState, setSidebarListItemsKeyState] = useState(sidebarListItemsKey);
-  if (sidebarListItemsKeyState !== sidebarListItemsKey) {
-    setSidebarListItemsKeyState(sidebarListItemsKey);
-    setSidebarListItems(sidebarListItemsFresh);
-  }
+  const { key: sidebarListItemsKey, items: sidebarListItems } =
+    useStableSidebarListItems(sidebarListItemsFresh);
   useEffect(() => {
     if (
       dragState !== null &&

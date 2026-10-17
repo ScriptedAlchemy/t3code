@@ -2,6 +2,8 @@ import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import * as DateTime from "effect/DateTime";
 import { deriveActiveWorkStartedAt } from "../session-logic.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, createElement, useLayoutEffect } from "react";
+import { create, type ReactTestRenderer } from "react-test-renderer";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -44,6 +46,7 @@ import {
   searchSidebarThreads,
   shouldClearThreadSelectionOnMouseDown,
   shouldShowSidebarV2Duration,
+  useStableSidebarListItems,
   shouldRecedeSidebarThread,
   sortLogicalProjectsForSidebar,
   sortInboxThreadsByReturn,
@@ -146,6 +149,100 @@ describe("resolveSidebarThreadSection", () => {
     );
   });
 });
+
+describe("useStableSidebarListItems", () => {
+  let renderer: ReactTestRenderer | undefined;
+
+  beforeEach(() => {
+    renderer = undefined;
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  });
+
+  afterEach(async () => {
+    await act(() => renderer?.unmount());
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps row identity until order changes and renders a removed thread's new list", async () => {
+    const oldItems = [
+      { kind: "thread", key: "removed", section: "active" },
+      { kind: "thread", key: "remaining", section: "active" },
+    ] as const;
+    const refreshedItems = oldItems.map((item) => ({ ...item }));
+    const nextItems = [{ kind: "thread", key: "remaining", section: "active" }] as const;
+    const oldThreads = new Map([
+      ["removed", { title: "Removed thread" }],
+      ["remaining", { title: "Remaining thread" }],
+    ]);
+    const refreshedThreads = new Map([
+      ["removed", { title: "Removed thread" }],
+      ["remaining", { title: "Updated remaining thread" }],
+    ]);
+    const nextThreads = new Map<string, { readonly title: string }>([
+      ["remaining", { title: "Updated remaining thread" }],
+    ]);
+    const committedItems: (readonly SidebarListItem[])[] = [];
+    const rows = (
+      items: readonly SidebarListItem[],
+      threads: ReadonlyMap<string, { readonly title: string }>,
+    ) => createElement(ThreadRows, { items, threads, committedItems });
+
+    await act(() => {
+      renderer = create(rows(oldItems, oldThreads));
+    });
+    expect(renderer?.toJSON()).toEqual({
+      type: "div",
+      props: {},
+      children: [
+        { type: "span", props: {}, children: ["Removed thread"] },
+        { type: "span", props: {}, children: ["Remaining thread"] },
+      ],
+    });
+
+    await act(() => renderer?.update(rows(refreshedItems, refreshedThreads)));
+
+    expect(renderer?.toJSON()).toEqual({
+      type: "div",
+      props: {},
+      children: [
+        { type: "span", props: {}, children: ["Removed thread"] },
+        { type: "span", props: {}, children: ["Updated remaining thread"] },
+      ],
+    });
+    expect(committedItems[1]).toBe(committedItems[0]);
+
+    await act(() => renderer?.update(rows(nextItems, nextThreads)));
+
+    expect(renderer?.toJSON()).toEqual({
+      type: "div",
+      props: {},
+      children: [{ type: "span", props: {}, children: ["Updated remaining thread"] }],
+    });
+  });
+});
+
+function ThreadRows({
+  items,
+  threads,
+  committedItems,
+}: {
+  readonly items: readonly SidebarListItem[];
+  readonly threads: ReadonlyMap<string, { readonly title: string }>;
+  readonly committedItems: (readonly SidebarListItem[])[];
+}) {
+  const { items: visibleItems } = useStableSidebarListItems(items);
+  useLayoutEffect(() => {
+    committedItems.push(visibleItems);
+  });
+  return createElement(
+    "div",
+    null,
+    visibleItems.map((item) => {
+      if (item.kind !== "thread") return null;
+      return createElement("span", { key: item.key }, threads.get(item.key)!.title);
+    }),
+  );
+}
 
 describe("deleteSelectedThreadEntries", () => {
   const entries = [{ threadKey: "one" }, { threadKey: "two" }, { threadKey: "three" }] as const;
