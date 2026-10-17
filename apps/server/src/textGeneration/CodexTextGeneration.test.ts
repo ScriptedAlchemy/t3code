@@ -140,7 +140,7 @@ function withFakeCodexEnv<A, E, R>(
     launchArgs?: string;
     environment?: NodeJS.ProcessEnv;
     models?: ReadonlyArray<string>;
-    managedRuntime?: boolean;
+    resolvedRuntime?: "managed" | "existing";
   },
   effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
 ) {
@@ -148,7 +148,11 @@ function withFakeCodexEnv<A, E, R>(
     const fs = yield* FileSystem.FileSystem;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-codex-text-" });
     const codexPath = yield* makeFakeCodexBinary(tempDir, input);
-    const config = decodeCodexSettings({ binaryPath: codexPath, launchArgs: input.launchArgs });
+    const config = decodeCodexSettings({
+      binaryPath: codexPath,
+      launchArgs: input.launchArgs,
+      setupMode: input.resolvedRuntime ?? "existing",
+    });
     const textGeneration = yield* makeCodexTextGeneration(
       config,
       input.environment === undefined ? undefined : { ...process.env, ...input.environment },
@@ -160,7 +164,7 @@ function withFakeCodexEnv<A, E, R>(
           capabilities: null,
         })),
       ),
-      input.managedRuntime
+      input.resolvedRuntime
         ? Effect.succeed({
             config,
             environment: input.environment ?? process.env,
@@ -249,11 +253,32 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
       ),
   );
 
+  it.effect("preserves a service tier when an existing runtime resolves its executable", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ title: "Resolved existing runtime" }),
+        resolvedRuntime: "existing",
+        requireServiceTier: "priority",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const title = yield* textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Resolve the existing executable",
+            modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
+              { id: "serviceTier", value: "priority" },
+            ]),
+          });
+          expect(title).toEqual({ title: "Resolved existing runtime" });
+        }),
+    ),
+  );
+
   it.effect("omits a persisted service tier for managed ChatGPT text generation", () =>
     withFakeCodexEnv(
       {
         output: JSON.stringify({ subject: "Update project", body: "" }),
-        managedRuntime: true,
+        resolvedRuntime: "managed",
         forbidArg: 'service_tier="priority"',
       },
       (textGeneration) =>

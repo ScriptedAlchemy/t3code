@@ -167,6 +167,36 @@ it.effect.each(["0.156.0", "0.156.1", "0.156.2", "0.157.0"])(
       expect((yield* h.installation.state).source).toBe("local");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+it.effect.each([true, false])(
+  "acquires only the managed runtime when requested with managed installation %s",
+  (managedInstalled) =>
+    Effect.gen(function* () {
+      const first = yield* makeHarness();
+      if (managedInstalled) {
+        yield* first.installation.start;
+        expect((yield* terminalState(first.installation)).phase).toBe("succeeded");
+      }
+      const h = yield* makeHarness({ baseDir: first.baseDir, local: { version: "0.156.2" } });
+      expect(yield* h.installation.acquire().pipe(Effect.scoped)).toMatchObject({
+        source: "local",
+        executablePath: h.localBinaryPath,
+        version: "0.156.2",
+      });
+      const managed = h.installation.acquire({ managedOnly: true }).pipe(Effect.scoped);
+      if (managedInstalled) {
+        expect(yield* managed).toMatchObject({
+          source: "managed",
+          executablePath: `${h.baseDir}/tools/codex/0.156.1/bin/codex`,
+          version: "0.156.1",
+        });
+      } else {
+        expect((yield* Effect.flip(managed)).detail).toBe(
+          "Codex is not installed in T3 Code. Install it to continue.",
+        );
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect.each([
   { version: "0.128.9" },
   { version: "0.145.0" },

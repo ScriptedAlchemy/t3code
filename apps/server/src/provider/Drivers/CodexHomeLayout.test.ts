@@ -14,6 +14,7 @@ import {
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 const decodeCodexSettingsValue = Schema.decodeSync(CodexSettings);
 
 const decodeCodexSettings = (input: {
@@ -85,6 +86,58 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   });
 
   describe("materializeCodexShadowHome", () => {
+    it.effect("creates a configured direct home and preserves it across retries", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* makeTempDir("t3code-codex-direct-");
+        const homePath = path.join(root, "nested", "home");
+        const layout = yield* resolveCodexHomeLayout(decodeCodexSettings({ homePath }));
+
+        yield* materializeCodexShadowHome(layout);
+        expect((yield* fileSystem.stat(homePath)).type).toBe("Directory");
+        yield* fileSystem.writeFileString(path.join(homePath, "auth.json"), "private auth");
+        yield* materializeCodexShadowHome(layout);
+        expect(yield* fileSystem.readFileString(path.join(homePath, "auth.json"))).toBe(
+          "private auth",
+        );
+      }),
+    );
+
+    it.effect("leaves the implicit default home for Codex to initialize", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* makeTempDir("t3code-codex-default-");
+        const layout = yield* resolveCodexHomeLayout(decodeCodexSettings({})).pipe(
+          Effect.provideService(HostProcess.HomeDirectory, root),
+        );
+
+        yield* materializeCodexShadowHome(layout);
+        expect(yield* fileSystem.exists(path.join(root, ".codex"))).toBe(false);
+      }),
+    );
+
+    it.effect("reports a filesystem error when a direct home is a file", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const root = yield* makeTempDir("t3code-codex-direct-error-");
+        const homePath = path.join(root, "home");
+        yield* writeTextFile(homePath, "not a directory");
+        const layout = yield* resolveCodexHomeLayout(decodeCodexSettings({ homePath }));
+
+        const error = yield* materializeCodexShadowHome(layout).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "CodexShadowHomeFileSystemError",
+          operation: "makeDirectory",
+          path: homePath,
+          sharedHomePath: homePath,
+          effectiveHomePath: homePath,
+          cause: expect.any(PlatformError.PlatformError),
+        });
+      }),
+    );
+
     it.effect.skipIf(!symlinksSupported)(
       "materializes a shadow home with shared state links and private auth",
       () =>

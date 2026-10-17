@@ -124,7 +124,9 @@ export interface CodexExecutable {
 interface CodexInstallationService {
   readonly managedDirectory: string;
   readonly resolve: () => Effect.Effect<CodexExecutable, CodexInstallationError>;
-  readonly acquire: () => Effect.Effect<CodexExecutable, CodexInstallationError, Scope.Scope>;
+  readonly acquire: (options?: {
+    readonly managedOnly?: boolean;
+  }) => Effect.Effect<CodexExecutable, CodexInstallationError, Scope.Scope>;
   readonly start: Effect.Effect<ProviderInstallState, CodexInstallationError>;
   readonly cancel: (
     operationId: string,
@@ -287,10 +289,12 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
       wrapFailure("resolve", "Codex is not installed in T3 Code. Install it to continue."),
     ),
   );
-  const acquire = Effect.fn("CodexInstallation.acquire")(function* () {
+  const acquire = Effect.fn("CodexInstallation.acquire")(function* (options?: {
+    readonly managedOnly?: boolean;
+  }) {
     return yield* Effect.acquireRelease(
       gate.withPermit(
-        resolve().pipe(
+        (options?.managedOnly === true ? resolveManaged() : resolve()).pipe(
           Effect.tap(() =>
             Effect.sync(() => {
               leases += 1;

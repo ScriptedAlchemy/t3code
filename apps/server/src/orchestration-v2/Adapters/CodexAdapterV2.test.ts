@@ -1961,13 +1961,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       Effect.void,
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
+    runtimeOptions: Partial<
+      Pick<CodexAdapterV2.CodexAdapterV2Options, "settings" | "resolveRuntime">
+    > & { readonly modelProvider?: string | null } = {},
   ) =>
     Effect.gen(function* () {
+      const { modelProvider = null, ...adapterRuntimeOptions } = runtimeOptions;
       const fileSystem = yield* FileSystem.FileSystem;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const serverConfig = yield* makeReplayServerConfig(transcript.scenario).pipe(Effect.orDie);
       const continuationRequests: Array<ProviderContinuationRequests.ProviderContinuationRequest> =
         [];
+      const configReadRequests: Array<unknown> = [];
       const clientFactory: CodexAdapterV2.CodexAppServerClientFactoryShape = {
         open: (openInput) =>
           Layer.build(CodexReplay.layerReplay(transcript)).pipe(
@@ -1988,6 +1993,19 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   (client) =>
                     ({
                       ...client,
+                      raw: {
+                        ...client.raw,
+                        request: (method, params) =>
+                          method === "config/read"
+                            ? Effect.sync(() => {
+                                configReadRequests.push(params);
+                                return {
+                                  config: { model_provider: modelProvider },
+                                  origins: {},
+                                };
+                              })
+                            : client.raw.request(method, params),
+                      },
                       request: (method, params) =>
                         onRequest(method, params).pipe(
                           Effect.andThen(client.request(method, params)),
@@ -2002,6 +2020,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
         instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
         settings: DEFAULT_CODEX_SETTINGS,
+        ...adapterRuntimeOptions,
         environment: {},
         clientFactory,
         crypto: yield* Crypto.Crypto,
@@ -2071,12 +2090,105 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         serverConfig,
         events,
         continuationRequests,
+        configReadRequests,
         terminalEvents,
         subagentUpdates,
         hasPendingBackgroundWork,
         firstTerminal: Deferred.await(firstTerminal),
       };
     });
+
+  it.effect.each([
+    { setupMode: "existing" as const, resolved: true },
+    { setupMode: "managed" as const, resolved: true },
+    { setupMode: "managed" as const, resolved: false },
+  ])(
+    "applies service tiers for $setupMode sessions with resolved runtime $resolved",
+    ({ setupMode, resolved }) =>
+      Effect.gen(function* () {
+        const nativeThreadId = `tier-${setupMode}-${resolved}`;
+        const nativeTurnId = `${nativeThreadId}-turn`;
+        const prompt = "Run with the selected tier";
+        const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt });
+        const entries = preamble.map((entry) =>
+          entry.type === "expect_outbound" && entry.label === "turn/start"
+            ? {
+                ...entry,
+                frame: {
+                  id: 3,
+                  method: "turn/start",
+                  params: {
+                    threadId: nativeThreadId,
+                    input: [{ type: "text", text: prompt }],
+                    cwd: "/workspace",
+                    model: "gpt-5.4",
+                    approvalPolicy: "never",
+                    approvalsReviewer: "user",
+                    sandboxPolicy: { type: "dangerFullAccess" },
+                    summary: "detailed",
+                    ...(setupMode === "existing" ? { serviceTier: "priority" } : {}),
+                  },
+                },
+              }
+            : entry,
+        );
+        const settings = { ...DEFAULT_CODEX_SETTINGS, setupMode };
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: nativeThreadId,
+            entries: [
+              ...entries,
+              {
+                type: "emit_inbound",
+                label: "turn/completed",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                  },
+                },
+              },
+            ],
+          }),
+          undefined,
+          undefined,
+          undefined,
+          {
+            settings: resolved ? DEFAULT_CODEX_SETTINGS : settings,
+            ...(resolved
+              ? {
+                  resolveRuntime: Effect.succeed({
+                    config: settings,
+                    environment: {},
+                    revision: "test",
+                  }),
+                }
+              : {}),
+          },
+        );
+        yield* harness.runtime.startTurn({
+          ...makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`${nativeThreadId}-attempt`),
+            text: prompt,
+          }),
+          modelSelection: {
+            ...CODEX_TEST_MODEL_SELECTION,
+            options: [{ id: "serviceTier", value: "priority" }],
+          },
+        });
+        yield* harness.firstTerminal;
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
 
   it.effect.each(["supported", "unsupported", "invalid"] as const)(
     "delivers native history with %s app-server protocol",
@@ -3161,56 +3273,220 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("resumes a provider thread without requesting or decoding its history", () =>
-    Effect.scoped(
+  it.effect(
+    "loads an unloaded paginated thread with its destination provider before rollback",
+    () =>
       Effect.gen(function* () {
-        const scenario = "codex-resume-metadata";
-        const nativeThreadId = `native-${scenario}-thread`;
+        const nativeThreadId = "unloaded-rollback-thread";
         const preamble = codexReplayPreamble({
           nativeThreadId,
-          nativeTurnId: "unused-turn",
-          prompt: "unused-prompt",
-        }).slice(0, 5);
-        const transcript = makeCodexReplayTranscript({
-          scenario,
-          entries: [
-            ...preamble,
-            {
-              type: "expect_outbound",
-              label: "thread/resume",
-              frame: {
-                id: 3,
-                method: "thread/resume",
-                params: {
-                  threadId: nativeThreadId,
-                  excludeTurns: true,
-                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+          nativeTurnId: "unused",
+          prompt: "unused",
+        });
+        const revertedThread = codexReplayThreadResult({ nativeThreadId, forkedFromId: null });
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "unloaded-rollback",
+            entries: [
+              ...preamble.slice(0, 5),
+              {
+                type: "expect_outbound",
+                label: "thread/read",
+                frame: {
+                  id: 3,
+                  method: "thread/read",
+                  params: { threadId: nativeThreadId, includeTurns: false },
                 },
               },
-            },
-            {
-              type: "emit_inbound",
-              label: "thread/resume",
-              frame: { id: 3, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
-            },
-          ],
+              {
+                type: "emit_inbound",
+                label: "thread/read",
+                frame: {
+                  id: 3,
+                  result: {
+                    thread: {
+                      id: nativeThreadId,
+                      historyMode: "paginated",
+                      status: { type: "notLoaded" },
+                    },
+                  },
+                },
+              },
+              {
+                type: "expect_outbound",
+                label: "thread/resume",
+                frame: {
+                  id: 4,
+                  method: "thread/resume",
+                  params: {
+                    threadId: nativeThreadId,
+                    modelProvider: "local_custom",
+                    excludeTurns: true,
+                    config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "thread/resume",
+                frame: { id: 4, result: revertedThread },
+              },
+              {
+                type: "expect_outbound",
+                label: "thread/turns/list",
+                frame: {
+                  id: 5,
+                  method: "thread/turns/list",
+                  params: {
+                    threadId: nativeThreadId,
+                    cursor: null,
+                    limit: 1,
+                    sortDirection: "desc",
+                    itemsView: "summary",
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "thread/turns/list",
+                frame: {
+                  id: 5,
+                  result: {
+                    data: [
+                      { id: "native-turn-second", items: [], status: "completed", error: null },
+                    ],
+                    nextCursor: null,
+                  },
+                },
+              },
+              {
+                type: "expect_outbound",
+                label: "thread/revert",
+                frame: {
+                  id: 6,
+                  method: "thread/revert",
+                  params: { threadId: nativeThreadId, beforeTurnId: "native-turn-second" },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "thread/revert",
+                frame: { id: 6, result: revertedThread },
+              },
+            ],
+          }),
+          undefined,
+          undefined,
+          undefined,
+          { modelProvider: "local_custom" },
+        );
+        const now = yield* DateTime.now;
+        const firstTurn = codexReplaySourceTurn({
+          id: "first",
+          ordinal: 1,
+          nativeId: "native-turn-first",
+          providerThreadId: harness.providerThread.id,
+          now,
         });
-        const harness = yield* makeCodexReplayHarness(transcript);
-        const resumed = yield* harness.runtime.resumeThread({
+        const secondTurn = codexReplaySourceTurn({
+          id: "second",
+          ordinal: 2,
+          nativeId: "native-turn-second",
+          providerThreadId: harness.providerThread.id,
+          now,
+        });
+        const result = yield* harness.runtime.rollbackThread({
           providerThread: harness.providerThread,
-          modelSelection: CODEX_TEST_MODEL_SELECTION,
-          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          target: {
+            type: "provider_turn",
+            checkpointId: CheckpointId.make("unloaded-rollback"),
+            appRunOrdinal: 1,
+            providerTurn: firstTurn,
+          },
+          providerThreadTurns: [firstTurn, secondTurn],
         });
-
-        assert.equal(resumed.nativeThreadRef?.nativeId, nativeThreadId);
-        assert.equal(resumed.status, "idle");
-        assert.equal(DateTime.toEpochMillis(resumed.updatedAt), 1782622450000);
+        assert.deepEqual(result.providerPayload, { ...revertedThread.thread, projectId: null });
+        assert.equal(result.providerThread.nativeThreadRef?.nativeId, nativeThreadId);
+        assert.equal(
+          result.providerThread.nativeConversationHeadRef?.nativeId,
+          "native-turn-first",
+        );
+        assert.equal(result.providerThread.status, "idle");
+        assert.deepEqual(harness.configReadRequests, [{ cwd: "/workspace", includeLayers: false }]);
       }).pipe(
+        Effect.scoped,
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
         ),
       ),
-    ),
+  );
+
+  it.effect.each([
+    { configured: null, expected: "openai" },
+    { configured: "local_custom", expected: "local_custom" },
+    { configured: "openai_token_sharing", expected: "openai_token_sharing" },
+  ])(
+    "resumes with destination provider $expected without decoding history",
+    ({ configured, expected }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scenario = "codex-resume-metadata";
+          const nativeThreadId = `native-${scenario}-thread`;
+          const preamble = codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused-turn",
+            prompt: "unused-prompt",
+          }).slice(0, 5);
+          const transcript = makeCodexReplayTranscript({
+            scenario,
+            entries: [
+              ...preamble,
+              {
+                type: "expect_outbound",
+                label: "thread/resume",
+                frame: {
+                  id: 3,
+                  method: "thread/resume",
+                  params: {
+                    threadId: nativeThreadId,
+                    modelProvider: expected,
+                    excludeTurns: true,
+                    config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "thread/resume",
+                frame: { id: 3, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+              },
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(
+            transcript,
+            undefined,
+            undefined,
+            undefined,
+            { modelProvider: configured },
+          );
+          const resumed = yield* harness.runtime.resumeThread({
+            providerThread: harness.providerThread,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: { ...CODEX_TEST_RUNTIME_POLICY, cwd: "/destination-project" },
+          });
+
+          assert.equal(resumed.nativeThreadRef?.nativeId, nativeThreadId);
+          assert.equal(resumed.status, "idle");
+          assert.deepEqual(harness.configReadRequests, [
+            { cwd: "/destination-project", includeLayers: false },
+          ]);
+          assert.equal(DateTime.toEpochMillis(resumed.updatedAt), 1782622450000);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
   );
 
   it.effect.each(
@@ -3270,6 +3546,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const nativeThreadId = "saved-thread";
         const params = {
           threadId: nativeThreadId,
+          modelProvider: "openai",
           excludeTurns: true,
           cwd: CODEX_TEST_RUNTIME_POLICY.cwd,
           model: CODEX_TEST_MODEL_SELECTION.model,
@@ -3395,6 +3672,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 method: "thread/resume",
                 params: {
                   threadId: nativeThreadId,
+                  modelProvider: "openai",
                   excludeTurns: true,
                   config: CodexAdapterV2.CODEX_THREAD_CONFIG,
                 },
@@ -8266,9 +8544,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect(
-    "falls back to fork-local thread/revert on paginated history when the source turn lacks a native reference",
-    () =>
+  it.effect.each([
+    { configured: null, expected: "openai" },
+    { configured: "local_custom", expected: "local_custom" },
+    { configured: "openai_token_sharing", expected: "openai_token_sharing" },
+  ])(
+    "forks with destination provider $expected and reverts fork-local paginated history",
+    ({ configured, expected }) =>
       Effect.gen(function* () {
         const nativeThreadId = "fallback-source-thread";
         const forkThreadId = "fallback-fork-thread";
@@ -8287,7 +8569,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               frame: {
                 id: 3,
                 method: "thread/fork",
-                params: { threadId: nativeThreadId, config: CodexAdapterV2.CODEX_THREAD_CONFIG },
+                params: {
+                  threadId: nativeThreadId,
+                  modelProvider: expected,
+                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                },
               },
             },
             {
@@ -8374,6 +8660,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             Effect.sync(() => {
               outbound.push(method);
             }),
+          undefined,
+          { modelProvider: configured },
         );
         const now = yield* DateTime.now;
         const firstTurn = codexReplaySourceTurn({
@@ -8431,7 +8719,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               frame: {
                 id: 3,
                 method: "thread/fork",
-                params: { threadId: nativeThreadId, config: CodexAdapterV2.CODEX_THREAD_CONFIG },
+                params: {
+                  threadId: nativeThreadId,
+                  modelProvider: "openai",
+                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                },
               },
             },
             {
@@ -8538,6 +8830,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               params: {
                 threadId: nativeThreadId,
                 lastTurnId: "native-turn-first",
+                modelProvider: "openai",
                 config: CodexAdapterV2.CODEX_THREAD_CONFIG,
               },
             },

@@ -1,9 +1,11 @@
 import { CodexSettings, ProviderDriverKind } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
+import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import type { CodexEffectiveRuntime } from "../CodexManagedRuntime.ts";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
@@ -126,6 +128,9 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
       const modelCatalog = yield* ModelCatalog.ModelCatalog;
       const currentCatalog = modelCatalog.current(DRIVER_KIND);
       const processEnv = yield* mergeProviderInstanceEnvironment(environment);
+      const binaryPath =
+        expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory) || "codex";
+      const installation = yield* CodexInstallation.CodexInstallation;
       const homeLayout = yield* resolveCodexHomeLayout(config);
       const continuationIdentity = codexContinuationIdentity(homeLayout);
       const stampIdentity = withInstanceIdentity({
@@ -149,17 +154,40 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
       const effectiveConfig = {
         ...config,
         enabled,
-        binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
+        binaryPath,
         homePath: homeLayout.effectiveHomePath ?? "",
       } satisfies CodexSettings;
+      const resolveRuntime = Effect.gen(function* () {
+        const executablePath =
+          enabled &&
+          binaryPath === "codex" &&
+          !(yield* resolveCommandPath("codex", { env: processEnv }))
+            ? yield* installation.acquire({ managedOnly: true }).pipe(
+                Effect.map((executable) => executable.executablePath),
+                Effect.catchTags({ CodexInstallationError: () => Effect.succeed(binaryPath) }),
+              )
+            : binaryPath;
+        return {
+          config: { ...effectiveConfig, binaryPath: executablePath },
+          environment: processEnv,
+          revision: executablePath,
+        } satisfies CodexEffectiveRuntime;
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, pathService),
+      );
       const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
-        resolveProviderMaintenanceCapabilitiesEffect(
-          makeCodexMaintenanceResolver(homeLayout.sharedHomePath),
-          {
-            binaryPath: effectiveConfig.binaryPath,
-            env: processEnv,
-          },
-        ).pipe(
+        resolveRuntime.pipe(
+          Effect.flatMap((runtime) =>
+            resolveProviderMaintenanceCapabilitiesEffect(
+              makeCodexMaintenanceResolver(homeLayout.sharedHomePath),
+              {
+                binaryPath: runtime.config.binaryPath,
+                env: runtime.environment,
+              },
+            ),
+          ),
+          Effect.scoped,
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, pathService),
@@ -175,7 +203,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
           enabled,
           config,
         },
-        { onUsageLimits: (update) => snapshot.applyUsageLimits(update) },
+        { onUsageLimits: (update) => snapshot.applyUsageLimits(update), resolveRuntime },
       ).pipe(
         Effect.mapError(
           (cause) =>
@@ -193,7 +221,12 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
       const checkProvider = modelCatalog.refreshInBackground.pipe(
         Effect.andThen(
           Effect.zipWith(
-            checkCodexProviderStatus(effectiveConfig, undefined, processEnv),
+            resolveRuntime.pipe(
+              Effect.flatMap((runtime) =>
+                checkCodexProviderStatus(runtime.config, undefined, runtime.environment),
+              ),
+              Effect.scoped,
+            ),
             currentCatalog,
             (draft, catalog) => stampIdentity(applyCodexModelCatalog(draft, catalog)),
             { concurrent: true },
@@ -242,19 +275,26 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
         effectiveConfig,
         processEnv,
         snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+        resolveRuntime,
       );
       const snapshotForCwd = (cwd: string) =>
         !effectiveConfig.enabled
           ? snapshot.getSnapshot
           : Effect.all([
               snapshot.getSnapshot,
-              probeCodexSkillsForCwd({
-                binaryPath: effectiveConfig.binaryPath,
-                homePath: effectiveConfig.homePath,
-                launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
-                cwd,
-                environment: processEnv,
-              }).pipe(
+              resolveRuntime.pipe(
+                Effect.flatMap((runtime) =>
+                  probeCodexSkillsForCwd({
+                    binaryPath: runtime.config.binaryPath,
+                    homePath: runtime.config.homePath,
+                    launchArgs: resolveCodexLaunchArgs(
+                      runtime.config.launchArgs,
+                      runtime.environment,
+                    ),
+                    cwd,
+                    environment: runtime.environment,
+                  }),
+                ),
                 Effect.scoped,
                 Effect.timeout("20 seconds"),
                 Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -284,12 +324,13 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
         resetCreditCoordinator
           .redeem(accountKey, (idempotencyKey) =>
             Effect.gen(function* () {
+              const runtime = yield* resolveRuntime;
               const { client } = yield* withCodexAppServerClient({
-                binaryPath: effectiveConfig.binaryPath,
-                homePath: effectiveConfig.homePath,
-                launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+                binaryPath: runtime.config.binaryPath,
+                homePath: runtime.config.homePath,
+                launchArgs: resolveCodexLaunchArgs(runtime.config.launchArgs, runtime.environment),
                 cwd: process.cwd(),
-                environment: processEnv,
+                environment: runtime.environment,
               });
               const response = yield* client.request("account/rateLimitResetCredit/consume", {
                 idempotencyKey,

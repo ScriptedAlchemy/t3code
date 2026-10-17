@@ -320,10 +320,9 @@ const ensureShadowAuthIsPrivate = Effect.fn("CodexHomeLayout.ensureShadowAuthIsP
 export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome")(function* (
   layout: CodexHomeLayout,
 ) {
-  if (layout.mode !== "authOverlay") return;
   const effectiveHomePath = layout.effectiveHomePath;
   if (!effectiveHomePath) return;
-  if (layout.sharedHomePath === effectiveHomePath) {
+  if (layout.mode === "authOverlay" && layout.sharedHomePath === effectiveHomePath) {
     return yield* new CodexShadowHomePathConflictError({
       sharedHomePath: layout.sharedHomePath,
       effectiveHomePath,
@@ -346,6 +345,8 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
           }),
       }),
     );
+
+  if (layout.mode === "direct") return yield* makeDirectory(effectiveHomePath);
 
   yield* Effect.all(
     [

@@ -40,6 +40,7 @@ import { WizardPanel, WizardPopup, WizardHeader, WizardFooter } from "../ui/wiza
 import {
   ADD_PROVIDER_WIZARD_STEPS,
   ACP_REGISTRY_WIZARD_STEPS,
+  TRAEX_BRIDGE_CODEX_LAUNCH_ARGS,
   LOCAL_ACP_WIZARD_STEPS,
   deriveAvailableInstanceId,
   resolveAcpRegistryWizardNavigation,
@@ -75,6 +76,7 @@ function deriveInstanceId(driver: ProviderDriverKind, label: string): string {
 
 const INSTANCE_ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
+const TRAEX_BRIDGE_PRESET = "traexBridge";
 const ACP_REGISTRY_DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
 const DEFAULT_DRIVER_OPTION = providerClients.definitions[0]!;
 const EMPTY_CONFIG_DRAFT: Record<string, unknown> = {};
@@ -113,7 +115,9 @@ export function AddProviderInstanceDialog({
 
   const [wizardStep, setWizardStep] = useState(0);
   const [addingChatGptAccount, setAddingChatGptAccount] = useState(false);
-  const [driver, setDriver] = useState<ProviderDriverKind>(DEFAULT_DRIVER_KIND);
+  const [selection, setSelection] = useState<string>(DEFAULT_DRIVER_KIND);
+  const driver =
+    selection === TRAEX_BRIDGE_PRESET ? DEFAULT_DRIVER_KIND : ProviderDriverKind.make(selection);
   const [identityByDriver, setIdentityByDriver] = useState<Record<string, ProviderIdentityDraft>>(
     {},
   );
@@ -139,11 +143,11 @@ export function AddProviderInstanceDialog({
   const driverOption = providerClients.get(driver) ?? DEFAULT_DRIVER_OPTION;
   const isAcpRegistry = driver === ACP_REGISTRY_DRIVER_KIND;
   const defaultIdentity: ProviderIdentityDraft = {
-    label: driverOption.label,
+    label: selection === TRAEX_BRIDGE_PRESET ? "Traex" : driverOption.label,
     accentColor: "",
     instanceIdOverride: null,
   };
-  const { label, accentColor, instanceIdOverride } = identityByDriver[driver] ?? defaultIdentity;
+  const { label, accentColor, instanceIdOverride } = identityByDriver[selection] ?? defaultIdentity;
   const instanceId =
     instanceIdOverride ??
     deriveAvailableInstanceId(
@@ -165,7 +169,16 @@ export function AddProviderInstanceDialog({
   const identityStep = 1;
   const previewLabel = label.trim() || `${driverOption.label} Workspace`;
 
-  const configDraft = configByDriver[driver] ?? EMPTY_CONFIG_DRAFT;
+  const storedConfigDraft = configByDriver[selection] ?? EMPTY_CONFIG_DRAFT;
+  const defaultTraexHomePath = `~/.codex-t3/traex/${instanceId}`;
+  const configDraft =
+    selection === TRAEX_BRIDGE_PRESET
+      ? {
+          homePath: defaultTraexHomePath,
+          launchArgs: TRAEX_BRIDGE_CODEX_LAUNCH_ARGS,
+          ...storedConfigDraft,
+        }
+      : storedConfigDraft;
   const isLocalAcp = isAcpRegistry && isManualAcpConfiguration && configDraft.source === "local";
   const localCommandPath =
     typeof configDraft.commandPath === "string" ? configDraft.commandPath.trim() : "";
@@ -183,14 +196,22 @@ export function AddProviderInstanceDialog({
         previewLabel,
         null,
       ] as const)
-    : ([driverOption.label, previewLabel, null] as const);
+    : ([
+        selection === TRAEX_BRIDGE_PRESET ? "Traex bridge" : driverOption.label,
+        previewLabel,
+        null,
+      ] as const);
   const setConfigDraft = (config: Record<string, unknown> | undefined) => {
+    const overrides = { ...config };
+    if (selection === TRAEX_BRIDGE_PRESET && overrides.homePath === defaultTraexHomePath) {
+      delete overrides.homePath;
+    }
     setConfigByDriver((existing) => {
       const next = { ...existing };
-      if (config === undefined || Object.keys(config).length === 0) {
-        delete next[driver];
+      if (Object.keys(overrides).length === 0) {
+        delete next[selection];
       } else {
-        next[driver] = config;
+        next[selection] = overrides;
       }
       return next;
     });
@@ -198,7 +219,7 @@ export function AddProviderInstanceDialog({
   const setIdentityDraft = (update: Partial<ProviderIdentityDraft>) => {
     setIdentityByDriver((existing) => ({
       ...existing,
-      [driver]: { ...(existing[driver] ?? defaultIdentity), ...update },
+      [selection]: { ...(existing[selection] ?? defaultIdentity), ...update },
     }));
   };
 
@@ -233,7 +254,7 @@ export function AddProviderInstanceDialog({
   };
 
   const handleAcpPrepared = (agent: AcpRegistrySearchAgent) => {
-    setDriver(ACP_REGISTRY_DRIVER_KIND);
+    setSelection(ACP_REGISTRY_DRIVER_KIND);
     const nextLabel = agent.name;
     const registryIconUrl = resolveOfficialAcpRegistryIconUrl(agent.icon);
     const nextInstanceId = deriveAvailableInstanceId(
@@ -261,8 +282,15 @@ export function AddProviderInstanceDialog({
     setWizardStep(1);
   };
 
+  const handleTraexBridgePreset = () => {
+    setSelection(TRAEX_BRIDGE_PRESET);
+    setIsManualAcpConfiguration(false);
+    setHasAttemptedSubmit(false);
+    setWizardStep(1);
+  };
+
   const handleManualAcpConfiguration = () => {
-    setDriver(ACP_REGISTRY_DRIVER_KIND);
+    setSelection(ACP_REGISTRY_DRIVER_KIND);
     setSelectedAcp(null);
     setIsManualAcpConfiguration(true);
     setConfigByDriver((existing) => {
@@ -280,7 +308,7 @@ export function AddProviderInstanceDialog({
   };
 
   const handleLocalAcpConfiguration = () => {
-    setDriver(ACP_REGISTRY_DRIVER_KIND);
+    setSelection(ACP_REGISTRY_DRIVER_KIND);
     setSelectedAcp(null);
     setIsManualAcpConfiguration(true);
     setConfigByDriver((existing) => ({
@@ -303,10 +331,7 @@ export function AddProviderInstanceDialog({
     setHasAttemptedSubmit(true);
     if (instanceIdError !== null || (isAcpRegistry && acpSelectionError !== null)) return;
 
-    const config =
-      driver === "codex"
-        ? { ...configByDriver[driver], setupMode: "existing" }
-        : (configByDriver[driver] ?? {});
+    const config = driver === "codex" ? { ...configDraft, setupMode: "existing" } : configDraft;
     const hasConfig = Object.keys(config).length > 0;
     const normalizedAccentColor = normalizeProviderAccentColor(accentColor);
 
@@ -407,9 +432,9 @@ export function AddProviderInstanceDialog({
                 </div>
                 <RadioGroup
                   disabled={isPreparingRegistryAgent}
-                  value={driver}
+                  value={selection}
                   onValueChange={(value) => {
-                    setDriver(ProviderDriverKind.make(value));
+                    setSelection(value);
                     setIsManualAcpConfiguration(false);
                     setHasAttemptedSubmit(false);
                   }}
@@ -452,6 +477,26 @@ export function AddProviderInstanceDialog({
 
               {wizardStep === 0 ? (
                 <div className="space-y-4 pt-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-medium text-foreground">Traex bridge</h3>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        Run Codex against a traex-bridge container on {environmentLabel} at
+                        127.0.0.1:8317. Requires macOS or Linux. Uses Codex from that server's PATH
+                        or an existing T3-managed installation. Set a custom binary path in Config.
+                        The bridge key is read from ~/.traex-bridge/api-key on that server, not this
+                        client.
+                      </p>
+                    </div>
+                    <Button
+                      disabled={isPreparingRegistryAgent}
+                      onClick={handleTraexBridgePreset}
+                      size="xs"
+                      variant="outline"
+                    >
+                      Use Traex
+                    </Button>
+                  </div>
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
                     <div aria-hidden className="flex-1 border-t border-border/70" />
                     <span>Or choose from ACP Registry</span>
@@ -662,7 +707,7 @@ export function AddProviderInstanceDialog({
               >
                 {wizardStep === 0 ? "Cancel" : "Back"}
               </Button>
-              {wizardStep === 0 && driver === "codex" ? (
+              {wizardStep === 0 && selection === "codex" ? (
                 <>
                   <Button variant="outline" size="sm" onClick={() => navigateToStep(1)}>
                     Configure manually

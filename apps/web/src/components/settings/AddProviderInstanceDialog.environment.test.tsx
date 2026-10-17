@@ -52,6 +52,12 @@ vi.mock("../../state/session", async (importOriginal) => {
 vi.mock("../ui/toast", () => ({ toastManager: { add: actions.toast } }));
 
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
+import {
+  deriveProviderSettingsFields,
+  nextProviderConfigWithFieldValue,
+  type SettingsFormDefinition,
+} from "./ProviderSettingsForm";
+import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 
 const remoteEnvironmentId = EnvironmentId.make("remote-device");
 const preparedAgent: AcpRegistrySearchAgent = {
@@ -192,6 +198,266 @@ describe("AddProviderInstanceDialog environment routing", () => {
 
     expect(settingsHooks.read).toHaveBeenCalledWith(remoteEnvironmentId);
     expect(settingsHooks.useMutation).toHaveBeenCalledWith(remoteEnvironmentId);
+  });
+
+  it("persists a Traex preset as an isolated Codex instance in the selected environment", async () => {
+    settingsHooks.read.mockReturnValue({
+      providerInstances: { codex_traex: { driver: "codex", enabled: true } },
+    });
+    let tree = render();
+    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Next").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Add instance").props.onClick as () => void)();
+    await Promise.resolve();
+
+    expect(settingsHooks.useMutation).toHaveBeenCalledWith(remoteEnvironmentId);
+    expect(settingsHooks.mutate).toHaveBeenCalledWith({
+      operation: "create",
+      instanceId: "codex_traex_2",
+      instance: {
+        driver: "codex",
+        enabled: true,
+        displayName: "Traex",
+        config: {
+          setupMode: "existing",
+          homePath: "~/.codex-t3/traex/codex_traex_2",
+          launchArgs: expect.any(String),
+        },
+      },
+    });
+    const launchArgs: unknown = settingsHooks.mutate.mock.calls[0]?.[0]?.instance.config.launchArgs;
+    if (typeof launchArgs !== "string") throw new Error("Missing persisted launch arguments.");
+    const args = tokenizeCliArgs(launchArgs);
+    expect(args).toContain('model_provider="traex"');
+    expect(args).toContainEqual(expect.stringContaining('base_url="http://127.0.0.1:8317/v1"'));
+    expect(args).toContainEqual(expect.stringContaining("cat ~/.traex-bridge/api-key"));
+    expect(args.join(" ")).not.toContain("model_catalog_url");
+    expect(args.join(" ")).not.toContain("features.api_key_model_discovery");
+  });
+
+  it.each([
+    { name: "default home", editConfig: false, homePath: undefined },
+    { name: "another config field", editConfig: true, homePath: undefined },
+    { name: "custom home", editConfig: true, homePath: "~/.traex-personal" },
+  ])("preserves isolation after changing the Traex ID with $name", async (fixture) => {
+    let tree = render();
+    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    tree = render();
+    if (fixture.editConfig) {
+      (findByChildren(tree, "Next").props.onClick as () => void)();
+      tree = render();
+      const configuration = visitElements(
+        tree,
+        (element) => element.props.idPrefix === "add-provider-codex",
+      );
+      (configuration!.props.onChange as (value: Record<string, unknown>) => void)({
+        ...(configuration!.props.value as Record<string, unknown>),
+        binaryPath: "/opt/codex",
+        ...(fixture.homePath === undefined ? {} : { homePath: fixture.homePath }),
+      });
+      (findByChildren(tree, "Back").props.onClick as () => void)();
+      tree = render();
+    }
+    const instanceId = visitElements(
+      tree,
+      (element) => element.props.id === "add-provider-instance-id",
+    );
+    (instanceId!.props.onChange as (event: { target: { value: string } }) => void)({
+      target: { value: "traex_custom" },
+    });
+    tree = render();
+    (findByChildren(tree, "Next").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Add instance").props.onClick as () => void)();
+    await Promise.resolve();
+
+    expect(settingsHooks.mutate).toHaveBeenCalledWith({
+      operation: "create",
+      instanceId: "traex_custom",
+      instance: {
+        driver: "codex",
+        enabled: true,
+        displayName: "Traex",
+        config: {
+          setupMode: "existing",
+          homePath: fixture.homePath ?? "~/.codex-t3/traex/traex_custom",
+          launchArgs: expect.any(String),
+          ...(fixture.editConfig ? { binaryPath: "/opt/codex" } : {}),
+        },
+      },
+    });
+  });
+
+  it("derives the Traex home from the final ID after clearing a custom home", async () => {
+    let tree = render();
+    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Next").props.onClick as () => void)();
+    tree = render();
+    let configuration = visitElements(
+      tree,
+      (element) => element.props.idPrefix === "add-provider-codex",
+    );
+    const homeField = deriveProviderSettingsFields(
+      configuration!.props.definition as SettingsFormDefinition,
+    ).find((field) => field.key === "homePath");
+    if (!homeField) throw new Error("Missing home path field.");
+    (configuration!.props.onChange as (value: Record<string, unknown> | undefined) => void)(
+      nextProviderConfigWithFieldValue(configuration!.props.value, homeField, "~/.traex-personal"),
+    );
+    tree = render();
+    configuration = visitElements(
+      tree,
+      (element) => element.props.idPrefix === "add-provider-codex",
+    );
+    (configuration!.props.onChange as (value: Record<string, unknown> | undefined) => void)(
+      nextProviderConfigWithFieldValue(configuration!.props.value, homeField, ""),
+    );
+    tree = render();
+    (findByChildren(tree, "Back").props.onClick as () => void)();
+    tree = render();
+    const instanceId = visitElements(
+      tree,
+      (element) => element.props.id === "add-provider-instance-id",
+    );
+    (instanceId!.props.onChange as (event: { target: { value: string } }) => void)({
+      target: { value: "traex_final" },
+    });
+    tree = render();
+    (findByChildren(tree, "Next").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Add instance").props.onClick as () => void)();
+    await Promise.resolve();
+
+    expect(settingsHooks.mutate).toHaveBeenCalledWith({
+      operation: "create",
+      instanceId: "traex_final",
+      instance: {
+        driver: "codex",
+        enabled: true,
+        displayName: "Traex",
+        config: {
+          setupMode: "existing",
+          homePath: "~/.codex-t3/traex/traex_final",
+          launchArgs: expect.any(String),
+        },
+      },
+    });
+  });
+
+  it("preserves the edited Traex draft after returning to provider selection", async () => {
+    let tree = render();
+    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    tree = render();
+    const label = visitElements(tree, (element) => element.props.id === "add-provider-label");
+    (label!.props.onChange as (event: { target: { value: string } }) => void)({
+      target: { value: "Personal Traex" },
+    });
+    tree = render();
+    const instanceId = visitElements(
+      tree,
+      (element) => element.props.id === "add-provider-instance-id",
+    );
+    (instanceId!.props.onChange as (event: { target: { value: string } }) => void)({
+      target: { value: "traex_personal" },
+    });
+    tree = render();
+    (findByChildren(tree, "Next").props.onClick as () => void)();
+    tree = render();
+    const configuration = visitElements(
+      tree,
+      (element) => element.props.idPrefix === "add-provider-codex",
+    );
+    (configuration!.props.onChange as (value: Record<string, unknown>) => void)({
+      ...(configuration!.props.value as Record<string, unknown>),
+      binaryPath: "/opt/codex-personal",
+      homePath: "~/.traex-personal",
+      launchArgs: "--profile personal",
+    });
+    tree = render();
+    (findByChildren(tree, "Back").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Back").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Next").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Add instance").props.onClick as () => void)();
+    await Promise.resolve();
+
+    expect(settingsHooks.mutate).toHaveBeenCalledWith({
+      operation: "create",
+      instanceId: "traex_personal",
+      instance: {
+        driver: "codex",
+        enabled: true,
+        displayName: "Personal Traex",
+        config: {
+          setupMode: "existing",
+          binaryPath: "/opt/codex-personal",
+          homePath: "~/.traex-personal",
+          launchArgs: "--profile personal",
+        },
+      },
+    });
+  });
+
+  it("restores the manual Codex draft after choosing Traex and switching back", async () => {
+    let tree = render();
+    (findByChildren(tree, "Configure manually").props.onClick as () => void)();
+    tree = render();
+    const label = visitElements(tree, (element) => element.props.id === "add-provider-label");
+    (label!.props.onChange as (event: { target: { value: string } }) => void)({
+      target: { value: "Work" },
+    });
+    (findByChildren(tree, "Next").props.onClick as () => void)();
+    tree = render();
+    const configuration = visitElements(
+      tree,
+      (element) => element.props.idPrefix === "add-provider-codex",
+    );
+    (configuration!.props.onChange as (value: Record<string, unknown>) => void)({
+      binaryPath: "/opt/codex",
+      homePath: "~/.codex-work",
+    });
+    (findByChildren(tree, "Back").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Back").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Use Traex").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Back").props.onClick as () => void)();
+    tree = render();
+    const group = visitElements(
+      tree,
+      (element) => element.props["aria-labelledby"] === "add-instance-driver-label",
+    );
+    (group!.props.onValueChange as (value: string) => void)("codex");
+    tree = render();
+    (findByChildren(tree, "Configure manually").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Next").props.onClick as () => void)();
+    tree = render();
+    (findByChildren(tree, "Add instance").props.onClick as () => void)();
+    await Promise.resolve();
+
+    expect(settingsHooks.mutate).toHaveBeenCalledWith({
+      operation: "create",
+      instanceId: "codex_work",
+      instance: {
+        driver: "codex",
+        enabled: true,
+        displayName: "Work",
+        config: {
+          setupMode: "existing",
+          binaryPath: "/opt/codex",
+          homePath: "~/.codex-work",
+        },
+      },
+    });
   });
 
   it("awaits an atomic create before closing and retains prepared ACP metadata", async () => {

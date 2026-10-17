@@ -25,6 +25,17 @@ T3 Code can use your installed Codex and its existing login. Run `codex login`
 on the environment's machine to sign in. [Provider setup](./install.md#providers)
 covers installation and custom configuration.
 
+## Use Traex bridge
+
+Run traex-bridge on the selected environment's macOS or Linux machine at
+`127.0.0.1:8317`, with its API key in `~/.traex-bridge/api-key` on that machine.
+In **Settings → Providers → Add provider**, choose **Use Traex**.
+The preset uses Codex from that machine's PATH or an existing T3-managed installation.
+You can also set a custom binary path in Config.
+
+Traex uses a separate Codex home so its sessions and configuration stay isolated
+from your other Codex accounts.
+
 ## Use multiple accounts
 
 Add another ChatGPT account in **Settings → Providers**, then select the account
