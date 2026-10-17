@@ -142,7 +142,7 @@ it.effect.each(["0.156.0", "0.156.1", "0.156.2", "0.157.0"])(
   (version) =>
     Effect.gen(function* () {
       const h = yield* makeHarness({ local: { version } });
-      expect(yield* h.installation.start).toMatchObject({
+      expect(yield* h.installation.start()).toMatchObject({
         source: "local",
         phase: "succeeded",
         installedVersion: version,
@@ -173,7 +173,7 @@ it.effect.each([true, false])(
     Effect.gen(function* () {
       const first = yield* makeHarness();
       if (managedInstalled) {
-        yield* first.installation.start;
+        yield* first.installation.start();
         expect((yield* terminalState(first.installation)).phase).toBe("succeeded");
       }
       const h = yield* makeHarness({ baseDir: first.baseDir, local: { version: "0.156.2" } });
@@ -197,6 +197,26 @@ it.effect.each([true, false])(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect("installs a managed runtime when requested despite a compatible host Codex", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({ local: { version: "0.156.1" } });
+    const started = yield* h.installation.start({ managedOnly: true });
+    expect(started.phase).toBe("downloading");
+    expect(started.operationId).not.toBeNull();
+    const operationId = started.operationId;
+    if (operationId === null) throw new Error("Managed install must have an operation id.");
+    const installed = yield* h.installation.changes.pipe(
+      Stream.filter((state) => state.operationId === operationId && state.phase === "succeeded"),
+      Stream.runHead,
+      Effect.map(Option.getOrThrow),
+    );
+    expect(installed.source).toBe("managed");
+    expect(installed.executablePath).toBe(`${h.baseDir}/tools/codex/0.156.1/bin/codex`);
+    expect(h.downloads()).toBe(1);
+    expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect.each([
   { version: "0.128.9" },
   { version: "0.145.0" },
@@ -210,7 +230,7 @@ it.effect.each([
   Effect.gen(function* () {
     const h = yield* makeHarness({ local });
     expect((yield* h.installation.state).installedVersion).toBeNull();
-    yield* h.installation.start;
+    yield* h.installation.start();
     const installed = yield* terminalState(h.installation);
     expect(installed.phase).toBe("succeeded");
     const executable = yield* h.installation.resolve();
@@ -225,7 +245,7 @@ it.effect("falls back to a managed download when the reused local executable dis
     const h = yield* makeHarness({ local: { version: "0.156.1" } });
     expect((yield* h.installation.resolve()).source).toBe("local");
     yield* h.fs.remove(h.localBinaryPath);
-    yield* h.installation.start;
+    yield* h.installation.start();
     expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
     expect((yield* h.installation.resolve()).source).toBe("managed");
     expect(h.downloads()).toBe(1);
@@ -240,7 +260,7 @@ it.effect("rechecks compatibility after the local executable is replaced", () =>
     yield* h.fs.writeFileString(h.localBinaryPath, "#!/bin/sh\nprintf 'codex-cli 0.128.9\\n'\n", {
       mode: 0o755,
     });
-    yield* h.installation.start;
+    yield* h.installation.start();
     expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
     expect((yield* h.installation.resolve()).source).toBe("managed");
     expect(h.downloads()).toBe(1);
@@ -268,7 +288,7 @@ it.effect("rechecks a cached local executable when the shared manifest policy ch
         },
       ],
     };
-    yield* h.installation.start;
+    yield* h.installation.start();
     expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
     expect((yield* h.installation.resolve()).source).toBe("managed");
     expect(h.downloads()).toBe(1);
@@ -288,7 +308,7 @@ it.effect("uses bundled Codex compatibility when the remote manifest omits its p
         compatibility: [],
       }),
     });
-    expect((yield* h.installation.start).source).toBe("local");
+    expect((yield* h.installation.start()).source).toBe("local");
     expect(h.downloads()).toBe(0);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
@@ -304,7 +324,7 @@ it.effect("preserves the invoked name of version-manager launcher symlinks", () 
     );
     yield* h.fs.remove(h.localBinaryPath);
     yield* h.fs.symlink(launcher, h.localBinaryPath);
-    expect(yield* h.installation.start).toMatchObject({ source: "local", phase: "succeeded" });
+    expect(yield* h.installation.start()).toMatchObject({ source: "local", phase: "succeeded" });
     expect((yield* h.installation.resolve()).executablePath).toBe(h.localBinaryPath);
     expect(h.downloads()).toBe(0);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
@@ -315,7 +335,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const { installation, fs, baseDir } = yield* makeHarness();
-      yield* installation.start;
+      yield* installation.start();
       expect((yield* terminalState(installation)).phase).toBe("succeeded");
       const executable = yield* installation.resolve();
       expect(executable.executablePath).toBe(`${baseDir}/tools/codex/0.156.1/bin/codex`);
@@ -333,7 +353,7 @@ it.effect(
 it.effect("requires an update before running an older activated managed installation", () =>
   Effect.gen(function* () {
     const first = yield* makeHarness();
-    yield* first.installation.start;
+    yield* first.installation.start();
     yield* terminalState(first.installation);
     const executable = yield* first.installation.resolve();
     const oldDirectory = `${first.installation.managedDirectory}/0.155.1`;
@@ -353,7 +373,7 @@ it.effect("requires an update before running an older activated managed installa
     expect((yield* Effect.flip(restarted.installation.resolve())).detail).toContain(
       "outside the supported range",
     );
-    yield* restarted.installation.start;
+    yield* restarted.installation.start();
     expect((yield* terminalState(restarted.installation)).phase).toBe("succeeded");
     expect((yield* restarted.installation.resolve()).version).toBe("0.156.1");
     expect(restarted.downloads()).toBe(1);
@@ -365,7 +385,7 @@ it.effect("rejects corrupted downloads without publishing a runtime", () =>
     const { installation, fs } = yield* makeHarness({
       options: { releaseAsset: { ...asset, sha256: "0".repeat(64) } },
     });
-    yield* installation.start;
+    yield* installation.start();
     const state = yield* terminalState(installation);
     expect(state.phase).toBe("failed");
     expect(state.message).toContain("SHA-256");
@@ -381,7 +401,7 @@ it.effect("cancels an in-flight download and cleans the staging directory", () =
       Deferred.succeed(downloading, undefined).pipe(Effect.andThen(Effect.never)),
     );
     const { installation, fs } = yield* makeHarness({ body });
-    const started = yield* installation.start;
+    const started = yield* installation.start();
     yield* Deferred.await(downloading);
     expect((yield* installation.cancel(started.operationId!)).phase).toBe("cancelled");
     expect(
@@ -396,7 +416,7 @@ it.effect("cancels an in-flight download and cleans the staging directory", () =
 it.effect("protects active process leases and removes the runtime after release", () =>
   Effect.gen(function* () {
     const { installation, fs } = yield* makeHarness();
-    yield* installation.start;
+    yield* installation.start();
     yield* terminalState(installation);
     const leaseScope = yield* Scope.make();
     yield* installation.acquire().pipe(Effect.provideService(Scope.Scope, leaseScope));
@@ -412,7 +432,7 @@ it.effect("protects active process leases and removes the runtime after release"
 it.effect("keeps an activated runtime when a later update fails verification", () =>
   Effect.gen(function* () {
     const first = yield* makeHarness();
-    yield* first.installation.start;
+    yield* first.installation.start();
     yield* terminalState(first.installation);
     const update = yield* makeHarness({
       baseDir: first.baseDir,
@@ -421,7 +441,7 @@ it.effect("keeps an activated runtime when a later update fails verification", (
     expect((yield* update.installation.state).executablePath).toBe(
       (yield* first.installation.resolve()).executablePath,
     );
-    yield* update.installation.start;
+    yield* update.installation.start();
     expect((yield* terminalState(update.installation)).phase).toBe("failed");
     expect((yield* update.installation.resolve()).version).toBe("0.156.1");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
@@ -518,7 +538,7 @@ it.effect("installs on Windows via System32 tar with CRLF output and a locked ru
       spawner: makeWindowsTar(fs, commands),
       runtimeRenameFailures: 3,
     });
-    yield* h.installation.start;
+    yield* h.installation.start();
     // Each failed attempt has scheduled its retry before the test fiber resumes.
     for (let attempt = 0; attempt < 3; attempt++) {
       yield* Queue.take(h.failedRenames);
@@ -539,7 +559,7 @@ it.effect("installs on Windows via System32 tar with CRLF output and a locked ru
 it.effect("does not retry a failed runtime rename outside Windows", () =>
   Effect.gen(function* () {
     const h = yield* makeHarness({ runtimeRenameFailures: 1 });
-    yield* h.installation.start;
+    yield* h.installation.start();
     expect((yield* terminalState(h.installation)).phase).toBe("failed");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

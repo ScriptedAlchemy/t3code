@@ -1,11 +1,12 @@
 import * as Dialog from "../../components/ui/Dialog";
+import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import type { ProviderAuthResponse, ServerProvider } from "@t3tools/contracts";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Linking, Pressable, ScrollView, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -45,6 +46,7 @@ export function SettingsProviderAccountsRouteScreen() {
                   .filter(
                     (provider) =>
                       provider.setup?.canAuthenticate ||
+                      (provider.driver === "codex" && provider.setup?.canInstall === true) ||
                       (provider.driver === "acpRegistry" && provider.installed),
                   )
                   .map((provider) => (
@@ -57,6 +59,7 @@ export function SettingsProviderAccountsRouteScreen() {
                 {!environment.serverConfig.providers.some(
                   (provider) =>
                     provider.setup?.canAuthenticate ||
+                    (provider.driver === "codex" && provider.setup?.canInstall === true) ||
                     (provider.driver === "acpRegistry" && provider.installed),
                 ) ? (
                   <Text className="p-4 text-foreground-muted">
@@ -83,15 +86,30 @@ function ProviderAccount({
   const instanceId = provider.instanceId;
   const target = { environmentId, input: { instanceId } };
   const auth = useEnvironmentQuery(serverEnvironment.providerAuthState(target));
+  const canInstallCodex = provider.driver === "codex" && provider.setup?.canInstall === true;
+  const installationQuery = useEnvironmentQuery(
+    canInstallCodex ? serverEnvironment.providerInstallState(target) : null,
+  );
+  const installation = installationQuery.data;
   const options = { reportFailure: false, reportDefect: false };
   const start = useAtomCommand(serverEnvironment.startProviderAuth, options);
   const respond = useAtomCommand(serverEnvironment.respondProviderAuth, options);
   const complete = useAtomCommand(serverEnvironment.completeProviderAuth, options);
   const cancel = useAtomCommand(serverEnvironment.cancelProviderAuth, options);
   const logout = useAtomCommand(serverEnvironment.logoutProviderAuth, options);
+  const startInstall = useAtomCommand(serverEnvironment.startProviderInstall, options);
+  const cancelInstall = useAtomCommand(serverEnvironment.cancelProviderInstall, options);
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, options);
+  const canStartInstall = useAtomValue(
+    serverEnvironment.startProviderInstall.permissionAtom(environmentId),
+  );
+  const canCancelInstall = useAtomValue(
+    serverEnvironment.cancelProviderInstall.permissionAtom(environmentId),
+  );
   const [pending, setPending] = useState(false);
   const [choosingMethod, setChoosingMethod] = useState(false);
   const pendingRef = useRef(false);
+  const refreshedInstallation = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState({ id: "", values: {} as Record<string, string> });
   const state = auth.data;
@@ -101,6 +119,14 @@ function ProviderAccount({
   const values = draft.id === draftId ? draft.values : {};
   const active =
     state?.phase === "starting" || state?.phase === "waiting" || state?.phase === "verifying";
+  const installActive =
+    installation?.phase === "downloading" ||
+    installation?.phase === "extracting" ||
+    installation?.phase === "verifying";
+  const installationKey =
+    installation?.phase === "succeeded" && installation.source === "managed"
+      ? `${installation.operationId ?? ""}:${installation.installedVersion ?? ""}:${installation.executablePath ?? ""}`
+      : null;
   const signedIn =
     provider.auth.status === "authenticated" ||
     (provider.auth.status === "unknown" && state?.phase === "succeeded");
@@ -120,7 +146,32 @@ function ProviderAccount({
       ? interaction.url
       : state?.authorizationUrl;
   const disabled = pending || auth.error !== null || isDiscovering;
-  async function run(command: () => Promise<AtomCommandResult<unknown, unknown>>) {
+  const installDisabled =
+    pending || !canStartInstall || installationQuery.error !== null || installation === null;
+  const cancelInstallDisabled =
+    pending || !canCancelInstall || installationQuery.error !== null || installation === null;
+
+  useEffect(() => {
+    if (!canInstallCodex || provider.installed || installationKey === null) {
+      refreshedInstallation.current = null;
+      return;
+    }
+    if (refreshedInstallation.current === installationKey) return;
+    refreshedInstallation.current = installationKey;
+    void refreshProviders({ environmentId, input: { instanceId } });
+  }, [
+    canInstallCodex,
+    environmentId,
+    instanceId,
+    installationKey,
+    provider.installed,
+    refreshProviders,
+  ]);
+
+  async function run(
+    command: () => Promise<AtomCommandResult<unknown, unknown>>,
+    failureMessage = "Could not update provider sign-in.",
+  ) {
     if (pendingRef.current) return false;
     pendingRef.current = true;
     setPending(true);
@@ -131,10 +182,10 @@ function ProviderAccount({
       if (result._tag === "Success") succeeded = true;
       else if (!isAtomCommandInterrupted(result)) {
         const failure = squashAtomCommandFailure(result);
-        setError(failure instanceof Error ? failure.message : "Could not update provider sign-in.");
+        setError(failure instanceof Error ? failure.message : failureMessage);
       }
     } catch {
-      setError("Could not update provider sign-in.");
+      setError(failureMessage);
     }
     pendingRef.current = false;
     setPending(false);
@@ -182,6 +233,20 @@ function ProviderAccount({
     }
     setChoosingMethod(true);
   }
+  const installDescription =
+    installation?.phase === "downloading"
+      ? `Downloading Codex CLI (${(installation.downloadedBytes / 1_000_000).toFixed(1)} MB${installation.totalBytes === null ? "" : ` of ${(installation.totalBytes / 1_000_000).toFixed(1)} MB`}).`
+      : installation?.phase === "extracting"
+        ? "Extracting Codex CLI."
+        : installation?.phase === "verifying"
+          ? "Checking Codex CLI."
+          : installation?.phase === "succeeded" && installation.source === "local"
+            ? "This provider cannot use the environment's Codex executable. Install Codex CLI for this provider."
+            : installation?.phase === "succeeded"
+              ? "Installation finished. Checking this provider's Codex runtime."
+              : installation?.phase === "failed" || installation?.phase === "cancelled"
+                ? (installation.message ?? "Codex CLI installation failed.")
+                : `Install Codex CLI on ${environment.label} before signing in.`;
   return (
     <View className="border-b border-border-subtle">
       <View className="gap-2 p-4">
@@ -195,12 +260,49 @@ function ProviderAccount({
               ? "Signed in."
               : isDiscovering
                 ? "Discovering sign-in methods…"
-                : needsExternalSetup
-                  ? "No in-app sign-in advertised. Follow the provider's docs to finish setup."
-                  : "Connect this provider."}
+                : canInstallCodex && !provider.installed
+                  ? "Install Codex CLI before signing in."
+                  : needsExternalSetup
+                    ? "No in-app sign-in advertised. Follow the provider's docs to finish setup."
+                    : "Connect this provider."}
         </Text>
         {signedIn && !active && provider.auth.email?.trim() ? (
           <ProviderAccountEmail key={provider.auth.email} email={provider.auth.email} />
+        ) : null}
+        {canInstallCodex && !provider.installed ? (
+          <SettingsActionRow
+            icon="arrow.down.to.line"
+            label={
+              installActive
+                ? "Cancel installation"
+                : installation?.phase === "succeeded"
+                  ? installation.source === "local"
+                    ? "Install Codex CLI"
+                    : "Refresh provider status"
+                  : installation?.phase === "failed" || installation?.phase === "cancelled"
+                    ? "Retry installation"
+                    : "Install Codex CLI"
+            }
+            description={installationQuery.error ?? installDescription}
+            disabled={(installActive ? cancelInstallDisabled : installDisabled) || active}
+            loading={pending}
+            onPress={() => {
+              if (installActive && installation?.operationId) {
+                void run(
+                  () =>
+                    cancelInstall({
+                      environmentId,
+                      input: { instanceId, operationId: installation.operationId! },
+                    }),
+                  "Could not cancel Codex installation. Try again.",
+                );
+              } else if (installation?.phase === "succeeded" && installation.source !== "local") {
+                void refreshProviders({ environmentId, input: { instanceId } });
+              } else {
+                void run(() => startInstall(target), "Could not install Codex CLI. Try again.");
+              }
+            }}
+          />
         ) : null}
         {interaction?.type === "deviceCode" ? (
           <Text selectable className="text-foreground">
@@ -269,9 +371,9 @@ function ProviderAccount({
             />
           </>
         ) : null}
-        {error || auth.error ? (
+        {error || auth.error || installationQuery.error ? (
           <Text accessibilityRole="alert" className="text-danger-foreground">
-            {error ?? auth.error}
+            {error ?? auth.error ?? installationQuery.error}
           </Text>
         ) : null}
       </View>

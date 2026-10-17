@@ -10,6 +10,7 @@ import type {
   ProviderInstanceId,
   ServerProvider,
 } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { CopyIcon } from "lucide-react";
 
@@ -50,6 +51,19 @@ export function ProviderAuthenticationSection({
   const complete = useAtomCommand(serverEnvironment.completeProviderAuth, commands);
   const cancel = useAtomCommand(serverEnvironment.cancelProviderAuth, commands);
   const logout = useAtomCommand(serverEnvironment.logoutProviderAuth, commands);
+  const canInstallCodex = provider.driver === "codex" && provider.setup?.canInstall === true;
+  const installQuery = useEnvironmentQuery(
+    canInstallCodex ? serverEnvironment.providerInstallState(target) : null,
+  );
+  const startInstall = useAtomCommand(serverEnvironment.startProviderInstall, commands);
+  const cancelInstall = useAtomCommand(serverEnvironment.cancelProviderInstall, commands);
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, commands);
+  const canStartInstall = useAtomValue(
+    serverEnvironment.startProviderInstall.permissionAtom(environmentId),
+  );
+  const canCancelInstall = useAtomValue(
+    serverEnvironment.cancelProviderInstall.permissionAtom(environmentId),
+  );
   const [methodId, setMethodId] = useState("");
   const [draft, setDraft] = useState({ id: "", values: {} as Record<string, string> });
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +72,8 @@ export function ProviderAuthenticationSection({
   const reservedBrowser = useRef<Window | null>(null);
   const [browserFlowId, setBrowserFlowId] = useState<string | null>(null);
   const handledBrowserFlow = useRef<string | null>(null);
+  const refreshedInstallation = useRef<string | null>(null);
+  const installation = installQuery.data;
   const terminalQueue = useRef<ProviderAuthRespondInput[]>([]);
   const terminalSending = useRef(false);
   const auth = query.data;
@@ -65,6 +81,14 @@ export function ProviderAuthenticationSection({
   const acceptsCode = interaction?.type === "browser" && interaction.callbackInputKind === "code";
   const active =
     auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying";
+  const installActive =
+    installation?.phase === "downloading" ||
+    installation?.phase === "extracting" ||
+    installation?.phase === "verifying";
+  const installationKey =
+    installation?.phase === "succeeded" && installation.source === "managed"
+      ? `${installation.operationId ?? ""}:${installation.installedVersion ?? ""}:${installation.executablePath ?? ""}`
+      : null;
   const signedIn =
     provider.auth.status === "authenticated" ||
     (provider.auth.status === "unknown" && auth?.phase === "succeeded");
@@ -91,19 +115,46 @@ export function ProviderAuthenticationSection({
             : "Finish signing in in your browser."
     : signedIn
       ? "Signed in."
-      : isDiscovering
-        ? "Discovering sign-in methods…"
-        : needsExternalSetup
-          ? "No in-app sign-in advertised. Follow the provider's docs to finish setup."
-          : `Sign in on ${environmentLabel}.`;
+      : canInstallCodex && !provider.installed
+        ? "Install Codex CLI on this environment before signing in."
+        : isDiscovering
+          ? "Discovering sign-in methods…"
+          : needsExternalSetup
+            ? "No in-app sign-in advertised. Follow the provider's docs to finish setup."
+            : `Sign in on ${environmentLabel}.`;
   const statusMessage = auth?.phase === "failed" ? auth.message : null;
   const disabled = readOnly || pending || query.error !== null || isDiscovering;
+  const installDisabled =
+    readOnly || pending || !canStartInstall || installQuery.error !== null || installation === null;
+  const cancelInstallDisabled =
+    readOnly ||
+    pending ||
+    !canCancelInstall ||
+    installQuery.error !== null ||
+    installation === null;
   const draftId = `${auth?.flowId ?? ""}:${interaction?.id ?? ""}`;
   const values = draft.id === draftId ? draft.values : {};
   const url =
     interaction?.type === "browser" || interaction?.type === "deviceCode"
       ? interaction.url
       : auth?.authorizationUrl;
+
+  useEffect(() => {
+    if (!canInstallCodex || provider.installed || installationKey === null) {
+      refreshedInstallation.current = null;
+      return;
+    }
+    if (refreshedInstallation.current === installationKey) return;
+    refreshedInstallation.current = installationKey;
+    void refreshProviders({ environmentId, input: { instanceId } });
+  }, [
+    canInstallCodex,
+    environmentId,
+    instanceId,
+    installationKey,
+    provider.installed,
+    refreshProviders,
+  ]);
 
   useEffect(() => () => reservedBrowser.current?.close(), []);
   useEffect(() => {
@@ -159,7 +210,10 @@ export function ProviderAuthenticationSection({
     }
   }
 
-  async function run(command: () => Promise<AtomCommandResult<unknown, unknown>>) {
+  async function run<A, E>(
+    command: () => Promise<AtomCommandResult<A, E>>,
+    failureMessage = "Provider sign-in failed. Try again.",
+  ) {
     if (pendingRef.current) return false;
     pendingRef.current = true;
     setPending(true);
@@ -170,12 +224,10 @@ export function ProviderAuthenticationSection({
       if (result._tag === "Success") succeeded = true;
       else if (!isAtomCommandInterrupted(result)) {
         const failure = squashAtomCommandFailure(result);
-        setError(
-          failure instanceof Error ? failure.message : "Provider sign-in failed. Try again.",
-        );
+        setError(failure instanceof Error ? failure.message : failureMessage);
       }
     } catch {
-      setError("Provider sign-in failed. Try again.");
+      setError(failureMessage);
     }
     pendingRef.current = false;
     setPending(false);
@@ -217,6 +269,21 @@ export function ProviderAuthenticationSection({
     setDraft({ id: draftId, values: { ...values, [name]: value } });
   }
 
+  const installStatus =
+    installation?.phase === "downloading"
+      ? `Downloading Codex CLI (${(installation.downloadedBytes / 1_000_000).toFixed(1)} MB${installation.totalBytes === null ? "" : ` of ${(installation.totalBytes / 1_000_000).toFixed(1)} MB`}).`
+      : installation?.phase === "extracting"
+        ? "Extracting Codex CLI."
+        : installation?.phase === "verifying"
+          ? "Checking Codex CLI."
+          : installation?.phase === "succeeded" && installation.source === "local"
+            ? "This provider cannot use the environment's Codex executable. Install Codex CLI for this provider."
+            : installation?.phase === "succeeded" && !provider.installed
+              ? "Installation finished. Checking this provider's Codex runtime."
+              : installation?.phase === "failed" || installation?.phase === "cancelled"
+                ? (installation.message ?? "Codex CLI installation failed.")
+                : null;
+
   return (
     <SettingsRow
       title="Account"
@@ -242,10 +309,92 @@ export function ProviderAuthenticationSection({
           <p role="status" className="[overflow-wrap:anywhere]">
             {statusMessage}
           </p>
+        ) : installQuery.error || (canInstallCodex && !provider.installed && installStatus) ? (
+          <div>
+            <p
+              role={installQuery.error ? "alert" : "status"}
+              className={
+                installQuery.error
+                  ? "text-destructive [overflow-wrap:anywhere]"
+                  : "text-muted-foreground [overflow-wrap:anywhere]"
+              }
+            >
+              {installQuery.error ?? installStatus}
+            </p>
+            {installation?.phase === "downloading" &&
+            installation.totalBytes !== null &&
+            installation.totalBytes > 0 ? (
+              <progress
+                aria-label="Codex CLI download"
+                className="mt-2 block h-1 w-full accent-foreground"
+                value={installation.downloadedBytes}
+                max={installation.totalBytes}
+              />
+            ) : null}
+          </div>
         ) : undefined
       }
       control={
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          {canInstallCodex && !provider.installed ? (
+            installActive ? (
+              installation.operationId ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={cancelInstallDisabled}
+                  onClick={() => {
+                    const operationId = installation.operationId;
+                    if (!operationId) return;
+                    void run(
+                      () => cancelInstall({ environmentId, input: { instanceId, operationId } }),
+                      "Could not cancel Codex installation. Try again.",
+                    );
+                  }}
+                >
+                  Cancel installation
+                </Button>
+              ) : (
+                <Button size="sm" variant="outline" disabled>
+                  Installing Codex CLI
+                </Button>
+              )
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={installDisabled || active}
+                onClick={() => {
+                  if (installation?.phase === "succeeded") {
+                    if (installation.source === "local") {
+                      void run(
+                        () => startInstall({ environmentId, input: { instanceId } }),
+                        "Could not install Codex CLI. Try again.",
+                      );
+                    } else {
+                      void run(
+                        () => refreshProviders({ environmentId, input: { instanceId } }),
+                        "Could not refresh Codex status. Try again.",
+                      );
+                    }
+                  } else {
+                    void run(
+                      () => startInstall({ environmentId, input: { instanceId } }),
+                      "Could not install Codex CLI. Try again.",
+                    );
+                  }
+                }}
+              >
+                {installation?.phase === "failed" || installation?.phase === "cancelled"
+                  ? "Retry installation"
+                  : installation?.phase === "succeeded"
+                    ? installation.source === "local"
+                      ? "Install Codex CLI"
+                      : "Refresh status"
+                    : "Install Codex CLI"}
+              </Button>
+            )
+          ) : null}
           {!active && (auth?.methods?.length ?? 0) > 1 ? (
             <Select
               value={auth?.methods?.some((method) => method.id === methodId) ? methodId : ""}

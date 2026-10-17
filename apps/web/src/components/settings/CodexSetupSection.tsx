@@ -1011,30 +1011,40 @@ export function CodexManagedRuntimeFields({
   environmentId,
   instanceId,
   provider,
+  setupMode,
 }: {
   readonly environmentId: EnvironmentId;
   readonly instanceId: ProviderInstanceId;
   readonly provider: ServerProvider | undefined;
+  readonly setupMode: "managed" | "cli";
 }) {
   const installation = useEnvironmentQuery(
-    serverEnvironment.providerInstallState({
-      environmentId,
-      input: { instanceId },
-    }),
+    setupMode === "managed"
+      ? serverEnvironment.providerInstallState({ environmentId, input: { instanceId } })
+      : null,
   );
-  const executablePath = installation.data?.executablePath ?? "";
+  const executablePath =
+    setupMode === "cli"
+      ? (provider?.runtimePaths?.binaryPath ?? "")
+      : (installation.data?.executablePath ?? "");
   return (
     <>
       <SettingsRow
         title="Binary path"
-        description="Selected by T3 Code."
+        description={
+          setupMode === "cli" ? "Selected by this provider instance." : "Selected by T3 Code."
+        }
         control={
           <div className="w-full sm:w-80">
             <Input
               aria-label="Codex binary path"
               value={executablePath}
               title={executablePath}
-              placeholder={installation.error ? "Could not read runtime path" : "Not installed"}
+              placeholder={
+                setupMode === "managed" && installation.error
+                  ? "Could not read runtime path"
+                  : "Not installed"
+              }
               disabled
             />
           </div>
