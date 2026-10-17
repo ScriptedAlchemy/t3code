@@ -224,7 +224,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
           ...draft,
           ...(cliAccount
             ? {
-                setup: { ...draft.setup, canAuthenticate: true, canInstall: true },
+                setup: {
+                  ...draft.setup,
+                  canAuthenticate: true,
+                  canInstall: binaryPath === "codex",
+                },
                 ...(draft.auth.status === "unauthenticated"
                   ? { message: "Sign in with Codex CLI in provider settings." }
                   : {}),
