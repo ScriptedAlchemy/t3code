@@ -218,15 +218,7 @@ export const codexUsageReader: ProviderUsageReader<CodexSettings, Path.Path> = {
   directories: Effect.fn("codexUsageReader.directories")(function* ({ config, environment }) {
     if (config === undefined) return [];
     const path = yield* Path.Path;
-    const environmentHome = environment.CODEX_HOME?.trim();
-    const layout = yield* resolveCodexHomeLayout(
-      config.setupMode !== "managed" &&
-        !config.homePath.trim() &&
-        !config.shadowHomePath.trim() &&
-        environmentHome
-        ? { ...config, homePath: environmentHome }
-        : config,
-    );
+    const layout = yield* resolveCodexHomeLayout(config, environment);
     return [{ dir: path.resolve(layout.sharedHomePath, "sessions") }];
   }),
 };

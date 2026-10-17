@@ -12,7 +12,8 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 
-import { codexCliEnvironment, codexCliLaunchArgs, makeCodexCliAuth } from "./CodexCliAuth.ts";
+import { makeCodexCliAuth } from "./CodexCliAuth.ts";
+import { codexCliEnvironment, codexCliLaunchArgs } from "./Drivers/CodexRuntime.ts";
 import { materializeCodexShadowHome, resolveCodexHomeLayout } from "./Drivers/CodexHomeLayout.ts";
 
 import { codexCliFixtureSource } from "./CodexCliAuth.testkit.ts";

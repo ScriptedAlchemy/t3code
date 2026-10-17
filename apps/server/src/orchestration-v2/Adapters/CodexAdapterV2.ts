@@ -104,10 +104,8 @@ import {
   describeMcpElicitation,
   toMcpElicitationResponse,
 } from "../../provider/CodexMcpElicitation.ts";
-import {
-  materializeCodexShadowHome,
-  resolveCodexHomeLayout,
-} from "../../provider/Drivers/CodexHomeLayout.ts";
+import { materializeCodexShadowHome } from "../../provider/Drivers/CodexHomeLayout.ts";
+import { resolveCodexRuntime } from "../../provider/Drivers/CodexRuntime.ts";
 import {
   boundProviderEventForLogging,
   shouldPersistProviderEvent,
@@ -1576,7 +1574,13 @@ export const createCodexAdapterV2 = (
     const hostEnvironment = yield* HostProcess.Environment;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const serverConfig = yield* ServerConfig;
-    const homeLayout = yield* resolveCodexHomeLayout(config);
+    const runtime = yield* resolveCodexRuntime({
+      instanceId,
+      config,
+      environment: yield* mergeProviderInstanceEnvironment(environment, hostEnvironment),
+      stateDir: serverConfig.stateDir,
+    });
+    const { homeLayout } = runtime;
 
     yield* materializeCodexShadowHome(homeLayout).pipe(
       Effect.mapError(
@@ -1591,7 +1595,7 @@ export const createCodexAdapterV2 = (
     );
 
     const settings = {
-      ...config,
+      ...runtime.config,
       enabled,
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
       homePath: homeLayout.effectiveHomePath ?? "",
@@ -1600,7 +1604,7 @@ export const createCodexAdapterV2 = (
     return yield* makeCodexAdapterV2({
       instanceId,
       settings,
-      environment: yield* mergeProviderInstanceEnvironment(environment, hostEnvironment),
+      environment: runtime.environment,
       clientFactory,
       crypto,
       fileSystem,

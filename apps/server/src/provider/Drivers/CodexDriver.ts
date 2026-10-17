@@ -6,7 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { codexCliEnvironment, codexCliLaunchArgs, makeCodexCliAuth } from "../CodexCliAuth.ts";
+import { makeCodexCliAuth } from "../CodexCliAuth.ts";
 import type { CodexEffectiveRuntime } from "../CodexManagedRuntime.ts";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
@@ -49,11 +49,8 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
-import {
-  codexContinuationIdentity,
-  materializeCodexShadowHome,
-  resolveCodexHomeLayout,
-} from "./CodexHomeLayout.ts";
+import { codexContinuationIdentity, materializeCodexShadowHome } from "./CodexHomeLayout.ts";
+import { resolveCodexRuntime } from "./CodexRuntime.ts";
 import { makeManagedCodexProvider } from "./CodexManagedProvider.ts";
 import { codexUsageReader } from "./codexUsage.ts";
 import * as CodexInstallation from "../CodexInstallation.ts";
@@ -150,29 +147,26 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
       const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
       const modelCatalog = yield* ModelCatalog.ModelCatalog;
       const currentCatalog = modelCatalog.current(DRIVER_KIND);
-      const instanceEnvironment = yield* mergeProviderInstanceEnvironment(environment);
+      const instanceEnvironment = yield* mergeProviderInstanceEnvironment(
+        environment,
+        yield* HostProcess.Environment,
+      );
       const cliAccount = config.setupMode === "cli";
       const binaryPath =
         expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory) || "codex";
       const installation = yield* CodexInstallation.CodexInstallation;
-      const homeLayout = yield* resolveCodexHomeLayout(
-        cliAccount
-          ? {
-              ...config,
-              shadowHomePath: pathService.join(
-                (yield* ServerConfig.ServerConfig).stateDir,
-                "providers",
-                "codex",
-                instanceId,
-                "cli",
-              ),
-            }
-          : config,
-      );
+      const runtime = yield* resolveCodexRuntime({
+        instanceId,
+        config,
+        environment: instanceEnvironment,
+        stateDir: (yield* ServerConfig.ServerConfig).stateDir,
+      });
+      const { homeLayout, environment: processEnv } = runtime;
       const accountKey = homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath;
-      const processEnv = cliAccount
-        ? codexCliEnvironment(instanceEnvironment, accountKey)
-        : instanceEnvironment;
+      const runtimePaths = {
+        homePath: homeLayout.sharedHomePath,
+        shadowHomePath: accountKey,
+      };
       const continuationIdentity = codexContinuationIdentity(homeLayout);
       const stampIdentity = withInstanceIdentity({
         instanceId,
@@ -193,22 +187,24 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
         ),
       );
       const effectiveConfig = {
-        ...config,
+        ...runtime.config,
         enabled,
         binaryPath,
-        homePath: homeLayout.effectiveHomePath ?? "",
-        ...(cliAccount ? { launchArgs: codexCliLaunchArgs(config.launchArgs) } : {}),
       } satisfies CodexSettings;
       const resolveRuntime = Effect.gen(function* () {
+        const resolvedBinaryPath =
+          enabled && (cliAccount || binaryPath === "codex")
+            ? yield* resolveCommandPath(binaryPath, { env: processEnv })
+            : undefined;
         const executablePath =
-          enabled &&
-          binaryPath === "codex" &&
-          !(yield* resolveCommandPath("codex", { env: processEnv }))
+          enabled && binaryPath === "codex" && !resolvedBinaryPath
             ? yield* installation.acquire({ managedOnly: true }).pipe(
                 Effect.map((executable) => executable.executablePath),
                 Effect.catchTags({ CodexInstallationError: () => Effect.succeed(binaryPath) }),
               )
-            : binaryPath;
+            : cliAccount
+              ? (resolvedBinaryPath ?? binaryPath)
+              : binaryPath;
         return {
           config: { ...effectiveConfig, binaryPath: executablePath },
           environment: processEnv,
@@ -233,8 +229,8 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
                   ? { message: "Sign in with Codex CLI in provider settings." }
                   : {}),
                 runtimePaths: {
-                  homePath: homeLayout.sharedHomePath,
-                  shadowHomePath: accountKey,
+                  ...draft.runtimePaths,
+                  ...runtimePaths,
                 },
               }
             : {}),
@@ -267,7 +263,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
           accentColor,
           environment,
           enabled,
-          config: cliAccount ? { ...config, shadowHomePath: accountKey } : config,
+          config,
         },
         { onUsageLimits: (update) => snapshot.applyUsageLimits(update), resolveRuntime },
       ).pipe(
@@ -290,7 +286,19 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
             withAccess(
               resolveRuntime.pipe(
                 Effect.flatMap((runtime) =>
-                  checkCodexProviderStatus(runtime.config, undefined, runtime.environment),
+                  checkCodexProviderStatus(runtime.config, undefined, runtime.environment).pipe(
+                    Effect.map((draft) =>
+                      cliAccount && pathService.isAbsolute(runtime.config.binaryPath)
+                        ? {
+                            ...draft,
+                            runtimePaths: {
+                              ...runtimePaths,
+                              binaryPath: runtime.config.binaryPath,
+                            },
+                          }
+                        : draft,
+                    ),
+                  ),
                 ),
               ),
             ).pipe(
