@@ -203,6 +203,68 @@ it.layer(layerTest)("CodexDriver", (it) => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect.each(["host", "instance"] as const)(
+    "shares the %s CODEX_HOME with native account runtime and usage",
+    (source) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-custom-home-" });
+        const sharedHome = NodePath.join(root, "shared");
+        yield* fs.makeDirectory(sharedHome);
+        yield* fs.writeFileString(NodePath.join(sharedHome, "config.toml"), 'model = "gpt-5.4"\n');
+        const instanceId = ProviderInstanceId.make(`custom-home-${source}`);
+        const ownedHome = NodePath.join(
+          serverConfig.stateDir,
+          "providers",
+          "codex",
+          instanceId,
+          "cli",
+        );
+        const config = {
+          ...CodexDriver.defaultConfig(),
+          setupMode: "cli" as const,
+          shadowHomePath: NodePath.join(root, "ignored"),
+        };
+        const instance = yield* CodexDriver.create({
+          instanceId,
+          displayName: "Custom shared home",
+          enabled: false,
+          environment:
+            source === "instance"
+              ? [{ name: "CODEX_HOME", value: sharedHome, sensitive: false }]
+              : [],
+          config,
+        }).pipe(
+          Effect.provideService(HostProcess.HomeDirectory, root),
+          Effect.provideService(
+            HostProcess.Environment,
+            source === "host" ? { CODEX_HOME: sharedHome } : {},
+          ),
+        );
+        expect(instance.auth?.credentialBinding).toEqual({ owner: "provider", key: ownedHome });
+        expect((yield* instance.snapshot.getSnapshot).runtimePaths).toMatchObject({
+          homePath: sharedHome,
+          shadowHomePath: ownedHome,
+        });
+        expect(yield* fs.readLink(NodePath.join(ownedHome, "sessions"))).toBe(
+          NodePath.join(sharedHome, "sessions"),
+        );
+        expect(yield* fs.readFileString(NodePath.join(ownedHome, "config.toml"))).toBe(
+          'model = "gpt-5.4"\n',
+        );
+        if (CodexDriver.usage?.kind !== "transcripts") throw new Error("Expected transcript usage");
+        expect(
+          yield* CodexDriver.usage.directories({
+            instanceId,
+            config,
+            environment: { CODEX_HOME: sharedHome },
+            configured: true,
+          }),
+        ).toEqual([{ dir: NodePath.join(sharedHome, "sessions") }]);
+      }),
+  );
+
   it.effect.each([true, false])(
     "keeps the instance PATH boundary when host Codex exists and managed installation is %s",
     (managedInstalled) =>

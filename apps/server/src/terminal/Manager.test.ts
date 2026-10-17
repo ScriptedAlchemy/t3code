@@ -2515,6 +2515,64 @@ it.layer(
     }),
   );
 
+  it.effect.each(["linux", "win32"] as const)(
+    "keeps a private Codex account through the final terminal environment merge on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const serverSettings = yield* ServerSettings.ServerSettingsService;
+        const path = yield* Path.Path;
+        const providerInstanceId = ProviderInstanceId.make("codex_private");
+        const { manager, ptyAdapter } = yield* createManager(5, {
+          shellResolver: () => "/bin/sh",
+          env: {
+            CODEX_HOME: "/ambient-account",
+            OPENAI_API_KEY: "ambient-key",
+            ...(platform === "win32" ? { OpenAI_Api_Key: "mixed-case-key" } : {}),
+            CODEX_API_KEY: "ambient-codex-key",
+            OPENAI_BASE_URL: "https://other-provider.example",
+            ACCESS_TOKEN: "ambient-token",
+            AWS_PROFILE: "project-tools",
+          },
+          resolveProviderInstanceEnvironment: (rawProviderInstanceId, env) =>
+            TerminalManager.resolveProviderInstanceTerminalEnvironment({
+              serverSettings,
+              path,
+              rawProviderInstanceId,
+              env,
+              stateDir: "/state",
+            }),
+        }).pipe(Effect.provide(layerWithHostPlatform(platform)));
+        yield* manager.open(openInput({ providerInstanceId }));
+        yield* manager.restart(restartInput({ providerInstanceId }));
+        expect(ptyAdapter.spawnInputs).toHaveLength(2);
+        for (const { env } of ptyAdapter.spawnInputs) {
+          expect(env).toMatchObject({
+            CODEX_HOME: "/state/providers/codex/codex_private/cli",
+            OPENAI_API_KEY: "",
+            CODEX_API_KEY: "",
+            OPENAI_BASE_URL: "",
+            ACCESS_TOKEN: "",
+            AWS_PROFILE: "project-tools",
+          });
+          expect(
+            Object.entries(env).filter(([key]) => key.toUpperCase() === "OPENAI_API_KEY"),
+          ).toEqual([["OPENAI_API_KEY", ""]]);
+        }
+      }).pipe(
+        Effect.provide(
+          ServerSettings.layerTest({
+            providerInstances: {
+              [ProviderInstanceId.make("codex_private")]: {
+                driver: ProviderDriverKind.make("codex"),
+                environment: [{ name: "CODEX_API_KEY", value: "instance-key", sensitive: true }],
+                config: { setupMode: "cli", shadowHomePath: "/ignored" },
+              },
+            },
+          }),
+        ),
+      ),
+  );
+
   it.effect("keeps a private Claude account through the final terminal environment merge", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
