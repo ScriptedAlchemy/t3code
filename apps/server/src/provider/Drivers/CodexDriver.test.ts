@@ -203,6 +203,51 @@ it.layer(layerTest)("CodexDriver", (it) => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect.each(["path", "managed"] as const)(
+    "reports the selected native executable from %s in runtime paths",
+    (source) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-native-executable-" });
+        const binDir = NodePath.join(root, "instance-bin");
+        yield* fs.makeDirectory(binDir);
+        const executablePath = NodePath.join(source === "path" ? binDir : root, "codex");
+        yield* fs.writeFileString(
+          executablePath,
+          `#!${process.execPath}\n${codexCliFixtureSource}`,
+          { mode: 0o755 },
+        );
+        const installation = yield* CodexInstallation.CodexInstallation;
+        const instance = yield* CodexDriver.create({
+          instanceId: ProviderInstanceId.make(`native-executable-${source}`),
+          displayName: "Native executable",
+          enabled: true,
+          environment: [{ name: "PATH", value: binDir, sensitive: false }],
+          config: {
+            ...CodexDriver.defaultConfig(),
+            setupMode: "cli",
+            homePath: NodePath.join(root, "shared"),
+          },
+        }).pipe(
+          Effect.provideService(CodexInstallation.CodexInstallation, {
+            ...installation,
+            acquire: () =>
+              Effect.succeed({
+                executablePath,
+                managedVersionDirectory: root,
+                source: "managed" as const,
+                version: "0.156.1",
+              }),
+          }),
+        );
+        expect(yield* instance.snapshot.refresh).toMatchObject({
+          installed: true,
+          runtimePaths: { binaryPath: executablePath },
+        });
+      }),
+    { skip: windowsHost },
+  );
+
   it.effect.each(["host", "instance"] as const)(
     "shares the %s CODEX_HOME with native account runtime and usage",
     (source) =>
