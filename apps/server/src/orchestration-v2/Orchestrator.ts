@@ -469,6 +469,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "prepared-run.progress":
     case "prepared-run.fail":
     case "prepared-run.retry":
+    case "run.pool-failover":
     case "subagent.stop":
     case "run.interrupt":
     case "queued-message.promote-to-steer":
