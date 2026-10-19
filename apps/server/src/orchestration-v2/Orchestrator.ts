@@ -123,7 +123,7 @@ import {
 } from "./ProjectionStore.ts";
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import { ProviderPoolCatalog } from "./ProviderPoolCatalog.ts";
-import { routeModelSelection } from "./ProviderPoolRouting.ts";
+import { routeModelSelection, type RoutedSelection } from "./ProviderPoolRouting.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
@@ -851,20 +851,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
    * ever sees a concrete member: run, thread, session, and adapter ids never
    * carry a pool id.
    */
-  const routeSelection = (input: {
-    readonly commandId: CommandId;
-    readonly commandType: string;
+  const resolveRouting = (input: {
     readonly selection: ModelSelection;
     readonly current: { readonly instanceId: ProviderInstanceId; readonly busy: boolean } | null;
     readonly threadId: ThreadId;
     readonly projectId: OrchestrationV2AppThread["projectId"];
     readonly excluded?: ReadonlySet<ProviderInstanceId>;
-  }) =>
+  }): Effect.Effect<RoutedSelection> =>
     Effect.gen(function* () {
       const providers = yield* poolCatalog.getPublishedProviders;
       const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
       const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-      const routed = routeModelSelection({
+      return routeModelSelection({
         selection: input.selection,
         providers,
         settings,
@@ -874,6 +872,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(input.excluded === undefined ? {} : { excluded: input.excluded }),
         nowMs,
       });
+    });
+
+  const routeSelection = (
+    input: Parameters<typeof resolveRouting>[0] & {
+      readonly commandId: CommandId;
+      readonly commandType: string;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const routed = yield* resolveRouting(input);
       if (routed.type === "no_eligible_member") {
         return yield* new OrchestratorDispatchError({
           commandId: input.commandId,
@@ -4843,6 +4851,158 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ? {}
               : { sessionTransition: restartSessionTransition }),
           },
+        } satisfies PendingOrchestrationEffectV2,
+      ]);
+    });
+
+  /**
+   * A pooled member hit its usage limit mid-turn. Attempt n closes as failed
+   * and attempt n+1 opens on a healthy sibling, so the run never reaches
+   * `failed`: no queue hold, no limit banner, no recovery arm, and no
+   * delegated-completion or subagent finalization on a transient failure.
+   * A stale attempt, an unpooled run, or no healthy sibling yields no events.
+   */
+  const dispatchRunPoolFailover = (
+    command: Extract<OrchestrationV2InternalCommand, { readonly type: "run.pool-failover" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) =>
+    Effect.gen(function* () {
+      const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      const run = projection.runs.find((candidate) => candidate.id === command.runId);
+      const rootNodeId = run?.rootNodeId ?? null;
+      const providerThread = projection.providerThreads.find(
+        (candidate) => candidate.id === run?.providerThreadId,
+      );
+      if (
+        run === undefined ||
+        rootNodeId === null ||
+        providerThread === undefined ||
+        run.activeAttemptId !== command.attemptId ||
+        (run.status !== "running" && run.status !== "starting")
+      ) {
+        return;
+      }
+      // A run visits each member at most once.
+      const excluded = new Set([
+        run.providerInstanceId,
+        ...projection.attempts
+          .filter((attempt) => attempt.runId === run.id && attempt.status === "failed")
+          .map((attempt) => attempt.providerInstanceId),
+      ]);
+      const routed = yield* resolveRouting({
+        selection: run.modelSelection,
+        current: { instanceId: run.providerInstanceId, busy: false },
+        threadId: command.threadId,
+        projectId: projection.thread.projectId,
+        excluded,
+      });
+      if (routed.type !== "routed" || routed.decision.type !== "member") {
+        return;
+      }
+      const rootNode = projection.nodes.find((candidate) => candidate.id === rootNodeId);
+      const replaced = yield* replaceRunAttempt({
+        command,
+        events,
+        effects,
+        projection,
+        threadId: command.threadId,
+        run,
+        rootNodeId,
+        providerThread,
+        modelSelection: routed.selection,
+        selectionTransition: null,
+        reason: "provider_recovery",
+        priorAttempt: { attempt: "failed", node: "failed" },
+        userMessageId: run.userMessageId,
+        createdBy: "system",
+        cwdFallback:
+          projection.checkpointScopes.find((scope) => scope.id === rootNode?.checkpointScopeId)
+            ?.cwd ??
+          projection.thread.worktreePath ??
+          process.cwd(),
+        // The prompt is re-sent as the new attempt's user message, and the
+        // limit error is this attempt's outcome, not history worth replaying.
+        handoffItemFilter: (item) =>
+          !(item.type === "error" && item.nodeId === rootNodeId) &&
+          !(item.type === "user_message" && item.messageId === run.userMessageId),
+      });
+      const now = yield* DateTime.now;
+      const emitEvent = emit(events, command);
+      const providers = yield* poolCatalog.getPublishedProviders;
+      const nameOf = (instanceId: ProviderInstanceId) =>
+        providers.find((provider) => provider.instanceId === instanceId)?.displayName ?? instanceId;
+      yield* emitEvent({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId: replaced.rootNodeId,
+        providerInstanceId: routed.selection.instanceId,
+        occurredAt: now,
+        payload: {
+          id: idAllocator.derive.runSignalTurnItem({
+            runId: run.id,
+            signal: `pool-failover:${replaced.attemptId}`,
+          }),
+          threadId: command.threadId,
+          runId: run.id,
+          nodeId: replaced.rootNodeId,
+          providerThreadId: replaced.providerThread.id,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: yield* nextTurnItemOrdinal(projection),
+          status: "completed",
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "system_notice",
+          message: `${nameOf(run.providerInstanceId)} reached its usage limit. Continuing on ${nameOf(routed.selection.instanceId)}.`,
+        },
+      });
+      const releasedSession = projection.providerSessions.find(
+        (session) =>
+          session.id === providerThread.providerSessionId &&
+          session.id !== replaced.providerThread.providerSessionId &&
+          session.status !== "stopped" &&
+          session.status !== "error",
+      );
+      if (releasedSession !== undefined) {
+        yield* emitEvent({
+          type: "provider-session.detached",
+          threadId: command.threadId,
+          driver: releasedSession.driver,
+          providerInstanceId: releasedSession.providerInstanceId,
+          occurredAt: now,
+          payload: {
+            providerSessionId: releasedSession.id,
+            detachedAt: now,
+            reason: "Account pool failover.",
+          },
+        });
+      }
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        ...(releasedSession === undefined
+          ? []
+          : [
+              {
+                id: `effect:${command.commandId}:provider-session.detach:${releasedSession.id}`,
+                commandId: command.commandId,
+                threadId: command.threadId,
+                request: {
+                  type: "provider-session.detach" as const,
+                  providerSessionId: releasedSession.id,
+                  detail: "Account pool failover.",
+                },
+              } satisfies PendingOrchestrationEffectV2,
+            ]),
+        {
+          id: `effect:${command.commandId}:provider-turn.start:${run.id}`,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          request: { type: "provider-turn.start", runId: run.id },
         } satisfies PendingOrchestrationEffectV2,
       ]);
     });
@@ -11272,6 +11432,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "prepared-run.retry":
         yield* dispatchPreparedRunRetry(command, events);
+        break;
+      case "run.pool-failover":
+        yield* dispatchRunPoolFailover(command, events, effects);
         break;
       case "runtime-request.respond":
         yield* dispatchRuntimeRequestRespond(command, events, effects);
