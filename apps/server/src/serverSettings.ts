@@ -8,6 +8,7 @@ import {
   type ProviderInstanceMutation,
   defaultInstanceIdForDriver,
   isProviderDriverKind,
+  isReservedProviderInstanceId,
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
@@ -143,10 +144,21 @@ export function applyProviderInstanceMutation(
   const providerInstances = { ...settings.providerInstances };
   if (mutation.operation === "upsert" || mutation.operation === "create") {
     providerInstances[mutation.instanceId] = mutation.instance;
-  } else {
-    delete providerInstances[mutation.instanceId];
+    return { ...settings, providerInstances };
   }
-  return { ...settings, providerInstances };
+  delete providerInstances[mutation.instanceId];
+  const providerPools = Object.fromEntries(
+    Object.entries(settings.providerPools).map(([driver, pool]) => [
+      driver,
+      {
+        ...pool,
+        memberInstanceIds: pool.memberInstanceIds.filter(
+          (memberId) => memberId !== mutation.instanceId,
+        ),
+      },
+    ]),
+  );
+  return { ...settings, providerInstances, providerPools };
 }
 
 function ensureProviderInstanceMutationAllowed(
@@ -155,8 +167,10 @@ function ensureProviderInstanceMutationAllowed(
   settingsPath: string,
 ): Effect.Effect<void, ServerSettingsError> {
   if (
-    mutation.operation === "create" &&
-    settings.providerInstances[mutation.instanceId] !== undefined
+    mutation.operation !== "remove" &&
+    (isReservedProviderInstanceId(mutation.instanceId) ||
+      (mutation.operation === "create" &&
+        settings.providerInstances[mutation.instanceId] !== undefined))
   ) {
     return Effect.fail(
       new ServerSettingsError({
@@ -165,6 +179,39 @@ function ensureProviderInstanceMutationAllowed(
         providerInstanceId: mutation.instanceId,
       }),
     );
+  }
+  return Effect.void;
+}
+
+/**
+ * A built-in driver's default instance exists without a settings entry, and
+ * its id is the driver kind, so an unconfigured member resolves that way.
+ */
+const configuredInstanceDriver = (
+  settings: ServerSettings,
+  instanceId: ProviderInstanceId,
+): ProviderDriverKind | undefined =>
+  settings.providerInstances[instanceId]?.driver ??
+  (isProviderDriverKind(instanceId) ? instanceId : undefined);
+
+function ensureProviderPoolsValid(
+  settings: ServerSettings,
+  settingsPath: string,
+): Effect.Effect<void, ServerSettingsError> {
+  for (const [driver, pool] of Object.entries(settings.providerPools)) {
+    const seen = new Set<ProviderInstanceId>();
+    for (const memberId of pool.memberInstanceIds) {
+      if (seen.has(memberId) || configuredInstanceDriver(settings, memberId) !== driver) {
+        return Effect.fail(
+          new ServerSettingsError({
+            settingsPath,
+            operation: "validate-provider-pool",
+            providerInstanceId: memberId,
+          }),
+        );
+      }
+      seen.add(memberId);
+    }
   }
   return Effect.void;
 }
@@ -1150,14 +1197,26 @@ const make = Effect.gen(function* () {
     ),
     updateSettings: (patch) =>
       updateAndPersistSettings((current) =>
-        Effect.succeed(applyServerSettingsPatch(current, patch)),
+        Effect.gen(function* () {
+          const next = applyServerSettingsPatch(current, patch);
+          if (patch.providerPools !== undefined) {
+            yield* ensureProviderPoolsValid(next, settingsPath);
+          }
+          return next;
+        }),
       ),
     updateProviderInstance: (mutation, patch = {}) =>
       updateAndPersistSettings((current) =>
         Effect.gen(function* () {
           yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
-          const patched = applyServerSettingsPatch(current, patch);
-          return applyProviderInstanceMutation(patched, mutation);
+          const next = applyProviderInstanceMutation(
+            applyServerSettingsPatch(current, patch),
+            mutation,
+          );
+          if (patch.providerPools !== undefined) {
+            yield* ensureProviderPoolsValid(next, settingsPath);
+          }
+          return next;
         }),
       ),
     withSettingsSnapshot,

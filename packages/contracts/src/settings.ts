@@ -1316,6 +1316,7 @@ export const ServerSettingsOperation = Schema.Literals([
   "normalize",
   "check-exists",
   "create-provider-instance",
+  "validate-provider-pool",
   "read-file",
   "read-provider-history",
   "read-project-settings",
