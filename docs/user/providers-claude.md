@@ -15,8 +15,6 @@ settings.
 Each account has its own Claude configuration and conversation history. T3 Code
 does not copy global settings, skills, or plugins from your existing Claude
 installation. The account can still use project instructions and project skills.
-Existing threads can switch only between Claude instances with the same config
-directory.
 
 To reuse an installed CLI account, choose **Use existing Claude Code**. Leave
 **CLAUDE_CONFIG_DIR path** empty to use the CLI's default configuration. For a
@@ -31,6 +29,24 @@ use their own Claude login and ignore credential and endpoint overrides.
 Claude Code's verbose mode can stay enabled when you use Claude for text generation, including
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
 T3 Code uses the Claude configuration on the connected server.
+
+## Account pools
+
+With two or more Claude accounts, you can offer them as one. In **Settings >
+Account pools**, tick the Claude accounts to share and turn on **Pool these
+accounts**. The model picker then shows a single Claude entry in place of the
+ticked accounts. Each turn runs on an account that still has usage left. If an
+account reaches its usage limit mid-turn, the turn continues on another account,
+and the thread's model picker shows the account that ran it.
+
+A thread stays on its account while that account is available. Moving a thread to
+another Claude account continues from a summary of the conversation, because each
+account keeps its own history.
+
+Pooled accounts stay in **Settings**, where you can still select them and where
+**Settings > Providers** shows which pool each belongs to and when a limited account
+is available again. To bring an account back into the model picker, untick it or
+turn the pool off. Threads stay on the account that last ran them.
 
 ## Compact long conversations
 
