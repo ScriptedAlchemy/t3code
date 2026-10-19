@@ -1153,10 +1153,21 @@ const make = Effect.gen(function* () {
       return { parent, target, shell } as const;
     });
 
-  const loadProviders = providerRegistry.getProviders;
+  const loadProviders = providerRegistry.getPublishedProviders;
 
+  // A pool has no adapter of its own; routing picks a member's at dispatch.
   const loadOrchestrationCapableInstanceIds = () =>
-    providerAdapters.list().pipe(Effect.map((instanceIds) => new Set(instanceIds)));
+    Effect.all([providerAdapters.list(), loadProviders]).pipe(
+      Effect.map(
+        ([instanceIds, providers]) =>
+          new Set([
+            ...instanceIds,
+            ...providers
+              .filter((provider) => provider.pool?.role === "pool")
+              .map((provider) => provider.instanceId),
+          ]),
+      ),
+    );
 
   /**
    * Provider snapshots only re-probe while a client is in the foreground, so an
@@ -1229,12 +1240,20 @@ const make = Effect.gen(function* () {
         const healthyCandidates = candidates.filter(
           (candidate) => providerConstraints(candidate, true).length === 0,
         );
+        const poolCandidate = healthyCandidates.find(
+          (candidate) => candidate.pool?.role === "pool",
+        );
         const inheritedCandidate = healthyCandidates.find(
           (candidate) => candidate.instanceId === input.parent.thread.modelSelection.instanceId,
         );
+        const preferred = [poolCandidate, inheritedCandidate].filter(
+          (candidate): candidate is ServerProvider => candidate !== undefined,
+        );
         const orderedCandidates = [
-          ...(inheritedCandidate === undefined ? [] : [inheritedCandidate]),
-          ...healthyCandidates.filter((candidate) => candidate !== inheritedCandidate),
+          ...new Set([
+            ...preferred,
+            ...healthyCandidates.filter((candidate) => !preferred.includes(candidate)),
+          ]),
         ];
         for (const candidate of orderedCandidates) {
           const enabledForProject =
@@ -1919,38 +1938,41 @@ const make = Effect.gen(function* () {
           inheritedModel: parent?.thread.modelSelection.model ?? null,
           runtimeMode: limits.runtimeMode,
           interactionMode: limits.interactionMode,
-          providers: providers.map((provider) => {
-            const constraints = providerConstraints(
-              provider,
-              orchestrationCapableInstanceIds.has(provider.instanceId),
-            );
-            return {
-              providerInstanceId: provider.instanceId,
-              driverKind: provider.driver,
-              displayName: provider?.displayName ?? null,
-              models:
-                provider?.models
-                  .filter(
-                    (model) =>
-                      model.isCustom ||
-                      !modelPreferences[provider.instanceId]?.hiddenModels.includes(model.slug),
-                  )
-                  .map((model) => ({
-                    id: model.slug,
-                    label: model.name ?? null,
-                    ...(model.capabilities?.optionDescriptors === undefined
-                      ? {}
-                      : { options: model.capabilities.optionDescriptors }),
-                  })) ?? [],
-              ...(provider.supportedRuntimeModes === undefined ||
-              provider.supportedRuntimeModes.length === 0
-                ? {}
-                : { runtimeModes: [...provider.supportedRuntimeModes] }),
-              canRunChildTask: constraints.length === 0,
-              canRunCrossProviderChildTask: constraints.length === 0,
-              constraints: [...constraints],
-            };
-          }),
+          // Pooled accounts are addressed through their pool.
+          providers: providers
+            .filter((provider) => provider.pool?.role !== "member")
+            .map((provider) => {
+              const constraints = providerConstraints(
+                provider,
+                orchestrationCapableInstanceIds.has(provider.instanceId),
+              );
+              return {
+                providerInstanceId: provider.instanceId,
+                driverKind: provider.driver,
+                displayName: provider?.displayName ?? null,
+                models:
+                  provider?.models
+                    .filter(
+                      (model) =>
+                        model.isCustom ||
+                        !modelPreferences[provider.instanceId]?.hiddenModels.includes(model.slug),
+                    )
+                    .map((model) => ({
+                      id: model.slug,
+                      label: model.name ?? null,
+                      ...(model.capabilities?.optionDescriptors === undefined
+                        ? {}
+                        : { options: model.capabilities.optionDescriptors }),
+                    })) ?? [],
+                ...(provider.supportedRuntimeModes === undefined ||
+                provider.supportedRuntimeModes.length === 0
+                  ? {}
+                  : { runtimeModes: [...provider.supportedRuntimeModes] }),
+                canRunChildTask: constraints.length === 0,
+                canRunCrossProviderChildTask: constraints.length === 0,
+                constraints: [...constraints],
+              };
+            }),
           features: {
             appOwnedSubagents: true,
             asyncPolling: true,

@@ -1656,7 +1656,7 @@ const layerWsRpc = (
       const loadServerConfig = (options: { readonly usageLimitsCommand: boolean }) =>
         Effect.gen(function* () {
           const keybindingsConfig = yield* keybindings.loadConfigState;
-          const currentProviders = yield* providerRegistry.getProviders;
+          const currentProviders = yield* providerRegistry.getPublishedProviders;
           const providers = options.usageLimitsCommand
             ? withUsageLimitsCommands(currentProviders, yield* usageLimitSources.current)
             : currentProviders;
@@ -2224,7 +2224,7 @@ const layerWsRpc = (
                 providers = yield* providerRegistry.refreshInstance(instance.instanceId);
               }
             }
-            return { providers };
+            return { providers: yield* providerRegistry.getPublishedProviders };
           }),
         [WS_METHODS.mcpAppsCallTool]: (input) => mcpAppRequests.callTool(input),
         [WS_METHODS.mcpAppsToolInfo]: (input) => mcpAppRequests.toolInfo(input),
@@ -2927,13 +2927,7 @@ const layerWsRpc = (
                 })),
               );
               const providerStatuses = Stream.zipLatestWith(
-                // The registry stream carries changes only. Seed it with the current
-                // providers so a source refresh that lands before any provider change
-                // still pairs up and reaches the client.
-                Stream.concat(
-                  Stream.fromEffect(providerRegistry.getProviders),
-                  providerRegistry.streamChanges,
-                ),
+                providerRegistry.streamPublishedChanges,
                 usageLimitSources.streamChanges.pipe(
                   Stream.changesWith(
                     usageLimitsCommand ? sameUsageLimitCommandCoverage : () => true,

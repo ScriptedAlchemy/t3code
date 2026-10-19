@@ -2,6 +2,7 @@ import {
   defaultInstanceIdForDriver,
   isProviderWorkspaceSnapshotCurrent,
   ProviderDriverKind,
+  providerPoolDriver,
   type IsoDateTime,
   type ProviderInstanceId,
   type ServerProvider,
@@ -704,9 +705,25 @@ export const layer = Layer.effect(
       return yield* refreshOneSource(providerSource);
     });
 
-    const refreshInstance = Effect.fn("refreshInstance")(function* (
+    const providerPools = serverSettings.getSettings.pipe(
+      Effect.map((settings) => settings.providerPools),
+      Effect.orDie,
+    );
+
+    const refreshInstance: (
+      instanceId: ProviderInstanceId,
+    ) => Effect.Effect<ReadonlyArray<ServerProvider>> = Effect.fn("refreshInstance")(function* (
       instanceId: ProviderInstanceId,
     ) {
+      const poolDriver = providerPoolDriver(instanceId);
+      if (poolDriver !== null) {
+        const members = (yield* providerPools)[poolDriver]?.memberInstanceIds ?? [];
+        yield* Effect.forEach(members, refreshInstance, {
+          concurrency: "unbounded",
+          discard: true,
+        });
+        return yield* Ref.get(providersRef);
+      }
       const sources = yield* getLiveSources;
       const providerSource = sources.find((candidate) => candidate.instanceId === instanceId);
       if (!providerSource) {
@@ -982,10 +999,6 @@ export const layer = Layer.effect(
       );
     });
 
-    const providerPools = serverSettings.getSettings.pipe(
-      Effect.map((settings) => settings.providerPools),
-      Effect.orDie,
-    );
     const getPublishedProviders = Effect.all([Ref.get(providersRef), providerPools]).pipe(
       Effect.map(([providers, providerPools]) => withProviderPools({ providers, providerPools })),
     );
