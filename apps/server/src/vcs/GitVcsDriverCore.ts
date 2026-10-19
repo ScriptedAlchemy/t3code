@@ -37,6 +37,7 @@ import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import { resolveProjectFileBackedSetting } from "@t3tools/shared/projectSettings";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import { explicitBareRepositoryEnv, gitConfigEnv } from "./VcsProcess.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
 import {
   parseRemoteNames,
@@ -330,6 +331,24 @@ export function splitNullSeparatedGitStdoutPaths(
 ): string[] {
   return splitNullSeparatedPaths(result.stdout, result.stdoutTruncated);
 }
+
+/**
+ * Refuses a ref name with a leading "-" before it reaches checkout or `worktree add`. Git refuses
+ * such branch and tag names, and both commands, or the `git branch` that `worktree add` runs, read
+ * one as an option. `--end-of-options` cannot guard them: Git before 2.44 reads it like `--`.
+ * A lone "-" is the previous checkout, which both commands read as a ref.
+ */
+const refuseOptionLikeRefName = (operation: string, cwd: string, refName: string | undefined) =>
+  refName !== undefined && refName !== "-" && refName.startsWith("-")
+    ? Effect.fail(
+        new GitCommandError({
+          operation,
+          command: "git",
+          cwd,
+          detail: "Ref names cannot start with '-'.",
+        }),
+      )
+    : Effect.void;
 
 function sanitizeRemoteName(value: string): string {
   const sanitized = value
@@ -899,29 +918,8 @@ const collectOutput = Effect.fnUntraced(function* (
 export const windowsLongPathConfigEnv = (
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv => {
-  if (platform !== "win32") {
-    return {};
-  }
-  const countKey =
-    Object.keys(env).find((key) => key.toUpperCase() === "GIT_CONFIG_COUNT") ?? "GIT_CONFIG_COUNT";
-  const inherited = env[countKey];
-  if (
-    inherited !== undefined &&
-    inherited !== "" &&
-    // Git parses the count with strtoul: leading whitespace, an optional sign
-    // (only -0 is non-negative), digits, and nothing after them.
-    /^[ \t\r\n\v\f]*(?:\+?\d+|-0+)/.exec(inherited)?.[0] !== inherited
-  ) {
-    return {};
-  }
-  const count = inherited === undefined || inherited === "" ? 0 : Number.parseInt(inherited, 10);
-  return {
-    [countKey]: String(count + 1),
-    [`GIT_CONFIG_KEY_${count}`]: "core.longpaths",
-    [`GIT_CONFIG_VALUE_${count}`]: "true",
-  };
-};
+): NodeJS.ProcessEnv =>
+  platform === "win32" ? gitConfigEnv(env, "core.longpaths", "true", platform) : {};
 
 export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -954,7 +952,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               }),
           ),
         );
-        const env = {
+        const baseEnv = {
           ...process.env,
           // Status polling runs beside the user's own git commands; without this,
           // `git status` takes index.lock to save its refreshed index.
@@ -962,6 +960,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           ...input.env,
           ...trace2Monitor.env,
         };
+        const env = { ...baseEnv, ...explicitBareRepositoryEnv(baseEnv, hostPlatform) };
         const spawnEnv = { ...env, ...windowsLongPathConfigEnv(hostPlatform, env) };
         const resolved = yield* resolveSpawnCommand("git", [], { env: spawnEnv });
         // A git.cmd wrapper would need cmd.exe, which cuts multi-line commit
@@ -1270,7 +1269,16 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return executeGit(
       "GitVcsDriver.fetchRemoteForStatus",
       fetchCwd,
-      ["--git-dir", gitCommonDir, "fetch", "--quiet", "--no-tags", "--no-auto-gc", remoteName],
+      [
+        "--git-dir",
+        gitCommonDir,
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-auto-gc",
+        "--",
+        remoteName,
+      ],
       {
         env: STATUS_UPSTREAM_REFRESH_ENV,
         fallbackErrorDetail: "Background Git fetch exited with a non-zero status.",
@@ -1553,9 +1561,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     ).pipe(Effect.map((result) => result.exitCode === 0));
 
   const remoteExists: GitVcsDriver.GitVcsDriver["Service"]["remoteExists"] = (input) =>
-    executeGit("GitVcsDriver.remoteExists", input.cwd, ["remote", "get-url", input.remoteName], {
-      allowNonZeroExit: true,
-    }).pipe(Effect.map((result) => result.exitCode === 0));
+    executeGit(
+      "GitVcsDriver.remoteExists",
+      input.cwd,
+      ["remote", "get-url", "--", input.remoteName],
+      {
+        allowNonZeroExit: true,
+      },
+    ).pipe(Effect.map((result) => result.exitCode === 0));
 
   const originRemoteExists = (cwd: string): Effect.Effect<boolean, GitCommandError> =>
     remoteExists({ cwd, remoteName: "origin" });
@@ -1647,10 +1660,26 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     yield* runGit("GitVcsDriver.ensureRemote.add", input.cwd, [
       "remote",
       "add",
+      "--",
       remoteName,
       input.url,
     ]);
     return remoteName;
+  });
+
+  const resolveRemoteBaseRef = Effect.fn("resolveRemoteBaseRef")(function* (
+    cwd: string,
+    baseRef: string,
+  ) {
+    if (!baseRef.includes("/") || baseRef.startsWith("refs/")) return null;
+    const comparisonRef = `refs/remotes/${baseRef}`;
+    const remoteBase = yield* executeGit(
+      "GitVcsDriver.resolveRemoteBaseRef",
+      cwd,
+      ["show-ref", "--verify", "--quiet", comparisonRef],
+      { allowNonZeroExit: true },
+    );
+    return remoteBase.exitCode === 0 ? { baseRef, comparisonRef } : null;
   });
 
   const resolveBaseBranchForNoUpstream = Effect.fn("resolveBaseBranchForNoUpstream")(function* (
@@ -1664,6 +1693,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ["config", "--get", `branch.${refName}.gh-merge-base`],
       true,
     ).pipe(Effect.map((stdout) => stdout.trim()));
+
+    // Keep the configured remote and compare its exact ref even when a local ref shadows it.
+    const configuredRemoteBase = yield* resolveRemoteBaseRef(cwd, configuredBaseBranch);
+    if (configuredRemoteBase !== null) return configuredRemoteBase;
 
     const primaryRemoteName = yield* resolvePrimaryRemoteName(cwd).pipe(
       Effect.orElseSucceed(() => null),
@@ -1701,7 +1734,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             refName: normalizedCandidate,
           }))
         ) {
-          return `${primaryRemoteName}/${normalizedCandidate}`;
+          return {
+            baseRef: `${primaryRemoteName}/${normalizedCandidate}`,
+            comparisonRef: `refs/remotes/${primaryRemoteName}/${normalizedCandidate}`,
+          };
         }
         continue;
       }
@@ -1714,11 +1750,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           refName: normalizedCandidate,
         }))
       ) {
-        return `${primaryRemoteName}/${normalizedCandidate}`;
+        return {
+          baseRef: `${primaryRemoteName}/${normalizedCandidate}`,
+          comparisonRef: `refs/remotes/${primaryRemoteName}/${normalizedCandidate}`,
+        };
       }
 
       if (yield* branchExists(cwd, normalizedCandidate)) {
-        return normalizedCandidate;
+        return { baseRef: normalizedCandidate, comparisonRef: `refs/heads/${normalizedCandidate}` };
       }
     }
 
@@ -1729,15 +1768,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     cwd: string,
     refName: string,
   ) {
-    const baseRef = yield* resolveBaseBranchForNoUpstream(cwd, refName);
-    if (!baseRef) {
+    const base = yield* resolveBaseBranchForNoUpstream(cwd, refName);
+    if (!base) {
       return 0;
     }
 
     const result = yield* executeGit(
       "GitVcsDriver.computeAheadCountAgainstBase",
       cwd,
-      ["rev-list", "--count", `${baseRef}..HEAD`],
+      ["rev-list", "--count", "--end-of-options", `${base.comparisonRef}..HEAD`],
       { allowNonZeroExit: true },
     );
     if (result.exitCode !== 0) {
@@ -2196,7 +2235,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   });
 
   const prepareCommitContext: GitVcsDriver.GitVcsDriver["Service"]["prepareCommitContext"] =
-    Effect.fn("prepareCommitContext")(function* (cwd, filePaths) {
+    Effect.fn("prepareCommitContext")(function* (cwd, filePaths, options) {
       return yield* Effect.scoped(
         Effect.gen(function* () {
           const indexValue = yield* runGitStdout(
@@ -2248,6 +2287,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           if (stagedSummary.length === 0) {
             return null;
           }
+
+          // A user-supplied message needs change detection, but no patch for generation.
+          if (options?.includePatch === false) return { stagedSummary, stagedPatch: "" };
 
           const stagedPatch = yield* runGitStdoutWithOptions(
             "GitVcsDriver.prepareCommitContext.stagedPatch",
@@ -2337,7 +2379,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       yield* runGit(
         "GitVcsDriver.pushCurrentBranch.pushWithRequestedRemote",
         cwd,
-        ["push", "-u", requestedRemoteName, `HEAD:refs/heads/${publishBranch}`],
+        ["push", "-u", "--", requestedRemoteName, `HEAD:refs/heads/${publishBranch}`],
         { timeoutMs: null },
       );
       return {
@@ -2372,12 +2414,23 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           };
         }
 
-        const hasRemoteBranch = yield* remoteBranchExists({
+        const publishBranch = yield* resolvePublishBranchName(cwd, branch);
+        // The configured diff base can contain HEAD while the publish branch is still behind.
+        const publishContainsHead = yield* executeGit(
+          "GitVcsDriver.pushCurrentBranch.publishContainsHead",
           cwd,
-          remoteName: publishRemoteName,
-          refName: branch,
-        }).pipe(Effect.orElseSucceed(() => false));
-        if (hasRemoteBranch) {
+          [
+            "merge-base",
+            "--is-ancestor",
+            "HEAD",
+            `refs/remotes/${publishRemoteName}/${publishBranch}`,
+          ],
+          { allowNonZeroExit: true },
+        ).pipe(
+          Effect.map((result) => result.exitCode === 0),
+          Effect.orElseSucceed(() => false),
+        );
+        if (publishContainsHead) {
           return {
             status: "skipped_up_to_date" as const,
             branch,
@@ -2402,7 +2455,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       yield* runGit(
         "GitVcsDriver.pushCurrentBranch.pushWithUpstream",
         cwd,
-        ["push", "-u", publishRemoteName, `HEAD:refs/heads/${publishBranch}`],
+        ["push", "-u", "--", publishRemoteName, `HEAD:refs/heads/${publishBranch}`],
         { timeoutMs: null },
       );
       return {
@@ -2451,7 +2504,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         yield* runGit(
           "GitVcsDriver.pushCurrentBranch.pushOwnBranch",
           cwd,
-          ["push", "-u", remoteName, `HEAD:refs/heads/${publishBranch}`],
+          ["push", "-u", "--", remoteName, `HEAD:refs/heads/${publishBranch}`],
           { timeoutMs: null },
         );
         return {
@@ -2465,7 +2518,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       yield* runGit(
         "GitVcsDriver.pushCurrentBranch.pushUpstream",
         cwd,
-        ["push", currentUpstream.remoteName, `HEAD:refs/heads/${currentUpstream.branchName}`],
+        ["push", "--", currentUpstream.remoteName, `HEAD:refs/heads/${currentUpstream.branchName}`],
         { timeoutMs: null },
       );
       return {
@@ -2549,7 +2602,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         runGitStdoutWithOptions(
           "GitVcsDriver.readRangeContext.log",
           cwd,
-          ["log", "--oneline", commitRange],
+          ["log", "--oneline", "--end-of-options", commitRange],
           {
             maxOutputBytes: RANGE_COMMIT_SUMMARY_MAX_OUTPUT_BYTES,
             appendTruncationMarker: true,
@@ -2558,7 +2611,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         runGitStdoutWithOptions(
           "GitVcsDriver.readRangeContext.diffStat",
           cwd,
-          ["diff", "--stat", diffRange],
+          ["diff", "--stat", "--end-of-options", diffRange],
           {
             maxOutputBytes: RANGE_DIFF_SUMMARY_MAX_OUTPUT_BYTES,
             appendTruncationMarker: true,
@@ -2567,7 +2620,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         runGitStdoutWithOptions(
           "GitVcsDriver.readRangeContext.diffPatch",
           cwd,
-          ["diff", "--no-ext-diff", "--patch", "--minimal", diffRange],
+          ["diff", "--no-ext-diff", "--patch", "--minimal", "--end-of-options", diffRange],
           {
             maxOutputBytes: RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES,
             appendTruncationMarker: true,
@@ -2711,15 +2764,23 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     branch: string | null,
     explicitBaseRef?: string,
   ) {
-    const baseRef =
-      explicitBaseRef ??
-      (branch
-        ? yield* resolveBaseBranchForNoUpstream(cwd, branch, { allowRemoteOfCurrent: true }).pipe(
-            Effect.orElseSucceed(() => null),
-          )
-        : null);
-    if (baseRef === null) return { baseRef, mergeBase: "HEAD" };
-    const args = ["merge-base", baseRef, "HEAD"];
+    const base =
+      explicitBaseRef !== undefined
+        ? ((yield* resolveRemoteBaseRef(cwd, explicitBaseRef)) ?? {
+            baseRef: explicitBaseRef,
+            comparisonRef:
+              !explicitBaseRef.startsWith("refs/") && (yield* branchExists(cwd, explicitBaseRef))
+                ? `refs/heads/${explicitBaseRef}`
+                : explicitBaseRef,
+          })
+        : branch
+          ? yield* resolveBaseBranchForNoUpstream(cwd, branch, { allowRemoteOfCurrent: true }).pipe(
+              Effect.orElseSucceed(() => null),
+            )
+          : null;
+    if (base === null) return { baseRef: null, mergeBase: "HEAD" };
+    const { baseRef, comparisonRef } = base;
+    const args = ["merge-base", "--end-of-options", comparisonRef, "HEAD"];
     const result = yield* executeGit("GitVcsDriver.resolveReviewMergeBase", cwd, args, {
       allowNonZeroExit: true,
     });
@@ -2974,7 +3035,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const result = yield* executeGit(
       "GitVcsDriver.getReviewDiffFileContents.revision",
       input.cwd,
-      ["show", `${revision}:${relativePath}`],
+      ["show", "--end-of-options", `${revision}:${relativePath}`],
       { maxOutputBytes: REVIEW_DIFF_FILE_MAX_OUTPUT_BYTES },
     );
     if (result.stdout.includes("\0")) {
@@ -3409,9 +3470,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input, options) {
+    yield* refuseOptionLikeRefName("GitVcsDriver.createWorktree", input.cwd, input.refName);
+    yield* refuseOptionLikeRefName("GitVcsDriver.createWorktree", input.cwd, input.newRefName);
     const targetBranch = input.newRefName ?? input.refName;
     const sanitizedBranch = targetBranch.replace(/\//g, "-");
-    const repoName = path.basename(input.cwd);
+    // resolve: a cwd like `<repo>/sub/..` must not name the folder `..`.
+    const repoName = path.basename(path.resolve(input.cwd));
     let worktreePath = input.path;
     if (worktreePath == null) {
       const parentDir = resolveWorktreesDirectory(
@@ -3431,8 +3495,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       worktreePath = path.join(parentDir, repoName, sanitizedBranch);
     }
     const args = input.newRefName
-      ? ["worktree", "add", "-b", input.newRefName, worktreePath, input.refName]
-      : ["worktree", "add", worktreePath, input.refName];
+      ? ["worktree", "add", "-b", input.newRefName, "--", worktreePath, input.refName]
+      : ["worktree", "add", "--", worktreePath, input.refName];
     const progress = options?.progress;
     const onCheckoutProgress = progress?.onCheckoutProgress;
 
@@ -3561,6 +3625,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           "fetch",
           "--quiet",
           "--no-tags",
+          "--",
           remoteName,
           `+refs/pull/${input.prNumber}/head:refs/heads/${input.branch}`,
         ],
@@ -3590,7 +3655,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       yield* executeGit(
         "GitVcsDriver.fetchPullRequestHeadCommit",
         input.cwd,
-        ["fetch", "--quiet", "--no-tags", remoteName, `refs/pull/${input.prNumber}/head`],
+        ["fetch", "--quiet", "--no-tags", "--", remoteName, `refs/pull/${input.prNumber}/head`],
         {
           fallbackErrorDetail: "git fetch pull request head failed",
         },
@@ -3661,7 +3726,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const fetchRemote: GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"] = Effect.fn("fetchRemote")(
     function* (input) {
-      const args = ["fetch", "--quiet", input.remoteName];
+      const args = ["fetch", "--quiet", "--", input.remoteName];
       const options = {
         env: STATUS_UPSTREAM_REFRESH_ENV,
         fallbackErrorDetail: `git fetch ${input.remoteName} failed`,
@@ -3762,6 +3827,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       "fetch",
       "--quiet",
       "--no-tags",
+      "--",
       input.remoteName,
       `+refs/heads/${input.remoteBranch}:refs/remotes/${input.remoteName}/${input.remoteBranch}`,
     ]);
@@ -3772,8 +3838,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       "GitVcsDriver.fetchRemoteBranch.materialize",
       input.cwd,
       localBranchAlreadyExists
-        ? ["branch", "--force", input.localBranch, targetRef]
-        : ["branch", input.localBranch, targetRef],
+        ? ["branch", "--force", "--", input.localBranch, targetRef]
+        : ["branch", "--", input.localBranch, targetRef],
     );
   });
 
@@ -3783,6 +3849,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         "fetch",
         "--quiet",
         "--no-tags",
+        "--",
         input.remoteName,
         `+refs/heads/${input.remoteBranch}:refs/remotes/${input.remoteName}/${input.remoteBranch}`,
       ]);
@@ -3793,6 +3860,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       "branch",
       "--set-upstream-to",
       `${input.remoteName}/${input.remoteBranch}`,
+      "--",
       input.branch,
     ]);
 
@@ -3805,7 +3873,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     if (input.force) {
       args.push("--force");
     }
-    args.push(input.path);
+    args.push("--", input.path);
     const result = yield* executeGitWithStableDiagnostics(
       "GitVcsDriver.removeWorktree",
       input.cwd,
@@ -3912,27 +3980,28 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         { concurrency: "unbounded" },
       );
 
-      const localTrackingBranch = remoteExists
-        ? yield* executeGit(
-            "GitVcsDriver.switchRef.localTrackingBranch",
-            input.cwd,
-            ["for-each-ref", "--format=%(refname:short)\t%(upstream:short)", "refs/heads"],
-            {
-              timeoutMs: 5_000,
-              allowNonZeroExit: true,
-            },
-          ).pipe(
-            Effect.map((result) =>
-              result.exitCode === 0
-                ? parseTrackingBranchByUpstreamRef(result.stdout, input.refName)
-                : null,
-            ),
-          )
-        : null;
+      const localTrackingBranch =
+        remoteExists && !localInputExists
+          ? yield* executeGit(
+              "GitVcsDriver.switchRef.localTrackingBranch",
+              input.cwd,
+              ["for-each-ref", "--format=%(refname:short)\t%(upstream:short)", "refs/heads"],
+              {
+                timeoutMs: 5_000,
+                allowNonZeroExit: true,
+              },
+            ).pipe(
+              Effect.map((result) =>
+                result.exitCode === 0
+                  ? parseTrackingBranchByUpstreamRef(result.stdout, input.refName)
+                  : null,
+              ),
+            )
+          : null;
 
       const localTrackedBranchCandidate = deriveLocalBranchNameFromRemoteRef(input.refName);
       const localTrackedBranchTargetExists =
-        remoteExists && localTrackedBranchCandidate
+        remoteExists && !localInputExists && !localTrackingBranch && localTrackedBranchCandidate
           ? yield* executeGit(
               "GitVcsDriver.switchRef.localTrackedBranchTargetExists",
               input.cwd,
@@ -3954,6 +4023,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               ? ["checkout", localTrackingBranch]
               : ["checkout", input.refName];
 
+      yield* refuseOptionLikeRefName("GitVcsDriver.switchRef", input.cwd, checkoutArgs.at(-1));
+
       // A stale ref must not turn into a path checkout that discards local edits.
       yield* executeGit("GitVcsDriver.switchRef.checkout", input.cwd, [...checkoutArgs, "--"], {
         timeoutMs: 10_000,
@@ -3971,7 +4042,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const createRef: GitVcsDriver.GitVcsDriver["Service"]["createRef"] = Effect.fn("createRef")(
     function* (input) {
-      yield* executeGit("GitVcsDriver.createRef", input.cwd, ["branch", input.refName], {
+      yield* executeGit("GitVcsDriver.createRef", input.cwd, ["branch", "--", input.refName], {
         timeoutMs: 10_000,
         fallbackErrorDetail: "git branch create failed",
       });

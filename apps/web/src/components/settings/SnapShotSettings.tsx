@@ -13,7 +13,7 @@ import * as Cause from "effect/Cause";
 import { useEffect, useRef, useState } from "react";
 
 import { useStableCallback } from "../../hooks/useStableCallback";
-import { useClientSettings, useUpdateClientSettings } from "../../hooks/useSettings";
+import { useClientSettings, updateClientSettings } from "../../hooks/useSettings";
 import { getDesktopSnapShotBridge } from "../../lib/desktopSnapShot";
 import {
   readSnapShotSetupResume,
@@ -77,8 +77,15 @@ type ShortcutCheck =
     };
 
 export function SnapShotSettings() {
-  const settings = useClientSettings();
-  const updateSettings = useUpdateClientSettings();
+  const settings = useClientSettings((current) => ({
+    snapShotAnimations: current.snapShotAnimations,
+    snapShotEnabled: current.snapShotEnabled,
+    snapShotFlash: current.snapShotFlash,
+    snapShotIncludeAccessibility: current.snapShotIncludeAccessibility,
+    snapShotPlaySound: current.snapShotPlaySound,
+    snapShotShortcut: current.snapShotShortcut,
+    snapShotSound: current.snapShotSound,
+  }));
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const bridge = getDesktopSnapShotBridge();
   const [state, setState] = useState<DesktopSnapShotState | null>(null);
@@ -218,7 +225,7 @@ export function SnapShotSettings() {
   const save = async (patch: ClientSettingsPatch) => {
     setSetupError(null);
     try {
-      await updateSettings(patch);
+      await updateClientSettings(patch);
       return await refreshState();
     } catch (error) {
       setSetupError(captureSettingsError("Couldn't save capture settings", error));

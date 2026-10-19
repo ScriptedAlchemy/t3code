@@ -36,6 +36,7 @@ import {
   type OrchestratorMcpListScheduledTasksInput,
   type ProjectId,
   type OrchestratorMcpThreadDetail,
+  type OrchestratorMcpThreadPullRequest,
   type OrchestratorMcpThreadInterruptInput,
   type OrchestratorMcpThreadInterruptResult,
   type OrchestratorMcpThreadListInput,
@@ -50,6 +51,7 @@ import {
   type OrchestratorMcpThreadWaitInput,
   type OrchestratorMcpThreadWaitResult,
   type ProviderInteractionMode,
+  type ProviderInstanceId,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type RuntimeMode,
@@ -59,6 +61,10 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import {
+  normalizeThreadPullRequestKey,
+  visibleThreadPullRequests,
+} from "@t3tools/shared/threadPullRequests";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -86,6 +92,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
+import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -200,6 +207,29 @@ function failure(code: OrchestratorMcpFailure["code"], message: string): Orchest
   return new OrchestratorMcpFailure({ code, message });
 }
 
+/**
+ * A caller's thread is live while it is not archived, runs on the caller's
+ * provider instance, and has an active run or a background subagent that
+ * instance started. A background subagent outlives its run and calls tools
+ * with its thread's credential, which is revoked when the provider process
+ * goes away.
+ */
+export const isLiveCallerShell = (
+  shell: Pick<
+    OrchestrationV2ThreadShell,
+    "archivedAt" | "activeRunId" | "providerInstanceId" | "pendingBackgroundTasks"
+  > | null,
+  providerInstanceId: ProviderInstanceId | undefined,
+) =>
+  shell !== null &&
+  shell.archivedAt === null &&
+  shell.providerInstanceId === providerInstanceId &&
+  (shell.activeRunId !== null ||
+    (shell.pendingBackgroundTasks?.some(
+      (task) => task.kind === "subagent" && task.providerInstanceId === providerInstanceId,
+    ) ??
+      false));
+
 function threadManagementFailure(error: unknown): OrchestratorMcpFailure {
   if (!isThreadManagementError(error)) return failure("orchestration_error", errorMessage(error));
   switch (error._tag) {
@@ -260,11 +290,16 @@ function providerConstraints(
     constraints.push("No V2 provider adapter is registered.");
   }
   if (provider === undefined) return constraints;
-  if (!provider.enabled) constraints.push("Provider instance is disabled.");
-  if (!provider.installed) constraints.push("Provider executable is not installed.");
+  // Driver availability comes from the registry, even when health probes are skipped.
   if (!isProviderAvailable(provider)) {
     constraints.push(provider.unavailableReason ?? "Provider driver is unavailable.");
   }
+  if (!provider.enabled) {
+    constraints.push("Provider instance is disabled.");
+    // Disabled snapshots contain placeholders for installation, health, and auth.
+    return constraints;
+  }
+  if (!provider.installed) constraints.push("Provider executable is not installed.");
   if (provider.status === "error" || provider.status === "disabled") {
     constraints.push(provider.message ?? `Provider status is ${provider.status}.`);
   }
@@ -679,6 +714,20 @@ function threadSnooze(
   };
 }
 
+/** The same links `list_thread_pull_requests` reports, without the snapshot details. */
+function threadPullRequests(
+  links: OrchestrationV2ThreadShell["pullRequests"],
+): OrchestratorMcpThreadPullRequest[] {
+  return visibleThreadPullRequests(links ?? []).map((link) => ({
+    host: normalizeThreadPullRequestKey(link).host,
+    repository: link.repository,
+    number: link.number,
+    url: link.url,
+    source: link.source,
+    state: link.snapshot?.state ?? null,
+  }));
+}
+
 function listItemFromShell(
   shell: OrchestrationV2ThreadShell,
   nowMs: number,
@@ -695,6 +744,7 @@ function listItemFromShell(
     runtimeMode: shell.runtimeMode,
     interactionMode: shell.interactionMode,
     linkedPullRequest: shell.linkedPullRequest ?? null,
+    pullRequests: threadPullRequests(shell.pullRequests),
     ...threadSettlement(shell),
     ...threadSnooze(shell, nowMs),
     parentThreadId: shell.lineage.parentThreadId,
@@ -727,6 +777,7 @@ function threadDetail(
     runtimeMode: projection.thread.runtimeMode,
     interactionMode: projection.thread.interactionMode,
     linkedPullRequest: projection.thread.linkedPullRequest ?? null,
+    pullRequests: threadPullRequests(projection.thread.pullRequests),
     titleRegeneration:
       projection.thread.titleRegeneration === undefined ||
       projection.thread.titleRegeneration === null
@@ -1060,13 +1111,26 @@ const make = Effect.gen(function* () {
     scope: McpInvocationScope,
     parent: Pick<OrchestrationV2ThreadProjection, "thread" | "runs">,
   ) => {
+    const notActive = failure(
+      "parent_not_active",
+      "The calling provider no longer owns an active thread run.",
+    );
     const activeRun = ThreadManagementService.latestActiveRun(parent);
+    if (parent.thread.archivedAt === null && activeRun === undefined) {
+      // Decide from this one fresh snapshot: a run may have started since `parent` was read.
+      return threadManagement.getThreadShell(parent.thread.id).pipe(
+        Effect.mapError(threadManagementFailure),
+        Effect.flatMap((shell) =>
+          isLiveCallerShell(shell, scope.thread?.providerInstanceId)
+            ? Effect.void
+            : Effect.fail(notActive),
+        ),
+      );
+    }
     return parent.thread.archivedAt !== null ||
       activeRun === undefined ||
       activeRun.providerInstanceId !== scope.thread?.providerInstanceId
-      ? Effect.fail(
-          failure("parent_not_active", "The calling provider no longer owns an active thread run."),
-        )
+      ? Effect.fail(notActive)
       : Effect.void;
   };
 
@@ -1951,6 +2015,21 @@ const make = Effect.gen(function* () {
                 failure("invalid_request", "Unable to resolve the parent checkout commit."),
               ),
             );
+          // Launch preparation creates the worktree from the project root, so a
+          // parent checkout in another repository (such as a Git folder inside
+          // Scratch) would hand it a commit it cannot find.
+          if (parent.thread.worktreePath !== null) {
+            yield* gitDriver
+              .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
+              .pipe(
+                Effect.mapError(() =>
+                  failure(
+                    "invalid_request",
+                    `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
+                  ),
+                ),
+              );
+          }
           workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
         }
         // ThreadManagementService.dispatch is the chokepoint for this command
@@ -2537,7 +2616,7 @@ const make = Effect.gen(function* () {
                 ? threadManagementFailure(error)
                 : failure(
                     "orchestration_error",
-                    `Unable to send to thread ${input.threadId}: ${errorMessage(error)}`,
+                    `Unable to send to thread ${input.threadId}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
                   ),
             ),
           );

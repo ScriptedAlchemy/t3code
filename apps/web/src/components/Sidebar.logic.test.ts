@@ -2,8 +2,6 @@ import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import * as DateTime from "effect/DateTime";
 import { deriveActiveWorkStartedAt } from "../session-logic.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { act, createElement, useLayoutEffect } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -46,7 +44,6 @@ import {
   searchSidebarThreads,
   shouldClearThreadSelectionOnMouseDown,
   shouldShowSidebarV2Duration,
-  useStableSidebarListItems,
   shouldRecedeSidebarThread,
   sortLogicalProjectsForSidebar,
   sortInboxThreadsByReturn,
@@ -149,100 +146,6 @@ describe("resolveSidebarThreadSection", () => {
     );
   });
 });
-
-describe("useStableSidebarListItems", () => {
-  let renderer: ReactTestRenderer | undefined;
-
-  beforeEach(() => {
-    renderer = undefined;
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  });
-
-  afterEach(async () => {
-    await act(() => renderer?.unmount());
-    vi.unstubAllGlobals();
-  });
-
-  it("keeps row identity until order changes and renders a removed thread's new list", async () => {
-    const oldItems = [
-      { kind: "thread", key: "removed", section: "active" },
-      { kind: "thread", key: "remaining", section: "active" },
-    ] as const;
-    const refreshedItems = oldItems.map((item) => ({ ...item }));
-    const nextItems = [{ kind: "thread", key: "remaining", section: "active" }] as const;
-    const oldThreads = new Map([
-      ["removed", { title: "Removed thread" }],
-      ["remaining", { title: "Remaining thread" }],
-    ]);
-    const refreshedThreads = new Map([
-      ["removed", { title: "Removed thread" }],
-      ["remaining", { title: "Updated remaining thread" }],
-    ]);
-    const nextThreads = new Map<string, { readonly title: string }>([
-      ["remaining", { title: "Updated remaining thread" }],
-    ]);
-    const committedItems: (readonly SidebarListItem[])[] = [];
-    const rows = (
-      items: readonly SidebarListItem[],
-      threads: ReadonlyMap<string, { readonly title: string }>,
-    ) => createElement(ThreadRows, { items, threads, committedItems });
-
-    await act(() => {
-      renderer = create(rows(oldItems, oldThreads));
-    });
-    expect(renderer?.toJSON()).toEqual({
-      type: "div",
-      props: {},
-      children: [
-        { type: "span", props: {}, children: ["Removed thread"] },
-        { type: "span", props: {}, children: ["Remaining thread"] },
-      ],
-    });
-
-    await act(() => renderer?.update(rows(refreshedItems, refreshedThreads)));
-
-    expect(renderer?.toJSON()).toEqual({
-      type: "div",
-      props: {},
-      children: [
-        { type: "span", props: {}, children: ["Removed thread"] },
-        { type: "span", props: {}, children: ["Updated remaining thread"] },
-      ],
-    });
-    expect(committedItems[1]).toBe(committedItems[0]);
-
-    await act(() => renderer?.update(rows(nextItems, nextThreads)));
-
-    expect(renderer?.toJSON()).toEqual({
-      type: "div",
-      props: {},
-      children: [{ type: "span", props: {}, children: ["Updated remaining thread"] }],
-    });
-  });
-});
-
-function ThreadRows({
-  items,
-  threads,
-  committedItems,
-}: {
-  readonly items: readonly SidebarListItem[];
-  readonly threads: ReadonlyMap<string, { readonly title: string }>;
-  readonly committedItems: (readonly SidebarListItem[])[];
-}) {
-  const { items: visibleItems } = useStableSidebarListItems(items);
-  useLayoutEffect(() => {
-    committedItems.push(visibleItems);
-  });
-  return createElement(
-    "div",
-    null,
-    visibleItems.map((item) => {
-      if (item.kind !== "thread") return null;
-      return createElement("span", { key: item.key }, threads.get(item.key)!.title);
-    }),
-  );
-}
 
 describe("deleteSelectedThreadEntries", () => {
   const entries = [{ threadKey: "one" }, { threadKey: "two" }, { threadKey: "three" }] as const;
@@ -1464,9 +1367,80 @@ describe("resolveThreadStatusPill", () => {
       }),
     ).toMatchObject({ label: "Completed", pulse: false });
   });
+
+  it("shows failed, not completed, when the unseen run failed", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          interactionMode: "default",
+          latestRun: { ...makeLatestRun(), status: "failed" },
+          lastVisitedAt: "2026-03-09T10:04:00.000Z",
+          runtime: {
+            ...baseThread.runtime,
+            status: "failed",
+            activeRunId: null,
+            lastError: "Provider turn failed.",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Failed", pulse: false });
+  });
+
+  it("shows failed for a thread nobody has opened yet", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          interactionMode: "default",
+          latestRun: { ...makeLatestRun(), status: "failed" },
+          lastVisitedAt: null,
+          runtime: { ...baseThread.runtime, status: "failed", activeRunId: null },
+        },
+      }),
+    ).toMatchObject({ label: "Failed" });
+  });
+
+  it("shows failed, not plan ready, when a plan run proposed a plan and then failed", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasActionableProposedPlan: true,
+          latestRun: { ...makeLatestRun(), status: "failed" },
+          lastVisitedAt: "2026-03-09T10:04:00.000Z",
+          runtime: { ...baseThread.runtime, status: "failed", activeRunId: null },
+        },
+      }),
+    ).toMatchObject({ label: "Failed" });
+  });
+
+  it("drops the failed pill once the failure has been seen", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          interactionMode: "default",
+          latestRun: { ...makeLatestRun(), status: "failed" },
+          lastVisitedAt: "2026-03-09T10:06:00.000Z",
+          runtime: { ...baseThread.runtime, status: "failed", activeRunId: null },
+        },
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("resolveProjectStatusIndicator", () => {
+  it("ranks a failure above work in progress and completions", () => {
+    expect(
+      resolveProjectStatusIndicator([
+        { label: "Completed", colorClass: "", dotClass: "", pulse: false },
+        { label: "Working", colorClass: "", dotClass: "", pulse: true },
+        { label: "Failed", colorClass: "", dotClass: "", pulse: false },
+      ]),
+    ).toMatchObject({ label: "Failed" });
+  });
+
   it("returns null when no threads have a notable status", () => {
     expect(resolveProjectStatusIndicator([null, null])).toBeNull();
   });
@@ -2338,6 +2312,33 @@ describe("Working shelf (beta)", () => {
       });
       expect(resolveSidebarDropVerb("active", "working")).toBeNull();
     });
+
+    it.each([
+      ["pinned", "p1"],
+      ["active", "a2"],
+      ["settled", "s1"],
+    ] as const)(
+      "does not move a Working thread into %s when its reference drag ends in the sidebar",
+      (section, overKey) => {
+        const target = resolveSidebarDropTarget(items, "w1", overKey);
+        expect(target?.section).toBe(section);
+        expect(
+          planSidebarThreadDrop({
+            activeKey: "w1",
+            activeSection: "working",
+            target: target!,
+            pinnedOrder: ["p1"],
+            pinnedKeysById: new Map([["p1", "m"]]),
+            activeOrder: ["a1", "a2"],
+            activeKeysById: new Map([
+              ["a1", "f"],
+              ["a2", "t"],
+            ]),
+            activeTimeOrdered: true,
+          }),
+        ).toEqual({ kind: "none" });
+      },
+    );
 
     it("arranges the rows it can write when another row's server cannot store an order", () => {
       const plan = planSidebarThreadDrop({

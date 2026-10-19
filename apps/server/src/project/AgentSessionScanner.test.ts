@@ -740,7 +740,14 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
           const sharedHome = yield* makeTempDir("t3code-codex-shared-");
           const workspace = yield* makeTempDir("t3code-codex-workspace-");
           yield* writeTranscript({
-            filePath: path.join(sharedHome, "sessions", "2026", "01", "01", "rollout-session.jsonl"),
+            filePath: path.join(
+              sharedHome,
+              "sessions",
+              "2026",
+              "01",
+              "01",
+              "rollout-session.jsonl",
+            ),
             contents: codexRolloutLine(workspace),
             mtimeMs: Date.parse("2026-01-02T00:00:00.000Z"),
           });
@@ -3136,7 +3143,7 @@ describe("parseAgentSessionTranscript", () => {
       lastActiveAtMs: Date.parse("2026-08-25T08:00:00.000Z"),
     });
 
-    expect(thread?.title).toBe("<environment_context>");
+    expect(thread?.title).toBe("Initialize Git and add a README.");
     expect(thread?.messages.map((message) => message.text)).toEqual([
       context,
       "Initialize Git and add a README.",
@@ -3163,7 +3170,7 @@ describe("parseAgentSessionTranscript", () => {
       lastActiveAtMs: Date.parse("2026-08-25T08:00:00.000Z"),
     });
 
-    expect(thread?.title).toBe("<environment_context>");
+    expect(thread?.title).toBe("Create a useful project.");
     expect(thread?.messages.map((message) => message.text)).toEqual([prompt]);
   });
 
@@ -3186,7 +3193,32 @@ describe("parseAgentSessionTranscript", () => {
       lastActiveAtMs: Date.parse("2026-08-25T08:00:00.000Z"),
     });
 
-    expect(thread?.title).toBe("## My request for Codex:");
+    expect(thread?.title).toBe("Fix the visible bug");
+    expect(thread?.messages.map((message) => message.text)).toEqual([prompt]);
+  });
+
+  it("titles a Codex event after the request that follows injected setup blocks", () => {
+    const prompt = [
+      "<recommended_plugins>\nGitHub\n</recommended_plugins>",
+      "# AGENTS.md instructions for /tmp/project\n\n<INSTRUCTIONS>\nRules\n</INSTRUCTIONS>",
+      '<in-app-browser-context source="ambient-ui-state">\nTab\n</in-app-browser-context>',
+      "Fix the import titles",
+    ].join("\n");
+    const thread = AgentSessionScanner.parseAgentSessionTranscript({
+      contents: [
+        encodeTranscriptRecord({ type: "session_meta", payload: { id: "codex-session" } }),
+        encodeTranscriptRecord({
+          type: "event_msg",
+          payload: { type: "user_message", message: prompt },
+        }),
+      ].join("\n"),
+      source: "codex",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      fallbackSessionId: "fallback",
+      lastActiveAtMs: Date.parse("2026-08-25T08:00:00.000Z"),
+    });
+
+    expect(thread?.title).toBe("Fix the import titles");
     expect(thread?.messages.map((message) => message.text)).toEqual([prompt]);
   });
 

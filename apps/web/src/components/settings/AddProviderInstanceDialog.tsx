@@ -4,7 +4,7 @@ import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import { CheckIcon, HardDriveIcon, MessageCircleIcon, TerminalIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   type AcpRegistrySearchAgent,
@@ -181,10 +181,11 @@ export function AddProviderInstanceDialog({
 
   // Codex and Claude run at their default slots before they are configured, so
   // those ids stay reserved; other unconfigured default slots are free to take.
-  const existingIds = useMemo(
-    () => new Set(["codex", "claudeAgent", ...Object.keys(settings.providerInstances ?? {})]),
-    [settings.providerInstances],
-  );
+  const existingIds = new Set([
+    "codex",
+    "claudeAgent",
+    ...Object.keys(settings.providerInstances ?? {}),
+  ]);
 
   const driverOption = providerClients.get(driver) ?? DEFAULT_DRIVER_OPTION;
   const isAcpRegistry = driver === ACP_REGISTRY_DRIVER_KIND;
@@ -211,10 +212,7 @@ export function AddProviderInstanceDialog({
       label,
       existingIds,
     );
-  const driverSettingsFields = useMemo(
-    () => deriveProviderSettingsFields(driverOption),
-    [driverOption],
-  );
+  const driverSettingsFields = deriveProviderSettingsFields(driverOption);
   const instanceIdError = validateInstanceId(instanceId, existingIds);
   const showInstanceIdError = hasAttemptedSubmit && instanceIdError !== null;
   const identityStep = 1;
