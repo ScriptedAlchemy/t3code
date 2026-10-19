@@ -1,6 +1,7 @@
 import {
   ProviderInstanceId,
   ProviderSetupError,
+  providerPoolDriver,
   type OrchestrationV2ProviderCapabilities,
   type ProviderDriverKind,
   type ProviderInstanceConfig,
@@ -33,6 +34,16 @@ export class ProviderAdapterRegistryLookupError extends Schema.TaggedError<Provi
   }
 }
 
+/** A pool id reached the adapter layer, so a selection entry point skipped routing. */
+export class ProviderAdapterUnroutedPoolError extends Schema.TaggedError<ProviderAdapterUnroutedPoolError>()(
+  "ProviderAdapterUnroutedPoolError",
+  { instanceId: ProviderInstanceId },
+) {
+  override get message(): string {
+    return `Pool ${this.instanceId} must be routed to a member before reaching a provider adapter.`;
+  }
+}
+
 export class ProviderAdapterRegistryMetadataError extends Schema.TaggedError<ProviderAdapterRegistryMetadataError>()(
   "ProviderAdapterRegistryMetadataError",
   { instanceId: ProviderInstanceId, cause: Schema.Defect() },
@@ -40,6 +51,7 @@ export class ProviderAdapterRegistryMetadataError extends Schema.TaggedError<Pro
 
 export const ProviderAdapterRegistryV2Error = Schema.Union([
   ProviderAdapterRegistryLookupError,
+  ProviderAdapterUnroutedPoolError,
   ProviderAdapterRegistryMetadataError,
   ProviderAdapterDriverCreateError,
 ]);
@@ -66,6 +78,25 @@ export class ProviderAdapterRegistryV2 extends Context.Service<
   ProviderAdapterRegistryV2Shape
 >()("t3/orchestration-v2/ProviderAdapterRegistry/ProviderAdapterRegistryV2") {}
 
+const refusingPoolIds = (
+  registry: ProviderAdapterRegistryV2Shape,
+): ProviderAdapterRegistryV2Shape => {
+  const guard = (instanceId: ProviderInstanceId) =>
+    providerPoolDriver(instanceId) === null
+      ? Effect.void
+      : Effect.fail(new ProviderAdapterUnroutedPoolError({ instanceId }));
+  return {
+    ...registry,
+    get: (instanceId) => guard(instanceId).pipe(Effect.andThen(registry.get(instanceId))),
+    ...(registry.getMetadata === undefined
+      ? {}
+      : {
+          getMetadata: (instanceId: ProviderInstanceId) =>
+            guard(instanceId).pipe(Effect.andThen(registry.getMetadata!(instanceId))),
+        }),
+  };
+};
+
 export const layerFromProviderInstanceRegistry: Layer.Layer<
   ProviderAdapterRegistryV2,
   never,
@@ -74,89 +105,92 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
   ProviderAdapterRegistryV2,
   Effect.gen(function* () {
     const instances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
-    return ProviderAdapterRegistryV2.of({
-      get: (instanceId) =>
-        instances.getInstance(instanceId).pipe(
-          Effect.flatMap((instance) => {
-            if (instance === undefined)
-              return new ProviderAdapterRegistryLookupError({ instanceId });
-            const adapter = instance.orchestrationAdapter;
-            const auth = instance.auth;
-            if (!auth) return Effect.succeed(adapter);
-            return Effect.succeed({
-              ...adapter,
-              openSession: (input) => {
-                const open = Effect.gen(function* () {
-                  const binding = auth.credentialBinding;
-                  const related = binding
-                    ? (yield* instances.listInstances).filter(
-                        (instance) =>
-                          instance.auth?.credentialBinding?.key === binding.key &&
-                          instance.auth.credentialBinding.owner === binding.owner,
+    return ProviderAdapterRegistryV2.of(
+      refusingPoolIds({
+        get: (instanceId) =>
+          instances.getInstance(instanceId).pipe(
+            Effect.flatMap((instance) => {
+              if (instance === undefined)
+                return new ProviderAdapterRegistryLookupError({ instanceId });
+              const adapter = instance.orchestrationAdapter;
+              const auth = instance.auth;
+              if (!auth) return Effect.succeed(adapter);
+              return Effect.succeed({
+                ...adapter,
+                openSession: (input) => {
+                  const open = Effect.gen(function* () {
+                    const binding = auth.credentialBinding;
+                    const related = binding
+                      ? (yield* instances.listInstances).filter(
+                          (instance) =>
+                            instance.auth?.credentialBinding?.key === binding.key &&
+                            instance.auth.credentialBinding.owner === binding.owner,
+                        )
+                      : [instance];
+                    for (const instance of related) {
+                      if (
+                        instance.auth?.isChangingCredentials &&
+                        (yield* instance.auth.isChangingCredentials)
                       )
-                    : [instance];
-                  for (const instance of related) {
-                    if (
-                      instance.auth?.isChangingCredentials &&
-                      (yield* instance.auth.isChangingCredentials)
-                    )
-                      return yield* new ProviderSetupError({
-                        instanceId,
-                        operation: "session",
-                        detail: "This provider's sign-in is changing. Try again after it finishes.",
-                      });
-                  }
-                  let admitted: Effect.Effect<
-                    ProviderAdapter.ProviderAdapterV2SessionRuntime,
-                    ProviderAdapter.ProviderAdapterV2Error | ProviderSetupError,
-                    Scope.Scope
-                  > = adapter.openSession(input);
-                  // Shared credential changes must interrupt a peer's startup too.
-                  for (const peer of related) {
-                    if (peer.auth?.withAccess) admitted = peer.auth.withAccess(admitted);
-                  }
-                  return yield* admitted;
-                });
-                return open.pipe(
-                  Effect.mapError((cause) =>
-                    isProviderSetupError(cause)
-                      ? new ProviderAdapter.ProviderAdapterOpenSessionError({
-                          driver: adapter.driver,
-                          providerSessionId: input.providerSessionId,
-                          cause,
-                        })
-                      : cause,
-                  ),
-                );
-              },
-            } satisfies ProviderAdapter.ProviderAdapterV2["Service"]);
+                        return yield* new ProviderSetupError({
+                          instanceId,
+                          operation: "session",
+                          detail:
+                            "This provider's sign-in is changing. Try again after it finishes.",
+                        });
+                    }
+                    let admitted: Effect.Effect<
+                      ProviderAdapter.ProviderAdapterV2SessionRuntime,
+                      ProviderAdapter.ProviderAdapterV2Error | ProviderSetupError,
+                      Scope.Scope
+                    > = adapter.openSession(input);
+                    // Shared credential changes must interrupt a peer's startup too.
+                    for (const peer of related) {
+                      if (peer.auth?.withAccess) admitted = peer.auth.withAccess(admitted);
+                    }
+                    return yield* admitted;
+                  });
+                  return open.pipe(
+                    Effect.mapError((cause) =>
+                      isProviderSetupError(cause)
+                        ? new ProviderAdapter.ProviderAdapterOpenSessionError({
+                            driver: adapter.driver,
+                            providerSessionId: input.providerSessionId,
+                            cause,
+                          })
+                        : cause,
+                    ),
+                  );
+                },
+              } satisfies ProviderAdapter.ProviderAdapterV2["Service"]);
+            }),
+          ),
+        list: () =>
+          instances.listInstances.pipe(
+            Effect.map((available) => available.map((instance) => instance.instanceId)),
+          ),
+        getMetadata: (instanceId) =>
+          Effect.gen(function* () {
+            const instance = yield* instances.getInstance(instanceId);
+            if (instance === undefined) {
+              return yield* new ProviderAdapterRegistryLookupError({ instanceId });
+            }
+            const capabilities = yield* instance.orchestrationAdapter
+              .getCapabilities()
+              .pipe(
+                Effect.mapError(
+                  (cause) => new ProviderAdapterRegistryMetadataError({ instanceId, cause }),
+                ),
+              );
+            return {
+              driver: instance.driverKind,
+              continuationKey: instance.continuationIdentity.continuationKey,
+              enabled: instance.enabled,
+              capabilities,
+            };
           }),
-        ),
-      list: () =>
-        instances.listInstances.pipe(
-          Effect.map((available) => available.map((instance) => instance.instanceId)),
-        ),
-      getMetadata: (instanceId) =>
-        Effect.gen(function* () {
-          const instance = yield* instances.getInstance(instanceId);
-          if (instance === undefined) {
-            return yield* new ProviderAdapterRegistryLookupError({ instanceId });
-          }
-          const capabilities = yield* instance.orchestrationAdapter
-            .getCapabilities()
-            .pipe(
-              Effect.mapError(
-                (cause) => new ProviderAdapterRegistryMetadataError({ instanceId, cause }),
-              ),
-            );
-          return {
-            driver: instance.driverKind,
-            continuationKey: instance.continuationIdentity.continuationKey,
-            enabled: instance.enabled,
-            capabilities,
-          };
-        }),
-    });
+      }),
+    );
   }),
 );
 
@@ -166,7 +200,7 @@ export type ProviderAdapterRegistryBuildError = typeof ProviderAdapterRegistryBu
 function makeRegistry(
   adapters: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>,
 ): ProviderAdapterRegistryV2Shape {
-  return {
+  return refusingPoolIds({
     get: (instanceId) =>
       Effect.gen(function* () {
         const adapter = adapters.find((candidate) => candidate.instanceId === instanceId);
@@ -176,7 +210,7 @@ function makeRegistry(
         return adapter;
       }),
     list: () => Effect.succeed(adapters.map((adapter) => adapter.instanceId)),
-  };
+  });
 }
 
 export function layerFromAdapters(
@@ -353,12 +387,14 @@ const layerFromProviderAdapter: Layer.Layer<
   ProviderAdapterRegistryV2,
   Effect.gen(function* () {
     const adapter = yield* ProviderAdapter.ProviderAdapterV2;
-    return ProviderAdapterRegistryV2.of({
-      get: (instanceId) =>
-        adapter.instanceId === instanceId
-          ? Effect.succeed(adapter)
-          : Effect.fail(new ProviderAdapterRegistryLookupError({ instanceId })),
-      list: () => Effect.succeed([adapter.instanceId]),
-    } satisfies ProviderAdapterRegistryV2Shape);
+    return ProviderAdapterRegistryV2.of(
+      refusingPoolIds({
+        get: (instanceId) =>
+          adapter.instanceId === instanceId
+            ? Effect.succeed(adapter)
+            : Effect.fail(new ProviderAdapterRegistryLookupError({ instanceId })),
+        list: () => Effect.succeed([adapter.instanceId]),
+      }),
+    );
   }),
 );

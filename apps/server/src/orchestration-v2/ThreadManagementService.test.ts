@@ -334,6 +334,38 @@ it.effect("allows a new turn when the project enables an instance the machine di
   }).pipe(Effect.provide(layerTest));
 });
 
+it.effect("accepts a pool id while any member is enabled for the project", () => {
+  const projectId = ProjectId.make("project:thread-management:gate-pool");
+  const personal = ProviderInstanceId.make("codex");
+  const work = ProviderInstanceId.make("codex_work");
+  const poolId = ProviderInstanceId.make("pool_codex");
+  const commandId = CommandId.make("command:thread-management:gate-pool");
+  const settings = (workEnabled: boolean) =>
+    ServerSettings.layerTest({
+      providerInstances: {
+        [personal]: { driver: "codex", enabled: false },
+        [work]: { driver: "codex", enabled: workEnabled },
+      },
+      providerPools: {
+        [ProviderDriverKind.make("codex")]: { enabled: true, memberInstanceIds: [personal, work] },
+      },
+    });
+
+  return Effect.gen(function* () {
+    yield* Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      yield* threads.assertProviderInstanceEnabled({ projectId, commandId, instanceId: poolId });
+    }).pipe(Effect.provide(layerThreadManagementTest(settings(true))));
+    yield* Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const error = yield* Effect.flip(
+        threads.assertProviderInstanceEnabled({ projectId, commandId, instanceId: poolId }),
+      );
+      expect(error).toMatchObject({ projectId, instanceId: poolId });
+    }).pipe(Effect.provide(layerThreadManagementTest(settings(false))));
+  });
+});
+
 it.effect("inherits the machine value when the project has no override", () => {
   const projectId = ProjectId.make("project:thread-management:gate-inherit");
   const instanceId = ProviderInstanceId.make("codex_work");
