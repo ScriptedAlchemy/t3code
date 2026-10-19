@@ -3051,8 +3051,20 @@ const OrchestrationV2InternalCommand = Schema.Union([
     placeholder: Schema.optional(Schema.String),
     secretStatus: OrchestrationV2SecretRequestStatus,
   }),
+  Schema.Struct({
+    type: Schema.Literal("run.pool-failover"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    attemptId: RunAttemptId,
+    failure: OrchestrationV2ProviderFailure,
+  }),
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
+
+// Keyed by attempt so the hook and the recovery sweep collapse onto one receipt.
+export const runPoolFailoverCommandId = (attemptId: RunAttemptId): CommandId =>
+  CommandId.make(`command:system:pool-failover:${attemptId}`);
 
 export type OrchestrationV2ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
 
