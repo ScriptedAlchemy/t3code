@@ -1,3 +1,5 @@
+import { isReservedProviderInstanceId } from "@t3tools/contracts";
+
 export type WizardNavigation =
   | { readonly kind: "navigate"; readonly step: number }
   | { readonly kind: "blocked"; readonly step: number; readonly error: string };
@@ -37,6 +39,25 @@ export function updateProviderIdentityDraft(
     ...drafts,
     [driver]: { ...getProviderIdentityDraft(drafts, driver), ...update },
   };
+}
+
+const INSTANCE_ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+
+/**
+ * Validate an instance id against the same slug rules the server applies in
+ * `ProviderInstanceId` (see `packages/contracts/src/providerInstance.ts`).
+ */
+export function validateInstanceId(id: string, existing: ReadonlySet<string>): string | null {
+  if (id.length === 0) return "Instance ID is required.";
+  if (id.length > 64) return "Instance ID must be 64 characters or fewer.";
+  if (!INSTANCE_ID_PATTERN.test(id)) {
+    return "Instance ID must start with a letter and use only letters, digits, '-', or '_'.";
+  }
+  if (isReservedProviderInstanceId(id)) {
+    return "Instance IDs starting with 'pool_' are reserved for account pools.";
+  }
+  if (existing.has(id)) return `An instance named '${id}' already exists.`;
+  return null;
 }
 
 export function deriveAvailableInstanceId(

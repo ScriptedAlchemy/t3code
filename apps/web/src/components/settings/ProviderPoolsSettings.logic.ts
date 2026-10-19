@@ -26,6 +26,17 @@ export function limitedUntilLabel(
   return `Limited until ${formatUpcomingTimestamp(provider.limitedUntil, timestampFormat, nowMs)}`;
 }
 
+/** The name of the pool an account belongs to, for the Providers page's "In Claude pool". */
+export function resolveProviderPoolName(
+  providers: ReadonlyArray<ServerProvider>,
+  provider: Pick<ServerProvider, "pool"> | undefined,
+): string | undefined {
+  if (provider?.pool?.role !== "member") return undefined;
+  const { poolInstanceId } = provider.pool;
+  const pool = providers.find((candidate) => candidate.instanceId === poolInstanceId);
+  return pool === undefined ? undefined : resolveProviderInstanceDisplayName(pool);
+}
+
 /**
  * Accounts sharing a continuation group resume each other's conversations natively; any other
  * switch is a summary handoff, which is what makes a third-party endpoint visibly different.

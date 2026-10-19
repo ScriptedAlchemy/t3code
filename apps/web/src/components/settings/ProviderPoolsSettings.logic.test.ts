@@ -6,6 +6,7 @@ import {
   buildProviderPoolPatch,
   limitedUntilLabel,
   modelCoverageLabel,
+  resolveProviderPoolName,
 } from "./ProviderPoolsSettings.logic";
 
 const claude = ProviderDriverKind.make("claudeAgent");
@@ -173,5 +174,25 @@ describe("limitedUntilLabel", () => {
     expect(
       limitedUntilLabel({ limitedUntil: "2026-10-19T12:30:00.000Z" }, nowMs, "locale"),
     ).toMatch(/^Limited until /);
+  });
+});
+
+describe("resolveProviderPoolName", () => {
+  const pool = provider("pool_claudeAgent", claude, {
+    displayName: "Claude",
+    pool: { role: "pool", memberInstanceIds: [id("claudeAgent")], droppedModels: [] },
+  });
+  const member = provider("claudeAgent", claude, {
+    pool: { role: "member", poolInstanceId: id("pool_claudeAgent") },
+  });
+
+  it("names the pool an account belongs to", () => {
+    expect(resolveProviderPoolName([member, pool], member)).toBe("Claude");
+  });
+
+  it("is absent for an unpooled account or a member whose pool is not listed", () => {
+    expect(resolveProviderPoolName([member, pool], provider("codex", codex))).toBeUndefined();
+    expect(resolveProviderPoolName([member], member)).toBeUndefined();
+    expect(resolveProviderPoolName([member], undefined)).toBeUndefined();
   });
 });

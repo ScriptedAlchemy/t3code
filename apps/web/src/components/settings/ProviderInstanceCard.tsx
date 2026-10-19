@@ -57,6 +57,7 @@ import type {
 import { deriveProviderSettingsFields, ProviderSettingsForm } from "./ProviderSettingsForm";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { ProviderLimitedUntil } from "./ProviderLimitedUntil";
 import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
@@ -568,6 +569,7 @@ interface ProviderInstanceCardProps {
   readonly instance: ProviderInstanceConfig;
   readonly driverOption: ProviderClientDefinition | undefined;
   readonly liveProvider: ServerProvider | undefined;
+  readonly poolName?: string | undefined;
   readonly mode: "list" | "editor";
   readonly selected?: boolean | undefined;
   readonly onSelect?: (() => void) | undefined;
@@ -619,6 +621,7 @@ export function ProviderInstanceCard({
   instance,
   driverOption,
   liveProvider,
+  poolName,
   mode,
   selected = false,
   onSelect,
@@ -978,6 +981,12 @@ export function ProviderInstanceCard({
     </Popover>
   ) : null;
 
+  const poolBadge = poolName ? (
+    <Badge variant="outline" size="sm">
+      In {poolName} pool
+    </Badge>
+  ) : null;
+
   if (mode === "list") {
     return (
       <div
@@ -1004,6 +1013,7 @@ export function ProviderInstanceCard({
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-2">
               <span className="truncate text-sm font-medium text-foreground">{displayName}</span>
+              {poolBadge}
               {versionLabel ? (
                 <code className="max-w-24 shrink-0 truncate text-xs text-muted-foreground">
                   {versionLabel}
@@ -1032,6 +1042,10 @@ export function ProviderInstanceCard({
                 </span>
               </ProviderStatusDiagnostic>
             </span>
+            <ProviderLimitedUntil
+              provider={liveProvider}
+              className="mt-0.5 block text-xs text-warning-foreground"
+            />
           </span>
         </div>
         <span className="flex h-5 shrink-0 items-center gap-1">
@@ -1062,6 +1076,8 @@ export function ProviderInstanceCard({
 
   const editorHeaderAction = (
     <div className="flex shrink-0 items-center gap-1.5">
+      <ProviderLimitedUntil provider={liveProvider} className="text-xs text-warning-foreground" />
+      {poolBadge}
       {driverOption?.badgeLabel ? (
         <Badge variant="warning" size="sm" className="shrink-0">
           {driverOption.badgeLabel}
