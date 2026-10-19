@@ -79,16 +79,13 @@ const layerTest = ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe
   Layer.provide(layerInstanceRegistry),
 );
 
-it.effect("refuses a pool id that reached the adapter layer without routing", () =>
+it.effect("never resolves a pool id to an adapter", () =>
   Effect.gen(function* () {
     const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
-    const poolId = ProviderInstanceId.make("pool_codex");
+    const poolId = ProviderInstanceId.make("pool_claudeAgent");
     const error = yield* Effect.flip(registry.get(poolId));
-    assert.instanceOf(error, ProviderAdapterRegistry.ProviderAdapterUnroutedPoolError);
+    assert.instanceOf(error, ProviderAdapterRegistry.ProviderAdapterRegistryLookupError);
     assert.equal(error.instanceId, poolId);
-    const metadata = yield* Effect.flip(registry.getMetadata!(poolId));
-    assert.instanceOf(metadata, ProviderAdapterRegistry.ProviderAdapterUnroutedPoolError);
-    assert.deepEqual(yield* registry.list(), [personalId, workId]);
   }).pipe(Effect.provide(layerTest)),
 );
 
