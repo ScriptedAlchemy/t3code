@@ -1,0 +1,679 @@
+import { assert, it } from "@effect/vitest";
+import {
+  CommandId,
+  MessageId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderThreadId,
+  ProviderTurnId,
+  runPoolFailoverCommandId,
+  ThreadId,
+  type OrchestrationV2ProviderSession,
+  type OrchestrationV2ProviderThread,
+  type ProviderPoolSettings,
+  type ServerProvider,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
+
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as EffectWorker from "./EffectWorker.ts";
+import * as EventSink from "./EventSink.ts";
+import * as Orchestrator from "./Orchestrator.ts";
+import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import { ProviderPoolCatalog } from "./ProviderPoolCatalog.ts";
+import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import { withProviderPools } from "../provider/providerPoolSnapshot.ts";
+import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+
+const driver = ProviderDriverKind.make("claudeAgent");
+const first = ProviderInstanceId.make("claudeAgent");
+const second = ProviderInstanceId.make("claudeAgent_work");
+const poolId = ProviderInstanceId.make("pool_claudeAgent");
+const projectId = ProjectId.make("project:pool-failover");
+const model = "pool-model";
+const minutes = (count: number) => count * 60_000;
+
+interface PoolAdapterState {
+  /** The next started turn fails with this reset time, whichever member starts it. */
+  readonly failNextStart: string | null;
+  /** When set, a started turn waits here before completing. */
+  readonly holdTurn: Deferred.Deferred<void> | null;
+  readonly started: ReadonlyArray<{
+    readonly instanceId: ProviderInstanceId;
+    readonly attemptId: string;
+    readonly prompt: string;
+  }>;
+}
+
+function makePoolAdapter(
+  instanceId: ProviderInstanceId,
+  state: Ref.Ref<PoolAdapterState>,
+): ProviderAdapter.ProviderAdapterV2["Service"] {
+  return {
+    instanceId,
+    driver,
+    getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+    planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+    openSession: (sessionInput) =>
+      Effect.gen(function* () {
+        const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        const now = yield* DateTime.now;
+        const providerSession: OrchestrationV2ProviderSession = {
+          id: sessionInput.providerSessionId,
+          driver,
+          providerInstanceId: instanceId,
+          status: "ready",
+          cwd: sessionInput.runtimePolicy.cwd ?? "/fallback",
+          model: sessionInput.modelSelection.model,
+          capabilities: CodexProviderCapabilitiesV2,
+          createdAt: now,
+          updatedAt: now,
+          lastError: null,
+        };
+        return {
+          instanceId,
+          driver,
+          providerSessionId: sessionInput.providerSessionId,
+          providerSession,
+          events: Stream.fromQueue(events),
+          ensureThread: (threadInput) =>
+            Effect.gen(function* () {
+              const createdAt = yield* DateTime.now;
+              return {
+                id: ProviderThreadId.make(`provider-thread:${instanceId}:${threadInput.threadId}`),
+                driver,
+                providerInstanceId: instanceId,
+                providerSessionId: sessionInput.providerSessionId,
+                appThreadId: threadInput.threadId,
+                ownerNodeId: null,
+                nativeThreadRef: {
+                  driver,
+                  nativeId: `native-thread:${instanceId}:${threadInput.threadId}`,
+                  strength: "strong",
+                },
+                nativeConversationHeadRef: null,
+                status: "idle",
+                firstRunOrdinal: null,
+                lastRunOrdinal: null,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt,
+                updatedAt: createdAt,
+              } satisfies OrchestrationV2ProviderThread;
+            }),
+          resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+          startTurn: (input) =>
+            Effect.gen(function* () {
+              const prompt = input.message.text;
+              const { failNextStart, holdTurn } = yield* Ref.getAndUpdate(state, (current) => ({
+                ...current,
+                failNextStart: null,
+                started: [...current.started, { instanceId, attemptId: input.attemptId, prompt }],
+              }));
+              const providerTurnId = ProviderTurnId.make(`provider-turn:${input.attemptId}`);
+              const occurredAt = yield* DateTime.now;
+              yield* Queue.offer(events, {
+                type: "provider_turn.updated",
+                driver,
+                providerTurn: {
+                  id: providerTurnId,
+                  providerThreadId: input.providerThread.id,
+                  nodeId: input.rootNodeId,
+                  runAttemptId: input.attemptId,
+                  nativeTurnRef: {
+                    driver,
+                    nativeId: `native:${providerTurnId}`,
+                    strength: "strong",
+                  },
+                  ordinal: input.providerTurnOrdinal,
+                  status: "running",
+                  startedAt: occurredAt,
+                  completedAt: null,
+                },
+              });
+              if (failNextStart !== null) {
+                yield* Queue.offer(events, {
+                  type: "turn.terminal",
+                  driver,
+                  providerThreadId: input.providerThread.id,
+                  providerTurnId,
+                  runOrdinal: input.runOrdinal,
+                  failureItemOrdinal: input.providerTurnOrdinal * 100 + 1,
+                  status: "failed",
+                  failure: {
+                    class: "usage_limit",
+                    message: "Usage limit reached.",
+                    code: "api_error_429",
+                    retryable: true,
+                    resetAt: failNextStart,
+                  },
+                  threadDisposition: "reusable",
+                });
+                return;
+              }
+              if (holdTurn !== null) yield* Deferred.await(holdTurn);
+              const completedAt = yield* DateTime.now;
+              yield* Queue.offer(events, {
+                type: "provider_turn.updated",
+                driver,
+                providerTurn: {
+                  id: providerTurnId,
+                  providerThreadId: input.providerThread.id,
+                  nodeId: input.rootNodeId,
+                  runAttemptId: input.attemptId,
+                  nativeTurnRef: {
+                    driver,
+                    nativeId: `native:${providerTurnId}`,
+                    strength: "strong",
+                  },
+                  ordinal: input.providerTurnOrdinal,
+                  status: "completed",
+                  startedAt: occurredAt,
+                  completedAt,
+                },
+              });
+              yield* Queue.offer(events, {
+                type: "turn.terminal",
+                driver,
+                providerThreadId: input.providerThread.id,
+                providerTurnId,
+                runOrdinal: input.runOrdinal,
+                status: "completed",
+                failure: null,
+                threadDisposition: "reusable",
+              });
+            }),
+          steerTurn: () => Effect.void,
+          interruptTurn: () => Effect.void,
+          respondToRuntimeRequest: () => Effect.void,
+          readThreadSnapshot: () => Effect.die("unused readThreadSnapshot"),
+          rollbackThread: () => Effect.die("unused rollbackThread"),
+          forkThread: () => Effect.die("unused forkThread"),
+        };
+      }),
+  };
+}
+
+const makeInstance = (
+  adapter: ProviderAdapter.ProviderAdapterV2["Service"],
+  continuationKey: string,
+): ProviderInstance => ({
+  instanceId: adapter.instanceId,
+  driverKind: driver,
+  continuationIdentity: { driverKind: driver, continuationKey },
+  displayName: String(adapter.instanceId),
+  enabled: true,
+  snapshot: {} as ProviderInstance["snapshot"],
+  orchestrationAdapter: adapter,
+  textGeneration: {} as ProviderInstance["textGeneration"],
+});
+
+const makeProvider = (
+  instanceId: ProviderInstanceId,
+  displayName: string,
+  groupKey: string,
+  limitedUntil?: string,
+): ServerProvider => ({
+  instanceId,
+  driver,
+  displayName,
+  enabled: true,
+  installed: true,
+  version: "1.0.0",
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-10-19T00:00:00.000Z",
+  continuation: { groupKey },
+  models: [{ slug: model, name: model, isCustom: false, capabilities: null }],
+  slashCommands: [],
+  skills: [],
+  ...(limitedUntil === undefined ? {} : { limitedUntil }),
+});
+
+const poolSettings: ProviderPoolSettings = {
+  [driver]: { enabled: true, memberInstanceIds: [first, second] },
+};
+
+const settings = {
+  providerInstances: {
+    [first]: { driver, enabled: true },
+    [second]: { driver, enabled: true },
+  },
+  providerPools: poolSettings,
+};
+
+/** A catalog over a mutable member list, so a test can cool a member and see markLimited land. */
+const makeCatalog = (providers: Ref.Ref<ReadonlyArray<ServerProvider>>) =>
+  Layer.succeed(ProviderPoolCatalog, {
+    getPublishedProviders: Ref.get(providers).pipe(
+      Effect.map((members) =>
+        withProviderPools({ providers: members, providerPools: poolSettings }),
+      ),
+    ),
+    markLimited: ({ instanceId, until }) =>
+      Ref.update(providers, (members) =>
+        members.map((member) =>
+          member.instanceId === instanceId ? { ...member, limitedUntil: until } : member,
+        ),
+      ),
+  });
+
+const makeRegistry = (
+  keys: { readonly first: string; readonly second: string },
+  state: Ref.Ref<PoolAdapterState>,
+) => {
+  const instances = [
+    makeInstance(makePoolAdapter(first, state), keys.first),
+    makeInstance(makePoolAdapter(second, state), keys.second),
+  ];
+  return ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
+    Layer.provide(
+      Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+        getInstance: (instanceId) =>
+          Effect.succeed(instances.find((instance) => instance.instanceId === instanceId)),
+        listInstances: Effect.succeed(instances),
+        listUnavailable: Effect.succeed([]),
+        streamChanges: Stream.empty,
+        subscribeChanges: Effect.never,
+      }),
+    ),
+  );
+};
+
+const createThread = (threadId: ThreadId, cwd: string, instanceId: ProviderInstanceId) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      createdBy: "user",
+      creationSource: "web",
+      commandId: CommandId.make(`${threadId}:create`),
+      threadId,
+      projectId,
+      title: "Pool failover",
+      modelSelection: { instanceId, model },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: cwd,
+    });
+  });
+
+const sendMessage = (threadId: ThreadId, key: string, instanceId?: ProviderInstanceId) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      createdBy: "user",
+      creationSource: "web",
+      commandId: CommandId.make(`${threadId}:${key}`),
+      threadId,
+      messageId: MessageId.make(`${threadId}:${key}:message`),
+      text: key,
+      attachments: [],
+      ...(instanceId === undefined ? {} : { modelSelection: { instanceId, model } }),
+      dispatchMode: { type: "start_immediately" },
+    });
+  });
+
+const awaitRunStatus = (threadId: ThreadId, status: "completed" | "failed" | "running") =>
+  Effect.gen(function* () {
+    const eventSink = yield* EventSink.EventSinkV2;
+    return yield* eventSink
+      .stream({ threadId, afterSequence: yield* eventSink.latestSequence({ threadId }) })
+      .pipe(
+        Stream.filter(
+          (stored) => stored.event.type === "run.updated" && stored.event.payload.status === status,
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkScoped,
+      );
+  });
+
+it.live("moves a limited Claude turn to the other account with a summary handoff", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("pool-failover-claude");
+      const threadId = ThreadId.make("thread:pool-failover-claude");
+      const resetAt = DateTime.formatIso(
+        DateTime.makeUnsafe(DateTime.toEpochMillis(yield* DateTime.now) + minutes(30)),
+      );
+      const state = yield* Ref.make<PoolAdapterState>({
+        failNextStart: resetAt,
+        holdTurn: null,
+        started: [],
+      });
+      const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+        makeProvider(first, "Claude", "claude:home:first"),
+        makeProvider(second, "Claude - Work", "claude:home:second"),
+      ]);
+      const result = yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* createThread(threadId, cwd, poolId);
+        const firstCompleted = yield* awaitRunStatus(threadId, "completed");
+        const hold = yield* Deferred.make<void>();
+        yield* Ref.update(state, (current) => ({ ...current, holdTurn: hold }));
+        yield* sendMessage(threadId, "first");
+        const running = yield* awaitRunStatus(threadId, "running");
+        yield* Fiber.join(running);
+        yield* sendMessage(threadId, "second");
+        yield* Deferred.succeed(hold, undefined);
+        yield* Fiber.join(firstCompleted);
+        const secondCompleted = yield* awaitRunStatus(threadId, "completed");
+        yield* Ref.update(state, (current) => ({ ...current, holdTurn: null }));
+        yield* Fiber.join(secondCompleted);
+        yield* worker.drain();
+
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const failedAttemptId = projection.attempts[0]!.id;
+        const replay = yield* orchestrator.dispatch({
+          type: "run.pool-failover",
+          commandId: runPoolFailoverCommandId(failedAttemptId),
+          threadId,
+          runId: projection.runs[0]!.id,
+          attemptId: failedAttemptId,
+          failure: {
+            class: "usage_limit",
+            message: "Usage limit reached.",
+            code: "api_error_429",
+            retryable: true,
+            resetAt,
+          },
+        });
+        yield* worker.drain();
+        return {
+          projection: yield* orchestrator.getThreadProjection(threadId),
+          replayedEvents: replay.storedEvents.length,
+          started: (yield* Ref.get(state)).started,
+          members: yield* Ref.get(providers),
+        };
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "pool-failover-claude" },
+            makeRegistry({ first: "claude:home:first", second: "claude:home:second" }, state),
+            { settings, poolCatalog: makeCatalog(providers) },
+          ),
+        ),
+      );
+
+      const { projection, started } = result;
+      const [firstRun, secondRun] = projection.runs;
+      assert.lengthOf(projection.runs, 2);
+      assert.equal(firstRun?.status, "completed");
+      const attempts = projection.attempts.filter((attempt) => attempt.runId === firstRun?.id);
+      assert.deepEqual(
+        attempts.map((attempt) => [attempt.status, attempt.reason]),
+        [
+          ["failed", "initial"],
+          ["completed", "provider_recovery"],
+        ],
+      );
+      const [limited, recovered] = attempts;
+      assert.notEqual(limited?.providerInstanceId, recovered?.providerInstanceId);
+      assert.equal(firstRun?.providerInstanceId, recovered?.providerInstanceId);
+      assert.equal(projection.thread.providerInstanceId, recovered?.providerInstanceId);
+
+      const handoff = projection.contextHandoffs.find(
+        (candidate) => candidate.targetRunId === firstRun?.id,
+      );
+      assert.equal(handoff?.strategy, "full_thread_summary");
+      assert.isFalse(handoff?.history?.messages.some((message) => message.kind === "error"));
+      assert.lengthOf(
+        projection.messages.filter((message) => message.runId === firstRun?.id),
+        1,
+      );
+      assert.deepEqual(
+        started.map((turn) => turn.instanceId),
+        [limited?.providerInstanceId, recovered?.providerInstanceId, recovered?.providerInstanceId],
+      );
+      assert.isTrue(started[1]?.prompt.includes("first"));
+      assert.isTrue(started[1]?.prompt.includes("Context handoff"));
+
+      const notice = projection.turnItems.find((item) => item.type === "system_notice");
+      const limitedName = result.members.find(
+        (member) => member.instanceId === limited?.providerInstanceId,
+      )?.displayName;
+      const recoveredName = result.members.find(
+        (member) => member.instanceId === recovered?.providerInstanceId,
+      )?.displayName;
+      assert.equal(
+        notice?.type === "system_notice" ? notice.message : null,
+        `${limitedName} reached its usage limit. Continuing on ${recoveredName}.`,
+      );
+      assert.equal(
+        result.members.find((member) => member.instanceId === limited?.providerInstanceId)
+          ?.limitedUntil,
+        resetAt,
+      );
+
+      assert.equal(secondRun?.status, "completed");
+      assert.equal(secondRun?.providerInstanceId, recovered?.providerInstanceId);
+      assert.lengthOf(projection.attempts, 3);
+      assert.isAbove(result.replayedEvents, 0);
+    }),
+  ),
+);
+
+it.live("moves a limited shared-home turn to the other account with a native resume", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("pool-failover-shared");
+      const threadId = ThreadId.make("thread:pool-failover-shared");
+      const resetAt = DateTime.formatIso(
+        DateTime.makeUnsafe(DateTime.toEpochMillis(yield* DateTime.now) + minutes(30)),
+      );
+      const state = yield* Ref.make<PoolAdapterState>({
+        failNextStart: null,
+        holdTurn: null,
+        started: [],
+      });
+      const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+        makeProvider(first, "Codex", "codex:home:shared"),
+        makeProvider(second, "Codex 2", "codex:home:shared"),
+      ]);
+      const projection = yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* createThread(threadId, cwd, poolId);
+        const warmed = yield* awaitRunStatus(threadId, "completed");
+        yield* sendMessage(threadId, "warm");
+        yield* Fiber.join(warmed);
+        yield* worker.drain();
+        yield* Ref.update(state, (current) => ({ ...current, failNextStart: resetAt }));
+        const completed = yield* awaitRunStatus(threadId, "completed");
+        yield* sendMessage(threadId, "limited");
+        yield* Fiber.join(completed);
+        yield* worker.drain();
+        return yield* orchestrator.getThreadProjection(threadId);
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "pool-failover-shared" },
+            makeRegistry({ first: "codex:home:shared", second: "codex:home:shared" }, state),
+            { settings, poolCatalog: makeCatalog(providers) },
+          ),
+        ),
+      );
+
+      const run = projection.runs[1];
+      assert.equal(run?.status, "completed");
+      const attempts = projection.attempts.filter((attempt) => attempt.runId === run?.id);
+      assert.deepEqual(
+        attempts.map((attempt) => attempt.status),
+        ["failed", "completed"],
+      );
+      assert.notEqual(attempts[0]?.providerInstanceId, attempts[1]?.providerInstanceId);
+      assert.lengthOf(projection.contextHandoffs, 0);
+      const resumed = projection.providerThreads.find(
+        (candidate) => candidate.id === run?.providerThreadId,
+      );
+      assert.equal(resumed?.providerInstanceId, attempts[1]?.providerInstanceId);
+      assert.equal(
+        resumed?.nativeThreadRef?.nativeId,
+        `native-thread:${attempts[0]?.providerInstanceId}:${threadId}`,
+      );
+    }),
+  ),
+);
+
+it.live("fails the run with the pool's earliest reset when every account is cooling", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("pool-failover-cooling");
+      const threadId = ThreadId.make("thread:pool-failover-cooling");
+      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+      const failureResetAt = DateTime.formatIso(DateTime.makeUnsafe(nowMs + minutes(30)));
+      const siblingResetAt = DateTime.formatIso(DateTime.makeUnsafe(nowMs + minutes(10)));
+      const state = yield* Ref.make<PoolAdapterState>({
+        failNextStart: failureResetAt,
+        holdTurn: null,
+        started: [],
+      });
+      const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+        makeProvider(first, "Claude", "claude:home:first"),
+        makeProvider(second, "Claude - Work", "claude:home:second", siblingResetAt),
+      ]);
+      const { projection, shell } = yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* createThread(threadId, cwd, poolId);
+        const failed = yield* awaitRunStatus(threadId, "failed");
+        yield* sendMessage(threadId, "limited");
+        yield* Fiber.join(failed);
+        yield* worker.drain();
+        return {
+          projection: yield* orchestrator.getThreadProjection(threadId),
+          shell: yield* orchestrator.getThreadShell(threadId),
+        };
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "pool-failover-cooling" },
+            makeRegistry({ first: "claude:home:first", second: "claude:home:second" }, state),
+            { settings, poolCatalog: makeCatalog(providers) },
+          ),
+        ),
+      );
+
+      assert.equal(projection.runs[0]?.providerInstanceId, first);
+      assert.equal(projection.runs[0]?.status, "failed");
+      assert.lengthOf(projection.attempts, 1);
+      const error = projection.turnItems.find((item) => item.type === "error");
+      assert.equal(error?.type === "error" ? error.failure.resetAt : null, siblingResetAt);
+      assert.equal(shell?.usageLimitResetAt, siblingResetAt);
+      const armed = limitRecoveryCommand(shell!, true, nowMs);
+      assert.equal(armed?.type, "thread.metadata.update");
+      assert.equal(
+        armed?.type === "thread.metadata.update" ? armed.limitRecovery?.resetAt : null,
+        siblingResetAt,
+      );
+    }),
+  ),
+);
+
+it.live("routes a selection naming a cooling account to its healthy sibling", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("pool-failover-cooling-member");
+      const threadId = ThreadId.make("thread:pool-failover-cooling-member");
+      const state = yield* Ref.make<PoolAdapterState>({
+        failNextStart: null,
+        holdTurn: null,
+        started: [],
+      });
+      const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+        makeProvider(
+          first,
+          "Claude",
+          "claude:home:first",
+          DateTime.formatIso(
+            DateTime.makeUnsafe(DateTime.toEpochMillis(yield* DateTime.now) + minutes(10)),
+          ),
+        ),
+        makeProvider(second, "Claude - Work", "claude:home:second"),
+      ]);
+      const projection = yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* createThread(threadId, cwd, first);
+        const completed = yield* awaitRunStatus(threadId, "completed");
+        yield* sendMessage(threadId, "hello", first);
+        yield* Fiber.join(completed);
+        yield* worker.drain();
+        return yield* orchestrator.getThreadProjection(threadId);
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "pool-failover-cooling-member" },
+            makeRegistry({ first: "claude:home:first", second: "claude:home:second" }, state),
+            { settings, poolCatalog: makeCatalog(providers) },
+          ),
+        ),
+      );
+      assert.equal(projection.thread.providerInstanceId, second);
+      assert.equal(projection.runs[0]?.providerInstanceId, second);
+      assert.equal(projection.runs[0]?.status, "completed");
+    }),
+  ),
+);
+
+it.live("refuses a pool whose every member the project turned off", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("pool-failover-disabled");
+      const threadId = ThreadId.make("thread:pool-failover-disabled");
+      const state = yield* Ref.make<PoolAdapterState>({
+        failNextStart: null,
+        holdTurn: null,
+        started: [],
+      });
+      const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+        makeProvider(first, "Claude", "claude:home:first"),
+        makeProvider(second, "Claude - Work", "claude:home:second"),
+      ]);
+      const error = yield* createThread(threadId, cwd, poolId).pipe(
+        Effect.flip,
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "pool-failover-disabled" },
+            makeRegistry({ first: "claude:home:first", second: "claude:home:second" }, state),
+            {
+              settings: {
+                ...settings,
+                projectSettingsOverrides: {
+                  [projectId]: {
+                    providerInstances: {
+                      [first]: { enabled: false },
+                      [second]: { enabled: false },
+                    },
+                  },
+                },
+              },
+              poolCatalog: makeCatalog(providers),
+            },
+          ),
+        ),
+      );
+      assert.equal(error._tag, "OrchestratorDispatchError");
+      assert.equal(
+        error._tag === "OrchestratorDispatchError" ? error.cause : null,
+        "No account in the Claude pool is enabled for this project.",
+      );
+    }),
+  ),
+);
