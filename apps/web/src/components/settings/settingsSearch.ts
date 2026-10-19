@@ -21,6 +21,7 @@ export type SettingsPath =
   | "/settings/keybindings"
   | "/settings/snap-shot"
   | "/settings/providers"
+  | "/settings/account-pools"
   | "/settings/integrations"
   | "/settings/scheduled-tasks"
   | "/settings/source-control"
@@ -57,6 +58,7 @@ export interface SettingsSearchItem {
   readonly managedTunnelOnly?: boolean;
   readonly secondary?: boolean;
   readonly requiresThreadAutoSettlement?: boolean;
+  readonly requiresProviderPools?: boolean;
 }
 
 export interface SettingsSearchAvailability {
@@ -68,6 +70,7 @@ export interface SettingsSearchAvailability {
   readonly canManageLocalBackend: boolean;
   readonly isWslSettingsRowVisible: boolean;
   readonly hasThreadAutoSettlement: boolean;
+  readonly hasProviderPools?: boolean;
   readonly managedTunnelActive?: boolean;
 }
 
@@ -79,6 +82,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/keybindings": "Keybindings",
   "/settings/snap-shot": "SnapShots",
   "/settings/providers": "Providers",
+  "/settings/account-pools": "Account pools",
   "/settings/integrations": "Integrations",
   "/settings/scheduled-tasks": "Scheduled Tasks",
   "/settings/source-control": "Source Control",
@@ -635,6 +639,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "account-pools",
+    title: "Account pools",
+    to: "/settings/account-pools",
+    searchTerms: [
+      "load balance load balancing failover multiple accounts pool usage limit quota rotate switch claude codex",
+    ],
+    requiresProviderPools: true,
+  },
+  {
     id: "usage-providers",
     title: "Usage providers",
     to: "/settings/providers",
@@ -995,6 +1008,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/snap-shot": null,
   "/settings/keybindings": null,
   "/settings/providers": null,
+  "/settings/account-pools": null,
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",
@@ -1052,6 +1066,20 @@ export function getThreadAutoSettlementSearchAvailability(
       selected.length > 0 &&
       selected.every((environment) => eligibleEnvironmentIds.includes(environment.environmentId)),
   };
+}
+
+interface ProviderPoolsSearchEnvironment {
+  readonly serverConfig: {
+    readonly environment: { readonly capabilities: { readonly providerPools?: boolean } };
+  } | null;
+}
+
+export function hasProviderPoolsEnvironment(
+  environments: readonly ProviderPoolsSearchEnvironment[],
+): boolean {
+  return environments.some(
+    (environment) => environment.serverConfig?.environment.capabilities.providerPools === true,
+  );
 }
 
 export function isSettingsSearchScopeAvailable(
@@ -1113,6 +1141,7 @@ export function filterAvailableSettingsSearchItems(
       (!item.localEnvironmentOnly || !availability.localEnvironmentDisabled) &&
       (!item.wslAvailableOnly || availability.isWslSettingsRowVisible) &&
       (!item.requiresThreadAutoSettlement || availability.hasThreadAutoSettlement) &&
+      (!item.requiresProviderPools || availability.hasProviderPools === true) &&
       (!item.managedTunnelOnly || availability.managedTunnelActive === true),
   );
 }

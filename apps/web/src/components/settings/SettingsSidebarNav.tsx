@@ -15,6 +15,7 @@ import {
   CalendarClockIcon,
   GitBranchIcon,
   HardDriveIcon,
+  LayersIcon,
   PanelsTopLeftIcon,
   KeyboardIcon,
   Link2Icon,
@@ -40,6 +41,7 @@ import {
 import { SidebarUtilityMenu } from "../sidebar/SidebarChrome";
 import { scrollToSettingsTarget } from "./settingsLayout";
 import {
+  hasProviderPoolsEnvironment,
   searchSettings,
   isSettingsOverviewVisible,
   SETTINGS_SECTION_LABELS,
@@ -48,6 +50,7 @@ import {
 } from "./settingsSearch";
 import { useAvailableSettingsSearchItems } from "./useAvailableSettingsSearchItems";
 import { validateSettingsScopeSearch } from "./settingsScope";
+import { useEnvironments } from "~/state/environments";
 
 const SnapShotIcon = createLucideIcon("snap-shot", [
   [
@@ -82,6 +85,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/keybindings": KeyboardIcon,
   "/settings/snap-shot": SnapShotIcon,
   "/settings/providers": BotIcon,
+  "/settings/account-pools": LayersIcon,
   "/settings/integrations": BlocksIcon,
   "/settings/scheduled-tasks": CalendarClockIcon,
   "/settings/source-control": GitBranchIcon,
@@ -112,8 +116,12 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const currentHash = useLocation({ select: (location) => location.hash });
   const currentSearch = useLocation({ select: (location) => location.search });
   const scopeSearch = validateSettingsScopeSearch(currentSearch);
+  const { environments } = useEnvironments();
+  const providerPoolsAvailable = hasProviderPoolsEnvironment(environments) === true;
   const navItems = SETTINGS_NAV_ITEMS.filter(
-    (item) => item.to !== "/settings/projects" || isSettingsOverviewVisible(scopeSearch),
+    (item) =>
+      (item.to !== "/settings/projects" || isSettingsOverviewVisible(scopeSearch)) &&
+      (item.to !== "/settings/account-pools" || providerPoolsAvailable),
   );
   const { isMobile, setOpenMobile, open, setOpen } = useSidebar();
   const searchInputRef = useRef<HTMLInputElement>(null);

@@ -5,6 +5,7 @@ import {
   filterAvailableSettingsSearchItems,
   getSettingsSearchTargetScope,
   getThreadAutoSettlementSearchAvailability,
+  hasProviderPoolsEnvironment,
   isSettingsOverviewVisible,
   isSettingsSearchScopeAvailable,
   searchableSetting,
@@ -280,6 +281,43 @@ describe("searchSettings", () => {
       "auto-settle-merged-threads",
       "days-before-auto-settle",
     ]);
+  });
+
+  it("offers account pools only when an environment reports the capability", () => {
+    const availability = {
+      hasCloudPublicConfig: false,
+      hasEnvironment: true,
+      hasProviderSettingsEnvironment: true,
+      hasMacProviderSettingsEnvironment: false,
+      canManageLocalBackend: false,
+      isWslSettingsRowVisible: false,
+      hasThreadAutoSettlement: false,
+    };
+    const without = filterAvailableSettingsSearchItems(availability);
+    const withPools = filterAvailableSettingsSearchItems({
+      ...availability,
+      hasProviderPools: true,
+    });
+    expect(searchSettings("failover", without)).toEqual([]);
+    expect(searchSettings("failover", withPools).map((item) => item.id)).toEqual(["account-pools"]);
+    expect(searchSettings("multiple accounts", withPools)[0]).toMatchObject({
+      id: "account-pools",
+      to: "/settings/account-pools",
+    });
+  });
+
+  it("detects the capability on any connected environment's server", () => {
+    const environment = (capabilities: { providerPools?: boolean }) => ({
+      serverConfig: { environment: { capabilities } },
+    });
+    expect(hasProviderPoolsEnvironment([])).toBe(false);
+    expect(hasProviderPoolsEnvironment([{ serverConfig: null }, environment({})])).toBe(false);
+    expect(
+      hasProviderPoolsEnvironment([
+        environment({ providerPools: false }),
+        environment({ providerPools: true }),
+      ]),
+    ).toBe(true);
   });
 
   it("finds keybinding commands by label, command id, and default key", () => {
