@@ -238,6 +238,7 @@ export const make = Effect.gen(function* () {
       threadRestartContinuation: true,
       projectSettingsOverrides: true,
       projectProviderInstanceOverrides: true,
+      providerAccountTransfer: true,
       threadSnooze: true,
       environmentThemes: true,
       usageLimitSources: true,

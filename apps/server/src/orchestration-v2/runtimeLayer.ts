@@ -8,6 +8,7 @@ import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as McpAppRequests from "../mcpApps/McpAppRequests.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as ProviderAccountTransfer from "../provider/ProviderAccountTransfer.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as AgentSessionImporter from "../project/AgentSessionImporter.ts";
 import * as AgentSessionScanner from "../project/AgentSessionScanner.ts";
@@ -145,6 +146,10 @@ const layerProviderSessionManagerProvided = ProviderSessionManager.layer.pipe(
 
 const layerProviderAuthServiceProvided = ProviderAuthService.layer.pipe(
   Layer.provide(Layer.merge(ProjectionStore.layer, layerProviderSessionManagerProvided)),
+);
+
+const layerProviderAccountTransferProvided = ProviderAccountTransfer.layer.pipe(
+  Layer.provide(layerProviderAuthServiceProvided),
 );
 
 const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
@@ -352,6 +357,7 @@ export const layer = Layer.mergeAll(
   layerEffectWorkerProvided,
   layerProviderSessionManagerProvided,
   layerProviderAuthServiceProvided,
+  layerProviderAccountTransferProvided,
   layerProviderRuntimeRecoveryProvided,
   layerProjectionMaintenanceProvided,
   layerLegacyV1ThreadImporterProvided,

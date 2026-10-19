@@ -1,4 +1,4 @@
-import { TrimmedString, makeProviderSettingsSchema } from "@t3tools/contracts";
+import { TrimmedString, machineLocalSetting, makeProviderSettingsSchema } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -33,6 +33,7 @@ export const AcpRegistrySettings = makeProviderSettingsSchema(
       }),
     ),
     commandPath: TrimmedString.pipe(
+      machineLocalSetting,
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
         title: "Executable override",

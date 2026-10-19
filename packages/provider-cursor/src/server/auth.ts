@@ -10,6 +10,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -294,6 +295,15 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
       key: `cursor:${options.instanceId}`,
     },
     isChangingCredentials: Effect.sync(() => operation !== "idle"),
+    exportStaticCredential: configuredKey
+      ? Effect.succeed(Option.none())
+      : readApiKey.pipe(
+          Effect.map((apiKey) =>
+            apiKey === undefined
+              ? Option.none()
+              : Option.some({ name: "CURSOR_API_KEY", value: apiKey }),
+          ),
+        ),
     start: (owner, stopSessions = Effect.void) =>
       lock.withPermits(1)(
         Effect.uninterruptible(

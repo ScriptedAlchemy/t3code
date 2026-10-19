@@ -113,6 +113,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("requires provider management on both ends of an account transfer", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerAccountExport)).toBe(
+      AuthProvidersManageScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerAccountImport)).toBe(
+      AuthProvidersManageScope,
+    );
+  });
+
   it("reads the reviewer menu under the same scope as the pull request it belongs to", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.pullRequestsChecks)).toBe(
       AuthOrchestrationReadScope,

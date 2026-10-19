@@ -4,13 +4,17 @@ import * as Schema from "effect/Schema";
 import { type CommandId, ProjectId } from "./baseSchemas.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
+  AntigravitySettings,
   ClientSettingsSchema,
   ClientSettingsPatch,
   ClaudeSettings,
+  CodexSettings,
   DEFAULT_SERVER_SETTINGS,
+  machineLocalSettingsFields,
   requiredScopesForProjectMutation,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
+  secretSettingsFields,
   ServerSettings,
   ServerSettingsPatch,
 } from "./settings.ts";
@@ -1201,5 +1205,25 @@ describe("server model preferences", () => {
     expect(decodeServerSettingsPatch({ migrateModelPreferences: input })).toEqual({
       migrateModelPreferences: input,
     });
+  });
+});
+
+describe("machine-local provider settings", () => {
+  it("marks every path field on Codex, and only those", () => {
+    expect(machineLocalSettingsFields(CodexSettings)).toEqual([
+      "binaryPath",
+      "homePath",
+      "shadowHomePath",
+    ]);
+  });
+
+  it("marks home and binary paths on Claude", () => {
+    expect(machineLocalSettingsFields(ClaudeSettings)).toEqual(["binaryPath", "homePath"]);
+  });
+
+  it("keeps secret and machine-local classifications apart", () => {
+    expect(secretSettingsFields(AntigravitySettings)).toEqual(["apiKey"]);
+    expect(machineLocalSettingsFields(AntigravitySettings)).toEqual(["binaryPath"]);
+    expect(secretSettingsFields(CodexSettings)).toEqual([]);
   });
 });

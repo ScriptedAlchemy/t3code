@@ -80,6 +80,29 @@ const phase = (auth: Auth, phase: ProviderAuthState["phase"], session = owner) =
   );
 
 it.layer(NodeServices.layer)("CursorAuth", (it) => {
+  it.effect("describes a browser sign-in as CURSOR_API_KEY for another machine", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      expect(yield* harness.auth.controller.exportStaticCredential!).toEqual(Option.none());
+      yield* Effect.promise(() => harness.store.save(harness.credentials));
+      expect(yield* harness.auth.controller.exportStaticCredential!).toEqual(
+        Option.some({ name: "CURSOR_API_KEY", value: "browser-key" }),
+      );
+    }),
+  );
+
+  it.effect("exports nothing for a key that is configured in the environment or expired", () =>
+    Effect.gen(function* () {
+      const configured = yield* makeHarness({ apiKey: "configured-key" });
+      expect(yield* configured.auth.controller.exportStaticCredential!).toEqual(Option.none());
+      const expired = yield* makeHarness();
+      yield* Effect.promise(() =>
+        expired.store.save({ ...expired.credentials, apiKeyExpiresAtMs: 0 }),
+      );
+      expect(yield* expired.auth.controller.exportStaticCredential!).toEqual(Option.none());
+    }),
+  );
+
   it.effect("closes SDK sessions and interrupts in-flight credential work before signing out", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
