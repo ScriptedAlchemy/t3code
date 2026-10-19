@@ -49,6 +49,16 @@ client connections and provider-instance rebuilds. Releases are immutable, with 
 selecting the version for new processes. Running processes hold leases on their version. Updates
 and removal must respect those leases instead of replacing executables under a running agent.
 
+[Account sync](../../apps/server/src/provider/ProviderAccountTransfer.ts) copies a provider
+instance between environments through the client, and sessions never travel. Codex and Antigravity
+sign-ins rotate or belong to the provider's own tooling, so the destination signs in for itself.
+Only a static credential T3 owns can move, and Cursor's named API key is the one such credential:
+its `exportStaticCredential` hook describes it as the `CURSOR_API_KEY` variable that reproduces it
+elsewhere. The destination decides what is secret and what is machine-local from its own schema
+annotations and derives every secret-store name itself, so the wire carries typed slots, never
+store names. `provider.account.export` is the one RPC that returns saved static secrets to a
+client, which is why both ends sit behind `providers:manage`.
+
 ## Setup must not happen as a health-check side effect
 
 Opening a provider session can start MCP servers, run hooks, or launch a login browser.
