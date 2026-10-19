@@ -11,10 +11,7 @@ import {
   type ServerSettings,
   type ServerProviderState,
 } from "@t3tools/contracts";
-import {
-  composerInstanceIdFor,
-  foldProviderPoolsForComposer,
-} from "@t3tools/client-runtime/provider-pools";
+import { foldProviderPoolsForComposer } from "@t3tools/client-runtime/provider-pools";
 import {
   normalizeProviderAccentColor,
   resolveProviderInstanceDisplayName,
@@ -217,19 +214,6 @@ export function deriveComposerProviderInstanceEntries(
       projectId,
     ),
   );
-}
-
-/**
- * A thread records the account that ran it, which a composer hides inside its pool. Selection
- * state is keyed by the composer's entry, so it follows the thread to the pool.
- */
-export function toComposerModelSelection<Selection extends Pick<ModelSelection, "instanceId">>(
-  providers: ReadonlyArray<ServerProvider>,
-  selection: Selection | null | undefined,
-): Selection | null | undefined {
-  if (!selection) return selection;
-  const instanceId = composerInstanceIdFor(providers, selection.instanceId);
-  return instanceId === selection.instanceId ? selection : { ...selection, instanceId };
 }
 
 export function getProviderInstanceEntry(

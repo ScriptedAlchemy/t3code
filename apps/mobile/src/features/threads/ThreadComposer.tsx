@@ -1,6 +1,7 @@
 import * as Dialog from "../../components/ui/Dialog";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
+import { composerModelSelectionFor } from "@t3tools/client-runtime/provider-pools";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
@@ -98,7 +99,6 @@ import {
   type ComposerSendPresentation,
 } from "./composerSendPresentation";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
-import { resolveThreadComposerModelSelection } from "./thread-provider-instance";
 import { ComposerPopoverAnchor } from "./ComposerPopoverAnchor";
 import { ComposerQueuedEditAttachments } from "./ComposerQueuedEdit";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
@@ -377,7 +377,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       props.connectionState !== "connected" || props.queueCount > 0 || attachmentsUploading,
   });
   const sendLabel = sendPresentation.label;
-  const currentModelSelection = resolveThreadComposerModelSelection(
+  const currentModelSelection = composerModelSelectionFor(
     props.serverConfig?.providers ?? [],
     props.selectedThread.modelSelection,
   );

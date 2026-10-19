@@ -38,7 +38,6 @@ import {
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
-import { resolveThreadComposerModelSelection } from "./thread-provider-instance";
 import {
   buildModelOptions,
   groupByProvider,
@@ -97,6 +96,7 @@ import {
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
 import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
+import { composerModelSelectionFor } from "@t3tools/client-runtime/provider-pools";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -542,10 +542,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     modelOptions,
   });
   const selectedModel = resolvedModel
-    ? resolveThreadComposerModelSelection(
-        selectedEnvironmentServerConfig?.providers ?? [],
-        resolvedModel,
-      )
+    ? composerModelSelectionFor(selectedEnvironmentServerConfig?.providers ?? [], resolvedModel)
     : null;
   const selectedModelKey = selectedModel
     ? `${selectedModel.instanceId}:${selectedModel.model}`

@@ -1063,9 +1063,9 @@ import {
   deriveComposerProviderInstanceEntries,
   NO_PROVIDER_MODEL_SELECTION,
   resolvePoolMemberLabel,
-  toComposerModelSelection,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
+import { composerModelSelectionFor } from "@t3tools/client-runtime/provider-pools";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import {
@@ -1821,8 +1821,10 @@ function useComposerProviderModel(
     providers: providerStatuses,
     selectedProvider,
     selectedInstanceId,
-    threadModelSelection: toComposerModelSelection(providerStatuses, threadModelSelection),
-    projectModelSelection: toComposerModelSelection(providerStatuses, projectModelSelection),
+    threadModelSelection:
+      threadModelSelection && composerModelSelectionFor(providerStatuses, threadModelSelection),
+    projectModelSelection:
+      projectModelSelection && composerModelSelectionFor(providerStatuses, projectModelSelection),
     settings,
   });
   const selectedProviderModels = selection.selectedProviderEntry?.models ?? NO_PROVIDER_MODELS;

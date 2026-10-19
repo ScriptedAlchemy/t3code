@@ -1,28 +1,14 @@
 import { useMemo } from "react";
 
-import { composerInstanceIdFor } from "@t3tools/client-runtime/provider-pools";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   normalizeProviderAccentColor,
   resolveProviderInstanceDisplayName,
   shouldShowInstanceBadge,
 } from "@t3tools/client-runtime/state/provider-instance-display";
-import type {
-  EnvironmentId,
-  ModelSelection,
-  ProviderDriverKind,
-  ServerProvider,
-} from "@t3tools/contracts";
+import type { EnvironmentId, ProviderDriverKind } from "@t3tools/contracts";
 
 import type { ThreadListProvider } from "../../state/thread-list-environments";
-
-export function resolveThreadComposerModelSelection(
-  providers: ReadonlyArray<ServerProvider>,
-  selection: ModelSelection,
-): ModelSelection {
-  const instanceId = composerInstanceIdFor(providers, selection.instanceId);
-  return instanceId === selection.instanceId ? selection : { ...selection, instanceId };
-}
 
 export interface ThreadRowProviderInstance {
   readonly driverKind: ProviderDriverKind;

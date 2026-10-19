@@ -13,7 +13,6 @@ import {
   resolveProviderCatalogAvailability,
   resolveSelectableProviderInstance,
   sortProviderInstanceEntries,
-  toComposerModelSelection,
 } from "./providerInstances";
 
 function provider(input: {
@@ -778,17 +777,6 @@ describe("account pools in the composer catalog", () => {
     expect(ids(settingsEntries)).toEqual(
       expect.arrayContaining(["claudeAgent", "claudeAgent_icloud", "codex"]),
     );
-  });
-
-  it("maps a thread's account to the pool that hides it", () => {
-    const selection = { instanceId: memberIds[1]!, model: "opus" };
-    expect(toComposerModelSelection(pooledProviders, selection)).toEqual({
-      instanceId: poolId,
-      model: "opus",
-    });
-    const unpooled = { instanceId: ProviderInstanceId.make("codex"), model: "gpt" };
-    expect(toComposerModelSelection(pooledProviders, unpooled)).toBe(unpooled);
-    expect(toComposerModelSelection(pooledProviders, undefined)).toBeUndefined();
   });
 
   describe("resolvePoolMemberLabel", () => {

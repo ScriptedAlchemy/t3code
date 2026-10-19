@@ -1,4 +1,9 @@
-import { findProviderPool, type ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  findProviderPool,
+  type ModelSelection,
+  type ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 
 export function providerPoolOf(
   providers: ReadonlyArray<ServerProvider>,
@@ -26,4 +31,13 @@ export function composerInstanceIdFor(
   instanceId: ProviderInstanceId,
 ): ProviderInstanceId {
   return providerPoolOf(providers, instanceId)?.instanceId ?? instanceId;
+}
+
+/** A thread records the account that ran it; a composer keys its selection by the pool that hides that account. */
+export function composerModelSelectionFor<Selection extends Pick<ModelSelection, "instanceId">>(
+  providers: ReadonlyArray<ServerProvider>,
+  selection: Selection,
+): Selection {
+  const instanceId = composerInstanceIdFor(providers, selection.instanceId);
+  return instanceId === selection.instanceId ? selection : { ...selection, instanceId };
 }

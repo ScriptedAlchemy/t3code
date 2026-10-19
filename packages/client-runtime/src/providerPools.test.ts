@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   composerInstanceIdFor,
+  composerModelSelectionFor,
   foldProviderPoolsForComposer,
   providerPoolOf,
 } from "./providerPools.ts";
@@ -71,6 +72,25 @@ describe("composerInstanceIdFor", () => {
     expect(composerInstanceIdFor(providers, id("pool_claudeAgent"))).toBe("pool_claudeAgent");
     expect(composerInstanceIdFor(providers, id("codex"))).toBe("codex");
     expect(composerInstanceIdFor(providers, id("missing"))).toBe("missing");
+  });
+});
+
+describe("composerModelSelectionFor", () => {
+  it("moves a selection on a pooled account to its pool and keeps the rest of it", () => {
+    const selection = {
+      instanceId: id("claudeAgent_icloud"),
+      model: "opus",
+      options: [{ id: "effort", value: "high" }],
+    };
+    expect(composerModelSelectionFor(providers, selection)).toEqual({
+      ...selection,
+      instanceId: "pool_claudeAgent",
+    });
+  });
+
+  it("returns the same selection when it is not on a pooled account", () => {
+    const selection = { instanceId: id("codex"), model: "gpt-5" };
+    expect(composerModelSelectionFor(providers, selection)).toBe(selection);
   });
 });
 

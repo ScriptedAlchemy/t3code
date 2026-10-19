@@ -1,3 +1,4 @@
+import { composerModelSelectionFor } from "@t3tools/client-runtime/provider-pools";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   EnvironmentId,
@@ -10,7 +11,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   createThreadRowProviderInstanceResolver,
-  resolveThreadComposerModelSelection,
   resolveThreadProviderInstance,
 } from "./thread-provider-instance";
 
@@ -75,11 +75,11 @@ describe("resolveThreadProviderInstance", () => {
       model: "opus",
       options: [{ id: "effort", value: "high" }],
     };
-    expect(resolveThreadComposerModelSelection(config.providers, selection)).toEqual({
+    expect(composerModelSelectionFor(config.providers, selection)).toEqual({
       ...selection,
       instanceId: poolId,
     });
-    expect(resolveThreadComposerModelSelection([], selection)).toBe(selection);
+    expect(composerModelSelectionFor([], selection)).toBe(selection);
     const thread = {
       ...makeThread(EnvironmentId.make("environment-a"), poolId),
       runtime: {

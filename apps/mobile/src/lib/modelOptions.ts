@@ -1,6 +1,7 @@
 import type { MenuAction } from "@react-native-menu/menu";
 import {
   composerInstanceIdFor,
+  composerModelSelectionFor,
   foldProviderPoolsForComposer,
 } from "@t3tools/client-runtime/provider-pools";
 import type {
@@ -233,29 +234,25 @@ export function resolveNewTaskModelSelection(input: {
 
 export function buildModelOptions(
   config: T3ServerConfig | null | undefined,
-  fallbackModelSelection: ModelSelection | null,
-  providerInstanceId: ModelSelection["instanceId"] | undefined,
+  requestedFallbackSelection: ModelSelection | null,
+  requestedInstanceId: ModelSelection["instanceId"] | undefined,
   projectId: ProjectId | null,
   surface: "composer" | "settings",
   includeHidden = false,
 ): ReadonlyArray<ModelOption> {
   const options = new Map<string, ModelOption>();
   const providers = config?.providers ?? [];
-  if (surface === "composer") {
-    if (providerInstanceId !== undefined) {
-      providerInstanceId = composerInstanceIdFor(providers, providerInstanceId);
-    }
-    if (fallbackModelSelection) {
-      const instanceId = composerInstanceIdFor(providers, fallbackModelSelection.instanceId);
-      if (instanceId !== fallbackModelSelection.instanceId) {
-        fallbackModelSelection = { ...fallbackModelSelection, instanceId };
-      }
-    }
-  }
+  const composer = surface === "composer";
+  const providerInstanceId =
+    composer && requestedInstanceId !== undefined
+      ? composerInstanceIdFor(providers, requestedInstanceId)
+      : requestedInstanceId;
+  const fallbackModelSelection =
+    composer && requestedFallbackSelection
+      ? composerModelSelectionFor(providers, requestedFallbackSelection)
+      : requestedFallbackSelection;
 
-  for (const provider of surface === "composer"
-    ? foldProviderPoolsForComposer(providers)
-    : providers) {
+  for (const provider of composer ? foldProviderPoolsForComposer(providers) : providers) {
     if (
       (providerInstanceId !== undefined && provider.instanceId !== providerInstanceId) ||
       !isProviderEnabledForProject(config, provider, projectId) ||
