@@ -63,7 +63,10 @@ const PROVIDER_ALIASES: Record<string, string> = { claude: "claudeagent" };
  */
 export function resolvePromptLinkModelSelection(
   providers: ReadonlyArray<
-    Pick<ServerProvider, "instanceId" | "driver" | "enabled" | "availability" | "status"> & {
+    Pick<
+      ServerProvider,
+      "instanceId" | "driver" | "enabled" | "availability" | "status" | "pool"
+    > & {
       readonly models: ReadonlyArray<
         SelectableModelOption & { readonly isDefault?: boolean | undefined }
       >;
@@ -72,7 +75,11 @@ export function resolvePromptLinkModelSelection(
   request: { readonly provider: string; readonly model: string | null },
 ): { readonly selection: ModelSelection; readonly exact: boolean } | null {
   const driver = PROVIDER_ALIASES[request.provider] ?? request.provider;
-  const usable = providers.filter(
+  // The pool outranks its members, which composer pickers no longer offer.
+  const usable = [
+    ...providers.filter((provider) => provider.pool?.role === "pool"),
+    ...providers.filter((provider) => provider.pool?.role !== "pool"),
+  ].filter(
     (provider) =>
       provider.driver.toLowerCase() === driver &&
       provider.enabled &&

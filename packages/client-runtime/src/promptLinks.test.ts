@@ -111,4 +111,30 @@ describe("resolvePromptLinkModelSelection", () => {
       resolvePromptLinkModelSelection(providers, { provider: "cursor", model: null }),
     ).toBeNull();
   });
+
+  it("resolves a driver to its active pool rather than a hidden member", () => {
+    const providers = [
+      {
+        ...provider("claudeAgent", "claudeAgent"),
+        pool: {
+          role: "member" as const,
+          poolInstanceId: ProviderInstanceId.make("pool_claudeAgent"),
+        },
+      },
+      {
+        ...provider("pool_claudeAgent", "claudeAgent"),
+        pool: {
+          role: "pool" as const,
+          memberInstanceIds: [ProviderInstanceId.make("claudeAgent")],
+          droppedModels: [],
+        },
+      },
+    ];
+    expect(
+      resolvePromptLinkModelSelection(providers, { provider: "claude", model: "small" }),
+    ).toEqual({
+      selection: { instanceId: "pool_claudeAgent", model: "small" },
+      exact: true,
+    });
+  });
 });
