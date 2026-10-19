@@ -15,6 +15,10 @@
       "types": "./src/handoff.ts",
       "default": "./src/handoff.ts"
     },
+    "./provider-pools": {
+      "types": "./src/providerPools.ts",
+      "default": "./src/providerPools.ts"
+    },
     "./device/stream": {
       "types": "./src/device/stream.ts",
       "default": "./src/device/stream.ts"
