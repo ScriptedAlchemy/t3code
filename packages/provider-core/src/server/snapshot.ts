@@ -1,4 +1,4 @@
-import type { ProviderUsageLimitsUpdate, ServerProvider } from "@t3tools/contracts";
+import type { IsoDateTime, ProviderUsageLimitsUpdate, ServerProvider } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 import type { ProviderMaintenanceCapabilities } from "./maintenance.ts";
@@ -22,4 +22,9 @@ export interface ManagedServerProvider {
   readonly applyUsageLimits: (
     update: ProviderUsageLimitsUpdate & { readonly checkedAt: string },
   ) => Effect.Effect<void>;
+  /**
+   * Cools the account until `until`. Max-merge: an earlier end never shortens
+   * a cooldown already in force, so concurrent reports commute.
+   */
+  readonly markLimited: (input: { readonly until: IsoDateTime }) => Effect.Effect<void>;
 }

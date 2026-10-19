@@ -9,6 +9,9 @@ const makeProviderRegistryMock = (
   providers: ReadonlyArray<ServerProvider> = [],
 ): ProviderRegistry.ProviderRegistry["Service"] => ({
   getProviders: Effect.succeed(providers),
+  getPublishedProviders: Effect.succeed(providers),
+  streamPublishedChanges: Stream.empty,
+  markLimited: () => Effect.void,
   refresh: () => Effect.succeed(providers),
   refreshInstance: () => Effect.succeed(providers),
   refreshWorkspaceSnapshot: () => Effect.succeed(providers),

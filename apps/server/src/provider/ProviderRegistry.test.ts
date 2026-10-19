@@ -1306,6 +1306,7 @@ it.layer(
                 refresh: Ref.get(nextProvider),
                 streamChanges: Stream.empty,
                 applyUsageLimits: () => Effect.void,
+                markLimited: () => Effect.void,
               },
               orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
               textGeneration: {} as ProviderInstance["textGeneration"],
@@ -1481,6 +1482,7 @@ it.layer(
               refresh: Ref.get(nextProvider),
               streamChanges: Stream.empty,
               applyUsageLimits: () => Effect.void,
+              markLimited: () => Effect.void,
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -1856,6 +1858,7 @@ it.layer(
             ),
             streamChanges: Stream.empty,
             applyUsageLimits: () => Effect.void,
+            markLimited: () => Effect.void,
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
           textGeneration: {} as ProviderInstance["textGeneration"],
@@ -1890,6 +1893,117 @@ it.layer(
           assert.strictEqual(yield* Ref.get(refreshCalls), 0);
         }).pipe(Effect.provide(runtimeServices));
       }),
+    );
+
+    it.effect("publishes an account pool over its members and routes cooldowns to the member", () =>
+      Effect.gen(function* () {
+        const codexDriver = ProviderDriverKind.make("codex");
+        const makeCodexInstance = (instanceId: ProviderInstanceId) => {
+          const snapshot = {
+            instanceId,
+            driver: codexDriver,
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: "2026-06-10T00:00:00.000Z",
+            version: "1.0.0",
+            models: [
+              {
+                slug: "gpt-5.4",
+                name: "GPT-5.4",
+                isCustom: false,
+                capabilities: createModelCapabilities({ optionDescriptors: [] }),
+              },
+            ],
+            slashCommands: [],
+            skills: [],
+          } as const satisfies ServerProvider;
+          return Effect.map(Ref.make<ServerProvider>(snapshot), (current) => ({
+            current,
+            instance: {
+              instanceId,
+              driverKind: codexDriver,
+              continuationIdentity: { driverKind: codexDriver, continuationKey: "codex:home" },
+              displayName: undefined,
+              enabled: true,
+              snapshot: {
+                resolveMaintenance: () =>
+                  Effect.succeed(
+                    makeManualOnlyProviderMaintenanceCapabilities({
+                      provider: codexDriver,
+                      packageName: null,
+                    }),
+                  ),
+                getSnapshot: Ref.get(current),
+                refresh: Ref.get(current),
+                streamChanges: Stream.empty,
+                applyUsageLimits: () => Effect.void,
+                markLimited: ({ until }) =>
+                  Ref.update(current, (provider) => ({ ...provider, limitedUntil: until })),
+              },
+              orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+              textGeneration: {} as ProviderInstance["textGeneration"],
+            } satisfies ProviderInstance,
+          }));
+        };
+        const personal = yield* makeCodexInstance(ProviderInstanceId.make("codex"));
+        const work = yield* makeCodexInstance(ProviderInstanceId.make("codex_work"));
+        const instances = [personal.instance, work.instance];
+        const layerInstanceRegistry = Layer.succeed(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          {
+            getInstance: (instanceId) =>
+              Effect.succeed(instances.find((instance) => instance.instanceId === instanceId)),
+            listInstances: Effect.succeed(instances),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+          },
+        );
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          const published = yield* registry.getPublishedProviders;
+          assert.deepStrictEqual(
+            published.map((provider) => `${provider.instanceId}:${provider.pool?.role ?? "none"}`),
+            ["codex:member", "codex_work:member", "pool_codex:pool"],
+          );
+          assert.isFalse((yield* registry.getProviders).some((provider) => provider.pool));
+
+          yield* registry.markLimited({
+            instanceId: work.instance.instanceId,
+            until: "2026-06-10T01:00:00.000Z",
+          });
+          assert.strictEqual(
+            (yield* Ref.get(work.current)).limitedUntil,
+            "2026-06-10T01:00:00.000Z",
+          );
+          assert.isUndefined((yield* Ref.get(personal.current)).limitedUntil);
+        }).pipe(
+          Effect.provide(
+            ProviderRegistry.layer.pipe(
+              Layer.provide(layerInstanceRegistry),
+              Layer.provide(
+                ServerSettingsModule.layerTest({
+                  providerPools: {
+                    [codexDriver]: {
+                      enabled: true,
+                      memberInstanceIds: [personal.instance.instanceId, work.instance.instanceId],
+                    },
+                  },
+                }),
+              ),
+            ),
+          ),
+          Effect.scoped,
+        );
+      }).pipe(
+        Effect.provide(
+          ServerConfig.layerTest(process.cwd(), {
+            prefix: "t3-provider-registry-pools-",
+          }).pipe(Layer.provideMerge(NodeServices.layer)),
+        ),
+      ),
     );
 
     it.effect("deduplicates cwd probes and clears snapshots when an instance rebuilds", () =>
@@ -1954,6 +2068,7 @@ it.layer(
             refresh: Effect.succeed(provider),
             streamChanges: Stream.empty,
             applyUsageLimits: () => Effect.void,
+            markLimited: () => Effect.void,
           },
           snapshotForCwd,
           invalidateCaches: Ref.update(cacheInvalidations, (count) => count + 1),
@@ -2187,6 +2302,7 @@ it.layer(
             refresh: Effect.succeed(unhealthyProvider),
             streamChanges: Stream.empty,
             applyUsageLimits: () => Effect.void,
+            markLimited: () => Effect.void,
           },
           snapshotForCwd: () => Ref.get(scanResult),
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -2359,6 +2475,7 @@ it.layer(
               ),
               streamChanges: Stream.empty,
               applyUsageLimits: () => Effect.void,
+              markLimited: () => Effect.void,
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -2386,6 +2503,7 @@ it.layer(
               ),
               streamChanges: Stream.empty,
               applyUsageLimits: () => Effect.void,
+              markLimited: () => Effect.void,
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -2562,6 +2680,7 @@ it.layer(
               }),
               streamChanges: Stream.empty,
               applyUsageLimits: () => Effect.void,
+              markLimited: () => Effect.void,
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -2667,6 +2786,7 @@ it.layer(
             refresh: Effect.succeed(refreshedProvider),
             streamChanges: Stream.fromPubSub(changes),
             applyUsageLimits: () => Effect.void,
+            markLimited: () => Effect.void,
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
           textGeneration: {} as ProviderInstance["textGeneration"],
@@ -2795,6 +2915,7 @@ it.layer(
               refresh: Effect.succeed(authoritativeProvider),
               streamChanges: Stream.fromPubSub(changes),
               applyUsageLimits: () => Effect.void,
+              markLimited: () => Effect.void,
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -2898,6 +3019,7 @@ it.layer(
             refresh: Effect.die(new Error("simulated refresh failure")),
             streamChanges: Stream.empty,
             applyUsageLimits: () => Effect.void,
+            markLimited: () => Effect.void,
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
           textGeneration: {} as ProviderInstance["textGeneration"],
@@ -2999,6 +3121,7 @@ it.layer(
             refresh: Effect.succeed(provider),
             streamChanges: Stream.empty,
             applyUsageLimits: () => Effect.void,
+            markLimited: () => Effect.void,
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
           textGeneration: {} as ProviderInstance["textGeneration"],

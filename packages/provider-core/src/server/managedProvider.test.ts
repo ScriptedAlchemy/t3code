@@ -595,6 +595,44 @@ describe("makeManagedServerProvider", () => {
     ).pipe(Effect.provide(layerAlwaysRunTest)),
   );
 
+  it.effect("keeps the later cooldown across probes and clears it when the account changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const account = yield* Ref.make("first@example.com");
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Ref.get(account).pipe(
+            Effect.map((email) => ({
+              ...refreshedSnapshot,
+              auth: { ...refreshedSnapshot.auth, email },
+            })),
+          ),
+        });
+
+        yield* provider.markLimited({ until: "2026-04-10T01:00:00.000Z" });
+        yield* provider.markLimited({ until: "2026-04-10T00:30:00.000Z" });
+        assert.strictEqual((yield* provider.getSnapshot).limitedUntil, "2026-04-10T01:00:00.000Z");
+
+        const refreshed = yield* provider.refresh;
+        assert.strictEqual(refreshed.limitedUntil, "2026-04-10T01:00:00.000Z");
+
+        yield* provider.applyUsageLimits({
+          checkedAt: "2026-04-10T00:05:00.000Z",
+          windows: [{ id: "five_hour", kind: "session", label: "Session", usedPercent: 90 }],
+        });
+        assert.strictEqual((yield* provider.getSnapshot).limitedUntil, "2026-04-10T01:00:00.000Z");
+
+        yield* Ref.set(account, "second@example.com");
+        const switched = yield* provider.refresh;
+        assert.isUndefined(switched.limitedUntil);
+      }),
+    ).pipe(Effect.provide(layerAlwaysRunTest)),
+  );
+
   it.effect("keeps live usage windows across a failed probe and a stale enrichment", () =>
     Effect.scoped(
       Effect.gen(function* () {
