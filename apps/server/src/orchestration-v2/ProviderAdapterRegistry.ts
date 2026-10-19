@@ -34,7 +34,6 @@ export class ProviderAdapterRegistryLookupError extends Schema.TaggedError<Provi
   }
 }
 
-/** A pool id reached the adapter layer, so a selection entry point skipped routing. */
 export class ProviderAdapterUnroutedPoolError extends Schema.TaggedError<ProviderAdapterUnroutedPoolError>()(
   "ProviderAdapterUnroutedPoolError",
   { instanceId: ProviderInstanceId },

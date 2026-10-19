@@ -23,7 +23,6 @@ const healthRank = (provider: ServerProvider): number =>
   STATUS_RANK[provider.status] * 10 +
   AUTH_RANK[provider.auth.status];
 
-/** Pool order breaks ties, so the first member wins when health is equal. */
 const healthiestMember = (members: ReadonlyArray<ServerProvider>): ServerProvider =>
   members.reduce((best, candidate) =>
     healthRank(candidate) < healthRank(best) ? candidate : best,
@@ -54,7 +53,6 @@ function makePoolEntry(
   const sharedSlugs = new Set(
     [...slugCounts].filter(([, count]) => count === members.length).map(([slug]) => slug),
   );
-  // Metadata comes from the first member in pool order that advertises the slug.
   const models = members
     .flatMap((member) => member.models)
     .filter((model, index, all) => {

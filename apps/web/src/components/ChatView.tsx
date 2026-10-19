@@ -7426,7 +7426,6 @@ export default function ChatView(props: ChatViewProps) {
   // Keyed on the fields it reads: the thread and runtime objects change with
   // every streamed event, and a new function re-renders the whole model picker.
   const hasStartedSession = activeRuntime !== null;
-  // The runtime names the account that ran; the picker offers its pool, so compare against that.
   const runtimeProviderInstanceId =
     activeRuntime === null
       ? null

@@ -15,7 +15,6 @@ export const ProviderPoolConfig = Schema.Struct({
 });
 export type ProviderPoolConfig = typeof ProviderPoolConfig.Type;
 
-// Keyed by driver, so one pool per driver is structural.
 export const ProviderPoolSettings = Schema.Record(ProviderDriverKind, ProviderPoolConfig);
 export type ProviderPoolSettings = typeof ProviderPoolSettings.Type;
 

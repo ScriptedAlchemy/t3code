@@ -49,7 +49,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   triggerClassName?: string;
   triggerLabel?: string;
   triggerAriaLabel?: string;
-  /** The account behind a selected pool, so the trigger shows who is answering. */
   activeAccount?: { readonly poolName: string; readonly memberName: string } | null;
   onOpenChange?: (open: boolean) => void;
   onOpenProviderSetup?: (instanceId: ProviderInstanceId) => void;

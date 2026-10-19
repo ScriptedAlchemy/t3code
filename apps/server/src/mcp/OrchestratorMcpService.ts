@@ -1938,7 +1938,6 @@ const make = Effect.gen(function* () {
           inheritedModel: parent?.thread.modelSelection.model ?? null,
           runtimeMode: limits.runtimeMode,
           interactionMode: limits.interactionMode,
-          // Pooled accounts are addressed through their pool.
           providers: providers
             .filter((provider) => provider.pool?.role !== "member")
             .map((provider) => {

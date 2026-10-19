@@ -12,10 +12,8 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 
-/** What routing knows about one member. Derived per call, never stored. */
 export interface PoolMemberHealth {
   readonly instanceId: ProviderInstanceId;
-  /** Enabled for the project, installed, signed in, not erroring, available. */
   readonly eligible: boolean;
   /** Shared with every member on the same credential fingerprint: one login is one quota. */
   readonly limitedUntilMs: number | null;
@@ -26,13 +24,11 @@ export interface PoolRoutingInput {
   /** Pool order; it breaks every tie. */
   readonly members: ReadonlyArray<PoolMemberHealth>;
   readonly threadId: ThreadId;
-  /** The thread's current instance, null for a new thread. */
   readonly current: {
     readonly instanceId: ProviderInstanceId;
     /** A run is active on it: steering and queueing never move a live turn. */
     readonly busy: boolean;
   } | null;
-  /** Members that already failed this run. */
   readonly excluded: ReadonlySet<ProviderInstanceId>;
   readonly nowMs: number;
 }
@@ -69,12 +65,8 @@ const isCooling = (member: PoolMemberHealth, nowMs: number): boolean =>
   member.limitedUntilMs !== null && member.limitedUntilMs > nowMs;
 
 /**
- * Ranking, first match wins: the current member while a run is live on it,
- * the current member while healthy, a healthy member sharing the current
- * member's continuation key (Codex accounts on one home resume natively),
- * then the healthy member with the highest rendezvous score. Rendezvous
- * hashing spreads new threads with no cursor to persist, and a member that
- * cools moves only its own threads.
+ * Rendezvous hashing spreads new threads with no cursor to persist, and a
+ * member that cools moves only its own threads.
  */
 export function choosePoolMember(input: PoolRoutingInput): PoolRoutingDecision {
   const candidates = input.members.filter(
@@ -124,7 +116,6 @@ export function choosePoolMember(input: PoolRoutingInput): PoolRoutingDecision {
   };
 }
 
-/** Earliest moment any eligible member is usable again; null while one already is. */
 export function earliestPoolResetAtMs(
   members: ReadonlyArray<PoolMemberHealth>,
   nowMs: number,
@@ -172,7 +163,6 @@ export function poolMemberHealth(input: {
 }
 
 export type RoutedSelection =
-  /** Names no pool and no pooled account: returned by reference. */
   | { readonly type: "unrouted"; readonly selection: ModelSelection }
   | {
       readonly type: "routed";

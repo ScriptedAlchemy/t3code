@@ -379,8 +379,6 @@ export const layerProduction = Layer.mergeAll(
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
 ).pipe(
   Layer.provide(Scheduler.layer),
-  // A reference with an empty default, provided once here like the
-  // finalization observer, so test runtimes built from `layer` route nothing.
   Layer.provide(ProviderPoolCatalog.layer),
   Layer.provideMerge(layerEventInfrastructure),
 );

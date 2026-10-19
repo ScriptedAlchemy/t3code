@@ -33,7 +33,6 @@ export type UsageLimitResolution =
   /** Fail the run as today. For a pooled run `resetAt` is the pool's earliest reset. */
   | { readonly type: "finalize"; readonly resetAt: IsoDateTime | null };
 
-/** Applied when the provider reports a usage limit without a reset time. */
 export const DEFAULT_LIMIT_COOLDOWN_MS = 15 * 60_000;
 
 /**

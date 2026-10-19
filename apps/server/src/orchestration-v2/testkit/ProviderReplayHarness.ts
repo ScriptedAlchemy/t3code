@@ -272,7 +272,6 @@ export function layerWithRegistry<Error>(
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
     readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
-    /** Provides the ProviderPoolCatalog reference; its default routes nothing. */
     readonly poolCatalog?: Layer.Layer<never>;
   } = {},
 ): Layer.Layer<

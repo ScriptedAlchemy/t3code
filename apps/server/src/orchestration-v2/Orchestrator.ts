@@ -4056,13 +4056,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
-  /**
-   * Runs this run's next attempt on `modelSelection`. A steering restart and a
-   * pool failover share it; they differ only in how the prior attempt closes
-   * and in what the caller appends afterwards. Handoff versus native resume is
-   * still decided by the switch plan, so shared-home Codex members resume and
-   * Claude members get a summary with no pool-specific code.
-   */
   const replaceRunAttempt = (input: {
     readonly command: OrchestrationV2ServerCommand;
     readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
@@ -4860,7 +4853,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
    * and attempt n+1 opens on a healthy sibling, so the run never reaches
    * `failed`: no queue hold, no limit banner, no recovery arm, and no
    * delegated-completion or subagent finalization on a transient failure.
-   * A stale attempt, an unpooled run, or no healthy sibling yields no events.
    */
   const dispatchRunPoolFailover = (
     command: Extract<OrchestrationV2InternalCommand, { readonly type: "run.pool-failover" }>,
@@ -4883,7 +4875,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ) {
         return;
       }
-      // A run visits each member at most once.
       const excluded = new Set([
         run.providerInstanceId,
         ...projection.attempts

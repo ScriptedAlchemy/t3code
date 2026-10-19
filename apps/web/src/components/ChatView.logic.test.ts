@@ -1377,7 +1377,6 @@ describe("resolveComposerProviderSelection", () => {
     ])[0]!;
   }
 
-  // Without pools the composer catalog is the unfolded list, so the entries' snapshots are it.
   const selectComposerProvider = (
     input: Omit<Parameters<typeof resolveComposerProviderSelection>[0], "providers">,
   ) =>

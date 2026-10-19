@@ -26,7 +26,6 @@ export function limitedUntilLabel(
   return `Limited until ${formatUpcomingTimestamp(provider.limitedUntil, timestampFormat, nowMs)}`;
 }
 
-/** The name of the pool an account belongs to, for the Providers page's "In Claude pool". */
 export function resolveProviderPoolName(
   providers: ReadonlyArray<ServerProvider>,
   provider: Pick<ServerProvider, "pool"> | undefined,
@@ -77,7 +76,6 @@ export interface ProviderPoolCard {
   readonly modelCoverage: { readonly available: number; readonly total: number } | null;
 }
 
-/** One card per driver with two or more accounts, in the order the server lists them. */
 export function buildProviderPoolCards(
   providers: ReadonlyArray<ServerProvider>,
   providerPools: ProviderPoolSettings,
@@ -128,11 +126,6 @@ export type ProviderPoolChange =
   | { readonly type: "tick"; readonly instanceId: ProviderInstanceId; readonly ticked: boolean }
   | { readonly type: "enabled"; readonly enabled: boolean };
 
-/**
- * Patches one driver's entry so concurrent edits to other drivers survive. Ticking keeps the
- * order accounts were added in, and unticking the last account removes the entry. A pool starts
- * off, so ticking accounts never changes the picker until the switch is turned on.
- */
 export function buildProviderPoolPatch(
   driver: ProviderDriverKind,
   current: ProviderPoolConfig | undefined,

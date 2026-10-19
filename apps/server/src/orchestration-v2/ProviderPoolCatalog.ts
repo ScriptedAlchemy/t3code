@@ -5,11 +5,6 @@ import * as Layer from "effect/Layer";
 
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 
-/**
- * The orchestrator's in-memory view of account pools. A reference with an
- * empty default, shaped like RunFinalizationObserver, so test runtimes that
- * build the orchestrator without a provider registry route nothing.
- */
 export class ProviderPoolCatalog extends Context.Reference<{
   readonly getPublishedProviders: Effect.Effect<ReadonlyArray<ServerProvider>>;
   readonly markLimited: (input: {

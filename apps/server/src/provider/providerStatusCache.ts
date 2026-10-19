@@ -88,7 +88,6 @@ export const hydrateCachedProvider = (input: {
     checkedAt: input.cachedProvider.checkedAt,
     slashCommands: input.cachedProvider.slashCommands,
     skills: input.cachedProvider.skills,
-    // A cooldown outlives a restart only while it is still in force.
     ...(input.cachedProvider.limitedUntil !== undefined &&
     Date.parse(input.cachedProvider.limitedUntil) > input.nowMs
       ? { limitedUntil: input.cachedProvider.limitedUntil }

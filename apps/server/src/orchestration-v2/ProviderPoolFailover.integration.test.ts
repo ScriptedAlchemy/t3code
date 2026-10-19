@@ -48,7 +48,6 @@ const minutes = (count: number) => count * 60_000;
 interface PoolAdapterState {
   /** The next started turn fails with this reset time, whichever member starts it. */
   readonly failNextStart: string | null;
-  /** When set, a started turn waits here before completing. */
   readonly holdTurn: Deferred.Deferred<void> | null;
   readonly started: ReadonlyArray<{
     readonly instanceId: ProviderInstanceId;
@@ -254,7 +253,6 @@ const settings = {
   providerPools: poolSettings,
 };
 
-/** A catalog over a mutable member list, so a test can cool a member and see markLimited land. */
 const makeCatalog = (providers: Ref.Ref<ReadonlyArray<ServerProvider>>) =>
   Layer.succeed(ProviderPoolCatalog, {
     getPublishedProviders: Ref.get(providers).pipe(

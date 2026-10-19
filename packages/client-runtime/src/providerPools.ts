@@ -1,6 +1,5 @@
 import { findProviderPool, type ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 
-/** The pool entry for a pool id or a member id; null for an unpooled instance. */
 export function providerPoolOf(
   providers: ReadonlyArray<ServerProvider>,
   instanceId: ProviderInstanceId,

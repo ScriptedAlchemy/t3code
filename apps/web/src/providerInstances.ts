@@ -23,10 +23,6 @@ import {
 
 export { normalizeProviderAccentColor, shouldShowInstanceBadge };
 
-/**
- * `providerPools` is part of the settings shape because a pool id is enabled only while the pool
- * config names an enabled member; without it every pool would read as disabled.
- */
 type ProviderInstanceSettings = Pick<
   ServerSettings,
   "providerInstances" | "projectSettingsOverrides" | "providerPools"
