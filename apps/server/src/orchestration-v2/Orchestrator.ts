@@ -931,7 +931,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   const enforceCommandPolicy =
-    (command: OrchestrationV2Command) =>
+    (command: OrchestrationV2ServerCommand) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, OrchestratorDispatchError, R> =>
       effect.pipe(
         Effect.mapError(
@@ -4048,6 +4048,440 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
+  /**
+   * Runs this run's next attempt on `modelSelection`. A steering restart and a
+   * pool failover share it; they differ only in how the prior attempt closes
+   * and in what the caller appends afterwards. Handoff versus native resume is
+   * still decided by the switch plan, so shared-home Codex members resume and
+   * Claude members get a summary with no pool-specific code.
+   */
+  const replaceRunAttempt = (input: {
+    readonly command: OrchestrationV2ServerCommand;
+    readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
+    readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
+    readonly projection: Pick<
+      OrchestrationV2ThreadProjection,
+      | "runs"
+      | "providerSessions"
+      | "providerThreads"
+      | "providerTurns"
+      | "attempts"
+      | "nodes"
+      | "thread"
+    >;
+    readonly threadId: ThreadId;
+    readonly run: OrchestrationV2Run;
+    readonly rootNodeId: NodeId;
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly modelSelection: ModelSelection;
+    readonly selectionTransition: {
+      readonly type: "apply_on_next_turn" | "restart_session" | "create_with_handoff";
+    } | null;
+    readonly reason: "steering_restart" | "provider_recovery";
+    readonly priorAttempt: {
+      readonly attempt: "superseded" | "failed";
+      readonly node: "interrupted" | "failed";
+    };
+    readonly userMessageId: OrchestrationV2Run["userMessageId"];
+    readonly createdBy: OrchestrationV2ContextTransfer["createdBy"];
+    readonly cwdFallback: string;
+    readonly handoffItemFilter?: (item: OrchestrationV2TurnItem) => boolean;
+  }) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const emitEvent = emit(input.events, input.command);
+      const selectionChanged = !modelSelectionsEqual(
+        input.run.modelSelection,
+        input.modelSelection,
+      );
+      const providerInstanceChanged =
+        input.run.providerInstanceId !== input.modelSelection.instanceId;
+      const currentAttempt = input.projection.attempts.find(
+        (candidate) => candidate.id === input.run.activeAttemptId,
+      );
+      const currentRootNode = input.projection.nodes.find(
+        (candidate) => candidate.id === input.rootNodeId,
+      );
+      const attemptOrdinal =
+        Math.max(
+          0,
+          ...input.projection.attempts
+            .filter((candidate) => candidate.runId === input.run.id)
+            .map((candidate) => candidate.attemptOrdinal),
+        ) + 1;
+      const nextAttemptId = idAllocator.derive.runAttempt({
+        runId: input.run.id,
+        attemptOrdinal,
+      });
+      const nextRootNodeId = idAllocator.derive.rootNodeAttempt({
+        runId: input.run.id,
+        attemptOrdinal,
+      });
+      let restartProviderThread = input.providerThread;
+      let restartSessionTransition:
+        | {
+            readonly type: "replace";
+            readonly replacementProviderSessionId: ProviderSessionId;
+          }
+        | { readonly type: "detach" }
+        | null = null;
+      let restartHandoff: OrchestrationV2ContextHandoff | null = null;
+      let restartTransfer: OrchestrationV2ContextTransfer | null = null;
+      const canResumeAcrossInstances =
+        providerInstanceChanged &&
+        input.providerThread.nativeThreadRef !== null &&
+        (yield* providerSwitchService
+          .plan({
+            projection: {
+              ...input.projection,
+              thread: { ...input.projection.thread, modelSelection: input.run.modelSelection },
+            },
+            targetModelSelection: input.modelSelection,
+          })
+          .pipe(mapDispatchError(input.command))).transition.type === "restart_and_resume";
+      const requiresProviderThreadHandoff =
+        (providerInstanceChanged && !canResumeAcrossInstances) ||
+        input.selectionTransition?.type === "create_with_handoff";
+      const requiresProviderSessionRestart =
+        canResumeAcrossInstances || input.selectionTransition?.type === "restart_session";
+      if (requiresProviderThreadHandoff) {
+        const targetAdapter = yield* providerAdapters.get(input.modelSelection.instanceId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorProviderAdapterError({
+                commandId: input.command.commandId,
+                providerInstanceId: input.modelSelection.instanceId,
+                cause,
+              }),
+          ),
+        );
+        const targetCapabilities = yield* targetAdapter.getCapabilities().pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorProviderAdapterError({
+                commandId: input.command.commandId,
+                providerInstanceId: input.modelSelection.instanceId,
+                cause,
+              }),
+          ),
+        );
+        yield* enforceCommandPolicy(input.command)(
+          commandPolicy.ensureContextHandoff({
+            commandId: input.command.commandId,
+            threadId: input.threadId,
+            providerInstanceId: input.modelSelection.instanceId,
+            capabilities: targetCapabilities,
+            strategy: "full_thread_summary",
+          }),
+        );
+        const existingTargetProviderThread = rootProviderThreadsForProvider(
+          input.projection,
+          input.modelSelection.instanceId,
+        ).find((candidate) => candidate.id !== input.providerThread.id);
+        const targetProviderSessionId =
+          existingTargetProviderThread?.providerSessionId ??
+          (yield* mapDispatchError(input.command)(
+            providerSessionIdFor({
+              adapter: targetAdapter,
+              providerInstanceId: input.modelSelection.instanceId,
+              threadId: input.threadId,
+            }),
+          ));
+        const targetProviderThreadBase: OrchestrationV2ProviderThread =
+          existingTargetProviderThread === undefined
+            ? {
+                id: idAllocator.derive.providerThread({
+                  driver: targetAdapter.driver,
+                  nativeThreadId: `pending:${input.run.id}:attempt:${attemptOrdinal}`,
+                }),
+                driver: targetAdapter.driver,
+                providerInstanceId: input.modelSelection.instanceId,
+                providerSessionId: targetProviderSessionId,
+                appThreadId: input.threadId,
+                ownerNodeId: null,
+                nativeThreadRef: null,
+                nativeConversationHeadRef: null,
+                status: "not_loaded",
+                firstRunOrdinal: input.run.ordinal,
+                lastRunOrdinal: input.run.ordinal,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt: now,
+                updatedAt: now,
+              }
+            : {
+                ...existingTargetProviderThread,
+                providerSessionId: targetProviderSessionId,
+                lastRunOrdinal: input.run.ordinal,
+                updatedAt: now,
+              };
+        const transferId = yield* mapDispatchError(input.command)(
+          idAllocator.allocate.contextTransfer({
+            sourceThreadId: input.threadId,
+            targetThreadId: input.threadId,
+            type: "provider_handoff",
+          }),
+        );
+        restartHandoff = yield* contextHandoffService
+          .prepareProviderHandoff({
+            threadId: input.threadId,
+            targetRunId: input.run.id,
+            transferId,
+            fromProviderThreadIds: [input.providerThread.id],
+            toProviderThreadId: targetProviderThreadBase.id,
+            fromProviderInstanceId: input.run.providerInstanceId,
+            toProviderInstanceId: input.modelSelection.instanceId,
+            coveredRunOrdinals: { from: 1, to: input.run.ordinal },
+            strategy: "full_thread_summary",
+            items: (yield* readHandoffItems(input.threadId)).filter(
+              input.handoffItemFilter ?? (() => true),
+            ),
+            runs: input.projection.runs,
+            createdAt: now,
+          })
+          .pipe(mapDispatchError(input.command));
+        restartProviderThread = {
+          ...targetProviderThreadBase,
+          handoffIds: Array.from(
+            new Set([...targetProviderThreadBase.handoffIds, restartHandoff.id]),
+          ),
+        };
+        restartTransfer = {
+          id: transferId,
+          type: "provider_handoff",
+          sourceThreadId: input.threadId,
+          targetThreadId: input.threadId,
+          sourcePoint: contextSourcePointForRun(input.projection, input.run),
+          basePoint: null,
+          sourceProviderInstanceId: input.run.providerInstanceId,
+          targetProviderInstanceId: input.modelSelection.instanceId,
+          targetRunId: input.run.id,
+          status: "consumed",
+          resolution: {
+            strategy: "portable_context",
+            contextHandoffId: restartHandoff.id,
+          },
+          createdBy: input.createdBy,
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          consumedAt: now,
+        };
+        restartSessionTransition = { type: "detach" };
+      } else if (requiresProviderSessionRestart) {
+        const nextProviderSessionId = yield* mapDispatchError(input.command)(
+          idAllocator.allocate.providerSession({
+            providerInstanceId: input.modelSelection.instanceId,
+            threadId: input.threadId,
+          }),
+        );
+        restartProviderThread = {
+          ...input.providerThread,
+          providerInstanceId: input.modelSelection.instanceId,
+          providerSessionId: nextProviderSessionId,
+          status: "not_loaded",
+          updatedAt: now,
+        };
+        restartSessionTransition = {
+          type: "replace",
+          replacementProviderSessionId: nextProviderSessionId,
+        };
+      }
+      const resolvedRuntimePolicy = yield* runtimePolicy
+        .resolve({ thread: input.projection.thread, modelSelection: input.modelSelection })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorDispatchError({
+                commandId: input.command.commandId,
+                commandType: input.command.type,
+                cause,
+              }),
+          ),
+        );
+      const checkpointScope = yield* checkpointService
+        .prepareRootRunScope({
+          threadId: input.threadId,
+          runId: input.run.id,
+          rootNodeId: nextRootNodeId,
+          providerThreadId: restartProviderThread.id,
+          cwd:
+            resolvedRuntimePolicy.cwd ?? input.projection.thread.worktreePath ?? input.cwdFallback,
+          createdAt: now,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorDispatchError({
+                commandId: input.command.commandId,
+                commandType: input.command.type,
+                cause,
+              }),
+          ),
+        );
+      const ensuredCheckpointScope = yield* checkpointService.ensureScope(checkpointScope).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorDispatchError({
+              commandId: input.command.commandId,
+              commandType: input.command.type,
+              cause,
+            }),
+        ),
+      );
+      const restartedRun: OrchestrationV2Run = {
+        ...input.run,
+        providerInstanceId: input.modelSelection.instanceId,
+        modelSelection: input.modelSelection,
+        providerThreadId: restartProviderThread.id,
+        rootNodeId: nextRootNodeId,
+        activeAttemptId: nextAttemptId,
+        userMessageId: input.userMessageId,
+        status: "starting",
+        contextHandoffId: restartHandoff?.id ?? input.run.contextHandoffId,
+      };
+      const nextAttempt: OrchestrationV2RunAttempt = {
+        id: nextAttemptId,
+        runId: input.run.id,
+        attemptOrdinal,
+        rootNodeId: nextRootNodeId,
+        providerInstanceId: input.modelSelection.instanceId,
+        providerThreadId: restartProviderThread.id,
+        providerTurnId: null,
+        reason: input.reason,
+        status: "pending",
+        startedAt: null,
+        completedAt: null,
+      };
+      const nextRootNode: OrchestrationV2ExecutionNode = {
+        id: nextRootNodeId,
+        threadId: input.threadId,
+        runId: input.run.id,
+        parentNodeId: null,
+        rootNodeId: nextRootNodeId,
+        kind: "root_turn",
+        status: "pending",
+        countsForRun: true,
+        providerThreadId: restartProviderThread.id,
+        providerTurnId: null,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: ensuredCheckpointScope.id,
+        startedAt: null,
+        completedAt: null,
+      };
+      if (currentAttempt !== undefined) {
+        yield* emitEvent({
+          type: "run-attempt.updated",
+          threadId: input.threadId,
+          runId: input.run.id,
+          nodeId: input.rootNodeId,
+          providerInstanceId: input.run.providerInstanceId,
+          occurredAt: now,
+          payload: { ...currentAttempt, status: input.priorAttempt.attempt, completedAt: now },
+        });
+      }
+      if (currentRootNode !== undefined) {
+        yield* emitEvent({
+          type: "node.updated",
+          threadId: input.threadId,
+          runId: input.run.id,
+          nodeId: input.rootNodeId,
+          providerInstanceId: input.run.providerInstanceId,
+          occurredAt: now,
+          payload: { ...currentRootNode, status: input.priorAttempt.node, completedAt: now },
+        });
+      }
+      if (selectionChanged) {
+        yield* emitEvent({
+          type: providerInstanceChanged
+            ? "thread.provider-switched"
+            : "thread.model-selection-updated",
+          threadId: input.threadId,
+          providerInstanceId: input.modelSelection.instanceId,
+          occurredAt: now,
+          payload: {
+            ...input.projection.thread,
+            providerInstanceId: input.modelSelection.instanceId,
+            modelSelection: input.modelSelection,
+            updatedAt: now,
+          },
+        });
+      }
+      if (requiresProviderThreadHandoff || requiresProviderSessionRestart) {
+        yield* emitEvent({
+          type: "provider-thread.updated",
+          threadId: input.threadId,
+          driver: restartProviderThread.driver,
+          providerInstanceId: input.modelSelection.instanceId,
+          occurredAt: now,
+          payload: restartProviderThread,
+        });
+      }
+      if (restartHandoff !== null) {
+        yield* emitEvent({
+          type: "context-handoff.updated",
+          threadId: input.threadId,
+          runId: input.run.id,
+          providerInstanceId: input.modelSelection.instanceId,
+          occurredAt: now,
+          payload: restartHandoff,
+        });
+      }
+      if (restartTransfer !== null) {
+        yield* emitEvent({
+          type: "context-transfer.created",
+          threadId: input.threadId,
+          runId: input.run.id,
+          providerInstanceId: input.modelSelection.instanceId,
+          occurredAt: now,
+          payload: restartTransfer,
+        });
+      }
+      yield* emitEvent({
+        type: "run.updated",
+        threadId: input.threadId,
+        runId: input.run.id,
+        nodeId: nextRootNodeId,
+        providerInstanceId: input.modelSelection.instanceId,
+        occurredAt: now,
+        payload: restartedRun,
+      });
+      yield* emitEvent({
+        type: "run-attempt.created",
+        threadId: input.threadId,
+        runId: input.run.id,
+        nodeId: nextRootNodeId,
+        providerInstanceId: input.modelSelection.instanceId,
+        occurredAt: now,
+        payload: nextAttempt,
+      });
+      yield* emitEvent({
+        type: "node.updated",
+        threadId: input.threadId,
+        runId: input.run.id,
+        nodeId: nextRootNodeId,
+        providerInstanceId: input.modelSelection.instanceId,
+        occurredAt: now,
+        payload: nextRootNode,
+      });
+      yield* emitEvent({
+        type: "checkpoint-scope.created",
+        threadId: input.threadId,
+        runId: input.run.id,
+        nodeId: nextRootNodeId,
+        providerInstanceId: input.modelSelection.instanceId,
+        occurredAt: now,
+        payload: ensuredCheckpointScope,
+      });
+      return {
+        attemptId: nextAttemptId,
+        rootNodeId: nextRootNodeId,
+        providerThread: restartProviderThread,
+        sessionTransition: restartSessionTransition,
+      };
+    });
+
   const dispatchSteerIntoRun = (input: {
     readonly command: Extract<
       OrchestrationV2Command,
@@ -4357,384 +4791,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
 
-      const currentAttempt = input.projection.attempts.find(
-        (candidate) => candidate.id === targetRun.activeAttemptId,
-      );
-      const currentRootNode = input.projection.nodes.find(
-        (candidate) => candidate.id === rootNodeId,
-      );
-      const attemptOrdinal =
-        Math.max(
-          0,
-          ...input.projection.attempts
-            .filter((candidate) => candidate.runId === targetRun.id)
-            .map((candidate) => candidate.attemptOrdinal),
-        ) + 1;
-      const nextAttemptId = idAllocator.derive.runAttempt({
-        runId: targetRun.id,
-        attemptOrdinal,
-      });
-      const nextRootNodeId = idAllocator.derive.rootNodeAttempt({
-        runId: targetRun.id,
-        attemptOrdinal,
-      });
-      let restartProviderThread = providerThread;
-      let restartSessionTransition:
-        | {
-            readonly type: "replace";
-            readonly replacementProviderSessionId: ProviderSessionId;
-          }
-        | { readonly type: "detach" }
-        | null = null;
-      let restartHandoff: OrchestrationV2ContextHandoff | null = null;
-      let restartTransfer: OrchestrationV2ContextTransfer | null = null;
-      const canResumeAcrossInstances =
-        providerInstanceChanged &&
-        providerThread.nativeThreadRef !== null &&
-        (yield* providerSwitchService
-          .plan({
-            projection: {
-              ...input.projection,
-              thread: { ...input.projection.thread, modelSelection: targetRun.modelSelection },
-            },
-            targetModelSelection: input.modelSelection,
-          })
-          .pipe(mapDispatchError(input.command))).transition.type === "restart_and_resume";
-      const requiresProviderThreadHandoff =
-        (providerInstanceChanged && !canResumeAcrossInstances) ||
-        selectionTransition?.type === "create_with_handoff";
-      const requiresProviderSessionRestart =
-        canResumeAcrossInstances || selectionTransition?.type === "restart_session";
-      if (requiresProviderThreadHandoff) {
-        const targetAdapter = yield* providerAdapters.get(input.modelSelection.instanceId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorProviderAdapterError({
-                commandId: input.command.commandId,
-                providerInstanceId: input.modelSelection.instanceId,
-                cause,
-              }),
-          ),
-        );
-        const targetCapabilities = yield* targetAdapter.getCapabilities().pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorProviderAdapterError({
-                commandId: input.command.commandId,
-                providerInstanceId: input.modelSelection.instanceId,
-                cause,
-              }),
-          ),
-        );
-        yield* enforceCommandPolicy(input.command)(
-          commandPolicy.ensureContextHandoff({
-            commandId: input.command.commandId,
-            threadId: input.command.threadId,
-            providerInstanceId: input.modelSelection.instanceId,
-            capabilities: targetCapabilities,
-            strategy: "full_thread_summary",
-          }),
-        );
-        const existingTargetProviderThread = rootProviderThreadsForProvider(
-          input.projection,
-          input.modelSelection.instanceId,
-        ).find((candidate) => candidate.id !== providerThread.id);
-        const targetProviderSessionId =
-          existingTargetProviderThread?.providerSessionId ??
-          (yield* mapDispatchError(input.command)(
-            providerSessionIdFor({
-              adapter: targetAdapter,
-              providerInstanceId: input.modelSelection.instanceId,
-              threadId: input.command.threadId,
-            }),
-          ));
-        const targetProviderThreadBase: OrchestrationV2ProviderThread =
-          existingTargetProviderThread === undefined
-            ? {
-                id: idAllocator.derive.providerThread({
-                  driver: targetAdapter.driver,
-                  nativeThreadId: `pending:${targetRun.id}:attempt:${attemptOrdinal}`,
-                }),
-                driver: targetAdapter.driver,
-                providerInstanceId: input.modelSelection.instanceId,
-                providerSessionId: targetProviderSessionId,
-                appThreadId: input.command.threadId,
-                ownerNodeId: null,
-                nativeThreadRef: null,
-                nativeConversationHeadRef: null,
-                status: "not_loaded",
-                firstRunOrdinal: targetRun.ordinal,
-                lastRunOrdinal: targetRun.ordinal,
-                handoffIds: [],
-                forkedFrom: null,
-                createdAt: now,
-                updatedAt: now,
-              }
-            : {
-                ...existingTargetProviderThread,
-                providerSessionId: targetProviderSessionId,
-                lastRunOrdinal: targetRun.ordinal,
-                updatedAt: now,
-              };
-        const transferId = yield* mapDispatchError(input.command)(
-          idAllocator.allocate.contextTransfer({
-            sourceThreadId: input.command.threadId,
-            targetThreadId: input.command.threadId,
-            type: "provider_handoff",
-          }),
-        );
-        restartHandoff = yield* contextHandoffService
-          .prepareProviderHandoff({
-            threadId: input.command.threadId,
-            targetRunId: targetRun.id,
-            transferId,
-            fromProviderThreadIds: [providerThread.id],
-            toProviderThreadId: targetProviderThreadBase.id,
-            fromProviderInstanceId: targetRun.providerInstanceId,
-            toProviderInstanceId: input.modelSelection.instanceId,
-            coveredRunOrdinals: { from: 1, to: targetRun.ordinal },
-            strategy: "full_thread_summary",
-            items: yield* readHandoffItems(input.command.threadId),
-            runs: input.projection.runs,
-            createdAt: now,
-          })
-          .pipe(mapDispatchError(input.command));
-        restartProviderThread = {
-          ...targetProviderThreadBase,
-          handoffIds: Array.from(
-            new Set([...targetProviderThreadBase.handoffIds, restartHandoff.id]),
-          ),
-        };
-        restartTransfer = {
-          id: transferId,
-          type: "provider_handoff",
-          sourceThreadId: input.command.threadId,
-          targetThreadId: input.command.threadId,
-          sourcePoint: contextSourcePointForRun(input.projection, targetRun),
-          basePoint: null,
-          sourceProviderInstanceId: targetRun.providerInstanceId,
-          targetProviderInstanceId: input.modelSelection.instanceId,
-          targetRunId: targetRun.id,
-          status: "consumed",
-          resolution: {
-            strategy: "portable_context",
-            contextHandoffId: restartHandoff.id,
-          },
-          createdBy: input.createdBy,
-          error: null,
-          createdAt: now,
-          updatedAt: now,
-          consumedAt: now,
-        };
-        restartSessionTransition = { type: "detach" };
-      } else if (requiresProviderSessionRestart) {
-        const nextProviderSessionId = yield* mapDispatchError(input.command)(
-          idAllocator.allocate.providerSession({
-            providerInstanceId: input.modelSelection.instanceId,
-            threadId: input.command.threadId,
-          }),
-        );
-        restartProviderThread = {
-          ...providerThread,
-          providerInstanceId: input.modelSelection.instanceId,
-          providerSessionId: nextProviderSessionId,
-          status: "not_loaded",
-          updatedAt: now,
-        };
-        restartSessionTransition = {
-          type: "replace",
-          replacementProviderSessionId: nextProviderSessionId,
-        };
-      }
-      const resolvedRuntimePolicy = yield* runtimePolicy
-        .resolve({ thread: input.projection.thread, modelSelection: input.modelSelection })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorDispatchError({
-                commandId: input.command.commandId,
-                commandType: input.command.type,
-                cause,
-              }),
-          ),
-        );
-      const checkpointScope = yield* checkpointService
-        .prepareRootRunScope({
-          threadId: input.command.threadId,
-          runId: targetRun.id,
-          rootNodeId: nextRootNodeId,
-          providerThreadId: restartProviderThread.id,
-          cwd:
-            resolvedRuntimePolicy.cwd ??
-            input.projection.thread.worktreePath ??
-            session.providerSession.cwd,
-          createdAt: now,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorDispatchError({
-                commandId: input.command.commandId,
-                commandType: input.command.type,
-                cause,
-              }),
-          ),
-        );
-      const ensuredCheckpointScope = yield* checkpointService.ensureScope(checkpointScope).pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorDispatchError({
-              commandId: input.command.commandId,
-              commandType: input.command.type,
-              cause,
-            }),
-        ),
-      );
-      const restartedRun: OrchestrationV2Run = {
-        ...targetRun,
-        providerInstanceId: input.modelSelection.instanceId,
+      const replaced = yield* replaceRunAttempt({
+        command: input.command,
+        events: input.events,
+        effects: input.effects,
+        projection: input.projection,
+        threadId: input.command.threadId,
+        run: targetRun,
+        rootNodeId,
+        providerThread,
         modelSelection: input.modelSelection,
-        providerThreadId: restartProviderThread.id,
-        rootNodeId: nextRootNodeId,
-        activeAttemptId: nextAttemptId,
-        userMessageId: input.messageId,
-        status: "starting",
-        contextHandoffId: restartHandoff?.id ?? targetRun.contextHandoffId,
-      };
-      const nextAttempt: OrchestrationV2RunAttempt = {
-        id: nextAttemptId,
-        runId: targetRun.id,
-        attemptOrdinal,
-        rootNodeId: nextRootNodeId,
-        providerInstanceId: input.modelSelection.instanceId,
-        providerThreadId: restartProviderThread.id,
-        providerTurnId: null,
+        selectionTransition,
         reason: "steering_restart",
-        status: "pending",
-        startedAt: null,
-        completedAt: null,
-      };
-      const nextRootNode: OrchestrationV2ExecutionNode = {
-        id: nextRootNodeId,
-        threadId: input.command.threadId,
-        runId: targetRun.id,
-        parentNodeId: null,
-        rootNodeId: nextRootNodeId,
-        kind: "root_turn",
-        status: "pending",
-        countsForRun: true,
-        providerThreadId: restartProviderThread.id,
-        providerTurnId: null,
-        nativeItemRef: null,
-        runtimeRequestId: null,
-        checkpointScopeId: ensuredCheckpointScope.id,
-        startedAt: null,
-        completedAt: null,
-      };
-      if (currentAttempt !== undefined) {
-        yield* emitEvent({
-          type: "run-attempt.updated",
-          threadId: input.command.threadId,
-          runId: targetRun.id,
-          nodeId: rootNodeId,
-          providerInstanceId: targetRun.providerInstanceId,
-          occurredAt: now,
-          payload: { ...currentAttempt, status: "superseded", completedAt: now },
-        });
-      }
-      if (currentRootNode !== undefined) {
-        yield* emitEvent({
-          type: "node.updated",
-          threadId: input.command.threadId,
-          runId: targetRun.id,
-          nodeId: rootNodeId,
-          providerInstanceId: targetRun.providerInstanceId,
-          occurredAt: now,
-          payload: { ...currentRootNode, status: "interrupted", completedAt: now },
-        });
-      }
-      if (selectionChanged) {
-        yield* emitEvent({
-          type: providerInstanceChanged
-            ? "thread.provider-switched"
-            : "thread.model-selection-updated",
-          threadId: input.command.threadId,
-          providerInstanceId: input.modelSelection.instanceId,
-          occurredAt: now,
-          payload: {
-            ...input.projection.thread,
-            providerInstanceId: input.modelSelection.instanceId,
-            modelSelection: input.modelSelection,
-            updatedAt: now,
-          },
-        });
-      }
-      if (requiresProviderThreadHandoff || requiresProviderSessionRestart) {
-        yield* emitEvent({
-          type: "provider-thread.updated",
-          threadId: input.command.threadId,
-          driver: restartProviderThread.driver,
-          providerInstanceId: input.modelSelection.instanceId,
-          occurredAt: now,
-          payload: restartProviderThread,
-        });
-      }
-      if (restartHandoff !== null) {
-        yield* emitEvent({
-          type: "context-handoff.updated",
-          threadId: input.command.threadId,
-          runId: targetRun.id,
-          providerInstanceId: input.modelSelection.instanceId,
-          occurredAt: now,
-          payload: restartHandoff,
-        });
-      }
-      if (restartTransfer !== null) {
-        yield* emitEvent({
-          type: "context-transfer.created",
-          threadId: input.command.threadId,
-          runId: targetRun.id,
-          providerInstanceId: input.modelSelection.instanceId,
-          occurredAt: now,
-          payload: restartTransfer,
-        });
-      }
-      yield* emitEvent({
-        type: "run.updated",
-        threadId: input.command.threadId,
-        runId: targetRun.id,
-        nodeId: nextRootNodeId,
-        providerInstanceId: input.modelSelection.instanceId,
-        occurredAt: now,
-        payload: restartedRun,
+        priorAttempt: { attempt: "superseded", node: "interrupted" },
+        userMessageId: input.messageId,
+        createdBy: input.createdBy,
+        cwdFallback: session.providerSession.cwd,
       });
-      yield* emitEvent({
-        type: "run-attempt.created",
-        threadId: input.command.threadId,
-        runId: targetRun.id,
-        nodeId: nextRootNodeId,
-        providerInstanceId: input.modelSelection.instanceId,
-        occurredAt: now,
-        payload: nextAttempt,
-      });
-      yield* emitEvent({
-        type: "node.updated",
-        threadId: input.command.threadId,
-        runId: targetRun.id,
-        nodeId: nextRootNodeId,
-        providerInstanceId: input.modelSelection.instanceId,
-        occurredAt: now,
-        payload: nextRootNode,
-      });
-      yield* emitEvent({
-        type: "checkpoint-scope.created",
-        threadId: input.command.threadId,
-        runId: targetRun.id,
-        nodeId: nextRootNodeId,
-        providerInstanceId: input.modelSelection.instanceId,
-        occurredAt: now,
-        payload: ensuredCheckpointScope,
-      });
+      const nextRootNodeId = replaced.rootNodeId;
+      const restartProviderThread = replaced.providerThread;
+      const restartSessionTransition = replaced.sessionTransition;
       yield* appendSteeringMessage({
         runId: targetRun.id,
         nodeId: nextRootNodeId,
