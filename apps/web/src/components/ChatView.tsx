@@ -31,6 +31,7 @@ import { useProjectScriptEditing } from "./chat/useProjectScriptEditing";
 import { RightPanelSurfaceContent } from "./chat/RightPanelSurfaceContent";
 import { useThreadTerminalActions } from "./terminal/useThreadTerminalActions";
 import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
+import { composerInstanceIdFor } from "@t3tools/client-runtime/provider-pools";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
@@ -282,11 +283,9 @@ import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
 import { getProviderModelCapabilities } from "../providerModels";
 import {
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
+  deriveComposerProviderInstanceEntries,
   NO_PROVIDER_MODEL_SELECTION,
   shouldShowInstanceBadge,
-  sortProviderInstanceEntries,
 } from "../providerInstances";
 import {
   useClientSettings,
@@ -2367,16 +2366,15 @@ export default function ChatView(props: ChatViewProps) {
     if (autoBalanceUpdateBanner) items.push(autoBalanceUpdateBanner);
     return items;
   })() as ComposerBannerStackItem[];
-  const providerInstanceEntries = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(
-      deriveProviderInstanceEntries(providerStatuses),
-      settings,
-      activeProject?.id ?? null,
-    ),
+  const providerInstanceEntries = deriveComposerProviderInstanceEntries(
+    providerStatuses,
+    settings,
+    activeProject?.id ?? null,
   );
   const activeThreadModelInstanceId = activeThread?.modelSelection.instanceId;
   const { selectedProviderEntry, requestedDriverKind } = resolveComposerProviderSelection({
     entries: providerInstanceEntries,
+    providers: providerStatuses,
     candidateInstanceIds: [
       selectedProviderByThreadId,
       activeRuntime?.providerInstanceId,
@@ -2945,13 +2943,17 @@ export default function ChatView(props: ChatViewProps) {
     availableEditors,
     openInCwd: gitCwd,
   });
+  const lockedAccountInstanceId = lockedProvider
+    ? (activeRuntime?.providerInstanceId ?? activeThread?.modelSelection.instanceId ?? null)
+    : null;
   const manualCompactionProviderAvailable = hasAvailableCompactionProvider({
     providers: providerInstanceEntries,
     driverKind: selectedProvider,
     instanceId: activeProviderInstanceId,
-    lockedInstanceId: lockedProvider
-      ? (activeRuntime?.providerInstanceId ?? activeThread?.modelSelection.instanceId ?? null)
-      : null,
+    lockedInstanceId:
+      lockedAccountInstanceId === null
+        ? null
+        : composerInstanceIdFor(providerStatuses, lockedAccountInstanceId),
   });
   const [resumeCompactionPermanentlyDismissed, setResumeCompactionPermanentlyDismissed] =
     useLocalStorage(
@@ -7424,7 +7426,11 @@ export default function ChatView(props: ChatViewProps) {
   // Keyed on the fields it reads: the thread and runtime objects change with
   // every streamed event, and a new function re-renders the whole model picker.
   const hasStartedSession = activeRuntime !== null;
-  const runtimeProviderInstanceId = activeRuntime?.providerInstanceId ?? null;
+  // The runtime names the account that ran; the picker offers its pool, so compare against that.
+  const runtimeProviderInstanceId =
+    activeRuntime === null
+      ? null
+      : composerInstanceIdFor(providerStatuses, activeRuntime.providerInstanceId);
   const currentModelSelection = activeThread?.modelSelection ?? null;
   const getModelDisabledReason = makeModelDisabledReason(
     currentModelSelection
@@ -7493,7 +7499,7 @@ export default function ChatView(props: ChatViewProps) {
       hasStartedSession: activeRuntime !== null,
       supportsProviderSwitchingViaHandoff,
       currentModelSelection: activeThread.modelSelection,
-      currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
+      currentProviderInstanceId: runtimeProviderInstanceId,
       nextModelSelection,
     });
     if (modelChangeBlockReason) {

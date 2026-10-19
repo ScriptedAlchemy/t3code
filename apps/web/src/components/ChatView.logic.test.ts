@@ -1377,6 +1377,15 @@ describe("resolveComposerProviderSelection", () => {
     ])[0]!;
   }
 
+  // Without pools the composer catalog is the unfolded list, so the entries' snapshots are it.
+  const selectComposerProvider = (
+    input: Omit<Parameters<typeof resolveComposerProviderSelection>[0], "providers">,
+  ) =>
+    resolveComposerProviderSelection({
+      ...input,
+      providers: input.entries.map((candidate) => candidate.snapshot),
+    });
+
   function importedThread(instanceId: ProviderInstanceId) {
     return makeThread({
       modelSelection: { instanceId, model: "default" },
@@ -1402,7 +1411,7 @@ describe("resolveComposerProviderSelection", () => {
     expect(thread.runtime).toBeNull();
     expect(lockedProvider).toBe(driver);
     expect(
-      resolveComposerProviderSelection({
+      selectComposerProvider({
         entries,
         candidateInstanceIds: [thread.modelSelection.instanceId],
         lockedProvider,
@@ -1449,7 +1458,7 @@ describe("resolveComposerProviderSelection", () => {
 
       expect(lockedProvider).not.toBeNull();
       expect(
-        resolveComposerProviderSelection({
+        selectComposerProvider({
           entries,
           candidateInstanceIds: [other.instanceId, imported.instanceId],
           lockedProvider,
@@ -1481,7 +1490,7 @@ describe("resolveComposerProviderSelection", () => {
     const customEntry = entry("antigravity", "google_work", {
       showInteractionModeToggle: false,
     });
-    const selection = resolveComposerProviderSelection({
+    const selection = selectComposerProvider({
       entries: [defaultEntry, customEntry],
       candidateInstanceIds: [customEntry.instanceId],
       lockedProvider: null,
@@ -1504,7 +1513,7 @@ describe("resolveComposerProviderSelection", () => {
       showInteractionModeToggle: false,
     });
     const fallbackEntry = entry("codex");
-    const selection = resolveComposerProviderSelection({
+    const selection = selectComposerProvider({
       entries: [disabledEntry, fallbackEntry],
       candidateInstanceIds: [disabledEntry.instanceId],
       lockedProvider: null,
@@ -1527,7 +1536,7 @@ describe("resolveComposerProviderSelection", () => {
       auth: { status: "unauthenticated" },
       models: catalogModels,
     });
-    const selection = resolveComposerProviderSelection({
+    const selection = selectComposerProvider({
       entries: [entry("codex"), signedOutEntry],
       candidateInstanceIds: [signedOutEntry.instanceId],
       lockedProvider: null,
@@ -1617,7 +1626,7 @@ describe("resolveComposerProviderSelection", () => {
 
   it("does not continue an existing Antigravity thread in another profile after deletion", () => {
     const missingInstanceId = ProviderInstanceId.make("google_work");
-    const selection = resolveComposerProviderSelection({
+    const selection = selectComposerProvider({
       entries: [entry("antigravity")],
       candidateInstanceIds: [missingInstanceId],
       lockedProvider: ProviderDriverKind.make("antigravity"),
@@ -1629,7 +1638,7 @@ describe("resolveComposerProviderSelection", () => {
   });
 
   it("does not treat the empty draft placeholder as a provider setup target", () => {
-    const selection = resolveComposerProviderSelection({
+    const selection = selectComposerProvider({
       entries: [entry("antigravity", "antigravity", { enabled: false })],
       candidateInstanceIds: [NO_PROVIDER_MODEL_SELECTION.instanceId],
       lockedProvider: null,
@@ -1648,7 +1657,7 @@ describe("resolveComposerProviderSelection", () => {
     const anotherEntry = entry("antigravity", "google_personal", {
       continuation: { groupKey: "personal-profile" },
     });
-    const selection = resolveComposerProviderSelection({
+    const selection = selectComposerProvider({
       entries: [sessionEntry, anotherEntry],
       candidateInstanceIds: [anotherEntry.instanceId, sessionEntry.instanceId],
       lockedProvider: ProviderDriverKind.make("antigravity"),
@@ -1656,6 +1665,74 @@ describe("resolveComposerProviderSelection", () => {
     });
 
     expect(selection.selectedProviderEntry).toBeUndefined();
+  });
+
+  describe("with an active account pool", () => {
+    const poolId = ProviderInstanceId.make("pool_claudeAgent");
+    const memberIds = ["claudeAgent", "claudeAgent_icloud"].map((id) =>
+      ProviderInstanceId.make(id),
+    );
+    const member = (instanceId: string) =>
+      entry("claudeAgent", instanceId, { pool: { role: "member", poolInstanceId: poolId } });
+    const poolEntry = entry("claudeAgent", poolId, {
+      pool: { role: "pool", memberInstanceIds: memberIds, droppedModels: [] },
+      continuation: undefined,
+    });
+    const providers = [member("claudeAgent"), member("claudeAgent_icloud"), poolEntry].map(
+      (candidate) => candidate.snapshot,
+    );
+    const composerEntries = [entry("codex"), poolEntry];
+
+    it("selects the pool for a thread whose runtime account the composer hides", () => {
+      const thread = importedThread(memberIds[0]!);
+      const selection = resolveComposerProviderSelection({
+        entries: composerEntries,
+        providers,
+        candidateInstanceIds: [null, memberIds[1], thread.modelSelection.instanceId],
+        lockedProvider: ProviderDriverKind.make("claudeAgent"),
+        lockedInstanceId: memberIds[1],
+      });
+
+      expect(selection.selectedProviderEntry?.instanceId).toBe(poolId);
+      expect(selection.unavailableProviderInstanceId).toBeUndefined();
+    });
+
+    it("locks a started thread to the continuation group its pool shares", () => {
+      const sharedPool = entry("codex", "pool_codex", {
+        pool: {
+          role: "pool",
+          memberInstanceIds: [ProviderInstanceId.make("codex"), ProviderInstanceId.make("codex_2")],
+          droppedModels: [],
+        },
+        continuation: { groupKey: "codex:home:shared" },
+      });
+      const sharedMember = entry("codex", "codex_2", {
+        pool: { role: "member", poolInstanceId: sharedPool.instanceId },
+        continuation: { groupKey: "codex:home:shared" },
+      });
+      const selection = resolveComposerProviderSelection({
+        entries: [sharedPool],
+        providers: [sharedMember.snapshot, sharedPool.snapshot],
+        candidateInstanceIds: [sharedMember.instanceId],
+        lockedProvider: ProviderDriverKind.make("codex"),
+        lockedInstanceId: sharedMember.instanceId,
+      });
+
+      expect(selection.lockedContinuationGroupKey).toBe("codex:home:shared");
+      expect(selection.selectedProviderEntry?.instanceId).toBe(sharedPool.instanceId);
+    });
+
+    it("does not lock a mixed Claude pool to one account's continuation group", () => {
+      const selection = resolveComposerProviderSelection({
+        entries: composerEntries,
+        providers,
+        candidateInstanceIds: [memberIds[0]],
+        lockedProvider: ProviderDriverKind.make("claudeAgent"),
+        lockedInstanceId: memberIds[0],
+      });
+
+      expect(selection.lockedContinuationGroupKey).toBeNull();
+    });
   });
 });
 

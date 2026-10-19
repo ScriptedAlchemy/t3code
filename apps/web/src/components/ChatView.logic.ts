@@ -26,6 +26,7 @@ import {
   type RunId,
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
+import { composerInstanceIdFor } from "@t3tools/client-runtime/provider-pools";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import * as DateTime from "effect/DateTime";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
@@ -567,13 +568,23 @@ export function shouldWriteThreadErrorToCurrentServerThread(input: {
   );
 }
 
+/**
+ * `entries` is the composer catalog, in which an active pool replaces its member accounts, while
+ * `providers` is the unfolded list. Threads and drafts name the account that ran, so every
+ * instance id is mapped to the pool that hides it before it is matched against `entries`.
+ */
 export function resolveComposerProviderSelection(input: {
   entries: ReadonlyArray<ProviderInstanceEntry>;
+  providers: ReadonlyArray<ServerProvider>;
   candidateInstanceIds: ReadonlyArray<ProviderInstanceId | null | undefined>;
   lockedProvider: ProviderDriverKind | null;
   lockedInstanceId: ProviderInstanceId | null | undefined;
 }) {
-  const requestedInstanceId = input.candidateInstanceIds.find(
+  const toComposerId = <Id extends ProviderInstanceId | null | undefined>(instanceId: Id) =>
+    instanceId == null ? instanceId : composerInstanceIdFor(input.providers, instanceId);
+  const candidateInstanceIds = input.candidateInstanceIds.map(toComposerId);
+  const lockedInstanceId = toComposerId(input.lockedInstanceId);
+  const requestedInstanceId = candidateInstanceIds.find(
     (candidate) => candidate != null && candidate !== NO_PROVIDER_MODEL_SELECTION.instanceId,
   );
   const requestedDriverKind =
@@ -582,22 +593,22 @@ export function resolveComposerProviderSelection(input: {
     input.entries[0]?.driverKind ??
     ProviderDriverKind.make("unconfigured");
   const lockedContinuationGroupKey = input.lockedProvider
-    ? (input.entries.find((entry) => entry.instanceId === input.lockedInstanceId)
-        ?.continuationGroupKey ?? null)
+    ? (input.entries.find((entry) => entry.instanceId === lockedInstanceId)?.continuationGroupKey ??
+      null)
     : null;
   // Missing metadata must not move Antigravity history into another Google profile.
   const requiresExactInstance =
     input.lockedProvider === "antigravity" &&
-    input.lockedInstanceId != null &&
+    lockedInstanceId != null &&
     lockedContinuationGroupKey === null;
   const compatibleEntries = input.entries.filter(
     (entry) =>
       (!input.lockedProvider || entry.driverKind === input.lockedProvider) &&
       (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey) &&
-      (!requiresExactInstance || entry.instanceId === input.lockedInstanceId),
+      (!requiresExactInstance || entry.instanceId === lockedInstanceId),
   );
   const selectedProviderEntry =
-    input.candidateInstanceIds
+    candidateInstanceIds
       .map((candidate) =>
         compatibleEntries.find(
           (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
@@ -612,7 +623,7 @@ export function resolveComposerProviderSelection(input: {
   const unavailableProviderInstanceId = selectedProviderEntry
     ? undefined
     : input.lockedProvider
-      ? (input.lockedInstanceId ?? requestedInstanceId)
+      ? (lockedInstanceId ?? requestedInstanceId)
       : requestedInstanceId;
   return {
     selectedProviderEntry,

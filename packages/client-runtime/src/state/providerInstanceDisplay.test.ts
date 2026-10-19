@@ -23,6 +23,17 @@ describe("resolveProviderInstanceDisplayName", () => {
     ).toBe("Work");
   });
 
+  it("names a pool after its provider rather than its reserved id", () => {
+    expect(
+      resolveProviderInstanceDisplayName({
+        instanceId: ProviderInstanceId.make("pool_claudeAgent"),
+        driver: claude,
+        displayName: "Claude",
+        pool: { role: "pool", memberInstanceIds: [], droppedModels: [] },
+      }),
+    ).toBe("Claude");
+  });
+
   it("humanizes a custom instance id when the snapshot only carries the brand label", () => {
     expect(
       resolveProviderInstanceDisplayName({

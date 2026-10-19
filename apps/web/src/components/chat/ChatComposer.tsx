@@ -1060,10 +1060,10 @@ import {
 import { proposedPlanTitle } from "@t3tools/shared/proposedPlanText";
 import { hasProviderSetup } from "./ProviderStatusBanner";
 import {
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
+  deriveComposerProviderInstanceEntries,
   NO_PROVIDER_MODEL_SELECTION,
-  sortProviderInstanceEntries,
+  resolvePoolMemberLabel,
+  toComposerModelSelection,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
@@ -1780,7 +1780,7 @@ const NO_PROVIDER_MODELS: ServerProvider["models"] = [];
  * hook here; in the composer body they would straddle its later hooks and lose their cache.
  */
 function useComposerProviderModel(
-  input: Omit<Parameters<typeof resolveComposerProviderSelection>[0], "entries"> & {
+  input: Omit<Parameters<typeof resolveComposerProviderSelection>[0], "entries" | "providers"> & {
     readonly providerStatuses: ReadonlyArray<ServerProvider>;
     readonly settings: UnifiedSettings;
     readonly activeProjectId: ProjectId | null;
@@ -1803,15 +1803,11 @@ function useComposerProviderModel(
     lockedInstanceId,
   } = input;
   const draftModelState = useComposerDraftModelState(threadRef);
-  const providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry> = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(
-      deriveProviderInstanceEntries(providerStatuses),
-      settings,
-      activeProjectId,
-    ),
-  );
+  const providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry> =
+    deriveComposerProviderInstanceEntries(providerStatuses, settings, activeProjectId);
   const selection = resolveComposerProviderSelection({
     entries: providerInstanceEntries,
+    providers: providerStatuses,
     candidateInstanceIds,
     lockedProvider,
     lockedInstanceId,
@@ -1825,8 +1821,8 @@ function useComposerProviderModel(
     providers: providerStatuses,
     selectedProvider,
     selectedInstanceId,
-    threadModelSelection,
-    projectModelSelection,
+    threadModelSelection: toComposerModelSelection(providerStatuses, threadModelSelection),
+    projectModelSelection: toComposerModelSelection(providerStatuses, projectModelSelection),
     settings,
   });
   const selectedProviderModels = selection.selectedProviderEntry?.models ?? NO_PROVIDER_MODELS;
@@ -5158,6 +5154,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
         lockedProvider={lockedProvider}
         lockedContinuationGroupKey={lockedContinuationGroupKey}
+        activeAccount={resolvePoolMemberLabel(
+          providerStatuses,
+          selectedInstanceId,
+          activeThread?.runtime?.providerInstanceId,
+        )}
         instanceEntries={providerInstanceEntries}
         keybindings={keybindings}
         modelOptionsByInstance={modelOptionsByInstance}
