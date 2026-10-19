@@ -1,4 +1,8 @@
 import type { MenuAction } from "@react-native-menu/menu";
+import {
+  composerInstanceIdFor,
+  foldProviderPoolsForComposer,
+} from "@t3tools/client-runtime/provider-pools";
 import type {
   ModelCapabilities,
   ModelSelection,
@@ -232,11 +236,26 @@ export function buildModelOptions(
   fallbackModelSelection: ModelSelection | null,
   providerInstanceId: ModelSelection["instanceId"] | undefined,
   projectId: ProjectId | null,
+  surface: "composer" | "settings",
   includeHidden = false,
 ): ReadonlyArray<ModelOption> {
   const options = new Map<string, ModelOption>();
+  const providers = config?.providers ?? [];
+  if (surface === "composer") {
+    if (providerInstanceId !== undefined) {
+      providerInstanceId = composerInstanceIdFor(providers, providerInstanceId);
+    }
+    if (fallbackModelSelection) {
+      const instanceId = composerInstanceIdFor(providers, fallbackModelSelection.instanceId);
+      if (instanceId !== fallbackModelSelection.instanceId) {
+        fallbackModelSelection = { ...fallbackModelSelection, instanceId };
+      }
+    }
+  }
 
-  for (const provider of config?.providers ?? []) {
+  for (const provider of surface === "composer"
+    ? foldProviderPoolsForComposer(providers)
+    : providers) {
     if (
       (providerInstanceId !== undefined && provider.instanceId !== providerInstanceId) ||
       !isProviderEnabledForProject(config, provider, projectId) ||

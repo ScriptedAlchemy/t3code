@@ -338,6 +338,7 @@ function ThreadSettingsSessionProvider(
             props.selectedModel,
             props.lockedProviderInstanceId,
             props.projectId,
+            "composer",
             true,
           ),
         )

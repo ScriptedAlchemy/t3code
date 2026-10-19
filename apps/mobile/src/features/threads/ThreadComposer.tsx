@@ -98,6 +98,7 @@ import {
   type ComposerSendPresentation,
 } from "./composerSendPresentation";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
+import { resolveThreadComposerModelSelection } from "./thread-provider-instance";
 import { ComposerPopoverAnchor } from "./ComposerPopoverAnchor";
 import { ComposerQueuedEditAttachments } from "./ComposerQueuedEdit";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
@@ -376,7 +377,10 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       props.connectionState !== "connected" || props.queueCount > 0 || attachmentsUploading,
   });
   const sendLabel = sendPresentation.label;
-  const currentModelSelection = props.selectedThread.modelSelection;
+  const currentModelSelection = resolveThreadComposerModelSelection(
+    props.serverConfig?.providers ?? [],
+    props.selectedThread.modelSelection,
+  );
   const currentRuntimeMode = props.selectedThread.runtimeMode;
   const modelUnavailable =
     props.connectionState === "connected" &&
@@ -415,7 +419,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     );
   const openUsageLimits = () => {
     const report = collectProviderUsageLimits(
-      currentModelSelection.instanceId,
+      props.selectedThread.runtime?.providerInstanceId ??
+        props.selectedThread.modelSelection.instanceId,
       props.serverConfig?.providers ?? [],
       props.serverConfig?.usageLimitSources ?? [],
       Date.now(),
@@ -569,6 +574,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     currentModelSelection,
     lockedProviderInstanceId,
     props.selectedThread.projectId,
+    "composer",
   );
   const threadProviderGroups = groupByProvider(modelOptions);
   const currentModelOption =

@@ -27,7 +27,7 @@ export function ScheduledTaskModelPickerRouteScreen() {
   const selectedModel = editor?.draft.modelSelection ?? null;
   const projectId = editor?.draft.projectId ?? null;
   const models = useMemo(
-    () => buildModelOptions(config, selectedModel, undefined, projectId),
+    () => buildModelOptions(config, selectedModel, undefined, projectId, "settings"),
     [config, selectedModel, projectId],
   );
   const providerGroups = useMemo(() => groupByProvider(models), [models]);

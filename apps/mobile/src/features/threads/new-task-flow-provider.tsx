@@ -38,6 +38,7 @@ import {
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
+import { resolveThreadComposerModelSelection } from "./thread-provider-instance";
 import {
   buildModelOptions,
   groupByProvider,
@@ -531,14 +532,21 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     draftModelSelection ?? projectDefaultModelSelection ?? stickyModelSelection,
     undefined,
     selectedProject?.id ?? null,
+    "composer",
   );
 
-  const selectedModel = resolveNewTaskModelSelection({
+  const resolvedModel = resolveNewTaskModelSelection({
     draftSelection: draftModelSelection,
     projectDefaultSelection: projectDefaultModelSelection,
     stickySelection: stickyModelSelection,
     modelOptions,
   });
+  const selectedModel = resolvedModel
+    ? resolveThreadComposerModelSelection(
+        selectedEnvironmentServerConfig?.providers ?? [],
+        resolvedModel,
+      )
+    : null;
   const selectedModelKey = selectedModel
     ? `${selectedModel.instanceId}:${selectedModel.model}`
     : null;

@@ -39,6 +39,7 @@ export function scheduledTaskDefaultModel(
       projectDefaultSelection,
       undefined,
       project?.id ?? null,
+      "settings",
     ),
   });
 }

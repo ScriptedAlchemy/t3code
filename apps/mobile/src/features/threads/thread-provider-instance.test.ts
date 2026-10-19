@@ -10,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   createThreadRowProviderInstanceResolver,
+  resolveThreadComposerModelSelection,
   resolveThreadProviderInstance,
 } from "./thread-provider-instance";
 
@@ -50,6 +51,52 @@ function makeThread(environmentId: EnvironmentId, instanceId: string): Environme
 }
 
 describe("resolveThreadProviderInstance", () => {
+  it("selects the pool in the composer while labeling the runtime member", () => {
+    const memberId = ProviderInstanceId.make("claudeAgent_work");
+    const poolId = ProviderInstanceId.make("pool_claudeAgent");
+    const config = {
+      providers: [
+        {
+          instanceId: memberId,
+          driver: "claudeAgent",
+          displayName: "Claude Work",
+          pool: { role: "member", poolInstanceId: poolId },
+        },
+        {
+          instanceId: poolId,
+          driver: "claudeAgent",
+          displayName: "Claude",
+          pool: { role: "pool", memberInstanceIds: [memberId], droppedModels: [] },
+        },
+      ],
+    } as unknown as ServerConfig;
+    const selection = {
+      instanceId: memberId,
+      model: "opus",
+      options: [{ id: "effort", value: "high" }],
+    };
+    expect(resolveThreadComposerModelSelection(config.providers, selection)).toEqual({
+      ...selection,
+      instanceId: poolId,
+    });
+    expect(resolveThreadComposerModelSelection([], selection)).toBe(selection);
+    const thread = {
+      ...makeThread(EnvironmentId.make("environment-a"), poolId),
+      runtime: {
+        status: "running" as const,
+        activeRunId: null,
+        providerInstanceId: memberId,
+        providerName: "Claude",
+        lastError: null,
+        updatedAt: "2026-06-01T00:01:00.000Z",
+      },
+    };
+    expect(resolveThreadProviderInstance(config.providers, thread)).toMatchObject({
+      displayName: "Claude Work",
+      driverKind: "claudeAgent",
+    });
+  });
+
   it("resolves two environments with the same default instance id independently", () => {
     const environmentA = EnvironmentId.make("environment-a");
     const environmentB = EnvironmentId.make("environment-b");
