@@ -635,6 +635,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "provider-account-sync",
+    title: "Sync provider accounts",
+    to: "/settings/providers",
+    searchTerms: ["copy transfer accounts api keys another device machine environment remote"],
+    providerSettingsOnly: true,
+  },
+  {
     id: "usage-providers",
     title: "Usage providers",
     to: "/settings/providers",
