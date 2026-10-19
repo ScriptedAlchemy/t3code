@@ -44,6 +44,11 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
 } from "./providerInstance.ts";
+import {
+  ProviderPoolSettings,
+  ProviderPoolSettingsPatch,
+  providerPoolDriver,
+} from "./providerPool.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
 
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
@@ -1202,6 +1207,7 @@ export const ServerSettings = Schema.Struct({
   providerInstances: Schema.Record(ProviderInstanceId, ProviderInstanceConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  providerPools: ProviderPoolSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   sourceControlHosts: Schema.Record(Schema.String, SourceControlHostSettings).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
@@ -1264,7 +1270,31 @@ export const resolveProviderInstanceEnabled = (
   return instance.enabled ?? configEnabled ?? defaultEnabledForDriver(instance.driver);
 };
 
+/**
+ * A pool id is enabled when any of its configured members is, so a pooled
+ * selection is never rejected while one account can still take the turn.
+ * `providerPools` is optional only so callers typed against the narrower
+ * settings shape keep compiling; omitting it reports every pool id disabled.
+ */
 export const resolveProjectProviderInstanceEnabled = (
+  settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides"> &
+    Partial<Pick<ServerSettings, "providerPools">>,
+  projectId: ProjectId | null,
+  instanceId: ProviderInstanceId,
+): boolean => {
+  const poolDriver = providerPoolDriver(instanceId);
+  if (poolDriver === null) {
+    return resolveConcreteInstanceEnabled(settings, projectId, instanceId);
+  }
+  const pool = settings.providerPools?.[poolDriver];
+  return (
+    pool?.memberInstanceIds.some((memberId) =>
+      resolveConcreteInstanceEnabled(settings, projectId, memberId),
+    ) ?? false
+  );
+};
+
+const resolveConcreteInstanceEnabled = (
   settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">,
   projectId: ProjectId | null,
   instanceId: ProviderInstanceId,
@@ -1474,6 +1504,8 @@ export const ServerSettingsPatch = Schema.Struct({
   usageLimitSources: Schema.optionalKey(
     Schema.Record(UsageLimitSourceId, Schema.NullOr(UsageLimitSourceConfig)),
   ),
+  // Per-entry for the same reason as `usageLimitSources`.
+  providerPools: Schema.optionalKey(ProviderPoolSettingsPatch),
   cursorKeychainUsageEnabled: Schema.optionalKey(Schema.Boolean),
 
   usagePriceOverrides: Schema.optionalKey(
@@ -1493,7 +1525,12 @@ export function requiredScopesForServerSettingsPatch(
   let changesSettings = false;
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;
-    if (key === "providers" || key === "providerInstances" || key === "usageLimitSources") {
+    if (
+      key === "providers" ||
+      key === "providerInstances" ||
+      key === "usageLimitSources" ||
+      key === "providerPools"
+    ) {
       changesProviders = true;
     } else {
       changesSettings = true;

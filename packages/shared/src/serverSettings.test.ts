@@ -725,6 +725,32 @@ describe("serverSettings helpers", () => {
     expect(Object.keys(removed.usageLimitSources)).toEqual([hubB]);
   });
 
+  it("replaces and removes provider pools per driver so concurrent edits cannot clobber", () => {
+    const claude = ProviderDriverKind.make("claudeAgent");
+    const codex = ProviderDriverKind.make("codex");
+    const pool = (...members: string[]) => ({
+      enabled: true,
+      memberInstanceIds: members.map((member) => ProviderInstanceId.make(member)),
+    });
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerPools: { [claude]: pool("claudeAgent", "claudeAgent_icloud", "claudeAgent_work") },
+    };
+
+    const added = applyServerSettingsPatch(current, {
+      providerPools: { [codex]: pool("codex", "codex_2") },
+    });
+    expect(added.providerPools).toEqual({
+      [claude]: pool("claudeAgent", "claudeAgent_icloud", "claudeAgent_work"),
+      [codex]: pool("codex", "codex_2"),
+    });
+
+    const replaced = applyServerSettingsPatch(added, {
+      providerPools: { [claude]: pool("claudeAgent_icloud"), [codex]: null },
+    });
+    expect(replaced.providerPools).toEqual({ [claude]: pool("claudeAgent_icloud") });
+  });
+
   it("replaces and removes individual usage prices without clobbering other models", () => {
     const prices = { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 };
     const current = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {

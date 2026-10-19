@@ -55,6 +55,24 @@ describe("splitSharedServerPatch", () => {
     });
   });
 
+  it("keeps provider pools local: member instance ids belong to one environment", () => {
+    const patch = {
+      providerPools: {
+        [ProviderDriverKind.make("claudeAgent")]: {
+          enabled: true,
+          memberInstanceIds: [
+            ProviderInstanceId.make("claudeAgent"),
+            ProviderInstanceId.make("claudeAgent_icloud"),
+          ],
+        },
+      },
+    };
+    expect(splitSharedServerPatch(patch)).toEqual({ sharedPatch: {}, localPatch: patch });
+    expect(
+      pickSharedServerSettings({ ...DEFAULT_SERVER_SETTINGS, ...patch }, restartCapabilities),
+    ).not.toHaveProperty("providerPools");
+  });
+
   it.each([
     {
       instanceId: ProviderInstanceId.make("codex"),
