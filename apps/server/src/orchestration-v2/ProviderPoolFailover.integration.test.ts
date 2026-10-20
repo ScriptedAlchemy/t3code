@@ -19,12 +19,16 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -971,4 +975,85 @@ it.live("fails a delegated child over before its parent hears of the limit", () 
       );
     }),
   ),
+);
+
+it.live("leaves a crash between the cooldown and the failover to restart recovery", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const databaseLayer = SqlitePersistence.layerFromPath(
+        path.join(yield* fs.makeTempDirectoryScoped({ prefix: "t3-pool-crash-" }), "state.sqlite"),
+      ).pipe(Layer.provide(NodeServices.layer));
+      const cwd = yield* checkpointWorkspace("pool-failover-crash");
+      const threadId = ThreadId.make("thread:pool-failover-crash");
+      const resetAt = DateTime.formatIso(
+        DateTime.makeUnsafe(DateTime.toEpochMillis(yield* DateTime.now) + minutes(30)),
+      );
+      const state = yield* Ref.make<PoolAdapterState>({
+        failNextStart: resetAt,
+        holdTurn: null,
+        started: [],
+      });
+      const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+        makeProvider(first, "Claude", "claude:home:first"),
+        makeProvider(second, "Claude - Work", "claude:home:second"),
+      ]);
+      const layerRuntime = (
+        name: string,
+        options: Parameters<typeof ProviderReplayHarness.layerWithRegistry>[2],
+      ) =>
+        ProviderReplayHarness.layerWithRegistry(
+          { name },
+          makeRegistry({ first: "claude:home:first", second: "claude:home:second" }, state),
+          { databaseLayer, settings, poolCatalog: makeCatalog(providers), ...options },
+        );
+      const failoverReached = yield* Deferred.make<void>();
+      const crashed = yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        yield* createThread(threadId, cwd, poolId);
+        yield* sendMessage(threadId, "limited");
+        yield* Deferred.await(failoverReached);
+        return yield* orchestrator.getThreadProjection(threadId);
+      }).pipe(
+        Effect.provide(
+          layerRuntime("pool-failover-crash", {
+            // The process dies here: the cooldown is published, the command never lands.
+            poolFailoverDispatch: (dispatch) => (command) =>
+              command.type === "run.pool-failover"
+                ? Deferred.succeed(failoverReached, undefined).pipe(Effect.andThen(Effect.never))
+                : dispatch(command),
+          }),
+        ),
+      );
+      const restarted = yield* Effect.gen(function* () {
+        yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+        return yield* (yield* Orchestrator.OrchestratorV2).getThreadProjection(threadId);
+      }).pipe(
+        Effect.provide(layerRuntime("pool-failover-crash-restart", { recoverOnStartup: true })),
+      );
+
+      assert.deepEqual(
+        crashed.runs.map((run) => run.status),
+        ["running"],
+      );
+      const limitError = crashed.turnItems.find((item) => item.type === "error");
+      assert.equal(limitError?.type === "error" ? limitError.failure.class : null, "usage_limit");
+      assert.equal(
+        (yield* Ref.get(providers)).find(
+          (member) => member.instanceId === crashed.runs[0]?.providerInstanceId,
+        )?.limitedUntil,
+        resetAt,
+      );
+      // Startup recovery settles the run before any scheduled sweep can see it.
+      assert.deepEqual(
+        restarted.runs.map((run) => run.status),
+        ["cancelled"],
+      );
+      assert.deepEqual(
+        restarted.attempts.map((attempt) => attempt.status),
+        ["cancelled"],
+      );
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );
