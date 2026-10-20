@@ -343,3 +343,97 @@ it("closes an open source-account popover when reset availability replaces its t
   await click("Use reset");
   await expect.poll(() => document.querySelector('[role="alertdialog"]')).not.toBeNull();
 });
+
+const claudeInstance = (
+  instanceId: string,
+  email: string,
+  displayName?: string,
+): ServerProvider => ({
+  instanceId: ProviderInstanceId.make(instanceId),
+  driver: ProviderDriverKind.make("claudeAgent"),
+  ...(displayName ? { displayName } : {}),
+  enabled: true,
+  installed: true,
+  version: null,
+  status: "ready",
+  auth: { status: "authenticated", email },
+  checkedAt: "2026-09-03T11:00:00Z",
+  models: [],
+  slashCommands: [],
+  skills: [],
+  usageLimits: {
+    checkedAt: "2026-09-03T11:00:00Z",
+    windows: [
+      {
+        id: "five_hour",
+        kind: "session",
+        label: "Session",
+        usedPercent: 40,
+        windowDurationMins: 300,
+        resetsAt: "2026-09-03T14:00:00Z",
+      },
+    ],
+  },
+});
+
+const claudeEnvironment = (providers: ServerProvider[]): LimitPresentations =>
+  new Map([
+    [
+      EnvironmentId.make("env-a"),
+      { entry: { target: { label: "Test" } }, serverConfig: { providers, usageLimitSources: [] } },
+    ],
+  ]);
+
+const segmentLabels = () =>
+  Array.from(document.querySelectorAll("button[aria-label]"), (node) =>
+    node.getAttribute("aria-label")!.replace(/:.*/, ""),
+  );
+
+it("says when one login backs several instances and names it after the first", async () => {
+  setup();
+  await using _screen = await render(
+    <UsageLimitsPooled
+      presentations={claudeEnvironment([
+        claudeInstance("claudeAgent", "same@example.com"),
+        claudeInstance("claude_icloud", "Same@example.com", "Claude - iCloud"),
+      ])}
+      now={0}
+    />,
+  );
+  expect(document.querySelector("h2")?.textContent).toBe("Claude · 1 account");
+  expect(segmentLabels()).toEqual(["Claude"]);
+  await click("Claude:");
+  const popup = () => document.querySelector('[data-slot="popover-popup"]')?.textContent;
+  await expect.poll(popup).toContain("Signed in onClaude, Claude - iCloud");
+  expect(popup()).toContain("One login, one quota: these instances share this limit.");
+});
+
+it("counts the accounts in the header and names each segment after its instance", async () => {
+  setup();
+  await using _screen = await render(
+    <UsageLimitsPooled
+      presentations={claudeEnvironment([
+        claudeInstance("claudeAgent", "one@example.com"),
+        claudeInstance("claude_icloud", "two@example.com", "Claude - iCloud"),
+      ])}
+      now={0}
+    />,
+  );
+  expect(document.querySelector("h2")?.textContent).toBe("Claude · 2 accounts");
+  expect(segmentLabels()).toEqual(["Claude", "Claude - iCloud"]);
+  await click("Claude - iCloud:");
+  const popup = () => document.querySelector('[data-slot="popover-popup"]')?.textContent;
+  await expect.poll(popup).toContain("Claude - iCloud");
+  expect(popup()).not.toContain("Signed in on");
+});
+
+it("leaves the count off a pool with one account on one instance", async () => {
+  setup();
+  await using _screen = await render(
+    <UsageLimitsPooled
+      presentations={claudeEnvironment([claudeInstance("claudeAgent", "one@example.com")])}
+      now={0}
+    />,
+  );
+  expect(document.querySelector("h2")?.textContent).toBe("Claude");
+});
