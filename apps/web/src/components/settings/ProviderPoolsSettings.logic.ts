@@ -1,4 +1,5 @@
 import {
+  isPoolableDriver,
   PROVIDER_DISPLAY_NAMES,
   providerLimitedUntilMs,
   type ProviderDriverKind,
@@ -81,7 +82,9 @@ export function buildProviderPoolCards(
   providerPools: ProviderPoolSettings,
 ): ReadonlyArray<ProviderPoolCard> {
   const accounts = providers.filter((provider) => provider.pool?.role !== "pool");
-  const drivers = [...new Set(accounts.map((provider) => provider.driver))];
+  const drivers = [...new Set(accounts.map((provider) => provider.driver))].filter(
+    isPoolableDriver,
+  );
   return drivers.flatMap((driver) => {
     const siblings = accounts.filter((provider) => provider.driver === driver);
     if (siblings.length < 2) return [];

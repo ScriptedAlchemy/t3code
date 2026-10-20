@@ -120,3 +120,20 @@ describe("deriveProviderInstanceConfigMap", () => {
     });
   });
 });
+
+describe("deriveProviderInstanceConfigMap with reserved ids", () => {
+  it("drops a hand-edited pool_* instance so it never registers a real adapter", () => {
+    const reservedId = ProviderInstanceId.make("pool_codex");
+    const settings = settingsWith({
+      providerInstances: {
+        [reservedId]: { driver: ProviderDriverKind.make("codex") },
+        [instanceId]: { driver: ProviderDriverKind.make("codex") },
+      },
+    });
+
+    const merged = deriveProviderInstanceConfigMap(settings);
+
+    expect(merged[reservedId]).toBeUndefined();
+    expect(merged[instanceId]).toEqual({ driver: ProviderDriverKind.make("codex") });
+  });
+});

@@ -173,3 +173,22 @@ describe("ServerProvider.pool", () => {
     expect(decoded.pool).toBeUndefined();
   });
 });
+
+describe("poolable drivers", () => {
+  it("ignores a pool configured for a driver whose instances are not accounts of one service", () => {
+    const acp = ProviderDriverKind.make("acpRegistry");
+    const pools = resolveActiveProviderPools({
+      providerPools: decodePoolSettings({
+        acpRegistry: { enabled: true, memberInstanceIds: ["acpRegistry_a", "acpRegistry_b"] },
+        claudeAgent: { enabled: true, memberInstanceIds: ["claudeAgent", "claudeAgent_b"] },
+      }),
+      instances: [
+        provider("acpRegistry_a", acp),
+        provider("acpRegistry_b", acp),
+        provider("claudeAgent", claude),
+        provider("claudeAgent_b", claude),
+      ],
+    });
+    expect(pools.map((pool) => pool.driver)).toEqual([claude]);
+  });
+});

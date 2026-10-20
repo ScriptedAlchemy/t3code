@@ -46,6 +46,19 @@ export const providerPoolInstanceId = (driver: ProviderDriverKind): ProviderInst
 export const isReservedProviderInstanceId = (instanceId: string): boolean =>
   instanceId.startsWith(PROVIDER_POOL_ID_PREFIX);
 
+/**
+ * Only drivers whose instances are accounts of one service pool. ACP registry
+ * instances are different agents, and the other drivers' usage-limit and
+ * handoff behavior has not been checked.
+ */
+export const POOLABLE_DRIVERS: ReadonlySet<ProviderDriverKind> = new Set([
+  ProviderDriverKind.make("claudeAgent"),
+  ProviderDriverKind.make("codex"),
+]);
+
+export const isPoolableDriver = (driver: ProviderDriverKind): boolean =>
+  POOLABLE_DRIVERS.has(driver);
+
 export const providerPoolDriver = (instanceId: ProviderInstanceId): ProviderDriverKind | null => {
   if (!isReservedProviderInstanceId(instanceId)) return null;
   const driver = instanceId.slice(PROVIDER_POOL_ID_PREFIX.length);
@@ -68,8 +81,8 @@ export function resolveActiveProviderPools(input: {
   readonly instances: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver" | "enabled">>;
 }): ReadonlyArray<ActiveProviderPool> {
   return Object.entries(input.providerPools).flatMap(([key, config]) => {
-    if (!config.enabled) return [];
     const driver = ProviderDriverKind.make(key);
+    if (!config.enabled || !isPoolableDriver(driver)) return [];
     const memberInstanceIds = [...new Set(config.memberInstanceIds)].filter((memberId) =>
       input.instances.some(
         (instance) =>

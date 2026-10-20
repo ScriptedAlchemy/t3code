@@ -196,3 +196,14 @@ describe("resolveProviderPoolName", () => {
     expect(resolveProviderPoolName([member], undefined)).toBeUndefined();
   });
 });
+
+describe("buildProviderPoolCards for non-poolable drivers", () => {
+  it("offers no card for a driver whose instances are different agents", () => {
+    const acp = ProviderDriverKind.make("acpRegistry");
+    const cards = buildProviderPoolCards(
+      [provider("acpRegistry_devin", acp), provider("acpRegistry_other", acp)],
+      {},
+    );
+    expect(cards).toEqual([]);
+  });
+});
