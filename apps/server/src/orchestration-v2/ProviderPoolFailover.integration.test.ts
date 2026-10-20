@@ -630,6 +630,58 @@ it.live("routes a selection naming a cooling account to its healthy sibling", ()
   ),
 );
 
+it.live("starts a queued run on its pinned account when no pool member is eligible", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("pool-failover-queued-exhausted");
+      const threadId = ThreadId.make("thread:pool-failover-queued-exhausted");
+      const state = yield* Ref.make<PoolAdapterState>({
+        failNextStart: null,
+        holdTurn: null,
+        started: [],
+      });
+      const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+        makeProvider(first, "Claude", "claude:home:first"),
+        makeProvider(second, "Claude - Work", "claude:home:second"),
+      ]);
+      const projection = yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* createThread(threadId, cwd, poolId);
+        const firstCompleted = yield* awaitRunStatus(threadId, "completed");
+        const hold = yield* Deferred.make<void>();
+        yield* Ref.update(state, (current) => ({ ...current, holdTurn: hold }));
+        yield* sendMessage(threadId, "first");
+        const running = yield* awaitRunStatus(threadId, "running");
+        yield* Fiber.join(running);
+        yield* sendMessage(threadId, "queued");
+        yield* Ref.update(providers, (members) =>
+          members.map((member) => ({ ...member, auth: { status: "unauthenticated" as const } })),
+        );
+        yield* Deferred.succeed(hold, undefined);
+        yield* Fiber.join(firstCompleted);
+        const queuedCompleted = yield* awaitRunStatus(threadId, "completed");
+        yield* Ref.update(state, (current) => ({ ...current, holdTurn: null }));
+        yield* Fiber.join(queuedCompleted);
+        yield* worker.drain();
+        return yield* orchestrator.getThreadProjection(threadId);
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "pool-failover-queued-exhausted" },
+            makeRegistry({ first: "claude:home:first", second: "claude:home:second" }, state),
+            { settings, poolCatalog: makeCatalog(providers) },
+          ),
+        ),
+      );
+
+      const [firstRun, queuedRun] = projection.runs;
+      assert.equal(queuedRun?.status, "completed");
+      assert.equal(queuedRun?.providerInstanceId, firstRun?.providerInstanceId);
+    }),
+  ),
+);
+
 it.live("refuses a pool whose every member the project turned off", () =>
   Effect.scoped(
     Effect.gen(function* () {

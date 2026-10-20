@@ -1341,16 +1341,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.gen(function* () {
       const { projection, queuedRun } = input;
       const threadId = projection.thread.id;
-      const routed = yield* routeSelection({
-        commandId: CommandId.make(`command:system:start-queued:${queuedRun.id}`),
-        commandType: "message.dispatch",
+      const routed = yield* resolveRouting({
         selection: queuedRun.modelSelection,
         current: { instanceId: projection.thread.providerInstanceId, busy: false },
         threadId,
         projectId: projection.thread.projectId,
       });
+      if (routed.type !== "routed") return null;
       const instanceId = routed.selection.instanceId;
-      if (routed.type !== "routed" || instanceId === queuedRun.providerInstanceId) return null;
+      if (instanceId === queuedRun.providerInstanceId) return null;
       const attempt = projection.attempts.find(
         (candidate) => candidate.id === queuedRun.activeAttemptId,
       );
@@ -1470,8 +1469,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (repinnedRun !== null) {
         projection = yield* readCommandProjection(threadId);
       }
-      const queuedRun =
-        projection.runs.find((candidate) => candidate.id === pinnedRun.id) ?? pinnedRun;
+      const queuedRun = repinnedRun ?? pinnedRun;
       // A message queued behind a worktree that was cancelled or never created
       // would run in the project checkout instead, so it waits for the user.
       const failedRun = latestExecutedRun(projection.runs);
