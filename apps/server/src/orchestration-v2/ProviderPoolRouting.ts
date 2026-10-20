@@ -15,7 +15,7 @@ import {
 export interface PoolMemberHealth {
   readonly instanceId: ProviderInstanceId;
   readonly eligible: boolean;
-  /** Shared with every member on the same credential fingerprint: one login is one quota. */
+  /** Shared with every member on the same credential fingerprint or login email: one login is one quota. */
   readonly limitedUntilMs: number | null;
   readonly usedPercent: number | null;
   readonly continuationKey: string | null;
@@ -136,6 +136,16 @@ const isMemberHealthy = (provider: ServerProvider): boolean =>
   provider.status !== "disabled" &&
   provider.auth.status !== "unauthenticated";
 
+const sharesLogin = (a: ServerProvider, b: ServerProvider): boolean => {
+  const aFingerprint = a.usageLimits?.credentialFingerprint;
+  const bFingerprint = b.usageLimits?.credentialFingerprint;
+  if (aFingerprint !== undefined && bFingerprint !== undefined) {
+    return aFingerprint === bFingerprint;
+  }
+  const email = a.auth.email?.trim().toLowerCase();
+  return email !== undefined && email !== "" && email === b.auth.email?.trim().toLowerCase();
+};
+
 export function poolMemberHealth(input: {
   readonly members: ReadonlyArray<ServerProvider>;
   readonly settings: Parameters<typeof resolveProjectProviderInstanceEnabled>[0];
@@ -143,13 +153,9 @@ export function poolMemberHealth(input: {
   readonly nowMs: number;
 }): ReadonlyArray<PoolMemberHealth> {
   return input.members.map((member) => {
-    const fingerprint = member.usageLimits?.credentialFingerprint;
-    const sharing =
-      fingerprint === undefined
-        ? [member]
-        : input.members.filter(
-            (candidate) => candidate.usageLimits?.credentialFingerprint === fingerprint,
-          );
+    const sharing = input.members.filter(
+      (candidate) => candidate === member || sharesLogin(member, candidate),
+    );
     const limitedUntilMs = sharing.reduce<number | null>((latest, candidate) => {
       const untilMs = providerLimitedUntilMs(candidate, input.nowMs);
       return untilMs === null || (latest !== null && latest >= untilMs) ? latest : untilMs;

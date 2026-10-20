@@ -273,6 +273,112 @@ describe("routeModelSelection", () => {
     }
   });
 
+  it("shares a cooldown between members on one login email without fingerprints", () => {
+    const providers = [
+      stamped("claudeAgent", {
+        auth: { status: "authenticated", email: " Account@Example.com " },
+        limitedUntil: "2026-10-19T12:30:00.000Z",
+      }),
+      stamped("claudeAgent_work", {
+        auth: { status: "authenticated", email: "account@example.com" },
+      }),
+      pool,
+    ];
+    const routed = route("pool_claudeAgent", providers, { instanceId: "claudeAgent_work" });
+    assert.equal(routed.type, "routed");
+    if (routed.type === "routed") {
+      assert.deepEqual(routed.decision, {
+        type: "all_limited",
+        instanceId: id("claudeAgent_work"),
+        earliestResetAtMs: later(30),
+      });
+      assert.equal(routed.selection.instanceId, "claudeAgent_work");
+    }
+  });
+
+  it.each([
+    {
+      name: "matching normalized emails without fingerprints",
+      emails: [" Account@Example.com ", "account@example.com"],
+      fingerprints: [undefined, undefined],
+      shares: true,
+    },
+    {
+      name: "matching emails with only the first fingerprint",
+      emails: ["account@example.com", "account@example.com"],
+      fingerprints: ["fp", undefined],
+      shares: true,
+    },
+    {
+      name: "matching emails with only the second fingerprint",
+      emails: ["account@example.com", "account@example.com"],
+      fingerprints: [undefined, "fp"],
+      shares: true,
+    },
+    {
+      name: "different emails without fingerprints",
+      emails: ["account@example.com", "other@example.com"],
+      fingerprints: [undefined, undefined],
+      shares: false,
+    },
+    {
+      name: "matching fingerprints with different emails",
+      emails: ["account@example.com", "other@example.com"],
+      fingerprints: ["fp", "fp"],
+      shares: true,
+    },
+    {
+      name: "different fingerprints with matching emails",
+      emails: ["account@example.com", "account@example.com"],
+      fingerprints: ["fp", "other"],
+      shares: false,
+    },
+    {
+      name: "empty emails without fingerprints",
+      emails: ["", "  "],
+      fingerprints: [undefined, undefined],
+      shares: false,
+    },
+    {
+      name: "missing emails without fingerprints",
+      emails: [undefined, undefined],
+      fingerprints: [undefined, undefined],
+      shares: false,
+    },
+  ])("merges cooldown and usage for $name", ({ emails, fingerprints, shares }) => {
+    const health = poolMemberHealth({
+      members: ["claudeAgent", "claudeAgent_work"].map((instanceId, index) =>
+        stamped(instanceId, {
+          auth: { status: "authenticated", email: emails[index] },
+          limitedUntil: index === 0 ? "2026-10-19T12:30:00.000Z" : "2026-10-19T12:10:00.000Z",
+          usageLimits: {
+            checkedAt: "2026-10-19T11:00:00.000Z",
+            credentialFingerprint: fingerprints[index],
+            windows: [
+              {
+                id: "session",
+                kind: "session",
+                label: "Session",
+                usedPercent: index === 0 ? 20 : 80,
+              },
+            ],
+          },
+        }),
+      ),
+      settings,
+      projectId,
+      nowMs,
+    });
+    assert.deepEqual(
+      health.map((entry) => entry.limitedUntilMs),
+      shares ? [later(30), later(30)] : [later(30), later(10)],
+    );
+    assert.deepEqual(
+      health.map((entry) => entry.usedPercent),
+      shares ? [80, 80] : [20, 80],
+    );
+  });
+
   it("shares the maximum window usage across every member on one credential", () => {
     const health = poolMemberHealth({
       members: [
