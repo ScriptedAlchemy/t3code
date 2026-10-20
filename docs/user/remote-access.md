@@ -125,7 +125,8 @@ Once two machines are connected, you can copy provider accounts from one to the
 others instead of setting each up by hand. On web or desktop, open
 **Settings → Providers** for the source machine, then choose **Sync accounts** in
 the header, or **Sync to…** on one account. Tick the accounts and the machines,
-then choose **Sync**.
+then choose **Sync**. The mobile app has the same **Sync to…** action on
+**Settings → Provider accounts**.
 
 Each copy keeps the account's settings and API keys. A Cursor sign-in arrives on
 the other machine as an API key. Sign-ins themselves are not copied. Each machine
