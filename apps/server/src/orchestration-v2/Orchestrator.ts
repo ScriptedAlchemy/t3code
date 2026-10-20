@@ -4902,9 +4902,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         createdBy: "system",
         cwdFallback:
           projection.checkpointScopes.find((scope) => scope.id === rootNode?.checkpointScopeId)
-            ?.cwd ??
-          projection.thread.worktreePath ??
-          process.cwd(),
+            ?.cwd ?? process.cwd(),
         // The prompt is re-sent as the new attempt's user message, and the
         // limit error is this attempt's outcome, not history worth replaying.
         handoffItemFilter: (item) =>
@@ -4965,23 +4963,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             reason: "Account pool failover.",
           },
         });
+        yield* Ref.update(effects, (existing) => [
+          ...existing,
+          {
+            id: `effect:${command.commandId}:provider-session.detach:${releasedSession.id}`,
+            commandId: command.commandId,
+            threadId: command.threadId,
+            request: {
+              type: "provider-session.detach",
+              providerSessionId: releasedSession.id,
+              detail: "Account pool failover.",
+            },
+          } satisfies PendingOrchestrationEffectV2,
+        ]);
       }
       yield* Ref.update(effects, (existing) => [
         ...existing,
-        ...(releasedSession === undefined
-          ? []
-          : [
-              {
-                id: `effect:${command.commandId}:provider-session.detach:${releasedSession.id}`,
-                commandId: command.commandId,
-                threadId: command.threadId,
-                request: {
-                  type: "provider-session.detach" as const,
-                  providerSessionId: releasedSession.id,
-                  detail: "Account pool failover.",
-                },
-              } satisfies PendingOrchestrationEffectV2,
-            ]),
         {
           id: `effect:${command.commandId}:provider-turn.start:${run.id}`,
           commandId: command.commandId,
