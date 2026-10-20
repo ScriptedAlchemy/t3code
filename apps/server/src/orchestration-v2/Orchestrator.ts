@@ -61,6 +61,8 @@ import {
   ThreadLinkedPullRequest,
   ThreadId,
   type TurnItemId,
+  findProviderPool,
+  providerPoolDriver,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import {
@@ -860,6 +862,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   }): Effect.Effect<RoutedSelection> =>
     Effect.gen(function* () {
       const providers = yield* poolCatalog.getPublishedProviders;
+      // Most dispatches name no pool; keep the settings read off that path.
+      if (
+        findProviderPool(providers, input.selection.instanceId) === null &&
+        providerPoolDriver(input.selection.instanceId) === null
+      ) {
+        return { type: "unrouted", selection: input.selection };
+      }
       const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
       const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
       return routeModelSelection({
