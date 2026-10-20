@@ -59,12 +59,30 @@ function continuationHint(
     : null;
 }
 
+/** Two instances signed in as one login share a single quota, so pooling them adds no capacity. */
+function sameLoginHint(
+  provider: ServerProvider,
+  siblings: ReadonlyArray<ServerProvider>,
+): string | null {
+  const email = provider.auth.email?.trim().toLowerCase();
+  if (!email) return null;
+  const sharing = siblings.filter(
+    (candidate) =>
+      candidate.instanceId !== provider.instanceId &&
+      candidate.auth.email?.trim().toLowerCase() === email,
+  );
+  return sharing.length > 0
+    ? `Same login as ${sharing.map(resolveProviderInstanceDisplayName).join(", ")}`
+    : null;
+}
+
 export interface ProviderPoolCandidate {
   readonly instanceId: ProviderInstanceId;
   readonly displayName: string;
   readonly status: string;
   readonly ticked: boolean;
   readonly continuationHint: string | null;
+  readonly sameLoginHint: string | null;
   readonly provider: ServerProvider;
 }
 
@@ -103,6 +121,7 @@ export function buildProviderPoolCards(
           status: getProviderSummary(provider).headline,
           ticked: ticked.has(provider.instanceId),
           continuationHint: continuationHint(provider, siblings),
+          sameLoginHint: sameLoginHint(provider, siblings),
           provider,
         })),
         enabled: config?.enabled ?? false,

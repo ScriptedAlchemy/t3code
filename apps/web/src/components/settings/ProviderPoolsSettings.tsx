@@ -99,6 +99,11 @@ export function ProviderPoolsSettings({
                       {candidate.continuationHint ? (
                         <span className="block">{candidate.continuationHint}</span>
                       ) : null}
+                      {candidate.sameLoginHint ? (
+                        <span className="block text-muted-foreground">
+                          {candidate.sameLoginHint}
+                        </span>
+                      ) : null}
                     </>
                   }
                   control={

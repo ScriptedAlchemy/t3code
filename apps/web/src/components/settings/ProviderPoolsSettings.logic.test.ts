@@ -65,6 +65,28 @@ describe("buildProviderPoolCards", () => {
     expect(hints?.[2]).toContain("switching to or from it uses a summary");
   });
 
+  it("flags accounts signed in as the same login, ignoring email case and spacing", () => {
+    const signedIn = (email: string) => ({ auth: { status: "authenticated" as const, email } });
+    const [card] = buildProviderPoolCards(
+      [
+        provider("claudeAgent", claude, signedIn("same@example.com")),
+        provider("claude_icloud", claude, {
+          displayName: "Claude - iCloud",
+          ...signedIn(" Same@Example.com "),
+        }),
+        provider("claude_work", claude, signedIn("other@example.com")),
+        provider("claude_unknown", claude),
+      ],
+      {},
+    );
+    expect(card?.candidates.map((candidate) => candidate.sameLoginHint)).toEqual([
+      "Same login as Claude - iCloud",
+      "Same login as Claude",
+      null,
+      null,
+    ]);
+  });
+
   it("reflects the configured pool: ticked accounts, the switch, and whether it can be turned on", () => {
     const [off] = buildProviderPoolCards(providers, {
       [codex]: { enabled: false, memberInstanceIds: [id("codex")] },
