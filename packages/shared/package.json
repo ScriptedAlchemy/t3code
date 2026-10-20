@@ -367,6 +367,10 @@
       "types": "./src/usageFormat.ts",
       "import": "./src/usageFormat.ts"
     },
+    "./providerInstanceDisplay": {
+      "types": "./src/providerInstanceDisplay.ts",
+      "import": "./src/providerInstanceDisplay.ts"
+    },
     "./usageLimits": {
       "types": "./src/usageLimits.ts",
       "import": "./src/usageLimits.ts"

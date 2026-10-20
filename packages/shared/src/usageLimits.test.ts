@@ -655,6 +655,61 @@ describe("pools", () => {
     ]);
   });
 
+  it("lists every instance that shares one login and names it after the first", () => {
+    const first = provider({
+      driver: claude,
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      auth: { status: "authenticated", email: "same@example.com" },
+      usageLimits: { checkedAt, windows: [window] },
+    });
+    const second = {
+      ...first,
+      instanceId: ProviderInstanceId.make("claude_icloud"),
+      displayName: "Claude - iCloud",
+    };
+    const input = new Map([
+      [
+        EnvironmentId.make("env-a"),
+        { ...laptop, serverConfig: { providers: [first, second, second] } },
+      ],
+    ]);
+    const accounts = collectLimitAccounts(input);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.displayName).toBe("Claude");
+    expect(accounts[0]?.instances).toEqual([
+      { instanceId: "claudeAgent", displayName: "Claude", environmentId: "env-a" },
+      { instanceId: "claude_icloud", displayName: "Claude - iCloud", environmentId: "env-a" },
+    ]);
+  });
+
+  it("names a default instance without a display name like the rest of the app", () => {
+    const input = new Map([
+      [
+        EnvironmentId.make("env-a"),
+        {
+          ...laptop,
+          serverConfig: {
+            providers: [
+              provider({
+                auth: { status: "authenticated", email: "a@example.com" },
+                usageLimits: { checkedAt, windows: [window] },
+              }),
+              provider({
+                instanceId: ProviderInstanceId.make("codex_personal"),
+                auth: { status: "authenticated", email: "b@example.com" },
+                usageLimits: { checkedAt, windows: [window] },
+              }),
+            ],
+          },
+        },
+      ],
+    ]);
+    expect(collectLimitAccounts(input).map((account) => account.displayName)).toEqual([
+      "Codex",
+      "Codex Personal",
+    ]);
+  });
+
   it("keys a hub account without an email by hub, so two environments on one hub share it", () => {
     const seat = {
       id: "claude-team-seat.json",
@@ -813,6 +868,7 @@ describe("pools", () => {
           key: "go",
           driver: claude,
           displayName: "Go",
+          instances: [],
           email: undefined,
           plan: undefined,
           accentColor: undefined,
@@ -858,6 +914,7 @@ describe("pooled account columns", () => {
     key,
     driver: ProviderDriverKind.make("claudeAgent"),
     displayName: key,
+    instances: [],
     email: undefined,
     plan: undefined,
     accentColor: undefined,
@@ -1045,6 +1102,7 @@ describe("Cursor limit presentation", () => {
     key: "cursor",
     driver: ProviderDriverKind.make("cursor"),
     displayName: "Cursor",
+    instances: [],
     email: undefined,
     plan: undefined,
     accentColor: undefined,
