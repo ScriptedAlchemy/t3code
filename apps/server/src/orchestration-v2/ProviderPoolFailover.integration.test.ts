@@ -11,6 +11,7 @@ import {
   ThreadId,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2StoredEvent,
   type ProviderPoolSettings,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -253,12 +254,13 @@ const settings = {
   providerPools: poolSettings,
 };
 
-const makeCatalog = (providers: Ref.Ref<ReadonlyArray<ServerProvider>>) =>
+const makeCatalog = (
+  providers: Ref.Ref<ReadonlyArray<ServerProvider>>,
+  providerPools: ProviderPoolSettings = poolSettings,
+) =>
   Layer.succeed(ProviderPoolCatalog, {
     getPublishedProviders: Ref.get(providers).pipe(
-      Effect.map((members) =>
-        withProviderPools({ providers: members, providerPools: poolSettings }),
-      ),
+      Effect.map((members) => withProviderPools({ providers: members, providerPools })),
     ),
     markLimited: ({ instanceId, until }) =>
       Ref.update(providers, (members) =>
@@ -326,20 +328,31 @@ const sendMessage = (threadId: ThreadId, key: string, instanceId?: ProviderInsta
     });
   });
 
-const awaitRunStatus = (threadId: ThreadId, status: "completed" | "failed" | "running") =>
+const awaitEvent = (
+  threadId: ThreadId,
+  matches: (event: OrchestrationV2StoredEvent["event"]) => boolean,
+) =>
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
     return yield* eventSink
       .stream({ threadId, afterSequence: yield* eventSink.latestSequence({ threadId }) })
       .pipe(
-        Stream.filter(
-          (stored) => stored.event.type === "run.updated" && stored.event.payload.status === status,
-        ),
+        Stream.filter((stored) => matches(stored.event)),
         Stream.take(1),
         Stream.runDrain,
         Effect.forkScoped,
       );
   });
+
+const awaitRunStatus = (threadId: ThreadId, status: "completed" | "failed" | "running") =>
+  awaitEvent(threadId, (event) => event.type === "run.updated" && event.payload.status === status);
+
+/** The adapter records the start, and reads its fault, before the turn reports running. */
+const awaitProviderTurnRunning = (threadId: ThreadId) =>
+  awaitEvent(
+    threadId,
+    (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
+  );
 
 it.live("moves a limited Claude turn to the other account with a summary handoff", () =>
   Effect.scoped(
@@ -723,6 +736,238 @@ it.live("refuses a pool whose every member the project turned off", () =>
       assert.equal(
         error._tag === "OrchestratorDispatchError" ? error.cause : null,
         "No account in the Claude pool is enabled for this project.",
+      );
+    }),
+  ),
+);
+
+const limitBehindQueue = (input: {
+  readonly name: string;
+  readonly pooled: boolean;
+  readonly failoverDispatches: Ref.Ref<number>;
+}) =>
+  Effect.gen(function* () {
+    const cwd = yield* checkpointWorkspace(input.name);
+    const threadId = ThreadId.make(`thread:${input.name}`);
+    const resetAt = DateTime.formatIso(
+      DateTime.makeUnsafe(DateTime.toEpochMillis(yield* DateTime.now) + minutes(30)),
+    );
+    const state = yield* Ref.make<PoolAdapterState>({
+      failNextStart: null,
+      holdTurn: null,
+      started: [],
+    });
+    const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+      makeProvider(first, "Claude", "claude:home:first"),
+      makeProvider(second, "Claude - Work", "claude:home:second"),
+    ]);
+    const { projection, shell } = yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      yield* createThread(threadId, cwd, input.pooled ? poolId : first);
+      const hold = yield* Deferred.make<void>();
+      yield* Ref.update(state, (current) => ({ ...current, holdTurn: hold }));
+      const running = yield* awaitProviderTurnRunning(threadId);
+      yield* sendMessage(threadId, "first");
+      yield* Fiber.join(running);
+      yield* sendMessage(threadId, "limited");
+      yield* sendMessage(threadId, "queued");
+      yield* Ref.update(state, (current) => ({ ...current, failNextStart: resetAt }));
+      const failed = yield* awaitRunStatus(threadId, "failed");
+      yield* Deferred.succeed(hold, undefined);
+      yield* Fiber.join(failed);
+      yield* worker.drain();
+      return {
+        projection: yield* orchestrator.getThreadProjection(threadId),
+        shell: yield* orchestrator.getThreadShell(threadId),
+      };
+    }).pipe(
+      Effect.provide(
+        ProviderReplayHarness.layerWithRegistry(
+          { name: input.name },
+          makeRegistry({ first: "claude:home:first", second: "claude:home:second" }, state),
+          {
+            settings: input.pooled ? settings : { ...settings, providerPools: {} },
+            poolCatalog: makeCatalog(providers, input.pooled ? poolSettings : {}),
+            poolFailoverDispatch: (dispatch) => (command) =>
+              command.type === "run.pool-failover"
+                ? Ref.update(input.failoverDispatches, (count) => count + 1).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new Orchestrator.OrchestratorDispatchError({
+                          commandId: command.commandId,
+                          commandType: command.type,
+                          cause: "Simulated failover dispatch failure.",
+                        }),
+                      ),
+                    ),
+                  )
+                : dispatch(command),
+          },
+        ),
+      ),
+    );
+    const limitedRun = projection.runs[1];
+    const members = yield* Ref.get(providers);
+    const error = projection.turnItems.find((item) => item.type === "error");
+    return {
+      resetAt,
+      runs: projection.runs.map((run) => run.status),
+      startedTurns: (yield* Ref.get(state)).started.length,
+      limitedRunAttempts: projection.attempts.filter((attempt) => attempt.runId === limitedRun?.id)
+        .length,
+      errorResetAt: error?.type === "error" ? error.failure.resetAt : null,
+      shellResetAt: shell?.usageLimitResetAt ?? null,
+      cooldown: members.find((member) => member.instanceId === limitedRun?.providerInstanceId)
+        ?.limitedUntil,
+    };
+  });
+
+it.live("fails a pooled run like an unpooled one when the failover dispatch fails", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const pooledDispatches = yield* Ref.make(0);
+      const unpooledDispatches = yield* Ref.make(0);
+      const { resetAt: pooledResetAt, ...pooled } = yield* limitBehindQueue({
+        name: "pool-failover-dispatch-fails",
+        pooled: true,
+        failoverDispatches: pooledDispatches,
+      });
+      const { resetAt: unpooledResetAt, ...unpooled } = yield* limitBehindQueue({
+        name: "pool-failover-dispatch-fails-unpooled",
+        pooled: false,
+        failoverDispatches: unpooledDispatches,
+      });
+
+      assert.equal(yield* Ref.get(pooledDispatches), 1);
+      assert.equal(yield* Ref.get(unpooledDispatches), 0);
+      // With a healthy sibling the pool has no earliest reset, so the run keeps its own.
+      assert.deepEqual(pooled, {
+        runs: ["completed", "failed", "queued"],
+        startedTurns: 2,
+        limitedRunAttempts: 1,
+        errorResetAt: pooledResetAt,
+        shellResetAt: pooledResetAt,
+        cooldown: pooledResetAt,
+      });
+      assert.deepEqual(unpooled, {
+        ...pooled,
+        errorResetAt: unpooledResetAt,
+        shellResetAt: unpooledResetAt,
+        cooldown: unpooledResetAt,
+      });
+    }),
+  ),
+);
+
+it.live("fails a delegated child over before its parent hears of the limit", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("pool-failover-delegated");
+      const parentThreadId = ThreadId.make("thread:pool-failover-delegated");
+      const resetAt = DateTime.formatIso(
+        DateTime.makeUnsafe(DateTime.toEpochMillis(yield* DateTime.now) + minutes(30)),
+      );
+      const state = yield* Ref.make<PoolAdapterState>({
+        failNextStart: null,
+        holdTurn: null,
+        started: [],
+      });
+      const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+        makeProvider(first, "Claude", "claude:home:first"),
+        makeProvider(second, "Claude - Work", "claude:home:second"),
+      ]);
+      const result = yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* createThread(parentThreadId, cwd, poolId);
+        const hold = yield* Deferred.make<void>();
+        yield* Ref.update(state, (current) => ({ ...current, holdTurn: hold }));
+        const parentRunning = yield* awaitProviderTurnRunning(parentThreadId);
+        yield* sendMessage(parentThreadId, "parent");
+        yield* Fiber.join(parentRunning);
+
+        const parentRun = (yield* orchestrator.getThreadProjection(parentThreadId)).runs.at(-1)!;
+        const parentEvents = yield* Ref.make<ReadonlyArray<OrchestrationV2StoredEvent["event"]>>(
+          [],
+        );
+        const delivered = yield* eventSink
+          .stream({
+            threadId: parentThreadId,
+            afterSequence: yield* eventSink.latestSequence({ threadId: parentThreadId }),
+          })
+          .pipe(
+            Stream.tap((stored) => Ref.update(parentEvents, (events) => [...events, stored.event])),
+            Stream.takeUntil(
+              (stored) =>
+                stored.event.type === "run.updated" &&
+                stored.event.payload.status === "completed" &&
+                stored.event.payload.userMessageId !== parentRun.userMessageId,
+            ),
+            Stream.runDrain,
+            Effect.forkScoped,
+          );
+        yield* Ref.update(state, (current) => ({ ...current, failNextStart: resetAt }));
+        yield* orchestrator.dispatch({
+          type: "delegated_task.request",
+          commandId: CommandId.make(`${parentThreadId}:delegate`),
+          parentThreadId,
+          parentRunId: parentRun.id,
+          parentNodeId: parentRun.rootNodeId!,
+          task: "child task",
+          modelSelection: { instanceId: poolId, model },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          completionWake: "always",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        yield* Deferred.succeed(hold, undefined);
+        yield* Fiber.join(delivered);
+        yield* worker.drain();
+        const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+        const childThreadId = parent.subagents.find(
+          (task) => task.prompt === "child task",
+        )?.childThreadId;
+        return {
+          parent,
+          child: yield* orchestrator.getThreadProjection(childThreadId!),
+          subagentStatuses: (yield* Ref.get(parentEvents)).flatMap((event) =>
+            event.type === "subagent.updated" ? [event.payload.status] : [],
+          ),
+        };
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "pool-failover-delegated" },
+            makeRegistry({ first: "claude:home:first", second: "claude:home:second" }, state),
+            // The continuation worker dispatches the parent's completion delivery.
+            { settings, poolCatalog: makeCatalog(providers), runContinuationWorker: true },
+          ),
+        ),
+      );
+
+      const childRun = result.child.runs[0];
+      assert.lengthOf(result.child.runs, 1);
+      assert.equal(childRun?.status, "completed");
+      const attempts = result.child.attempts.filter((attempt) => attempt.runId === childRun?.id);
+      assert.deepEqual(
+        attempts.map((attempt) => [attempt.status, attempt.reason]),
+        [
+          ["failed", "initial"],
+          ["completed", "provider_recovery"],
+        ],
+      );
+      assert.notEqual(attempts[0]?.providerInstanceId, attempts[1]?.providerInstanceId);
+
+      assert.notInclude(result.subagentStatuses, "failed");
+      assert.equal(result.subagentStatuses.at(-1), "completed");
+      const task = result.parent.subagents.find((candidate) => candidate.prompt === "child task");
+      assert.equal(task?.status, "completed");
+      assert.lengthOf(
+        result.parent.messages.filter((message) => message.delegatedCompletion !== undefined),
+        1,
       );
     }),
   ),
