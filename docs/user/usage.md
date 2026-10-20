@@ -93,7 +93,7 @@ Claude resets are not available when the server runs on macOS, where Claude keep
 Keychain. On narrow screens, numbered rows below
 the bar show each account's quota, countdown, and credits. Tap a row to open its details.
 
-The same account signed in on more than one environment, or reported by a hub as well, counts once.
+Each segment is one signed-in account, named like its provider instance. The same account signed in on more than one environment, or reported by a hub as well, counts once. Instances signed into the same login, such as two Claude instances with one email, share one segment, and its details list them under **Signed in on**.
 Filter with the environment dropdown to see what a single machine has.
 
 When a Claude or Codex account has no overall weekly quota left, its pooled session contribution
