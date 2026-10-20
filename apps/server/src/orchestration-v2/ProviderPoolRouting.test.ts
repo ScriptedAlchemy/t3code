@@ -12,6 +12,7 @@ import {
 import {
   choosePoolMember,
   earliestPoolResetAtMs,
+  poolMemberHealth,
   rendezvousScore,
   routeModelSelection,
   type PoolMemberHealth,
@@ -31,6 +32,7 @@ const member = (
   instanceId: id(instanceId),
   eligible: true,
   limitedUntilMs: null,
+  usedPercent: null,
   continuationKey: `key:${instanceId}`,
   ...overrides,
 });
@@ -101,6 +103,45 @@ describe("choosePoolMember", () => {
       else assert.notEqual(pick(thread, withoutB), id("b"));
     }
     assert.equal(rendezvousScore(threadId, id("a")), rendezvousScore(threadId, id("a")));
+  });
+
+  it("spreads to the least-used member regardless of rendezvous score", () => {
+    for (const [lessUsed, moreUsed] of [
+      [a, b],
+      [b, a],
+    ] as const) {
+      assert.deepEqual(
+        choose([
+          { ...moreUsed, usedPercent: 80 },
+          { ...lessUsed, usedPercent: 20 },
+        ]),
+        { type: "member", instanceId: lessUsed.instanceId, reason: "spread" },
+      );
+    }
+  });
+
+  it("breaks equal quota ties with rendezvous scores and treats unknown usage as zero", () => {
+    const expected =
+      rendezvousScore(threadId, a.instanceId) > rendezvousScore(threadId, b.instanceId) ? a : b;
+    for (const [aUsage, bUsage] of [
+      [20, 20],
+      [null, null],
+      [null, 0],
+      [0, null],
+    ] as const) {
+      assert.deepEqual(
+        choose([
+          { ...a, usedPercent: aUsage },
+          { ...b, usedPercent: bUsage },
+        ]),
+        { type: "member", instanceId: expected.instanceId, reason: "spread" },
+      );
+    }
+    assert.deepEqual(choose([{ ...a, usedPercent: 20 }, b]), {
+      type: "member",
+      instanceId: b.instanceId,
+      reason: "spread",
+    });
   });
 
   it("skips excluded members and reports when every member is unusable", () => {
@@ -230,6 +271,71 @@ describe("routeModelSelection", () => {
       assert.equal(routed.decision.type, "all_limited");
       assert.equal(routed.selection.instanceId, "claudeAgent");
     }
+  });
+
+  it("shares the maximum window usage across every member on one credential", () => {
+    const health = poolMemberHealth({
+      members: [
+        stamped("claudeAgent", {
+          usageLimits: {
+            checkedAt: "2026-10-19T11:00:00.000Z",
+            credentialFingerprint: "fp",
+            windows: [
+              { id: "session", kind: "session", label: "Session", usedPercent: 20 },
+              { id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 80 },
+            ],
+          },
+        }),
+        stamped("claudeAgent_work", {
+          usageLimits: {
+            checkedAt: "2026-10-19T11:00:00.000Z",
+            credentialFingerprint: "fp",
+            windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 40 }],
+          },
+        }),
+        provider("claudeAgent_other", {
+          usageLimits: {
+            checkedAt: "2026-10-19T11:00:00.000Z",
+            credentialFingerprint: "other",
+            windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 90 }],
+          },
+        }),
+      ],
+      settings,
+      projectId,
+      nowMs,
+    });
+    assert.deepEqual(
+      health.map((entry) => entry.usedPercent),
+      [80, 80, 90],
+    );
+  });
+
+  it("reports unknown usage without windows and keeps ungrouped quotas separate", () => {
+    const health = poolMemberHealth({
+      members: [
+        provider("claudeAgent"),
+        provider("claudeAgent_empty", {
+          usageLimits: { checkedAt: "2026-10-19T11:00:00.000Z", windows: [] },
+        }),
+        provider("claudeAgent_work", {
+          usageLimits: {
+            checkedAt: "2026-10-19T11:00:00.000Z",
+            windows: [
+              { id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 80 },
+              { id: "session", kind: "session", label: "Session", usedPercent: 20 },
+            ],
+          },
+        }),
+      ],
+      settings,
+      projectId,
+      nowMs,
+    });
+    assert.deepEqual(
+      health.map((entry) => entry.usedPercent),
+      [null, null, 80],
+    );
   });
 
   it("reports no eligible member when the project turned every member off", () => {

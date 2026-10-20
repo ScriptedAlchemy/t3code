@@ -17,6 +17,7 @@ export interface PoolMemberHealth {
   readonly eligible: boolean;
   /** Shared with every member on the same credential fingerprint: one login is one quota. */
   readonly limitedUntilMs: number | null;
+  readonly usedPercent: number | null;
   readonly continuationKey: string | null;
 }
 
@@ -65,7 +66,7 @@ const isCooling = (member: PoolMemberHealth, nowMs: number): boolean =>
   member.limitedUntilMs !== null && member.limitedUntilMs > nowMs;
 
 /**
- * Rendezvous hashing spreads new threads with no cursor to persist, and a
+ * Rendezvous hashing breaks quota ties with no cursor to persist, and a
  * member that cools moves only its own threads.
  */
 export function choosePoolMember(input: PoolRoutingInput): PoolRoutingDecision {
@@ -90,8 +91,10 @@ export function choosePoolMember(input: PoolRoutingInput): PoolRoutingDecision {
   const spread = healthy.reduce<PoolMemberHealth | undefined>(
     (best, member) =>
       best === undefined ||
-      rendezvousScore(input.threadId, member.instanceId) >
-        rendezvousScore(input.threadId, best.instanceId)
+      (member.usedPercent ?? 0) < (best.usedPercent ?? 0) ||
+      ((member.usedPercent ?? 0) === (best.usedPercent ?? 0) &&
+        rendezvousScore(input.threadId, member.instanceId) >
+          rendezvousScore(input.threadId, best.instanceId))
         ? member
         : best,
     undefined,
@@ -139,7 +142,7 @@ export function poolMemberHealth(input: {
   readonly projectId: ProjectId;
   readonly nowMs: number;
 }): ReadonlyArray<PoolMemberHealth> {
-  const limitedUntilOf = (member: ServerProvider): number | null => {
+  return input.members.map((member) => {
     const fingerprint = member.usageLimits?.credentialFingerprint;
     const sharing =
       fingerprint === undefined
@@ -147,19 +150,23 @@ export function poolMemberHealth(input: {
         : input.members.filter(
             (candidate) => candidate.usageLimits?.credentialFingerprint === fingerprint,
           );
-    return sharing.reduce<number | null>((latest, candidate) => {
+    const limitedUntilMs = sharing.reduce<number | null>((latest, candidate) => {
       const untilMs = providerLimitedUntilMs(candidate, input.nowMs);
       return untilMs === null || (latest !== null && latest >= untilMs) ? latest : untilMs;
     }, null);
-  };
-  return input.members.map((member) => ({
-    instanceId: member.instanceId,
-    eligible:
-      isMemberHealthy(member) &&
-      resolveProjectProviderInstanceEnabled(input.settings, input.projectId, member.instanceId),
-    limitedUntilMs: limitedUntilOf(member),
-    continuationKey: member.continuation?.groupKey ?? null,
-  }));
+    const usedPercent = sharing
+      .flatMap((candidate) => candidate.usageLimits?.windows ?? [])
+      .reduce<number | null>((highest, window) => Math.max(highest ?? 0, window.usedPercent), null);
+    return {
+      instanceId: member.instanceId,
+      eligible:
+        isMemberHealthy(member) &&
+        resolveProjectProviderInstanceEnabled(input.settings, input.projectId, member.instanceId),
+      limitedUntilMs,
+      usedPercent,
+      continuationKey: member.continuation?.groupKey ?? null,
+    };
+  });
 }
 
 export type RoutedSelection =
