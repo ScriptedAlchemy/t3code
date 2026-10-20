@@ -34,6 +34,20 @@ export type UsageLimitResolution =
   | { readonly type: "finalize"; readonly resetAt: IsoDateTime | null };
 
 export const DEFAULT_LIMIT_COOLDOWN_MS = 15 * 60_000;
+// Per-minute burst limits recover quickly and should not park a healthy account.
+export const BURST_LIMIT_COOLDOWN_MS = 60_000;
+
+export function limitCooldownUntilMs(
+  failure: OrchestrationV2ProviderFailure,
+  nowMs: number,
+): number {
+  const resetMs = failure.resetAt == null ? Number.NaN : Date.parse(failure.resetAt);
+  if (resetMs > nowMs) return resetMs;
+  return (
+    nowMs +
+    (failure.code === "rateLimitExceeded" ? BURST_LIMIT_COOLDOWN_MS : DEFAULT_LIMIT_COOLDOWN_MS)
+  );
+}
 
 /**
  * Runs between a usage-limit terminal and the run going terminal. A reference
@@ -59,14 +73,11 @@ const make = Effect.gen(function* () {
     input: UsageLimitedAttempt,
   ) {
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-    const resetMs = input.failure.resetAt == null ? Number.NaN : Date.parse(input.failure.resetAt);
     // Every driver cools through this one site, pooled or not, so the
     // Providers page shows "Limited until" for any account.
     yield* catalog.markLimited({
       instanceId: input.providerInstanceId,
-      until: DateTime.formatIso(
-        DateTime.makeUnsafe(resetMs > nowMs ? resetMs : nowMs + DEFAULT_LIMIT_COOLDOWN_MS),
-      ),
+      until: DateTime.formatIso(DateTime.makeUnsafe(limitCooldownUntilMs(input.failure, nowMs))),
     });
     const asToday = { type: "finalize", resetAt: input.failure.resetAt ?? null } as const;
     const owner = findProviderPool(yield* catalog.getPublishedProviders, input.providerInstanceId);
