@@ -44,6 +44,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.providerInstallStart]: AuthProvidersManageScope,
   [WS_METHODS.providerInstallCancel]: AuthProvidersManageScope,
   [WS_METHODS.providerInstallRemove]: AuthProvidersManageScope,
+  // Export returns plaintext provider secrets.
+  [WS_METHODS.providerAccountExport]: AuthProvidersManageScope,
+  [WS_METHODS.providerAccountImport]: AuthProvidersManageScope,
 
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,

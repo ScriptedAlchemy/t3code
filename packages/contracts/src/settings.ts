@@ -485,6 +485,8 @@ export const makeBinaryPathSetting = (fallback: string) =>
       }),
     ),
     Schema.withDecodingDefault(Effect.succeed(fallback)),
+    // Last on purpose: a key annotation placed before `decodeTo` is dropped by the transformation.
+    machineLocalSetting,
   );
 
 export type ProviderSettingsFormControl = "text" | "password" | "textarea" | "switch" | "select";
@@ -520,6 +522,11 @@ declare module "effect/Schema" {
     interface Annotations {
       /** Store this credential separately and expose only whether it is configured to clients. */
       readonly settingsSecret?: boolean | undefined;
+      /**
+       * Describes the machine, not the account (binary paths, home directories). Account sync
+       * never copies it, and the destination keeps its own value when it updates a copy.
+       */
+      readonly settingsMachineLocal?: boolean | undefined;
       readonly providerSettingsForm?: ProviderSettingsFormAnnotation | undefined;
       readonly providerSettingsFormSchema?: ProviderSettingsFormSchemaAnnotation | undefined;
     }
@@ -536,6 +543,23 @@ export function isSecretSetting(schema: Schema.Top): boolean {
   return (
     annotations?.settingsSecret === true ||
     annotations?.providerSettingsForm?.control === "password"
+  );
+}
+
+export function machineLocalSetting<S extends Schema.Top>(schema: S): S["Rebuild"] {
+  return schema.annotateKey({ settingsMachineLocal: true });
+}
+
+function isMachineLocalSetting(schema: Schema.Top): boolean {
+  const annotations = Schema.resolveAnnotationsKey(schema) ?? Schema.resolveAnnotations(schema);
+  return annotations?.settingsMachineLocal === true;
+}
+
+export function machineLocalSettingsFields(schema: {
+  readonly fields: Readonly<Record<string, Schema.Top>>;
+}): ReadonlyArray<string> {
+  return Object.entries(schema.fields).flatMap(([field, fieldSchema]) =>
+    isMachineLocalSetting(fieldSchema) ? [field] : [],
   );
 }
 
@@ -575,6 +599,7 @@ export const CodexSettings = makeProviderSettingsSchema(
       }),
     ),
     homePath: TrimmedString.pipe(
+      machineLocalSetting,
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
         title: "CODEX_HOME path",
@@ -586,6 +611,7 @@ export const CodexSettings = makeProviderSettingsSchema(
       }),
     ),
     shadowHomePath: TrimmedString.pipe(
+      machineLocalSetting,
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
         title: "Shadow home path",
@@ -634,6 +660,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       }),
     ),
     homePath: TrimmedString.pipe(
+      machineLocalSetting,
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
         title: "CLAUDE_CONFIG_DIR path",
@@ -739,6 +766,7 @@ export const AntigravitySettings = makeProviderSettingsSchema(
       }),
     ),
     binaryPath: TrimmedString.pipe(
+      machineLocalSetting,
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
         title: "Binary path",

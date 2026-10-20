@@ -115,6 +115,8 @@ describe("command permissions", () => {
           WS_METHODS.providerInstallStart,
           WS_METHODS.providerInstallCancel,
           WS_METHODS.providerInstallRemove,
+          WS_METHODS.providerAccountExport,
+          WS_METHODS.providerAccountImport,
         ].map((method) => createCommandPermissions(runtime, method));
         registry.set(sessions(env), AsyncResult.success(grant(true)));
         for (const command of commands) {

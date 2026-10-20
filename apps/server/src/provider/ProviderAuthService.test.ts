@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -398,6 +399,64 @@ const observeAuth = Effect.fn("ProviderAuthService.test.observeAuth")(function* 
     Effect.forkScoped,
   );
   return { states, fiber };
+});
+
+describe("ProviderAuthService.readStaticCredential", () => {
+  const credential = { name: "CURSOR_API_KEY", value: "key" };
+  const unused = () => Effect.die("not reachable through readStaticCredential");
+  const controller = (
+    exportStaticCredential?: ProviderAuthService.ProviderAuthController["exportStaticCredential"],
+  ): ProviderAuthService.ProviderAuthController => ({
+    start: unused,
+    complete: unused,
+    cancel: unused,
+    logout: unused,
+    subscribe: () => Stream.empty,
+    ...(exportStaticCredential === undefined ? {} : { exportStaticCredential }),
+  });
+  const makeService = (instances: ReadonlyArray<ProviderInstance>) =>
+    ProviderAuthService.makeProviderAuthService.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getInstance: (id) =>
+              Effect.succeed(instances.find((instance) => instance.instanceId === id)),
+          }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+        ),
+      ),
+    );
+
+  it.effect("hands out the driver's static credential and none where there is no hook", () =>
+    Effect.gen(function* () {
+      const service = yield* makeService([
+        makeInstance({
+          instanceId,
+          enabled: true,
+          auth: controller(Effect.succeed(Option.some(credential))),
+        }),
+        makeInstance({ instanceId: otherInstanceId, enabled: true, auth: controller() }),
+        makeInstance({ instanceId: unsupportedInstanceId, enabled: true }),
+      ]);
+      assert.deepStrictEqual(
+        yield* service.readStaticCredential({ instanceId }),
+        Option.some(credential),
+      );
+      assert.deepStrictEqual(
+        yield* service.readStaticCredential({ instanceId: otherInstanceId }),
+        Option.none(),
+      );
+      assert.deepStrictEqual(
+        yield* service.readStaticCredential({ instanceId: unsupportedInstanceId }),
+        Option.none(),
+      );
+      assert.deepStrictEqual(
+        yield* service.readStaticCredential({ instanceId: ProviderInstanceId.make("missing") }),
+        Option.none(),
+      );
+    }),
+  );
 });
 
 describe("ProviderAuthService", () => {

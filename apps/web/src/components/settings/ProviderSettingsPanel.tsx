@@ -98,6 +98,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { SyncProviderAccountsAction } from "./SyncProviderAccountsDialog";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
@@ -1017,6 +1018,7 @@ export function EnvironmentProviderSettings({
         }
         headerAction={
           <div className="flex min-w-0 items-center gap-2">
+            <SyncProviderAccountsAction sourceEnvironmentId={environmentId} readOnly={readOnly} />
             <ProviderUpdatesAction />
             <Tooltip>
               <TooltipTrigger
@@ -1416,6 +1418,15 @@ function ProviderInstanceRow({
         mode === "editor" && !isDefault
           ? () => actions.deleteInstance(instanceId, instance)
           : undefined
+      }
+      syncAction={
+        mode === "editor" ? (
+          <SyncProviderAccountsAction
+            sourceEnvironmentId={environmentId}
+            readOnly={readOnly}
+            instanceIds={[instanceId]}
+          />
+        ) : undefined
       }
       headerAction={
         mode === "editor" && isDefault && isDirty ? (

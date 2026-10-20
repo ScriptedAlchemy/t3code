@@ -2,7 +2,10 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   AuthEnvironmentMaintainScope,
   AuthOrchestrationReadScope,
+  AuthProvidersManageScope,
+  ProviderInstanceId,
   type AuthEnvironmentScope,
+  ProviderDriverKind,
   ScheduledTaskError,
   ScheduledTaskId,
   WS_METHODS,
@@ -322,6 +325,44 @@ describe("WS RPC instrumentation middleware", () => {
         assert.deepStrictEqual(appSpans(ended), []);
         const snapshots = yield* Metric.snapshot;
         assert.equal(requestCount(snapshots, WS_METHODS.serverSignalProcess, "success")?.count, 1);
+      }),
+    ),
+  );
+
+  it.effect("records no spans for provider account transfer, whose payload holds plaintext", () =>
+    withTelemetry((ended) =>
+      Effect.gen(function* () {
+        const group = groupOf(WS_METHODS.providerAccountExport, WS_METHODS.providerAccountImport);
+        const instanceId = ProviderInstanceId.make("codex");
+        const account = {
+          instanceId,
+          instance: { driver: ProviderDriverKind.make("codex"), config: {}, environment: [] },
+          secrets: [],
+          omitted: [],
+        };
+        const client = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              group.toLayerHandler(WS_METHODS.providerAccountExport, () =>
+                Effect.succeed(account).pipe(Effect.withSpan("export.child")),
+              ),
+              group.toLayerHandler(WS_METHODS.providerAccountImport, () =>
+                Effect.succeed({ instanceId, change: "created", omitted: [] } as const).pipe(
+                  Effect.withSpan("import.child"),
+                ),
+              ),
+              connectionMiddleware([AuthProvidersManageScope]),
+            ),
+          ),
+        );
+
+        yield* client[WS_METHODS.providerAccountExport]({ instanceId });
+        yield* client[WS_METHODS.providerAccountImport]({ account });
+
+        assert.deepStrictEqual(appSpans(ended), []);
+        const snapshots = yield* Metric.snapshot;
+        for (const method of [WS_METHODS.providerAccountExport, WS_METHODS.providerAccountImport])
+          assert.equal(requestCount(snapshots, method, "success")?.count, 1);
       }),
     ),
   );

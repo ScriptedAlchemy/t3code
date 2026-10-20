@@ -207,6 +207,10 @@
       "types": "./src/state/projects.ts",
       "default": "./src/state/projects.ts"
     },
+    "./state/provider-account-sync": {
+      "types": "./src/state/providerAccountSync.ts",
+      "default": "./src/state/providerAccountSync.ts"
+    },
     "./state/provider-instance-display": {
       "types": "./src/state/providerInstanceDisplay.ts",
       "default": "./src/state/providerInstanceDisplay.ts"

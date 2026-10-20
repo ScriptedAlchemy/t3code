@@ -371,6 +371,7 @@ function makeMutableServerSettingsService(
           yield* PubSub.publish(changes, next);
           return next;
         }),
+      reviseProviderInstance: () => Effect.die("Unexpected provider revision"),
       withSettingsSnapshot: (use) => Ref.get(settingsRef).pipe(Effect.flatMap(use)),
       get streamChanges() {
         return Stream.fromPubSub(changes);

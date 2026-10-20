@@ -119,6 +119,25 @@ on that machine. Existing threads stay where they started. If resource checks ar
 unavailable or all eligible machines are full, choose a machine manually to continue.
 Mobile keeps its manual environment selection.
 
+### Sync accounts to another machine
+
+Once two machines are connected, you can copy provider accounts from one to the
+others instead of setting each up by hand. On web or desktop, open
+**Settings → Providers** for the source machine, then choose **Sync accounts** in
+the header, or **Sync to…** on one account. Tick the accounts and the machines,
+then choose **Sync**. The mobile app has the same **Sync to…** action on
+**Settings → Provider accounts**.
+
+Each copy keeps the account's settings and API keys. A Cursor sign-in arrives on
+the other machine as an API key. Sign-ins themselves are not copied. Each machine
+signs in on its own, and paths such as binary locations and config directories
+stay where they were set. When a copy still needs a sign-in, the result list offers
+**Sign in on** that machine, which opens its provider settings. Keys travel through
+this client, the same way a key you type into provider settings does.
+
+Syncing again updates the copies instead of duplicating them. A machine on an
+older version is listed but cannot be chosen until it updates.
+
 ### Tailscale HTTPS
 
 Join both devices to the same tailnet. In the desktop app, enable **Tailscale

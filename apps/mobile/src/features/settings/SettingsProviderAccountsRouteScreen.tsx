@@ -23,6 +23,7 @@ import {
 } from "./components/SettingsEnvironmentFilterHeader";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
+import { ProviderAccountSync } from "./ProviderAccountSync";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 
 export function SettingsProviderAccountsRouteScreen() {
@@ -463,6 +464,11 @@ function ProviderAccount({
           }
         />
       ) : null}
+      <ProviderAccountSync
+        environment={environment}
+        provider={provider}
+        accountLabel={provider.displayName ?? provider.driver}
+      />
     </View>
   );
 }

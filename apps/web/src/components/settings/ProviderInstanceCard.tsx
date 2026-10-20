@@ -578,6 +578,7 @@ interface ProviderInstanceCardProps {
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
   readonly onDelete?: (() => void) | undefined;
   readonly headerAction?: ReactNode | undefined;
+  readonly syncAction?: ReactNode;
   readonly setup?: ReactNode;
   readonly runtime?: ReactNode;
   readonly hiddenModels: ReadonlyArray<string>;
@@ -630,6 +631,7 @@ export function ProviderInstanceCard({
   onUpdate,
   onDelete,
   headerAction,
+  syncAction,
   setup,
   runtime,
   hiddenModels,
@@ -1091,6 +1093,7 @@ export function ProviderInstanceCard({
         className={cn("inline-flex items-center gap-1", readOnly && "opacity-50")}
       >
         {titleTailNode}
+        {syncAction}
         {onDelete ? (
           <Button
             type="button"

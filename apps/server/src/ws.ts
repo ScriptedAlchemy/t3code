@@ -170,6 +170,7 @@ import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ProviderAuthService from "./provider/ProviderAuthService.ts";
+import * as ProviderAccountTransfer from "./provider/ProviderAccountTransfer.ts";
 import { makeProviderInstallation } from "./provider/providerInstallation.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -1253,6 +1254,7 @@ const layerWsRpc = (
         yield* AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const providerAuth = yield* ProviderAuthService.ProviderAuthService;
+      const accountTransfer = yield* ProviderAccountTransfer.ProviderAccountTransfer;
       const providerInstallation = yield* makeProviderInstallation();
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
@@ -2321,6 +2323,9 @@ const layerWsRpc = (
           providerAuth.complete(input, currentSessionId),
         [WS_METHODS.chatGptReconnectProfile]: (input) => providerAuth.reconnectProfile(input),
         [WS_METHODS.chatGptImportProfile]: (input) => providerAuth.importProfile(input),
+        [WS_METHODS.providerAccountExport]: ({ instanceId }) =>
+          accountTransfer.exportAccount(instanceId),
+        [WS_METHODS.providerAccountImport]: ({ account }) => accountTransfer.importAccount(account),
         [WS_METHODS.chatGptHandoffSubscribe]: (input) =>
           subscribeChatGptHandoff(input, currentSessionId),
         [WS_METHODS.codexAuthCallbackSubscribe]: (input) => subscribeCodexAuthCallback(input),

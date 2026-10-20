@@ -1577,6 +1577,60 @@ it.layer(NodeServices.layer)("server settings", (it) => {
   );
 
   it.effect(
+    "revises a provider instance in place and hands the callback markers, not secrets",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const instanceId = ProviderInstanceId.make("antigravity_revised");
+        const first = yield* service.reviseProviderInstance(instanceId, (current) =>
+          Effect.succeed({
+            instance: {
+              driver: ProviderDriverKind.make("antigravity"),
+              config: { apiKey: "revised-secret", binaryPath: "/b/antigravity" },
+              environment: [{ name: "GEMINI_API_KEY", value: "env-revised", sensitive: true }],
+            },
+            result: current,
+          }),
+        );
+        assert.isUndefined(first.result);
+        assert.propertyVal(
+          first.settings.providerInstances[instanceId]?.config,
+          "apiKey",
+          "revised-secret",
+        );
+        const disk = yield* fs.readFileString(config.settingsPath);
+        assert.notInclude(disk, "revised-secret");
+        assert.notInclude(disk, "env-revised");
+        assert.include(disk, "/b/antigravity");
+
+        const second = yield* service.reviseProviderInstance(instanceId, (current) =>
+          current === undefined
+            ? Effect.die("the first revision was not stored")
+            : Effect.succeed({ instance: { ...current, displayName: "Kept" }, result: current }),
+        );
+        assert.propertyVal(second.result.config, "apiKey", "••••••");
+        assert.equal(second.result.environment?.[0]?.value, "");
+        assert.propertyVal(
+          second.settings.providerInstances[instanceId]?.config,
+          "apiKey",
+          "revised-secret",
+        );
+        assert.equal(second.settings.providerInstances[instanceId]?.displayName, "Kept");
+
+        const rejected = yield* service
+          .reviseProviderInstance(instanceId, () => Effect.fail("vetoed" as const))
+          .pipe(Effect.flip);
+        assert.equal(rejected, "vetoed");
+        assert.equal(
+          (yield* service.getSettings).providerInstances[instanceId]?.displayName,
+          "Kept",
+        );
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect(
     "uses the same secret lifecycle for provider config, environment, host tokens, and quota keys",
     () =>
       Effect.gen(function* () {

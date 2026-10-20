@@ -6,6 +6,7 @@ import type {
   ProviderSetupError,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
+import type * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
@@ -23,6 +24,18 @@ export interface ProviderAuthController {
     stopSessions: Effect.Effect<void, ProviderSetupError>,
   ) => Effect.Effect<ProviderAuthState, ProviderSetupError>;
   readonly isChangingCredentials?: Effect.Effect<boolean>;
+  /**
+   * A sign-in that is a static secret T3 owns and that never rotates, described as the
+   * environment variable that reproduces it on another machine (Cursor's named API key as
+   * CURSOR_API_KEY). Never implement it for anything that rotates on refresh (Codex ChatGPT) or
+   * that the provider's own tooling owns (CLI homes, keychains, Antigravity OAuth tokens): those
+   * machines sign in for themselves. None when signed out, expired, or already configured through
+   * that variable, which then travels on its own.
+   */
+  readonly exportStaticCredential?: Effect.Effect<
+    Option.Option<{ readonly name: string; readonly value: string }>,
+    ProviderSetupError
+  >;
   readonly invalidate?: Effect.Effect<void>;
   readonly refreshMethods?: Effect.Effect<void>;
   readonly withAccess?: <A, E, R>(
