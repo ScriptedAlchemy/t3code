@@ -69,9 +69,8 @@ const make = Effect.gen(function* () {
       ),
     });
     const asToday = { type: "finalize", resetAt: input.failure.resetAt ?? null } as const;
-    if (findProviderPool(yield* catalog.getPublishedProviders, input.providerInstanceId) === null) {
-      return asToday;
-    }
+    const owner = findProviderPool(yield* catalog.getPublishedProviders, input.providerInstanceId);
+    if (owner === null) return asToday;
     yield* orchestrator
       .dispatch({
         type: "run.pool-failover",
@@ -90,19 +89,31 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+    const logSkipped = (error: unknown) =>
+      Effect.logWarning("orchestration-v2.pool-failover.reset-lookup-failed", {
+        threadId: input.threadId,
+        runId: input.runId,
+        error,
+      });
+    // The hook must never block finalization; on a read failure the run fails with its own reset.
     const records = yield* projections
       .getThreadRecords(input.threadId, ["runs"], { runIds: [input.runId] })
-      .pipe(Effect.orElseSucceed(() => null));
+      .pipe(
+        Effect.tapError(logSkipped),
+        Effect.orElseSucceed(() => null),
+      );
     const run = records?.runs.find((candidate) => candidate.id === input.runId);
     if (run !== undefined && run.activeAttemptId !== input.attemptId) {
       return { type: "failed_over" } as const;
     }
-    const settings = yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => null));
+    const settings = yield* serverSettings.getSettings.pipe(
+      Effect.tapError(logSkipped),
+      Effect.orElseSucceed(() => null),
+    );
     if (records === null || settings === null) return asToday;
-    const pool = findProviderPool(yield* catalog.getPublishedProviders, input.providerInstanceId);
     const earliest = earliestPoolResetAtMs(
       poolMemberHealth({
-        members: pool?.members ?? [],
+        members: owner.members,
         settings,
         projectId: records.thread.projectId,
         nowMs,
