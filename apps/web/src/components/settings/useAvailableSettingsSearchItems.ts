@@ -44,7 +44,7 @@ export function useAvailableSettingsSearchItems(scopeSearch: SettingsScopeSearch
     ) === true;
   const hasThreadAutoSettlement =
     getThreadAutoSettlementSearchAvailability(environments).eligibleEnvironmentIds.length > 0;
-  const hasProviderPools = hasProviderPoolsEnvironment(environments) === true;
+  const hasProviderPools = hasProviderPoolsEnvironment(environments);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const canMaintain = useEnvironmentScope(primaryEnvironmentId, AuthEnvironmentMaintainScope);
   const cloudLinkState = usePrimaryCloudLinkState().data;

@@ -182,6 +182,7 @@ describe("searchSettings", () => {
       canManageLocalBackend: false,
       isWslSettingsRowVisible: false,
       hasThreadAutoSettlement: false,
+      hasProviderPools: false,
     });
 
     const gatedIds = new Set<string>([
@@ -215,6 +216,7 @@ describe("searchSettings", () => {
       canManageLocalBackend: false,
       isWslSettingsRowVisible: false,
       hasThreadAutoSettlement: false,
+      hasProviderPools: false,
     };
     const itemIds = (macAvailable: boolean) =>
       filterAvailableSettingsSearchItems({
@@ -234,6 +236,7 @@ describe("searchSettings", () => {
       canManageLocalBackend: false,
       isWslSettingsRowVisible: false,
       hasThreadAutoSettlement: false,
+      hasProviderPools: false,
     };
     const remoteOnly = filterAvailableSettingsSearchItems({
       ...availability,
@@ -256,6 +259,7 @@ describe("searchSettings", () => {
       canManageLocalBackend: true,
       isWslSettingsRowVisible: false,
       hasThreadAutoSettlement: false,
+      hasProviderPools: false,
     };
     const itemIds = (managedTunnelActive: boolean) =>
       filterAvailableSettingsSearchItems({ ...availability, managedTunnelActive }).map(
@@ -274,6 +278,7 @@ describe("searchSettings", () => {
       canManageLocalBackend: false,
       isWslSettingsRowVisible: false,
       hasThreadAutoSettlement: true,
+      hasProviderPools: false,
     });
 
     expect(searchSettings("auto-settle", available).map((item) => item.id)).toEqual([
@@ -292,6 +297,7 @@ describe("searchSettings", () => {
       canManageLocalBackend: false,
       isWslSettingsRowVisible: false,
       hasThreadAutoSettlement: false,
+      hasProviderPools: false,
     };
     const without = filterAvailableSettingsSearchItems(availability);
     const withPools = filterAvailableSettingsSearchItems({
@@ -442,6 +448,7 @@ describe("searchSettings", () => {
       canManageLocalBackend: false,
       isWslSettingsRowVisible: false,
       hasThreadAutoSettlement: true,
+      hasProviderPools: false,
     });
     expect(searchSettings("writing style", available)[0]?.id).toBe("source-control-writing-style");
     expect(searchSettings("auto-settle", available)).toHaveLength(3);
@@ -546,6 +553,7 @@ describe("auto-settlement search availability", () => {
       canManageLocalBackend: false,
       isWslSettingsRowVisible: false,
       hasThreadAutoSettlement: availability.eligibleEnvironmentIds.length > 0,
+      hasProviderPools: false,
     });
     expect(searchSettings("auto-settle", items).map((item) => item.id)).toEqual([
       "auto-settle-inactive-threads",

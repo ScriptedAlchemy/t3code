@@ -70,7 +70,7 @@ export interface SettingsSearchAvailability {
   readonly canManageLocalBackend: boolean;
   readonly isWslSettingsRowVisible: boolean;
   readonly hasThreadAutoSettlement: boolean;
-  readonly hasProviderPools?: boolean;
+  readonly hasProviderPools: boolean;
   readonly managedTunnelActive?: boolean;
 }
 
@@ -1141,7 +1141,7 @@ export function filterAvailableSettingsSearchItems(
       (!item.localEnvironmentOnly || !availability.localEnvironmentDisabled) &&
       (!item.wslAvailableOnly || availability.isWslSettingsRowVisible) &&
       (!item.requiresThreadAutoSettlement || availability.hasThreadAutoSettlement) &&
-      (!item.requiresProviderPools || availability.hasProviderPools === true) &&
+      (!item.requiresProviderPools || availability.hasProviderPools) &&
       (!item.managedTunnelOnly || availability.managedTunnelActive === true),
   );
 }

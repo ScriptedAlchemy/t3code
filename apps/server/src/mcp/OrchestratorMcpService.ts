@@ -1247,13 +1247,11 @@ const make = Effect.gen(function* () {
           (candidate) => candidate.instanceId === input.parent.thread.modelSelection.instanceId,
         );
         const preferred = [poolCandidate, inheritedCandidate].filter(
-          (candidate): candidate is ServerProvider => candidate !== undefined,
+          (candidate) => candidate !== undefined,
         );
         const orderedCandidates = [
-          ...new Set([
-            ...preferred,
-            ...healthyCandidates.filter((candidate) => !preferred.includes(candidate)),
-          ]),
+          ...preferred,
+          ...healthyCandidates.filter((candidate) => !preferred.includes(candidate)),
         ];
         for (const candidate of orderedCandidates) {
           const enabledForProject =

@@ -117,7 +117,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const currentSearch = useLocation({ select: (location) => location.search });
   const scopeSearch = validateSettingsScopeSearch(currentSearch);
   const { environments } = useEnvironments();
-  const providerPoolsAvailable = hasProviderPoolsEnvironment(environments) === true;
+  const providerPoolsAvailable = hasProviderPoolsEnvironment(environments);
   const navItems = SETTINGS_NAV_ITEMS.filter(
     (item) =>
       (item.to !== "/settings/projects" || isSettingsOverviewVisible(scopeSearch)) &&

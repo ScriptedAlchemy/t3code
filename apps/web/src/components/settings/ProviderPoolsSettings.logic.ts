@@ -20,7 +20,7 @@ export function limitedUntilLabel(
   nowMs: number,
   timestampFormat: TimestampFormat,
 ): string | null {
-  if (providerLimitedUntilMs(provider, nowMs) === null || provider.limitedUntil === undefined) {
+  if (provider.limitedUntil === undefined || providerLimitedUntilMs(provider, nowMs) === null) {
     return null;
   }
   return `Limited until ${formatUpcomingTimestamp(provider.limitedUntil, timestampFormat, nowMs)}`;

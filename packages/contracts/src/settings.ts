@@ -1273,12 +1273,12 @@ export const resolveProviderInstanceEnabled = (
 /**
  * A pool id is enabled when any of its configured members is, so a pooled
  * selection is never rejected while one account can still take the turn.
- * `providerPools` is optional only so callers typed against the narrower
- * settings shape keep compiling; omitting it reports every pool id disabled.
  */
 export const resolveProjectProviderInstanceEnabled = (
-  settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides"> &
-    Partial<Pick<ServerSettings, "providerPools">>,
+  settings: Pick<
+    ServerSettings,
+    "providerInstances" | "projectSettingsOverrides" | "providerPools"
+  >,
   projectId: ProjectId | null,
   instanceId: ProviderInstanceId,
 ): boolean => {
@@ -1286,7 +1286,7 @@ export const resolveProjectProviderInstanceEnabled = (
   if (poolDriver === null) {
     return resolveConcreteInstanceEnabled(settings, projectId, instanceId);
   }
-  const pool = settings.providerPools?.[poolDriver];
+  const pool = settings.providerPools[poolDriver];
   return (
     pool?.memberInstanceIds.some((memberId) =>
       resolveConcreteInstanceEnabled(settings, projectId, memberId),

@@ -1024,9 +1024,7 @@ export const layer = Layer.effect(
     return {
       getProviders: Ref.get(providersRef),
       getPublishedProviders,
-      get streamPublishedChanges() {
-        return streamPublishedChanges;
-      },
+      streamPublishedChanges,
       markLimited,
       refresh: (provider?: ProviderDriverKind) =>
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
