@@ -1,3 +1,4 @@
+import { createProviderAccountSyncCommand } from "@t3tools/client-runtime/state/provider-account-sync";
 import { createServerEnvironmentAtoms } from "@t3tools/client-runtime/state/server";
 import { createEnvironmentServerConfigsAtom } from "@t3tools/client-runtime/state/shell";
 
@@ -11,6 +12,7 @@ export const serverEnvironment = createServerEnvironmentAtoms(connectionAtomRunt
   usageLimitSources: true,
   usageLimitsCommand: true,
 });
+export const providerAccountSync = createProviderAccountSyncCommand(connectionAtomRuntime);
 export const environmentServerConfigsAtom = createEnvironmentServerConfigsAtom({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   serverConfigValueAtom: serverEnvironment.configValueAtom,
