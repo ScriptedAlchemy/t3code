@@ -138,4 +138,67 @@ describe("withProviderPools", () => {
       [personal.instanceId, work.instanceId],
     );
   });
+
+  const effort = (
+    choices: ReadonlyArray<string>,
+    defaultChoice: string,
+    overrides: { readonly id?: string; readonly label?: string } = {},
+  ): ServerProvider["models"][number] => ({
+    ...model("opus"),
+    capabilities: createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: overrides.id ?? "reasoningEffort",
+          label: overrides.label ?? "Reasoning",
+          type: "select",
+          options: choices.map((choice) => ({
+            id: choice,
+            label: choice,
+            ...(choice === defaultChoice ? { isDefault: true } : {}),
+          })),
+        },
+      ],
+    }),
+  });
+  const personalEffort = effort(["low", "medium", "high"], "medium");
+
+  it.each([
+    {
+      label: "the same options under other labels",
+      workOpus: effort(["high", "low", "medium"], "medium", { label: "Effort" }),
+      shared: true,
+    },
+    {
+      label: "an extra choice",
+      workOpus: effort(["low", "medium", "high", "xhigh"], "medium"),
+      shared: false,
+    },
+    {
+      label: "another default",
+      workOpus: effort(["low", "medium", "high"], "high"),
+      shared: false,
+    },
+    {
+      label: "another option id",
+      workOpus: effort(["low", "medium", "high"], "medium", { id: "effort" }),
+      shared: false,
+    },
+    { label: "no options", workOpus: { ...model("opus"), capabilities: null }, shared: false },
+  ])("shares a model whose members offer $label only when its options match", (input) => {
+    const pool = withProviderPools({
+      providers: [
+        provider("claudeAgent", claude, { models: [personalEffort, model("sonnet")] }),
+        provider("claudeAgent_work", claude, { models: [input.workOpus, model("sonnet")] }),
+      ],
+      providerPools: pools({ claudeAgent: ["claudeAgent", "claudeAgent_work"] }),
+    }).at(-1);
+    assert.deepEqual(
+      pool?.models.map((entry) => entry.slug),
+      input.shared ? ["opus", "sonnet"] : ["sonnet"],
+    );
+    assert.deepEqual(
+      pool?.pool?.role === "pool" ? pool.pool.droppedModels : null,
+      input.shared ? [] : ["opus"],
+    );
+  });
 });

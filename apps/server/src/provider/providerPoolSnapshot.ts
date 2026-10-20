@@ -38,20 +38,44 @@ const intersectByName = <Entry extends { readonly name: string }>(
   );
 };
 
+/** What a dispatch can send for a model: option ids, their choices, and their defaults. */
+const optionSignature = (model: ServerProvider["models"][number]): string =>
+  JSON.stringify(
+    (model.capabilities?.optionDescriptors ?? [])
+      .toSorted((left, right) => left.id.localeCompare(right.id))
+      .map((descriptor) =>
+        descriptor.type === "select"
+          ? [
+              descriptor.id,
+              descriptor.type,
+              descriptor.options.map((choice) => choice.id).toSorted(),
+              descriptor.currentValue ??
+                descriptor.options.find((choice) => choice.isDefault)?.id ??
+                null,
+            ]
+          : [descriptor.id, descriptor.type, null, descriptor.currentValue ?? null],
+      ),
+  );
+
 function makePoolEntry(
   pool: ActiveProviderPool,
   first: ServerProvider,
   members: ReadonlyArray<ServerProvider>,
 ): ServerProvider {
   const healthiest = healthiestMember(members);
-  const slugCounts = new Map<string, number>();
-  for (const member of members) {
-    for (const slug of new Set(member.models.map((model) => model.slug))) {
-      slugCounts.set(slug, (slugCounts.get(slug) ?? 0) + 1);
-    }
-  }
+  const slugs = [...new Set(members.flatMap((member) => member.models.map((model) => model.slug)))];
+  // A failover re-sends the run's options to another member, so a model is
+  // shared only when every member accepts the same options for it.
   const sharedSlugs = new Set(
-    [...slugCounts].filter(([, count]) => count === members.length).map(([slug]) => slug),
+    slugs.filter((slug) => {
+      const signatures = members.map((member) => {
+        const model = member.models.find((candidate) => candidate.slug === slug);
+        return model === undefined ? undefined : optionSignature(model);
+      });
+      return signatures.every(
+        (signature) => signature !== undefined && signature === signatures[0],
+      );
+    }),
   );
   const models = members
     .flatMap((member) => member.models)
@@ -97,7 +121,7 @@ function makePoolEntry(
     pool: {
       role: "pool",
       memberInstanceIds: pool.memberInstanceIds,
-      droppedModels: [...slugCounts.keys()].filter((slug) => !sharedSlugs.has(slug)),
+      droppedModels: slugs.filter((slug) => !sharedSlugs.has(slug)),
     },
   };
 }

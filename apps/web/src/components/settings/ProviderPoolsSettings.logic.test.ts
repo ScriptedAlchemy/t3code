@@ -101,10 +101,10 @@ describe("buildProviderPoolCards", () => {
 describe("modelCoverageLabel", () => {
   it("states the count of models every ticked account offers", () => {
     expect(modelCoverageLabel({ available: 12, total: 13 })).toBe(
-      "12 of 13 models are available in every ticked account",
+      "12 of 13 models are available with the same options in every ticked account",
     );
     expect(modelCoverageLabel({ available: 6, total: 6 })).toBe(
-      "All 6 models are available in every ticked account",
+      "All 6 models are available with the same options in every ticked account",
     );
   });
 });

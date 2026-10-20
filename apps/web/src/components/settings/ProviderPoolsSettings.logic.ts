@@ -121,8 +121,8 @@ export function buildProviderPoolCards(
 
 export function modelCoverageLabel(coverage: { available: number; total: number }): string {
   return coverage.available === coverage.total
-    ? `All ${coverage.total} models are available in every ticked account`
-    : `${coverage.available} of ${coverage.total} models are available in every ticked account`;
+    ? `All ${coverage.total} models are available with the same options in every ticked account`
+    : `${coverage.available} of ${coverage.total} models are available with the same options in every ticked account`;
 }
 
 export type ProviderPoolChange =
