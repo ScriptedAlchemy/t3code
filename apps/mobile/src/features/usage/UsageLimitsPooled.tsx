@@ -328,6 +328,11 @@ export function UsageLimitsSection({
       ) : null}
       {pools.map((pool, index) => {
         const windows = displayLimitWindows(pool);
+        const accountCount = pool.accounts.length;
+        const instanceCount = pool.accounts.reduce(
+          (sum, account) => sum + account.instances.length,
+          0,
+        );
         return (
           <Fragment key={pool.driver}>
             {index === cursorPromptAt ? cursorPrompt : null}
@@ -336,6 +341,11 @@ export function UsageLimitsSection({
                 <ProviderIcon provider={pool.driver} size={18} />
                 <Text className="text-base font-t3-medium text-foreground">
                   {DRIVER_LABEL[pool.driver] ?? pool.driver}
+                  {accountCount > 1 || instanceCount > 1 ? (
+                    <Text className="text-foreground-muted">
+                      {` · ${accountCount} ${accountCount === 1 ? "account" : "accounts"}`}
+                    </Text>
+                  ) : null}
                 </Text>
               </View>
               {windows.map((window) => {
@@ -510,6 +520,19 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
                 <Text className="text-sm text-foreground-muted">{account.sourceLabel}</Text>
               )}
             </View>
+            {account.instances.length > 1 ? (
+              <View className="gap-2 rounded-[24px] border-continuous bg-grouped-card p-4">
+                <Text className="text-sm font-t3-medium text-foreground">Signed in on</Text>
+                <Text className="text-sm text-foreground-muted">
+                  {[...new Set(account.instances.map((instance) => instance.displayName))].join(
+                    ", ",
+                  )}
+                </Text>
+                <Text className="text-sm text-foreground-muted">
+                  One login, one quota: these instances share this limit.
+                </Text>
+              </View>
+            ) : null}
             {account.redeem && account.limits.resetCredits ? (
               <View className="gap-3 rounded-[24px] border-continuous bg-grouped-card p-4">
                 <Text className="text-sm font-t3-medium text-foreground">Reset credits</Text>
