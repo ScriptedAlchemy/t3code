@@ -91,36 +91,35 @@ export const makeClaudeCliAuth = Effect.fn("makeClaudeCliAuth")(function* (optio
         type: "agent",
       },
     ]),
-    authenticate: (_methodId, context) =>
-      Effect.gen(function* () {
+    authenticate: Effect.fn("ClaudeCliAuth.authenticate")(
+      function* (_methodId, context) {
         const child = yield* spawn(["auth", "login", "--claudeai"]);
         let offered = false;
         let submitted = false;
-        const complete = (code: string) =>
-          Effect.gen(function* () {
-            const value = code.trim();
-            if (submitted || value.length === 0 || value.length > 4096 || /[\r\n\0]/.test(code)) {
-              return yield* new ProviderSetupError({
-                instanceId,
-                operation: "complete",
-                detail: submitted
-                  ? "A sign-in code was already submitted."
-                  : "Paste the single-line code from Claude.",
-              });
-            }
-            submitted = true;
-            yield* Stream.make(new TextEncoder().encode(`${value}\n`)).pipe(
-              Stream.run(child.stdin),
-              Effect.mapError(
-                () =>
-                  new ProviderSetupError({
-                    instanceId,
-                    operation: "complete",
-                    detail: "Claude could not accept the code. Start sign-in again.",
-                  }),
-              ),
-            );
-          });
+        const complete = Effect.fn("ClaudeCliAuth.complete")(function* (code: string) {
+          const value = code.trim();
+          if (submitted || value.length === 0 || value.length > 4096 || /[\r\n\0]/.test(code)) {
+            return yield* new ProviderSetupError({
+              instanceId,
+              operation: "complete",
+              detail: submitted
+                ? "A sign-in code was already submitted."
+                : "Paste the single-line code from Claude.",
+            });
+          }
+          submitted = true;
+          yield* Stream.make(new TextEncoder().encode(`${value}\n`)).pipe(
+            Stream.run(child.stdin),
+            Effect.mapError(
+              () =>
+                new ProviderSetupError({
+                  instanceId,
+                  operation: "complete",
+                  detail: "Claude could not accept the code. Start sign-in again.",
+                }),
+            ),
+          );
+        });
         const watch = (stream: typeof child.stdout) => {
           let pending = "";
           return stream.pipe(
@@ -192,17 +191,17 @@ export const makeClaudeCliAuth = Effect.fn("makeClaudeCliAuth")(function* (optio
             detail: "Claude could not verify a subscription account. Start sign-in again.",
           });
         }
-      }).pipe(
-        Effect.mapError((cause) =>
-          isSetupError(cause)
-            ? cause
-            : new ProviderSetupError({
-                instanceId,
-                operation: "start",
-                detail: "Could not complete Claude sign-in. Try again.",
-              }),
-        ),
+      },
+      Effect.mapError((cause) =>
+        isSetupError(cause)
+          ? cause
+          : new ProviderSetupError({
+              instanceId,
+              operation: "start",
+              detail: "Could not complete Claude sign-in. Try again.",
+            }),
       ),
+    ),
     logout: Effect.gen(function* () {
       if (!(yield* readStatus).loggedIn) return;
       const child = yield* spawn(["auth", "logout"]);

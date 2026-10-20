@@ -266,93 +266,90 @@ export class ServerSettingsService extends Context.Service<
   static readonly layerTest = (overrides: DeepPartial<ServerSettings> = {}) => layerTest(overrides);
 }
 
-const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
-  Effect.gen(function* () {
-    const { automaticGitFetchInterval, providerHealthRefreshInterval, ...overridesForMerge } =
-      overrides;
-    const merged = deepMerge(DEFAULT_SERVER_SETTINGS, overridesForMerge);
-    const initialSettings = yield* normalizeServerSettings({
-      ...merged,
-      ...(automaticGitFetchInterval !== undefined
-        ? { automaticGitFetchInterval: automaticGitFetchInterval as Duration.Duration }
-        : {}),
-      ...(providerHealthRefreshInterval !== undefined
-        ? { providerHealthRefreshInterval: providerHealthRefreshInterval as Duration.Duration }
-        : {}),
-    });
-    const currentSettingsRef = yield* Ref.make<ServerSettings>(initialSettings);
-    const writeSemaphore = yield* Semaphore.make(1);
-    const getSettings = Ref.get(currentSettingsRef).pipe(Effect.map(resolveTextGenerationProvider));
+const makeTest = Effect.fn("serverSettings.makeTest")(function* (
+  overrides: DeepPartial<ServerSettings> = {},
+) {
+  const { automaticGitFetchInterval, providerHealthRefreshInterval, ...overridesForMerge } =
+    overrides;
+  const merged = deepMerge(DEFAULT_SERVER_SETTINGS, overridesForMerge);
+  const initialSettings = yield* normalizeServerSettings({
+    ...merged,
+    ...(automaticGitFetchInterval !== undefined
+      ? { automaticGitFetchInterval: automaticGitFetchInterval as Duration.Duration }
+      : {}),
+    ...(providerHealthRefreshInterval !== undefined
+      ? { providerHealthRefreshInterval: providerHealthRefreshInterval as Duration.Duration }
+      : {}),
+  });
+  const currentSettingsRef = yield* Ref.make<ServerSettings>(initialSettings);
+  const writeSemaphore = yield* Semaphore.make(1);
+  const getSettings = Ref.get(currentSettingsRef).pipe(Effect.map(resolveTextGenerationProvider));
 
-    const reviseTestSettings = <A, E>(
-      update: (
-        current: ServerSettings,
-      ) => Effect.Effect<{ readonly settings: ServerSettings; readonly result: A }, E>,
-    ): Effect.Effect<
-      { readonly settings: ServerSettings; readonly result: A },
-      ServerSettingsError | E
-    > =>
-      writeSemaphore.withPermits(1)(
-        Ref.get(currentSettingsRef).pipe(
-          Effect.flatMap(update),
-          Effect.flatMap(({ settings, result }) =>
-            normalizeServerSettings(settings).pipe(
-              Effect.map((next) => ({ settings: next, result })),
-            ),
+  const reviseTestSettings = <A, E>(
+    update: (
+      current: ServerSettings,
+    ) => Effect.Effect<{ readonly settings: ServerSettings; readonly result: A }, E>,
+  ): Effect.Effect<
+    { readonly settings: ServerSettings; readonly result: A },
+    ServerSettingsError | E
+  > =>
+    writeSemaphore.withPermits(1)(
+      Ref.get(currentSettingsRef).pipe(
+        Effect.flatMap(update),
+        Effect.flatMap(({ settings, result }) =>
+          normalizeServerSettings(settings).pipe(
+            Effect.map((next) => ({ settings: next, result })),
           ),
-          Effect.tap(({ settings }) => Ref.set(currentSettingsRef, settings)),
-          Effect.map(({ settings, result }) => ({
-            settings: resolveTextGenerationProvider(settings),
+        ),
+        Effect.tap(({ settings }) => Ref.set(currentSettingsRef, settings)),
+        Effect.map(({ settings, result }) => ({
+          settings: resolveTextGenerationProvider(settings),
+          result,
+        })),
+      ),
+    );
+  const updateTestSettings = (
+    update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
+  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+    reviseTestSettings((current) =>
+      update(current).pipe(Effect.map((settings) => ({ settings, result: undefined }))),
+    ).pipe(Effect.map(({ settings }) => settings));
+
+  return {
+    start: Effect.void,
+    ready: Effect.void,
+    getSettings,
+    updateSettings: (patch) =>
+      updateTestSettings((currentSettings) =>
+        Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
+      ),
+    updateProviderInstance: (mutation, patch = {}) =>
+      updateTestSettings((currentSettings) =>
+        Effect.gen(function* () {
+          yield* ensureProviderInstanceMutationAllowed(currentSettings, mutation, "test settings");
+          const patched = applyServerSettingsPatch(currentSettings, patch);
+          return applyProviderInstanceMutation(patched, mutation);
+        }),
+      ),
+    reviseProviderInstance: (instanceId, revise) =>
+      reviseTestSettings((current) =>
+        revise(current.providerInstances[instanceId], current).pipe(
+          Effect.map(({ instance, result }) => ({
+            settings: applyProviderInstanceMutation(current, {
+              operation: "upsert",
+              instanceId,
+              instance,
+            }),
             result,
           })),
         ),
-      );
-    const updateTestSettings = (
-      update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
-    ): Effect.Effect<ServerSettings, ServerSettingsError> =>
-      reviseTestSettings((current) =>
-        update(current).pipe(Effect.map((settings) => ({ settings, result: undefined }))),
-      ).pipe(Effect.map(({ settings }) => settings));
-
-    return {
-      start: Effect.void,
-      ready: Effect.void,
-      getSettings,
-      updateSettings: (patch) =>
-        updateTestSettings((currentSettings) =>
-          Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
-        ),
-      updateProviderInstance: (mutation, patch = {}) =>
-        updateTestSettings((currentSettings) =>
-          Effect.gen(function* () {
-            yield* ensureProviderInstanceMutationAllowed(
-              currentSettings,
-              mutation,
-              "test settings",
-            );
-            const patched = applyServerSettingsPatch(currentSettings, patch);
-            return applyProviderInstanceMutation(patched, mutation);
-          }),
-        ),
-      reviseProviderInstance: (instanceId, revise) =>
-        reviseTestSettings((current) =>
-          revise(current.providerInstances[instanceId], current).pipe(
-            Effect.map(({ instance, result }) => ({
-              settings: applyProviderInstanceMutation(current, {
-                operation: "upsert",
-                instanceId,
-                instance,
-              }),
-              result,
-            })),
-          ),
-        ),
-      withSettingsSnapshot: (use) =>
-        writeSemaphore.withPermits(1)(getSettings.pipe(Effect.flatMap(use))),
-      streamChanges: Stream.empty,
-      subscribeChanges: Effect.succeed(Stream.empty),
-    } satisfies ServerSettingsService["Service"];
-  });
+      ),
+    withSettingsSnapshot: (use) =>
+      writeSemaphore.withPermits(1)(getSettings.pipe(Effect.flatMap(use))),
+    streamChanges: Stream.empty,
+    subscribeChanges: Effect.succeed(Stream.empty),
+  } satisfies ServerSettingsService["Service"];
+});
 
 export const layerTest = (overrides: DeepPartial<ServerSettings> = {}) =>
   Layer.effect(ServerSettingsService, makeTest(overrides));
@@ -719,8 +716,8 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  const moveInlineSettingsSecrets = (settings: ServerSettings) =>
-    Effect.gen(function* () {
+  const moveInlineSettingsSecrets = Effect.fn("serverSettings.moveInlineSettingsSecrets")(
+    function* (settings: ServerSettings) {
       const pending: SettingsSecret[] = [];
       mapSettingsSecrets(settings, (secret) => {
         if (secret.kind === "field" && !secret.redacted && secret.value.length > 0) {
@@ -746,15 +743,14 @@ const make = Effect.gen(function* () {
       return mapSettingsSecrets(settings, (secret) =>
         moved.has(secret.secretName) ? { value: "", redacted: true } : secret,
       );
-    });
+    },
+  );
 
   const loadSettingsFromDisk = Effect.gen(function* () {
     let settings = DEFAULT_SERVER_SETTINGS;
     let legacyProviders: Readonly<Record<string, unknown>> | undefined;
     let legacySourceControl: Parameters<typeof migrateLegacySourceControlSettings>[1] = {};
-    // A file that failed to decode must stay on disk for the user to repair;
-    // the fold below only writes when it started from the file's real contents.
-    let settingsFileTrusted = true;
+    let parseFailure = Option.none<unknown>();
 
     if (yield* readConfigExists) {
       const raw = yield* readRawConfig;
@@ -769,10 +765,10 @@ const make = Effect.gen(function* () {
       }
       if (decoded._tag === "Failure" || legacySettings._tag === "Failure") {
         const failure = decoded._tag === "Failure" ? decoded : legacySettings;
-        settingsFileTrusted = false;
         // The file may hold an opt-out we can no longer read; never resume threads on a guess.
         settings = { ...DEFAULT_SERVER_SETTINGS, continueThreadsAfterServerUpdate: false };
         if (failure._tag === "Failure") {
+          parseFailure = Option.some(Cause.squash(failure.cause));
           yield* Effect.logWarning("failed to parse settings.json, using defaults", {
             path: settingsPath,
             issues: Cause.pretty(failure.cause),
@@ -784,6 +780,8 @@ const make = Effect.gen(function* () {
       }
     }
 
+    // A file that failed to decode must stay on disk for the user to repair.
+    const settingsFileTrusted = Option.isNone(parseFailure);
     const providerHistory = yield* sql<{
       readonly providerName: string;
       readonly providerInstanceId: string | null;
@@ -881,23 +879,23 @@ const make = Effect.gen(function* () {
         yield* secretStore.remove(move.from).pipe(Effect.ignore);
       }
     }
-    return migrated;
+    return { settings: migrated, parseFailure };
   });
 
-  const settingsCache = yield* Cache.makeWith<typeof cacheKey, ServerSettings, ServerSettingsError>(
-    () => loadSettingsFromDisk,
-    {
-      capacity: 1,
-      timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
-    },
+  const settingsCache = yield* Cache.makeWith((_key: typeof cacheKey) => loadSettingsFromDisk, {
+    capacity: 1,
+    timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
+  });
+
+  const getSettingsFromCache = Cache.get(settingsCache, cacheKey).pipe(
+    Effect.map((loaded) => loaded.settings),
+  );
+  const reloadSettings = Cache.invalidate(settingsCache, cacheKey).pipe(
+    Effect.andThen(Cache.get(settingsCache, cacheKey)),
   );
 
-  const getSettingsFromCache = Cache.get(settingsCache, cacheKey);
-
-  const materializeSettingsSecrets = (
-    settings: ServerSettings,
-  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
-    Effect.gen(function* () {
+  const materializeSettingsSecrets = Effect.fn("serverSettings.materializeSettingsSecrets")(
+    function* (settings: ServerSettings): Effect.fn.Return<ServerSettings, ServerSettingsError> {
       const storedSecrets = new Map<string, string>();
       const pending = new Map<string, SettingsSecret>();
       mapSettingsSecrets(settings, (secret) => {
@@ -929,7 +927,8 @@ const make = Effect.gen(function* () {
             : secret.value,
         redacted: secret.sensitive && secret.kind === "environment" && secret.redacted,
       }));
-    });
+    },
+  );
 
   const materializeChanges = (changes: Stream.Stream<ServerSettings>) =>
     changes.pipe(
@@ -1100,7 +1099,14 @@ const make = Effect.gen(function* () {
   > =>
     writeSemaphore.withPermits(1)(
       Effect.gen(function* () {
-        const current = yield* getSettingsFromCache;
+        const { settings: current, parseFailure } = yield* reloadSettings;
+        if (Option.isSome(parseFailure)) {
+          return yield* new ServerSettingsError({
+            settingsPath,
+            operation: "read-file",
+            cause: parseFailure.value,
+          });
+        }
         const { settings: updated, result } = yield* update(current);
         const persisted = yield* persistSettingsSecrets(current, updated);
         const next = yield* normalizeServerSettings(persisted.settings);
@@ -1120,7 +1126,7 @@ const make = Effect.gen(function* () {
             return materializedExit.value;
           }),
         );
-        yield* Cache.set(settingsCache, cacheKey, next);
+        yield* Cache.set(settingsCache, cacheKey, { settings: next, parseFailure: Option.none() });
         yield* emitChange(next);
         return { settings: resolveTextGenerationProvider(materialized), result };
       }),
@@ -1144,8 +1150,7 @@ const make = Effect.gen(function* () {
 
   const revalidateAndEmit = writeSemaphore.withPermits(1)(
     Effect.gen(function* () {
-      yield* Cache.invalidate(settingsCache, cacheKey);
-      const settings = yield* getSettingsFromCache;
+      const { settings } = yield* reloadSettings;
       yield* emitChange(settings);
     }),
   );
@@ -1234,8 +1239,7 @@ const make = Effect.gen(function* () {
 
     const startup = Effect.gen(function* () {
       yield* startWatcher;
-      yield* Cache.invalidate(settingsCache, cacheKey);
-      yield* getSettingsFromCache;
+      yield* reloadSettings;
     });
 
     const startupExit = yield* Effect.exit(startup);

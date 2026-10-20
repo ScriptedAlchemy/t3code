@@ -1,4 +1,10 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  DEFAULT_MODEL_BY_PROVIDER,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   applyProviderInstanceSettings,
@@ -12,6 +18,7 @@ import {
   resolvePoolMemberLabel,
   resolveProviderCatalogAvailability,
   resolveSelectableProviderInstance,
+  shouldShowInstanceBadge,
   sortProviderInstanceEntries,
 } from "./providerInstances";
 
@@ -347,6 +354,34 @@ describe("deriveProviderEntriesByEnvironment", () => {
     expect(byEnvironment.get("remote")?.get("claude")?.accentColor).toBe("#445566");
   });
 
+  it("keeps an instance a project turns on as a sibling for the instance badge", () => {
+    const codex = ProviderDriverKind.make("codex");
+    const byEnvironment = deriveProviderEntriesByEnvironment([
+      [
+        "local",
+        [
+          provider({ provider: codex, instanceId: "codex" }),
+          provider({ provider: codex, instanceId: "codex_work" }),
+        ],
+        {
+          providerInstances: {
+            [ProviderInstanceId.make("codex_work")]: { driver: codex, enabled: false },
+          },
+          projectSettingsOverrides: {
+            [ProjectId.make("project-work")]: {
+              providerInstances: { [ProviderInstanceId.make("codex_work")]: { enabled: true } },
+            },
+          },
+          providerPools: {},
+        },
+      ],
+    ]);
+    const entries = byEnvironment.get("local");
+    const personal = entries?.get("codex");
+
+    expect(personal && shouldShowInstanceBadge(personal, entries?.values() ?? [])).toBe(true);
+  });
+
   it("never falls back to another environment's instances", () => {
     const byEnvironment = deriveProviderEntriesByEnvironment([
       ["local", [provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex" })]],
@@ -497,8 +532,7 @@ describe("getDefaultProviderInstanceModel", () => {
       providers,
       ProviderInstanceId.make("claudeAgent"),
     );
-    expect(typeof resolved).toBe("string");
-    expect(resolved?.length).toBeGreaterThan(0);
+    expect(resolved).toBe(DEFAULT_MODEL_BY_PROVIDER[ProviderDriverKind.make("claudeAgent")]);
   });
 
   it("honors the instance's declared default before model-list order", () => {

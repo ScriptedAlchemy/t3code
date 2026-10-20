@@ -1,9 +1,9 @@
 import { EnvironmentId, ProviderDriverKind, type AcpRegistrySearchAgent } from "@t3tools/contracts";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
 import { userEvent } from "vite-plus/test/browser";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+
+import { act, render } from "../../../test/render";
 
 const actions = vi.hoisted(() => ({
   toast: vi.fn(),
@@ -109,21 +109,14 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-let root: Root;
-let container: HTMLDivElement;
-
-function render(onOpenChange = actions.onOpenChange) {
-  return act(async () =>
-    root.render(
-      <AddProviderInstanceDialog
-        open
-        environmentId={remoteEnvironmentId}
-        environmentLabel="Remote device"
-        onOpenChange={onOpenChange}
-      />,
-    ),
-  );
-}
+const dialog = () => (
+  <AddProviderInstanceDialog
+    open
+    environmentId={remoteEnvironmentId}
+    environmentLabel="Remote device"
+    onOpenChange={actions.onOpenChange}
+  />
+);
 const queryButton = (label: string) =>
   [...document.querySelectorAll("button")].find((element) => element.textContent?.trim() === label);
 function button(label: string) {
@@ -147,7 +140,7 @@ const input = (selector: string) => {
   return found!;
 };
 async function type(selector: string, value: string) {
-  await act(async () => userEvent.fill(input(selector), value));
+  await userEvent.fill(input(selector), value);
   await act(async () => input(selector).blur());
 }
 const signInStep = () => document.querySelector('[aria-label="Sign-in step"]');
@@ -163,34 +156,28 @@ async function chooseTraex() {
 }
 
 async function prepareCodexInstance() {
-  await render();
+  await using stack = new AsyncDisposableStack();
+  const screen = stack.use(await render(dialog()));
   await useExistingCodexCli();
   await type("#add-provider-label", "Work");
   await click("Next");
+  stack.move();
+  return screen;
+}
+
+function setup() {
+  actions.canManageProviders = true;
+  actions.toast.mockReset();
+  actions.onOpenChange.mockReset();
+  settingsHooks.read.mockReset().mockReturnValue({ providerInstances: {} });
+  settingsHooks.mutate.mockReset().mockResolvedValue({ _tag: "Success", value: {} });
+  settingsHooks.useMutation.mockReset().mockReturnValue(settingsHooks.mutate);
 }
 
 describe("AddProviderInstanceDialog environment routing", () => {
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    actions.canManageProviders = true;
-    actions.toast.mockReset();
-    actions.onOpenChange.mockReset();
-    settingsHooks.read.mockReset().mockReturnValue({ providerInstances: {} });
-    settingsHooks.mutate.mockReset().mockResolvedValue({ _tag: "Success", value: {} });
-    settingsHooks.useMutation.mockReset().mockReturnValue(settingsHooks.mutate);
-    // Attached so the ChatGPT sharing view, which replaces the portaled dialog, is queryable.
-    container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
-  });
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    vi.unstubAllGlobals();
-  });
-
   it("creates a provider with its default identity without typing", async () => {
-    await render();
+    setup();
+    await using _screen = await render(dialog());
     const grok = [...document.querySelectorAll('[role="radio"]')].find((radio) =>
       radio.textContent?.includes("Grok"),
     ) as HTMLElement;
@@ -206,10 +193,11 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("chooses an unused identity for another account without replacing configured instances", async () => {
+    setup();
     settingsHooks.read.mockReturnValue({
       providerInstances: { codex_2: { driver: "codex", enabled: false } },
     });
-    await render();
+    await using _screen = await render(dialog());
     await useExistingCodexCli();
     await click("Next");
     await click("Add instance");
@@ -226,14 +214,16 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("reads and writes settings through the supplied environment", async () => {
-    await render();
+    setup();
+    await using _screen = await render(dialog());
 
     expect(settingsHooks.read).toHaveBeenCalledWith(remoteEnvironmentId);
     expect(settingsHooks.useMutation).toHaveBeenCalledWith(remoteEnvironmentId);
   });
 
   it("keeps Codex connection choices separate from the provider catalog and remembers selection on Back", async () => {
-    await render();
+    setup();
+    await using _screen = await render(dialog());
     const steps = [
       ...document.querySelectorAll<HTMLButtonElement>('[aria-label="Setup progress"] button'),
     ];
@@ -262,7 +252,8 @@ describe("AddProviderInstanceDialog environment routing", () => {
   it.each(["cli", "existing"] as const)(
     "creates a Claude %s account through its connection choice",
     async (choice) => {
-      await render();
+      setup();
+      await using _screen = await render(dialog());
       await choose("Claude");
       await click("Next");
       expect(radio("Sign in with Claude Code").getAttribute("aria-checked")).toBe("true");
@@ -284,8 +275,9 @@ describe("AddProviderInstanceDialog environment routing", () => {
   );
 
   it("opens ChatGPT sharing only after Continue", async () => {
+    setup();
     const sharing = () => document.querySelector('[aria-label="ChatGPT sharing"]');
-    await render();
+    await using _screen = await render(dialog());
     await click("Next");
     await choose("Use ChatGPT sharing");
     expect(sharing()).toBeNull();
@@ -295,7 +287,8 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("creates a native Codex account without runtime overrides and continues to sign-in", async () => {
-    await render();
+    setup();
+    await using _screen = await render(dialog());
     await click("Next");
     await click("Continue");
     await type("#add-provider-label", "Personal");
@@ -315,7 +308,8 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("preserves the existing CLI configuration after leaving the native account path", async () => {
-    await render();
+    setup();
+    await using _screen = await render(dialog());
     await click("Next");
     await click("Continue");
     await click("Back");
@@ -337,10 +331,11 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("persists a Traex preset as an isolated Codex instance in the selected environment", async () => {
+    setup();
     settingsHooks.read.mockReturnValue({
       providerInstances: { codex_traex: { driver: "codex", enabled: true } },
     });
-    await render();
+    await using _screen = await render(dialog());
     await chooseTraex();
     await click("Next");
     await click("Add instance");
@@ -375,7 +370,8 @@ describe("AddProviderInstanceDialog environment routing", () => {
     { name: "another config field", editConfig: true, homePath: undefined },
     { name: "custom home", editConfig: true, homePath: "~/.traex-personal" },
   ])("preserves isolation after changing the Traex ID with $name", async (fixture) => {
-    await render();
+    setup();
+    await using _screen = await render(dialog());
     await chooseTraex();
     if (fixture.editConfig) {
       await click("Next");
@@ -407,7 +403,8 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("derives the Traex home from the final ID after clearing a custom home", async () => {
-    await render();
+    setup();
+    await using _screen = await render(dialog());
     await chooseTraex();
     await click("Next");
     await type("#add-provider-codex-homePath", "~/.traex-personal");
@@ -434,7 +431,8 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("preserves the edited Traex draft after returning to provider selection", async () => {
-    await render();
+    setup();
+    await using _screen = await render(dialog());
     await chooseTraex();
     await type("#add-provider-label", "Personal Traex");
     await type("#add-provider-instance-id", "traex_personal");
@@ -466,7 +464,8 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("restores the manual Codex draft after choosing Traex and switching back", async () => {
-    await render();
+    setup();
+    await using _screen = await render(dialog());
     await useExistingCodexCli();
     await type("#add-provider-label", "Work");
     await click("Next");
@@ -500,9 +499,10 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("awaits an atomic create before closing and retains prepared ACP metadata", async () => {
+    setup();
     const mutation = deferred<{ readonly _tag: "Success"; readonly value: unknown }>();
     settingsHooks.mutate.mockReturnValueOnce(mutation.promise);
-    await render();
+    await using _screen = await render(dialog());
     await click("Use Kilo Code");
 
     expect(document.body.textContent).toContain("v4.2.0 · binary");
@@ -532,7 +532,8 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("configures a manually entered registry agent from the first provider screen", async () => {
-    await render();
+    setup();
+    await using _screen = await render(dialog());
     await click("Enter registry agent");
     await type("#add-provider-acpRegistry-manual-agentId", "devin");
     await click("Next");
@@ -550,7 +551,8 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("creates a local command in the selected environment without a sign-in step", async () => {
-    await render();
+    setup();
+    await using _screen = await render(dialog());
     await click("Use local command");
     await click("Next");
     expect(document.body.textContent).toContain("Executable is required.");
@@ -595,8 +597,9 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("keeps the dialog open when the atomic upsert fails", async () => {
+    setup();
     settingsHooks.mutate.mockResolvedValueOnce({ _tag: "Failure", cause: new Error("Conflict") });
-    await render();
+    await using _screen = await render(dialog());
     await click("Use Kilo Code");
     await click("Continue to sign-in");
 
@@ -608,7 +611,8 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("adds an instance with the selected environment's provider grant alone", async () => {
-    await prepareCodexInstance();
+    setup();
+    await using _screen = await prepareCodexInstance();
     await click("Add instance");
 
     expect(settingsHooks.mutate).toHaveBeenCalledWith({
@@ -628,7 +632,8 @@ describe("AddProviderInstanceDialog environment routing", () => {
   });
 
   it("rejects a queued save after the provider grant is revoked", async () => {
-    await prepareCodexInstance();
+    setup();
+    await using screen = await prepareCodexInstance();
     const save = button("Add instance");
     actions.canManageProviders = false;
     // The rendered button is still enabled; the click must recheck the live grant.
@@ -637,18 +642,19 @@ describe("AddProviderInstanceDialog environment routing", () => {
     expect(settingsHooks.mutate).not.toHaveBeenCalled();
     expect(actions.toast).not.toHaveBeenCalled();
     expect(actions.onOpenChange).not.toHaveBeenCalled();
-    await render();
+    await screen.rerender(dialog());
     expect(button("Add instance").disabled).toBe(true);
   });
 
   it("keeps a denied draft available when the provider grant arrives", async () => {
+    setup();
     actions.canManageProviders = false;
-    await prepareCodexInstance();
+    await using screen = await prepareCodexInstance();
     expect(button("Add instance").disabled).toBe(true);
     expect(settingsHooks.mutate).not.toHaveBeenCalled();
 
     actions.canManageProviders = true;
-    await render();
+    await screen.rerender(dialog());
     expect(button("Add instance").disabled).toBe(false);
     await click("Add instance");
     expect(settingsHooks.mutate).toHaveBeenCalledOnce();

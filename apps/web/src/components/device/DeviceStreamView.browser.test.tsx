@@ -1,7 +1,8 @@
-import { act, useEffect, useSyncExternalStore } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { useEffect, useSyncExternalStore } from "react";
 import { EnvironmentId } from "@t3tools/contracts";
-import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
+
+import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
 
 const accessStore = {
   value: { httpBase: "http://test", wsBase: "ws://test", query: {}, credentials: true },
@@ -35,6 +36,7 @@ vi.mock(import("./DevicePhoneViewport"), async (original) => ({
     return <></>;
   },
 }));
+import { pasteTextToFocusComposer } from "../chat/composerFocusRedirect";
 import { DeviceStreamView } from "./DeviceStreamView";
 
 // MJPEG frames come from the device hub, so images keep their src without loading it and a
@@ -87,105 +89,114 @@ async function publishFrame(image: HTMLImageElement) {
   framedImages.add(image);
   await act(async () => image.dispatchEvent(new Event("load")));
 }
-let root: Root;
 let container: HTMLDivElement;
 let primes = 0;
-beforeEach(() => {
+
+async function setup(h264 = false, platform: "ios" | "android" = "ios") {
   primes = 0;
   viewerMounts = 0;
   viewerUnmounts = 0;
   images = [];
+  await using stack = new AsyncDisposableStack();
   stubImages();
-  container = document.createElement("div");
-  container.style.cssText = "width: 400px; height: 800px; display: flex";
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  restoreImages();
-  vi.useRealTimers();
-  vi.unstubAllGlobals();
-});
-
-async function setup(h264 = false) {
-  vi.useFakeTimers();
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  stack.defer(restoreImages);
+  stack.use(fakeTimers());
+  const touches: unknown[] = [];
   let videoBody: ReadableStreamDefaultController<Uint8Array> | undefined;
   let output: VideoFrameOutputCallback | undefined;
   if (h264) {
-    vi.stubGlobal(
-      "VideoDecoder",
-      class {
-        static isConfigSupported = async () => ({ supported: true });
-        state = "unconfigured";
-        constructor(callbacks: VideoDecoderInit) {
-          output = callbacks.output;
-        }
-        configure() {
-          this.state = "configured";
-        }
-        close() {
-          this.state = "closed";
-        }
-      },
+    stack.use(
+      stubGlobal(
+        "VideoDecoder",
+        class {
+          static isConfigSupported = async () => ({ supported: true });
+          state = "unconfigured";
+          constructor(callbacks: VideoDecoderInit) {
+            output = callbacks.output;
+          }
+          configure() {
+            this.state = "configured";
+          }
+          close() {
+            this.state = "closed";
+          }
+        },
+      ),
     );
-    vi.stubGlobal("EncodedVideoChunk", vi.fn());
+    stack.use(stubGlobal("EncodedVideoChunk", vi.fn()));
   } else {
     // Without WebCodecs the iOS client streams MJPEG.
     const videoDecoder = Object.getOwnPropertyDescriptor(globalThis, "VideoDecoder");
     if (videoDecoder) {
       Reflect.deleteProperty(globalThis, "VideoDecoder");
-      onTestFinished(() => {
+      stack.defer(() => {
         Object.defineProperty(globalThis, "VideoDecoder", videoDecoder);
       });
     }
   }
-  vi.stubGlobal("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("stream.avcc")) {
-      return Promise.resolve(
-        new Response(
-          new ReadableStream<Uint8Array>({
-            start(controller) {
-              videoBody = controller;
-              init.signal?.addEventListener("abort", () => controller.error(new Error("aborted")));
-            },
-          }),
-        ),
-      );
-    }
-    primes++;
-    return Promise.resolve(new Response("prime"));
-  });
-  const sockets: Array<{ onmessage?: (event: { data: ArrayBuffer }) => void }> = [];
-  vi.stubGlobal(
-    "WebSocket",
-    class {
-      static OPEN = 1;
-      readyState = 1;
-      constructor() {
-        sockets.push(this);
+  stack.use(
+    stubGlobal("fetch", (url: string, init: RequestInit) => {
+      if (url.endsWith("stream.avcc")) {
+        return Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                videoBody = controller;
+                init.signal?.addEventListener("abort", () =>
+                  controller.error(new Error("aborted")),
+                );
+              },
+            }),
+          ),
+        );
       }
-      onmessage?: (event: { data: ArrayBuffer }) => void;
-      send() {}
-      close() {}
-    },
+      primes++;
+      return Promise.resolve(new Response("prime"));
+    }),
+  );
+  const sockets: Array<{ onmessage?: (event: { data: ArrayBuffer }) => void }> = [];
+  const sent: unknown[] = [];
+  stack.use(
+    stubGlobal(
+      "WebSocket",
+      class {
+        static OPEN = 1;
+        readyState = 1;
+        constructor() {
+          sockets.push(this);
+        }
+        onmessage?: (event: { data: ArrayBuffer }) => void;
+        send(message: string | Uint8Array) {
+          if (typeof message === "string") {
+            sent.push(message);
+          } else if (message[0] === 0x03) {
+            touches.push(JSON.parse(new TextDecoder().decode(message.subarray(1))));
+          }
+        }
+        close() {}
+      },
+    ),
   );
   const view = (visible: boolean) => (
     <DeviceStreamView
       hostId="local"
       environmentId={EnvironmentId.make("test")}
       deviceId="test"
-      platform="ios"
+      platform={platform}
       visible={visible}
       allowPhoneView={h264}
     />
   );
-  await act(async () => root.render(view(true)));
+  container = document.createElement("div");
+  container.style.cssText = "width: 400px; height: 800px; display: flex";
+  const screen = stack.use(await render(view(true), { container }));
+  const environment = stack.move();
   return {
     images,
-    view,
+    show: (visible: boolean) => screen.rerender(view(visible)),
+    [Symbol.asyncDispose]: () => environment.disposeAsync(),
+    sent,
+    touches,
     configure() {
       const json = new TextEncoder().encode(
         JSON.stringify({ width: 400, height: 800, orientation: "portrait" }),
@@ -213,19 +224,67 @@ const reconnect = () =>
       .click(),
   );
 
+it.each([
+  { name: "middle", button: 1, buttons: 4 },
+  { name: "right", button: 2, buttons: 2 },
+])("ignores $name-button drags and forwards the next primary drag", async ({ button, buttons }) => {
+  await using stream = await setup();
+  const { touches, configure } = stream;
+  await act(async () => configure());
+  const viewport = container.querySelector("canvas")!.parentElement!;
+  viewport.style.width = "400px";
+  viewport.style.height = "800px";
+  // Synthetic pointer events do not register an active browser pointer to capture.
+  viewport.setPointerCapture = () => {};
+  const rect = viewport.getBoundingClientRect();
+  const pointer = (type: string, button: number, buttons: number, y: number) =>
+    viewport.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        pointerId: 1,
+        pointerType: "mouse",
+        button,
+        buttons,
+        clientX: rect.left + 100,
+        clientY: rect.top + y,
+      }),
+    );
+
+  await act(async () => {
+    pointer("pointerdown", button, buttons, 600);
+    pointer("pointermove", -1, buttons, 200);
+    pointer("pointerup", button, 0, 200);
+  });
+  expect(touches).toEqual([]);
+
+  await act(async () => {
+    pointer("pointerdown", 0, 1, 600);
+    pointer("pointermove", -1, 1, 200);
+    pointer("pointerup", 0, 0, 200);
+    pointer("pointermove", -1, 0, 400);
+  });
+  expect(touches).toEqual([
+    { type: "begin", x: 0.25, y: 0.75 },
+    { type: "move", x: 0.25, y: 0.25 },
+    { type: "end", x: 0.25, y: 0.25 },
+  ]);
+});
+
 it("removes MJPEG requests while hidden and reconnects when shown", async () => {
-  const { images, view } = await setup();
+  await using stream = await setup();
+  const { images, show } = stream;
   expect(images[0]!.src).toContain("stream.mjpeg");
-  await act(async () => root.render(view(false)));
+  await show(false);
   expect(container.querySelectorAll("img")).toHaveLength(0);
   expect(images[0]!.src).toBe("");
   expect(vi.getTimerCount()).toBe(0);
-  await act(async () => root.render(view(true)));
+  await show(true);
   expect(images.at(-1)!.src).toContain("stream.mjpeg");
 });
 
 it("offers Reconnect after the shared timeout and receives a frame after retry with unchanged access", async () => {
-  const { images } = await setup();
+  await using stream = await setup();
+  const { images } = stream;
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15_000);
   });
@@ -241,7 +300,7 @@ it("offers Reconnect after the shared timeout and receives a frame after retry w
 });
 
 it("starts exactly one new stream per Reconnect press", async () => {
-  await setup();
+  await using _stream = await setup();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15_000);
   });
@@ -251,7 +310,8 @@ it("starts exactly one new stream per Reconnect press", async () => {
 });
 
 it("keeps the 3D viewer mounted across iOS video recovery and releases it when hidden", async () => {
-  const { configure, frame, view } = await setup(true);
+  await using stream = await setup(true);
+  const { configure, frame, show } = stream;
   await act(async () => configure());
   expect(viewerMounts).toBe(0);
   await act(async () => frame());
@@ -267,7 +327,40 @@ it("keeps the 3D viewer mounted across iOS video recovery and releases it when h
   });
   await act(async () => frame());
   expect(viewerMounts).toBe(1);
-  await act(async () => root.render(view(false)));
+  await show(false);
   expect(viewerUnmounts).toBe(1);
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("types a paste on the Android screen into the device and lets Ctrl+V reach the paste", async () => {
+  await using stream = await setup(true, "android");
+  const { sent } = stream;
+  const screen = container.querySelector<HTMLElement>('[role="application"]')!;
+  screen.focus();
+  expect(document.activeElement).toBe(screen);
+  const chord = new KeyboardEvent("keydown", {
+    key: "v",
+    code: "KeyV",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  screen.dispatchEvent(chord);
+  expect(chord.defaultPrevented).toBe(false);
+  const clipboardData = new DataTransfer();
+  clipboardData.setData("text/plain", "pässwörd 1");
+  const composerPastes: Array<string | null> = [];
+  const capturePaste = (event: ClipboardEvent) =>
+    composerPastes.push(pasteTextToFocusComposer(event));
+  window.addEventListener("paste", capturePaste, true);
+  using _paste = {
+    [Symbol.dispose]: () => window.removeEventListener("paste", capturePaste, true),
+  };
+  const paste = new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true });
+  screen.dispatchEvent(paste);
+  expect(paste.defaultPrevented).toBe(true);
+  expect(sent.map((message) => JSON.parse(message as string) as unknown)).toEqual([
+    { type: "text", text: "pässwörd 1" },
+  ]);
+  expect(composerPastes).toEqual([null]);
 });

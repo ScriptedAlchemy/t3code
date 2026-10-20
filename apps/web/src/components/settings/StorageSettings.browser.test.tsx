@@ -1,3 +1,4 @@
+import { act, render } from "../../../test/render";
 import { RegistryProvider } from "@effect/atom-react";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -5,9 +6,9 @@ import {
   ThreadId,
   type StorageCleanupReport,
 } from "@t3tools/contracts";
-import { act, type ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { type ReactNode } from "react";
+import { expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 
 const state = vi.hoisted(() => ({
   settings: {} as typeof DEFAULT_SERVER_SETTINGS,
@@ -41,7 +42,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
   useSettingsScope: (() => {
     const environment = {
       environmentId: "env",
-      label: "Machine",
+      label: "Build workstation",
       serverConfig: {
         settings: state.settings,
         environment: {
@@ -91,10 +92,7 @@ vi.mock(import("../ui/toast"), async (original) => {
 
 import { StorageSettingsPanel } from "./StorageSettings";
 
-let root: Root;
-let container: HTMLDivElement;
-
-beforeEach(() => {
+function setup() {
   state.settings = {
     ...DEFAULT_SERVER_SETTINGS,
     storageCleanup: {
@@ -111,32 +109,22 @@ beforeEach(() => {
   };
   state.report = null;
   state.run.mockReset();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
+}
 
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-});
-
-async function render() {
-  await act(async () =>
-    root.render(
-      <RegistryProvider>
-        <StorageSettingsPanel />
-      </RegistryProvider>,
-    ),
-  );
-  return Array.from(container.querySelectorAll("button")).find(
+const panel = () => (
+  <RegistryProvider>
+    <StorageSettingsPanel />
+  </RegistryProvider>
+);
+const deleteButton = (container: HTMLElement) =>
+  Array.from(container.querySelectorAll("button")).find(
     (button) => button.textContent === "Delete now",
   )!;
-}
 
 it.each(["machine-wide immediate", "project custom"])(
   "runs cleanup when only %s settled retention is enabled",
   async (scope) => {
+    setup();
     if (scope === "machine-wide immediate") {
       state.settings = {
         ...state.settings,
@@ -166,7 +154,8 @@ it.each(["machine-wide immediate", "project custom"])(
     };
     let complete!: (result: { _tag: "Success"; value: StorageCleanupReport }) => void;
     state.run.mockImplementation(() => new Promise((resolve) => (complete = resolve)));
-    const button = await render();
+    await using screen = await render(panel());
+    const button = deleteButton(screen.container);
 
     expect(button.disabled).toBe(false);
     await act(async () => button.click());
@@ -181,14 +170,17 @@ it.each(["machine-wide immediate", "project custom"])(
 );
 
 it("keeps cleanup disabled when settled retention and all other rules are off", async () => {
-  const button = await render();
+  setup();
+  await using screen = await render(panel());
+  const button = deleteButton(screen.container);
 
   expect(button.disabled).toBe(true);
   await act(async () => button.click());
   expect(state.run).not.toHaveBeenCalled();
 });
 
-it("shows an orphan's full path and size while keeping thread row titles unchanged", async () => {
+it("shows orphan sizes and identifies failed worktrees with one connected machine", async () => {
+  setup();
   state.settings = {
     ...state.settings,
     storageCleanup: { ...state.settings.storageCleanup, worktreeSettledAfterDays: 0 },
@@ -202,6 +194,7 @@ it("shows an orphan's full path and size while keeping thread row titles unchang
         kind: "worktree",
         outcome: "kept",
         path: "/worktrees/repo/orphan",
+        projectPath: null,
         threadId: null,
         threadTitle: null,
         reason: "No thread uses this folder, and it isn't a git worktree",
@@ -210,20 +203,22 @@ it("shows an orphan's full path and size while keeping thread row titles unchang
       },
       {
         kind: "worktree",
-        outcome: "kept",
+        outcome: "failed",
         path: "/worktrees/repo/thread-checkout",
+        projectPath: "/projects/repo",
         threadId: ThreadId.make("thread"),
         threadTitle: "Thread title",
-        reason: "Thread is running or has pending work",
+        reason: "Git index is locked. Status will resume when the index lock is removed.",
         bytes: null,
         files: null,
       },
     ],
-    counts: { removed: 0, kept: 2, failed: 0 },
+    counts: { removed: 0, kept: 1, failed: 1 },
     omittedCount: 0,
     bytesFreed: 0,
   };
-  await render();
+  await using screen = await render(panel());
+  const { container } = screen;
   const lastRun = Array.from(container.querySelectorAll("button")).find((button) =>
     button.textContent?.includes("Last run"),
   )!;
@@ -231,6 +226,23 @@ it("shows an orphan's full path and size while keeping thread row titles unchang
   const titles = Array.from(container.querySelectorAll("h3"), (heading) => heading.textContent);
   expect(titles).toContain("/worktrees/repo/orphan");
   expect(titles).toContain("thread-checkout");
+  const failedRow = page.elementLocator(
+    page.getByRole("heading", { name: "thread-checkout", exact: true }).element().parentElement!,
+  );
+  await expect.element(failedRow.getByText("Build workstation", { exact: true })).toBeVisible();
+  await expect.element(failedRow.getByText("/projects/repo", { exact: true })).toBeVisible();
+  await expect
+    .element(failedRow.getByText("/worktrees/repo/thread-checkout", { exact: true }))
+    .toBeVisible();
+  await expect.element(failedRow.getByText("Thread title", { exact: true })).toBeVisible();
+  await expect
+    .element(
+      failedRow.getByText(
+        "Git index is locked. Status will resume when the index lock is removed.",
+        { exact: true },
+      ),
+    )
+    .toBeVisible();
   expect(titles).not.toContain("/worktrees/repo/thread-checkout");
   expect(container.textContent).toContain(
     "No thread uses this folder, and it isn't a git worktree",

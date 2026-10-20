@@ -37,20 +37,14 @@ import { usePullRequestAction } from "./usePullRequestAction";
 import { annotatePullRequestDiff, reviewPosition } from "./pullRequestDiffComments";
 import { usePullRequestFileFilter } from "./usePullRequestFileFilter";
 import { isPullRequestTestFile } from "./pullRequestFileFilters";
-import {
-  StackActions,
-  useFocusEffect,
-  useNavigation,
-  useRoute,
-  type StaticScreenProps,
-} from "@react-navigation/native";
-import { useAtomRefresh } from "@effect/atom-react";
+import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { RegistryContext, useAtomRefresh } from "@effect/atom-react";
 import { pullRequestReviewKey } from "./pullRequestReviewDrafts";
 import { type PullRequestDetail, type PullRequestListEntry } from "@t3tools/contracts";
 import { PullRequestOverviewLoading } from "./PullRequestOverviewLoading";
 import { copyPullRequestLink, sharePullRequestLink } from "./pullRequestLink";
 import { pullRequestStatus } from "./pullRequestStatus";
-import { useEffect, useRef, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import {
   Linking,
   Platform,
@@ -105,8 +99,7 @@ import {
   PullRequestDiffStats,
   PullRequestReadStatus,
 } from "./PullRequestPresentation";
-import { PullRequestFiles, usePullRequestFilesContent } from "./PullRequestFiles";
-import { PullRequestSheetContent } from "./PullRequestSheetContent";
+import { usePullRequestFilesSection } from "./PullRequestFiles";
 import { PullRequestDescription } from "./PullRequestDescription";
 import { PullRequestMarkdownRepository } from "./PullRequestMarkdown";
 import {
@@ -296,7 +289,7 @@ export function PullRequestRouteScreen({ route }: StaticScreenProps<PullRequestP
   const requestedSection = useRef(section);
   const [listAnimationsReady, setListAnimationsReady] = useState(false);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
-  const filesContent = usePullRequestFilesContent({ params });
+  const filesContent = usePullRequestFilesSection(params);
   const guidesEnabled = useReviewGuidesEnabled(params);
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>(DEFAULT_ACTIVITY_FILTER);
   const activityContent = usePullRequestActivityRows(params, activityFilter);
@@ -354,13 +347,22 @@ export function PullRequestRouteScreen({ route }: StaticScreenProps<PullRequestP
   const stack = usePullRequestStack(params, pr);
   const refreshActivity = useAtomRefresh(composerPullRequests.activity(requestTarget(params)));
   const refreshGuide = useAtomRefresh(composerPullRequests.reviewGuide(requestTarget(params)));
-  const refresh = () => {
-    pullRefresh.onRefresh();
-    if (guidesEnabled) refreshGuide();
-    stack.refresh();
-    refreshActivity();
-    filesContent.refresh();
-  };
+  const registry = use(RegistryContext);
+  const refresh = () =>
+    pullRefresh.onRefresh(async (signal) => {
+      const target = requestTarget(params);
+      await composerPullRequests.invalidate
+        .run(registry, {
+          environmentId: target.environmentId,
+          input: { reference: target.input },
+        })
+        .catch(() => undefined);
+      if (signal.aborted) return;
+      if (guidesEnabled) refreshGuide();
+      stack.refresh();
+      refreshActivity();
+      filesContent.refresh();
+    });
   const jumpToFiles = () => {
     scrollViews.current.overview?.scrollToOffset({
       offset: bodyY.current + filesY.current - insets.top,
@@ -737,32 +739,6 @@ export function PullRequestRouteScreen({ route }: StaticScreenProps<PullRequestP
         />
       </View>
     </PullRequestMarkdownRepository>
-  );
-}
-
-export function PullRequestFilesRouteScreen({ route }: StaticScreenProps<PullRequestDiffParams>) {
-  const navigation = useNavigation();
-  const fileSelectionId = useRoute().key;
-  return (
-    <PullRequestSheetContent
-      title="Changed files"
-      scrollable={false}
-      subtitle={`#${route.params.number}${route.params.commit ? ` · ${route.params.commit.slice(0, 7)}` : ` · ${route.params.repository}`}`}
-    >
-      <PullRequestFiles
-        params={route.params}
-        groupByDirectory
-        onSelectFile={(path) =>
-          navigation.dispatch(
-            StackActions.popTo("PullRequestFile", {
-              ...route.params,
-              path,
-              fileSelectionId,
-            }),
-          )
-        }
-      />
-    </PullRequestSheetContent>
   );
 }
 
@@ -1213,13 +1189,9 @@ export function PullRequestFileRouteScreen({
           </View>
         ) : null}
         {result.error && result.nextCursor ? (
-          <Pressable
-            accessibilityRole="button"
-            onPress={result.refresh}
-            className="min-h-11 items-center justify-center py-2"
-          >
-            <Text className="text-sm font-t3-medium">Retry loading remaining files</Text>
-          </Pressable>
+          <View className="self-center">
+            <Button label="Retry loading remaining files" tone="text" onPress={result.refresh} />
+          </View>
         ) : null}
         {parsed.kind === "files" && parsed.notice ? (
           <Text className="px-4 py-2 text-2xs text-foreground-muted">{parsed.notice}</Text>

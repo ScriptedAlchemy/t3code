@@ -4,13 +4,38 @@ import {
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { act, type ReactNode } from "react";
-import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Atom, AtomRegistry } from "effect/reactivity";
+import type { ReactNode } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 
+import "~/index.css";
+
+import { render as renderUi } from "../../../test/render";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import type { ModelEsque } from "./providerIconUtils";
+
+const favoritesAtom = Atom.make<ReadonlyArray<{ provider: ProviderInstanceId; model: string }>>(
+  [],
+).pipe(Atom.keepAlive);
+
+vi.mock(import("~/hooks/useSettings"), async (original) => ({
+  ...(await original()),
+  useEnvironmentModelPreferences: () => ({
+    favorites: useAtomValue(favoritesAtom),
+    providerModelPreferences: {},
+  }),
+  useToggleEnvironmentModelFavorite: () => {
+    const setFavorites = useAtomSet(favoritesAtom);
+    return async (provider: ProviderInstanceId, model: string) => {
+      setFavorites((favorites) =>
+        favorites.filter((favorite) => favorite.provider !== provider || favorite.model !== model),
+      );
+    };
+  },
+}));
 
 function providerEntry(instanceId: string, driver: string) {
   const provider: ServerProvider = {
@@ -29,21 +54,10 @@ function providerEntry(instanceId: string, driver: string) {
   return deriveProviderInstanceEntries([provider])[0]!;
 }
 
-afterEach(() => {
-  document.body.replaceChildren();
-  vi.unstubAllGlobals();
-});
-
 // Returns the trigger's visible text, which is what the user reads before opening the picker.
 async function triggerText(node: ReactNode) {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () => root.render(node));
-  const text = container.querySelector("button")?.textContent ?? "";
-  await act(async () => root.unmount());
-  return text;
+  await using screen = await renderUi(node);
+  return screen.container.querySelector("button")?.textContent ?? "";
 }
 
 function renderPicker(input: {
@@ -70,7 +84,93 @@ function renderPicker(input: {
   );
 }
 
+async function click(target: Parameters<typeof userEvent.click>[0]) {
+  await userEvent.click(target);
+}
+
+async function openLegacyPicker(activeModel: string) {
+  const entry = providerEntry("codex", "codex");
+  await using stack = new AsyncDisposableStack();
+  const pickerRegistry = AtomRegistry.make();
+  stack.defer(() => pickerRegistry.dispose());
+  pickerRegistry.set(favoritesAtom, [
+    { provider: entry.instanceId, model: "current-favorite" },
+    { provider: entry.instanceId, model: "legacy-favorite" },
+  ]);
+  stack.use(
+    await renderUi(
+      <RegistryContext.Provider value={pickerRegistry!}>
+        <ProviderModelPicker
+          environmentId={null}
+          activeInstanceId={entry.instanceId}
+          model={activeModel}
+          lockedProvider={null}
+          instanceEntries={[entry]}
+          modelOptionsByInstance={
+            new Map([
+              [
+                entry.instanceId,
+                [
+                  { slug: "current", name: "Current model" },
+                  { slug: "legacy-favorite", name: "Legacy favorite", isLegacy: true },
+                  { slug: "current-favorite", name: "Current favorite" },
+                  { slug: "other-legacy", name: "Other legacy", isLegacy: true },
+                ],
+              ],
+            ])
+          }
+          onInstanceModelChange={() => {}}
+        />
+      </RegistryContext.Provider>,
+    ),
+  );
+  await click(document.querySelector("button")!);
+  await click(page.getByRole("button", { name: entry.displayName, exact: true }));
+  return stack.move();
+}
+
 describe("ProviderModelPicker", () => {
+  it("hoists legacy favorites in provider order and returns an unfavorited model to legacy", async () => {
+    await using _screen = await openLegacyPicker("current");
+    const legacyFavorite = page.getByRole("option", { name: /Legacy favorite/ });
+    const currentFavorite = page.getByRole("option", { name: /Current favorite/ });
+    const current = page.getByRole("option", { name: /Current model/ });
+    const legacySection = page.getByRole("option", { name: /Legacy models/ });
+
+    await expect.element(legacyFavorite).toBeVisible();
+    await expect.element(currentFavorite).toBeVisible();
+    await expect.element(current).toBeVisible();
+    expect(legacyFavorite.element().getBoundingClientRect().top).toBeLessThan(
+      currentFavorite.element().getBoundingClientRect().top,
+    );
+    expect(currentFavorite.element().getBoundingClientRect().top).toBeLessThan(
+      current.element().getBoundingClientRect().top,
+    );
+
+    await click(legacyFavorite.getByRole("button", { name: "Remove from favorites" }));
+    await expect.element(legacyFavorite).not.toBeInTheDocument();
+    await click(legacySection);
+    await expect.element(legacyFavorite).toBeVisible();
+    await expect.element(page.getByRole("option", { name: /Other legacy/ })).toBeVisible();
+    expect(legacyFavorite.element().getBoundingClientRect().top).toBeGreaterThan(
+      legacySection.element().getBoundingClientRect().top,
+    );
+    await expect
+      .element(legacyFavorite.getByRole("button", { name: "Add to favorites" }))
+      .toBeVisible();
+  });
+
+  it("keeps unrelated legacy models collapsed when the active model is a favorite", async () => {
+    await using _screen = await openLegacyPicker("legacy-favorite");
+
+    await expect.element(page.getByRole("option", { name: /Legacy favorite/ })).toBeVisible();
+    await expect
+      .element(page.getByRole("option", { name: /Other legacy/ }))
+      .not.toBeInTheDocument();
+    await click(page.getByRole("option", { name: /Legacy models/ }));
+    await expect.element(page.getByRole("option", { name: /Other legacy/ })).toBeVisible();
+  });
+
   it("shows a neutral aggregate value without a representative model or availability badge", async () => {
     const label = await renderPicker({
       instanceId: "codex_personal",

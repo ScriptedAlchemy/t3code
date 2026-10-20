@@ -48,8 +48,8 @@ export const makeCodexCliAuth = Effect.fn("makeCodexCliAuth")(function* (options
         type: "agent",
       },
     ]),
-    authenticate: (methodId, context) =>
-      Effect.gen(function* () {
+    authenticate: Effect.fn("CodexCliAuth.authenticate")(
+      function* (methodId, context) {
         const { client, exitCode } = yield* open;
         const completions =
           yield* Queue.unbounded<CodexSchema.V2AccountLoginCompletedNotification>();
@@ -125,18 +125,18 @@ export const makeCodexCliAuth = Effect.fn("makeCodexCliAuth")(function* (options
           });
         }
         verified = true;
-      }).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.mapError((cause) =>
-          isProviderSetupError(cause)
-            ? cause
-            : new ProviderSetupError({
-                instanceId: options.instanceId,
-                operation: "start",
-                detail: "Could not complete Codex sign-in. Try again.",
-              }),
-        ),
+      },
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.mapError((cause) =>
+        isProviderSetupError(cause)
+          ? cause
+          : new ProviderSetupError({
+              instanceId: options.instanceId,
+              operation: "start",
+              detail: "Could not complete Codex sign-in. Try again.",
+            }),
       ),
+    ),
     logout: Effect.gen(function* () {
       const { client } = yield* open;
       yield* client.request("account/logout", undefined);

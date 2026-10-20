@@ -54,102 +54,100 @@ export class ProviderAccountTransfer extends Context.Service<
   }
 >()("t3/provider/ProviderAccountTransfer") {}
 
-export const makeProviderAccountTransfer = (drivers: ReadonlyArray<ProviderDriverDefinition>) =>
-  Effect.gen(function* () {
-    const settings = yield* Settings.ServerSettingsService;
-    const providerAuth = yield* ProviderAuthService.ProviderAuthService;
-    const driversByKind = new Map(drivers.map((driver) => [driver.driverKind, driver]));
+export const makeProviderAccountTransfer = Effect.fn("ProviderAccountTransfer.make")(function* (
+  drivers: ReadonlyArray<ProviderDriverDefinition>,
+) {
+  const settings = yield* Settings.ServerSettingsService;
+  const providerAuth = yield* ProviderAuthService.ProviderAuthService;
+  const driversByKind = new Map(drivers.map((driver) => [driver.driverKind, driver]));
 
-    const defaultInstanceDrivers = new Map(
-      drivers
-        .filter((driver) => driver.metadata.hasDefaultInstance !== false)
-        .map((driver) => [defaultInstanceIdForDriver(driver.driverKind), driver.driverKind]),
-    );
-    const implicitDefaultDriver = (
-      instanceId: ProviderInstanceId,
-    ): ProviderDriverKind | undefined => defaultInstanceDrivers.get(instanceId);
+  const defaultInstanceDrivers = new Map(
+    drivers
+      .filter((driver) => driver.metadata.hasDefaultInstance !== false)
+      .map((driver) => [defaultInstanceIdForDriver(driver.driverKind), driver.driverKind]),
+  );
+  const implicitDefaultDriver = (instanceId: ProviderInstanceId): ProviderDriverKind | undefined =>
+    defaultInstanceDrivers.get(instanceId);
 
-    const requirePolicy = (instanceId: ProviderInstanceId, driver: ProviderDriverKind) => {
-      const policy = providerSettingsFieldPolicy(driver);
-      return policy === undefined
-        ? Effect.fail(
-            new ProviderAccountTransferError({ instanceId, reason: "driver-unavailable" }),
-          )
-        : Effect.succeed(policy);
-    };
+  const requirePolicy = (instanceId: ProviderInstanceId, driver: ProviderDriverKind) => {
+    const policy = providerSettingsFieldPolicy(driver);
+    return policy === undefined
+      ? Effect.fail(new ProviderAccountTransferError({ instanceId, reason: "driver-unavailable" }))
+      : Effect.succeed(policy);
+  };
 
-    const exportAccount: ProviderAccountTransfer["Service"]["exportAccount"] = Effect.fn(
-      "ProviderAccountTransfer.exportAccount",
-    )(function* (instanceId) {
-      yield* Effect.annotateCurrentSpan({ instanceId });
-      const current = yield* settings.getSettings;
-      const stored = current.providerInstances[instanceId];
-      const driver = stored?.driver ?? implicitDefaultDriver(instanceId);
-      if (driver === undefined)
-        return yield* new ProviderAccountTransferError({
-          instanceId,
-          reason: "instance-not-found",
-        });
-      const policy = yield* requirePolicy(instanceId, driver);
-      const credential = yield* providerAuth.readStaticCredential({ instanceId });
-      return toPortableAccount(instanceId, stored ?? { driver }, policy, credential);
-    });
-
-    const importAccount: ProviderAccountTransfer["Service"]["importAccount"] = Effect.fn(
-      "ProviderAccountTransfer.importAccount",
-    )(function* (account) {
-      const { instanceId } = account;
-      yield* Effect.annotateCurrentSpan({ instanceId });
-      const policy = yield* requirePolicy(instanceId, account.instance.driver);
-      const driver = driversByKind.get(account.instance.driver);
-      if (driver === undefined)
-        return yield* new ProviderAccountTransferError({
-          instanceId,
-          reason: "driver-unavailable",
-        });
-      const decodeConfig = Schema.decodeUnknownEffect(driver.configSchema);
-
-      const committed = yield* settings.reviseProviderInstance(instanceId, (current, all) =>
-        Effect.gen(function* () {
-          const merged = mergePortableAccount({
-            current,
-            implicitDriver: implicitDefaultDriver(instanceId),
-            account,
-            policy,
-          });
-          if (merged._tag === "Conflict")
-            return yield* new ProviderAccountTransferError({
-              instanceId,
-              reason: "instance-id-conflict",
-            });
-          const secondInstance =
-            merged.change === "created" &&
-            driver.metadata.supportsMultipleInstances === false &&
-            (driver.metadata.hasDefaultInstance !== false ||
-              Object.values(all.providerInstances).some(
-                (instance) => instance.driver === driver.driverKind,
-              ));
-          if (secondInstance)
-            return yield* new ProviderAccountTransferError({
-              instanceId,
-              reason: "single-instance",
-            });
-          // The decoded value is discarded: the stored form keeps fields this build doesn't know,
-          // as a hand edit would.
-          yield* decodeConfig(merged.instance.config).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAccountTransferError({ instanceId, reason: "invalid-config", cause }),
-            ),
-          );
-          return { instance: merged.instance, result: merged };
-        }),
-      );
-      return { instanceId, change: committed.result.change, omitted: committed.result.omitted };
-    });
-
-    return ProviderAccountTransfer.of({ exportAccount, importAccount });
+  const exportAccount: ProviderAccountTransfer["Service"]["exportAccount"] = Effect.fn(
+    "ProviderAccountTransfer.exportAccount",
+  )(function* (instanceId) {
+    yield* Effect.annotateCurrentSpan({ instanceId });
+    const current = yield* settings.getSettings;
+    const stored = current.providerInstances[instanceId];
+    const driver = stored?.driver ?? implicitDefaultDriver(instanceId);
+    if (driver === undefined)
+      return yield* new ProviderAccountTransferError({
+        instanceId,
+        reason: "instance-not-found",
+      });
+    const policy = yield* requirePolicy(instanceId, driver);
+    const credential = yield* providerAuth.readStaticCredential({ instanceId });
+    return toPortableAccount(instanceId, stored ?? { driver }, policy, credential);
   });
+
+  const importAccount: ProviderAccountTransfer["Service"]["importAccount"] = Effect.fn(
+    "ProviderAccountTransfer.importAccount",
+  )(function* (account) {
+    const { instanceId } = account;
+    yield* Effect.annotateCurrentSpan({ instanceId });
+    const policy = yield* requirePolicy(instanceId, account.instance.driver);
+    const driver = driversByKind.get(account.instance.driver);
+    if (driver === undefined)
+      return yield* new ProviderAccountTransferError({
+        instanceId,
+        reason: "driver-unavailable",
+      });
+    const decodeConfig = Schema.decodeUnknownEffect(driver.configSchema);
+
+    const committed = yield* settings.reviseProviderInstance(instanceId, (current, all) =>
+      Effect.gen(function* () {
+        const merged = mergePortableAccount({
+          current,
+          implicitDriver: implicitDefaultDriver(instanceId),
+          account,
+          policy,
+        });
+        if (merged._tag === "Conflict")
+          return yield* new ProviderAccountTransferError({
+            instanceId,
+            reason: "instance-id-conflict",
+          });
+        const secondInstance =
+          merged.change === "created" &&
+          driver.metadata.supportsMultipleInstances === false &&
+          (driver.metadata.hasDefaultInstance !== false ||
+            Object.values(all.providerInstances).some(
+              (instance) => instance.driver === driver.driverKind,
+            ));
+        if (secondInstance)
+          return yield* new ProviderAccountTransferError({
+            instanceId,
+            reason: "single-instance",
+          });
+        // The decoded value is discarded: the stored form keeps fields this build doesn't know,
+        // as a hand edit would.
+        yield* decodeConfig(merged.instance.config).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAccountTransferError({ instanceId, reason: "invalid-config", cause }),
+          ),
+        );
+        return { instance: merged.instance, result: merged };
+      }),
+    );
+    return { instanceId, change: committed.result.change, omitted: committed.result.omitted };
+  });
+
+  return ProviderAccountTransfer.of({ exportAccount, importAccount });
+});
 
 export const layer = Layer.effect(
   ProviderAccountTransfer,

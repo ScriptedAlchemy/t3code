@@ -26,6 +26,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import * as CodexUsageHistory from "../../usage/CodexUsageHistory.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -66,6 +67,7 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
     }),
   ),
   Layer.provideMerge(ServerSettings.layerTest()),
+  Layer.provideMerge(Layer.mock(CodexUsageHistory.CodexUsageHistory)({})),
   Layer.provideMerge(ModelManifest.layerTest),
   Layer.provideMerge(ResetCreditCoordinator.layerTest),
   Layer.provideMerge(
@@ -98,6 +100,21 @@ const noSpawn = ChildProcessSpawner.make(() =>
 const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 it.layer(layerTest)("CodexDriver", (it) => {
+  it.effect("reports a disabled managed account as disabled", () =>
+    Effect.gen(function* () {
+      const instance = yield* CodexDriver.create({
+        instanceId: ProviderInstanceId.make("disabled-managed-account"),
+        displayName: "Disabled account",
+        enabled: false,
+        environment: [],
+        config: { ...CodexDriver.defaultConfig(), setupMode: "managed" },
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+
+      expect((yield* instance.snapshot.getSnapshot).enabled).toBe(false);
+      expect((yield* instance.snapshot.refresh).enabled).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect.skipIf(windowsHost)(
     "guards native account consumers and refreshes after cancellation",
     () =>
@@ -703,7 +720,9 @@ it.layer(layerTest)("CodexDriver", (it) => {
           const beforeRefresh = acquisitions;
           const snapshot = yield* instance.snapshot.refresh;
           expect(snapshot.installed).toBe(false);
-          expect(acquisitions - beforeRefresh).toBe(fixture.acquires);
+          // An explicit refresh resolves maintenance fresh and then probes, so the
+          // managed executable is acquired once for each.
+          expect(acquisitions - beforeRefresh).toBe(fixture.acquires * 2);
           expect(leases).toBe(0);
           yield* instance.textGeneration
             .generateThreadTitle({

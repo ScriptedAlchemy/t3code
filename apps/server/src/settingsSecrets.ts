@@ -3,6 +3,7 @@ import {
   ClaudeSettings,
   CodexSettings,
   type ProviderDriverKind,
+  EasDeviceHostConfig,
   type ServerSettings,
   UsageLimitSourceConfig,
   machineLocalSettingsFields,
@@ -51,6 +52,7 @@ export const providerSettingsFieldPolicy = (
   driver: ProviderDriverKind,
 ): ProviderSettingsFieldPolicy | undefined => providerFieldPolicies.get(driver);
 const usageLimitSecretFields = secretSettingsFields(UsageLimitSourceConfig);
+const easDeviceHostSecretFields = secretSettingsFields(EasDeviceHostConfig);
 const encode = (value: string) => Buffer.from(value, "utf8").toString("base64url");
 
 export interface SettingsSecret {
@@ -162,5 +164,16 @@ export function mapSettingsSecrets(
     ]),
   ) as ServerSettings["usageLimitSources"];
 
-  return { ...settings, providerInstances, sourceControlHosts, usageLimitSources };
+  const easDeviceHosts = settings.easDeviceHosts.map(
+    (host) =>
+      mapFields(
+        host,
+        easDeviceHostSecretFields,
+        (field, serverHost) =>
+          `device-host-${encode(host.id)}-${encode(field)}` +
+          (serverHost === null ? "" : `-${encode(serverHost)}`),
+      ) as EasDeviceHostConfig,
+  );
+
+  return { ...settings, providerInstances, sourceControlHosts, usageLimitSources, easDeviceHosts };
 }

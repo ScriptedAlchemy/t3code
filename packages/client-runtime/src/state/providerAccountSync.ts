@@ -129,96 +129,97 @@ function cellFromFailure(
 // A failed decode echoes the payload, and the payload is plaintext.
 const untraced = Effect.withTracerEnabled(false);
 
-const syncAccounts = (request: ProviderAccountSyncRequest) =>
-  Effect.gen(function* () {
-    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
-    const source = request.sourceEnvironmentId;
-    const destinations = [...new Set(request.destinationEnvironmentIds)];
+const syncAccounts = Effect.fn("providerAccountSync.syncAccounts")(function* (
+  request: ProviderAccountSyncRequest,
+) {
+  const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+  const source = request.sourceEnvironmentId;
+  const destinations = [...new Set(request.destinationEnvironmentIds)];
 
-    const gate = (environmentId: EnvironmentId) =>
-      registry.run(environmentId, getInitialServerConfig()).pipe(
-        Effect.map((config): EnvironmentBlockReason | null =>
-          serverSupportsAccountTransfer(config) ? null : "update-required",
-        ),
-        Effect.catch(() => Effect.succeed<EnvironmentBlockReason | null>("not-connected")),
-      );
-    const sourceBlock = yield* gate(source);
-    const destinationBlocks = new Map(
-      yield* Effect.forEach(
-        destinations,
-        (id) =>
-          id === source
-            ? Effect.succeed([id, "same-environment"] as const)
-            : gate(id).pipe(Effect.map((block) => [id, block] as const)),
-        { concurrency: "unbounded" },
+  const gate = (environmentId: EnvironmentId) =>
+    registry.run(environmentId, getInitialServerConfig()).pipe(
+      Effect.map((config): EnvironmentBlockReason | null =>
+        serverSupportsAccountTransfer(config) ? null : "update-required",
       ),
+      Effect.catch(() => Effect.succeed<EnvironmentBlockReason | null>("not-connected")),
     );
+  const sourceBlock = yield* gate(source);
+  const destinationBlocks = new Map(
+    yield* Effect.forEach(
+      destinations,
+      (id) =>
+        id === source
+          ? Effect.succeed([id, "same-environment"] as const)
+          : gate(id).pipe(Effect.map((block) => [id, block] as const)),
+      { concurrency: "unbounded" },
+    ),
+  );
 
-    const syncAccount = (instanceId: ProviderInstanceId) =>
-      Effect.gen(function* () {
-        const key = (destinationEnvironmentId: EnvironmentId): CellKey => ({
-          instanceId,
-          destinationEnvironmentId,
-        });
-        const cells = new Map<EnvironmentId, ProviderAccountSyncCell>();
-        for (const id of destinations) {
-          const reason = destinationBlocks.get(id) ?? null;
-          if (reason !== null)
-            cells.set(id, { ...key(id), status: "skipped", end: "destination", reason });
-          else if (sourceBlock !== null)
-            cells.set(id, { ...key(id), status: "skipped", end: "source", reason: sourceBlock });
-        }
-        const open = destinations.filter((id) => !cells.has(id));
-        if (open.length > 0) {
-          const exported = yield* Effect.exit(
-            registry.run(
-              source,
-              requestGuarded(WS_METHODS.providerAccountExport, { instanceId }).pipe(untraced),
-            ),
-          );
-          if (Exit.isFailure(exported)) {
-            for (const id of open)
-              cells.set(id, cellFromFailure(key(id), "export", exported.cause));
-          } else {
-            const account = exported.value;
-            yield* Effect.forEach(
-              open,
-              (id) =>
-                Effect.exit(
-                  registry.run(
-                    id,
-                    requestGuarded(WS_METHODS.providerAccountImport, { account }).pipe(untraced),
-                  ),
-                ).pipe(
-                  Effect.map((exit) => {
-                    cells.set(
-                      id,
-                      Exit.isSuccess(exit)
-                        ? {
-                            ...key(id),
-                            status: "synced",
-                            change: exit.value.change,
-                            omitted: exit.value.omitted,
-                          }
-                        : cellFromFailure(key(id), "import", exit.cause),
-                    );
-                  }),
-                ),
-              { concurrency: "unbounded", discard: true },
-            );
-          }
-        }
-        return destinations.flatMap((id) => {
-          const cell = cells.get(id);
-          return cell === undefined ? [] : [cell];
-        });
-      });
-
-    const rows = yield* Effect.forEach(request.instanceIds, syncAccount, {
-      concurrency: ACCOUNT_CONCURRENCY,
+  const syncAccount = Effect.fn("providerAccountSync.syncAccount")(function* (
+    instanceId: ProviderInstanceId,
+  ) {
+    const key = (destinationEnvironmentId: EnvironmentId): CellKey => ({
+      instanceId,
+      destinationEnvironmentId,
     });
-    return { cells: rows.flat() } satisfies ProviderAccountSyncReport;
+    const cells = new Map<EnvironmentId, ProviderAccountSyncCell>();
+    for (const id of destinations) {
+      const reason = destinationBlocks.get(id) ?? null;
+      if (reason !== null)
+        cells.set(id, { ...key(id), status: "skipped", end: "destination", reason });
+      else if (sourceBlock !== null)
+        cells.set(id, { ...key(id), status: "skipped", end: "source", reason: sourceBlock });
+    }
+    const open = destinations.filter((id) => !cells.has(id));
+    if (open.length > 0) {
+      const exported = yield* Effect.exit(
+        registry.run(
+          source,
+          requestGuarded(WS_METHODS.providerAccountExport, { instanceId }).pipe(untraced),
+        ),
+      );
+      if (Exit.isFailure(exported)) {
+        for (const id of open) cells.set(id, cellFromFailure(key(id), "export", exported.cause));
+      } else {
+        const account = exported.value;
+        yield* Effect.forEach(
+          open,
+          (id) =>
+            Effect.exit(
+              registry.run(
+                id,
+                requestGuarded(WS_METHODS.providerAccountImport, { account }).pipe(untraced),
+              ),
+            ).pipe(
+              Effect.map((exit) => {
+                cells.set(
+                  id,
+                  Exit.isSuccess(exit)
+                    ? {
+                        ...key(id),
+                        status: "synced",
+                        change: exit.value.change,
+                        omitted: exit.value.omitted,
+                      }
+                    : cellFromFailure(key(id), "import", exit.cause),
+                );
+              }),
+            ),
+          { concurrency: "unbounded", discard: true },
+        );
+      }
+    }
+    return destinations.flatMap((id) => {
+      const cell = cells.get(id);
+      return cell === undefined ? [] : [cell];
+    });
   });
+
+  const rows = yield* Effect.forEach(request.instanceIds, syncAccount, {
+    concurrency: ACCOUNT_CONCURRENCY,
+  });
+  return { cells: rows.flat() } satisfies ProviderAccountSyncReport;
+});
 
 export function createProviderAccountSyncCommand<E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry, E>,
