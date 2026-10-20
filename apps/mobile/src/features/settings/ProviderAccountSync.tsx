@@ -125,12 +125,8 @@ export function ProviderAccountSync({
 }) {
   const { environments } = useEnvironments();
   const canExport = useAtomValue(providerAccountSync.canExportAtom(environment.environmentId));
-  const source = useAccountSyncEnvironment(environment, canExport);
-  const sync = useAtomCommand(providerAccountSync, { reportFailure: false });
   const [open, setOpen] = useState(false);
-  const [chosen, setChosen] = useState<ReadonlySet<EnvironmentId>>(() => new Set());
   const [running, setRunning] = useState(false);
-  const [report, setReport] = useState<ProviderAccountSyncReport | null>(null);
 
   const others = environments.filter((entry) => entry.environmentId !== environment.environmentId);
   if (
@@ -140,11 +136,52 @@ export function ProviderAccountSync({
   )
     return null;
 
-  const close = () => {
-    setOpen(false);
-    setReport(null);
-    setChosen(new Set());
-  };
+  return (
+    <>
+      <SettingsActionRow
+        icon="arrow.left.arrow.right"
+        label="Sync to…"
+        description="Copy this account's settings to another device."
+        disabled={running}
+        onPress={() => setOpen((current) => !current)}
+      />
+      {open ? (
+        <SyncPanel
+          environment={environment}
+          others={others}
+          provider={provider}
+          accountLabel={accountLabel}
+          running={running}
+          setRunning={setRunning}
+          onClose={() => setOpen(false)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+// Mounted only while open, so a closed row never subscribes to the environment's settings.
+function SyncPanel({
+  environment,
+  others,
+  provider,
+  accountLabel,
+  running,
+  setRunning,
+  onClose,
+}: {
+  readonly environment: SettingsTarget;
+  readonly others: ReadonlyArray<EnvironmentPresentation>;
+  readonly provider: ServerProvider;
+  readonly accountLabel: string;
+  readonly running: boolean;
+  readonly setRunning: (running: boolean) => void;
+  readonly onClose: () => void;
+}) {
+  const source = useAccountSyncEnvironment(environment, true);
+  const sync = useAtomCommand(providerAccountSync, { reportFailure: false });
+  const [chosen, setChosen] = useState<ReadonlySet<EnvironmentId>>(() => new Set());
+  const [report, setReport] = useState<ProviderAccountSyncReport | null>(null);
   const runSync = async () => {
     setRunning(true);
     const result = await sync({
@@ -158,76 +195,65 @@ export function ProviderAccountSync({
   };
 
   return (
-    <>
-      <SettingsActionRow
-        icon="arrow.left.arrow.right"
-        label="Sync to…"
-        description="Copy this account's settings to another device."
-        disabled={running}
-        onPress={() => (open ? close() : setOpen(true))}
-      />
-      {open ? (
-        <View>
-          <Text textRole="footnote" className="px-4 py-3 text-foreground-muted">
-            {report === null
-              ? `Settings and API keys are copied from ${environment.label}. Sign-ins are not: each device signs in on its own. Paths stay on ${environment.label}.`
-              : "Sync again at any time; it updates the copies without duplicating them."}
-          </Text>
-          {report === null ? (
-            <>
-              {others.map((destination) => (
-                <DestinationRow
-                  key={destination.environmentId}
-                  source={source}
-                  destination={destination}
-                  provider={provider}
-                  checked={chosen.has(destination.environmentId)}
-                  disabled={running}
-                  onChange={(environmentId, checked) =>
-                    setChosen((current) => {
-                      const next = new Set(current);
-                      if (checked) next.add(environmentId);
-                      else next.delete(environmentId);
-                      return next;
-                    })
-                  }
-                />
-              ))}
-              <SettingsActionRow
-                icon="arrow.right"
-                label={running ? "Syncing…" : "Sync"}
-                disabled={chosen.size === 0}
-                loading={running}
-                onPress={() => void runSync()}
-              />
-              <SettingsActionRow icon="xmark" label="Cancel" disabled={running} onPress={close} />
-            </>
-          ) : (
-            <>
-              {report.cells.map((cell) => (
-                <ResultRow
-                  key={`${cell.instanceId}:${cell.destinationEnvironmentId}`}
-                  cell={cell}
-                  accountLabel={accountLabel}
-                  source={environment}
-                  destination={others.find(
-                    (entry) => entry.environmentId === cell.destinationEnvironmentId,
-                  )}
-                />
-              ))}
-              {report.cells.some((cell) => cell.status === "failed") ? (
-                <SettingsActionRow
-                  icon="arrow.clockwise"
-                  label="Retry"
-                  loading={running}
-                  onPress={() => void runSync()}
-                />
-              ) : null}
-              <SettingsActionRow icon="checkmark" label="Done" onPress={close} />
-            </>
-          )}
-        </View>
-      ) : null}
-    </>
+    <View>
+      <Text textRole="footnote" className="px-4 py-3 text-foreground-muted">
+        {report === null
+          ? `Settings and API keys are copied from ${environment.label}. Sign-ins are not: each device signs in on its own. Paths stay on ${environment.label}.`
+          : "Sync again at any time; it updates the copies without duplicating them."}
+      </Text>
+      {report === null ? (
+        <>
+          {others.map((destination) => (
+            <DestinationRow
+              key={destination.environmentId}
+              source={source}
+              destination={destination}
+              provider={provider}
+              checked={chosen.has(destination.environmentId)}
+              disabled={running}
+              onChange={(environmentId, checked) =>
+                setChosen((current) => {
+                  const next = new Set(current);
+                  if (checked) next.add(environmentId);
+                  else next.delete(environmentId);
+                  return next;
+                })
+              }
+            />
+          ))}
+          <SettingsActionRow
+            icon="arrow.right"
+            label={running ? "Syncing…" : "Sync"}
+            disabled={chosen.size === 0}
+            loading={running}
+            onPress={() => void runSync()}
+          />
+          <SettingsActionRow icon="xmark" label="Cancel" disabled={running} onPress={onClose} />
+        </>
+      ) : (
+        <>
+          {report.cells.map((cell) => (
+            <ResultRow
+              key={`${cell.instanceId}:${cell.destinationEnvironmentId}`}
+              cell={cell}
+              accountLabel={accountLabel}
+              source={environment}
+              destination={others.find(
+                (entry) => entry.environmentId === cell.destinationEnvironmentId,
+              )}
+            />
+          ))}
+          {report.cells.some((cell) => cell.status === "failed") ? (
+            <SettingsActionRow
+              icon="arrow.clockwise"
+              label="Retry"
+              loading={running}
+              onPress={() => void runSync()}
+            />
+          ) : null}
+          <SettingsActionRow icon="checkmark" label="Done" onPress={onClose} />
+        </>
+      )}
+    </View>
   );
 }
