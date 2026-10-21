@@ -193,7 +193,7 @@ const isSourceControlProviderError = Schema.is(SourceControlProviderError);
  * into sustained pressure. Backing off per branch keeps the retry rate below
  * the healthy rate once a branch has failed more than a couple of times.
  */
-export function prLookupFailureTtl(consecutiveFailures: number): Duration.Duration {
+function prLookupFailureTtl(consecutiveFailures: number): Duration.Duration {
   const exponent = Math.max(0, consecutiveFailures - 1);
   const backoffMs = Duration.toMillis(PR_LOOKUP_FAILURE_BASE_TTL) * Math.pow(2, exponent);
   return Duration.min(Duration.millis(backoffMs), PR_LOOKUP_FAILURE_MAX_TTL);
@@ -863,7 +863,10 @@ export const make = Effect.gen(function* () {
             ? [["Recent commit subjects from this repository:", ...subjects].join("\n")]
             : []),
           ...(agentInstructions ? [`Local AGENTS.md:\n${agentInstructions}`] : []),
-          ...(claudeInstructions ? [`Local CLAUDE.md:\n${claudeInstructions}`] : []),
+          // CLAUDE.md is often a symlink or copy of AGENTS.md; skip the duplicate.
+          ...(claudeInstructions && claudeInstructions !== agentInstructions
+            ? [`Local CLAUDE.md:\n${claudeInstructions}`]
+            : []),
         ].join("\n\n");
         if (!examples) {
           return repositoryConventionsTextGenerationPolicy;

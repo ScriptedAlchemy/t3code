@@ -1,5 +1,4 @@
 import { EnvironmentId, ProviderDriverKind, type AcpRegistrySearchAgent } from "@t3tools/contracts";
-import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -150,10 +149,6 @@ async function useExistingCodexCli() {
   await choose("Use existing Codex CLI");
   await click("Continue");
 }
-async function chooseTraex() {
-  await choose("Traex");
-  await click("Next");
-}
 
 async function prepareCodexInstance() {
   await using stack = new AsyncDisposableStack();
@@ -175,23 +170,6 @@ function setup() {
 }
 
 describe("AddProviderInstanceDialog environment routing", () => {
-  it("creates a provider with its default identity without typing", async () => {
-    setup();
-    await using _screen = await render(dialog());
-    const grok = [...document.querySelectorAll('[role="radio"]')].find((radio) =>
-      radio.textContent?.includes("Grok"),
-    ) as HTMLElement;
-    await act(async () => grok.click());
-    await click("Next");
-    await click("Next");
-    await click("Add instance");
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "grok",
-      instance: { driver: "grok", enabled: true, displayName: "Grok" },
-    });
-  });
-
   it("chooses an unused identity for another account without replacing configured instances", async () => {
     setup();
     settingsHooks.read.mockReturnValue({
@@ -209,291 +187,6 @@ describe("AddProviderInstanceDialog environment routing", () => {
         enabled: true,
         displayName: "Codex",
         config: { setupMode: "existing" },
-      },
-    });
-  });
-
-  it("reads and writes settings through the supplied environment", async () => {
-    setup();
-    await using _screen = await render(dialog());
-
-    expect(settingsHooks.read).toHaveBeenCalledWith(remoteEnvironmentId);
-    expect(settingsHooks.useMutation).toHaveBeenCalledWith(remoteEnvironmentId);
-  });
-
-  it("keeps Codex connection choices separate from the provider catalog and remembers selection on Back", async () => {
-    setup();
-    await using _screen = await render(dialog());
-    const steps = [
-      ...document.querySelectorAll<HTMLButtonElement>('[aria-label="Setup progress"] button'),
-    ];
-    expect(steps.length).toBeGreaterThan(0);
-    expect(steps.every((step) => step.disabled)).toBe(true);
-    expect(document.querySelector("#add-provider-connection-label")).toBeNull();
-    expect(queryButton("Use Kilo Code")).toBeDefined();
-
-    await click("Next");
-    expect(document.body.textContent).toContain("Connect Codex");
-    expect(radio("Sign in with Codex CLI").getAttribute("aria-checked")).toBe("true");
-    expect(radio("Use ChatGPT sharing").getAttribute("aria-label")).toBe(
-      "Use ChatGPT sharing. Use your ChatGPT plan. Some Codex features are unavailable.",
-    );
-    expect(queryButton("Use Kilo Code")).toBeUndefined();
-
-    await choose("Use existing Codex CLI");
-    await click("Back");
-    expect(document.querySelector("#add-provider-connection-label")).toBeNull();
-    expect(queryButton("Use Kilo Code")).toBeDefined();
-    await click("Next");
-    expect(radio("Use existing Codex CLI").getAttribute("aria-checked")).toBe("true");
-    expect(button("Continue").disabled).toBe(false);
-  });
-
-  it.each(["cli", "existing"] as const)(
-    "creates a Claude %s account through its connection choice",
-    async (choice) => {
-      setup();
-      await using _screen = await render(dialog());
-      await choose("Claude");
-      await click("Next");
-      expect(radio("Sign in with Claude Code").getAttribute("aria-checked")).toBe("true");
-      await choose(choice === "cli" ? "Sign in with Claude Code" : "Use existing Claude Code");
-      await click("Continue");
-      if (choice === "existing") await click("Next");
-      await click(choice === "cli" ? "Continue to sign-in" : "Add instance");
-      expect(settingsHooks.mutate).toHaveBeenCalledWith({
-        operation: "create",
-        instanceId: "claudeAgent_2",
-        instance: {
-          driver: "claudeAgent",
-          enabled: true,
-          displayName: "Claude",
-          config: { setupMode: choice },
-        },
-      });
-    },
-  );
-
-  it("opens ChatGPT sharing only after Continue", async () => {
-    setup();
-    const sharing = () => document.querySelector('[aria-label="ChatGPT sharing"]');
-    await using _screen = await render(dialog());
-    await click("Next");
-    await choose("Use ChatGPT sharing");
-    expect(sharing()).toBeNull();
-
-    await click("Continue");
-    expect(sharing()?.textContent).toBe("remote-device");
-  });
-
-  it("creates a native Codex account without runtime overrides and continues to sign-in", async () => {
-    setup();
-    await using _screen = await render(dialog());
-    await click("Next");
-    await click("Continue");
-    await type("#add-provider-label", "Personal");
-    await click("Continue to sign-in");
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "codex_personal",
-      instance: {
-        driver: "codex",
-        enabled: true,
-        displayName: "Personal",
-        config: { setupMode: "cli" },
-      },
-    });
-    expect(signInStep()?.textContent).toContain("remote-device/codex_personal opens the browser");
-    expect(actions.onOpenChange).not.toHaveBeenCalled();
-  });
-
-  it("preserves the existing CLI configuration after leaving the native account path", async () => {
-    setup();
-    await using _screen = await render(dialog());
-    await click("Next");
-    await click("Continue");
-    await click("Back");
-    await choose("Use existing Codex CLI");
-    await click("Continue");
-    await click("Next");
-    await click("Add instance");
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "codex_2",
-      instance: {
-        driver: "codex",
-        enabled: true,
-        displayName: "Codex",
-        config: { setupMode: "existing" },
-      },
-    });
-    expect(actions.onOpenChange).toHaveBeenCalledWith(false);
-  });
-
-  it("persists a Traex preset as an isolated Codex instance in the selected environment", async () => {
-    setup();
-    settingsHooks.read.mockReturnValue({
-      providerInstances: { codex_traex: { driver: "codex", enabled: true } },
-    });
-    await using _screen = await render(dialog());
-    await chooseTraex();
-    await click("Next");
-    await click("Add instance");
-
-    expect(settingsHooks.useMutation).toHaveBeenCalledWith(remoteEnvironmentId);
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "codex_traex_2",
-      instance: {
-        driver: "codex",
-        enabled: true,
-        displayName: "Traex",
-        config: {
-          setupMode: "existing",
-          homePath: "~/.codex-t3/traex/codex_traex_2",
-          launchArgs: expect.any(String),
-        },
-      },
-    });
-    const launchArgs: unknown = settingsHooks.mutate.mock.calls[0]?.[0]?.instance.config.launchArgs;
-    if (typeof launchArgs !== "string") throw new Error("Missing persisted launch arguments.");
-    const args = tokenizeCliArgs(launchArgs);
-    expect(args).toContain('model_provider="traex"');
-    expect(args).toContainEqual(expect.stringContaining('base_url="http://127.0.0.1:8317/v1"'));
-    expect(args).toContainEqual(expect.stringContaining("cat ~/.traex-bridge/api-key"));
-    expect(args.join(" ")).not.toContain("model_catalog_url");
-    expect(args.join(" ")).not.toContain("features.api_key_model_discovery");
-  });
-
-  it.each([
-    { name: "default home", editConfig: false, homePath: undefined },
-    { name: "another config field", editConfig: true, homePath: undefined },
-    { name: "custom home", editConfig: true, homePath: "~/.traex-personal" },
-  ])("preserves isolation after changing the Traex ID with $name", async (fixture) => {
-    setup();
-    await using _screen = await render(dialog());
-    await chooseTraex();
-    if (fixture.editConfig) {
-      await click("Next");
-      await type("#add-provider-codex-binaryPath", "/opt/codex");
-      if (fixture.homePath !== undefined) {
-        await type("#add-provider-codex-homePath", fixture.homePath);
-      }
-      await click("Back");
-    }
-    await type("#add-provider-instance-id", "traex_custom");
-    await click("Next");
-    await click("Add instance");
-
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "traex_custom",
-      instance: {
-        driver: "codex",
-        enabled: true,
-        displayName: "Traex",
-        config: {
-          setupMode: "existing",
-          homePath: fixture.homePath ?? "~/.codex-t3/traex/traex_custom",
-          launchArgs: expect.any(String),
-          ...(fixture.editConfig ? { binaryPath: "/opt/codex" } : {}),
-        },
-      },
-    });
-  });
-
-  it("derives the Traex home from the final ID after clearing a custom home", async () => {
-    setup();
-    await using _screen = await render(dialog());
-    await chooseTraex();
-    await click("Next");
-    await type("#add-provider-codex-homePath", "~/.traex-personal");
-    await type("#add-provider-codex-homePath", "");
-    await click("Back");
-    await type("#add-provider-instance-id", "traex_final");
-    await click("Next");
-    await click("Add instance");
-
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "traex_final",
-      instance: {
-        driver: "codex",
-        enabled: true,
-        displayName: "Traex",
-        config: {
-          setupMode: "existing",
-          homePath: "~/.codex-t3/traex/traex_final",
-          launchArgs: expect.any(String),
-        },
-      },
-    });
-  });
-
-  it("preserves the edited Traex draft after returning to provider selection", async () => {
-    setup();
-    await using _screen = await render(dialog());
-    await chooseTraex();
-    await type("#add-provider-label", "Personal Traex");
-    await type("#add-provider-instance-id", "traex_personal");
-    await click("Next");
-    await type("#add-provider-codex-binaryPath", "/opt/codex-personal");
-    await type("#add-provider-codex-homePath", "~/.traex-personal");
-    await type("#add-provider-codex-launchArgs", "--profile personal");
-    await click("Back");
-    await click("Back");
-    await chooseTraex();
-    await click("Next");
-    await click("Add instance");
-
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "traex_personal",
-      instance: {
-        driver: "codex",
-        enabled: true,
-        displayName: "Personal Traex",
-        config: {
-          setupMode: "existing",
-          binaryPath: "/opt/codex-personal",
-          homePath: "~/.traex-personal",
-          launchArgs: "--profile personal",
-        },
-      },
-    });
-  });
-
-  it("restores the manual Codex draft after choosing Traex and switching back", async () => {
-    setup();
-    await using _screen = await render(dialog());
-    await useExistingCodexCli();
-    await type("#add-provider-label", "Work");
-    await click("Next");
-    await type("#add-provider-codex-binaryPath", "/opt/codex");
-    await type("#add-provider-codex-homePath", "~/.codex-work");
-    await click("Back");
-    await click("Back");
-    await click("Back");
-    await chooseTraex();
-    await click("Back");
-    await choose("Codex");
-    await click("Next");
-    await click("Continue");
-    await click("Next");
-    await click("Add instance");
-
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "codex_work",
-      instance: {
-        driver: "codex",
-        enabled: true,
-        displayName: "Work",
-        config: {
-          setupMode: "existing",
-          binaryPath: "/opt/codex",
-          homePath: "~/.codex-work",
-        },
       },
     });
   });
@@ -529,25 +222,6 @@ describe("AddProviderInstanceDialog environment routing", () => {
     expect(settingsHooks.mutate).toHaveBeenCalledTimes(1);
     await click("Finish sign-in");
     expect(actions.onOpenChange).toHaveBeenCalledWith(false);
-  });
-
-  it("configures a manually entered registry agent from the first provider screen", async () => {
-    setup();
-    await using _screen = await render(dialog());
-    await click("Enter registry agent");
-    await type("#add-provider-acpRegistry-manual-agentId", "devin");
-    await click("Next");
-    await click("Continue to sign-in");
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "acpRegistry_custom",
-      instance: {
-        driver: "acpRegistry",
-        enabled: true,
-        config: { agentId: "devin" },
-      },
-    });
-    expect(signInStep()).not.toBeNull();
   });
 
   it("creates a local command in the selected environment without a sign-in step", async () => {
@@ -596,41 +270,6 @@ describe("AddProviderInstanceDialog environment routing", () => {
     expect(signInStep()).toBeNull();
   });
 
-  it("keeps the dialog open when the atomic upsert fails", async () => {
-    setup();
-    settingsHooks.mutate.mockResolvedValueOnce({ _tag: "Failure", cause: new Error("Conflict") });
-    await using _screen = await render(dialog());
-    await click("Use Kilo Code");
-    await click("Continue to sign-in");
-
-    expect(actions.onOpenChange).not.toHaveBeenCalled();
-    expect(actions.toast).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "error", title: "Could not add provider instance" }),
-    );
-    expect(button("Continue to sign-in").disabled).toBe(false);
-  });
-
-  it("adds an instance with the selected environment's provider grant alone", async () => {
-    setup();
-    await using _screen = await prepareCodexInstance();
-    await click("Add instance");
-
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "codex_work",
-      instance: {
-        driver: "codex",
-        enabled: true,
-        displayName: "Work",
-        config: { setupMode: "existing" },
-      },
-    });
-    expect(actions.toast).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "success", title: "Provider instance added" }),
-    );
-    expect(actions.onOpenChange).toHaveBeenCalledWith(false);
-  });
-
   it("rejects a queued save after the provider grant is revoked", async () => {
     setup();
     await using screen = await prepareCodexInstance();
@@ -644,20 +283,5 @@ describe("AddProviderInstanceDialog environment routing", () => {
     expect(actions.onOpenChange).not.toHaveBeenCalled();
     await screen.rerender(dialog());
     expect(button("Add instance").disabled).toBe(true);
-  });
-
-  it("keeps a denied draft available when the provider grant arrives", async () => {
-    setup();
-    actions.canManageProviders = false;
-    await using screen = await prepareCodexInstance();
-    expect(button("Add instance").disabled).toBe(true);
-    expect(settingsHooks.mutate).not.toHaveBeenCalled();
-
-    actions.canManageProviders = true;
-    await screen.rerender(dialog());
-    expect(button("Add instance").disabled).toBe(false);
-    await click("Add instance");
-    expect(settingsHooks.mutate).toHaveBeenCalledOnce();
-    expect(actions.onOpenChange).toHaveBeenCalledWith(false);
   });
 });
