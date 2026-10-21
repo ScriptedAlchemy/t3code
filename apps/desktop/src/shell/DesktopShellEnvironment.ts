@@ -254,7 +254,8 @@ const runCommandOutput = Effect.fn("desktop.shellEnvironment.runCommandOutput")(
           shell: input.shell ?? false,
           stdin: "ignore",
           stdout: "pipe",
-          stderr: "pipe",
+          // Startup scripts can fill an unread stderr pipe before emitting PATH.
+          stderr: "ignore",
           killSignal: "SIGTERM",
           forceKillAfter: PROCESS_TERMINATE_GRACE,
         }),
@@ -396,7 +397,7 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
   function* (
     config: ShellEnvironmentConfig,
   ): Effect.fn.Return<
-    void,
+    boolean,
     never,
     ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
   > {
@@ -418,6 +419,15 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
     const mergedPath = mergePaths(config.platform, [
       trimNonEmpty(shellEnvironment.PATH).pipe(Option.orElse(() => launchctlPath)),
       readEnvPath(config.env),
+      // GUI launchers may have only system paths when shell startup fails.
+      ...(!shellEnvironment.PATH && Option.isNone(launchctlPath)
+        ? [
+            trimNonEmpty(config.env.HOME ? `${config.env.HOME}/.local/bin` : undefined),
+            trimNonEmpty(
+              config.platform === "darwin" ? "/opt/homebrew/bin:/usr/local/bin" : "/usr/local/bin",
+            ),
+          ]
+        : []),
     ]);
 
     if (Option.isSome(mergedPath)) {
@@ -503,6 +513,7 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
         }
       }
     }
+    return Boolean(shellEnvironment.PATH);
   },
 );
 
@@ -517,7 +528,7 @@ const installShellEnvironment = (
     return installWindowsEnvironment(config);
   }
   if (config.platform === "darwin" || config.platform === "linux") {
-    return installPosixEnvironment(config).pipe(Effect.as(true));
+    return installPosixEnvironment(config);
   }
   return Effect.succeed(false);
 };

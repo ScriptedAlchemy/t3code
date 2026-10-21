@@ -118,6 +118,67 @@ function runShellEnvironment(input: {
 }
 
 describe("DesktopShellEnvironment", () => {
+  it.effect.each(["darwin", "linux"] as const)(
+    "leaves %s preparation incomplete when shell probes fail",
+    (platform) =>
+      Effect.gen(function* () {
+        const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin", HOME: "/home/test" };
+        const prepared = yield* runShellEnvironment({ env, platform, handler: () => "" });
+        assert.isFalse(prepared);
+        assert.include(env.PATH, "/home/test/.local/bin");
+        if (platform === "darwin") assert.include(env.PATH, "/opt/homebrew/bin");
+      }),
+  );
+
+  it.live(
+    "captures the shell environment when startup writes more than a pipe buffer to stderr",
+    () =>
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fixtureSpawner = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => {
+            assert.equal(command._tag, "StandardCommand");
+            if (command._tag !== "StandardCommand") return spawner.spawn(command);
+            return spawner.spawn(
+              ChildProcess.make(
+                process.execPath,
+                [
+                  "-e",
+                  `process.stderr.write(Buffer.alloc(2097152), () => process.stdout.write(${JSON.stringify(envOutput({ PATH: "/probe/bin" }))}));`,
+                ],
+                command.options,
+              ),
+            );
+          }),
+        );
+        const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin" };
+        const program = Effect.gen(function* () {
+          const service = yield* DesktopShellEnvironment.DesktopShellEnvironment;
+          yield* service.installIntoProcess;
+          assert.equal(env.PATH, "/probe/bin:/usr/bin");
+        }).pipe(
+          Effect.provide(
+            DesktopShellEnvironment.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  NodeServices.layer,
+                  fixtureSpawner,
+                  Layer.succeed(
+                    DesktopEnvironment.DesktopEnvironment,
+                    DesktopEnvironment.DesktopEnvironment.of({
+                      platform: "darwin",
+                    } as DesktopEnvironment.DesktopEnvironment["Service"]),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        yield* withProcessEnv(env, program);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, Logger.layer([])))),
+  );
+
   it.effect("rejects PATH output from a failed shell and tries the next candidate", () =>
     Effect.gen(function* () {
       const env: NodeJS.ProcessEnv = { SHELL: "/bin/failing", PATH: "/usr/bin" };
