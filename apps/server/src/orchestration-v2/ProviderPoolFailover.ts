@@ -33,9 +33,9 @@ export type UsageLimitResolution =
   /** Fail the run as today. For a pooled run `resetAt` is the pool's earliest reset. */
   | { readonly type: "finalize"; readonly resetAt: IsoDateTime | null };
 
-export const DEFAULT_LIMIT_COOLDOWN_MS = 15 * 60_000;
+const DEFAULT_LIMIT_COOLDOWN_MS = 15 * 60_000;
 // Per-minute burst limits recover quickly and should not park a healthy account.
-export const BURST_LIMIT_COOLDOWN_MS = 60_000;
+const BURST_LIMIT_COOLDOWN_MS = 60_000;
 
 export function limitCooldownUntilMs(
   failure: OrchestrationV2ProviderFailure,
