@@ -46,7 +46,7 @@ export function visibleModelsForCatalog(input: {
   readonly isDisplayed: (model: ModelOption) => boolean;
 }): ReadonlyArray<ModelOption> {
   const catalogModels =
-    input.manageHidden || input.showLegacy || input.favoritesOnly
+    input.manageHidden || input.showLegacy || input.favoritesOnly || input.query.trim().length > 0
       ? input.models
       : input.models.filter(
           (model) =>

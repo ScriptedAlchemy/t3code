@@ -508,18 +508,25 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
 
 export function groupModelOptionsWithProviderNotices(
   options: ReadonlyArray<ModelOption>,
-  providerGroups: ReadonlyArray<ProviderGroup>,
+  providerNotices: ReadonlyArray<ProviderGroup>,
 ): ReadonlyArray<ProviderGroup> {
   const noticesByProvider = new Map(
-    providerGroups
+    providerNotices
       .filter((group) => group.updateRequired)
       .map((group) => [group.providerKey, group.updateRequired] as const),
   );
+  const groups = groupByProvider(options);
+  const groupsByProvider = new Set(groups.map((group) => group.providerKey));
 
-  return groupByProvider(options).map((group) => {
-    const updateRequired = group.updateRequired ?? noticesByProvider.get(group.providerKey);
-    return updateRequired ? { ...group, updateRequired } : group;
-  });
+  return [
+    ...groups.map((group) => {
+      const updateRequired = group.updateRequired ?? noticesByProvider.get(group.providerKey);
+      return updateRequired ? { ...group, updateRequired } : group;
+    }),
+    ...providerNotices.filter(
+      (group) => group.updateRequired && !groupsByProvider.has(group.providerKey),
+    ),
+  ];
 }
 
 function modelMenuAction(option: ModelOption, selectedModel: ModelSelection | null): MenuAction {
