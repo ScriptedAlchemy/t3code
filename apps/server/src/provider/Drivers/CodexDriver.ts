@@ -81,6 +81,7 @@ function makeCodexMaintenanceResolver(
     nativeUpdate: {
       args: ["update"],
       isCommandPath: isCodexStandaloneCommandPath,
+      requiresCommandPath: true,
       env: { CODEX_HOME: sharedHomePath },
     },
   });
