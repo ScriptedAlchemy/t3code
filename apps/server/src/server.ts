@@ -607,6 +607,12 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(layerServerSettings),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      AntigravityInstallation.AntigravityInstallation.layer,
+      CodexInstallation.CodexInstallation.layer,
+    ),
+  ),
   Layer.provideMerge(layerSourceControlProviderRegistry),
   Layer.provideMerge(layerGit),
   Layer.provideMerge(layerVcs),
@@ -617,12 +623,6 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ),
   Layer.provideMerge(ProviderRegistry.layer),
   Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
-  Layer.provideMerge(
-    Layer.mergeAll(
-      AntigravityInstallation.AntigravityInstallation.layer,
-      CodexInstallation.CodexInstallation.layer,
-    ),
-  ),
 );
 
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
