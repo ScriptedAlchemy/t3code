@@ -61,6 +61,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
   }
   let downloads = 0;
   let releaseChecks = 0;
+  let credentialInvalidations = 0;
   const requests: Array<{ readonly url: string; readonly authorization: string | undefined }> = [];
   const crypto = yield* Crypto.Crypto;
   const sha256 = Hex.encode(yield* crypto.digest("SHA-256", archive).pipe(Effect.orDie));
@@ -120,7 +121,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
               fingerprint: token,
             });
       },
-      invalidate: () => Effect.void,
+      invalidate: () => Effect.sync(() => credentialInvalidations++).pipe(Effect.asVoid),
     }),
     Effect.provideService(
       HttpClient.HttpClient,
@@ -156,6 +157,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     failedRenames,
     downloads: () => downloads,
     releaseChecks: () => releaseChecks,
+    credentialInvalidations: () => credentialInvalidations,
     requests: () => requests,
   };
 });
@@ -752,6 +754,61 @@ it.effect("retries a rate-limited discovery immediately when GitHub credentials 
         )
         .map((request) => request.authorization),
     ).toEqual([undefined, "Bearer new-github-token"]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("retries rejected GitHub credentials anonymously and remembers the rejection", () =>
+  Effect.gen(function* () {
+    let metadataResponses = 0;
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      githubToken: "rejected-github-token",
+      releaseResponse: () => {
+        metadataResponses++;
+        if (metadataResponses === 1)
+          return Response.json({ message: "Bad credentials" }, { status: 401 });
+        if (metadataResponses === 2)
+          return Response.json(
+            { message: "API rate limit exceeded" },
+            {
+              status: 403,
+              headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "60" },
+            },
+          );
+        return undefined;
+      },
+    });
+
+    const failure = yield* Effect.flip(h.installation.refresh({ fresh: true }));
+    expect(failure.detail).toContain("rate-limited");
+    expect(h.releaseChecks()).toBe(2);
+    expect(h.credentialInvalidations()).toBe(1);
+    expect(h.requests().map((request) => request.authorization)).toEqual([
+      "Bearer rejected-github-token",
+      undefined,
+    ]);
+
+    expect((yield* Effect.flip(h.installation.refresh({ fresh: true }))).detail).toBe(
+      failure.detail,
+    );
+    expect(h.releaseChecks()).toBe(2);
+    yield* TestClock.adjust("60 seconds");
+    yield* h.installation.refresh({ fresh: true });
+    expect(h.releaseChecks()).toBe(3);
+    expect(h.credentialInvalidations()).toBe(1);
+    expect(h.requests().map((request) => request.authorization)).toEqual([
+      "Bearer rejected-github-token",
+      undefined,
+      undefined,
+    ]);
+
+    yield* h.installation.start();
+    expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
+    const assetRequests = h.requests().filter((request) =>
+      request.url.includes("/releases/download/"),
+    );
+    expect(assetRequests).toHaveLength(1);
+    expect(assetRequests[0]?.authorization).toBeUndefined();
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
