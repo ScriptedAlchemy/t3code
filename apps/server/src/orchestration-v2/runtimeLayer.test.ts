@@ -23,6 +23,7 @@ import {
   type PullRequestDetail,
   type PullRequestComment,
   PullRequestOperationError,
+  PullRequestUnavailableError,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
@@ -2513,18 +2514,25 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       const failure =
         reason === "defect"
           ? Effect.die("host unreachable")
-          : Effect.fail(
-              new PullRequestOperationError({
-                operation: "detail",
-                detail: "Read failed",
-                cause: new PullRequestProviderError({
+          : reason === "missing-tool" || reason === "unauthenticated"
+            ? Effect.fail(
+                new PullRequestUnavailableError({
+                  reason: reason === "missing-tool" ? "cli-missing" : "cli-unauthenticated",
                   provider: SourceControlProviderKind.make("github"),
-                  operation: "detail",
-                  reason,
-                  detail: "Read failed",
                 }),
-              }),
-            );
+              )
+            : Effect.fail(
+                new PullRequestOperationError({
+                  operation: "detail",
+                  detail: "Read failed",
+                  cause: new PullRequestProviderError({
+                    provider: SourceControlProviderKind.make("github"),
+                    operation: "detail",
+                    reason,
+                    detail: "Read failed",
+                  }),
+                }),
+              );
       let recovering = false;
       let recoveredReads = 0;
       const reactor = yield* PullRequestWatchReactor.make.pipe(
