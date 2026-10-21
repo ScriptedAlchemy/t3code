@@ -579,13 +579,21 @@ it.effect("starts from a cached verified release when GitHub later rate-limits m
                 headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "60" },
               },
             )
-          : releaseMetadata(asset.version),
+          : undefined,
     });
     yield* h.installation.refresh();
     rateLimited = true;
 
     yield* h.installation.start();
-    expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
+    const terminal = yield* terminalState(h.installation);
+    expect(terminal).toMatchObject({
+      phase: "succeeded",
+      version: asset.version,
+      installedVersion: asset.version,
+      source: "managed",
+      canRemove: true,
+      message: null,
+    });
     expect(h.releaseChecks()).toBe(1);
     expect(h.downloads()).toBe(1);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
