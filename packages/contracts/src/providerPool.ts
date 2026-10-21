@@ -38,7 +38,7 @@ export const ServerProviderPool = Schema.Union([
 ]);
 export type ServerProviderPool = typeof ServerProviderPool.Type;
 
-export const PROVIDER_POOL_ID_PREFIX = "pool_";
+const PROVIDER_POOL_ID_PREFIX = "pool_";
 
 export const providerPoolInstanceId = (driver: ProviderDriverKind): ProviderInstanceId =>
   ProviderInstanceId.make(`${PROVIDER_POOL_ID_PREFIX}${driver}`);
@@ -51,7 +51,7 @@ export const isReservedProviderInstanceId = (instanceId: string): boolean =>
  * instances are different agents, and the other drivers' usage-limit and
  * handoff behavior has not been checked.
  */
-export const POOLABLE_DRIVERS: ReadonlySet<ProviderDriverKind> = new Set([
+const POOLABLE_DRIVERS: ReadonlySet<ProviderDriverKind> = new Set([
   ProviderDriverKind.make("claudeAgent"),
   ProviderDriverKind.make("codex"),
 ]);
