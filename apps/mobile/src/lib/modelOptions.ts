@@ -138,6 +138,43 @@ function normalizeSelectionOptions(
       };
 }
 
+function modelOptionProviderContext(
+  config: T3ServerConfig | null | undefined,
+  requestedInstanceId: ModelSelection["instanceId"] | undefined,
+  projectId: ProjectId | null,
+  surface: "composer" | "settings",
+) {
+  const providers = config?.providers ?? [];
+  const composer = surface === "composer";
+  const providerInstanceId =
+    composer && requestedInstanceId !== undefined
+      ? composerInstanceIdFor(providers, requestedInstanceId)
+      : requestedInstanceId;
+  const lockedProvider = config?.providers.find(
+    (provider) => provider.instanceId === providerInstanceId,
+  );
+  const matchesLockedProvider = (provider: T3ServerConfig["providers"][number]) => {
+    if (providerInstanceId === undefined || provider.instanceId === providerInstanceId) return true;
+    if (!lockedProvider || provider.driver !== lockedProvider.driver) return false;
+    const groupKey = lockedProvider.continuation?.groupKey;
+    if (groupKey) return provider.continuation?.groupKey === groupKey;
+    return provider.driver !== "antigravity";
+  };
+
+  return {
+    providers,
+    providerInstanceId,
+    selectableProviders: (composer ? foldProviderPoolsForComposer(providers) : providers).filter(
+      (provider) =>
+        matchesLockedProvider(provider) &&
+        isProviderEnabledForProject(config, provider, projectId) &&
+        provider.installed &&
+        provider.auth.status !== "unauthenticated" &&
+        !(provider.driver === "antigravity" && provider.availability === "unavailable"),
+    ),
+  };
+}
+
 /**
  * `projectId` has no default: a caller that forgets it would silently check only the
  * machine-wide state and miss a project that turned this instance off. Pass `null` explicitly
@@ -251,26 +288,18 @@ export function buildModelOptions(
   includeHidden = false,
 ): ReadonlyArray<ModelOption> {
   const options = new Map<string, ModelOption>();
-  const providers = config?.providers ?? [];
   const composer = surface === "composer";
-  const providerInstanceId =
-    composer && requestedInstanceId !== undefined
-      ? composerInstanceIdFor(providers, requestedInstanceId)
-      : requestedInstanceId;
+  const providerContext = modelOptionProviderContext(
+    config,
+    requestedInstanceId,
+    projectId,
+    surface,
+  );
+  const { providers, providerInstanceId } = providerContext;
   const fallbackModelSelection =
     composer && requestedFallbackSelection
       ? composerModelSelectionFor(providers, requestedFallbackSelection)
       : requestedFallbackSelection;
-  const lockedProvider = config?.providers.find(
-    (provider) => provider.instanceId === providerInstanceId,
-  );
-  const matchesLockedProvider = (provider: T3ServerConfig["providers"][number]) => {
-    if (providerInstanceId === undefined || provider.instanceId === providerInstanceId) return true;
-    if (!lockedProvider || provider.driver !== lockedProvider.driver) return false;
-    const groupKey = lockedProvider.continuation?.groupKey;
-    if (groupKey) return provider.continuation?.groupKey === groupKey;
-    return provider.driver !== "antigravity";
-  };
   const registryAgentId = (instanceId: ModelSelection["instanceId"]) => {
     const configValue = config?.settings?.providerInstances[instanceId]?.config;
     if (configValue === null || typeof configValue !== "object") return undefined;
@@ -313,17 +342,7 @@ export function buildModelOptions(
     };
   };
 
-  for (const provider of composer ? foldProviderPoolsForComposer(providers) : providers) {
-    if (
-      !matchesLockedProvider(provider) ||
-      !isProviderEnabledForProject(config, provider, projectId) ||
-      !provider.installed ||
-      provider.auth.status === "unauthenticated" ||
-      (provider.driver === "antigravity" && provider.availability === "unavailable")
-    ) {
-      continue;
-    }
-
+  for (const provider of providerContext.selectableProviders) {
     const providerLabel = providerDisplayLabel(provider);
     const providerBadge = providerBadgeFor(provider.instanceId);
     const updateRequired = provider.updateRequiredModels?.length
@@ -428,6 +447,34 @@ export function buildModelOptions(
   return [...options.values()];
 }
 
+export function buildProviderUpdateRequiredGroups(
+  config: T3ServerConfig | null | undefined,
+  requestedInstanceId: ModelSelection["instanceId"] | undefined,
+  projectId: ProjectId | null,
+  surface: "composer" | "settings",
+): ReadonlyArray<ProviderGroup> {
+  return modelOptionProviderContext(
+    config,
+    requestedInstanceId,
+    projectId,
+    surface,
+  ).selectableProviders.flatMap((provider) => {
+    const updateRequiredModels = provider.updateRequiredModels;
+    if (!updateRequiredModels?.length) return [];
+    return [
+      {
+        providerKey: provider.instanceId,
+        providerLabel: providerDisplayLabel(provider),
+        models: [],
+        updateRequired: {
+          driver: provider.driver,
+          updateRequiredModels,
+        },
+      },
+    ];
+  });
+}
+
 export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyArray<ProviderGroup> {
   const groups = new Map<
     string,
@@ -457,6 +504,29 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
     models: group.models,
     ...(group.updateRequired ? { updateRequired: group.updateRequired } : {}),
   }));
+}
+
+export function groupModelOptionsWithProviderNotices(
+  options: ReadonlyArray<ModelOption>,
+  providerNotices: ReadonlyArray<ProviderGroup>,
+): ReadonlyArray<ProviderGroup> {
+  const noticesByProvider = new Map(
+    providerNotices
+      .filter((group) => group.updateRequired)
+      .map((group) => [group.providerKey, group.updateRequired] as const),
+  );
+  const groups = groupByProvider(options);
+  const groupsByProvider = new Set(groups.map((group) => group.providerKey));
+
+  return [
+    ...groups.map((group) => {
+      const updateRequired = group.updateRequired ?? noticesByProvider.get(group.providerKey);
+      return updateRequired ? { ...group, updateRequired } : group;
+    }),
+    ...providerNotices.filter(
+      (group) => group.updateRequired && !groupsByProvider.has(group.providerKey),
+    ),
+  ];
 }
 
 function modelMenuAction(option: ModelOption, selectedModel: ModelSelection | null): MenuAction {

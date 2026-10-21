@@ -56,13 +56,13 @@ const FINGERPRINT_REREAD_MS = 30 * 60_000;
 
 const isProviderError = Schema.is(PullRequestProviderError);
 
-const isRateLimited = (cause: Cause.Cause<PullRequestService.PullRequestError>) =>
+const providerFailureReason = (cause: Cause.Cause<PullRequestService.PullRequestError>) =>
   Option.match(Cause.findErrorOption(cause), {
-    onNone: () => false,
+    onNone: () => null,
     onSome: (error) =>
-      error._tag === "PullRequestOperationError" &&
-      isProviderError(error.cause) &&
-      error.cause.reason === "rate-limited",
+      error._tag === "PullRequestOperationError" && isProviderError(error.cause)
+        ? error.cause.reason
+        : null,
   });
 
 const logFailure =
@@ -241,7 +241,7 @@ export const make = Effect.gen(function* () {
   const ended = (target: WatchTarget, reason: WatchEndReason) =>
     Effect.suspend(() => reportEnd(lifeKey(target), lifeOf(target), reason));
 
-  const readFailures = new Map<string, number>();
+  const readFailures = new Map<string, { count: number; watches: string }>();
   const lastReads = new Map<string, LastRead>();
   const threadTails = new Map<
     string,
@@ -439,7 +439,7 @@ export const make = Effect.gen(function* () {
         (cause): Effect.Effect<ProviderChangeRequestWatchFingerprint | null | "paused"> =>
           Cause.hasInterruptsOnly(cause)
             ? Effect.interrupt
-            : isRateLimited(cause)
+            : providerFailureReason(cause) === "rate-limited"
               ? Effect.succeed("paused")
               : Effect.logDebug("pull request watch fingerprint failed", {
                   pullRequest: group.key,
@@ -482,9 +482,16 @@ export const make = Effect.gen(function* () {
     if (Exit.isFailure(read)) {
       if (Cause.hasInterruptsOnly(read.cause)) return yield* Effect.failCause(read.cause);
       lastReads.delete(group.key);
-      if (isRateLimited(read.cause)) return;
-      const failures = (readFailures.get(group.key) ?? 0) + 1;
-      readFailures.set(group.key, failures);
+      const reason = providerFailureReason(read.cause);
+      if (reason !== "not-found") {
+        readFailures.delete(group.key);
+        if (reason === "rate-limited") return;
+        return yield* Effect.failCause(read.cause);
+      }
+      const watches = group.targets.map(watchKey).sort().join("\n");
+      const previous = readFailures.get(group.key);
+      const failures = (previous?.watches === watches ? previous.count : 0) + 1;
+      readFailures.set(group.key, { count: failures, watches });
       if (failures >= READ_FAILURE_LIMIT && (yield* eachTarget(group, giveUp))) {
         readFailures.delete(group.key);
       }

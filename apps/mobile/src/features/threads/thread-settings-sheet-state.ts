@@ -35,6 +35,38 @@ export function modelMatchesCatalogQuery(input: {
   ].some((value) => value.toLocaleLowerCase().includes(query));
 }
 
+export function visibleModelsForCatalog(input: {
+  readonly models: ReadonlyArray<ModelOption>;
+  readonly providerLabel: string;
+  readonly query: string;
+  readonly manageHidden: boolean;
+  readonly showLegacy: boolean;
+  readonly favoritesOnly: boolean;
+  readonly favoriteKeys: ReadonlySet<string>;
+  readonly isDisplayed: (model: ModelOption) => boolean;
+}): ReadonlyArray<ModelOption> {
+  const catalogModels =
+    input.manageHidden || input.showLegacy || input.favoritesOnly || input.query.trim().length > 0
+      ? input.models
+      : input.models.filter(
+          (model) =>
+            !model.isLegacy || input.isDisplayed(model) || input.favoriteKeys.has(model.key),
+        );
+
+  return favoritesFirst(
+    catalogModels.filter(
+      (model) =>
+        (!input.favoritesOnly || input.favoriteKeys.has(model.key)) &&
+        modelMatchesCatalogQuery({
+          model,
+          providerLabel: input.providerLabel,
+          query: input.query,
+        }),
+    ),
+    input.favoriteKeys,
+  );
+}
+
 export function pendingModelAfterPress(input: {
   readonly current: ModelOption | null;
   readonly pressed: ModelOption;

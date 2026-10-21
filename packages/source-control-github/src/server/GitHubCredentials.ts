@@ -7,7 +7,6 @@ import * as Hex from "effect/encoding/Hex";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as PlatformError from "effect/PlatformError";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
@@ -15,6 +14,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import { readSourceControlHostSettings } from "@t3tools/source-control-core/client/definition";
+import { isMissingExecutable } from "@t3tools/source-control-core/server/discovery";
 import type { ServerSettings } from "@t3tools/contracts";
 
 import * as GitHubClient from "../client/definition.ts";
@@ -149,9 +149,7 @@ export const make = Effect.gen(function* () {
       })
       .pipe(
         Effect.mapError((error) =>
-          error._tag === "VcsProcessSpawnError" &&
-          error.cause instanceof PlatformError.PlatformError &&
-          error.cause.reason._tag === "NotFound"
+          isMissingExecutable(error)
             ? new GitHubCliMissingError({ host })
             : // gh exits non-zero with "no oauth token" when it has no login for the host.
               error._tag === "VcsProcessExitError"

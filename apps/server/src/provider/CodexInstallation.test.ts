@@ -10,11 +10,14 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Exit from "effect/Exit";
+import * as Redacted from "effect/Redacted";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import * as GitHubCredentials from "@t3tools/source-control-github/server/GitHubCredentials";
 import * as CodexInstallation from "./CodexInstallation.ts";
 
 const archive = Buffer.from(
@@ -37,6 +40,8 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     platform?: NodeJS.Platform;
     spawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
     runtimeRenameFailures?: number;
+    githubToken?: string;
+    githubCredential?: () => string | undefined;
     releaseResponse?: () => unknown;
   } = {},
 ) {
@@ -56,6 +61,8 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
   }
   let downloads = 0;
   let releaseChecks = 0;
+  let credentialInvalidations = 0;
+  const requests: Array<{ readonly url: string; readonly authorization: string | undefined }> = [];
   const crypto = yield* Crypto.Crypto;
   const sha256 = Hex.encode(yield* crypto.digest("SHA-256", archive).pipe(Effect.orDie));
   let runtimeRenameFailures = input.runtimeRenameFailures ?? 0;
@@ -102,14 +109,32 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     }),
     Effect.provideService(FileSystem.FileSystem, lockingFs),
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    Effect.provideService(GitHubCredentials.GitHubCredentials, {
+      get: (host) => {
+        const token = input.githubCredential?.() ?? input.githubToken;
+        return token === undefined
+          ? Effect.fail(new GitHubCredentials.GitHubNotSignedInError({ host }))
+          : Effect.succeed({
+              host,
+              token: Redacted.make(token),
+              source: "settings",
+              fingerprint: token,
+            });
+      },
+      invalidate: () => Effect.sync(() => credentialInvalidations++).pipe(Effect.asVoid),
+    }),
     Effect.provideService(
       HttpClient.HttpClient,
       HttpClient.make((request) =>
         Effect.sync(() => {
+          requests.push({ url: request.url, authorization: request.headers.authorization });
           if (request.url === "https://api.github.com/repos/openai/codex/releases/latest") {
             releaseChecks++;
             const body = input.releaseResponse?.() ?? releaseMetadata(asset.version, sha256);
-            return HttpClientResponse.fromWeb(request, Response.json(body));
+            return HttpClientResponse.fromWeb(
+              request,
+              body instanceof Response ? body : Response.json(body),
+            );
           }
           downloads++;
           return Object.defineProperty(
@@ -132,6 +157,8 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     failedRenames,
     downloads: () => downloads,
     releaseChecks: () => releaseChecks,
+    credentialInvalidations: () => credentialInvalidations,
+    requests: () => requests,
   };
 });
 const terminalState = (installation: CodexInstallation.CodexInstallation["Service"]) =>
@@ -538,8 +565,279 @@ it.effect("discovers and installs the latest package without a pinned version", 
     expect(h.downloads()).toBe(0);
     yield* h.installation.start();
     expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
-    expect(h.releaseChecks()).toBe(2);
+    expect(h.releaseChecks()).toBe(1);
     expect(h.downloads()).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("starts from a cached verified release when GitHub later rate-limits metadata", () =>
+  Effect.gen(function* () {
+    let rateLimited = false;
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      releaseResponse: () =>
+        rateLimited
+          ? Response.json(
+              { message: "API rate limit exceeded" },
+              {
+                status: 403,
+                headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "60" },
+              },
+            )
+          : undefined,
+    });
+    yield* h.installation.refresh();
+    rateLimited = true;
+
+    yield* h.installation.start();
+    const terminal = yield* terminalState(h.installation);
+    expect(terminal).toMatchObject({
+      phase: "succeeded",
+      version: asset.version,
+      installedVersion: asset.version,
+      source: "managed",
+      canRemove: true,
+      message: null,
+    });
+    expect(h.releaseChecks()).toBe(1);
+    expect(h.downloads()).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("reports a rate limit when no verified release is cached", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      releaseResponse: () =>
+        Response.json(
+          { message: "API rate limit exceeded" },
+          {
+            status: 403,
+            headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "60" },
+          },
+        ),
+    });
+
+    const failure = yield* Effect.flip(h.installation.start());
+    expect(failure.detail.toLowerCase()).toContain("rate limit");
+    expect(failure.detail).toContain("GitHub");
+    expect(h.releaseChecks()).toBe(1);
+    expect(h.downloads()).toBe(0);
+    expect((yield* h.installation.state).phase).toBe("idle");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("coalesces concurrent failed release checks during the failure cooldown", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      releaseResponse: () =>
+        Response.json(
+          { message: "API rate limit exceeded" },
+          {
+            status: 403,
+            headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "60" },
+          },
+        ),
+    });
+
+    const results = yield* Effect.all(
+      [
+        h.installation.refresh({ fresh: true }).pipe(Effect.exit),
+        h.installation.refresh({ fresh: true }).pipe(Effect.exit),
+      ],
+      { concurrency: 2 },
+    );
+    expect(results.every(Exit.isFailure)).toBe(true);
+    expect(h.releaseChecks()).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  { githubToken: "test-github-token", authorization: "Bearer test-github-token" },
+  { githubToken: undefined, authorization: undefined },
+])("uses GitHub credentials only for release metadata (%s)", ({ githubToken, authorization }) =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      ...(githubToken === undefined ? {} : { githubToken }),
+    });
+    yield* h.installation.start();
+    yield* terminalState(h.installation);
+
+    expect(h.requests()).toContainEqual({
+      url: "https://api.github.com/repos/openai/codex/releases/latest",
+      authorization,
+    });
+    const assetRequests = h
+      .requests()
+      .filter((request) => request.url.includes("/releases/download/"));
+    expect(assetRequests).toHaveLength(1);
+    expect(assetRequests[0]?.authorization).toBeUndefined();
+    expect(h.releaseChecks()).toBe(1);
+    expect(h.downloads()).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("honors GitHub retry headers during fresh refreshes", () =>
+  Effect.gen(function* () {
+    let rateLimited = true;
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      releaseResponse: () =>
+        rateLimited
+          ? Response.json(
+              { message: "API rate limit exceeded" },
+              {
+                status: 403,
+                headers: {
+                  "x-ratelimit-remaining": "0",
+                  "x-ratelimit-reset": "60",
+                  "retry-after": "30",
+                },
+              },
+            )
+          : releaseMetadata(asset.version),
+    });
+
+    const initialFailure = yield* Effect.flip(h.installation.refresh());
+    expect(initialFailure.detail.toLowerCase()).toContain("rate limit");
+    expect((yield* Effect.flip(h.installation.refresh({ fresh: true }))).detail).toBe(
+      initialFailure.detail,
+    );
+    yield* TestClock.adjust("30 seconds");
+    expect((yield* Effect.flip(h.installation.refresh({ fresh: true }))).detail).toBe(
+      initialFailure.detail,
+    );
+    expect(h.releaseChecks()).toBe(1);
+
+    yield* TestClock.adjust("30 seconds");
+    rateLimited = false;
+    yield* h.installation.refresh({ fresh: true });
+    expect((yield* h.installation.state).version).toBe(asset.version);
+    expect(h.releaseChecks()).toBe(2);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("retries a rate-limited discovery immediately when GitHub credentials change", () =>
+  Effect.gen(function* () {
+    let githubToken: string | undefined;
+    let rateLimited = true;
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      githubCredential: () => githubToken,
+      releaseResponse: () =>
+        rateLimited
+          ? Response.json(
+              { message: "API rate limit exceeded" },
+              {
+                status: 403,
+                headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "3600" },
+              },
+            )
+          : releaseMetadata(asset.version),
+    });
+
+    expect((yield* Effect.flip(h.installation.refresh({ fresh: true }))).detail).toContain(
+      "rate-limited",
+    );
+    githubToken = "new-github-token";
+    rateLimited = false;
+    yield* h.installation.refresh({ fresh: true });
+
+    expect(h.releaseChecks()).toBe(2);
+    expect(
+      h
+        .requests()
+        .filter(
+          (request) => request.url === "https://api.github.com/repos/openai/codex/releases/latest",
+        )
+        .map((request) => request.authorization),
+    ).toEqual([undefined, "Bearer new-github-token"]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("retries rejected GitHub credentials anonymously and remembers the rejection", () =>
+  Effect.gen(function* () {
+    let metadataResponses = 0;
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      githubToken: "rejected-github-token",
+      releaseResponse: () => {
+        metadataResponses++;
+        if (metadataResponses === 1)
+          return Response.json({ message: "Bad credentials" }, { status: 401 });
+        if (metadataResponses === 2)
+          return Response.json(
+            { message: "API rate limit exceeded" },
+            {
+              status: 403,
+              headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "60" },
+            },
+          );
+        return undefined;
+      },
+    });
+
+    const failure = yield* Effect.flip(h.installation.refresh({ fresh: true }));
+    expect(failure.detail).toContain("rate-limited");
+    expect(h.releaseChecks()).toBe(2);
+    expect(h.credentialInvalidations()).toBe(1);
+    expect(h.requests().map((request) => request.authorization)).toEqual([
+      "Bearer rejected-github-token",
+      undefined,
+    ]);
+
+    expect((yield* Effect.flip(h.installation.refresh({ fresh: true }))).detail).toBe(
+      failure.detail,
+    );
+    expect(h.releaseChecks()).toBe(2);
+    yield* TestClock.adjust("60 seconds");
+    yield* h.installation.refresh({ fresh: true });
+    expect(h.releaseChecks()).toBe(3);
+    expect(h.credentialInvalidations()).toBe(1);
+    expect(h.requests().map((request) => request.authorization)).toEqual([
+      "Bearer rejected-github-token",
+      undefined,
+      undefined,
+    ]);
+
+    yield* h.installation.start();
+    expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
+    const assetRequests = h
+      .requests()
+      .filter((request) => request.url.includes("/releases/download/"));
+    expect(assetRequests).toHaveLength(1);
+    expect(assetRequests[0]?.authorization).toBeUndefined();
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("briefly caches non-rate-limit discovery failures", () =>
+  Effect.gen(function* () {
+    let unavailable = true;
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      releaseResponse: () =>
+        unavailable
+          ? Response.json({ message: "temporarily unavailable" }, { status: 503 })
+          : releaseMetadata(asset.version),
+    });
+
+    const initialFailure = yield* Effect.flip(h.installation.refresh());
+    expect((yield* Effect.flip(h.installation.refresh({ fresh: true }))).detail).toBe(
+      initialFailure.detail,
+    );
+    yield* TestClock.adjust("29 seconds");
+    expect((yield* Effect.flip(h.installation.refresh({ fresh: true }))).detail).toBe(
+      initialFailure.detail,
+    );
+    expect(h.releaseChecks()).toBe(1);
+
+    yield* TestClock.adjust("1 second");
+    unavailable = false;
+    yield* h.installation.refresh({ fresh: true });
+    expect((yield* h.installation.state).version).toBe(asset.version);
+    expect(h.releaseChecks()).toBe(2);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
