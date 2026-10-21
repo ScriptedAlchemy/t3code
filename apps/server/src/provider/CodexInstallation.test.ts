@@ -804,9 +804,9 @@ it.effect("retries rejected GitHub credentials anonymously and remembers the rej
 
     yield* h.installation.start();
     expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
-    const assetRequests = h.requests().filter((request) =>
-      request.url.includes("/releases/download/"),
-    );
+    const assetRequests = h
+      .requests()
+      .filter((request) => request.url.includes("/releases/download/"));
     expect(assetRequests).toHaveLength(1);
     expect(assetRequests[0]?.authorization).toBeUndefined();
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
