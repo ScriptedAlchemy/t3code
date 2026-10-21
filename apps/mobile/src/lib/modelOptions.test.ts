@@ -11,9 +11,11 @@ import {
 } from "@t3tools/contracts";
 
 import {
+  buildProviderUpdateRequiredGroups,
   buildModelOptions,
   describeUnavailableModelSelection,
   groupByProvider,
+  groupModelOptionsWithProviderNotices,
   isModelSelectionUnavailable,
   resolveDefaultableModelSelection,
   resolveNewTaskModelSelection,
@@ -22,6 +24,45 @@ import {
 } from "./modelOptions";
 
 describe("mobile model options", () => {
+  it("keeps provider update notices when no model rows are visible", () => {
+    const updateRequiredModels = [
+      {
+        slug: "claude-next",
+        name: "Claude Next",
+        minVersion: "2.0.0",
+      },
+    ];
+    const config = {
+      providers: [
+        {
+          instanceId: "claudeAgent_work",
+          driver: "claudeAgent",
+          displayName: "Claude Work",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [],
+          updateRequiredModels,
+        },
+      ],
+    } as unknown as ServerConfig;
+    const options = buildModelOptions(config, null, undefined, null, "composer");
+    const providerNotices = buildProviderUpdateRequiredGroups(config, undefined, null, "composer");
+
+    expect(options).toEqual([]);
+    expect(groupModelOptionsWithProviderNotices(options, providerNotices)).toEqual([
+      {
+        providerKey: "claudeAgent_work",
+        providerLabel: "Claude Work",
+        models: [],
+        updateRequired: {
+          driver: "claudeAgent",
+          updateRequiredModels,
+        },
+      },
+    ]);
+  });
+
   it("distinguishes same-name OpenCode models without changing their routing", () => {
     const sources = [
       { id: "anthropic", label: "Anthropic" },

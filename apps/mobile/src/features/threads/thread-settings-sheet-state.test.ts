@@ -11,7 +11,11 @@ import {
   rememberModelOptions,
   withRememberedModelOptions,
 } from "../../state/use-model-option-memory";
-import { canCommitPendingModel, pendingModelAfterPress } from "./thread-settings-sheet-state";
+import {
+  canCommitPendingModel,
+  pendingModelAfterPress,
+  visibleModelsForCatalog,
+} from "./thread-settings-sheet-state";
 
 function modelOption(
   model: string,
@@ -69,6 +73,23 @@ afterEach(() => {
 });
 
 describe("thread settings sheet state", () => {
+  it("includes a matching legacy model in search while legacy models are hidden", () => {
+    const legacyModel = { ...modelOption("gpt-5.4"), isLegacy: true };
+
+    expect(
+      visibleModelsForCatalog({
+        models: [legacyModel],
+        providerLabel: "Codex",
+        query: "gpt-5.4",
+        manageHidden: false,
+        showLegacy: false,
+        favoritesOnly: false,
+        favoriteKeys: new Set(),
+        isDisplayed: () => false,
+      }),
+    ).toEqual([legacyModel]);
+  });
+
   it("preserves in-progress edits when the staged model is pressed again", () => {
     rememberModelOptions("codex", "gpt-next", [{ id: "effort", value: "medium" }]);
     const pending = modelOption("gpt-next", [{ id: "effort", value: "high" }]);
