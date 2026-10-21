@@ -41,6 +41,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     spawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
     runtimeRenameFailures?: number;
     githubToken?: string;
+    githubCredential?: () => string | undefined;
     releaseResponse?: () => unknown;
   } = {},
 ) {
@@ -108,15 +109,17 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     Effect.provideService(FileSystem.FileSystem, lockingFs),
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     Effect.provideService(GitHubCredentials.GitHubCredentials, {
-      get: (host) =>
-        input.githubToken === undefined
+      get: (host) => {
+        const token = input.githubCredential?.() ?? input.githubToken;
+        return token === undefined
           ? Effect.fail(new GitHubCredentials.GitHubNotSignedInError({ host }))
           : Effect.succeed({
               host,
-              token: Redacted.make(input.githubToken),
+              token: Redacted.make(token),
               source: "settings",
-              fingerprint: "test-fingerprint",
-            }),
+              fingerprint: token,
+            });
+      },
       invalidate: () => Effect.void,
     }),
     Effect.provideService(
@@ -713,6 +716,43 @@ it.effect("honors GitHub retry headers during fresh refreshes", () =>
     yield* h.installation.refresh({ fresh: true });
     expect((yield* h.installation.state).version).toBe(asset.version);
     expect(h.releaseChecks()).toBe(2);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("retries a rate-limited discovery immediately when GitHub credentials change", () =>
+  Effect.gen(function* () {
+    let githubToken: string | undefined;
+    let rateLimited = true;
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      githubCredential: () => githubToken,
+      releaseResponse: () =>
+        rateLimited
+          ? Response.json(
+              { message: "API rate limit exceeded" },
+              {
+                status: 403,
+                headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "3600" },
+              },
+            )
+          : releaseMetadata(asset.version),
+    });
+
+    expect((yield* Effect.flip(h.installation.refresh({ fresh: true }))).detail).toContain(
+      "rate-limited",
+    );
+    githubToken = "new-github-token";
+    rateLimited = false;
+    yield* h.installation.refresh({ fresh: true });
+
+    expect(h.releaseChecks()).toBe(2);
+    expect(
+      h.requests()
+        .filter((request) =>
+          request.url === "https://api.github.com/repos/openai/codex/releases/latest",
+        )
+        .map((request) => request.authorization),
+    ).toEqual([undefined, "Bearer new-github-token"]);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
