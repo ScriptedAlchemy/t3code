@@ -1,7 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
 import * as Redacted from "effect/Redacted";
+import { VcsProcessSpawnError } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import * as TestSourceControlHost from "@t3tools/source-control-testing/TestSourceControlHost";
@@ -9,6 +11,19 @@ import * as TestSourceControlHost from "@t3tools/source-control-testing/TestSour
 import * as GitCafeCredentials from "./GitCafeCredentials.ts";
 
 const processOutput = TestSourceControlHost.processOutput;
+
+const spawnNotFound = (module: "ChildProcess" | "FileSystem") =>
+  new VcsProcessSpawnError({
+    operation: "GitCafeCredentials.get",
+    command: "cafe",
+    cwd: "/server",
+    cause: PlatformError.systemError({
+      _tag: "NotFound",
+      module,
+      method: module === "ChildProcess" ? "spawn" : "stat",
+      ...(module === "FileSystem" ? { pathOrDescriptor: "/server" } : {}),
+    }),
+  });
 
 function harness(
   run: SourceControlHost.SourceControlHost["Service"]["process"]["run"],
@@ -33,6 +48,36 @@ function harness(
 }
 
 describe("GitCafeCredentials", () => {
+  it.effect("reports a missing cafe executable only for a child-process not-found", () => {
+    const { layer, calls } = harness(() => Effect.fail(spawnNotFound("ChildProcess")));
+    return Effect.gen(function* () {
+      const credentials = yield* GitCafeCredentials.GitCafeCredentials;
+      const error = yield* Effect.flip(credentials.get("staging.git.cafe"));
+      assert.strictEqual(error._tag, "GitCafeCliMissingError");
+      assert.strictEqual(calls.length, 1);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("does not cache a missing working directory as a missing cafe executable", () => {
+    let attempts = 0;
+    const { layer, calls } = harness(() =>
+      ++attempts === 1
+        ? Effect.fail(spawnNotFound("FileSystem"))
+        : Effect.succeed(processOutput("protocol=https\nhost=staging.git.cafe\npassword=gct_1\n")),
+    );
+    return Effect.gen(function* () {
+      const credentials = yield* GitCafeCredentials.GitCafeCredentials;
+      const first = yield* Effect.flip(credentials.get("staging.git.cafe"));
+      assert.strictEqual(first._tag, "GitCafeCliFailedError");
+      assert.strictEqual(
+        Redacted.value((yield* credentials.get("staging.git.cafe")).token),
+        "gct_1",
+      );
+      assert.strictEqual(attempts, 2);
+      assert.strictEqual(calls.length, 2);
+    }).pipe(Effect.provide(layer));
+  });
+
   it("hands CAFE_TOKEN only to the host cafe itself targets", () => {
     const token = { CAFE_TOKEN: "env-token" };
     assert.strictEqual(GitCafeCredentials.environmentToken("git.cafe", token), "env-token");
