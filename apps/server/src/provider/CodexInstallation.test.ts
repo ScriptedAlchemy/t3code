@@ -614,6 +614,32 @@ it.effect("reports a rate limit when no verified release is cached", () =>
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect("coalesces concurrent failed release checks during the failure cooldown", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      releaseResponse: () =>
+        Response.json(
+          { message: "API rate limit exceeded" },
+          {
+            status: 403,
+            headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "60" },
+          },
+        ),
+    });
+
+    const results = yield* Effect.all(
+      [
+        h.installation.refresh({ fresh: true }).pipe(Effect.exit),
+        h.installation.refresh({ fresh: true }).pipe(Effect.exit),
+      ],
+      { concurrency: 2 },
+    );
+    expect(results.every(Exit.isFailure)).toBe(true);
+    expect(h.releaseChecks()).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect.each([
   { githubToken: "test-github-token", authorization: "Bearer test-github-token" },
   { githubToken: undefined, authorization: undefined },
@@ -623,7 +649,7 @@ it.effect.each([
     Effect.gen(function* () {
       const h = yield* makeHarness({
         options: { releaseAsset: undefined },
-        githubToken,
+        ...(githubToken === undefined ? {} : { githubToken }),
       });
       yield* h.installation.start();
       yield* terminalState(h.installation);
@@ -632,7 +658,11 @@ it.effect.each([
         url: "https://api.github.com/repos/openai/codex/releases/latest",
         authorization,
       });
-      expect(h.requests()).toContainEqual({ url: asset.url, authorization: undefined });
+      const assetRequests = h.requests().filter((request) =>
+        request.url.includes("/releases/download/"),
+      );
+      expect(assetRequests).toHaveLength(1);
+      expect(assetRequests[0]?.authorization).toBeUndefined();
       expect(h.releaseChecks()).toBe(1);
       expect(h.downloads()).toBe(1);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

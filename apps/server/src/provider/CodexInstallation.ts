@@ -4,6 +4,7 @@ import { compareSemverVersions } from "@t3tools/shared/semver";
 import { cliArchiveTarCommand } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
+import * as GitHubCredentials from "@t3tools/source-control-github/server/GitHubCredentials";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -15,6 +16,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -30,6 +32,10 @@ import { resolveProviderCompatibility } from "./providerCompatibility.ts";
 
 const DRIVER = ProviderDriverKind.make("codex");
 const STAGING_STALE_AFTER_MS = 24 * 60 * 60_000;
+const RELEASE_CHECK_SUCCESS_TTL_MS = 3_600_000;
+const RELEASE_CHECK_FAILURE_COOLDOWN_MS = 30_000;
+const RELEASE_CHECK_RATE_LIMIT_MESSAGE =
+  "GitHub rate-limited Codex release checks. Sign in to GitHub in Settings → Source Control or try again after the rate limit resets.";
 const Version = Schema.String.check(Schema.isPattern(/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/u));
 const ActiveRelease = Schema.Struct({ version: Version });
 const InstalledRelease = Schema.Struct({
@@ -74,6 +80,34 @@ const Release = Schema.Struct({
     }),
   ),
 });
+const hasGitHubRateLimitHeaders = (
+  status: number,
+  headers: Readonly<Record<string, string | undefined>>,
+) =>
+  status === 429 ||
+  (status === 403 &&
+    (headers["x-ratelimit-remaining"] === "0" ||
+      headers["retry-after"] !== undefined));
+const retryAtFromGitHubHeaders = (
+  headers: Readonly<Record<string, string | undefined>>,
+  now: number,
+) => {
+  const deadlines: Array<number> = [];
+  const retryAfter = headers["retry-after"];
+  if (retryAfter !== undefined) {
+    const seconds = Number(retryAfter);
+    const retryAfterAt = Number.isFinite(seconds)
+      ? now + Math.max(seconds, 0) * 1_000
+      : Date.parse(retryAfter);
+    if (Number.isFinite(retryAfterAt) && retryAfterAt > now) deadlines.push(retryAfterAt);
+  }
+  const reset = headers["x-ratelimit-reset"];
+  if (reset !== undefined) {
+    const resetAt = Number(reset) * 1_000;
+    if (Number.isFinite(resetAt) && resetAt > now) deadlines.push(resetAt);
+  }
+  return deadlines.length === 0 ? undefined : Math.max(...deadlines);
+};
 export const resolveCodexReleaseAsset = (
   platform: NodeJS.Platform,
   arch: string,
@@ -173,6 +207,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
   const http = yield* HttpClient.HttpClient;
+  const githubCredentials = yield* GitHubCredentials.GitHubCredentials;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serviceScope = yield* Effect.scope;
   const platform = yield* HostProcess.Platform;
@@ -180,6 +215,8 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
   const arch = yield* HostProcess.Architecture;
   let asset = options.releaseAsset ?? null;
   let checkedAt: number | undefined;
+  let retryAt: number | undefined;
+  let lastDiscoveryFailure: CodexInstallationError | undefined;
   const discoveryGate = yield* Semaphore.make(1);
   const managedDirectory = path.join(options.baseDir, "tools", "codex");
   const activePath = path.join(managedDirectory, "active.json");
@@ -205,14 +242,52 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
       const current = yield* SubscriptionRef.get(state);
       if (isRunning(current)) return;
       const now = yield* Clock.currentTimeMillis;
-      if (!input?.fresh && checkedAt !== undefined && now - checkedAt < 3_600_000) return;
-      const release = yield* http
-        .get("https://api.github.com/repos/openai/codex/releases/latest")
-        .pipe(
-          Effect.flatMap(HttpClientResponse.filterStatusOk),
-          Effect.flatMap(HttpClientResponse.schemaBodyJson(Release)),
-          Effect.timeout("5 seconds"),
-        );
+      if (retryAt !== undefined && now < retryAt && lastDiscoveryFailure !== undefined)
+        return yield* Effect.fail(lastDiscoveryFailure);
+      retryAt = undefined;
+      lastDiscoveryFailure = undefined;
+      if (
+        !input?.fresh &&
+        checkedAt !== undefined &&
+        now - checkedAt < RELEASE_CHECK_SUCCESS_TTL_MS
+      )
+        return;
+      const credential = yield* Effect.option(githubCredentials.get("github.com"));
+      const baseRequest = HttpClientRequest.get(
+        "https://api.github.com/repos/openai/codex/releases/latest",
+      ).pipe(HttpClientRequest.setHeader("Accept", "application/vnd.github+json"));
+      const request = Option.match(credential, {
+        onNone: () => baseRequest,
+        onSome: (value) =>
+          HttpClientRequest.setHeader(
+            baseRequest,
+            "Authorization",
+            `Bearer ${Redacted.value(value.token)}`,
+          ),
+      });
+      const response = yield* http.execute(request).pipe(Effect.timeout("5 seconds"));
+      const responseAt = yield* Clock.currentTimeMillis;
+      if (response.status < 200 || response.status >= 300) {
+        let rateLimited = hasGitHubRateLimitHeaders(response.status, response.headers);
+        if (!rateLimited && response.status === 403) {
+          const body = yield* response.text.pipe(
+            Effect.timeout("5 seconds"),
+            Effect.catch(() => Effect.succeed("")),
+          );
+          rateLimited = /rate limit/i.test(body);
+        }
+        if (rateLimited) {
+          retryAt =
+            retryAtFromGitHubHeaders(response.headers, responseAt) ??
+            responseAt + RELEASE_CHECK_FAILURE_COOLDOWN_MS;
+          return yield* installationError("refresh", RELEASE_CHECK_RATE_LIMIT_MESSAGE);
+        }
+        yield* HttpClientResponse.filterStatusOk(response);
+        return yield* installationError("refresh", `GitHub returned HTTP ${response.status}.`);
+      }
+      const release = yield* HttpClientResponse.schemaBodyJson(Release)(response).pipe(
+        Effect.timeout("5 seconds"),
+      );
       const discovered = resolveCodexReleaseAsset(platform, arch, release);
       if (!discovered)
         return yield* installationError(
@@ -220,7 +295,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
           "The latest Codex release has no verified package for this platform.",
         );
       asset = discovered;
-      checkedAt = now;
+      checkedAt = yield* Clock.currentTimeMillis;
       yield* SubscriptionRef.update(state, (value) =>
         isRunning(value)
           ? value
@@ -231,8 +306,14 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
             },
       );
     },
-    discoveryGate.withPermit,
     Effect.mapError(wrapFailure("refresh", "Could not check for Codex updates. Try again.")),
+    Effect.tapError((failure) =>
+      Effect.gen(function* () {
+        lastDiscoveryFailure = failure;
+        retryAt ??= (yield* Clock.currentTimeMillis) + RELEASE_CHECK_FAILURE_COOLDOWN_MS;
+      }),
+    ),
+    discoveryGate.withPermit,
   );
   const readRecord = Effect.fn("CodexInstallation.readRecord")(function* <A>(
     file: string,
@@ -663,7 +744,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
           if (isRunning(current)) return current;
           if (!options?.managedOnly && (yield* reuseLocal()))
             return yield* SubscriptionRef.get(state);
-          yield* refresh({ fresh: true });
+          if (!asset) yield* refresh({ fresh: true });
           if (!asset) {
             return yield* installationError(
               "start",
