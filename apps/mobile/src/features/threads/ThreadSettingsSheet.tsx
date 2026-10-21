@@ -769,7 +769,8 @@ function buildThreadSettingsCatalogItems(
     ) {
       return [];
     }
-    const driver = group.models[0]?.providerDriver ?? group.providerKey;
+    const driver =
+      group.models[0]?.providerDriver ?? group.updateRequired?.driver ?? group.providerKey;
     const visibleModels = visibleModelsForCatalog({
       models: group.models,
       providerLabel: group.providerLabel,
@@ -792,7 +793,10 @@ function buildThreadSettingsCatalogItems(
     const isNarrowed = session.providerFilter !== null || session.searchQuery.trim().length > 0;
     const collapsible = !isNarrowed;
     const collapsed = providerSectionIsCollapsed({
-      defaultExpanded: isPrimary || containsAppliedSelection,
+      defaultExpanded:
+        isPrimary ||
+        containsAppliedSelection ||
+        (visibleModels.length === 0 && updateRequiredNotice !== null),
       hasExpansionOverride: session.providerExpansionOverrides.has(group.providerKey),
       isNarrowed,
     });
