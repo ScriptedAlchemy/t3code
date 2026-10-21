@@ -5,12 +5,12 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as PlatformError from "effect/PlatformError";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import { readSourceControlHostSettings } from "@t3tools/source-control-core/client/definition";
+import { isMissingExecutable } from "@t3tools/source-control-core/server/discovery";
 
 import * as GitCafeClient from "../client/definition.ts";
 
@@ -117,9 +117,7 @@ export const make = Effect.gen(function* () {
       })
       .pipe(
         Effect.mapError((error) =>
-          error._tag === "VcsProcessSpawnError" &&
-          error.cause instanceof PlatformError.PlatformError &&
-          error.cause.reason._tag === "NotFound"
+          isMissingExecutable(error)
             ? new GitCafeCliMissingError({ host })
             : error._tag === "VcsProcessExitError"
               ? new GitCafeNotSignedInError({ host })
