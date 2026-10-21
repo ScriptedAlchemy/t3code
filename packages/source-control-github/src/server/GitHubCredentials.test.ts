@@ -2,10 +2,11 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
 import * as Redacted from "effect/Redacted";
 import { ChildProcessSpawner } from "effect/process";
 
-import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, VcsProcessSpawnError } from "@t3tools/contracts";
 import type * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as TestSourceControlHost from "@t3tools/source-control-testing/TestSourceControlHost";
@@ -29,11 +30,13 @@ function harness(
   hosts: Record<string, { readonly account?: string; readonly enabled?: boolean }> = {},
   signedOut: ReadonlyArray<string> = [],
   tokens: Record<string, string> = {},
+  runOverride?: SourceControlHost.SourceControlHost["Service"]["process"]["run"],
 ) {
   const calls: Array<ReadonlyArray<string>> = [];
-  const run: SourceControlHost.SourceControlHost["Service"]["process"]["run"] = (input) =>
-    Effect.sync(() => {
-      calls.push(input.args);
+  const run: SourceControlHost.SourceControlHost["Service"]["process"]["run"] = (input) => {
+    calls.push(input.args);
+    if (runOverride !== undefined) return runOverride(input);
+    return Effect.sync(() => {
       const user = input.args[input.args.indexOf("--user") + 1];
       if (input.args.includes("--user") && user !== undefined && signedOut.includes(user)) {
         return {
@@ -52,6 +55,7 @@ function harness(
         stderrTruncated: false,
       };
     });
+  };
   const layer = GitHubCredentials.layer.pipe(
     Layer.provideMerge(
       TestSourceControlHost.layer({
@@ -66,12 +70,58 @@ function harness(
   return { layer, calls };
 }
 
+const spawnNotFound = (module: "ChildProcess" | "FileSystem") =>
+  new VcsProcessSpawnError({
+    operation: "GitHubCredentials.get",
+    command: "gh",
+    cwd: "/repo",
+    cause: PlatformError.systemError({
+      _tag: "NotFound",
+      module,
+      method: module === "ChildProcess" ? "spawn" : "stat",
+      ...(module === "FileSystem" ? { pathOrDescriptor: "/repo" } : {}),
+    }),
+  });
+
 describe("GitHubCredentials", () => {
   beforeEach(() => {
     for (const name of TOKEN_VARIABLES) vi.stubEnv(name, "");
   });
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it.effect("reports a missing gh executable only for a child-process not-found", () => {
+    const { layer, calls } = harness({}, [], {}, () => Effect.fail(spawnNotFound("ChildProcess")));
+    return Effect.gen(function* () {
+      const credentials = yield* GitHubCredentials.GitHubCredentials;
+      const error = yield* Effect.flip(credentials.get("github.com"));
+      expect(error._tag).toBe("GitHubCliMissingError");
+      expect(calls).toHaveLength(1);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("does not cache a missing working directory as a missing gh executable", () => {
+    let attempts = 0;
+    const { layer, calls } = harness({}, [], {}, () =>
+      ++attempts === 1
+        ? Effect.fail(spawnNotFound("FileSystem"))
+        : Effect.succeed({
+            exitCode: ChildProcessSpawner.ExitCode(0),
+            stdout: "active-token\n",
+            stderr: "",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          }),
+    );
+    return Effect.gen(function* () {
+      const credentials = yield* GitHubCredentials.GitHubCredentials;
+      const first = yield* Effect.flip(credentials.get("github.com"));
+      expect(first._tag).toBe("GitHubCliFailedError");
+      expect(Redacted.value((yield* credentials.get("github.com")).token)).toBe("active-token");
+      expect(attempts).toBe(2);
+      expect(calls).toHaveLength(2);
+    }).pipe(Effect.provide(layer));
   });
 
   it.effect("lets an environment token win over a pinned account, as gh does", () => {
