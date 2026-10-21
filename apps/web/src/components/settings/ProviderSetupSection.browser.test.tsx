@@ -380,6 +380,46 @@ describe("Native Codex sign-in browser", () => {
     expect(screen.button("Sign in")?.disabled).toBe(false);
   });
 
+  it("updates an authenticated CLI account and refreshes its models after installation", async () => {
+    prepareNativeSignIn();
+    setup.installation = {
+      ...codexInstallation,
+      version: "0.163.0",
+      installedVersion: "0.156.1",
+      source: "managed",
+    };
+    const account = {
+      installed: true,
+      version: "0.156.1",
+      auth: { status: "authenticated" as const },
+    };
+    await using screen = await renderNativeAuth({ autoOpenBrowser: false, provider: account });
+    await expect.element(screen.getByRole("button", { name: "Update Codex CLI" })).toBeVisible();
+    await screen.click("Update Codex CLI");
+    expect(setup.startInstall).toHaveBeenCalledWith({
+      environmentId,
+      input: { instanceId: nativeInstanceId },
+    });
+    setup.installation = { ...setup.installation, phase: "downloading", operationId: "update" };
+    await publish();
+    await expect.element(screen.getByRole("button", { name: "Cancel installation" })).toBeVisible();
+    setup.installation = { ...setup.installation, phase: "succeeded", installedVersion: "0.163.0" };
+    await publish();
+    await vi.waitFor(() =>
+      expect(setup.refreshProviders).toHaveBeenCalledWith({
+        environmentId,
+        input: { instanceId: nativeInstanceId },
+      }),
+    );
+    await screen.rerenderNativeAuth({
+      autoOpenBrowser: false,
+      provider: { ...account, version: "0.163.0" },
+    });
+    await expect
+      .element(screen.getByRole("button", { name: "Update Codex CLI" }))
+      .not.toBeInTheDocument();
+  });
+
   it("opens the sign-in page only in the client that started sign-in", async () => {
     prepareNativeSignIn();
     using reserved = reserveTab();
