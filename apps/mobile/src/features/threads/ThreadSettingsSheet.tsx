@@ -55,8 +55,9 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import {
+  buildProviderUpdateRequiredGroups,
   buildModelOptions,
-  groupByProvider,
+  groupModelOptionsWithProviderNotices,
   type ModelOption,
   type ProviderGroup,
 } from "../../lib/modelOptions";
@@ -94,11 +95,10 @@ import {
 } from "./thread-settings-options";
 import {
   canCommitPendingModel,
-  favoritesFirst,
   modelFavoriteKey,
-  modelMatchesCatalogQuery,
   pendingModelAfterPress,
   providerSectionIsCollapsed,
+  visibleModelsForCatalog,
 } from "./thread-settings-sheet-state";
 import { formatProviderUpdateRequiredNotice } from "@t3tools/client-runtime/providerUpdateRequiredModels";
 
@@ -357,19 +357,26 @@ function ThreadSettingsSessionProvider(
     new Map<string, { favorite: boolean; settings: ServerSettings; pending: boolean }>(),
   );
   const [pendingHiddenKeys, setPendingHiddenKeys] = useState<ReadonlySet<string>>(() => new Set());
-  const providerGroups =
+  const modelOptions =
     manageHidden && config
-      ? groupByProvider(
-          buildModelOptions(
-            config,
-            props.selectedModel,
-            props.lockedProviderInstanceId,
-            props.projectId,
-            "composer",
-            true,
-          ),
+      ? buildModelOptions(
+          config,
+          props.selectedModel,
+          props.lockedProviderInstanceId,
+          props.projectId,
+          "composer",
+          true,
         )
-      : props.providerGroups;
+      : props.providerGroups.flatMap((group) => group.models);
+  const providerGroups = groupModelOptionsWithProviderNotices(
+    modelOptions,
+    buildProviderUpdateRequiredGroups(
+      config,
+      props.lockedProviderInstanceId,
+      props.projectId,
+      "composer",
+    ),
+  );
   const legacyFavorites = AsyncResult.isSuccess(preferences)
     ? (preferences.value.modelFavorites ?? EMPTY_MODEL_FAVORITES)
     : EMPTY_MODEL_FAVORITES;
@@ -762,28 +769,16 @@ function buildThreadSettingsCatalogItems(
       return [];
     }
     const driver = group.models[0]?.providerDriver ?? group.providerKey;
-    const catalogModels =
-      session.manageHidden ||
-      session.showLegacy ||
-      session.providerFilter === FAVORITES_PROVIDER_FILTER
-        ? group.models
-        : group.models.filter(
-            (model) =>
-              !model.isLegacy || session.isDisplayed(model) || session.favoriteKeys.has(model.key),
-          );
-    const visibleModels = favoritesFirst(
-      catalogModels.filter(
-        (model) =>
-          (session.providerFilter !== FAVORITES_PROVIDER_FILTER ||
-            session.favoriteKeys.has(model.key)) &&
-          modelMatchesCatalogQuery({
-            model,
-            providerLabel: group.providerLabel,
-            query: session.searchQuery,
-          }),
-      ),
-      session.favoriteKeys,
-    );
+    const visibleModels = visibleModelsForCatalog({
+      models: group.models,
+      providerLabel: group.providerLabel,
+      query: session.searchQuery,
+      manageHidden: session.manageHidden,
+      showLegacy: session.showLegacy,
+      favoritesOnly: session.providerFilter === FAVORITES_PROVIDER_FILTER,
+      favoriteKeys: session.favoriteKeys,
+      isDisplayed: session.isDisplayed,
+    });
     const updateRequiredNotice =
       group.updateRequired && session.providerFilter !== FAVORITES_PROVIDER_FILTER
         ? formatProviderUpdateRequiredNotice(group.updateRequired, session.searchQuery)
