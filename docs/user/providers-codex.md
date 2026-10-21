@@ -12,6 +12,11 @@ thread history.
 If Codex is unavailable, install it from the account's setup panel before signing
 in. T3 Code installs it on the selected environment's machine.
 
+For a T3-managed installation, use **Refresh provider status** in **Settings >
+Providers** to check for the latest stable Codex release, then choose **Update
+Codex** when offered. On mobile, the update is offered under **Provider accounts**.
+Updates install only when requested; a failed update keeps the previous runtime.
+
 Choose **Device code** to sign in from any device. Enter the displayed code on the
 OpenAI page and choose your account. Choose **Browser on server machine** to sign
 in with a browser on the machine running the T3 Code environment.
