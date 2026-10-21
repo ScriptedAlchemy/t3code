@@ -342,6 +342,11 @@ export const CodexDriver: ProviderDriver<
       checkProvider,
       enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
         resolveMaintenance().pipe(
+          Effect.tap(() =>
+            settings.enableProviderUpdateChecks
+              ? installation.refresh().pipe(Effect.ignore)
+              : Effect.void,
+          ),
           Effect.flatMap((maintenanceCapabilities) =>
             enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities, {
               enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
@@ -515,7 +520,14 @@ export const CodexDriver: ProviderDriver<
       displayName,
       accentColor,
       enabled,
-      snapshot,
+      snapshot: {
+        ...snapshot,
+        refresh: enabled
+          ? installation
+              .refresh({ fresh: true })
+              .pipe(Effect.ignore, Effect.andThen(snapshot.refresh))
+          : snapshot.refresh,
+      },
       snapshotForCwd,
       consumeResetCredit,
       orchestrationAdapter,

@@ -56,6 +56,7 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(
     Layer.mock(CodexInstallation.CodexInstallation)({
       managedDirectory: "unused-managed-installation",
+      refresh: () => Effect.void,
     }),
   ),
   Layer.provideMerge(Layer.mock(ServerSecretStore.ServerSecretStore)({})),
@@ -182,6 +183,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
             CodexInstallation.CodexInstallation.of({
               ...installation,
               managedDirectory: "unused-managed-installation",
+              refresh: () => Effect.void,
               resolve: () => Effect.succeed(executable),
               acquire,
             }),

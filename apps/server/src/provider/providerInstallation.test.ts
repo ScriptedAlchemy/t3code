@@ -79,6 +79,7 @@ const makeHarness = Effect.fn("providerInstallation.test.makeHarness")(function*
             }),
         }),
         Layer.mock(CodexInstallation.CodexInstallation)({
+          refresh: () => Effect.void,
           managedDirectory: "/unused-managed-codex",
           start: (options) =>
             Effect.sync(() => {

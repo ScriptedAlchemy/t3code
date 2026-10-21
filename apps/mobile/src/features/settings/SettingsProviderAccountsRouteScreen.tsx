@@ -1,3 +1,4 @@
+import { compareSemverVersions } from "@t3tools/shared/semver";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -143,6 +144,11 @@ function ProviderAccount({
     installation?.phase === "downloading" ||
     installation?.phase === "extracting" ||
     installation?.phase === "verifying";
+  const updateAvailable =
+    installation?.source !== "local" &&
+    installation?.version != null &&
+    installation.installedVersion != null &&
+    compareSemverVersions(installation.version, installation.installedVersion) > 0;
   const installationKey =
     installation?.phase === "succeeded" && installation.source === "managed"
       ? `${installation.operationId ?? ""}:${installation.installedVersion ?? ""}:${installation.executablePath ?? ""}`
@@ -172,21 +178,14 @@ function ProviderAccount({
     pending || !canCancelInstall || installationQuery.error !== null || installation === null;
 
   useEffect(() => {
-    if (!canInstallCodex || provider.installed || installationKey === null) {
+    if (!canInstallCodex || installationKey === null) {
       refreshedInstallation.current = null;
       return;
     }
     if (refreshedInstallation.current === installationKey) return;
     refreshedInstallation.current = installationKey;
     void refreshProviders({ environmentId, input: { instanceId } });
-  }, [
-    canInstallCodex,
-    environmentId,
-    instanceId,
-    installationKey,
-    provider.installed,
-    refreshProviders,
-  ]);
+  }, [canInstallCodex, environmentId, instanceId, installationKey, refreshProviders]);
 
   async function run(
     command: () => Promise<AtomCommandResult<unknown, unknown>>,
@@ -284,21 +283,31 @@ function ProviderAccount({
         {signedIn && !active && provider.auth.email?.trim() ? (
           <ProviderAccountEmail key={provider.auth.email} email={provider.auth.email} />
         ) : null}
-        {canInstallCodex && !provider.installed ? (
+        {canInstallCodex && (!provider.installed || updateAvailable || installActive) ? (
           <SettingsActionRow
             icon="arrow.down.circle"
             label={
               installActive
                 ? "Cancel installation"
-                : installation?.phase === "succeeded"
-                  ? installation.source === "local"
-                    ? "Install Codex CLI"
-                    : "Refresh provider status"
-                  : installation?.phase === "failed" || installation?.phase === "cancelled"
-                    ? "Retry installation"
-                    : "Install Codex CLI"
+                : updateAvailable
+                  ? "Update Codex CLI"
+                  : installation?.phase === "succeeded"
+                    ? installation.source === "local"
+                      ? "Install Codex CLI"
+                      : "Refresh provider status"
+                    : installation?.phase === "failed" || installation?.phase === "cancelled"
+                      ? "Retry installation"
+                      : "Install Codex CLI"
             }
-            description={installationQuery.error ?? installDescription}
+            description={
+              installationQuery.error ??
+              (updateAvailable &&
+              !installActive &&
+              installation.phase !== "failed" &&
+              installation.phase !== "cancelled"
+                ? `Codex ${installation.version} is available.`
+                : installDescription)
+            }
             disabled={(installActive ? cancelInstallDisabled : installDisabled) || active}
             loading={pending}
             onPress={() => {
@@ -311,7 +320,11 @@ function ProviderAccount({
                     }),
                   "Could not cancel Codex installation. Try again.",
                 );
-              } else if (installation?.phase === "succeeded" && installation.source !== "local") {
+              } else if (
+                !updateAvailable &&
+                installation?.phase === "succeeded" &&
+                installation.source !== "local"
+              ) {
                 void refreshProviders({ environmentId, input: { instanceId } });
               } else {
                 void run(() => startInstall(target), "Could not install Codex CLI. Try again.");

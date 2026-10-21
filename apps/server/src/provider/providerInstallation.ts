@@ -133,6 +133,16 @@ export const makeProviderInstallation = Effect.fn("makeProviderInstallation")(fu
   const subscribe = (input: ProviderSetupInput) =>
     Stream.unwrap(
       requireInstance(input.instanceId, "observe-install").pipe(
+        Effect.tap(({ driver }) =>
+          driver === CODEX
+            ? settings.getSettings.pipe(
+                Effect.flatMap((current) =>
+                  current.enableProviderUpdateChecks ? codexInstallation.refresh() : Effect.void,
+                ),
+                Effect.ignore,
+              )
+            : Effect.void,
+        ),
         Effect.map(({ installation }) => installation.changes),
       ),
     );

@@ -37,6 +37,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     platform?: NodeJS.Platform;
     spawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
     runtimeRenameFailures?: number;
+    releaseResponse?: () => unknown;
   } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -54,6 +55,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     );
   }
   let downloads = 0;
+  let releaseChecks = 0;
   const crypto = yield* Crypto.Crypto;
   const sha256 = Hex.encode(yield* crypto.digest("SHA-256", archive).pipe(Effect.orDie));
   let runtimeRenameFailures = input.runtimeRenameFailures ?? 0;
@@ -104,6 +106,11 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
       HttpClient.HttpClient,
       HttpClient.make((request) =>
         Effect.sync(() => {
+          if (request.url === "https://api.github.com/repos/openai/codex/releases/latest") {
+            releaseChecks++;
+            const body = input.releaseResponse?.() ?? releaseMetadata(asset.version, sha256);
+            return HttpClientResponse.fromWeb(request, Response.json(body));
+          }
           downloads++;
           return Object.defineProperty(
             HttpClientResponse.fromWeb(request, new Response(null)),
@@ -124,6 +131,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     probeLog,
     failedRenames,
     downloads: () => downloads,
+    releaseChecks: () => releaseChecks,
   };
 });
 const terminalState = (installation: CodexInstallation.CodexInstallation["Service"]) =>
@@ -467,6 +475,123 @@ it.effect("keeps an activated runtime when a later update fails verification", (
     expect((yield* terminalState(update.installation)).phase).toBe("failed");
     expect((yield* update.installation.resolve()).version).toBe("0.156.1");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+const releaseMetadata = (version: string, sha256 = "a".repeat(64)) => ({
+  tag_name: `rust-v${version}`,
+  draft: false,
+  prerelease: false,
+  assets: [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+  ].map((target) => ({
+    name: `codex-package-${target}.tar.gz`,
+    size: archive.length,
+    digest: `sha256:${sha256}`,
+    browser_download_url: `https://github.com/openai/codex/releases/download/rust-v${version}/codex-package-${target}.tar.gz`,
+  })),
+});
+
+it("selects complete verified packages for all supported platforms", () => {
+  for (const platform of ["darwin", "linux", "win32"] as const)
+    for (const arch of ["x64", "arm64"])
+      expect(
+        CodexInstallation.resolveCodexReleaseAsset(platform, arch, releaseMetadata("0.200.0")),
+      ).toMatchObject({ version: "0.200.0", sha256: "a".repeat(64) });
+  expect(
+    CodexInstallation.resolveCodexReleaseAsset("linux", "riscv64", releaseMetadata("0.200.0")),
+  ).toBeNull();
+});
+
+it("rejects prereleases and packages with missing or invalid integrity metadata", () => {
+  const release = releaseMetadata("0.200.0");
+  for (const invalid of [
+    { ...release, prerelease: true },
+    { ...release, draft: true },
+    { ...release, tag_name: "rust-v0.201.0-alpha.1" },
+    { ...release, assets: [] },
+    ...[null, "sha256:bad"].map((digest) => ({
+      ...release,
+      assets: release.assets.map((asset) => ({ ...asset, digest })),
+    })),
+    {
+      ...release,
+      assets: release.assets.map((asset) => ({
+        ...asset,
+        browser_download_url: "https://example.com/package.tar.gz",
+      })),
+    },
+  ])
+    expect(CodexInstallation.resolveCodexReleaseAsset("darwin", "arm64", invalid)).toBeNull();
+});
+
+it.effect("discovers and installs the latest package without a pinned version", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({ options: { releaseAsset: undefined } });
+    expect((yield* h.installation.state).version).toBeNull();
+    yield* h.installation.refresh();
+    expect((yield* h.installation.state).version).toBe(asset.version);
+    expect(h.downloads()).toBe(0);
+    yield* h.installation.start();
+    expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
+    expect(h.releaseChecks()).toBe(2);
+    expect(h.downloads()).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("manual refresh discovers newer releases while background checks reuse the cache", () =>
+  Effect.gen(function* () {
+    let version = "0.163.0";
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      releaseResponse: () => releaseMetadata(version),
+    });
+    yield* h.installation.refresh();
+    version = "0.164.0";
+    yield* h.installation.refresh();
+    expect((yield* h.installation.state).version).toBe("0.163.0");
+    yield* h.installation.refresh({ fresh: true });
+    expect((yield* h.installation.state).version).toBe("0.164.0");
+    expect(h.releaseChecks()).toBe(2);
+    expect(h.downloads()).toBe(0);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("failed discovery preserves the installed runtime and never downloads a fallback", () =>
+  Effect.gen(function* () {
+    const first = yield* makeHarness();
+    yield* first.installation.start();
+    yield* terminalState(first.installation);
+    const h = yield* makeHarness({
+      baseDir: first.baseDir,
+      options: { releaseAsset: undefined },
+      releaseResponse: () => ({ error: "unavailable" }),
+    });
+    expect(Exit.isFailure(yield* Effect.exit(h.installation.start()))).toBe(true);
+    expect((yield* h.installation.resolve()).version).toBe(asset.version);
+    expect(h.downloads()).toBe(0);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+it.effect(
+  "does not downgrade an installed runtime when the release endpoint reports an older version",
+  () =>
+    Effect.gen(function* () {
+      const first = yield* makeHarness();
+      yield* first.installation.start();
+      yield* terminalState(first.installation);
+      const h = yield* makeHarness({
+        baseDir: first.baseDir,
+        options: { releaseAsset: undefined },
+        releaseResponse: () => releaseMetadata("0.155.0"),
+      });
+      yield* h.installation.start();
+      expect((yield* h.installation.resolve()).version).toBe(asset.version);
+      expect(h.downloads()).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 // Stands in for Windows' bsdtar: CRLF listings, and extraction writes the Windows layout.
