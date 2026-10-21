@@ -217,6 +217,8 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
   let checkedAt: number | undefined;
   let retryAt: number | undefined;
   let lastDiscoveryFailure: CodexInstallationError | undefined;
+  let lastDiscoveryFailureCredentialFingerprint: string | null | undefined;
+  let currentDiscoveryCredentialFingerprint: string | null = null;
   const discoveryGate = yield* Semaphore.make(1);
   const managedDirectory = path.join(options.baseDir, "tools", "codex");
   const activePath = path.join(managedDirectory, "active.json");
@@ -241,18 +243,34 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
       if (options.releaseAsset !== undefined) return;
       const current = yield* SubscriptionRef.get(state);
       if (isRunning(current)) return;
+      currentDiscoveryCredentialFingerprint = null;
       const now = yield* Clock.currentTimeMillis;
-      if (retryAt !== undefined && now < retryAt && lastDiscoveryFailure !== undefined)
-        return yield* Effect.fail(lastDiscoveryFailure);
-      retryAt = undefined;
-      lastDiscoveryFailure = undefined;
-      if (
+      let credential: Option.Option<GitHubCredentials.GitHubCredential> | undefined;
+      if (retryAt !== undefined && lastDiscoveryFailure !== undefined) {
+        credential = yield* Effect.option(githubCredentials.get("github.com"));
+        currentDiscoveryCredentialFingerprint = Option.match(credential, {
+          onNone: () => null,
+          onSome: (value) => value.fingerprint,
+        });
+        if (
+          now < retryAt &&
+          lastDiscoveryFailureCredentialFingerprint === currentDiscoveryCredentialFingerprint
+        )
+          return yield* Effect.fail(lastDiscoveryFailure);
+        retryAt = undefined;
+        lastDiscoveryFailure = undefined;
+        lastDiscoveryFailureCredentialFingerprint = undefined;
+      } else if (
         !input?.fresh &&
         checkedAt !== undefined &&
         now - checkedAt < RELEASE_CHECK_SUCCESS_TTL_MS
       )
         return;
-      const credential = yield* Effect.option(githubCredentials.get("github.com"));
+      credential ??= yield* Effect.option(githubCredentials.get("github.com"));
+      currentDiscoveryCredentialFingerprint = Option.match(credential, {
+        onNone: () => null,
+        onSome: (value) => value.fingerprint,
+      });
       const baseRequest = HttpClientRequest.get(
         "https://api.github.com/repos/openai/codex/releases/latest",
       ).pipe(HttpClientRequest.setHeader("Accept", "application/vnd.github+json"));
@@ -310,6 +328,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
     Effect.tapError((failure) =>
       Effect.gen(function* () {
         lastDiscoveryFailure = failure;
+        lastDiscoveryFailureCredentialFingerprint = currentDiscoveryCredentialFingerprint;
         retryAt ??= (yield* Clock.currentTimeMillis) + RELEASE_CHECK_FAILURE_COOLDOWN_MS;
       }),
     ),
