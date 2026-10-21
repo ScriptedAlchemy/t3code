@@ -10,6 +10,7 @@ import type {
   ProviderInstanceId,
   ServerProvider,
 } from "@t3tools/contracts";
+import { compareSemverVersions } from "@t3tools/shared/semver";
 import { useAtomValue } from "@effect/atom-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { CopyIcon } from "lucide-react";
@@ -85,6 +86,11 @@ export function ProviderAuthenticationSection({
     installation?.phase === "downloading" ||
     installation?.phase === "extracting" ||
     installation?.phase === "verifying";
+  const updateAvailable =
+    provider.installed &&
+    provider.version != null &&
+    installation?.version != null &&
+    compareSemverVersions(installation.version, provider.version) > 0;
   const installationKey =
     installation?.phase === "succeeded" && installation.source === "managed"
       ? `${installation.operationId ?? ""}:${installation.installedVersion ?? ""}:${installation.executablePath ?? ""}`
@@ -140,21 +146,14 @@ export function ProviderAuthenticationSection({
       : auth?.authorizationUrl;
 
   useEffect(() => {
-    if (!canInstallCodex || provider.installed || installationKey === null) {
+    if (!canInstallCodex || installationKey === null) {
       refreshedInstallation.current = null;
       return;
     }
     if (refreshedInstallation.current === installationKey) return;
     refreshedInstallation.current = installationKey;
     void refreshProviders({ environmentId, input: { instanceId } });
-  }, [
-    canInstallCodex,
-    environmentId,
-    instanceId,
-    installationKey,
-    provider.installed,
-    refreshProviders,
-  ]);
+  }, [canInstallCodex, environmentId, instanceId, installationKey, refreshProviders]);
 
   useEffect(() => () => reservedBrowser.current?.close(), []);
   useEffect(() => {
@@ -276,13 +275,17 @@ export function ProviderAuthenticationSection({
         ? "Extracting Codex CLI."
         : installation?.phase === "verifying"
           ? "Checking Codex CLI."
-          : installation?.phase === "succeeded" && installation.source === "local"
+          : installation?.phase === "succeeded" &&
+              installation.source === "local" &&
+              !provider.installed
             ? "This provider cannot use the environment's Codex executable. Install Codex CLI for this provider."
             : installation?.phase === "succeeded" && !provider.installed
               ? "Codex CLI is installed. Checking whether this provider can run it."
               : installation?.phase === "failed" || installation?.phase === "cancelled"
                 ? (installation.message ?? "Codex CLI installation failed.")
-                : null;
+                : updateAvailable
+                  ? `Codex ${installation.version} is available.`
+                  : null;
 
   return (
     <SettingsRow
@@ -309,7 +312,7 @@ export function ProviderAuthenticationSection({
           <p role="status" className="[overflow-wrap:anywhere]">
             {statusMessage}
           </p>
-        ) : installQuery.error || (canInstallCodex && !provider.installed && installStatus) ? (
+        ) : installQuery.error || (canInstallCodex && installStatus) ? (
           <div>
             <p
               role={installQuery.error ? "alert" : "status"}
@@ -336,7 +339,7 @@ export function ProviderAuthenticationSection({
       }
       control={
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {canInstallCodex && !provider.installed ? (
+          {canInstallCodex && (!provider.installed || updateAvailable || installActive) ? (
             installActive ? (
               installation.operationId ? (
                 <Button
@@ -365,7 +368,7 @@ export function ProviderAuthenticationSection({
                 variant="outline"
                 disabled={installDisabled || active}
                 onClick={() => {
-                  if (installation?.phase === "succeeded") {
+                  if (!updateAvailable && installation?.phase === "succeeded") {
                     if (installation.source === "local") {
                       void run(
                         () => startInstall({ environmentId, input: { instanceId } }),
@@ -385,13 +388,15 @@ export function ProviderAuthenticationSection({
                   }
                 }}
               >
-                {installation?.phase === "failed" || installation?.phase === "cancelled"
-                  ? "Retry installation"
-                  : installation?.phase === "succeeded"
-                    ? installation.source === "local"
-                      ? "Install Codex CLI"
-                      : "Refresh status"
-                    : "Install Codex CLI"}
+                {updateAvailable
+                  ? "Update Codex CLI"
+                  : installation?.phase === "failed" || installation?.phase === "cancelled"
+                    ? "Retry installation"
+                    : installation?.phase === "succeeded"
+                      ? installation.source === "local"
+                        ? "Install Codex CLI"
+                        : "Refresh status"
+                      : "Install Codex CLI"}
               </Button>
             )
           ) : null}
