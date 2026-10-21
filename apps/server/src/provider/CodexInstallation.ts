@@ -218,6 +218,8 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
   let lastDiscoveryFailure: CodexInstallationError | undefined;
   let lastDiscoveryFailureCredentialFingerprint: string | null | undefined;
   let currentDiscoveryCredentialFingerprint: string | null = null;
+  // Settings-backed tokens can return after cache invalidation, so skip a rejected token until credentials change.
+  let rejectedCredentialFingerprint: string | undefined;
   const discoveryGate = yield* Semaphore.make(1);
   const managedDirectory = path.join(options.baseDir, "tools", "codex");
   const activePath = path.join(managedDirectory, "active.json");
@@ -273,7 +275,11 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
       const baseRequest = HttpClientRequest.get(
         "https://api.github.com/repos/openai/codex/releases/latest",
       ).pipe(HttpClientRequest.setHeader("Accept", "application/vnd.github+json"));
-      const request = Option.match(credential, {
+      const authenticatedCredential = Option.filter(
+        credential,
+        (value) => value.fingerprint !== rejectedCredentialFingerprint,
+      );
+      const request = Option.match(authenticatedCredential, {
         onNone: () => baseRequest,
         onSome: (value) =>
           HttpClientRequest.setHeader(
@@ -282,7 +288,12 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
             `Bearer ${Redacted.value(value.token)}`,
           ),
       });
-      const response = yield* http.execute(request).pipe(Effect.timeout("5 seconds"));
+      let response = yield* http.execute(request).pipe(Effect.timeout("5 seconds"));
+      if (response.status === 401 && Option.isSome(authenticatedCredential)) {
+        rejectedCredentialFingerprint = authenticatedCredential.value.fingerprint;
+        yield* githubCredentials.invalidate("github.com");
+        response = yield* http.execute(baseRequest).pipe(Effect.timeout("5 seconds"));
+      }
       const responseAt = yield* Clock.currentTimeMillis;
       if (response.status < 200 || response.status >= 300) {
         let rateLimited = hasGitHubRateLimitHeaders(response.status, response.headers);
@@ -300,7 +311,6 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
           return yield* installationError("refresh", RELEASE_CHECK_RATE_LIMIT_MESSAGE);
         }
         yield* HttpClientResponse.filterStatusOk(response);
-        return yield* installationError("refresh", `GitHub returned HTTP ${response.status}.`);
       }
       const release = yield* HttpClientResponse.schemaBodyJson(Release)(response).pipe(
         Effect.timeout("5 seconds"),
