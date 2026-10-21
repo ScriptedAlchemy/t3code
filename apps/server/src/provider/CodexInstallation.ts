@@ -86,8 +86,7 @@ const hasGitHubRateLimitHeaders = (
 ) =>
   status === 429 ||
   (status === 403 &&
-    (headers["x-ratelimit-remaining"] === "0" ||
-      headers["retry-after"] !== undefined));
+    (headers["x-ratelimit-remaining"] === "0" || headers["retry-after"] !== undefined));
 const retryAtFromGitHubHeaders = (
   headers: Readonly<Record<string, string | undefined>>,
   now: number,
