@@ -654,29 +654,27 @@ it.effect("coalesces concurrent failed release checks during the failure cooldow
 it.effect.each([
   { githubToken: "test-github-token", authorization: "Bearer test-github-token" },
   { githubToken: undefined, authorization: undefined },
-])(
-  "uses GitHub credentials only for release metadata (%s)",
-  ({ githubToken, authorization }) =>
-    Effect.gen(function* () {
-      const h = yield* makeHarness({
-        options: { releaseAsset: undefined },
-        ...(githubToken === undefined ? {} : { githubToken }),
-      });
-      yield* h.installation.start();
-      yield* terminalState(h.installation);
+])("uses GitHub credentials only for release metadata (%s)", ({ githubToken, authorization }) =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({
+      options: { releaseAsset: undefined },
+      ...(githubToken === undefined ? {} : { githubToken }),
+    });
+    yield* h.installation.start();
+    yield* terminalState(h.installation);
 
-      expect(h.requests()).toContainEqual({
-        url: "https://api.github.com/repos/openai/codex/releases/latest",
-        authorization,
-      });
-      const assetRequests = h.requests().filter((request) =>
-        request.url.includes("/releases/download/"),
-      );
-      expect(assetRequests).toHaveLength(1);
-      expect(assetRequests[0]?.authorization).toBeUndefined();
-      expect(h.releaseChecks()).toBe(1);
-      expect(h.downloads()).toBe(1);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    expect(h.requests()).toContainEqual({
+      url: "https://api.github.com/repos/openai/codex/releases/latest",
+      authorization,
+    });
+    const assetRequests = h
+      .requests()
+      .filter((request) => request.url.includes("/releases/download/"));
+    expect(assetRequests).toHaveLength(1);
+    expect(assetRequests[0]?.authorization).toBeUndefined();
+    expect(h.releaseChecks()).toBe(1);
+    expect(h.downloads()).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("honors GitHub retry headers during fresh refreshes", () =>
@@ -747,9 +745,10 @@ it.effect("retries a rate-limited discovery immediately when GitHub credentials 
 
     expect(h.releaseChecks()).toBe(2);
     expect(
-      h.requests()
-        .filter((request) =>
-          request.url === "https://api.github.com/repos/openai/codex/releases/latest",
+      h
+        .requests()
+        .filter(
+          (request) => request.url === "https://api.github.com/repos/openai/codex/releases/latest",
         )
         .map((request) => request.authorization),
     ).toEqual([undefined, "Bearer new-github-token"]);
