@@ -307,7 +307,9 @@ it.layer(layerTest)("CodexDriver", (it) => {
         const managedDirectory = NodePath.join(root, "tools", "codex");
         yield* fs.makeDirectory(managedDirectory, { recursive: true });
         const binary = NodePath.join(
-          reference === "neighbor" ? `${managedDirectory}-external` : managedDirectory,
+          reference === "neighbor"
+            ? NodePath.join(`${managedDirectory}-external`, "packages", "standalone")
+            : managedDirectory,
           "0.156.1",
           "bin",
           "codex",
