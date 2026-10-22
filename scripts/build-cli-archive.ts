@@ -189,6 +189,7 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
     yield* fs.copy(path.join(input.repoRoot, "patches"), path.join(input.stageDir, "patches"));
   }
 
+  yield* fs.copyFile(path.join(input.repoRoot, ".npmrc"), path.join(input.stageDir, ".npmrc"));
   const install = yield* resolveSpawnCommand("vp", [...STAGE_INSTALL_ARGS]);
   yield* runCommand(
     ChildProcess.make(install.command, install.args, {
@@ -208,6 +209,7 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
     (entry) => entry !== platformKey,
   );
   for (const entry of [
+    ".npmrc",
     "package.json",
     "pnpm-workspace.yaml",
     "pnpm-lock.yaml",
