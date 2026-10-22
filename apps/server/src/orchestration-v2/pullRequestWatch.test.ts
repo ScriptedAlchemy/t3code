@@ -5,7 +5,11 @@ import type {
 } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 
-import { PULL_REQUEST_WATCH_WAKE_LIMIT, evaluatePullRequestWatch } from "./pullRequestWatch.ts";
+import {
+  PULL_REQUEST_WATCH_WAKE_LIMIT,
+  evaluatePullRequestWatch,
+  pullRequestWatchMessage,
+} from "./pullRequestWatch.ts";
 
 const STARTED = "2026-10-02T12:00:00.000Z";
 
@@ -58,6 +62,80 @@ const remark = (
 const noRemarks: ReadonlyArray<PullRequestComment> = [];
 
 describe("evaluatePullRequestWatch", () => {
+  it("finishes a CI watch after the last pending check even when known failures remain", () => {
+    const first = evaluatePullRequestWatch(
+      watch({ mode: "checks" }),
+      detail({
+        checks: [
+          check("Binary Size Limit", "failure"),
+          check("Binding Size Limit", "failure"),
+          check("test", "pending"),
+        ],
+      }),
+      noRemarks,
+    );
+    assert.isFalse(first.completed);
+    const finished = evaluatePullRequestWatch(
+      first.next,
+      detail({
+        checks: [
+          check("Binary Size Limit", "failure"),
+          check("Binding Size Limit", "failure"),
+          check("test", "success"),
+        ],
+      }),
+      noRemarks,
+    );
+    assert.isTrue(finished.completed);
+    assert.deepEqual(finished.changes, [
+      {
+        kind: "checks-completed",
+        count: 3,
+        failed: [check("Binary Size Limit", "failure"), check("Binding Size Limit", "failure")],
+      },
+    ]);
+    const message = pullRequestWatchMessage({
+      number: 16177,
+      url: "https://github.com/web-infra-dev/rspack/pull/16177",
+      baseBranch: "main",
+      headSha: "aaaaaaaaaa",
+      report: finished,
+    });
+    assert.equal(message.notification.outcome, "failed");
+    assert.include(message.text, "stopped watching");
+    assert.include(message.text, "Binary Size Limit");
+    assert.notInclude(message.text, "checks passed");
+  });
+
+  it("does not complete a CI watch on empty checks or a pending optional check", () => {
+    for (const checks of [
+      [],
+      [{ ...check("test", "success"), required: true }, check("bot", "pending")],
+    ]) {
+      const report = evaluatePullRequestWatch(
+        watch({ mode: "checks" }),
+        detail({ checks }),
+        noRemarks,
+      );
+      assert.isFalse(report.completed);
+    }
+  });
+
+  it("finishes a successful CI watch but preserves ongoing and legacy review watches", () => {
+    const green = detail({ checks: [check("test", "success")] });
+    assert.isTrue(evaluatePullRequestWatch(watch({ mode: "checks" }), green, noRemarks).completed);
+    assert.isFalse(evaluatePullRequestWatch(watch({ mode: "review" }), green, noRemarks).completed);
+    assert.isFalse(evaluatePullRequestWatch(watch(), green, noRemarks).completed);
+  });
+
+  it("keeps review comments out of CI-only watches", () => {
+    const report = evaluatePullRequestWatch(watch({ mode: "checks" }), detail(), [
+      remark("reviewer", "2026-10-02T12:01:00.000Z"),
+    ]);
+    assert.deepEqual(report.changes, []);
+    assert.isFalse(report.completed);
+  });
+
   it("reports each failure at once, even while another check never finishes", () => {
     const bot = check("CodeRabbit", "pending");
     const first = detail({ checks: [check("lint", "failure"), check("test", "pending"), bot] });

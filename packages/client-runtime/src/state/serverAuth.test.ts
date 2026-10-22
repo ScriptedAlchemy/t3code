@@ -157,7 +157,9 @@ it.effect("waits for a newly configured provider and preserves its active auth s
     };
     yield* Queue.offer(events, { version: 1, type: "settingsUpdated", payload: { settings } });
     yield* AtomRegistry.toStream(registry, atoms.settingsValueAtom(target.environmentId)).pipe(
-      Stream.filter((value) => value === settings),
+      Stream.filter(
+        (value) => value !== null && Object.hasOwn(value.providerInstances, instanceId),
+      ),
       Stream.runHead,
     );
     expect(requests).toBe(0);
@@ -234,7 +236,9 @@ it.effect("waits for a newly configured provider and preserves its active auth s
       payload: { settings: DEFAULT_SERVER_SETTINGS },
     });
     yield* AtomRegistry.toStream(registry, atoms.settingsValueAtom(target.environmentId)).pipe(
-      Stream.filter((value) => value === DEFAULT_SERVER_SETTINGS),
+      Stream.filter(
+        (value) => value !== null && !Object.hasOwn(value.providerInstances, instanceId),
+      ),
       Stream.runHead,
     );
     const deleted = registry.get(authAtom);
@@ -254,7 +258,9 @@ it.effect("waits for a newly configured provider and preserves its active auth s
       payload: { settings },
     });
     yield* AtomRegistry.toStream(registry, atoms.settingsValueAtom(target.environmentId)).pipe(
-      Stream.filter((value) => value === settings),
+      Stream.filter(
+        (value) => value !== null && Object.hasOwn(value.providerInstances, instanceId),
+      ),
       Stream.runHead,
     );
     registered = true;
@@ -272,7 +278,9 @@ it.effect("waits for a newly configured provider and preserves its active auth s
       payload: { settings: DEFAULT_SERVER_SETTINGS },
     });
     yield* AtomRegistry.toStream(registry, atoms.settingsValueAtom(target.environmentId)).pipe(
-      Stream.filter((value) => value === DEFAULT_SERVER_SETTINGS),
+      Stream.filter(
+        (value) => value !== null && !Object.hasOwn(value.providerInstances, instanceId),
+      ),
       Stream.runHead,
     );
     expect(registry.get(authAtom)).toMatchObject({ _tag: "Success", value: idle });

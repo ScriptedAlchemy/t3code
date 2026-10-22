@@ -920,29 +920,34 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
       }),
     );
 
-    it.effect("excludes sandboxes reached through a symlink into the worktrees dir", () =>
-      Effect.gen(function* () {
-        const path = yield* Path.Path;
-        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
-        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
-        const configBaseDir = yield* makeTempDir("t3code-scanner-base-");
-        const linkParent = yield* makeTempDir("t3code-scanner-links-");
-        const fileSystem = yield* FileSystem.FileSystem;
+    it.effect.each(["direct", "symlink"] as const)(
+      "excludes sandbox symlinks with a %s configured root",
+      (rootKind) =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+          const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+          const realBaseDir = yield* makeTempDir("t3code-scanner-base-");
+          const linkParent = yield* makeTempDir("t3code-scanner-links-");
+          const fileSystem = yield* FileSystem.FileSystem;
+          const configBaseDir =
+            rootKind === "symlink" ? path.join(linkParent, "t3-home") : realBaseDir;
+          if (rootKind === "symlink") yield* fileSystem.symlink(realBaseDir, configBaseDir);
 
-        const worktreeCwd = path.join(configBaseDir, "worktrees", "t3code", "wt-3");
-        yield* fileSystem.makeDirectory(worktreeCwd, { recursive: true });
-        const symlinkCwd = path.join(linkParent, "innocent-project");
-        yield* fileSystem.symlink(worktreeCwd, symlinkCwd);
-        yield* writeTranscript({
-          filePath: path.join(claudeHomePath, "projects", "-slug", "a.jsonl"),
-          contents: claudeSessionLine(symlinkCwd),
-          mtimeMs: Date.parse("2026-01-01T00:00:00.000Z"),
-        });
+          const worktreeCwd = path.join(configBaseDir, "worktrees", "t3code", "wt-3");
+          yield* fileSystem.makeDirectory(worktreeCwd, { recursive: true });
+          const symlinkCwd = path.join(linkParent, "innocent-project");
+          yield* fileSystem.symlink(worktreeCwd, symlinkCwd);
+          yield* writeTranscript({
+            filePath: path.join(claudeHomePath, "projects", "-slug", "a.jsonl"),
+            contents: claudeSessionLine(symlinkCwd),
+            mtimeMs: Date.parse("2026-01-01T00:00:00.000Z"),
+          });
 
-        const result = yield* runScan({ claudeHomePath, codexHomePath, configBaseDir });
+          const result = yield* runScan({ claudeHomePath, codexHomePath, configBaseDir });
 
-        expect(result.candidates).toEqual([]);
-      }),
+          expect(result.candidates).toEqual([]);
+        }),
     );
 
     it.effect("finds the cwd on a later line when the first records carry none", () =>

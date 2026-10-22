@@ -277,8 +277,40 @@ describe("pull request toolkit handlers", () => {
           type: "thread.pull-request.watch",
           number: 9,
           watching: true,
+          initialMode: "checks",
           link: { url: "https://github.com/t3tools/t3code/pull/9", source: "agent" },
         },
+      ]);
+    }),
+  );
+
+  it.effect("preserves an existing ongoing watch when mode is omitted", () =>
+    Effect.gen(function* () {
+      const ongoing = makeLink(1, {
+        headBranch: "feature",
+        watch: {
+          startedAt: "2026-08-20T00:00:00.000Z",
+          headSha: null,
+          failedChecks: [],
+          passed: false,
+          passedChecks: [],
+          remarksThrough: "2026-08-20T00:00:00.000Z",
+          remarkIds: [],
+          conflicting: false,
+          wakes: 0,
+        },
+      });
+      const harness = yield* makeHarness({ thread: makeThread([ongoing]) });
+      const result = yield* harness.call("watch_pull_request", {
+        repository: "t3tools/t3code",
+        number: 1,
+      });
+      expect(result).toMatchObject({ watching: true, watchMode: "review" });
+      expect(
+        listThreadPullRequests(v2PullRequestThread(makeThread([ongoing]))).pullRequests[0],
+      ).toMatchObject({ watchMode: "review" });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { initialMode: "checks", mode: undefined },
       ]);
     }),
   );

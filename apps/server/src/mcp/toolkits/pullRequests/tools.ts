@@ -6,6 +6,7 @@ import {
   PullRequestReviewGuideRun,
   PullRequestState,
   ThreadPullRequestLinkSource,
+  ThreadPullRequestWatchMode,
   TrimmedNonEmptyString,
   ThreadId,
 } from "@t3tools/contracts";
@@ -232,6 +233,7 @@ export const WatchPullRequestResult = Schema.Struct({
   watching: Schema.Boolean.annotate({
     description: "Whether T3 Code now watches the pull request for this thread.",
   }),
+  watchMode: Schema.optional(ThreadPullRequestWatchMode),
   wasWatching: Schema.Boolean.annotate({
     description: "Whether it was already watched before the call.",
   }),
@@ -242,6 +244,7 @@ export const ThreadPullRequestEntry = Schema.Struct({
   ...PullRequestIdentity,
   source: ThreadPullRequestLinkSource,
   watching: Schema.Boolean,
+  watchMode: Schema.optional(ThreadPullRequestWatchMode),
   state: Schema.NullOr(PullRequestState),
   title: Schema.NullOr(Schema.String),
   headBranch: Schema.NullOr(Schema.String),
@@ -316,8 +319,16 @@ const ListThreadPullRequestsTool = Tool.make("list_thread_pull_requests", {
 
 const WatchPullRequestTool = Tool.make("watch_pull_request", {
   description:
-    "Have T3 Code watch an open pull request for this thread, linking it first if needed. T3 Code checks it every two minutes and wakes you with a message when a check fails, the required checks pass, someone else comments or reviews, or the branch starts to conflict with its base. Use this to monitor or babysit a pull request instead of polling, sleeping, or running a watcher. Only comments posted after this call wake you, so handle the existing ones first, then end your turn. A wake is news, not a merge decision: check readiness yourself before merging. While T3 Code watches, the thread stays in the user's Working list, not their inbox. When you hand the work back to the user, call unwatch_pull_request first so the thread returns to their inbox. Watching ends when the pull request merges or closes, when its thread settles or is archived, when T3 Code fails to read it 8 times in a row (a host rate limit only delays it), when the user stops this thread, or when you call unwatch_pull_request. Unsettle the thread before starting a new watch. A subagent cannot watch: its parent thread owns the pull request.",
-  parameters: PullRequestTargetInput,
+    'Watch an open pull request for this thread, linking it first if needed. For a new watch, mode "checks" is the default: T3 Code wakes you for failures and conflicts, then stops and sends a final result when every reported check has finished, including failed or cancelled checks. A finished check is not approval to merge. Empty check results keep waiting. Use mode "review" only for intentionally ongoing monitoring of checks, new comments/reviews, and conflicts; it continues after CI finishes. Omitting mode on an existing watch preserves its mode. Handle existing comments before starting a review watch, then end your turn; do not poll, sleep, or run a watcher. The server checks every two minutes. Active watches keep the thread in Working; call unwatch_pull_request on every remaining watch when handing back, including after the user accepts a failure. After pushing a fix, start a new checks watch if needed. Watches also stop on merge/close, thread settle/archive/Stop, or repeated unreadable results; rate limits only delay them. Subagents cannot watch; their parent owns monitoring.',
+  parameters: Schema.Struct({
+    ...PullRequestTargetInput.fields,
+    mode: Schema.optional(
+      ThreadPullRequestWatchMode.annotate({
+        description:
+          '"checks" waits for CI to finish and stops regardless of outcome. "review" keeps watching checks and reviews until explicitly stopped. New watches default to "checks"; existing watches keep their mode when omitted.',
+      }),
+    ),
+  }),
   success: WatchPullRequestResult,
   failure: PullRequestToolError,
   dependencies,

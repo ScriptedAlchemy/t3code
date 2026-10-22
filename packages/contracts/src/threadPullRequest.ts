@@ -81,7 +81,12 @@ export const ThreadPullRequestKey = Schema.Struct({
 });
 export type ThreadPullRequestKey = typeof ThreadPullRequestKey.Type;
 
+export const ThreadPullRequestWatchMode = Schema.Literals(["checks", "review"]);
+export type ThreadPullRequestWatchMode = typeof ThreadPullRequestWatchMode.Type;
+
 export const ThreadPullRequestWatch = Schema.Struct({
+  /** Missing on saved watches created before bounded CI monitoring; those remain ongoing. */
+  mode: Schema.optional(ThreadPullRequestWatchMode),
   startedAt: IsoDateTime,
   headSha: Schema.NullOr(TrimmedNonEmptyString),
   failedChecks: Schema.Array(TrimmedNonEmptyString),

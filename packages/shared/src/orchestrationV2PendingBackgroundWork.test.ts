@@ -386,11 +386,30 @@ describe("derivePendingBackgroundWork kinds", () => {
       expect(tasks).toEqual([
         {
           taskId: "pull-request-watch:github.com/acme/app#1",
-          description: "Watching pull request #1",
+          description: "Watching checks and reviews on pull request #1",
           kind: "monitor",
         },
       ]);
       expect(backgroundWorkHoldsCompletion(tasks)).toBe(true);
+    });
+
+    it("distinguishes CI waits and releases the hold when their watch ends", () => {
+      const ci = { ...link(1, {}), watch: { ...watch, mode: "checks" as const } };
+      const tasks = derivePendingBackgroundWork({
+        latestRun: null,
+        providerThreads: [],
+        turnItems: [],
+        pullRequests: [ci],
+      });
+      expect(tasks[0]?.description).toBe("Waiting for CI on pull request #1");
+      expect(backgroundWorkHoldsCompletion(tasks)).toBe(true);
+      const ended = derivePendingBackgroundWork({
+        latestRun: null,
+        providerThreads: [],
+        turnItems: [],
+        pullRequests: [link(1, { watched: false })],
+      });
+      expect(backgroundWorkHoldsCompletion(ended)).toBe(false);
     });
 
     it("keeps a thread that never ran waiting on its watch", () => {

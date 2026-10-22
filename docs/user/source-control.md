@@ -280,23 +280,30 @@ closed reviews refresh periodically so reopening one on the host is detected. Me
 when requested. A settled thread's reviews stop refreshing until you unsettle it. With **Auto-settle merged threads** enabled, a thread can settle after every linked
 review is terminal. An open or unsynced link keeps it active.
 
-Ask the agent to watch, monitor, or babysit a pull request and it calls `watch_pull_request`. While
-the thread is active, the server checks the pull request every two minutes and wakes the agent when a
-check fails, the required checks pass, someone else comments or reviews, or the branch starts to
-conflict. Threads in a project that watch the same pull request share one check. On GitHub, a check
-first asks whether anything changed and reads the pull request only when it did, which keeps
-watching inside GitHub's rate limit. Comments from your own account do not wake it. Watching ends
-when the pull request merges or closes, after 10 wakes in a row that bring only comments, after 8
-failed reads in a row, or when you press Stop on the thread. A rate limit only pauses watching.
-Settling or archiving a thread also ends all its watches. Unsettle the thread before starting a new
-watch. Watching a pull request again does not repeat check or conflict news its last
-watch already reported; unlinking the pull request clears that. Subagents cannot watch pull requests; the thread that delegated to them does. To start or stop
-it yourself, use the row menu in the **Linked pull requests** panel. In the thread details card, a
-watched pull request shows an eye; click it to stop watching.
+Ask the agent to monitor CI on a pull request. It waits for every reported check to finish,
+then stops watching and reports the result, including failures or cancelled checks. Accepting a
+failure does not leave a CI watch running. If no checks have appeared yet, it keeps waiting;
+ask the agent to stop if the pull request has no CI. After pushing a fix, ask it to monitor the
+new run.
 
-A watched thread counts as working between wakes, so it stays in the **Working** section and does
-not auto-settle. Agents stop watching when they hand the work back to you, and the thread then
-returns to your inbox.
+For ongoing monitoring, ask the agent to keep watching checks and reviews. This continues after
+CI finishes and wakes the agent for new failures, comments, reviews, or conflicts. Comments from
+your own account do not wake it. Existing watches and watches started from the **Linked pull
+requests** row menu keep this ongoing behavior. The monitor's description distinguishes waiting
+for CI from watching checks and reviews.
+
+The server checks watched pull requests every two minutes. Threads in a project share reads of
+the same pull request, and unchanged results avoid unnecessary host requests. A watched thread
+stays in **Working** between wakes and does not auto-settle. CI watches release it automatically
+when checks finish; ongoing watches must be stopped when the agent hands work back to you.
+You can stop either kind from the linked review's row menu, its eye in thread details, or the
+thread's Stop action. Settling or archiving the thread also ends its watches.
+
+Both kinds stop when the pull request merges or closes, or after eight consecutive not-found
+responses. Rate limits and temporary host errors delay monitoring. Ongoing watches also stop
+after ten consecutive updates containing only comments. Unsettle the thread before starting
+another watch. Watching again remembers previously reported check and conflict news; a CI watch
+still reports its final result. Subagents report to their parent thread, which owns monitoring.
 
 Cross-repository links use a project on the same host. Azure DevOps reviews require a project checked
 out from the matching organization and repository.
