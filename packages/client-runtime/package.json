@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./projectKnowledge": {
+      "types": "./src/projectKnowledge/index.ts",
+      "default": "./src/projectKnowledge/index.ts"
+    },
     "./workspace-basename-lookup": {
       "types": "./src/workspaceBasenameLookup.ts",
       "default": "./src/workspaceBasenameLookup.ts"

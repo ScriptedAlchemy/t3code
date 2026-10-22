@@ -215,6 +215,7 @@ export class ProjectKnowledgeError extends Schema.TaggedError<ProjectKnowledgeEr
       "invalid_source",
       "user_confirmation_required",
       "wrong_environment",
+      "wrong_project",
       "stale_context",
       "context_budget",
       "command_reused",
@@ -237,6 +238,8 @@ export class ProjectKnowledgeError extends Schema.TaggedError<ProjectKnowledgeEr
         return "The selected source is unavailable or has changed.";
       case "user_confirmation_required":
         return "A user must confirm proposed knowledge.";
+      case "wrong_project":
+        return "This context belongs to another project.";
       case "wrong_environment":
         return "This context belongs to another environment.";
       case "stale_context":
