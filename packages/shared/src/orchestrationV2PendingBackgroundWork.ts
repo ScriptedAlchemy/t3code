@@ -304,7 +304,10 @@ function pullRequestWatchTasks(
       : [
           {
             taskId: `pull-request-watch:${threadPullRequestKeyOf(link)}`,
-            description: `Watching pull request #${link.number}`,
+            description:
+              link.watch.mode === "checks"
+                ? `Waiting for CI on pull request #${link.number}`
+                : `Watching checks and reviews on pull request #${link.number}`,
             kind: "monitor" as const,
           },
         ],
