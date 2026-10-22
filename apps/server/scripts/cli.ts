@@ -11,6 +11,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../../scripts/lib/brand-assets.ts";
 import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-executable-imports.ts";
+import { stageProjectMemory } from "../../../scripts/lib/project-memory-build.ts";
 import rootPackageJson from "../../../package.json" with { type: "json" };
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import {
@@ -85,6 +86,11 @@ const buildCmd = Command.make(
           shell: false,
         }),
       );
+
+      yield* stageProjectMemory({
+        repoRoot,
+        outputDir: path.join(serverDir, "dist/project-memory"),
+      });
 
       const webDist = path.join(repoRoot, "apps/web/dist");
       const clientTarget = path.join(serverDir, "dist/client");

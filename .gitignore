@@ -38,6 +38,7 @@ apps/mobile/.android-cache/
 artifacts/app-store/screenshots/
 .github/pr-assets/
 native/**/target/
+native/project-memory/build/
 node_modules/
 .alchemy/
 *.log

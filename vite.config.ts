@@ -309,6 +309,11 @@ export default defineConfig({
         rules: { "t3code/no-global-process-runtime": "off" },
       },
       {
+        // The addon builds and tests in the Rust CI job without workspace dependencies.
+        files: ["native/project-memory/build.mjs", "native/project-memory/kernel.test.mjs"],
+        rules: { "t3code/no-global-process-runtime": "off" },
+      },
+      {
         // The `t3` npm launcher is published as plain, dependency-free Node.
         files: ["scripts/npm-launcher/**"],
         rules: {

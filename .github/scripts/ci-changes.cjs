@@ -37,11 +37,12 @@ const EXTRA_OWNERS = [
   [/^scripts\/lib\//, ["@t3tools/desktop", "@t3tools/mobile", "@t3tools/web", "t3"]],
   // scripts/build-desktop-artifact.ts reads the GNOME extension manifest.
   [/^apps\/desktop\/gnome-extension\//, ["@t3tools/scripts"]],
+  [/^native\/project-memory\//, ["t3"]],
   [/^native\/browser-secret\//, ["@t3tools/desktop"]],
   [/^native\/kde-snap-shot\//, ["@t3tools/desktop"]],
   [/^native\/libghostty-vt\//, ["@t3tools/web"]],
 ];
-const RUST = /^native\/(resource-monitor|kde-snap-shot|hyprland-snap-shot)\//;
+const RUST = /^native\/(resource-monitor|kde-snap-shot|hyprland-snap-shot|project-memory)\//;
 
 // Tests that read another package's files without declaring it. The scripts
 // tests read app manifests, assets, and sources (cursor-sdk-packaging,

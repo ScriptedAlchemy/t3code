@@ -3,6 +3,7 @@
  * The archive is the unit every runtime installer downloads, so nothing in it
  * may require Node, npm, or a compiler on the machine that unpacks it.
  */
+import { stageProjectMemory } from "./lib/project-memory-build.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Config from "effect/Config";
@@ -487,6 +488,18 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
+  const rustArch = input.arch === "arm64" ? "aarch64" : "x86_64";
+  const rustSuffix =
+    input.platform === "mac"
+      ? "apple-darwin"
+      : input.platform === "win"
+        ? "pc-windows-msvc"
+        : "unknown-linux-gnu";
+  yield* stageProjectMemory({
+    repoRoot,
+    outputDir: path.join(contentDir, "project-memory"),
+    targets: [`${rustArch}-${rustSuffix}`],
+  });
   yield* stageRuntimeExternals({
     repoRoot,
     stageDir: contentDir,

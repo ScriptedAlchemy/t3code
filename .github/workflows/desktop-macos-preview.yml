@@ -79,6 +79,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
       # desktop-macos-preview-publish.yml packages this bundle as the preview channel.
+      - name: Setup Rust for server addons
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
       - name: Build JS bundle
         env:
           T3CODE_TELEMETRY_CHANNEL: ${{ github.repository == 'pingdotgg/t3code' && 'preview' || 'dev' }}
