@@ -26,7 +26,7 @@ const layerTest = Layer.mergeAll(
   ThreadSearch.layer,
   ProjectionStore.layer,
   ProjectStore.layer,
-).pipe(Layer.provideMerge(SqlitePersistence.layerMemory));
+).pipe(Layer.provideMerge(SqlitePersistence.layerMemory), Layer.provide(NodeServices.layer));
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const at = (minute: number) => DateTime.makeUnsafe(Date.UTC(2026, 8, 27, 0, minute));
@@ -120,6 +120,82 @@ const message = (
 });
 
 it.layer(layerTest)("ThreadSearch", (it) => {
+  it.effect("applies project scope before the result limit", () =>
+    Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const search = yield* ThreadSearch.ThreadSearch;
+      const project = ProjectId.make("project:scoped");
+      const other = ProjectId.make("project:other");
+      yield* createProject(project);
+      yield* createProject(other);
+      const target = ThreadId.make("z-target");
+      yield* projections.apply(thread(target, project));
+      yield* projections.apply(message(target, "target-message", "user", "scoped-token target"));
+      for (const id of ["a-other", "b-other", "c-other"]) {
+        yield* projections.apply(thread(ThreadId.make(id), other));
+        yield* projections.apply(
+          message(ThreadId.make(id), id, "user", "scoped-token other", { minute: 5 }),
+        );
+      }
+      const result = yield* search.search({ query: "scoped-token", projectId: project, limit: 1 });
+      assert.deepEqual(
+        result.matches.map((hit) => hit.threadId),
+        [target],
+      );
+    }),
+  );
+
+  it.effect("pages exact citations and includes archived threads only when requested", () =>
+    Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const search = yield* ThreadSearch.ThreadSearch;
+      const projectId = ProjectId.make("paged-search");
+      yield* createProject(projectId);
+      for (const id of ["page-a", "page-b", "page-c"]) {
+        const threadId = ThreadId.make(id);
+        yield* projections.apply(
+          thread(threadId, projectId, id === "page-c" ? { archivedAt: at(2) } : {}),
+        );
+        yield* projections.apply(message(threadId, `${id}-message`, "user", "paged-match"));
+      }
+      const first = yield* search.search({ projectId, query: "paged-match", limit: 1 });
+      assert.equal(first.matches[0]?.messageId, MessageId.make("page-a-message"));
+      assert.match(first.matches[0]?.digest ?? "", /^[a-f0-9]{64}$/);
+      if (!first.nextCursor) return assert.fail("First page must have continuation");
+      const second = yield* search.search({
+        projectId,
+        query: "paged-match",
+        limit: 1,
+        cursor: first.nextCursor,
+      });
+      assert.equal(second.matches[0]?.messageId, MessageId.make("page-b-message"));
+      assert.equal(second.nextCursor, null);
+      const archived = yield* search.search({
+        projectId,
+        query: "paged-match",
+        includeArchived: true,
+      });
+      assert.deepEqual(
+        archived.matches.map((hit) => hit.messageId),
+        [
+          MessageId.make("page-a-message"),
+          MessageId.make("page-b-message"),
+          MessageId.make("page-c-message"),
+        ],
+      );
+      assert.equal(archived.matches[2]?.archived, true);
+      const mismatch = yield* search
+        .search({
+          projectId,
+          query: "paged-match",
+          includeArchived: true,
+          cursor: first.nextCursor,
+        })
+        .pipe(Effect.flip);
+      assert.equal(mismatch.operation, "cursor");
+    }),
+  );
+
   it.effect("returns one finished user or assistant match per active thread", () =>
     Effect.gen(function* () {
       const projections = yield* ProjectionStore.ProjectionStoreV2;

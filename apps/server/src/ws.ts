@@ -1,3 +1,4 @@
+import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -1207,6 +1208,7 @@ export const layerWsRpc = (
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
       const eventLoopMonitor = yield* EventLoopMonitor.EventLoopMonitor;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
+      const projectKnowledge = yield* ProjectKnowledge.ProjectKnowledge;
 
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const mcpAppRequests = yield* McpAppRequests.McpAppRequests;
@@ -1897,6 +1899,12 @@ export const layerWsRpc = (
           threadManagement
             .searchThreadStream(input)
             .pipe(Stream.mapError((cause) => new OrchestrationV2SearchThreadError({ cause }))),
+        [WS_METHODS.projectKnowledgeSearch]: (input) => projectKnowledge.search(input),
+        [WS_METHODS.projectKnowledgeList]: (input) => projectKnowledge.list(input),
+        [WS_METHODS.projectKnowledgeReadSource]: (input) => projectKnowledge.readSource(input),
+        [WS_METHODS.projectKnowledgePrepareContext]: (input) =>
+          projectKnowledge.prepareContext(input),
+        [WS_METHODS.projectKnowledgeMutate]: (input) => projectKnowledge.mutate(input, "user"),
         [ORCHESTRATION_V2_WS_METHODS.searchThreads]: (input) =>
           threadSearch.search(input).pipe(
             Effect.mapError(

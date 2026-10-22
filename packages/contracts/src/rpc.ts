@@ -1,4 +1,17 @@
 import {
+  ProjectFact,
+  ProjectKnowledgeError,
+  ProjectKnowledgeMutation,
+  ProjectKnowledgeListInput,
+  ProjectKnowledgeListResult,
+  ProjectKnowledgeReadSourceInput,
+  ProjectKnowledgeSource,
+  ProjectKnowledgeSearchInput,
+  ProjectKnowledgeSearchResult,
+  ProjectKnowledgeContext,
+  ProjectKnowledgePreparedContext,
+} from "./projectKnowledge.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -385,6 +398,11 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  projectKnowledgeSearch: "projectKnowledge.search",
+  projectKnowledgeList: "projectKnowledge.list",
+  projectKnowledgeMutate: "projectKnowledge.mutate",
+  projectKnowledgeReadSource: "projectKnowledge.readSource",
+  projectKnowledgePrepareContext: "projectKnowledge.prepareContext",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -1904,7 +1922,38 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
+const WsProjectKnowledgeSearchRpc = Rpc.make(WS_METHODS.projectKnowledgeSearch, {
+  payload: ProjectKnowledgeSearchInput,
+  success: ProjectKnowledgeSearchResult,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeListRpc = Rpc.make(WS_METHODS.projectKnowledgeList, {
+  payload: ProjectKnowledgeListInput,
+  success: ProjectKnowledgeListResult,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeMutateRpc = Rpc.make(WS_METHODS.projectKnowledgeMutate, {
+  payload: ProjectKnowledgeMutation,
+  success: ProjectFact,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeReadSourceRpc = Rpc.make(WS_METHODS.projectKnowledgeReadSource, {
+  payload: ProjectKnowledgeReadSourceInput,
+  success: ProjectKnowledgeSource,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgePrepareContextRpc = Rpc.make(WS_METHODS.projectKnowledgePrepareContext, {
+  payload: ProjectKnowledgeContext,
+  success: ProjectKnowledgePreparedContext,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+
 export const WsRpcGroup = RpcGroup.make(
+  WsProjectKnowledgeSearchRpc,
+  WsProjectKnowledgeListRpc,
+  WsProjectKnowledgeMutateRpc,
+  WsProjectKnowledgeReadSourceRpc,
+  WsProjectKnowledgePrepareContextRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
