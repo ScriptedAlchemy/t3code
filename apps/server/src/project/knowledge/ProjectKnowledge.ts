@@ -246,6 +246,7 @@ const make = Effect.gen(function* () {
   >(
     projectId: ProjectId,
     facts: ReadonlyArray<{ readonly id: K; readonly sources: ReadonlyArray<KnowledgeFactSource> }>,
+    includeArchived = false,
   ) {
     const refs = facts.flatMap((fact) =>
       fact.sources.flatMap((source) =>
@@ -282,7 +283,7 @@ const make = Effect.gen(function* () {
       const message = row?.threadId === source.threadId ? row : undefined;
       let reason = sourceUnavailableReason(
         projectId,
-        false,
+        includeArchived,
         threadsById.get(source.threadId) ?? null,
         message && { role: message.role, streaming: message.streaming !== 0 },
       );
@@ -1026,6 +1027,15 @@ const make = Effect.gen(function* () {
         if (!fact) states.add("unavailable");
         else if (fact.status === "forgotten") states.add("forgotten");
         else if (fact.revision !== selection.revision) states.add("changed");
+        else {
+          // A fact's revision does not move when the message it cites is edited or removed.
+          const [lost] = yield* unavailableSources(
+            input.projectId,
+            [fact],
+            context.includeArchived ?? false,
+          ).pipe(Effect.mapError(storageError(input.projectId)));
+          if (lost) states.add(lost.reason === "changed" ? "changed" : "unavailable");
+        }
       }
       return states.has("forgotten")
         ? ("forgotten" as const)

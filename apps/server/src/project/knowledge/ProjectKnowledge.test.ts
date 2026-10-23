@@ -888,6 +888,90 @@ it.effect(
     }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("reports when a delivered fact's cited message changes or disappears", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const projectId = ProjectId.make("delivered-citations");
+    yield* createProject(projectId);
+    const deliveredFact = Effect.fn("test.deliveredFact")(function* (key: string) {
+      const sourceThreadId = ThreadId.make(`${key}-source-thread`);
+      const sourceMessageId = MessageId.make(`${key}-source-message`);
+      yield* projections.apply(thread(sourceThreadId, projectId));
+      yield* projections.apply(
+        message(sourceThreadId, sourceMessageId, "user", `${key}: tenant IDs in cache keys`),
+      );
+      const source = yield* knowledge.readSource({
+        projectId,
+        threadId: sourceThreadId,
+        messageId: sourceMessageId,
+      });
+      if (source.state !== "available") return yield* Effect.die("source unavailable");
+      const fact = yield* knowledge.mutate(
+        { ...createFact(projectId, key), sources: [source.source] },
+        { kind: "user" },
+      );
+      const record = {
+        version: 1 as const,
+        kind: "project-knowledge" as const,
+        contextId: ComposerContextId.make(`${key}-context`),
+        label: key,
+        knowledge: {
+          environmentId,
+          projectId,
+          selections: [{ kind: "fact" as const, factId: fact.id, revision: fact.revision }],
+          maxBytes: 48000,
+        },
+      };
+      const composer = yield* resolveKnowledgeComposer({
+        projectId,
+        text: `Use this. ${formatComposerContextReference(record)}`,
+        records: [record],
+      });
+      const threadId = ThreadId.make(`${key}-delivery-thread`);
+      const messageId = MessageId.make(`${key}-delivery-message`);
+      yield* knowledge.recordDelivery({
+        attemptId: RunAttemptId.make(`${key}-attempt`),
+        runId: RunId.make(`${key}-run`),
+        threadId,
+        messageId,
+        projectId,
+        providerInstanceId,
+        status: "sent",
+        items: composer.items,
+        omissions: composer.omissions,
+        createdAt: DateTime.formatIso(at(2)),
+        updatedAt: DateTime.formatIso(at(2)),
+      });
+      const current = Effect.map(
+        knowledge.readDeliveries({ projectId, threadId, messageId }),
+        (read) => read.deliveries[0]?.items[0]?.current,
+      );
+      assert.equal(yield* current, "current");
+      return { sourceThreadId, sourceMessageId, current };
+    });
+    const edited = yield* deliveredFact("edited");
+    const deleted = yield* deliveredFact("deleted");
+
+    yield* projections.apply(
+      message(edited.sourceThreadId, edited.sourceMessageId, "user", "edited later", {
+        minute: 3,
+      }),
+    );
+    const deletedThread = yield* projections.getThreadRecords(deleted.sourceThreadId, []);
+    yield* projections.apply({
+      id: EventId.make("delete-delivered-citation"),
+      threadId: deleted.sourceThreadId,
+      type: "thread.deleted",
+      occurredAt: at(4),
+      payload: { ...deletedThread.thread, deletedAt: at(4) },
+    });
+
+    assert.equal(yield* edited.current, "changed");
+    assert.equal(yield* deleted.current, "unavailable");
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect(
   "MCP ranks canonical project facts through the native addon and records retrieval once",
   () =>
