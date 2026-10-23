@@ -1,8 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
+import { isLikelyTestPath } from "@t3tools/shared/testPaths";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   CommandId,
-  isLikelyTestPath,
   type EnvironmentId,
   type ProjectCodeEdge,
   type ProjectCodeQueryResult,

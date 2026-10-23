@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
+import { isLikelyTestPath } from "@t3tools/shared/testPaths";
 import {
-  isLikelyTestPath,
   type EnvironmentId,
   type ProjectCodeCoverage,
   type ProjectCodeQueryResult,

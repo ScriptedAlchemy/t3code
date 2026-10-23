@@ -261,10 +261,6 @@ export const ProjectCodeQueryResult = Schema.Struct({
 });
 export type ProjectCodeQueryResult = typeof ProjectCodeQueryResult.Type;
 
-const TEST_PATH = /(^|\/)(__tests__|tests?|spec)\/|[._-](test|spec)\.[^/]+$|_test\.[^/]+$/;
-/** A path-convention guess shared by the server's test walk and every client's labels. */
-export const isLikelyTestPath = (path: string): boolean => TEST_PATH.test(path);
-
 export const ProjectFileHistoryInput = Schema.Struct({
   projectId: ProjectId,
   path: NonEmptyText.check(Schema.isMaxLength(2048)),

@@ -14,21 +14,21 @@ import type {
   SearchResult,
   UnresolvedReference,
 } from "@colbymchenry/codegraph";
-import {
-  isLikelyTestPath,
-  type ProjectCodeCoverage,
-  type ProjectCodeEdge,
-  type ProjectCodeFile,
-  type ProjectCodeIndexInfo,
-  type ProjectCodeSymbolGroup,
-  type ProjectCodeMatch,
-  type ProjectCodeQuery,
-  type ProjectCodeQueryResult,
-  type ProjectCodeSelection,
-  type ProjectCodeSourceDigest,
-  type ProjectCodeStats,
-  type ProjectCodeSymbol,
-  type ProjectCodeUnresolvedReference,
+import { isLikelyTestPath } from "@t3tools/shared/testPaths";
+import type {
+  ProjectCodeCoverage,
+  ProjectCodeEdge,
+  ProjectCodeFile,
+  ProjectCodeIndexInfo,
+  ProjectCodeSymbolGroup,
+  ProjectCodeMatch,
+  ProjectCodeQuery,
+  ProjectCodeQueryResult,
+  ProjectCodeSelection,
+  ProjectCodeSourceDigest,
+  ProjectCodeStats,
+  ProjectCodeSymbol,
+  ProjectCodeUnresolvedReference,
 } from "@t3tools/contracts";
 
 const INDEX_DIRECTORY = ".codegraph-t3";
