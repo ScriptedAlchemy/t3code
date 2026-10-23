@@ -156,7 +156,6 @@ interface LayerProps extends LoomWeaveFieldProps {
   readonly svgProps: Record<string, unknown>;
 }
 
-const clampX = (x: number, width: number) => Math.min(Math.max(x, 0), width);
 /** Anchors and labels keep this far from the field's edges so they are never half drawn. */
 const EDGE = 10;
 
@@ -168,14 +167,18 @@ function SpindleLayer(props: LayerProps) {
   const drawn = spindlePaths(weave, layout, geometry, colors, scale.x, width);
   const tailInView = geometry.tailX <= width;
   const tailX = Math.min(geometry.tailX, width - EDGE);
+  const startInView = geometry.startX >= 0;
   const startX = Math.max(geometry.startX, EDGE);
   const strandCount = layout.homeY.size;
+  // Labels live left of the start anchor; once the view pans that gutter away they sit over the
+  // strands on a backdrop.
+  const labelWidth = Math.min(256, Math.max(200, startX - 36));
   const bandLabel = (workstream: Workstream, top: number, onSpine: boolean) => (
     <button
       key={workstream.rootId}
       type="button"
-      className="absolute start-3 flex max-w-64 flex-col rounded px-1.5 py-0.5 text-start hover:bg-accent"
-      style={{ top }}
+      className="absolute start-3 flex flex-col rounded bg-card/80 px-1.5 py-0.5 text-start hover:bg-accent"
+      style={{ top, maxWidth: labelWidth }}
       onClick={() => props.onOpenWorkstream(workstream.rootId)}
     >
       <span className="flex min-w-0 items-center gap-1.5 text-xs">
@@ -189,7 +192,7 @@ function SpindleLayer(props: LayerProps) {
           {workstream.title}
         </span>
       </span>
-      <span className="ps-3.5 text-2xs text-muted-foreground">
+      <span className="truncate ps-3.5 text-2xs text-muted-foreground">
         {workstream.agentCount} {workstream.agentCount === 1 ? "agent" : "agents"} ·{" "}
         {workstream.runCount} {workstream.runCount === 1 ? "run" : "runs"}
         {workstream.failureCount > 0 ? (
@@ -267,21 +270,27 @@ function SpindleLayer(props: LayerProps) {
           />
         ))}
         <g className="pointer-events-none">
-          <Anchor x={startX} y={geometry.cy} />
-          <text
-            x={startX - 4}
-            y={geometry.cy - 30}
-            className="fill-foreground/80 text-2xs font-medium uppercase tracking-wide"
-          >
-            {strandCount} {strandCount === 1 ? "strand" : "strands"}
-          </text>
-          <text
-            x={startX - 4}
-            y={geometry.cy - 16}
-            className="fill-muted-foreground text-2xs tabular-nums"
-          >
-            {formatLoomClock(scale.ms(startX))}
-          </text>
+          {startInView ? (
+            <>
+              <Anchor x={startX} y={geometry.cy} />
+              <text
+                x={Math.max(startX + 6, 84)}
+                y={geometry.cy - 30}
+                textAnchor="end"
+                className="fill-foreground/80 text-2xs font-medium uppercase tracking-wide"
+              >
+                {strandCount} {strandCount === 1 ? "strand" : "strands"}
+              </text>
+              <text
+                x={Math.max(startX + 6, 84)}
+                y={geometry.cy - 16}
+                textAnchor="end"
+                className="fill-muted-foreground text-2xs tabular-nums"
+              >
+                {formatLoomClock(weave.startMs)}
+              </text>
+            </>
+          ) : null}
           {tailInView ? (
             <>
               <Anchor x={tailX} y={geometry.cy} />
@@ -336,18 +345,32 @@ function spindlePaths(
   for (const workstream of weave.workstreams) {
     for (const strand of workstream.strands) {
       const homeY = layout.homeY.get(strand.threadId);
-      if (homeY === undefined) continue;
-      const y = (px: number) => spindleY(geometry, homeY, px);
       const colorIndex = colors.get(strand.threadId) ?? workstream.colorIndex;
+      if (homeY === undefined) {
+        // A quiet child has no strand; its spawn marks its parent's.
+        const parentY =
+          strand.parentThreadId === null ? undefined : layout.homeY.get(strand.parentThreadId);
+        const at = strand.spawn === null ? null : x(strand.spawn.ms);
+        if (parentY !== undefined && at !== null && at >= startX && at <= tailX) {
+          births.push({
+            threadId: strand.threadId,
+            colorIndex,
+            x: at,
+            y: spindleY(geometry, parentY, at),
+          });
+        }
+        continue;
+      }
+      const y = (px: number) => spindleY(geometry, homeY, px);
       warps.push({
         threadId: strand.threadId,
         colorIndex,
         d: strandPath(geometry, homeY, startX, tailX),
       });
       if (strand.extent === null) continue;
-      const fromX = x(strand.extent.startMs);
-      const toX = x(strand.extent.endMs);
-      const d = strandPath(geometry, homeY, clampX(fromX, width), clampX(toX, width));
+      const fromX = Math.max(x(strand.extent.startMs), startX);
+      const toX = Math.min(x(strand.extent.endMs), tailX);
+      const d = strandPath(geometry, homeY, fromX, toX);
       if (d.length > 0) {
         actives.push({
           threadId: strand.threadId,
@@ -357,7 +380,7 @@ function spindlePaths(
           colorIndex,
           d,
         });
-      } else if (toX - fromX < 1 && fromX >= 0 && fromX <= width) {
+      } else if (toX > fromX - 1 && fromX <= tailX) {
         births.push({ threadId: strand.threadId, colorIndex, x: fromX, y: y(fromX) });
       }
       dots.push(...strandDots(strand.events, x, y, width));
@@ -479,7 +502,7 @@ function BranchLayer(
                 ? "bg-accent text-foreground"
                 : "text-foreground/85",
             )}
-            style={{ left, top: offsetY + y - NODE_RADIUS - 22, maxWidth: room }}
+            style={{ left, top: offsetY + y - NODE_RADIUS - 32, maxWidth: room }}
             onClick={() => props.onSelect({ kind: "lane", id: strand.threadId })}
           >
             <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", color.bg)} />
@@ -688,17 +711,37 @@ function GlyphNode(props: {
         strokeWidth={2}
       />
       {props.count !== undefined && props.count > 1 ? (
-        <g transform={`translate(${r - 1} ${-r + 1})`} className="pointer-events-none">
-          <circle r={5.5} className="fill-foreground" />
-          <text
-            textAnchor="middle"
-            y={2.5}
-            className="fill-background text-5xs font-semibold tabular-nums"
-          >
-            {props.count > 99 ? "99+" : props.count}
-          </text>
-        </g>
+        <CountBadge r={r} count={props.count} />
       ) : null}
+    </g>
+  );
+}
+
+/** Sits off the node's upper right, clear of its circle, so the icon stays readable. */
+function CountBadge(props: { readonly r: number; readonly count: number }) {
+  const text = props.count > 999 ? "999+" : String(props.count);
+  const width = 6 + text.length * 5;
+  const corner = props.r * Math.SQRT1_2 + 1;
+  return (
+    <g
+      transform={`translate(${corner.toFixed(1)} ${(-corner - 10).toFixed(1)})`}
+      className="pointer-events-none"
+    >
+      <rect
+        width={width}
+        height={10}
+        rx={5}
+        className="fill-foreground stroke-card"
+        strokeWidth={1.5}
+      />
+      <text
+        x={width / 2}
+        y={7.5}
+        textAnchor="middle"
+        className="fill-background text-4xs font-semibold tabular-nums"
+      >
+        {text}
+      </text>
     </g>
   );
 }
