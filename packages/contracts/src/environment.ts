@@ -75,6 +75,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectKnowledge: Schema.optionalKey(Schema.Boolean),
   /** projectKnowledge.readFact, projectKnowledge.status and the supersede mutation. */
   projectKnowledgeHistory: Schema.optionalKey(Schema.Boolean),
+  /** projectKnowledge.readDeliveries and the recorded copy delivered with sent messages. */
+  projectKnowledgeDeliveries: Schema.optionalKey(Schema.Boolean),
   /** Assisted proposals from settled runs, the origin list filter and status.assistedLearning. */
   projectKnowledgeAssistedLearning: Schema.optionalKey(Schema.Boolean),
   projectCode: Schema.optionalKey(Schema.Boolean),

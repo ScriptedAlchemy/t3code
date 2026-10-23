@@ -226,6 +226,7 @@ export const make = Effect.gen(function* () {
       inlineMessageContext: true,
       projectKnowledge: true,
       projectKnowledgeHistory: true,
+      projectKnowledgeDeliveries: true,
       projectKnowledgeAssistedLearning: true,
       conversationSummaries: true,
       projectLoom: true,
