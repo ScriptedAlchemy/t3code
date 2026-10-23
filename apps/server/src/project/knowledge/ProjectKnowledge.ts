@@ -5,6 +5,9 @@ import {
   type ProjectFact,
   type ProjectId,
   type ProjectKnowledgeContext,
+  type ProjectKnowledgeDeliveries,
+  type ProjectKnowledgeDelivery,
+  type ProjectKnowledgeReadDeliveriesInput,
   type ProjectKnowledgeListInput,
   type ProjectKnowledgeListResult,
   ProjectKnowledgeMutation,
@@ -59,6 +62,12 @@ export class ProjectKnowledge extends Context.Service<
     readonly resolveForTurn: (
       input: ProjectKnowledgeContext,
     ) => Effect.Effect<ProjectKnowledgePreparedContext, ProjectKnowledgeError>;
+    readonly recordDelivery: (
+      delivery: ProjectKnowledgeDelivery,
+    ) => Effect.Effect<void, ProjectKnowledgeError>;
+    readonly readDeliveries: (
+      input: ProjectKnowledgeReadDeliveriesInput,
+    ) => Effect.Effect<ProjectKnowledgeDeliveries, ProjectKnowledgeError>;
   }
 >()("t3/project/knowledge/ProjectKnowledge") {}
 
@@ -648,6 +657,72 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(storageError(input.projectId)));
     },
   );
-  return ProjectKnowledge.of({ list, mutate, readSource, search, prepareContext, resolveForTurn });
+  const recordDelivery: ProjectKnowledge["Service"]["recordDelivery"] = Effect.fn(
+    "ProjectKnowledge.recordDelivery",
+  )(function* (delivery) {
+    yield* store.recordDelivery(delivery).pipe(Effect.mapError(storageError(delivery.projectId)));
+  });
+  const readDeliveries: ProjectKnowledge["Service"]["readDeliveries"] = Effect.fn(
+    "ProjectKnowledge.readDeliveries",
+  )(function* (input) {
+    yield* requireProject(input.projectId);
+    const rows = yield* store
+      .deliveries(input.projectId, input.threadId, input.messageId)
+      .pipe(Effect.mapError(storageError(input.projectId)));
+    const facts = new Map<ProjectFactId, ProjectFact | null>();
+    const selectionState = Effect.fn("ProjectKnowledge.deliveredSelectionState")(function* (
+      context: ProjectKnowledgeContext,
+    ) {
+      const states = new Set<"changed" | "forgotten" | "unavailable">();
+      for (const selection of context.selections) {
+        if (selection.kind === "message") {
+          const source = yield* readSource({
+            projectId: input.projectId,
+            ...selection,
+            includeArchived: context.includeArchived ?? false,
+          });
+          if (source.state === "unavailable")
+            states.add(source.reason === "changed" ? "changed" : "unavailable");
+          continue;
+        }
+        if (!facts.has(selection.factId))
+          facts.set(
+            selection.factId,
+            yield* store
+              .find(input.projectId, selection.factId)
+              .pipe(Effect.mapError(storageError(input.projectId))),
+          );
+        const fact = facts.get(selection.factId);
+        if (!fact) states.add("unavailable");
+        else if (fact.status === "forgotten") states.add("forgotten");
+        else if (fact.revision !== selection.revision) states.add("changed");
+      }
+      return states.has("forgotten")
+        ? ("forgotten" as const)
+        : states.has("unavailable")
+          ? ("unavailable" as const)
+          : states.has("changed")
+            ? ("changed" as const)
+            : ("current" as const);
+    });
+    const deliveries = [];
+    for (const row of rows) {
+      const items = [];
+      for (const item of row.items)
+        items.push({ ...item, current: yield* selectionState(item.context) });
+      deliveries.push({ ...row, items });
+    }
+    return { deliveries };
+  });
+  return ProjectKnowledge.of({
+    list,
+    mutate,
+    readSource,
+    search,
+    prepareContext,
+    resolveForTurn,
+    recordDelivery,
+    readDeliveries,
+  });
 });
 export const layer = Layer.effect(ProjectKnowledge, make);

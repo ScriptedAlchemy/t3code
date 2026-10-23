@@ -1533,6 +1533,7 @@ function renderFeedEntry(
                   >
                     <UserMessageContent
                       text={renderedText}
+                      sent={{ threadId: message.sourceThreadId, messageId: message.id }}
                       environmentId={props.environmentId}
                       context={message.context}
                       markdownStyles={styles}
@@ -1755,6 +1756,7 @@ function TurnDiffStat(props: {
 
 type UserMessageContentProps = {
   readonly text: string;
+  readonly sent?: { readonly threadId: ThreadId; readonly messageId: MessageId };
   readonly environmentId: EnvironmentId;
   readonly context?: OrchestrationMessageContext;
   readonly markdownStyles: MarkdownStyleSet;
@@ -1862,6 +1864,7 @@ function UserMessageContent(props: UserMessageContentProps) {
           environmentId={props.environmentId}
           records={props.context?.records}
           record={props.context?.records.find((record) => record.contextId === selected.contextId)}
+          {...(props.sent ? { sent: props.sent } : {})}
           onClose={() => setSelected(null)}
         />
       ) : null}

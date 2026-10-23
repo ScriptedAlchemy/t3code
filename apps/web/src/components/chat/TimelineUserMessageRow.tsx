@@ -398,6 +398,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         <UserMessageContextReferenceChip
           reference={reference}
           record={record}
+          messageId={row.message.id}
+          sourceThreadId={row.projectedItem?.sourceThreadId}
           annotationImage={annotationImage}
           attachment={attachment}
           onExpandImage={(image) => {

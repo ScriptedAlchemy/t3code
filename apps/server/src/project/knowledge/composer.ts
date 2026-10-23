@@ -3,6 +3,7 @@ import {
   type ComposerContextId,
   type ComposerContextRecord,
   type ProjectId,
+  type ProjectKnowledgeDeliveryItem,
 } from "@t3tools/contracts";
 import {
   collectComposerContextReferences,
@@ -31,6 +32,7 @@ export const resolveKnowledgeComposer = Effect.fn("ProjectKnowledge.resolveCompo
         referenced.has(record.contextId),
     );
     const resolvedKnowledge = new Map<ComposerContextId, string>();
+    const items: ProjectKnowledgeDeliveryItem[] = [];
     if (records.length > 0) {
       const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
       for (const record of records) {
@@ -51,6 +53,12 @@ export const resolveKnowledgeComposer = Effect.fn("ProjectKnowledge.resolveCompo
         }
         const prepared = yield* knowledge.resolveForTurn(record.knowledge);
         resolvedKnowledge.set(record.contextId, prepared.text);
+        items.push({
+          contextId: record.contextId,
+          label: record.label,
+          context: record.knowledge,
+          text: prepared.text,
+        });
       }
     }
     if (
@@ -87,6 +95,18 @@ export const resolveKnowledgeComposer = Effect.fn("ProjectKnowledge.resolveCompo
         });
       }
     }
-    return { text, baseText, byteLength };
+    // Attached records the message text no longer references never reach the provider.
+    const omissions = input.records.flatMap((record) =>
+      record.kind === "project-knowledge" && !referenced.has(record.contextId)
+        ? [
+            {
+              contextId: record.contextId,
+              label: record.label,
+              reason: "not_referenced" as const,
+            },
+          ]
+        : [],
+    );
+    return { text, baseText, byteLength, items, omissions };
   },
 );

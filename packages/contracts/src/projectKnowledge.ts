@@ -7,6 +7,8 @@ import {
   NonNegativeInt,
   PositiveInt,
   ProjectId,
+  RunAttemptId,
+  RunId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -184,6 +186,66 @@ export const ProjectKnowledgePreparedContext: Schema.Codec<
   ProjectKnowledgePreparedContext,
   typeof ProjectKnowledgePreparedContextSchema.Encoded
 > = ProjectKnowledgePreparedContextSchema;
+export const ProjectKnowledgeDeliveryStatus = Schema.Literals([
+  "prepared",
+  "sent",
+  "failed",
+  "uncertain",
+]);
+export type ProjectKnowledgeDeliveryStatus = typeof ProjectKnowledgeDeliveryStatus.Type;
+export const ProjectKnowledgeDeliveryItem = Schema.Struct({
+  contextId: TrimmedNonEmptyString,
+  label: Schema.String,
+  context: ProjectKnowledgeContext,
+  text: Schema.String,
+});
+export type ProjectKnowledgeDeliveryItem = typeof ProjectKnowledgeDeliveryItem.Type;
+export const ProjectKnowledgeDeliveryOmission = Schema.Struct({
+  contextId: TrimmedNonEmptyString,
+  label: Schema.String,
+  reason: Schema.Literal("not_referenced"),
+});
+export const ProjectKnowledgeDelivery = Schema.Struct({
+  attemptId: RunAttemptId,
+  runId: RunId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  projectId: ProjectId,
+  providerInstanceId: ProviderInstanceId,
+  status: ProjectKnowledgeDeliveryStatus,
+  items: Schema.Array(ProjectKnowledgeDeliveryItem),
+  omissions: Schema.Array(ProjectKnowledgeDeliveryOmission),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type ProjectKnowledgeDelivery = typeof ProjectKnowledgeDelivery.Type;
+export const ProjectKnowledgeReadDeliveriesInput = Schema.Struct({
+  projectId: ProjectId,
+  threadId: ThreadId,
+  messageId: MessageId,
+});
+export type ProjectKnowledgeReadDeliveriesInput = typeof ProjectKnowledgeReadDeliveriesInput.Type;
+export const ProjectKnowledgeDeliveredSelectionState = Schema.Literals([
+  "current",
+  "changed",
+  "forgotten",
+  "unavailable",
+]);
+export const ProjectKnowledgeDeliveries = Schema.Struct({
+  // Oldest first; a replacement attempt (account failover) appends its own record.
+  deliveries: Schema.Array(
+    Schema.Struct({
+      ...ProjectKnowledgeDelivery.fields,
+      items: Schema.Array(
+        Schema.Struct({
+          ...ProjectKnowledgeDeliveryItem.fields,
+          current: ProjectKnowledgeDeliveredSelectionState,
+        }),
+      ),
+    }),
+  ),
+});
+export type ProjectKnowledgeDeliveries = typeof ProjectKnowledgeDeliveries.Type;
 export const KnowledgeSearchCursor = Schema.Struct({
   requestId: CommandId,
   offset: NonNegativeInt.check(Schema.isLessThanOrEqualTo(1000)),

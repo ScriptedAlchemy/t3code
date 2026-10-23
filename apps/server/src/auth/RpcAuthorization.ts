@@ -43,6 +43,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.projectKnowledgeList]: AuthOrchestrationReadScope,
   [WS_METHODS.projectKnowledgeReadSource]: AuthOrchestrationReadScope,
   [WS_METHODS.projectKnowledgePrepareContext]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectKnowledgeReadDeliveries]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,

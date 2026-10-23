@@ -8,6 +8,7 @@ import {
   EnvironmentId,
   ProjectFactId,
   ProjectKnowledgeError,
+  type ProjectKnowledgeDelivery,
   CheckpointScopeId,
   MessageId,
   NodeId,
@@ -694,11 +695,16 @@ function makeLocalCommandHarness(input: {
       ),
     }),
   );
+  const knowledgeDeliveries: Array<ProjectKnowledgeDelivery> = [];
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectKnowledge.ProjectKnowledge)({
           ...(input.resolveKnowledge ? { resolveForTurn: input.resolveKnowledge } : {}),
+          recordDelivery: (delivery) =>
+            Effect.sync(() => {
+              knowledgeDeliveries.push(delivery);
+            }),
         }),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: () => Effect.die("history read must fail first"),
@@ -764,6 +770,7 @@ function makeLocalCommandHarness(input: {
     getThreadRecords,
     getTurnStartContext,
     nativeStart,
+    knowledgeDeliveries,
     setProjection: (next: OrchestrationV2ThreadProjection) => {
       projection = next;
     },
@@ -1376,7 +1383,28 @@ effectIt.effect.each([false, true])(
       if (stale) {
         expect(result._tag).toBe("Failure");
         expect(harness.nativeStart).not.toHaveBeenCalled();
+        expect(harness.knowledgeDeliveries).toEqual([]);
       } else {
+        expect(
+          harness.knowledgeDeliveries.map((delivery) => [
+            delivery.attemptId,
+            delivery.status,
+            delivery.items,
+          ]),
+        ).toEqual(
+          ["prepared", "sent"].map((status) => [
+            harness.attemptId,
+            status,
+            [
+              {
+                contextId: record.contextId,
+                label: record.label,
+                context: record.knowledge,
+                text: "Quoted </context> content.",
+              },
+            ],
+          ]),
+        );
         expect(result._tag).toBe("Success");
         expect(harness.nativeStart).toHaveBeenCalledOnce();
         expect(harness.nativeStart.mock.calls[0]?.[0].message.text).toContain(

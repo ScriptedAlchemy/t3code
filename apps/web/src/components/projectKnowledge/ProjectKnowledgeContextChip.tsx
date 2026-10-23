@@ -1,13 +1,35 @@
 import { useState } from "react";
-import type { ProjectKnowledgeContextRecord } from "@t3tools/contracts";
+import type { MessageId, ProjectKnowledgeContextRecord, ThreadId } from "@t3tools/contracts";
+import {
+  deliveredKnowledgeNotes,
+  deliveredKnowledgeSnapshot,
+} from "@t3tools/client-runtime/projectKnowledge";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { BookOpenIcon } from "lucide-react";
 import { ContextChip } from "../ContextChip";
-import { Dialog, DialogPopup, DialogTitle, DialogDescription } from "../ui/dialog";
+import {
+  Dialog,
+  DialogDescription,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../ui/dialog";
 import { projectKnowledge } from "../../state/projectKnowledge";
+import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 
-export function ProjectKnowledgeContextChip({ record }: { record: ProjectKnowledgeContextRecord }) {
+/**
+ * In the composer this previews the current sources. On a sent message (`sent` given) it shows
+ * the recorded copy of what the turn delivered, never a fresh read that may have changed since.
+ */
+export function ProjectKnowledgeContextChip({
+  record,
+  sent,
+}: {
+  record: ProjectKnowledgeContextRecord;
+  sent?: { readonly threadId: ThreadId; readonly messageId: MessageId } | undefined;
+}) {
   const [open, setOpen] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -16,6 +38,7 @@ export function ProjectKnowledgeContextChip({ record }: { record: ProjectKnowled
     setPreview(null);
     setError(null);
     setOpen(true);
+    if (sent) return;
     const result = await prepare({
       environmentId: record.knowledge.environmentId,
       input: record.knowledge,
@@ -35,20 +58,76 @@ export function ProjectKnowledgeContextChip({ record }: { record: ProjectKnowled
       </ContextChip>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogPopup>
-          <DialogTitle>Selected project knowledge</DialogTitle>
-          <DialogDescription>
-            Current source material for this reference. Changed or forgotten selections are
-            unavailable.
-          </DialogDescription>
-          {error ? (
-            <p role="alert">{error}</p>
-          ) : preview === null ? (
-            <p>Reading sources…</p>
+          {sent ? (
+            open ? (
+              <DeliveredKnowledge record={record} sent={sent} />
+            ) : null
           ) : (
-            <pre className="max-h-96 overflow-auto whitespace-pre-wrap text-sm">{preview}</pre>
+            <>
+              <DialogHeader>
+                <DialogTitle>Selected project knowledge</DialogTitle>
+                <DialogDescription>
+                  Current source material for this reference. Changed or forgotten selections are
+                  unavailable.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogPanel>
+                {error ? (
+                  <p role="alert">{error}</p>
+                ) : preview === null ? (
+                  <p>Reading sources…</p>
+                ) : (
+                  <pre className="whitespace-pre-wrap text-sm">{preview}</pre>
+                )}
+              </DialogPanel>
+            </>
           )}
         </DialogPopup>
       </Dialog>
+    </>
+  );
+}
+
+function DeliveredKnowledge({
+  record,
+  sent,
+}: {
+  record: ProjectKnowledgeContextRecord;
+  sent: { readonly threadId: ThreadId; readonly messageId: MessageId };
+}) {
+  const query = useEnvironmentQuery(
+    projectKnowledge.readDeliveries({
+      environmentId: record.knowledge.environmentId,
+      input: { projectId: record.knowledge.projectId, ...sent },
+    }),
+  );
+  const snapshot = query.data ? deliveredKnowledgeSnapshot(query.data, record.contextId) : null;
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Project knowledge as sent</DialogTitle>
+        <DialogDescription>
+          The copy T3 delivered with this message. It does not show whether the agent used it.
+        </DialogDescription>
+      </DialogHeader>
+      <DialogPanel>
+        {query.error ? (
+          <p role="alert">{query.error}</p>
+        ) : query.data === null ? (
+          <p>Reading delivery record…</p>
+        ) : snapshot === null ? (
+          <p>No delivery was recorded for this reference.</p>
+        ) : (
+          <>
+            {deliveredKnowledgeNotes(snapshot).map((note) => (
+              <p key={note} className="text-muted-foreground text-sm">
+                {note}
+              </p>
+            ))}
+            <pre className="whitespace-pre-wrap text-sm">{snapshot.item.text}</pre>
+          </>
+        )}
+      </DialogPanel>
     </>
   );
 }

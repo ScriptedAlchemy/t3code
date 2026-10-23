@@ -23,7 +23,12 @@ import { PREFERRED_HIGHLIGHTER } from "../../lib/syntaxHighlighting";
 import ChatMarkdown from "../ChatMarkdown";
 import { ThreadContextChip } from "../ThreadContextChip";
 import { MessageCircleIcon, MousePointerClickIcon, PaintbrushIcon } from "lucide-react";
-import type { ComposerContextId, KnownComposerContextRecord } from "@t3tools/contracts";
+import type {
+  ComposerContextId,
+  KnownComposerContextRecord,
+  MessageId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { buildExpandedImagePreview } from "./ExpandedImagePreview";
 import { WorkspaceEntryIcon, WorkspaceEntryTooltip } from "./WorkspaceEntryIcon";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
@@ -270,6 +275,8 @@ function UserMessageElementDetails({
 
 interface UserMessageContextRenderContext {
   reference: ChatMarkdownContextReference;
+  messageId: MessageId | undefined;
+  sourceThreadId: ThreadId | undefined;
   annotationImage: ChatImageAttachment | null;
   attachment: ChatImageAttachment | ChatFileAttachment | null;
   resolvedTheme: "light" | "dark";
@@ -277,6 +284,22 @@ interface UserMessageContextRenderContext {
   onExpandImage: (image: ChatImageAttachment) => void;
   onExpandVideo: (file: ChatFileAttachment) => void;
   onOpenFile: (file: ChatFileAttachment) => void;
+}
+
+function SentProjectKnowledgeContextChip(props: {
+  record: Extract<KnownComposerContextRecord, { kind: "project-knowledge" }>;
+  messageId: MessageId | undefined;
+  sourceThreadId: ThreadId | undefined;
+}) {
+  const { threadRef } = use(TimelineRowCtx);
+  // Messages folded in from another thread were delivered by that thread's run.
+  const threadId = props.sourceThreadId ?? threadRef?.threadId;
+  return (
+    <ProjectKnowledgeContextChip
+      record={props.record}
+      sent={threadId && props.messageId ? { threadId, messageId: props.messageId } : undefined}
+    />
+  );
 }
 
 function UnavailableUserMessageContextChip(props: UserMessageContextRenderContext) {
@@ -301,7 +324,11 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
       canRender: (record) => record.kind === "project-knowledge",
       render: (record, context) =>
         record.kind === "project-knowledge" ? (
-          <ProjectKnowledgeContextChip record={record} />
+          <SentProjectKnowledgeContextChip
+            record={record}
+            messageId={context.messageId}
+            sourceThreadId={context.sourceThreadId}
+          />
         ) : (
           <UnavailableUserMessageContextChip {...context} />
         ),
@@ -514,6 +541,8 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
 export function UserMessageContextReferenceChip(props: {
   reference: ChatMarkdownContextReference;
   record: KnownComposerContextRecord | undefined;
+  messageId?: MessageId;
+  sourceThreadId?: ThreadId | undefined;
   annotationImage: ChatImageAttachment | null;
   attachment: ChatImageAttachment | ChatFileAttachment | null;
   onExpandImage: (image: ChatImageAttachment) => void;
@@ -528,6 +557,8 @@ export function UserMessageContextReferenceChip(props: {
   });
   return userMessageContextPresentationRegistry.render(props.reference.kind, props.record, {
     reference: props.reference,
+    messageId: props.messageId,
+    sourceThreadId: props.sourceThreadId,
     annotationImage: props.annotationImage,
     attachment: props.attachment,
     resolvedTheme,

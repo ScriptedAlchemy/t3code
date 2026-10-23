@@ -10,6 +10,8 @@ import {
   ProjectKnowledgeSearchResult,
   ProjectKnowledgeContext,
   ProjectKnowledgePreparedContext,
+  ProjectKnowledgeReadDeliveriesInput,
+  ProjectKnowledgeDeliveries,
 } from "./projectKnowledge.ts";
 import { ProjectCodeError, ProjectCodeQueryInput, ProjectCodeQueryResult } from "./projectCode.ts";
 import {
@@ -405,6 +407,7 @@ export const WS_METHODS = {
   projectKnowledgeMutate: "projectKnowledge.mutate",
   projectKnowledgeReadSource: "projectKnowledge.readSource",
   projectKnowledgePrepareContext: "projectKnowledge.prepareContext",
+  projectKnowledgeReadDeliveries: "projectKnowledge.readDeliveries",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -1954,6 +1957,11 @@ const WsProjectKnowledgePrepareContextRpc = Rpc.make(WS_METHODS.projectKnowledge
   success: ProjectKnowledgePreparedContext,
   error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
 });
+const WsProjectKnowledgeReadDeliveriesRpc = Rpc.make(WS_METHODS.projectKnowledgeReadDeliveries, {
+  payload: ProjectKnowledgeReadDeliveriesInput,
+  success: ProjectKnowledgeDeliveries,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
 
 export const WsProjectKnowledgeRpcGroup = RpcGroup.make(
   WsProjectKnowledgeSearchRpc,
@@ -1961,6 +1969,7 @@ export const WsProjectKnowledgeRpcGroup = RpcGroup.make(
   WsProjectKnowledgeMutateRpc,
   WsProjectKnowledgeReadSourceRpc,
   WsProjectKnowledgePrepareContextRpc,
+  WsProjectKnowledgeReadDeliveriesRpc,
 ).middleware(RpcScopeAuthorization);
 
 export const WsProjectCodeRpcGroup =

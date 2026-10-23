@@ -12,6 +12,8 @@ import {
   ProjectKnowledgeSearchResult,
   ProjectId,
   ProviderInstanceId,
+  RunAttemptId,
+  RunId,
   ThreadId,
   type OrchestrationV2DomainEvent,
   type ProjectKnowledgeMutation,
@@ -657,7 +659,114 @@ it.effect(
         text: "Plain chat",
         baseText: "Plain chat",
         byteLength: 0,
+        items: [],
+        omissions: [{ contextId: record.contextId, label: record.label, reason: "not_referenced" }],
       });
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "keeps the as-sent knowledge snapshot through edits, forgetting, retries and failover",
+  () =>
+    Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projectId = ProjectId.make("delivery-project");
+      yield* createProject(projectId);
+      const fact = yield* knowledge.mutate(createFact(projectId), { kind: "user" });
+      const record = {
+        version: 1 as const,
+        kind: "project-knowledge" as const,
+        contextId: ComposerContextId.make("delivered-knowledge"),
+        label: "Delivered knowledge",
+        knowledge: {
+          environmentId,
+          projectId,
+          selections: [{ kind: "fact" as const, factId: fact.id, revision: fact.revision }],
+          maxBytes: 48000,
+        },
+      };
+      const composer = yield* resolveKnowledgeComposer({
+        projectId,
+        text: `Use this. ${formatComposerContextReference(record)}`,
+        records: [record],
+      });
+      const [item] = composer.items;
+      assert.include(item?.text, "Cache keys include tenant IDs.");
+      const threadId = ThreadId.make("delivery-thread");
+      const messageId = MessageId.make("delivery-message");
+      const delivery = (attemptId: string, status: "prepared" | "sent", minute: number) => ({
+        attemptId: RunAttemptId.make(attemptId),
+        runId: RunId.make("delivery-run"),
+        threadId,
+        messageId,
+        projectId,
+        providerInstanceId,
+        status,
+        items: composer.items,
+        omissions: composer.omissions,
+        createdAt: DateTime.formatIso(at(minute)),
+        updatedAt: DateTime.formatIso(at(minute)),
+      });
+      const read = knowledge.readDeliveries({ projectId, threadId, messageId });
+      yield* knowledge.recordDelivery(delivery("attempt-1", "prepared", 1));
+      yield* knowledge.recordDelivery(delivery("attempt-1", "sent", 2));
+      const sent = yield* read;
+      assert.deepEqual(
+        sent.deliveries.map((entry) => [entry.attemptId, entry.status, entry.createdAt]),
+        [["attempt-1", "sent", DateTime.formatIso(at(1))]],
+      );
+      assert.deepEqual(sent.deliveries[0]?.items, [{ ...item!, current: "current" }]);
+
+      yield* knowledge.mutate(
+        {
+          ...createFact(projectId),
+          action: "edit",
+          commandId: CommandId.make("edit-after-send"),
+          expectedRevision: fact.revision,
+          content: "Cache keys include region IDs.",
+        },
+        { kind: "user" },
+      );
+      // Re-preparing a sent attempt must neither duplicate nor rewrite what was sent.
+      yield* knowledge.recordDelivery({
+        ...delivery("attempt-1", "prepared", 3),
+        items: [{ ...item!, text: "rewritten" }],
+      });
+      const edited = yield* read;
+      assert.equal(edited.deliveries.length, 1);
+      assert.equal(edited.deliveries[0]?.status, "sent");
+      assert.equal(edited.deliveries[0]?.items[0]?.text, item?.text);
+      assert.equal(edited.deliveries[0]?.items[0]?.current, "changed");
+
+      yield* knowledge.recordDelivery(delivery("attempt-failover", "sent", 4));
+      yield* knowledge.mutate(
+        {
+          action: "forget",
+          commandId: CommandId.make("forget-after-send"),
+          projectId,
+          factId: fact.id,
+          expectedRevision: fact.revision + 1,
+        },
+        { kind: "user" },
+      );
+      const forgotten = yield* read;
+      assert.deepEqual(
+        forgotten.deliveries.map((entry) => [
+          entry.attemptId,
+          entry.items[0]?.text,
+          entry.items[0]?.current,
+        ]),
+        [
+          ["attempt-1", item?.text, "forgotten"],
+          ["attempt-failover", item?.text, "forgotten"],
+        ],
+      );
+      const otherProjectId = ProjectId.make("other-delivery-project");
+      yield* createProject(otherProjectId);
+      assert.deepEqual(
+        yield* knowledge.readDeliveries({ projectId: otherProjectId, threadId, messageId }),
+        { deliveries: [] },
+      );
     }).pipe(Effect.provide(layerTest)),
 );
 

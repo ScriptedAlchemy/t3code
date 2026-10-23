@@ -10,6 +10,11 @@ import {
   ProjectFact,
   ProjectFactId,
   ProjectId,
+  ProjectKnowledgeDelivery,
+  ProjectKnowledgeDeliveryItem,
+  ProjectKnowledgeDeliveryOmission,
+  type MessageId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -56,6 +61,19 @@ const decodeProjectFacts = Schema.decodeUnknownEffect(Schema.Array(ProjectFact))
 const decodeFacts = Effect.fn("ProjectKnowledgeStore.decodeFacts")(function* (rows: unknown) {
   return yield* decodeProjectFacts(yield* decodeRows(rows));
 });
+
+const DeliveryRow = Schema.Struct({
+  ...ProjectKnowledgeDelivery.fields,
+  items: Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryItem)),
+  omissions: Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryOmission)),
+});
+const decodeDeliveries = Schema.decodeUnknownEffect(Schema.Array(DeliveryRow));
+const encodeDeliveryItems = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryItem)),
+);
+const encodeDeliveryOmissions = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryOmission)),
+);
 
 export const makeStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -178,5 +196,50 @@ export const makeStore = Effect.gen(function* () {
     yield* sql`UPDATE project_knowledge_facts SET retrieval_count = retrieval_count + 1
       WHERE project_id = ${projectId} AND status IN ('confirmed', 'proposed') AND ${sql.in("id", ids)}`;
   });
-  return { find, findMany, list, insert, update, receipt, record, candidates, recordRetrieval };
+  // A sent record is final: a later re-preparation of the same attempt cannot rewrite what
+  // the provider already received.
+  const recordDelivery = Effect.fn("ProjectKnowledgeStore.recordDelivery")(function* (
+    delivery: typeof ProjectKnowledgeDelivery.Type,
+  ) {
+    yield* sql`INSERT INTO project_knowledge_deliveries (
+      attempt_id, run_id, thread_id, message_id, project_id, provider_instance_id, status,
+      items_json, omissions_json, created_at, updated_at
+    ) VALUES (
+      ${delivery.attemptId}, ${delivery.runId}, ${delivery.threadId}, ${delivery.messageId},
+      ${delivery.projectId}, ${delivery.providerInstanceId}, ${delivery.status},
+      ${encodeDeliveryItems(delivery.items)}, ${encodeDeliveryOmissions(delivery.omissions)},
+      ${delivery.createdAt}, ${delivery.updatedAt}
+    ) ON CONFLICT (attempt_id) DO UPDATE SET
+      status = excluded.status, items_json = excluded.items_json,
+      omissions_json = excluded.omissions_json, updated_at = excluded.updated_at
+    WHERE project_knowledge_deliveries.status != 'sent'`;
+  });
+  const deliveries = Effect.fn("ProjectKnowledgeStore.deliveries")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+    messageId: MessageId,
+  ) {
+    const rows = yield* sql`
+      SELECT attempt_id AS "attemptId", run_id AS "runId", thread_id AS "threadId",
+        message_id AS "messageId", project_id AS "projectId",
+        provider_instance_id AS "providerInstanceId", status, items_json AS items,
+        omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM project_knowledge_deliveries
+      WHERE project_id = ${projectId} AND thread_id = ${threadId} AND message_id = ${messageId}
+      ORDER BY created_at ASC, attempt_id ASC LIMIT 20`;
+    return yield* decodeDeliveries(rows);
+  });
+  return {
+    find,
+    findMany,
+    list,
+    insert,
+    update,
+    receipt,
+    record,
+    candidates,
+    recordRetrieval,
+    recordDelivery,
+    deliveries,
+  };
 });

@@ -561,6 +561,7 @@ const ServerCoreWsRpcGroup = ServerWsRpcGroup.omit(
   WS_METHODS.projectKnowledgeList,
   WS_METHODS.projectKnowledgeReadSource,
   WS_METHODS.projectKnowledgePrepareContext,
+  WS_METHODS.projectKnowledgeReadDeliveries,
   WS_METHODS.projectKnowledgeMutate,
 );
 const layerKnowledgeRpc = WsProjectKnowledgeRpcGroup.middleware(RpcInstrumentation).toLayer(
@@ -572,6 +573,8 @@ const layerKnowledgeRpc = WsProjectKnowledgeRpcGroup.middleware(RpcInstrumentati
       [WS_METHODS.projectKnowledgeReadSource]: (input) => projectKnowledge.readSource(input),
       [WS_METHODS.projectKnowledgePrepareContext]: (input) =>
         projectKnowledge.prepareContext(input),
+      [WS_METHODS.projectKnowledgeReadDeliveries]: (input) =>
+        projectKnowledge.readDeliveries(input),
       [WS_METHODS.projectKnowledgeMutate]: (input) =>
         projectKnowledge.mutate(input, { kind: "user" }),
     };

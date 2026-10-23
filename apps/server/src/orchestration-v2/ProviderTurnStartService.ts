@@ -12,6 +12,7 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
+  type ProjectKnowledgeDeliveryStatus,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -1031,6 +1032,36 @@ export const layer: Layer.Layer<
       }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge));
       if (composer.byteLength > 0 && !(yield* isCurrentAttemptInStatus("running"))) return;
       const userText = composer.text;
+      // Keyed by attempt so a retried start updates the same record, while a replacement
+      // attempt (account failover) keeps its own account of what its provider received.
+      const recordKnowledgeDelivery = Effect.fn("ProviderTurnStartService.recordKnowledgeDelivery")(
+        function* (status: ProjectKnowledgeDeliveryStatus) {
+          if (composer.items.length === 0) return;
+          const now = DateTime.formatIso(yield* DateTime.now);
+          yield* knowledge.recordDelivery({
+            attemptId: attempt.id,
+            runId: run.id,
+            threadId: projection.thread.id,
+            messageId: message.id,
+            projectId: projection.thread.projectId,
+            providerInstanceId: run.providerInstanceId,
+            status,
+            items: composer.items,
+            omissions: composer.omissions,
+            createdAt: now,
+            updatedAt: now,
+          });
+        },
+      );
+      const settleKnowledgeDelivery = (status: ProjectKnowledgeDeliveryStatus) =>
+        recordKnowledgeDelivery(status).pipe(
+          Effect.catchCause(() =>
+            Effect.logWarning("Failed to record project knowledge delivery status", {
+              runId: run.id,
+              deliveryStatus: status,
+            }),
+          ),
+        );
       // Delivered once: this run's provider turn marks the work as told. A
       // restart continuation is prompted by its own text or resumes natively.
       const noteContinuation = isRestartNoteContinuation(
@@ -1270,6 +1301,7 @@ export const layer: Layer.Layer<
             );
           }
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
+          yield* recordKnowledgeDelivery("prepared").pipe(Effect.tapError(() => delivery.unsent));
           const start = compact ? session.compactThread! : session.startTurn;
           const context = [delivery.context, restartNote]
             .filter((part) => part !== "")
@@ -1295,7 +1327,11 @@ export const layer: Layer.Layer<
                   )
                 : Effect.void,
             ),
+            Effect.tapError((error) =>
+              settleKnowledgeDelivery(refusedBeforePrompt(error) ? "failed" : "uncertain"),
+            ),
           );
+          yield* settleKnowledgeDelivery("sent");
           // The provider already accepted the turn. A stale pending marker
           // can force a fresh thread later, but must not stop live ingestion.
           yield* delivery.delivered.pipe(

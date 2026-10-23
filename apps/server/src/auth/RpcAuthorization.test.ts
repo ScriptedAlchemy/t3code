@@ -45,6 +45,12 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("lets read-only clients inspect what project knowledge a turn delivered", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectKnowledgeReadDeliveries)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
   it("requires filesystem read permission for project code queries", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeQuery)).toBe(AuthFilesystemReadScope);
   });
