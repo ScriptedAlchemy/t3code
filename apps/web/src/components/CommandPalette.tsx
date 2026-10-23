@@ -49,6 +49,7 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
   BrainIcon,
+  ChartGanttIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -1621,6 +1622,35 @@ function OpenCommandPaletteDialog(props: {
         });
       },
     });
+    // A group can span environments; each member gets its own Loom, unless a thread picks one.
+    const contextualProjectInGroup = contextualProjectGroup.memberProjects.find(
+      (member) =>
+        member.environmentId === contextualProjectRef?.environmentId &&
+        member.id === contextualProjectRef.projectId,
+    );
+    const loomTargets =
+      contextualProjectInGroup === undefined
+        ? contextualProjectGroup.memberProjects
+        : [contextualProjectInGroup];
+    for (const member of loomTargets) {
+      actionItems.push({
+        kind: "action",
+        value: `action:open-loom:${member.environmentId}:${member.id}`,
+        searchTerms: ["loom", "timeline", "activity", "agents", "history", "project"],
+        title: "Open Loom",
+        description:
+          loomTargets.length > 1 && member.environmentLabel !== null
+            ? `${contextualProjectGroup.displayName} on ${member.environmentLabel}`
+            : contextualProjectGroup.displayName,
+        icon: <ChartGanttIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/loom/$environmentId/$projectId",
+            params: { environmentId: member.environmentId, projectId: member.id },
+          });
+        },
+      });
+    }
   }
 
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });

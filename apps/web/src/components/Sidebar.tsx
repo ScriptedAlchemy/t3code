@@ -47,7 +47,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 
-import { FolderIcon, ListFilterIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import { ChartGanttIcon, FolderIcon, ListFilterIcon, PlusIcon, SettingsIcon } from "lucide-react";
 import {
   useEffect,
   useLayoutEffect,
@@ -1007,6 +1007,23 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             projectRef,
           ),
         },
+      });
+    },
+  );
+  const handleOpenLoom = useStableCallback(
+    (event: ReactMouseEvent<HTMLElement>, projectGroup: SidebarProjectSnapshot) => {
+      event.preventDefault();
+      event.stopPropagation();
+      suppressNextScopeChangeRef.current = true;
+      dispatchProjectScopeMenu({ type: "project-settings-opened" });
+      if (isMobile) setOpenMobile(false);
+      const member =
+        projectGroup.memberProjects.find(
+          (candidate) => candidate.environmentId === primaryEnvironmentId,
+        ) ?? projectGroup;
+      void router.navigate({
+        to: "/loom/$environmentId/$projectId",
+        params: { environmentId: member.environmentId, projectId: member.id },
       });
     },
   );
@@ -2744,8 +2761,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 variant="ghost-muted"
                                 tabIndex={-1}
                                 aria-hidden="true"
-                                title={`Project settings for ${project.displayName}`}
+                                title={`Open Loom for ${project.displayName}`}
                                 className="ml-auto"
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onClick={(event) => handleOpenLoom(event, project)}
+                              >
+                                <ChartGanttIcon className="size-3.5" />
+                              </Button>
+                            ) : null}
+                            {project ? (
+                              <Button
+                                size="icon-xs"
+                                variant="ghost-muted"
+                                tabIndex={-1}
+                                aria-hidden="true"
+                                title={`Project settings for ${project.displayName}`}
                                 onPointerDown={(event) => event.stopPropagation()}
                                 onClick={(event) => {
                                   void handleProjectSettings(event, project);
