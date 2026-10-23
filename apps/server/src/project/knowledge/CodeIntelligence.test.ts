@@ -4,6 +4,7 @@ import { watch as NodeFSWatch } from "node:fs";
 import * as NodeFS from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeUrl from "node:url";
 import { Worker } from "node:worker_threads";
 
 import * as NodeCryptoEffect from "@effect/platform-node/NodeCrypto";
@@ -36,6 +37,9 @@ import * as CodeIntelligence from "./CodeIntelligence.ts";
 const projectId = ProjectId.make("project:code-intelligence");
 const threadId = ThreadId.make("thread:code-intelligence");
 const worktreeThreadId = ThreadId.make("thread:code-intelligence-worktree");
+const codeGraphRequirePath = NodeUrl.fileURLToPath(
+  new URL("../../../package.json", import.meta.url),
+);
 
 class FixtureSetupFailed extends Schema.TaggedError<FixtureSetupFailed>()("FixtureSetupFailed", {
   cause: Schema.Defect(),
@@ -174,7 +178,7 @@ it.effect(
                })().catch((error) => parentPort.postMessage({ error: String(error) }));`,
               {
                 eval: true,
-                workerData: { requirePath: NodePath.join(process.cwd(), "package.json"), root },
+                workerData: { requirePath: codeGraphRequirePath, root },
                 env: { ...process.env, CODEGRAPH_DIR: ".codegraph-t3" },
               },
             );
@@ -212,7 +216,7 @@ it.effect(
                    })().catch((error) => parentPort.postMessage({ error: String(error) }));`,
                   {
                     eval: true,
-                    workerData: { requirePath: NodePath.join(process.cwd(), "package.json"), root },
+                    workerData: { requirePath: codeGraphRequirePath, root },
                     env: { ...process.env, CODEGRAPH_DIR: ".codegraph-t3" },
                   },
                 );

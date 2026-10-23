@@ -676,8 +676,12 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
+const layerCodeIntelligence = CodeIntelligence.layer.pipe(
+  Layer.provideMerge(Layer.mergeAll(ProjectStore.layer, ProjectionStoreV2.layer, layerWorkspace)),
+);
+
 const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
-  Layer.provideMerge(CodeIntelligence.layer),
+  Layer.provideMerge(layerCodeIntelligence),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
