@@ -69,6 +69,12 @@ export class ProjectKnowledge extends Context.Service<
     readonly readDeliveries: (
       input: ProjectKnowledgeReadDeliveriesInput,
     ) => Effect.Effect<ProjectKnowledgeDeliveries, ProjectKnowledgeError>;
+    /** Sent records only, for replaying earlier messages into a fresh provider conversation. */
+    readonly readSentDeliveries: (input: {
+      readonly projectId: ProjectId;
+      readonly threadIds: ReadonlyArray<ProjectKnowledgeDelivery["threadId"]>;
+      readonly runIds: ReadonlyArray<ProjectKnowledgeDelivery["runId"]>;
+    }) => Effect.Effect<ReadonlyArray<ProjectKnowledgeDelivery>, ProjectKnowledgeError>;
   }
 >()("t3/project/knowledge/ProjectKnowledge") {}
 
@@ -746,6 +752,13 @@ const make = Effect.gen(function* () {
   )(function* (delivery) {
     yield* store.recordDelivery(delivery).pipe(Effect.mapError(storageError(delivery.projectId)));
   });
+  const readSentDeliveries: ProjectKnowledge["Service"]["readSentDeliveries"] = Effect.fn(
+    "ProjectKnowledge.readSentDeliveries",
+  )(function* (input) {
+    return yield* store
+      .sentDeliveries(input.projectId, input.threadIds, input.runIds)
+      .pipe(Effect.mapError(storageError(input.projectId)));
+  });
   const readDeliveries: ProjectKnowledge["Service"]["readDeliveries"] = Effect.fn(
     "ProjectKnowledge.readDeliveries",
   )(function* (input) {
@@ -807,6 +820,7 @@ const make = Effect.gen(function* () {
     resolveForTurn,
     recordDelivery,
     readDeliveries,
+    readSentDeliveries,
   });
 });
 export const layer = Layer.effect(ProjectKnowledge, make);

@@ -23,6 +23,10 @@ import {
   ThreadId,
   ProjectId,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ContextHandoff,
+  type OrchestrationV2HistoricalMessage,
+  ContextHandoffId,
+  TurnItemId,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -268,6 +272,7 @@ it.each([
 function makeLocalCommandHarness(input: {
   readonly text: string;
   readonly resolveKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["resolveForTurn"];
+  readonly readSentDeliveries?: ProjectKnowledge.ProjectKnowledge["Service"]["readSentDeliveries"];
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
   readonly fileSystem?: FileSystem.FileSystem;
@@ -701,6 +706,7 @@ function makeLocalCommandHarness(input: {
       Layer.mergeAll(
         Layer.mock(ProjectKnowledge.ProjectKnowledge)({
           ...(input.resolveKnowledge ? { resolveForTurn: input.resolveKnowledge } : {}),
+          ...(input.readSentDeliveries ? { readSentDeliveries: input.readSentDeliveries } : {}),
           recordDelivery: (delivery) =>
             Effect.sync(() => {
               knowledgeDeliveries.push(delivery);
@@ -709,7 +715,17 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: () => Effect.die("history read must fail first"),
         }),
-        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
+        Layer.mock(EventSink.EventSinkV2)({
+          writeIfRunCurrent,
+          write: ({ events: incoming }) =>
+            Effect.sync(() => {
+              for (const event of incoming) {
+                events.push(event);
+                projection = ProjectionStore.applyToProjection(projection, event);
+              }
+              return { storedEvents: [] } as never;
+            }),
+        }),
         IdAllocator.layer,
         layerWorktreeLocation(input.worktreesDir),
         input.fileSystem === undefined
@@ -1414,5 +1430,147 @@ effectIt.effect.each([false, true])(
           "Quoted &lt;/context> content.",
         );
       }
+    }),
+);
+
+effectIt.effect(
+  "replays the knowledge an earlier message was sent with into a provider handoff once",
+  () =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project-native-account-command");
+      const sourceRunId = RunId.make("run-knowledge-source");
+      const sourceMessageId = MessageId.make("message-knowledge-source");
+      const requestedRuns: Array<ReadonlyArray<RunId>> = [];
+      const harness = makeLocalCommandHarness({
+        text: "Continue on the new provider",
+        previousTurn: { runStatus: "completed", turnStatus: "completed" },
+        // The fact was edited after the earlier message was sent; the handoff must not re-hydrate.
+        resolveKnowledge: (context) =>
+          Effect.succeed({ context, text: "EDITED fact text", byteLength: 16 }),
+        readSentDeliveries: (input) =>
+          Effect.sync(() => {
+            requestedRuns.push(input.runIds);
+            return [
+              {
+                attemptId: RunAttemptId.make("attempt-knowledge-source"),
+                runId: sourceRunId,
+                threadId: harness.projection().thread.id,
+                messageId: sourceMessageId,
+                projectId,
+                providerInstanceId: harness.oldInstanceId,
+                status: "sent" as const,
+                items: [
+                  {
+                    contextId: "project-knowledge",
+                    label: "Deploy rule",
+                    context: {
+                      environmentId: EnvironmentId.make("test"),
+                      projectId,
+                      selections: [
+                        { kind: "fact" as const, factId: ProjectFactId.make("fact"), revision: 1 },
+                      ],
+                      maxBytes: 48000,
+                    },
+                    text: "ORIGINAL fact text",
+                  },
+                ],
+                omissions: [],
+                createdAt: "2026-09-04T11:00:00.000Z",
+                updatedAt: "2026-09-04T11:00:00.000Z",
+              },
+            ];
+          }),
+      });
+      const projection = harness.projection();
+      const run = projection.runs.at(-1)!;
+      const historical = (
+        id: string,
+        role: "user" | "assistant",
+        text: string,
+      ): OrchestrationV2HistoricalMessage => ({
+        itemId: TurnItemId.make(id),
+        role,
+        text,
+        threadId: projection.thread.id,
+        runId: sourceRunId,
+        providerThreadId: ProviderThreadId.make("existing-native-provider-thread"),
+        status: "completed",
+        kind: role === "user" ? "user_message" : "assistant_message",
+      });
+      const handoff: OrchestrationV2ContextHandoff = {
+        id: ContextHandoffId.make("handoff-provider-switch"),
+        transferId: null,
+        threadId: projection.thread.id,
+        targetRunId: run.id,
+        fromProviderThreadIds: [ProviderThreadId.make("existing-native-provider-thread")],
+        toProviderThreadId: run.providerThreadId!,
+        coveredRunOrdinals: { from: 1, to: 1 },
+        strategy: "full_thread_summary",
+        status: "ready",
+        summaryMessageId: null,
+        summaryText: "",
+        history: {
+          messages: [
+            historical(
+              IdAllocator.derive.userTurnItem({ messageId: sourceMessageId }),
+              "user",
+              "Follow the deploy rule",
+            ),
+            historical("turn-item-knowledge-answer", "assistant", "Done"),
+          ],
+          coverage: "Provider context handoff.",
+          omittedItems: 0,
+          omittedItemIds: [],
+        },
+        createdByProviderInstanceId: null,
+        createdAt: run.requestedAt,
+        updatedAt: run.requestedAt,
+      };
+      harness.setProjection({ ...projection, contextHandoffs: [handoff] });
+
+      const startNativeTurn = Effect.gen(function* () {
+        yield* harness.start;
+        const start = harness.startRootRun.mock.calls.at(-1)![0];
+        yield* start.session.startTurn({
+          appThread: start.appThread,
+          threadId: start.appThread.id,
+          runId: start.run.id,
+          runOrdinal: start.run.ordinal,
+          providerTurnOrdinal: start.providerTurnOrdinal,
+          attemptId: start.attemptId,
+          rootNodeId: start.rootNode.id,
+          providerThread: start.providerThread,
+          message: start.message,
+          modelSelection: start.modelSelection,
+          runtimePolicy: start.runtimePolicy,
+        });
+        return harness.nativeStart.mock.calls.at(-1)![0].message.text;
+      });
+
+      const sent = yield* startNativeTurn;
+      expect(requestedRuns).toEqual([[sourceRunId]]);
+      expect(sent.split("ORIGINAL fact text")).toHaveLength(2);
+      expect(sent).toContain('<t3_delivered_knowledge label="Deploy rule">');
+      expect(sent).toContain("reproduced as sent");
+      expect(sent).not.toContain("EDITED fact text");
+      expect(sent.indexOf("Follow the deploy rule")).toBeLessThan(sent.indexOf("ORIGINAL"));
+      expect(harness.projection().contextHandoffs[0]?.delivery?.status).toBe("inline");
+      // The persisted handoff keeps the message as authored; the excerpt lives in its delivery record.
+      expect(harness.projection().contextHandoffs[0]?.history?.messages[0]?.text).toBe(
+        "Follow the deploy rule",
+      );
+
+      // A retried start of the same attempt reaches the native conversation that already has it.
+      const current = harness.projection();
+      harness.setProjection({
+        ...current,
+        runs: current.runs.map((candidate) =>
+          candidate.id === run.id ? { ...candidate, status: "starting" } : candidate,
+        ),
+      });
+      const retried = yield* startNativeTurn;
+      expect(harness.nativeStart).toHaveBeenCalledTimes(2);
+      expect(retried).not.toContain("ORIGINAL fact text");
+      expect(retried).toContain("Continue on the new provider");
     }),
 );

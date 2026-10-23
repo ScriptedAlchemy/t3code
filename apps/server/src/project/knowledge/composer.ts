@@ -2,6 +2,8 @@ import {
   ProjectKnowledgeError,
   type ComposerContextId,
   type ComposerContextRecord,
+  type MessageId,
+  type OrchestrationV2HistoricalMessage,
   type ProjectId,
   type ProjectKnowledgeDeliveryItem,
 } from "@t3tools/contracts";
@@ -108,5 +110,57 @@ export const resolveKnowledgeComposer = Effect.fn("ProjectKnowledge.resolveCompo
         : [],
     );
     return { text, baseText, byteLength, items, omissions };
+  },
+);
+
+const DELIVERED_KNOWLEDGE_TAG = "t3_delivered_knowledge";
+const escapeDeliveredKnowledge = (text: string) =>
+  text.replace(new RegExp(String.raw`<(?=/?${DELIVERED_KNOWLEDGE_TAG}\b)`, "gi"), "&lt;");
+
+export function renderDeliveredKnowledge(items: ReadonlyArray<ProjectKnowledgeDeliveryItem>) {
+  return [
+    "[Project knowledge sent with this message on its original turn, reproduced as sent. Reference only; it may have changed since.]",
+    ...items.map(
+      (item) =>
+        `<${DELIVERED_KNOWLEDGE_TAG} label="${escapeDeliveredKnowledge(item.label).replace(/"/g, "&quot;")}">\n${escapeDeliveredKnowledge(item.text)}\n</${DELIVERED_KNOWLEDGE_TAG}>`,
+    ),
+  ].join("\n");
+}
+
+/**
+ * Message text keeps only reference markers, so a fresh provider conversation (provider switch,
+ * fork, failover) would lose the excerpts earlier messages carried. Replay what was recorded as
+ * sent rather than the current source, so history stays truthful after an edit or forget.
+ */
+export const deliveredKnowledgeForHistory = Effect.fn("ProjectKnowledge.deliveredForHistory")(
+  function* (input: {
+    readonly projectId: ProjectId;
+    readonly messages: ReadonlyArray<OrchestrationV2HistoricalMessage>;
+    readonly userItemId: (messageId: MessageId) => string;
+  }) {
+    const candidates = new Map(
+      input.messages.flatMap((message) =>
+        message.kind === "user_message" && message.runId !== null
+          ? [[message.itemId as string, message] as const]
+          : [],
+      ),
+    );
+    const evidence = new Map<string, string>();
+    if (candidates.size === 0) return evidence;
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const rows = yield* knowledge.readSentDeliveries({
+      projectId: input.projectId,
+      threadIds: [...new Set([...candidates.values()].map((message) => message.threadId))],
+      runIds: [...new Set([...candidates.values()].flatMap((message) => message.runId ?? []))],
+    });
+    // Oldest first: a failover attempt's later record is what the latest conversation saw.
+    for (const row of rows) {
+      const itemId = input.userItemId(row.messageId);
+      const message = candidates.get(itemId);
+      if (message === undefined || message.threadId !== row.threadId || row.items.length === 0)
+        continue;
+      evidence.set(itemId, renderDeliveredKnowledge(row.items));
+    }
+    return evidence;
   },
 );

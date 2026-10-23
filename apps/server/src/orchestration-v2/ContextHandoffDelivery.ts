@@ -1,5 +1,6 @@
 import type {
   OrchestrationV2ContextHandoff,
+  OrchestrationV2HistoricalMessage,
   OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -18,7 +19,12 @@ import {
  * refusal does not leave an ambiguous marker behind.
  */
 export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextHandoffs")(
-  function* <InjectError = never, PersistError = never, BudgetError = never>(input: {
+  function* <
+    InjectError = never,
+    PersistError = never,
+    BudgetError = never,
+    EvidenceError = never,
+  >(input: {
     readonly handoffs: ReadonlyArray<OrchestrationV2ContextHandoff>;
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly budget: number | Effect.Effect<number, BudgetError>;
@@ -28,6 +34,14 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       history: ProviderAdapter.ProviderAdapterV2HistoricalContext,
     ) => Effect.Effect<boolean, InjectError>;
     readonly persist: (handoff: OrchestrationV2ContextHandoff) => Effect.Effect<void, PersistError>;
+    /**
+     * Text the provider originally received alongside a historical message but that the message
+     * text does not carry (such as project knowledge sent with it), keyed by item id. Rendered
+     * with the message so it shares its budget and per-native-thread delivery marker.
+     */
+    readonly evidence?: (
+      messages: ReadonlyArray<OrchestrationV2HistoricalMessage>,
+    ) => Effect.Effect<ReadonlyMap<string, string>, EvidenceError>;
   }) {
     const nativeThreadId = input.providerThread.nativeThreadRef?.nativeId ?? undefined;
     const pending = input.handoffs.filter(
@@ -53,13 +67,23 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       coverage = `Context handoff (${strategies.join(", ")}). ${pending.length} handoff records; detailed coverage references omitted. Recover history with t3_thread_read({threadId:"${input.providerThread.appThreadId ?? pending[0]!.threadId}",view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. Follow fork/handoff source references in activity. For long items use itemId and textOffset=nextTextOffset until null.`;
     }
     const seen = new Set(input.alreadyDeliveredItemIds);
-    const messages = pending
+    const uniqueMessages = pending
       .flatMap((handoff) => handoff.history?.messages ?? [])
       .filter((message) => {
         if (seen.has(message.itemId)) return false;
         seen.add(message.itemId);
         return true;
       });
+    const evidence =
+      input.evidence === undefined || uniqueMessages.length === 0
+        ? new Map<string, string>()
+        : yield* input.evidence(uniqueMessages);
+    const messages = uniqueMessages.map((message) => {
+      const attached = evidence.get(message.itemId);
+      return attached === undefined
+        ? message
+        : { ...message, text: `${message.text}\n\n${attached}` };
+    });
     const oldContext = pending
       .filter((handoff) => handoff.history === undefined)
       .map((handoff) => handoff.summaryText)

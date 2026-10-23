@@ -1,5 +1,5 @@
 import * as HolographicMemory from "./HolographicMemory.ts";
-import { resolveKnowledgeComposer } from "./composer.ts";
+import { deliveredKnowledgeForHistory, resolveKnowledgeComposer } from "./composer.ts";
 import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
 import { assert, it } from "@effect/vitest";
 import {
@@ -15,6 +15,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
   type OrchestrationV2DomainEvent,
   type ProjectKnowledgeMutation,
 } from "@t3tools/contracts";
@@ -838,6 +839,33 @@ it.effect(
           ["attempt-failover", item?.text, "forgotten"],
         ],
       );
+      // Handoffs replay the sent copy of an edited, now forgotten fact; unsent attempts add nothing.
+      yield* knowledge.recordDelivery({
+        ...delivery("attempt-unsent", "prepared", 5),
+        runId: RunId.make("delivery-run-unsent"),
+        messageId: MessageId.make("delivery-message-unsent"),
+      });
+      const historical = (id: string, runId: string) => ({
+        itemId: TurnItemId.make(id),
+        role: "user" as const,
+        kind: "user_message",
+        text: "Use this.",
+        threadId,
+        runId: RunId.make(runId),
+        providerThreadId: null,
+        status: "completed",
+      });
+      const evidence = yield* deliveredKnowledgeForHistory({
+        projectId,
+        messages: [
+          historical("item:sent", "delivery-run"),
+          historical("item:unsent", "delivery-run-unsent"),
+        ],
+        userItemId: (id) => (id === messageId ? "item:sent" : "item:unsent"),
+      });
+      assert.deepEqual([...evidence.keys()], ["item:sent"]);
+      assert.include(evidence.get("item:sent"), "Cache keys include tenant IDs.");
+      assert.notInclude(evidence.get("item:sent"), "region IDs");
       const otherProjectId = ProjectId.make("other-delivery-project");
       yield* createProject(otherProjectId);
       assert.deepEqual(

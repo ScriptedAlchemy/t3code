@@ -14,6 +14,7 @@ import {
   ProjectKnowledgeDeliveryItem,
   ProjectKnowledgeDeliveryOmission,
   type MessageId,
+  type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -229,6 +230,23 @@ export const makeStore = Effect.gen(function* () {
       ORDER BY created_at ASC, attempt_id ASC LIMIT 20`;
     return yield* decodeDeliveries(rows);
   });
+  const sentDeliveries = Effect.fn("ProjectKnowledgeStore.sentDeliveries")(function* (
+    projectId: ProjectId,
+    threadIds: ReadonlyArray<ThreadId>,
+    runIds: ReadonlyArray<RunId>,
+  ) {
+    if (threadIds.length === 0 || runIds.length === 0) return [];
+    const rows = yield* sql`
+      SELECT attempt_id AS "attemptId", run_id AS "runId", thread_id AS "threadId",
+        message_id AS "messageId", project_id AS "projectId",
+        provider_instance_id AS "providerInstanceId", status, items_json AS items,
+        omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM project_knowledge_deliveries
+      WHERE project_id = ${projectId} AND ${sql.in("thread_id", threadIds)}
+        AND ${sql.in("run_id", runIds)} AND status = 'sent'
+      ORDER BY created_at ASC, attempt_id ASC`;
+    return yield* decodeDeliveries(rows);
+  });
   return {
     find,
     findMany,
@@ -241,5 +259,6 @@ export const makeStore = Effect.gen(function* () {
     recordRetrieval,
     recordDelivery,
     deliveries,
+    sentDeliveries,
   };
 });

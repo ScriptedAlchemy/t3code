@@ -1,6 +1,9 @@
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
-import { resolveKnowledgeComposer } from "../project/knowledge/composer.ts";
+import {
+  deliveredKnowledgeForHistory,
+  resolveKnowledgeComposer,
+} from "../project/knowledge/composer.ts";
 import * as ProjectKnowledge from "../project/knowledge/ProjectKnowledge.ts";
 import {
   CommandId,
@@ -1262,6 +1265,21 @@ export const layer: Layer.Layer<
               });
             }),
             alreadyDeliveredItemIds: deliveredItemIds,
+            evidence: (messages) =>
+              deliveredKnowledgeForHistory({
+                projectId: projection.thread.projectId,
+                messages,
+                userItemId: (messageId) => idAllocator.derive.userTurnItem({ messageId }),
+              }).pipe(
+                Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge),
+                // Missing evidence degrades the replay; it must not block the turn.
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Failed to read delivered project knowledge for handoff", {
+                    runId: run.id,
+                    cause,
+                  }).pipe(Effect.as(new Map<string, string>())),
+                ),
+              ),
             ...(session.injectHistory === undefined
               ? {}
               : {

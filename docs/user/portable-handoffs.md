@@ -12,6 +12,9 @@ Codex receives historical messages directly when its installed version supports 
 Other providers receive the same selection as attributed conversation context. A handoff does not
 copy the outgoing provider's reasoning, tool-call state, or attachments.
 
+Project knowledge referenced in an earlier message travels with that message exactly as it was
+sent, even if the fact has since been edited or forgotten. It counts toward the same history budget.
+
 The handoff includes references to omitted history. The agent can use T3 Code's thread-reading tool
 to retrieve saved messages and activity, including the remainder of a long item. For an important
 constraint, you can still repeat it in your next message. A handoff is a budgeted selection, not an
