@@ -5,8 +5,11 @@ import {
   MessageId,
   ProjectId,
   ThreadId,
+  type OrchestrationV2SearchThreadInput,
   type ProjectCodeQueryResult,
 } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { useRouterState } from "@tanstack/react-router";
 import * as Cause from "effect/Cause";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
@@ -26,6 +29,7 @@ vi.mock(
         configValueAtom: () =>
           Atom.make({
             environment: { capabilities: { projectKnowledge: true, projectCode: true } },
+            threadFind: true,
           }),
       },
     }) as never,
@@ -61,6 +65,27 @@ vi.mock(
                   messageCreatedAt: null,
                 },
               ],
+            }),
+          );
+        },
+        // Thread "thread-b" has one match in message-a, then two in message-b; like the
+        // server, the first match at or after `start` is selected.
+        threadFind: (target: { input: OrchestrationV2SearchThreadInput }) => {
+          state.queries.push({ kind: "thread-find", input: target.input });
+          const navigation = [
+            { entryId: "message-a", runId: null, count: 1, startIndex: 0 },
+            { entryId: "message-b", runId: null, count: 2, startIndex: 1 },
+          ];
+          const selected =
+            navigation.find((entry) => entry.entryId === target.input.start?.entryId) ??
+            navigation[0]!;
+          return Atom.make(
+            AsyncResult.success({
+              snapshotSequence: 1,
+              totalMatches: 3,
+              activeIndex: selected.startIndex,
+              navigation,
+              match: { entryId: selected.entryId, runId: null, occurrence: 0 },
             }),
           );
         },
@@ -133,6 +158,7 @@ vi.mock(
   () =>
     ({
       useProjects: () => [],
+      useThreadProjection: () => null,
       useThreadShells: () => [{ environmentId: "env", id: "thread-b", title: "Auth refresh bug" }],
     }) as never,
 );
@@ -144,6 +170,8 @@ vi.mock(
 
 import { selectActiveRightPanelSurface, useRightPanelStore } from "../rightPanelStore";
 import { OpenProjectSearchPalette, type ProjectSearchTarget } from "./CommandPaletteProjectSearch";
+import { ThreadFindBar } from "./chat/ThreadFindBar";
+import { useThreadFind } from "./chat/useThreadFind";
 
 const target: ProjectSearchTarget = {
   environmentId: EnvironmentId.make("env"),
@@ -152,6 +180,25 @@ const target: ProjectSearchTarget = {
   threadRef: { environmentId: EnvironmentId.make("env"), threadId: ThreadId.make("thread-a") },
   serverThreadId: ThreadId.make("thread-a"),
 };
+
+function RoutedThreadFind() {
+  const threadId = useRouterState({ select: (router) => router.location.pathname.split("/")[2] });
+  // Keyed like a thread view, so the target thread's find mounts only after navigation.
+  return threadId ? <ThreadFindView key={threadId} threadId={ThreadId.make(threadId)} /> : null;
+}
+
+function ThreadFindView(props: { readonly threadId: ThreadId }) {
+  const find = useThreadFind({
+    thread: scopeThreadRef(target.environmentId, props.threadId),
+    enabled: true,
+  });
+  return (
+    <div data-thread={props.threadId}>
+      <ThreadFindBar {...find.barProps} />
+      <output aria-label="Active match">{find.timelineProps.activeFindMatch?.entryId}</output>
+    </div>
+  );
+}
 
 function setup() {
   state.queries.length = 0;
@@ -164,6 +211,7 @@ it("keeps each group independent when one source fails, and opens symbols and co
   await using screen = await render(
     <RegistryContext.Provider value={registry}>
       <OpenProjectSearchPalette target={target} setOpen={setOpen} />
+      <RoutedThreadFind />
     </RegistryContext.Provider>,
     { router: "/env/thread-a" },
   );
@@ -193,4 +241,15 @@ it("keeps each group independent when one source fails, and opens symbols and co
 
   await screen.getByText("Auth refresh bug").click();
   await vi.waitFor(() => expect(screen.router?.state.location.pathname).toBe("/env/thread-b"));
+  // The conversation lands on its message with the palette query in thread find.
+  await expect.element(screen.getByPlaceholder("Find in thread")).toHaveValue("refresh token");
+  await expect
+    .element(screen.getByRole("status", { name: "Active match" }))
+    .toHaveTextContent("message-b");
+  await expect.element(screen.getByText("2/3")).toBeVisible();
+  expect(state.queries.find((query) => query.kind === "thread-find")?.input).toMatchObject({
+    threadId: "thread-b",
+    query: "refresh token",
+    start: { entryId: "message-b", occurrence: 0 },
+  });
 });

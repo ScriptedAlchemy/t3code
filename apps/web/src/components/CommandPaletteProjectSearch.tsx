@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   CommandId,
   type EnvironmentId,
@@ -31,6 +31,7 @@ import {
 } from "./CommandPalette.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
 import { CommandPaletteResults } from "./CommandPaletteResults";
+import { requestThreadFindOpen } from "./chat/threadFindActionBus";
 import { useOpenProjectMemory } from "./projectKnowledge/ProjectMemoryPanel";
 
 const SEARCH_DEBOUNCE_MS = 250;
@@ -175,6 +176,7 @@ function useFactGroup(target: ProjectSearchTarget, query: string | null): GroupS
 function useConversationGroup(target: ProjectSearchTarget, query: string | null): GroupState {
   const navigate = useNavigate();
   const threads = useThreadShells();
+  const config = useAtomValue(serverEnvironment.configValueAtom(target.environmentId));
   const search = useEnvironmentQuery(
     query === null
       ? null
@@ -210,9 +212,17 @@ function useConversationGroup(target: ProjectSearchTarget, query: string | null)
       ),
       icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
+        const threadRef = scopeThreadRef(target.environmentId, match.threadId);
+        if (config?.threadFind === true && query !== null) {
+          requestThreadFindOpen({
+            threadKey: scopedThreadKey(threadRef),
+            query,
+            ...(match.messageId ? { entryId: match.messageId } : {}),
+          });
+        }
         await navigate({
           to: "/$environmentId/$threadId",
-          params: buildThreadRouteParams(scopeThreadRef(target.environmentId, match.threadId)),
+          params: buildThreadRouteParams(threadRef),
         });
       },
     })),
