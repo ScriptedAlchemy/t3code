@@ -8,8 +8,8 @@ import {
   type EnvironmentId,
   type KnowledgeFactSource,
   type KnowledgeMessageRef,
+  type KnowledgeConflictHint,
   type KnowledgeSelection,
-  type KnowledgeSourceUnavailableReason,
   type MessageId,
   type ProjectFact,
   type ProjectId,
@@ -17,7 +17,12 @@ import {
   type ProjectKnowledgeSearchInput,
   type ThreadId,
 } from "@t3tools/contracts";
-import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
+import {
+  KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL,
+  isSupersededFact,
+  knowledgeOriginLabel,
+  projectKnowledgeContextRecord,
+} from "@t3tools/client-runtime/projectKnowledge";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -41,6 +46,7 @@ import {
   type ComposerThreadTarget,
   type DraftId,
 } from "../../composerDraftStore";
+import { ConflictHintRow, KnowledgeHealthStrip, ProjectFactDetailPane } from "./ProjectFactDetail";
 
 const selectionKey = (selection: KnowledgeSelection) =>
   selection.kind === "fact"
@@ -66,21 +72,19 @@ type MessageCitation = { readonly threadId: ThreadId; readonly messageId: Messag
 // has hashed it; readSource returns the canonical ref.
 type SourceRef = MessageCitation & { readonly digest?: KnowledgeMessageRef["digest"] };
 
-const UNAVAILABLE_SOURCE_LABEL: Record<KnowledgeSourceUnavailableReason, string> = {
-  missing: "Source missing",
-  deleted: "Source deleted",
-  archived: "Source archived",
-  wrong_project: "Source moved",
-  streaming: "Source still streaming",
-  changed: "Source changed",
-};
+// Facts carry UUIDs; the prefix is enough to tell linked facts apart on a card.
+const shortFactId = (id: ProjectFactId) => id.slice(0, 8);
 
 // The dialog is opened from the thread panel, timeline messages, the command
 // palette and a keybinding, so its open state lives outside any one of them.
+// A fact opened from search shows that search again, so the fact is in view.
+type FactFocus = { readonly id: ProjectFactId; readonly query: string };
 type OpenRequest = ProjectScope & {
   readonly message: MessageCitation | null;
+  readonly fact: FactFocus | null;
   readonly key: number;
 };
+const revealOnMount = (node: HTMLElement | null) => node?.scrollIntoView({ block: "nearest" });
 const openRequestAtom = Atom.make<OpenRequest | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("chat:project-memory"),
@@ -94,13 +98,22 @@ export function useProjectMemoryAvailable(environmentId: EnvironmentId | null): 
   return environmentId !== null && config?.environment.capabilities.projectKnowledge === true;
 }
 
+// Older servers lack readFact, status and the supersede mutation.
+function useProjectMemoryHistoryAvailable(environmentId: EnvironmentId): boolean {
+  const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  return config?.environment.capabilities.projectKnowledgeHistory === true;
+}
+
 export function useOpenProjectMemory() {
   const setRequest = useAtomSet(openRequestAtom);
-  return (scope: ProjectScope & { readonly message?: MessageCitation }) =>
+  return (
+    scope: ProjectScope & { readonly message?: MessageCitation; readonly fact?: FactFocus },
+  ) =>
     setRequest({
       environmentId: scope.environmentId,
       projectId: scope.projectId,
       message: scope.message ?? null,
+      fact: scope.fact ?? null,
       key: ++nextRequestKey,
     });
 }
@@ -148,6 +161,7 @@ export function ProjectMemoryDialogHost(props: Scope) {
               key={`${active.key}:${props.threadId}:${props.draftId ?? ""}`}
               {...props}
               seedMessage={active.message}
+              focusFact={active.fact}
             />
           ) : null}
         </DialogPanel>
@@ -156,7 +170,12 @@ export function ProjectMemoryDialogHost(props: Scope) {
   );
 }
 
-function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation | null }) {
+function MemoryContents(
+  props: Scope & {
+    readonly seedMessage: MessageCitation | null;
+    readonly focusFact: FactFocus | null;
+  },
+) {
   const target: ComposerThreadTarget = props.draftId ?? {
     environmentId: props.environmentId,
     threadId: props.threadId,
@@ -166,13 +185,31 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
   const [selections, setSelections] = useState<ReadonlyArray<KnowledgeSelection>>(
     attached?.knowledge.selections ?? [],
   );
-  const [query, setQuery] = useState("");
-  const [searchInput, setSearchInput] = useState<ProjectKnowledgeSearchInput | null>(null);
+  const [query, setQuery] = useState(props.focusFact?.query ?? "");
+  const [searchInput, setSearchInput] = useState<ProjectKnowledgeSearchInput | null>(() =>
+    props.focusFact
+      ? {
+          projectId: props.projectId,
+          query: props.focusFact.query,
+          includeArchived: false,
+          requestId: CommandId.make(randomUUID()),
+        }
+      : null,
+  );
   const [status, setStatus] = useState<"confirmed" | "proposed" | "forgotten">("confirmed");
   const [afterId, setAfterId] = useState<ProjectFactId | undefined>();
   const [includeArchived, setIncludeArchived] = useState(false);
   const [source, setSource] = useState<SourceRef | null>(props.seedMessage);
   const [editing, setEditing] = useState<ProjectFact | null>(null);
+  // Only meaningful with `editing`: submit replaces that fact instead of revising it.
+  const [superseding, setSuperseding] = useState(false);
+  const [detailId, setDetailId] = useState<ProjectFactId | null>(null);
+  const [includeSuperseded, setIncludeSuperseded] = useState(false);
+  const [lostSourcesOnly, setLostSourcesOnly] = useState(false);
+  const [hintNotice, setHintNotice] = useState<{
+    readonly content: string | null;
+    readonly hints: ReadonlyArray<KnowledgeConflictHint>;
+  } | null>(null);
   const [content, setContent] = useState("");
   const [entities, setEntities] = useState("");
   const [tags, setTags] = useState("");
@@ -190,11 +227,29 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const canMutate = useAtomValue(projectKnowledge.mutate.permissionAtom(props.environmentId));
+  const historyAvailable = useProjectMemoryHistoryAvailable(props.environmentId);
+  const showSuperseded = historyAvailable && includeSuperseded;
   const list = useEnvironmentQuery(
     projectKnowledge.list({
       environmentId: props.environmentId,
-      input: { projectId: props.projectId, status, ...(afterId ? { afterId } : {}) },
+      input: {
+        projectId: props.projectId,
+        // The lost-source filter spans proposed and confirmed, matching the health count.
+        ...(historyAvailable && lostSourcesOnly
+          ? { sourceState: "unavailable" as const }
+          : { status }),
+        ...(afterId ? { afterId } : {}),
+        ...(showSuperseded ? { includeSuperseded: true } : {}),
+      },
     }),
+  );
+  const health = useEnvironmentQuery(
+    historyAvailable
+      ? projectKnowledge.status({
+          environmentId: props.environmentId,
+          input: { projectId: props.projectId },
+        })
+      : null,
   );
   const search = useEnvironmentQuery(
     searchInput
@@ -230,7 +285,7 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
         : [...current, selection].slice(0, 20),
     );
   };
-  const restartSearch = () =>
+  const restartSearch = (superseded = showSuperseded) =>
     setSearchInput((current) =>
       current === null
         ? null
@@ -238,26 +293,47 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
             projectId: current.projectId,
             query: current.query,
             includeArchived: current.includeArchived ?? false,
+            ...(superseded ? { includeSuperseded: true } : {}),
             requestId: CommandId.make(randomUUID()),
           },
     );
+  const resetEditor = () => {
+    setEditing(null);
+    setSuperseding(false);
+    setContent("");
+    setSources([{ kind: "user" }]);
+  };
+  const startEditing = (fact: ProjectFact & { content: string }, supersede: boolean) => {
+    setEditing(fact);
+    setSuperseding(supersede);
+    setContent(fact.content);
+    setEntities(fact.entities.join(", "));
+    setTags(fact.tags.join(", "));
+    setKind(fact.kind);
+    setSources(fact.sources.length ? fact.sources : [{ kind: "user" }]);
+  };
   const apply = async (input: ProjectKnowledgeMutation) => {
     setBusy(true);
     setError(null);
     setPreview(null);
+    setHintNotice(null);
     selectionVersion.current += 1;
     const result = await mutate({ environmentId: props.environmentId, input });
     setBusy(false);
     if (result._tag === "Failure") setError(String(squashAtomCommandFailure(result)));
     else {
       useComposerDraftStore.getState().setKnowledgeContext(target, null);
-      setEditing(null);
-      setContent("");
+      resetEditor();
+      // A superseded fact drops out of recall, so its selection goes with the revised one.
+      const replaced = new Set<ProjectFactId>([result.value.id, input.factId]);
       setSelections((current) =>
-        current.filter((item) => item.kind !== "fact" || item.factId !== result.value.id),
+        current.filter((item) => item.kind !== "fact" || !replaced.has(item.factId)),
       );
+      if (result.value.hints?.length)
+        setHintNotice({ content: result.value.content, hints: result.value.hints });
     }
     list.refresh();
+    health.refresh();
     restartSearch();
   };
   const revise = (fact: ProjectFact, action: "confirm" | "forget" | "feedback", helpful = true) => {
@@ -305,6 +381,17 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
   );
   return (
     <div className="flex flex-col gap-3">
+      {health.data ? (
+        <KnowledgeHealthStrip
+          status={health.data}
+          onShowUnavailable={() => {
+            setLostSourcesOnly(true);
+            setAfterId(undefined);
+            setSearchInput(null);
+            setDetailId(null);
+          }}
+        />
+      ) : null}
       <form
         className="flex gap-2"
         onSubmit={(event) => {
@@ -316,6 +403,7 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
                   projectId: props.projectId,
                   query: query.trim(),
                   includeArchived,
+                  ...(showSuperseded ? { includeSuperseded: true } : {}),
                   requestId: CommandId.make(randomUUID()),
                 },
           );
@@ -345,14 +433,29 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
         />{" "}
         Include archived conversations
       </label>
+      {historyAvailable ? (
+        <label>
+          <input
+            type="checkbox"
+            checked={includeSuperseded}
+            onChange={(event) => {
+              setIncludeSuperseded(event.target.checked);
+              setAfterId(undefined);
+              restartSearch(event.target.checked);
+            }}
+          />{" "}
+          Show superseded
+        </label>
+      ) : null}
       <div className="flex flex-wrap gap-2">
         {(["confirmed", "proposed", "forgotten"] as const).map((value) => (
           <Button
             key={value}
-            variant={status === value && !searchInput ? "default" : "outline"}
+            variant={status === value && !searchInput && !lostSourcesOnly ? "default" : "outline"}
             size="sm"
             onClick={() => {
               setStatus(value);
+              setLostSourcesOnly(false);
               setAfterId(undefined);
               setSearchInput(null);
             }}
@@ -365,6 +468,7 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
           size="sm"
           onClick={() => {
             list.refresh();
+            health.refresh();
             restartSearch();
           }}
         >
@@ -375,6 +479,49 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
         <p role="alert">{error ?? list.error ?? search.error}</p>
       ) : null}
       {list.isPending || search.isPending ? <p>Reading project knowledge…</p> : null}
+      {hintNotice ? (
+        <section
+          aria-label="Possible conflicts"
+          className="flex flex-col gap-2 rounded-md border p-3"
+        >
+          {hintNotice.hints.map((hint) => (
+            <ConflictHintRow
+              key={hint.factId}
+              hint={hint}
+              currentContent={hintNotice.content}
+              onOpenFact={historyAvailable ? setDetailId : null}
+            />
+          ))}
+          <Button variant="ghost" size="sm" onClick={() => setHintNotice(null)}>
+            Dismiss
+          </Button>
+        </section>
+      ) : null}
+      {lostSourcesOnly && historyAvailable && !searchInput ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span>Showing facts that lost their source.</span>
+          <Button
+            variant="link"
+            size="sm"
+            onClick={() => {
+              setLostSourcesOnly(false);
+              setAfterId(undefined);
+            }}
+          >
+            Show all facts
+          </Button>
+        </div>
+      ) : null}
+      {detailId ? (
+        <ProjectFactDetailPane
+          environmentId={props.environmentId}
+          projectId={props.projectId}
+          factId={detailId}
+          onOpenFact={setDetailId}
+          onOpenSource={setSource}
+          onClose={() => setDetailId(null)}
+        />
+      ) : null}
       {search.data?.facts.state === "unavailable" ? (
         <p>
           Fact ranking is unavailable on this environment. Conversation search and saved facts
@@ -384,28 +531,40 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
       {search.data?.facts.state === "available" && search.data.facts.coverage === "partial" ? (
         <p>Partial coverage. Narrow the query to reach more facts.</p>
       ) : null}
-      {facts.map((fact) => {
+      {(detailId ? [] : facts).map((fact) => {
         const score =
           search.data?.facts.state === "available"
             ? search.data.facts.matches.find((match) => match.fact.id === fact.id)?.score
             : undefined;
         const unavailableReason = unavailableReasons.get(fact.id);
+        const superseded = isSupersededFact(fact);
         return (
-          <article className="rounded-md border p-3" key={fact.id}>
+          <article
+            className={`rounded-md border p-3${superseded ? " border-dashed" : ""}`}
+            key={fact.id}
+          >
             {unavailableReason ? (
-              <Badge variant="warning">{UNAVAILABLE_SOURCE_LABEL[unavailableReason]}</Badge>
+              <Badge variant="warning">
+                {KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL[unavailableReason]}
+              </Badge>
             ) : null}
-            <p className="whitespace-pre-wrap">{fact.content ?? "Forgotten fact"}</p>
+            {fact.supersededBy ? (
+              <Badge variant="secondary">Superseded by {shortFactId(fact.supersededBy)}</Badge>
+            ) : null}
+            {fact.supersedes ? (
+              <Badge variant="outline">Supersedes {shortFactId(fact.supersedes)}</Badge>
+            ) : null}
+            {fact.id === props.focusFact?.id ? (
+              <p className="whitespace-pre-wrap font-semibold" ref={revealOnMount}>
+                {fact.content ?? "Forgotten fact"}
+              </p>
+            ) : (
+              <p className="whitespace-pre-wrap">{fact.content ?? "Forgotten fact"}</p>
+            )}
             <p className="text-xs text-muted-foreground">
               {fact.kind} · {fact.status} · trust {fact.trust.toFixed(2)} · revision {fact.revision}
             </p>
-            <p>
-              {fact.origin.kind === "user"
-                ? "User assertion"
-                : fact.origin.kind === "agent-thread"
-                  ? `Agent observation in thread ${fact.origin.threadId}`
-                  : `Agent observation from ${fact.origin.label}`}
-            </p>
+            <p>{knowledgeOriginLabel(fact.origin)}</p>
             <div className="flex flex-wrap gap-2">
               {fact.sources.map((ref, index) =>
                 ref.kind === "user" ? (
@@ -444,24 +603,35 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
                     : "Select"}
                 </Button>
               ) : null}
+              {historyAvailable ? (
+                <Button size="sm" variant="ghost" onClick={() => setDetailId(fact.id)}>
+                  Details
+                </Button>
+              ) : null}
               {fact.status !== "forgotten" ? (
                 <>
-                  <Button
-                    disabled={!canMutate || busy}
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      setEditing(fact);
-                      setContent(fact.content);
-                      setEntities(fact.entities.join(", "));
-                      setTags(fact.tags.join(", "));
-                      setKind(fact.kind);
-                      setSources(fact.sources.length ? fact.sources : [{ kind: "user" }]);
-                    }}
-                  >
-                    Edit
-                  </Button>
-                  {fact.status === "proposed" ? (
+                  {/* The server rejects revisions of a superseded fact; its replacement is the one to change. */}
+                  {!superseded ? (
+                    <Button
+                      disabled={!canMutate || busy}
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => startEditing(fact, false)}
+                    >
+                      Edit
+                    </Button>
+                  ) : null}
+                  {historyAvailable && !superseded ? (
+                    <Button
+                      disabled={!canMutate || busy}
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => startEditing(fact, true)}
+                    >
+                      Supersede
+                    </Button>
+                  ) : null}
+                  {fact.status === "proposed" && !superseded ? (
                     <Button
                       disabled={!canMutate || busy}
                       size="sm"
@@ -501,12 +671,12 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
           </article>
         );
       })}
-      {!searchInput && list.data?.nextCursor ? (
+      {!searchInput && !detailId && list.data?.nextCursor ? (
         <Button variant="outline" onClick={() => setAfterId(list.data?.nextCursor ?? undefined)}>
           Next facts
         </Button>
       ) : null}
-      {afterId ? (
+      {afterId && !detailId ? (
         <Button variant="ghost" onClick={() => setAfterId(undefined)}>
           First facts
         </Button>
@@ -649,15 +819,23 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
             editing
               ? {
                   ...fields,
-                  action: "edit",
                   factId: editing.id,
                   expectedRevision: editing.revision,
+                  ...(superseding
+                    ? {
+                        action: "supersede" as const,
+                        replacementFactId: ProjectFactId.make(randomUUID()),
+                      }
+                    : { action: "edit" as const }),
                 }
               : { ...fields, action: "create", factId: ProjectFactId.make(randomUUID()) },
           );
         }}
       >
-        <h3>{editing ? "Edit fact" : "Save a fact"}</h3>
+        <h3>{editing ? (superseding ? "Supersede fact" : "Edit fact") : "Save a fact"}</h3>
+        {editing && superseding ? (
+          <p>The original stays readable but is no longer recalled once replaced.</p>
+        ) : null}
         <Textarea
           aria-label="Fact content"
           autoFocus={props.seedMessage !== null}
@@ -694,16 +872,14 @@ function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation |
         {!canMutate ? <p>This environment grants read access only.</p> : null}
         <div className="flex gap-2">
           <Button disabled={!canMutate || busy || content.trim() === ""} type="submit">
-            {editing ? "Save edit" : "Save fact"}
+            {editing ? (superseding ? "Save replacement" : "Save edit") : "Save fact"}
           </Button>
-          <Button
-            variant="ghost"
-            onClick={() => {
-              setEditing(null);
-              setContent("");
-              setSources([{ kind: "user" }]);
-            }}
-          >
+          {editing && historyAvailable ? (
+            <Button variant="ghost" onClick={() => setSuperseding((value) => !value)}>
+              {superseding ? "Edit instead" : "Supersede instead"}
+            </Button>
+          ) : null}
+          <Button variant="ghost" onClick={resetEditor}>
             New assertion
           </Button>
         </div>

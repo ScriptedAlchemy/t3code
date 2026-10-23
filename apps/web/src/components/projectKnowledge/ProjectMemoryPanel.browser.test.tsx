@@ -8,6 +8,8 @@ import {
   ProjectFactId,
   MessageId,
   type ProjectFact,
+  type ProjectFactHistoryEntry,
+  type ProjectKnowledgeStatus,
   type ProjectKnowledgeSearchInput,
 } from "@t3tools/contracts";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
@@ -19,6 +21,10 @@ const state = vi.hoisted(() => ({
   config: null as unknown,
   permission: null as unknown,
   list: null as unknown,
+  listRequest: vi.fn(),
+  detail: null as unknown,
+  readFact: vi.fn(),
+  status: null as unknown,
   search: null as unknown,
   searchRequest: vi.fn(),
   source: null as unknown,
@@ -35,7 +41,15 @@ vi.mock(
   () =>
     ({
       projectKnowledge: {
-        list: () => state.list,
+        list: (input: unknown) => {
+          state.listRequest(input);
+          return state.list;
+        },
+        readFact: (input: unknown) => {
+          state.readFact(input);
+          return state.detail;
+        },
+        status: () => state.status,
         search: (input: unknown) => state.searchRequest(input),
         readSource: (input: unknown) => {
           state.readSource(input);
@@ -91,11 +105,42 @@ const fact: ProjectFact = {
   updatedAt: "2026-10-22T00:00:00.000Z",
   forgottenAt: null,
 };
+const healthStatus: ProjectKnowledgeStatus = {
+  counts: { proposed: 1, confirmed: 4, superseded: 1, forgotten: 0 },
+  trustBands: { low: 0, guarded: 1, steady: 3, high: 1 },
+  recallThreshold: 0.3,
+  belowRecallThreshold: 0,
+  retrievals: 7,
+  feedback: { helpful: 2, unhelpful: 1 },
+  unavailableSources: 0,
+  unavailableSourcesCoverage: "complete",
+};
+const historyEntry = (
+  entry: Pick<ProjectFactHistoryEntry, "sequence" | "event" | "revision" | "trustAfter"> &
+    Partial<ProjectFactHistoryEntry>,
+): ProjectFactHistoryEntry => ({
+  actor: { kind: "user" },
+  at: fact.createdAt,
+  contentDigest: null,
+  content: null,
+  sources: [],
+  trustBefore: null,
+  helpful: null,
+  relatedFactId: null,
+  sourceUnavailable: null,
+  ...entry,
+});
 function setup() {
   const registry = AtomRegistry.make();
-  state.config = Atom.make({ environment: { capabilities: { projectKnowledge: true } } });
+  state.config = Atom.make({
+    environment: { capabilities: { projectKnowledge: true, projectKnowledgeHistory: true } },
+  });
   state.permission = Atom.make(true);
   state.list = Atom.make(AsyncResult.success({ facts: [fact], nextCursor: null }));
+  state.listRequest.mockReset();
+  state.readFact.mockReset();
+  state.detail = Atom.make(AsyncResult.initial(true));
+  state.status = Atom.make(AsyncResult.success(healthStatus));
   state.search = Atom.make(
     AsyncResult.success({
       messages: { matches: [], nextCursor: null },
@@ -445,4 +490,152 @@ it("pages facts and conversations independently and resets both for a new query"
     includeArchived: false,
     requestId: expect.any(String),
   });
+});
+
+it("opens a fact's history as an ordered timeline with its trust trend", async () => {
+  const registry = setup();
+  state.detail = Atom.make(
+    AsyncResult.success({
+      fact: { ...fact, revision: 2, trust: 0.6 },
+      sourceUnavailable: "deleted",
+      history: [
+        historyEntry({
+          sequence: 1,
+          event: "created",
+          revision: 1,
+          trustAfter: 0.5,
+          actor: fact.origin,
+          content: "Cache keys include tenants.",
+        }),
+        historyEntry({
+          sequence: 2,
+          event: "edited",
+          revision: 2,
+          trustBefore: 0.5,
+          trustAfter: 0.5,
+          content: fact.content,
+          sources: [source],
+          sourceUnavailable: "deleted",
+        }),
+        historyEntry({
+          sequence: 3,
+          event: "feedback",
+          revision: 2,
+          trustBefore: 0.5,
+          trustAfter: 0.6,
+          helpful: true,
+        }),
+      ],
+      historyTruncated: true,
+      supersedes: null,
+      supersededBy: null,
+      hints: [],
+    }),
+  );
+  await using screen = await mount(registry);
+  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  await page.getByRole("button", { name: "Details", exact: true }).click();
+  expect(state.readFact).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: { projectId: scope.projectId, factId: fact.id },
+  });
+  const rows = page.getByRole("list", { name: "Fact history" }).getByRole("listitem");
+  await expect.element(rows.nth(2)).toBeVisible();
+  expect(rows.elements().map((row) => row.querySelector("span")?.textContent)).toEqual([
+    "Created",
+    "Edited to revision 2",
+    "Marked helpful",
+  ]);
+  await expect.element(rows.nth(0).getByText(/Agent observation from Code agent/)).toBeVisible();
+  await expect.element(rows.nth(1).getByText("Source deleted")).toBeVisible();
+  await expect.element(rows.nth(2).getByText("Trust 0.50 → 0.60")).toBeVisible();
+  await expect.element(page.getByText("Earlier history not shown")).toBeVisible();
+  await expect
+    .element(page.getByRole("img", { name: "Trust from 0.50 to 0.60" }))
+    .toBeInTheDocument();
+  await page.getByRole("button", { name: "Back to facts" }).click();
+  await expect.element(page.getByRole("article")).toBeVisible();
+});
+
+it("marks superseded facts read-only and filters to facts that lost their source", async () => {
+  const registry = setup();
+  const replacement = ProjectFactId.make("replacement-fact-id");
+  state.list = Atom.make(
+    AsyncResult.success({
+      facts: [{ ...fact, status: "confirmed", supersededBy: replacement }],
+      nextCursor: null,
+    }),
+  );
+  state.status = Atom.make(AsyncResult.success({ ...healthStatus, unavailableSources: 1 }));
+  await using screen = await mount(registry);
+  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  const card = page.getByRole("article");
+  await expect.element(card.getByText("Superseded by replacem")).toBeVisible();
+  await expect
+    .element(card.getByRole("button", { name: "Edit", exact: true }))
+    .not.toBeInTheDocument();
+  await expect
+    .element(card.getByRole("button", { name: "Supersede", exact: true }))
+    .not.toBeInTheDocument();
+  await expect.element(card.getByRole("button", { name: "Forget", exact: true })).toBeEnabled();
+  expect(state.listRequest.mock.lastCall![0].input).not.toHaveProperty("sourceState");
+  await page.getByRole("button", { name: "1 fact lost its source" }).click();
+  await expect.element(page.getByText("Showing facts that lost their source.")).toBeVisible();
+  expect(state.listRequest.mock.lastCall![0].input).toEqual({
+    projectId: scope.projectId,
+    sourceState: "unavailable",
+  });
+  await page.getByRole("button", { name: "Show all facts" }).click();
+  await expect
+    .element(page.getByText("Showing facts that lost their source."))
+    .not.toBeInTheDocument();
+  expect(state.listRequest.mock.lastCall![0].input).not.toHaveProperty("sourceState");
+});
+
+it("supersedes a fact and surfaces the conflict hints the server returns", async () => {
+  const registry = setup();
+  state.mutate.mockResolvedValue({
+    _tag: "Success",
+    value: {
+      ...fact,
+      id: ProjectFactId.make("replacement"),
+      content: "Cache keys include tenant and region IDs.",
+      supersedes: fact.id,
+      hints: [
+        {
+          kind: "possible_conflict",
+          factId: ProjectFactId.make("other"),
+          revision: 3,
+          excerpt: "Cache keys never include region.",
+          similarity: 0.7,
+        },
+      ],
+    },
+  });
+  await using screen = await mount(registry);
+  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  await page.getByRole("button", { name: "Supersede", exact: true }).click();
+  await expect
+    .element(page.getByRole("textbox", { name: "Fact content" }))
+    .toHaveValue(fact.content);
+  await page
+    .getByRole("textbox", { name: "Fact content" })
+    .fill("Cache keys include tenant and region IDs.");
+  await page.getByRole("button", { name: "Save replacement" }).click();
+  expect(state.mutate).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: expect.objectContaining({
+      action: "supersede",
+      factId: fact.id,
+      expectedRevision: 1,
+      replacementFactId: expect.any(String),
+      content: "Cache keys include tenant and region IDs.",
+    }),
+  });
+  const notice = page.getByRole("region", { name: "Possible conflicts" });
+  await expect.element(notice.getByText(/Possible conflict with/)).toBeVisible();
+  await notice.getByRole("button", { name: "Compare" }).click();
+  await expect.element(notice.getByText("This fact")).toBeVisible();
+  await notice.getByRole("button", { name: "Dismiss" }).click();
+  await expect.element(notice).not.toBeInTheDocument();
 });

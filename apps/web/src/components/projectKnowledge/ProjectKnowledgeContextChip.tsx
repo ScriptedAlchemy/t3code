@@ -124,7 +124,9 @@ function DeliveredKnowledge({
                 {note}
               </p>
             ))}
-            <pre className="whitespace-pre-wrap text-sm">{snapshot.item.text}</pre>
+            {snapshot.item.contentRemoved ? null : (
+              <pre className="whitespace-pre-wrap text-sm">{snapshot.item.text}</pre>
+            )}
           </>
         )}
       </DialogPanel>
