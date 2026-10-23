@@ -29,6 +29,7 @@ vi.mock("@t3tools/client-runtime/state/runtime", () => ({
   squashAtomCommandFailure: () => new Error("Request failed"),
 }));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => crypto.randomUUID() }));
+vi.mock("../state/session", () => ({ useEnvironmentScope: () => true }));
 vi.mock("react-native", () => ({
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,

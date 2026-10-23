@@ -3,8 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import { ScrollView, Switch, View } from "react-native";
 import { useAtomValue } from "@effect/atom-react";
 import {
+  AuthSettingsWriteScope,
   CommandId,
   ProjectFactId,
+  type AssistedLearningRun,
   type EnvironmentId,
   type KnowledgeConflictHint,
   type KnowledgeFactSource,
@@ -20,9 +22,11 @@ import {
 } from "@t3tools/contracts";
 import {
   KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL,
+  assistedLearningRunLabel,
   isSupersededFact,
   knowledgeOriginLabel,
 } from "@t3tools/client-runtime/projectKnowledge";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 import {
@@ -40,6 +44,7 @@ import { projectKnowledge } from "../state/projectKnowledge";
 import { serverEnvironment } from "../state/server";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useEnvironmentQuery } from "../state/query";
+import { useEnvironmentScope } from "../state/session";
 import {
   ConflictHintRow,
   KnowledgeHealthRow,
@@ -116,6 +121,7 @@ export function ProjectKnowledgeEntry(props: Scope) {
           {...props}
           // Older servers lack readFact, status and supersede.
           history={config.environment.capabilities.projectKnowledgeHistory === true}
+          assisted={config.environment.capabilities.projectKnowledgeAssistedLearning === true}
           seedMessage={open.seed}
           onClose={() => setOpen(null)}
         />
@@ -127,6 +133,7 @@ export function ProjectKnowledgeEntry(props: Scope) {
 function ProjectKnowledgeSheet(
   props: Scope & {
     readonly history: boolean;
+    readonly assisted: boolean;
     readonly seedMessage: MessageCitation | null;
     readonly onClose: () => void;
   },
@@ -144,7 +151,9 @@ function ProjectKnowledgeSheet(
   const [selections, setSelections] = useState<ReadonlyArray<KnowledgeSelection>>(
     attachedInScope?.knowledge.selections ?? [],
   );
-  const [status, setStatus] = useState<"confirmed" | "proposed" | "forgotten">("confirmed");
+  const [status, setStatus] = useState<"confirmed" | "proposed" | "suggested" | "forgotten">(
+    "confirmed",
+  );
   const [afterId, setAfterId] = useState<ProjectFactId | undefined>();
   const [includeArchived, setIncludeArchived] = useState(false);
   const [searchText, setSearchText] = useState("");
@@ -185,7 +194,9 @@ function ProjectKnowledgeSheet(
         // The lost-source filter spans proposed and confirmed, matching the health count.
         ...(props.history && lostSourcesOnly
           ? { sourceState: "unavailable" as const }
-          : { status }),
+          : status === "suggested"
+            ? { status: "proposed" as const, origin: "assisted" as const }
+            : { status }),
         ...(afterId ? { afterId } : {}),
         ...(props.history && showSuperseded ? { includeSuperseded: true } : {}),
       },
@@ -455,6 +466,13 @@ function ProjectKnowledgeSheet(
               </View>
             ) : null}
 
+            {props.assisted ? (
+              <AssistedLearningRow
+                environmentId={props.environmentId}
+                projectId={props.projectId}
+                lastRun={health.data?.assistedLearning?.lastRun ?? null}
+              />
+            ) : null}
             <View className="flex-row items-center gap-3">
               <AppText className="flex-1">Include archived conversations</AppText>
               <Switch
@@ -467,10 +485,17 @@ function ProjectKnowledgeSheet(
               />
             </View>
             <View className="flex-row flex-wrap gap-2">
-              {(["confirmed", "proposed", "forgotten"] as const).map((value) => (
+              {(props.assisted
+                ? (["confirmed", "proposed", "suggested", "forgotten"] as const)
+                : (["confirmed", "proposed", "forgotten"] as const)
+              ).map((value) => (
                 <Button
                   key={value}
-                  label={value}
+                  label={
+                    value === "suggested" && health.data?.assistedLearning?.suggested
+                      ? `suggested (${health.data.assistedLearning.suggested})`
+                      : value
+                  }
                   tone={
                     status === value && !searchInput && !lostSourcesOnly ? "primary" : "secondary"
                   }
@@ -689,6 +714,14 @@ function ProjectKnowledgeSheet(
                   <AppText className="text-xs text-foreground-muted">
                     {knowledgeOriginLabel(fact.origin)}
                   </AppText>
+                  {fact.status === "proposed" &&
+                  fact.origin.kind === "assisted" &&
+                  fact.supersedes != null ? (
+                    <AppText className="text-xs">
+                      Confirming replaces fact {fact.supersedes.slice(0, 8)}; forgetting leaves it
+                      as it is.
+                    </AppText>
+                  ) : null}
                   <View className="flex-row flex-wrap gap-2">
                     {fact.sources.map((ref, index) =>
                       ref.kind === "user" ? (
@@ -916,5 +949,65 @@ function ProjectKnowledgeSheet(
         )}
       </ScrollView>
     </Sheet>
+  );
+}
+
+/** The project's opt-in for model-suggested facts and what the last run did with it. */
+function AssistedLearningRow(props: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly lastRun: AssistedLearningRun | null;
+}) {
+  const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
+  const canWrite = useEnvironmentScope(props.environmentId, AuthSettingsWriteScope);
+  const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const settings = config?.settings;
+  if (!settings || config.environment.capabilities.projectSettingsOverrides !== true) return null;
+  const enabled = resolveProjectSettings(settings, props.projectId).settings.enableAssistedLearning;
+  const toggle = async (next: boolean) => {
+    setBusy(true);
+    setError(null);
+    const result = await update({
+      environmentId: props.environmentId,
+      input: {
+        patch: {
+          projectSettingsOverrides: {
+            [props.projectId]: {
+              ...settings.projectSettingsOverrides[props.projectId],
+              enableAssistedLearning: next,
+            },
+          },
+        },
+      },
+    });
+    setBusy(false);
+    if (result._tag === "Failure") setError(String(squashAtomCommandFailure(result)));
+  };
+  return (
+    <View className="gap-1 rounded-2xl bg-subtle p-3">
+      <View className="flex-row items-center gap-3">
+        <AppText className="flex-1">Suggest facts from finished runs</AppText>
+        <Switch
+          accessibilityLabel="Suggest facts from finished runs"
+          value={enabled}
+          disabled={!canWrite || busy}
+          onValueChange={(value) => void toggle(value)}
+        />
+      </View>
+      <AppText className="text-xs text-foreground-muted">
+        After each run in this project, your text generation model proposes up to three cited facts
+        for review. Each run costs one model call.
+      </AppText>
+      {props.lastRun ? (
+        <AppText className="text-xs">{assistedLearningRunLabel(props.lastRun)}</AppText>
+      ) : null}
+      {error ? (
+        <AppText accessibilityRole="alert" className="text-xs text-danger">
+          {error}
+        </AppText>
+      ) : null}
+    </View>
   );
 }

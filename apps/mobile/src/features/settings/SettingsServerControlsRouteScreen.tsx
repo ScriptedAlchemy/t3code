@@ -59,7 +59,7 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "branchNamePrefix",
     "branchNameInstructions",
   ],
-  "agent-behavior": ["responseStreamingMode", "enableAgentBrowserAccess"],
+  "agent-behavior": ["responseStreamingMode", "enableAgentBrowserAccess", "enableAssistedLearning"],
   maintenance: ["continueThreadsAfterServerUpdate"],
 };
 
@@ -427,6 +427,16 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       value={uniform("enableAgentBrowserAccess")}
                       disabled={disabledFor("enableAgentBrowserAccess")}
                       onValueChange={(value) => write({ enableAgentBrowserAccess: value })}
+                    />
+                  </SettingsSection>
+                  <SettingsSection title="Project memory">
+                    <SettingsSwitchRow
+                      icon="brain"
+                      label="Suggest facts from finished runs"
+                      subtitle="After each run, your text generation model proposes up to three cited facts for review. Each run costs one model call."
+                      value={uniform("enableAssistedLearning")}
+                      disabled={disabledFor("enableAssistedLearning")}
+                      onValueChange={(value) => write({ enableAssistedLearning: value })}
                     />
                   </SettingsSection>
                 </>
