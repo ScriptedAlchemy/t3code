@@ -118,7 +118,12 @@ const fullWindow: LoomWindow = {
     edges: false,
     bytes: false,
   },
-  coverage: { untimedTasks: 0, commandsScanned: 0, commandsTruncated: false },
+  coverage: {
+    untimedTasks: 0,
+    untimedTasksTruncated: false,
+    commandsScanned: 0,
+    commandsTruncated: false,
+  },
   nextCursor: null,
 };
 
@@ -140,8 +145,8 @@ function setup() {
   return AtomRegistry.make();
 }
 
-function LoomHarness() {
-  const [search, setSearch] = useState<LoomSearch>({ from, to });
+function LoomHarness(props: { readonly initialSearch?: LoomSearch }) {
+  const [search, setSearch] = useState<LoomSearch>(props.initialSearch ?? { from, to });
   return (
     <ProjectLoomPage
       environmentId={environmentId}
@@ -200,4 +205,87 @@ it("nests and collapses lanes, filters them, notes limits, and opens a checkpoin
   expect(Object.values(useDiffPanelStore.getState().byThreadKey)).toContainEqual(
     expect.objectContaining({ kind: "turn", turnId: runId }),
   );
+});
+
+async function renderLoom(registry: AtomRegistry.AtomRegistry, initialSearch?: LoomSearch) {
+  return render(
+    <RegistryContext.Provider value={registry}>
+      <LoomHarness {...(initialSearch === undefined ? {} : { initialSearch })} />
+    </RegistryContext.Provider>,
+    { router: "/loom/loom-browser/project" },
+  );
+}
+
+it("pages older lanes of the default window within the bounds that produced the cursor", async () => {
+  const registry = setup();
+  const requests: Array<LoomWindowInput> = [];
+  state.respond = (input) => {
+    requests.push(input as LoomWindowInput);
+    const firstPage = (input as LoomWindowInput).cursor === undefined;
+    return Atom.make(
+      AsyncResult.success({ ...fullWindow, nextCursor: firstPage ? "page-2" : null }),
+    );
+  };
+  await using _screen = await renderLoom(registry, {});
+
+  await userEvent.click(page.getByRole("button", { name: "Older lanes" }));
+  await vi.waitFor(() => expect(requests).toHaveLength(2));
+  expect(requests[0]).toEqual({ projectId });
+  expect(requests[1]).toEqual({ projectId, from, to, cursor: "page-2" });
+});
+
+it("notes skipped command scans and untimed tasks", async () => {
+  const registry = setup();
+  state.respond = () =>
+    Atom.make(
+      AsyncResult.success({
+        ...fullWindow,
+        truncated: { ...fullWindow.truncated, runs: false },
+        coverage: {
+          untimedTasks: 3,
+          untimedTasksTruncated: false,
+          commandsScanned: 4000,
+          commandsTruncated: true,
+        },
+      }),
+    );
+  await using _screen = await renderLoom(registry);
+
+  await expect
+    .element(page.getByRole("status"))
+    .toHaveTextContent(
+      "Limited: test commands from the newest 4000 commands only, 3 agent tasks with no recorded time, not shown.",
+    );
+});
+
+it("draws queue time only when the run's start is recorded or it has not started", async () => {
+  const registry = setup();
+  const unstarted = (status: "completed" | "queued", ordinal: number) => ({
+    ...fullWindow.runs[0]!,
+    id: RunId.make(`run-${status}`),
+    ordinal,
+    status,
+    startedAt: null,
+    completedAt: status === "completed" ? "2026-10-21T12:00:00.000Z" : null,
+  });
+  state.respond = () =>
+    Atom.make(
+      AsyncResult.success({
+        ...fullWindow,
+        runs: [unstarted("completed", 2), unstarted("queued", 3)],
+      }),
+    );
+  await using _screen = await renderLoom(registry);
+
+  const queueLine = (name: RegExp) =>
+    page.getByRole("button", { name }).first().element().querySelector("line[stroke-dasharray]");
+  await expect.element(page.getByRole("button", { name: /^Run 2, completed/ })).toBeVisible();
+  expect(queueLine(/^Run 2, completed/)).toBeNull();
+  expect(
+    page
+      .getByRole("button", { name: /^Run 2, completed/ })
+      .element()
+      .querySelector('line[data-timing="unknown"]'),
+  ).not.toBeNull();
+  expect(queueLine(/^Run 3, queued/)).not.toBeNull();
 });

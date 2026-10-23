@@ -3,6 +3,7 @@ import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environ
 import {
   buildLoomRows,
   groupLoomActivity,
+  loomCoverageNotes,
   loomTruncationNotes,
 } from "@t3tools/client-runtime/projectLoom";
 import {
@@ -118,26 +119,43 @@ export function ProjectLoomPage(props: ProjectLoomPageProps) {
   );
 }
 
+interface LoomPage {
+  readonly cursor: string;
+  readonly from: string;
+  readonly to: string;
+}
+
 function LoomWorkspace(props: ProjectLoomPageProps) {
   const { search, onSearchChange } = props;
   const navigate = useNavigate();
   const openPrLink = useOpenPrLink();
   const filters = loomFiltersOf(search);
-  // Lane pages are ephemeral: a cursor only belongs to the window and filters that made it.
-  const filterKey = JSON.stringify([search.from, search.to, filters]);
+  // Lane pages are ephemeral: a cursor only belongs to the project, window and filters that made
+  // it. Each page carries the resolved bounds of the page before it, because without explicit
+  // bounds the server resolves a new "now" per request and would reject the cursor.
+  const filterKey = JSON.stringify([
+    props.environmentId,
+    props.projectId,
+    search.from,
+    search.to,
+    filters,
+  ]);
   const [cursorState, setCursorState] = useState<{
     readonly key: string;
-    readonly cursors: ReadonlyArray<string>;
-  }>({ key: filterKey, cursors: [] });
-  const cursors = cursorState.key === filterKey ? cursorState.cursors : [];
-  const setCursors = (next: ReadonlyArray<string>) =>
-    setCursorState({ key: filterKey, cursors: next });
+    readonly pages: ReadonlyArray<LoomPage>;
+  }>({ key: filterKey, pages: [] });
+  const pages = cursorState.key === filterKey ? cursorState.pages : [];
+  const setPages = (next: ReadonlyArray<LoomPage>) =>
+    setCursorState({ key: filterKey, pages: next });
+  const current = pages.at(-1);
+  const from = current?.from ?? search.from;
+  const to = current?.to ?? search.to;
   const input = {
     projectId: props.projectId,
-    ...(search.from === undefined ? {} : { from: search.from }),
-    ...(search.to === undefined ? {} : { to: search.to }),
+    ...(from === undefined ? {} : { from }),
+    ...(to === undefined ? {} : { to }),
     ...(filters === undefined ? {} : { filters }),
-    ...(cursors.length === 0 ? {} : { cursor: cursors.at(-1)! }),
+    ...(current === undefined ? {} : { cursor: current.cursor }),
   };
   const query = useEnvironmentQuery(
     projectLoom.window({ environmentId: props.environmentId, input }),
@@ -252,11 +270,14 @@ function LoomWorkspace(props: ProjectLoomPageProps) {
           search={search}
           update={update}
           actions={actions}
-          page={cursors.length}
+          page={pages.length}
           onOlderLanes={
-            data.nextCursor === null ? null : () => setCursors([...cursors, data.nextCursor!])
+            data.nextCursor === null
+              ? null
+              : () =>
+                  setPages([...pages, { cursor: data.nextCursor!, from: data.from, to: data.to }])
           }
-          onNewerLanes={cursors.length === 0 ? null : () => setCursors(cursors.slice(0, -1))}
+          onNewerLanes={pages.length === 0 ? null : () => setPages(pages.slice(0, -1))}
         />
       )}
     </>
@@ -300,7 +321,7 @@ function LoomLoaded(props: {
     return resolved;
   })();
   const selection = decodeLoomSelection(search.sel);
-  const truncation = loomTruncationNotes(data);
+  const truncation = [...loomTruncationNotes(data), ...loomCoverageNotes(data)];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">

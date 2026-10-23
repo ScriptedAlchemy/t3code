@@ -49,6 +49,8 @@ const ACTIVE_RUN = new Set<LoomRun["status"]>([
   "waiting",
 ]);
 
+const PRE_EXECUTION_RUN = new Set<LoomRun["status"]>(["preparing", "queued", "starting"]);
+
 export interface LoomTimelineProps {
   readonly window: LoomWindow;
   readonly rows: ReadonlyArray<LoomRow>;
@@ -430,7 +432,8 @@ function LoomRunGlyph(props: {
   // An active run is drawn to the as-of time; a finished run with no recorded end gets no span.
   const endMs =
     run.completedAt !== null ? Date.parse(run.completedAt) : active ? props.asOfMs : null;
-  const queueEndMs = startedMs ?? endMs;
+  // Without a recorded start, only a pre-execution status proves the whole span was queue time.
+  const queueEndMs = startedMs ?? (PRE_EXECUTION_RUN.has(run.status) ? endMs : null);
   if (!props.inView(requestedMs, endMs ?? requestedMs)) return null;
   const label = `Run ${run.ordinal}, ${run.status}, requested ${formatLoomTime(run.requestedAt)}${run.startedAt === null ? ", start unknown" : `, started ${formatLoomTime(run.startedAt)}`}${run.completedAt === null ? "" : `, completed ${formatLoomTime(run.completedAt)}`}`;
   const select = () => props.onSelect({ kind: "run", id: run.id });
@@ -446,6 +449,16 @@ function LoomRunGlyph(props: {
           y2={mid}
           strokeDasharray="2 2"
           className="stroke-muted-foreground/60"
+        />
+      ) : null}
+      {startedMs === null && queueEndMs === null && endMs !== null && endMs > requestedMs ? (
+        <line
+          data-timing="unknown"
+          x1={xRequested}
+          x2={scale.x(endMs)}
+          y1={mid}
+          y2={mid}
+          className="stroke-muted-foreground/25"
         />
       ) : null}
       {startedMs !== null && endMs !== null ? (
