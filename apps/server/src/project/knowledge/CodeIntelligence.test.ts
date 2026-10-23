@@ -1106,3 +1106,19 @@ it.effect("keeps the index out of the checkout's git status", () =>
     }),
   ),
 );
+
+it.effect("leaves import statements out of symbol search", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const search = yield* checkoutService(fixture.root, () => ["src/defs.ts", "src/use.ts"])({
+        operation: "search",
+        text: "defs",
+        limit: 20,
+      });
+      assert.deepEqual(
+        search.matches.filter((match) => match.symbol.kind === "import"),
+        [],
+      );
+    }),
+  ),
+);

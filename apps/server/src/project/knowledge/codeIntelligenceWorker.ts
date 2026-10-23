@@ -560,7 +560,7 @@ function walkRelations(
   return { nodes, edges, truncated: false };
 }
 
-// A file outline lists declarations; these kinds are structure or noise there.
+// A file outline lists declarations; these kinds are structure or noise there, and in search.
 const FILE_OUTLINE_EXCLUDED_KINDS: ReadonlySet<string> = new Set([
   "file",
   "import",
@@ -767,6 +767,10 @@ export async function inspectCodeInWorker(
         const results = graph
           .searchNodes(input.query.text, { limit: MAX_RESULTS })
           .filter((result) => listedPathSet.has(result.node.filePath))
+          .filter(
+            (result) =>
+              result.node.kind === "file" || !FILE_OUTLINE_EXCLUDED_KINDS.has(result.node.kind),
+          )
           .slice(0, limit + 1);
         if (results.length >= limit) resultLimitReached = true;
         for (const result of results) {
