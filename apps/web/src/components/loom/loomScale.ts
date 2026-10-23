@@ -39,11 +39,13 @@ export function loomScale(view: LoomView, width: number) {
   };
 }
 
-/**
- * Frames the window's activity with a margin, or the whole window when nothing happened. The weave
- * converges on the loaded tail, so it passes `tailMs` to keep that in frame too.
- */
-export function fitLoomView(window: LoomWindow, bounds: LoomView, tailMs?: number): LoomView {
+export interface LoomSpan {
+  readonly firstMs: number;
+  readonly lastMs: number;
+}
+
+/** When the window's recorded activity begins and ends, or null when nothing happened in it. */
+export function loomActivitySpan(window: LoomWindow, bounds: LoomView): LoomSpan | null {
   const times = [
     ...window.runs.flatMap((run) => [
       run.requestedAt,
@@ -57,17 +59,30 @@ export function fitLoomView(window: LoomWindow, bounds: LoomView, tailMs?: numbe
     ...window.edges.map((edge) => edge.at),
   ]
     .flatMap((iso) => (iso === null ? [] : [Date.parse(iso)]))
-    .concat(tailMs === undefined ? [] : [tailMs])
     .filter((ms) => ms >= bounds.fromMs && ms <= bounds.toMs);
-  if (times.length === 0) return bounds;
-  const first = Math.min(...times);
-  const last = Math.max(...times);
-  const span = Math.min(
-    Math.max((last - first) * 1.1, LOOM_MIN_VIEW_MS),
-    bounds.toMs - bounds.fromMs,
-  );
-  const center = (first + last) / 2;
-  return clampLoomView({ fromMs: center - span / 2, toMs: center + span / 2 }, bounds);
+  return times.length === 0 ? null : { firstMs: Math.min(...times), lastMs: Math.max(...times) };
+}
+
+/**
+ * A view of the span with `lead` and `trail` of the view's width left free before and after it,
+ * or the whole window when there is no span.
+ */
+export function frameLoomSpan(
+  span: LoomSpan | null,
+  bounds: LoomView,
+  lead = 0.05,
+  trail = 0.05,
+): LoomView {
+  if (span === null) return bounds;
+  const inner = Math.max(span.lastMs - span.firstMs, LOOM_MIN_VIEW_MS * (1 - lead - trail));
+  const total = Math.min(inner / (1 - lead - trail), bounds.toMs - bounds.fromMs);
+  const fromMs = span.firstMs - lead * total;
+  return clampLoomView({ fromMs, toMs: fromMs + total }, bounds);
+}
+
+/** Frames the window's activity with a margin, or the whole window when nothing happened. */
+export function fitLoomView(window: LoomWindow, bounds: LoomView): LoomView {
+  return frameLoomSpan(loomActivitySpan(window, bounds), bounds);
 }
 
 /** Evenly stepped ticks aligned to local time, at most one per `minGapPx`. */

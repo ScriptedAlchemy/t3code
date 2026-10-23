@@ -3,14 +3,15 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   BRANCH_LANE_SPACING,
   BRANCH_MARGIN,
+  BRANCH_MIN_RUN,
   BRANCH_RUN,
   branchLayout,
   branchSegments,
+  branchView,
   clusterEvents,
-  quietChildren,
   workstreamNodes,
 } from "./loomBranch";
-import { buildWeave, type WeaveEvent } from "./loomWeave";
+import { buildWeave, quietChildren, type WeaveEvent } from "./loomWeave";
 import { edge, iso, lane, run, window } from "./loomWeave.test";
 
 const MINUTE = 60_000;
@@ -59,13 +60,13 @@ const weave = buildWeave(
 const workstream = weave.workstreams[0]!;
 
 describe("branchLayout", () => {
-  const slots = (padMs: number) => {
-    const layout = branchLayout(workstream, padMs);
+  const slots = (msPerPx: number) => {
+    const layout = branchLayout(workstream, msPerPx);
     return (id: string) => (layout.laneY.get(id)! - layout.cy) / BRANCH_LANE_SPACING;
   };
 
   it("alternates the root's children by spawn time and nests grandchildren beyond their parent", () => {
-    const slot = slots(60 * MINUTE);
+    const slot = slots(MINUTE / 3);
     expect(slot("root")).toBe(0);
     expect(slot("first")).toBe(-1);
     expect(slot("first-child")).toBe(-2);
@@ -74,9 +75,52 @@ describe("branchLayout", () => {
   });
 
   it("reuses a lane once the strand on it has ended", () => {
-    const slot = slots(0);
+    const slot = slots(1_000);
     expect(slot("second")).toBe(1);
     expect(slot("fourth")).toBe(1);
+  });
+
+  it("keeps a lane for a short strand's title before reusing it", () => {
+    // At a third of a minute per pixel a title needs 40 minutes; "second" lived for 5.
+    expect(slots(MINUTE / 3)("fourth")).toBe(2);
+  });
+
+  it("never puts strands that overlap in time on one lane, and packs the rest", () => {
+    const children = Array.from({ length: 40 }, (_, index) => {
+      const start = T0 + ((index * 37) % 240) * MINUTE;
+      return { id: `c${index}`, start, end: start + (5 + ((index * 53) % 90)) * MINUTE };
+    });
+    const packed = buildWeave(
+      window({
+        lanes: [
+          lane("root", null),
+          ...children.map((child) => lane(child.id, "root", { createdAt: iso(child.start) })),
+        ],
+        runs: [
+          run("r", { threadId: "root", requestedAt: iso(T0), completedAt: iso(T0 + 400 * MINUTE) }),
+          ...children.map((child) =>
+            run(`r-${child.id}`, {
+              threadId: child.id,
+              requestedAt: iso(child.start),
+              completedAt: iso(child.end),
+            }),
+          ),
+        ],
+      }),
+    ).workstreams[0]!;
+    const layout = branchLayout(packed, 0);
+    const byLane = new Map<number, typeof children>();
+    for (const child of children) {
+      const y = layout.laneY.get(child.id)!;
+      byLane.set(y, [...(byLane.get(y) ?? []), child]);
+    }
+    for (const occupants of byLane.values()) {
+      const sorted = occupants.toSorted((left, right) => left.start - right.start);
+      sorted.slice(1).forEach((child, index) => {
+        expect(child.start).toBeGreaterThanOrEqual(sorted[index]!.end);
+      });
+    }
+    expect(byLane.size).toBeLessThan(children.length / 2);
   });
 
   it("gives no lane to a child that recorded nothing but its creation", () => {
@@ -85,14 +129,25 @@ describe("branchLayout", () => {
   });
 
   it("is exactly tall enough for every lane and its labels", () => {
-    const layout = branchLayout(workstream, 60 * MINUTE);
+    const layout = branchLayout(workstream, MINUTE / 3);
     expect(layout.cy).toBe(BRANCH_MARGIN + 2 * BRANCH_LANE_SPACING);
     expect(layout.height).toBe(2 * BRANCH_MARGIN + 4 * BRANCH_LANE_SPACING);
   });
 });
 
+describe("branchView", () => {
+  it("frames the workstream's own activity, not the rest of the window", () => {
+    const bounds = { fromMs: T0 - 24 * 60 * MINUTE, toMs: T0 + 24 * 60 * MINUTE };
+    const view = branchView(workstream, bounds, bounds.toMs);
+    expect(view.fromMs).toBeLessThan(T0);
+    expect(view.fromMs).toBeGreaterThan(T0 - 10 * MINUTE);
+    expect(view.toMs).toBeGreaterThan(T0 + 60 * MINUTE);
+    expect(view.toMs).toBeLessThan(T0 + 70 * MINUTE);
+  });
+});
+
 describe("branchSegments", () => {
-  const layout = branchLayout(workstream, 60 * MINUTE);
+  const layout = branchLayout(workstream, MINUTE / 3);
   const cy = layout.cy;
   const wide = (ms: number) => x(ms) * 10;
 
@@ -126,6 +181,28 @@ describe("branchSegments", () => {
       `M${200 + BRANCH_RUN}.0 ${layout.laneY.get("second")!.toFixed(1)}H250.0`,
     );
     expect(path.endX).toBe(250);
+  });
+
+  it("bends a strand shorter than two runs over a minimum hump", () => {
+    const short = buildWeave(
+      window({
+        lanes: [lane("root", null), lane("blip", "root", { createdAt: iso(T0 + 10 * MINUTE) })],
+        runs: [
+          run("r", { threadId: "root", requestedAt: iso(T0), completedAt: iso(T0 + 60 * MINUTE) }),
+        ],
+        edges: [
+          edge("subagent_spawn", "root", "blip", T0 + 10 * MINUTE),
+          edge("subagent_result", "blip", "root", T0 + 11 * MINUTE),
+        ],
+      }),
+    );
+    const path = branchSegments(
+      short.strands.get("blip")!,
+      branchLayout(short.workstreams[0]!, 0),
+      x,
+    )!;
+    expect(path.laneX).toBe(10 + BRANCH_MIN_RUN);
+    expect(path.endX).toBe(10 + 2 * BRANCH_MIN_RUN);
   });
 
   it("still draws the branch of a child with no recorded duration", () => {

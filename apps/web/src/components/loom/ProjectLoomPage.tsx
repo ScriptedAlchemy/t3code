@@ -72,6 +72,8 @@ import {
   type LoomSelection,
 } from "./loomSearch";
 import { LoomTimeline } from "./LoomTimeline";
+import { branchView } from "./loomBranch";
+import { spindleView } from "./loomSpindle";
 import { buildWeave, spineWorkstream } from "./loomWeave";
 import { LoomWeaveField } from "./LoomWeaveField";
 
@@ -310,9 +312,18 @@ function LoomLoaded(props: {
   const rows = buildLoomRows(data, collapsed, laneSearch);
   const activity = groupLoomActivity(data);
   const weave = buildWeave(data);
-  const fit = () => fitLoomView(data, bounds, mode === "lanes" ? undefined : weave.tailMs);
-  const [view, setView] = useState<LoomView>(fit);
   const spine = spineWorkstream(weave, search.root);
+  const fit = (): LoomView =>
+    mode === "lanes"
+      ? fitLoomView(data, bounds)
+      : mode === "agent" && spine !== null
+        ? branchView(spine, bounds, weave.tailMs)
+        : spindleView(weave, bounds);
+  // Agent mode frames its workstream; entering it, switching workstream or leaving it refits.
+  const viewKey = mode === "agent" ? `agent:${spine?.rootId}` : "window";
+  const [viewState, setViewState] = useState(() => ({ key: viewKey, view: fit() }));
+  const view = viewState.key === viewKey ? viewState.view : fit();
+  const setView = (next: LoomView) => setViewState({ key: viewKey, view: next });
   const visibleRowOf = (() => {
     const rowIndex = new Map(rows.map((row, index) => [row.threadId as string, index]));
     const parentOf = new Map<string, string | null>(

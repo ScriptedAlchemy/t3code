@@ -6,6 +6,7 @@ import { cn } from "~/lib/utils";
 import {
   branchLayout,
   branchSegments,
+  branchView,
   workstreamNodes,
   type BranchLayout,
   type BranchNode,
@@ -15,7 +16,6 @@ import { WEAVE_KINDS, workstreamColor, type WeaveEventKind } from "./loomKinds";
 import {
   formatLoomClock,
   formatLoomTick,
-  fitLoomView,
   formatLoomTime,
   loomScale,
   loomTicks,
@@ -163,13 +163,13 @@ const EDGE = 10;
 function SpindleLayer(props: LayerProps) {
   const { weave, spine, scale, width, height } = props;
   const layout = spindleLayout(weave, spine, height);
-  const geometry = spindleGeometry(width, height, scale.x(weave.tailMs));
+  const geometry = spindleGeometry(width, height, scale.x(weave.startMs), scale.x(weave.tailMs));
   const colors = strandColors(weave, spine);
   const drawn = spindlePaths(weave, layout, geometry, colors, scale.x, width);
   const tailInView = geometry.tailX <= width;
   const tailX = Math.min(geometry.tailX, width - EDGE);
-  const startX = geometry.startX + EDGE;
-  const strandCount = weave.workstreams.reduce((n, w) => n + w.strands.length, 0);
+  const startX = Math.max(geometry.startX, EDGE);
+  const strandCount = layout.homeY.size;
   const bandLabel = (workstream: Workstream, top: number, onSpine: boolean) => (
     <button
       key={workstream.rootId}
@@ -331,6 +331,7 @@ function spindlePaths(
   const births: Array<{ threadId: string; colorIndex: number; x: number; y: number }> = [];
   const dots: Array<ReturnType<typeof strandDots>[number]> = [];
   const candidates: Glyph[] = [];
+  const startX = Math.max(geometry.startX, 0);
   const tailX = Math.min(geometry.tailX, width);
   for (const workstream of weave.workstreams) {
     for (const strand of workstream.strands) {
@@ -341,7 +342,7 @@ function spindlePaths(
       warps.push({
         threadId: strand.threadId,
         colorIndex,
-        d: strandPath(geometry, homeY, 0, tailX),
+        d: strandPath(geometry, homeY, startX, tailX),
       });
       if (strand.extent === null) continue;
       const fromX = x(strand.extent.startMs);
@@ -412,10 +413,11 @@ function BranchLayer(
   },
 ) {
   const { spine, scale, width, height } = props;
-  const fit = fitLoomView(props.window, props.bounds);
-  // Lanes are packed in time; leaving most of a label's width (at the fitted zoom) after each
-  // strand lets the next one on its lane keep a readable title.
-  const layout = branchLayout(spine, ((fit.toMs - fit.fromMs) * LANE_LABEL_WIDTH) / width);
+  // Lanes pack at the zoom Agent mode opens with, so they stay put while the view zooms.
+  const layout = branchLayout(
+    spine,
+    loomScale(branchView(spine, props.bounds, props.weave.tailMs), width).msPerPx,
+  );
   const offsetY = Math.max(0, (height - layout.height) / 2);
   const svgHeight = Math.max(height, layout.height);
   const nodes = workstreamNodes(spine, layout, scale.x, width);

@@ -37,7 +37,8 @@ export function LoomMinimap(props: {
   const colors = strandColors(weave, spine);
   const strands = (() => {
     const tailX = Math.min(scale.x(weave.tailMs), width);
-    const geometry = spindleGeometry(width, MINIMAP_HEIGHT, tailX);
+    const startX = Math.max(scale.x(weave.startMs), 0);
+    const geometry = spindleGeometry(width, MINIMAP_HEIGHT, startX, tailX);
     return weave.workstreams.flatMap((workstream) =>
       workstream.strands.flatMap((strand) => {
         const homeY = layout.homeY.get(strand.threadId);
@@ -48,13 +49,13 @@ export function LoomMinimap(props: {
             : strandPath(
                 geometry,
                 homeY,
-                Math.max(0, scale.x(strand.extent.startMs)),
-                Math.min(width, scale.x(strand.extent.endMs)),
+                Math.max(startX, scale.x(strand.extent.startMs)),
+                Math.min(tailX, scale.x(strand.extent.endMs)),
               );
         return [
           {
             threadId: strand.threadId,
-            warp: strandPath(geometry, homeY, 0, tailX),
+            warp: strandPath(geometry, homeY, startX, tailX),
             active,
             spine: strand.threadId === spine?.rootId,
             colorIndex: colors.get(strand.threadId) ?? workstream.colorIndex,

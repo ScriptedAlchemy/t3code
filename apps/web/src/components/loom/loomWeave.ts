@@ -6,6 +6,7 @@ import {
 import type { LoomEdge, LoomLane, LoomMarker, LoomRun, LoomWindow } from "@t3tools/contracts";
 
 import type { WeaveEventKind } from "./loomKinds";
+import { loomActivitySpan } from "./loomScale";
 import type { LoomSelection } from "./loomSearch";
 
 export const ACTIVE_RUN = new Set<LoomRun["status"]>([
@@ -125,6 +126,8 @@ export interface Weave {
   readonly workstreams: ReadonlyArray<Workstream>;
   readonly strands: ReadonlyMap<string, WeaveStrand>;
   readonly asOfMs: number;
+  /** Where the window's recorded activity begins: the spindle's start anchor. */
+  readonly startMs: number;
   /** Where the loaded record ends: the as-of time, or the window's end when that comes first. */
   readonly tailMs: number;
 }
@@ -315,7 +318,10 @@ export function buildWeave(window: LoomWindow): Weave {
     })
     .sort((left, right) => right.lastActiveMs - left.lastActiveMs)
     .map((workstream, colorIndex) => ({ ...workstream, colorIndex }));
-  return { workstreams, strands, asOfMs, tailMs: Math.min(asOfMs, Date.parse(window.to)) };
+  const fromMs = Date.parse(window.from);
+  const tailMs = Math.min(asOfMs, Date.parse(window.to));
+  const firstMs = loomActivitySpan(window, { fromMs, toMs: tailMs })?.firstMs ?? fromMs;
+  return { workstreams, strands, asOfMs, startMs: Math.min(firstMs, tailMs), tailMs };
 }
 
 /**
@@ -336,6 +342,26 @@ function withTransfers(
     startMs: Math.min(extent.startMs, ...exact),
     endMs: Math.max(extent.endMs, ...exact),
   };
+}
+
+/**
+ * Children that recorded nothing but their creation: no run, event or result, and no children of
+ * their own. A lane for each would be a curve to nowhere, so they show only as a spawn node on
+ * their parent, and get no strand of their own in either mode.
+ */
+export function quietChildren(workstream: Workstream): ReadonlySet<string> {
+  const parents = new Set(workstream.strands.map((strand) => strand.parentThreadId));
+  return new Set(
+    workstream.strands
+      .filter(
+        (strand) =>
+          strand.parentThreadId !== null &&
+          strand.events.length === 0 &&
+          strand.rejoin === null &&
+          !parents.has(strand.threadId),
+      )
+      .map((strand) => strand.threadId),
+  );
 }
 
 /** The workstream to put on the spine: the requested one when loaded, else the most recent. */

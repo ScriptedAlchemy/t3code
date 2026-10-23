@@ -6,7 +6,9 @@ import {
   dotPaths,
   glyphCandidates,
   spindleGeometry,
+  SPINDLE_LEAD,
   spindleLayout,
+  spindleView,
   spindleY,
   STRAND_GAP,
   strandDots,
@@ -20,7 +22,7 @@ const MINUTE = 60_000;
 const T0 = Date.parse("2026-10-22T12:00:00.000Z");
 
 describe("spindleY", () => {
-  const geometry = spindleGeometry(1000, 400, 1000);
+  const geometry = spindleGeometry(1000, 400, 0, 1000);
 
   it("sits on the spine at both anchors and at its home between the fans", () => {
     expect(geometry.fan).toBe(180);
@@ -32,14 +34,14 @@ describe("spindleY", () => {
   });
 
   it("shrinks the fan when the tail is close to the start", () => {
-    const short = spindleGeometry(1000, 400, 100);
+    const short = spindleGeometry(1000, 400, 0, 100);
     expect(short.fan).toBe(50);
     expect(spindleY(short, 0, 50)).toBe(0);
   });
 });
 
 describe("strandPath", () => {
-  const geometry = spindleGeometry(1000, 400, 1000);
+  const geometry = spindleGeometry(1000, 400, 0, 1000);
 
   it("starts and ends exactly at the requested extent and bends only inside the fans", () => {
     const path = strandPath(geometry, 100, 120, 700);
@@ -55,6 +57,28 @@ describe("strandPath", () => {
   });
 });
 
+describe("spindleView", () => {
+  it("frames the window's activity through the loaded tail, with the label room on the left", () => {
+    const bounds = { fromMs: T0 - 24 * 60 * MINUTE, toMs: T0 + 60 * MINUTE };
+    const weave = buildWeave(
+      window({
+        from: iso(bounds.fromMs),
+        to: iso(bounds.toMs),
+        asOf: iso(T0 + 50 * MINUTE),
+        lanes: [lane("root", null)],
+        runs: [run("r", { threadId: "root", requestedAt: iso(T0), completedAt: iso(T0 + MINUTE) })],
+      }),
+    );
+    expect(weave.startMs).toBe(T0);
+    expect(weave.tailMs).toBe(T0 + 50 * MINUTE);
+    const view = spindleView(weave, bounds);
+    const span = view.toMs - view.fromMs;
+    expect((T0 - view.fromMs) / span).toBeCloseTo(SPINDLE_LEAD);
+    expect(view.toMs).toBeGreaterThan(weave.tailMs);
+    expect(view.toMs).toBeLessThanOrEqual(bounds.toMs);
+  });
+});
+
 describe("spindleLayout", () => {
   const data = window({
     lanes: [
@@ -66,6 +90,7 @@ describe("spindleLayout", () => {
     runs: [
       run("q", { threadId: "quiet", requestedAt: iso(T0), completedAt: iso(T0 + MINUTE) }),
       run("b", { threadId: "busy", completedAt: iso(T0 + 50 * MINUTE) }),
+      run("bc", { threadId: "busy-child", completedAt: iso(T0 + 40 * MINUTE) }),
       run("r", { threadId: "recent", completedAt: iso(T0 + 90 * MINUTE) }),
     ],
   });
@@ -98,6 +123,17 @@ describe("spindleLayout", () => {
     expect(recent!.y).toBeLessThan(200);
     expect(quiet!.y).toBeGreaterThan(200);
     expect(200 - recent!.y).toBeLessThan(quiet!.y - 200 + BAND_GAP);
+  });
+
+  it("gives a child that recorded nothing but its creation no strand", () => {
+    const quiet = buildWeave(
+      window({
+        lanes: [lane("root", null), lane("blip", "root")],
+        runs: [run("r", { threadId: "root" })],
+      }),
+    );
+    const layout = spindleLayout(quiet, quiet.workstreams[0]!, 400);
+    expect([...layout.homeY.keys()]).toEqual(["root"]);
   });
 
   it("compresses toward the centre when the field is too short", () => {

@@ -1,12 +1,19 @@
 import { WEAVE_KINDS, type WeaveEventKind } from "./loomKinds";
+import { frameLoomSpan, type LoomView } from "./loomScale";
 import type { LoomSelection } from "./loomSearch";
-import type { WeaveEvent, WeaveStrand, Workstream } from "./loomWeave";
+import { quietChildren, type WeaveEvent, type WeaveStrand, type Workstream } from "./loomWeave";
 
-export const BRANCH_LANE_SPACING = 84;
+export const BRANCH_LANE_SPACING = 96;
 /** Room above the top lane and below the bottom one for nodes and their labels. */
 export const BRANCH_MARGIN = 56;
-/** The shortest horizontal run of the S-curve that leaves or rejoins a parent. */
+/** The horizontal run of the S-curve that leaves or rejoins a parent. */
 export const BRANCH_RUN = 40;
+/** A strand too short for two full runs still bends over at least this, so it reads as a hump. */
+export const BRANCH_MIN_RUN = 14;
+const LANE_GAP = 24;
+const LANE_LABEL = 120;
+/** Spawns this many px apart at the fitted zoom leave from what reads as one point. */
+const BURST = 24;
 
 export interface BranchLayout {
   readonly cy: number;
@@ -20,35 +27,37 @@ const endOf = (strand: WeaveStrand) =>
   Math.max(startOf(strand), strand.rejoin?.ms ?? strand.extent?.endMs ?? 0);
 
 /**
- * Children that recorded nothing but their creation: no run, event or result, and no children of
- * their own. A lane for each would be a curve to nowhere, so they show only as a spawn node on
- * their parent.
+ * Frames one workstream's activity: its events, transfers and the ends of its strands, which reach
+ * the loaded tail while one still runs. Creation times stay out, so an old root does not stretch
+ * the frame. The whole window when nothing on it happened inside the window.
  */
-export function quietChildren(workstream: Workstream): ReadonlySet<string> {
-  const parents = new Set(workstream.strands.map((strand) => strand.parentThreadId));
-  return new Set(
-    workstream.strands
-      .filter(
-        (strand) =>
-          strand.parentThreadId !== null &&
-          strand.events.length === 0 &&
-          strand.rejoin === null &&
-          !parents.has(strand.threadId),
-      )
-      .map((strand) => strand.threadId),
+export function branchView(workstream: Workstream, bounds: LoomView, tailMs: number): LoomView {
+  const times = workstream.strands
+    .flatMap((strand) => [
+      strand.events[0]?.ms,
+      strand.events.at(-1)?.ms,
+      strand.spawn?.ms,
+      strand.rejoin?.ms,
+      strand.extent === null ? undefined : Math.min(strand.extent.endMs, tailMs),
+    ])
+    .filter((ms): ms is number => ms !== undefined && ms >= bounds.fromMs && ms <= bounds.toMs);
+  return frameLoomSpan(
+    times.length === 0 ? null : { firstMs: Math.min(...times), lastMs: Math.max(...times) },
+    bounds,
   );
 }
 
 /**
- * The root takes the centre lane. Children take lanes in spawn order, alternating above and below,
- * and a child's own children go beyond it on its side, so a subtree reads as one wedge. A lane is
- * reused once the strand on it has ended `padMs` earlier: dozens of short-lived subagents pack into
- * a few lanes instead of a column too tall to see. Packing works in time, not pixels, so lanes stay
- * put while the view zooms.
+ * The root takes the centre lane. Children take lanes in spawn order, nearest free lane first,
+ * alternating above and below, and a child's own children go beyond it on its side, so a subtree
+ * reads as one wedge. Like a Gantt chart, a lane is reused once its strand has ended: it stays
+ * taken for LANE_GAP px after the strand ends, and for at least LANE_LABEL px after it starts so
+ * a short strand keeps room for its title. Pixels convert to time at `msPerPx`, the fitted zoom,
+ * so lanes stay put while the view zooms.
  */
 export function branchLayout(
   workstream: Workstream,
-  padMs: number,
+  msPerPx: number,
   spacing = BRANCH_LANE_SPACING,
   margin = BRANCH_MARGIN,
 ): BranchLayout {
@@ -67,7 +76,7 @@ export function branchLayout(
     const parent = byId.get(strand.parentThreadId);
     const parentSlot = parent === undefined ? 0 : (place(parent) ?? 0);
     const from = startOf(strand);
-    const to = endOf(strand) + padMs;
+    const to = Math.max(endOf(strand) + LANE_GAP * msPerPx, from + LANE_LABEL * msPerPx);
     let slot = 0;
     if (parentSlot === 0) {
       for (let k = 1; slot === 0; k++) {
@@ -85,8 +94,14 @@ export function branchLayout(
     slots.set(strand.threadId, slot);
     return slot;
   };
-  for (const strand of workstream.strands.toSorted((left, right) => startOf(left) - startOf(right)))
-    place(strand);
+  // Children that leave at the same point take lanes shortest first, so a longer strand encloses
+  // the shorter ones and its rejoin does not cross their lanes.
+  const burst = (strand: WeaveStrand) => Math.floor(startOf(strand) / (BURST * msPerPx || 1));
+  const order = workstream.strands.toSorted(
+    (left, right) =>
+      burst(left) - burst(right) || endOf(left) - endOf(right) || startOf(left) - startOf(right),
+  );
+  for (const strand of order) place(strand);
   const values = [...slots.values()];
   const above = -Math.min(0, ...values);
   const below = Math.max(0, ...values);
@@ -140,17 +155,19 @@ export function branchSegments(
   const spawnX = x(strand.spawn.ms);
   const rejoinX = strand.rejoin === null ? null : x(strand.rejoin.ms);
   // A branch that climbs several lanes gets a longer run, so it reads as a curve, not a wall.
-  const climb = Math.min(BRANCH_RUN * 2, Math.max(BRANCH_RUN, Math.abs(y - parentY) * 0.3));
-  const run = rejoinX === null ? climb : Math.max(0, Math.min(climb, (rejoinX - spawnX) / 2));
+  const climb = Math.min(BRANCH_RUN * 3, Math.max(BRANCH_RUN, Math.abs(y - parentY) * 0.4));
+  const run =
+    rejoinX === null ? climb : Math.max(BRANCH_MIN_RUN, Math.min(climb, (rejoinX - spawnX) / 2));
   const laneX = spawnX + run;
-  const endX = rejoinX ?? Math.max(laneX, x(strand.extent.endMs));
+  const bodyEnd =
+    rejoinX === null ? Math.max(laneX, x(strand.extent.endMs)) : Math.max(laneX, rejoinX - run);
+  const endX = rejoinX === null ? bodyEnd : bodyEnd + run;
   const curve = (fromX: number, fromY: number, toX: number, toY: number) =>
     `C${f(fromX + run / 2)} ${f(fromY)} ${f(toX - run / 2)} ${f(toY)} ${f(toX)} ${f(toY)}`;
   const leave: BranchSegment = {
     d: `M${f(spawnX)} ${f(parentY)}${curve(spawnX, parentY, laneX, y)}`,
     inferred: !strand.spawn.exact,
   };
-  const bodyEnd = rejoinX === null ? endX : endX - run;
   const back = rejoinX === null ? "" : curve(bodyEnd, y, endX, parentY);
   const body = bodyEnd > laneX || back !== "" ? `M${f(laneX)} ${f(y)}H${f(bodyEnd)}${back}` : "";
   return {

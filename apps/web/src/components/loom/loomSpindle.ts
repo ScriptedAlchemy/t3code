@@ -1,6 +1,13 @@
 import { WEAVE_KINDS, type WeaveEventKind } from "./loomKinds";
+import { frameLoomSpan, type LoomView } from "./loomScale";
 import type { LoomSelection } from "./loomSearch";
-import type { Weave, WeaveEvent, WeaveStrand, Workstream } from "./loomWeave";
+import {
+  quietChildren,
+  type Weave,
+  type WeaveEvent,
+  type WeaveStrand,
+  type Workstream,
+} from "./loomWeave";
 
 /** Distance between strands inside a band, and between bands. */
 export const STRAND_GAP = 6;
@@ -22,9 +29,29 @@ export interface SpindleGeometry {
   readonly fan: number;
 }
 
-/** The fan takes 18% of the field each side, or half the spindle when it is shorter than that. */
-export function spindleGeometry(width: number, height: number, tailX: number): SpindleGeometry {
-  const startX = 0;
+/** Share of the framed view left of the start anchor, where the workstream labels sit. */
+export const SPINDLE_LEAD = 0.2;
+
+/** The spindle from its start anchor to its loaded tail, with room on the left for the labels. */
+export function spindleView(weave: Weave, bounds: LoomView): LoomView {
+  return frameLoomSpan(
+    { firstMs: weave.startMs, lastMs: weave.tailMs },
+    bounds,
+    SPINDLE_LEAD,
+    0.03,
+  );
+}
+
+/**
+ * The anchors sit at the start of the window's activity and at its loaded tail. The fan takes 18%
+ * of the field each side, or half the spindle when it is shorter than that.
+ */
+export function spindleGeometry(
+  width: number,
+  height: number,
+  startX: number,
+  tailX: number,
+): SpindleGeometry {
   const clampedTail = Math.max(startX, tailX);
   return {
     cy: height / 2,
@@ -85,9 +112,9 @@ export interface SpindleLayout {
 
 /**
  * The spine workstream sits on the centre line, its other strands close around it, busiest
- * nearest. Remaining
- * workstreams alternate above and below, most recently active nearest. The whole stack scales
- * about the centre to fill the field: compressed when it is too tall, spread when it is sparse.
+ * nearest; quiet children get no strand. Remaining workstreams alternate above and below, most
+ * recently active nearest. The whole stack scales about the centre to fill the field: compressed
+ * when it is too tall, spread when it is sparse.
  */
 export function spindleLayout(
   weave: Weave,
@@ -99,10 +126,14 @@ export function spindleLayout(
   const bands: Array<{ workstream: Workstream; offset: number }> = [];
   let above = 0;
   let below = 0;
+  const drawn = (workstream: Workstream) => {
+    const quiet = quietChildren(workstream);
+    return workstream.strands.filter((strand) => !quiet.has(strand.threadId));
+  };
   if (spine !== null) {
     // The busiest strands sit next to the spine, where the eye starts; the ones that recorded
     // little take the outer edge.
-    const [root, ...rest] = spine.strands;
+    const [root, ...rest] = drawn(spine);
     const ordered = [
       root!,
       ...rest.toSorted((left, right) => right.events.length - left.events.length),
@@ -111,17 +142,18 @@ export function spindleLayout(
       const k = Math.ceil(index / 2) * STRAND_GAP;
       offsets.set(strand.threadId, index % 2 === 1 ? -k : k);
     });
-    const half = Math.ceil((spine.strands.length - 1) / 2) * STRAND_GAP;
+    const half = Math.ceil((ordered.length - 1) / 2) * STRAND_GAP;
     above = -half;
     below = half;
   }
   weave.workstreams
     .filter((workstream) => workstream !== spine)
     .forEach((workstream, index) => {
-      const size = workstream.strands.length * STRAND_GAP;
+      const strands = drawn(workstream);
+      const size = strands.length * STRAND_GAP;
       const sign = index % 2 === 0 ? -1 : 1;
       const edge = sign < 0 ? (above -= BAND_GAP) : (below += BAND_GAP);
-      workstream.strands.forEach((strand, position) => {
+      strands.forEach((strand, position) => {
         offsets.set(strand.threadId, edge + sign * (STRAND_GAP / 2 + position * STRAND_GAP));
       });
       bands.push({ workstream, offset: edge + (sign * size) / 2 });
