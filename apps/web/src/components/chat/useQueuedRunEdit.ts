@@ -6,6 +6,7 @@ import {
   type MessageId,
   type OrchestrationMessageContext,
   type PreviewAnnotationPayload,
+  type ProjectKnowledgeContextRecord,
   type RunId,
   type ScopedThreadRef,
   type ThreadContextRecord,
@@ -61,6 +62,7 @@ export interface QueuedRunEditContent {
   readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
   readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
   readonly threadContexts: ReadonlyArray<ThreadContextRecord>;
+  readonly knowledgeContexts?: ReadonlyArray<ProjectKnowledgeContextRecord> | undefined;
 }
 
 /** Draft id for editing a queued run of the route thread. */
@@ -69,7 +71,7 @@ function queuedEditDraftTarget(routeThreadRef: ScopedThreadRef, runId: RunId) {
 }
 
 /** Uploads the edit's new attachments and saves it. Returns the error to show, or null. */
-async function submitQueuedRunEdit(input: {
+export async function submitQueuedRunEdit(input: {
   readonly environmentId: EnvironmentId;
   readonly draftTarget: ComposerThreadTarget;
   readonly editing: EditingQueuedRun;
@@ -121,6 +123,7 @@ async function submitQueuedRunEdit(input: {
         reviewComments: content.reviewComments,
         previewAnnotations: content.previewAnnotations,
         threadContexts: content.threadContexts,
+        knowledgeContexts: content.knowledgeContexts ?? [],
         attachments: newAttachments.map((attachment, index) => ({
           attachment,
           attachmentId: uploads[editing.existingAttachments.length + index]?.id ?? attachment.id,

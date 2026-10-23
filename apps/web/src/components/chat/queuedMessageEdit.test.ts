@@ -1,6 +1,15 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  MessageId,
+  ProjectId,
+  ProjectFactId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
+import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { submitQueuedRunEdit } from "./useQueuedRunEdit";
 import {
   DraftId,
   useComposerDraftStore,
@@ -38,6 +47,40 @@ const uploadedFile = {
 };
 
 describe("queued message file edits", () => {
+  it("saves newly attached knowledge references in the queued message context", async () => {
+    const record = projectKnowledgeContextRecord({
+      environmentId,
+      projectId: ProjectId.make("project"),
+      selections: [{ kind: "fact", factId: ProjectFactId.make("fact"), revision: 1 }],
+      maxBytes: 48000,
+    });
+    const editQueuedRun = vi.fn().mockResolvedValue({ _tag: "Success", value: undefined });
+    const error = await submitQueuedRunEdit({
+      environmentId,
+      draftTarget: editTarget,
+      editing: {
+        threadId: threadTarget.threadId,
+        runId: RunId.make("run"),
+        messageId: MessageId.make("message"),
+        originalText: "Original message",
+        existingAttachments: [],
+      },
+      content: {
+        prompt: "Edited with project memory",
+        images: [],
+        files: [],
+        terminalContexts: [],
+        reviewComments: [],
+        previewAnnotations: [],
+        threadContexts: [],
+        knowledgeContexts: [record],
+      },
+      editQueuedRun,
+    });
+    expect(error).toBeNull();
+    expect(editQueuedRun.mock.calls[0]?.[0].input.edit.context.records).toEqual([record]);
+  });
+
   beforeEach(() => {
     useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
   });

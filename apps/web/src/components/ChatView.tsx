@@ -3821,8 +3821,7 @@ export default function ChatView(props: ChatViewProps) {
             <ProjectMemoryDialogHost
               environmentId={activeThread.environmentId}
               projectId={activeThread.projectId}
-              threadId={activeThread.id}
-              {...(draftId ? { draftId } : {})}
+              composerDraftTarget={composerDraftTarget}
             />
 
             <CodeExplorerDialogHost

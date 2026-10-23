@@ -561,6 +561,7 @@ export function useComposerSend(input: ComposerSendInput) {
           reviewComments: composerReviewComments,
           previewAnnotations: composerPreviewAnnotations,
           threadContexts: composerThreadContexts,
+          knowledgeContexts: sendCtx.knowledgeContexts,
         },
         setThreadError,
       );

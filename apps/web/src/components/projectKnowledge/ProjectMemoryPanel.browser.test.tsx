@@ -84,7 +84,11 @@ vi.mock(
 );
 
 import { ConfirmDialogHost } from "../ConfirmDialogHost";
-import { useComposerDraftStore, partializeComposerDraftStoreState } from "../../composerDraftStore";
+import {
+  DraftId,
+  useComposerDraftStore,
+  partializeComposerDraftStoreState,
+} from "../../composerDraftStore";
 import {
   ProjectMemoryDialogHost,
   ProjectMemoryPanel,
@@ -204,11 +208,14 @@ async function setup(viewport: "desktop" | "narrow" = "desktop") {
   return registry;
 }
 
-async function mount(registry: ReturnType<typeof AtomRegistry.make>) {
+async function mount(
+  registry: ReturnType<typeof AtomRegistry.make>,
+  composerDraftTarget = target as typeof target | DraftId,
+) {
   return render(
     <RegistryContext.Provider value={registry}>
       <ProjectMemoryPanel environmentId={scope.environmentId} projectId={scope.projectId} />
-      <ProjectMemoryDialogHost {...scope} />
+      <ProjectMemoryDialogHost {...scope} composerDraftTarget={composerDraftTarget} />
       <ConfirmDialogHost />
     </RegistryContext.Provider>,
   );
@@ -218,6 +225,25 @@ const factList = () => page.getByRole("list", { name: "Project facts" });
 const factRow = (content: string) => factList().getByRole("button", { name: new RegExp(content) });
 const inspector = () => page.getByRole("region", { name: "Inspector" });
 const draftFooter = () => page.getByRole("region", { name: "Draft selection" });
+
+it("attaches project memory to the queued-edit composer without changing the thread draft", async () => {
+  const registry = await setup();
+  const editTarget = DraftId.make("queued-edit:memory-browser:run");
+  const store = useComposerDraftStore.getState();
+  store.clearComposerContent(editTarget);
+  store.setPrompt(target, "Ordinary draft stays here.");
+  store.setPrompt(editTarget, "Queued message edit.");
+  await using screen = await mount(registry, editTarget);
+  await openMemory(screen);
+  await page.getByRole("checkbox", { name: /Select for draft/ }).click();
+  await page.getByRole("button", { name: "Preview and attach" }).click();
+  await expect.element(page.getByText("Escaped provider preview.")).toBeVisible();
+  expect(store.getComposerDraft(editTarget)?.knowledgeContexts?.[0]?.knowledge.selections).toEqual([
+    { kind: "fact", factId: fact.id, revision: 1 },
+  ]);
+  expect(store.getComposerDraft(target)?.prompt).toBe("Ordinary draft stays here.");
+  expect(store.getComposerDraft(target)?.knowledgeContexts ?? []).toEqual([]);
+});
 
 async function openMemory(screen: { getByRole: Screen["getByRole"] }) {
   await screen.getByRole("button", { name: "Project memory", exact: true }).click();
@@ -492,7 +518,7 @@ it("remembers a timeline message with a citation to that exact message", async (
   await using screen = await render(
     <RegistryContext.Provider value={registry}>
       <RememberEvidence />
-      <ProjectMemoryDialogHost {...scope} />
+      <ProjectMemoryDialogHost {...scope} composerDraftTarget={target} />
       <ConfirmDialogHost />
     </RegistryContext.Provider>,
   );

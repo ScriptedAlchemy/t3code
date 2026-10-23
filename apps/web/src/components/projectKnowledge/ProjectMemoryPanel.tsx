@@ -19,6 +19,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -36,7 +37,6 @@ import {
   useComposerDraftStore,
   useComposerThreadDraft,
   type ComposerThreadTarget,
-  type DraftId,
 } from "../../composerDraftStore";
 import { ConflictHintRow, KnowledgeHealthStrip } from "./ProjectFactDetail";
 import { AssistedLearningSection } from "./AssistedLearningSection";
@@ -55,8 +55,7 @@ import { factRowKey, messageRowKey, selectionKey, shortFactId } from "./projectM
 type Scope = {
   environmentId: EnvironmentId;
   projectId: ProjectId;
-  threadId: ThreadId;
-  draftId?: DraftId;
+  composerDraftTarget: ComposerThreadTarget;
 };
 type ProjectScope = Pick<Scope, "environmentId" | "projectId">;
 type MessageCitation = { readonly threadId: ThreadId; readonly messageId: MessageId };
@@ -152,7 +151,7 @@ export function ProjectMemoryDialogHost(props: Scope) {
         </DialogHeader>
         {active ? (
           <MemoryContents
-            key={`${active.key}:${props.threadId}:${props.draftId ?? ""}`}
+            key={`${active.key}:${typeof props.composerDraftTarget === "string" ? props.composerDraftTarget : scopedThreadKey(props.composerDraftTarget)}`}
             {...props}
             seedMessage={active.message}
             focusFact={active.fact}
@@ -186,10 +185,7 @@ function MemoryContents(
     readonly focusFact: FactFocus | null;
   },
 ) {
-  const target: ComposerThreadTarget = props.draftId ?? {
-    environmentId: props.environmentId,
-    threadId: props.threadId,
-  };
+  const target = props.composerDraftTarget;
   const draft = useComposerThreadDraft(target);
   const attached = draft.knowledgeContexts?.[0];
   const [selections, setSelections] = useState<ReadonlyArray<KnowledgeSelection>>(
