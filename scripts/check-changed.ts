@@ -109,13 +109,38 @@ const steps = [
 ].filter((step) => step !== false);
 
 console.log(`check:changed: ${files.length} files since ${base.slice(0, 12)}`);
-const results = steps.map((step) => {
+const results = [];
+for (const step of steps) {
   console.log(`\n> vp ${step.name}`);
   const started = performance.now();
-  const { status } = NodeChildProcess.spawnSync("vp", step.args, { cwd: root, stdio: "inherit" });
+  let status: number | null = 0;
+  if (
+    step.name.startsWith("test (") &&
+    Array.from(tests).some((file) => file.startsWith("apps/server/"))
+  ) {
+    const cargo = NodeChildProcess.spawnSync("cargo", ["--version"], {
+      cwd: root,
+      stdio: "ignore",
+    });
+    if (cargo.error || cargo.status !== 0) {
+      console.error(
+        "check:changed: server tests require cargo to build project-memory. Install the Rust toolchain and retry.",
+      );
+      status = 1;
+    } else {
+      console.log("> node native/project-memory/build.mjs");
+      status = NodeChildProcess.spawnSync("node", ["native/project-memory/build.mjs"], {
+        cwd: root,
+        stdio: "inherit",
+      }).status;
+    }
+  }
+  if (status === 0) {
+    status = NodeChildProcess.spawnSync("vp", step.args, { cwd: root, stdio: "inherit" }).status;
+  }
   const seconds = ((performance.now() - started) / 1000).toFixed(1);
-  return { name: step.name, ok: status === 0, seconds };
-});
+  results.push({ name: step.name, ok: status === 0, seconds });
+}
 
 console.log("\ncheck:changed summary");
 for (const result of results) {
