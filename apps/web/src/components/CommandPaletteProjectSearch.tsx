@@ -9,7 +9,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { BrainIcon, BracesIcon, MessageSquareIcon } from "lucide-react";
+import { BrainIcon, BracesIcon, MessageSquareIcon, NetworkIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { useHandleNewThread } from "~/hooks/useHandleNewThread";
@@ -32,10 +32,13 @@ import {
 import { CommandPaletteContent } from "./CommandPaletteContent";
 import { CommandPaletteResults } from "./CommandPaletteResults";
 import { requestThreadFindOpen } from "./chat/threadFindActionBus";
+import { useOpenCodeExplorer } from "./codeExplorer/openCodeExplorer";
 import { useOpenProjectMemory } from "./projectKnowledge/ProjectMemoryPanel";
 
 const SEARCH_DEBOUNCE_MS = 250;
 const GROUP_LIMIT = 8;
+// The explorer is a second action on the best symbol matches, not a second result list.
+const EXPLORE_LIMIT = 3;
 const MIN_QUERY_LENGTH = 2;
 const MAX_QUERY_LENGTH = 200;
 
@@ -245,9 +248,15 @@ function projectCodeErrorMessage(failure: unknown): string | undefined {
   return PROJECT_CODE_ERROR_MESSAGE[failure._tag as ProjectCodeError["_tag"]];
 }
 
-function useSymbolGroup(target: ProjectSearchTarget, query: string | null): GroupState {
+interface SymbolGroups {
+  readonly symbols: GroupState;
+  readonly explore: ReadonlyArray<CommandPaletteActionItem>;
+}
+
+function useSymbolGroups(target: ProjectSearchTarget, query: string | null): SymbolGroups {
   const config = useAtomValue(serverEnvironment.configValueAtom(target.environmentId));
   const canQuery = useAtomValue(projectCode.query.permissionAtom(target.environmentId));
+  const openExplorer = useOpenCodeExplorer();
   const available = config?.environment.capabilities.projectCode === true;
   const search = useEnvironmentQuery(
     available && canQuery && query !== null
@@ -261,35 +270,62 @@ function useSymbolGroup(target: ProjectSearchTarget, query: string | null): Grou
         })
       : null,
   );
+  const only = (symbols: GroupState): SymbolGroups => ({ symbols, explore: [] });
   if (!available) {
-    return { status: "unavailable", message: "Code search is not available on this server." };
+    return only({ status: "unavailable", message: "Code search is not available on this server." });
   }
   if (!canQuery) {
-    return { status: "unavailable", message: "This connection cannot read project files." };
+    return only({ status: "unavailable", message: "This connection cannot read project files." });
   }
   if (search.error) {
-    return { status: "error", message: projectCodeErrorMessage(search.failure) ?? search.error };
+    return only({
+      status: "error",
+      message: projectCodeErrorMessage(search.failure) ?? search.error,
+    });
   }
-  if (!search.data || search.isPending) return { status: "pending" };
+  if (!search.data || search.isPending) return only({ status: "pending" });
   if (search.data.coverage.state === "unavailable") {
-    return { status: "unavailable", message: "The code index is not ready for this project." };
+    return only({
+      status: "unavailable",
+      message: "The code index is not ready for this project.",
+    });
   }
   const terms = queryTerms(query ?? "");
+  const matches = search.data.matches;
   return {
-    status: "ready",
-    items: search.data.matches.slice(0, GROUP_LIMIT).map(({ symbol }) => ({
+    symbols: {
+      status: "ready",
+      items: matches.slice(0, GROUP_LIMIT).map(({ symbol }) => ({
+        kind: "action" as const,
+        value: `symbol:${symbol.id}`,
+        searchTerms: [],
+        title: <HighlightedTerms text={symbol.name} terms={terms} />,
+        description: (
+          <Snippet>
+            {symbol.kind} · {symbol.path}:{symbol.startLine}
+          </Snippet>
+        ),
+        icon: <BracesIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          useRightPanelStore.getState().openFile(target.threadRef, symbol.path, symbol.startLine);
+        },
+      })),
+    },
+    explore: matches.slice(0, EXPLORE_LIMIT).map(({ symbol }) => ({
       kind: "action" as const,
-      value: `symbol:${symbol.id}`,
+      value: `explore:${symbol.id}`,
       searchTerms: [],
-      title: <HighlightedTerms text={symbol.name} terms={terms} />,
-      description: (
-        <Snippet>
-          {symbol.kind} · {symbol.path}:{symbol.startLine}
-        </Snippet>
-      ),
-      icon: <BracesIcon className={ITEM_ICON_CLASS} />,
+      title: `Explore ${symbol.name}`,
+      description: <Snippet>Callers and callees · {symbol.path}</Snippet>,
+      icon: <NetworkIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
-        useRightPanelStore.getState().openFile(target.threadRef, symbol.path, symbol.startLine);
+        openExplorer({
+          environmentId: target.environmentId,
+          projectId: target.projectId,
+          threadRef: target.threadRef,
+          serverThreadId: target.serverThreadId,
+          symbol,
+        });
       },
     })),
   };
@@ -348,7 +384,7 @@ export function OpenProjectSearchPalette(props: {
   const settled = searchable && debounced === normalized ? normalized : null;
   const facts = useFactGroup(props.target, settled);
   const conversations = useConversationGroup(props.target, settled);
-  const symbols = useSymbolGroup(props.target, settled);
+  const { symbols, explore } = useSymbolGroups(props.target, settled);
   const pending: GroupState = { status: "pending" };
   const groups = searchable
     ? [
@@ -370,6 +406,9 @@ export function OpenProjectSearchPalette(props: {
           <BracesIcon className={ITEM_ICON_CLASS} />,
           settled ? symbols : pending,
         ),
+        ...(settled && explore.length > 0
+          ? [{ value: "explore", label: "Code explorer", items: explore }]
+          : []),
       ]
     : [];
 
