@@ -47,6 +47,13 @@ describe("V2 preview upgrade", () => {
         [65, "CodexUsageNativeTurnIndex"],
         [66, "RepairClientSettlementTimestamps"],
         [67, "WebhookDedupe"],
+        [68, "ProjectKnowledge"],
+        [69, "ProjectKnowledgeDeliveries"],
+        [70, "ProjectKnowledgeHistory"],
+        [71, "ProjectCodeFileHistory"],
+        [72, "ProjectKnowledgeAssistedRuns"],
+        [73, "ConversationSummaries"],
+        [74, "ProjectKnowledgeSearchReceiptExpiry"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -137,6 +144,13 @@ describe("V2 preview upgrade", () => {
         [65, "CodexUsageNativeTurnIndex"],
         [66, "RepairClientSettlementTimestamps"],
         [67, "WebhookDedupe"],
+        [68, "ProjectKnowledge"],
+        [69, "ProjectKnowledgeDeliveries"],
+        [70, "ProjectKnowledgeHistory"],
+        [71, "ProjectCodeFileHistory"],
+        [72, "ProjectKnowledgeAssistedRuns"],
+        [73, "ConversationSummaries"],
+        [74, "ProjectKnowledgeSearchReceiptExpiry"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
