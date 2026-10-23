@@ -114,7 +114,11 @@ export function FactInspector(props: {
       : null,
   );
   const detail = detailQuery.data?.fact.id === props.factId ? detailQuery.data : null;
-  const fact = props.listedFact ?? detail?.fact;
+  // A mutation can remove the row from these results; detail still owns its latest revision.
+  const fact =
+    detail && (!props.listedFact || detail.fact.revision >= props.listedFact.revision)
+      ? detail.fact
+      : props.listedFact;
   if (!fact) {
     if (props.historyAvailable && !detailQuery.error) {
       return <p role="status">Reading fact…</p>;

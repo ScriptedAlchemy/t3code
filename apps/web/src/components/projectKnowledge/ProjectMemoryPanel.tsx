@@ -1,7 +1,7 @@
 import { cn, randomUUID } from "../../lib/utils";
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import {
   CommandId,
@@ -186,6 +186,7 @@ function MemoryContents(
   },
 ) {
   const target = props.composerDraftTarget;
+  const registry = useContext(RegistryContext);
   const draft = useComposerThreadDraft(target);
   const attached = draft.knowledgeContexts?.[0];
   const [selections, setSelections] = useState<ReadonlyArray<KnowledgeSelection>>(
@@ -348,10 +349,24 @@ function MemoryContents(
             requestId: CommandId.make(randomUUID()),
           },
     );
-  const refresh = () => {
+  const refreshFact = (factId: ProjectFactId) => {
+    if (historyAvailable)
+      registry.refresh(
+        projectKnowledge.readFact({
+          environmentId: props.environmentId,
+          input: { projectId: props.projectId, factId },
+        }),
+      );
+  };
+  const refresh = (changedFactIds: ReadonlyArray<ProjectFactId> = []) => {
     list.refresh();
     health.refresh();
     restartSearch();
+    for (const factId of new Set([
+      ...changedFactIds,
+      ...(inspection.kind === "fact" ? [inspection.factId] : []),
+    ]))
+      refreshFact(factId);
   };
   const apply = async (input: ProjectKnowledgeMutation) => {
     setBusy(true);
@@ -377,7 +392,7 @@ function MemoryContents(
         focusIn(INSPECTOR_HEADING);
       }
     }
-    refresh();
+    refresh([input.factId, ...(result._tag === "Success" ? [result.value.id] : [])]);
   };
   const revise = async (
     fact: ProjectFact,
@@ -561,7 +576,7 @@ function MemoryContents(
                 Memory health
               </Button>
             ) : null}
-            <Button size="sm" variant="ghost" onClick={refresh}>
+            <Button size="sm" variant="ghost" onClick={() => refresh()}>
               Refresh
             </Button>
             <Button
