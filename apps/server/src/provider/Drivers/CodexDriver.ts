@@ -413,6 +413,11 @@ export const CodexDriver: ProviderDriver<
               "generateKnowledgeCandidates",
               nativeGeneration.generateKnowledgeCandidates(input),
             ),
+          generateConversationSummary: (input) =>
+            protect(
+              "generateConversationSummary",
+              nativeGeneration.generateConversationSummary(input),
+            ),
         }
       : nativeGeneration;
     const snapshotForCwd = (cwd: string) =>

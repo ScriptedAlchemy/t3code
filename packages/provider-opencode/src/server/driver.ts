@@ -164,6 +164,11 @@ function selectOpenCodeRuntimeTextGeneration(
         v1: v1.generateKnowledgeCandidates(input),
         v2: v2.generateKnowledgeCandidates(input),
       }),
+    generateConversationSummary: (input) =>
+      byOpenCodeRuntime(probe.get, {
+        v1: v1.generateConversationSummary(input),
+        v2: v2.generateConversationSummary(input),
+      }),
   };
 }
 

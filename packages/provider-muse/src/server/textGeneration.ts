@@ -349,6 +349,13 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
         detail: "Muse Code cannot extract project knowledge. Choose another text generation model.",
       }),
     );
+  const generateConversationSummary: ProviderTextGeneration["generateConversationSummary"] = () =>
+    Effect.fail(
+      new TextGenerationError({
+        operation: "generateConversationSummary",
+        detail: "Muse Code cannot summarize conversations. Choose another text generation model.",
+      }),
+    );
   return {
     generateCommitMessage,
     generatePrContent,
@@ -356,5 +363,6 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     generateThreadTitle,
     generateReviewGuide,
     generateKnowledgeCandidates,
+    generateConversationSummary,
   } satisfies ProviderTextGeneration;
 });

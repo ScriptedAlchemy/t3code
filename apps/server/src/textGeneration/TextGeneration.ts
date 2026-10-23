@@ -11,6 +11,8 @@ import * as SourceControlProviderRegistry from "../sourceControl/SourceControlPr
 import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
 
 export type {
+  ConversationSummaryGenerationInput,
+  ConversationSummaryGenerationResult,
   KnowledgeCandidatesGenerationInput,
   KnowledgeCandidatesGenerationResult,
   BranchNameGenerationInput,
@@ -35,7 +37,8 @@ type TextGenerationOp =
   | "generateBranchName"
   | "generateThreadTitle"
   | "generateReviewGuide"
-  | "generateKnowledgeCandidates";
+  | "generateKnowledgeCandidates"
+  | "generateConversationSummary";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -82,6 +85,12 @@ export const make = Effect.gen(function* () {
         "generateKnowledgeCandidates",
         input.modelSelection.instanceId,
       ).pipe(Effect.flatMap((textGeneration) => textGeneration.generateKnowledgeCandidates(input))),
+    generateConversationSummary: (input) =>
+      resolveInstance(
+        registry,
+        "generateConversationSummary",
+        input.modelSelection.instanceId,
+      ).pipe(Effect.flatMap((textGeneration) => textGeneration.generateConversationSummary(input))),
     generateThreadTitle: (input) =>
       resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) =>

@@ -9,6 +9,7 @@ import type { ProviderTextGeneration } from "./textGeneration.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildConversationSummaryPrompt,
   buildKnowledgeCandidatesPrompt,
   buildPrContentPrompt,
   buildReviewGuidePrompt,
@@ -180,6 +181,16 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
       });
     });
 
+  const generateConversationSummary: ProviderTextGeneration["generateConversationSummary"] =
+    Effect.fn(`${name}.generateConversationSummary`)(function* (input) {
+      return yield* run({
+        operation: "generateConversationSummary",
+        cwd: input.cwd,
+        modelSelection: input.modelSelection,
+        ...buildConversationSummaryPrompt(input),
+      });
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
@@ -187,5 +198,6 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     generateThreadTitle,
     generateReviewGuide,
     generateKnowledgeCandidates,
+    generateConversationSummary,
   } satisfies ProviderTextGeneration;
 }

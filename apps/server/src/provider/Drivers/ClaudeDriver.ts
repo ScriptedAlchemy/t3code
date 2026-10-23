@@ -389,6 +389,11 @@ export const ClaudeDriver: ProviderDriver<
               "generateKnowledgeCandidates",
               nativeGeneration.generateKnowledgeCandidates(input),
             ),
+          generateConversationSummary: (input) =>
+            protect(
+              "generateConversationSummary",
+              nativeGeneration.generateConversationSummary(input),
+            ),
         }
       : nativeGeneration;
 
