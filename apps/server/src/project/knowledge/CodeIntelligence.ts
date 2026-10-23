@@ -1,5 +1,6 @@
-// @effect-diagnostics nodeBuiltinImport:off - this boundary owns the analysis process and its IPC.
+// @effect-diagnostics nodeBuiltinImport:off - this boundary owns the analysis process, its IPC, and the index generation directories.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
@@ -11,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -20,10 +22,20 @@ import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
-import { isWorkspaceLeaseHeld, withWorkspaceLease } from "../../workspace/workspaceLease.ts";
+import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
+import {
+  INDEX_DIRECTORY,
+  IndexOutsideCheckout,
+  generationDirectory,
+  isIndexPath,
+  listGenerations,
+  publishGeneration,
+  readPublishedGeneration,
+  removeLegacyIndexFiles,
+} from "./codeIndexLayout.ts";
+import type { CodeIntelligenceCommand } from "./codeIntelligenceWorkerThread.ts";
 
 const MAX_LISTED_FILES = 10_000;
-const INDEX_DIRECTORY = ".codegraph-t3";
 
 export class CodeIntelligenceProjectNotFound extends Schema.TaggedError<CodeIntelligenceProjectNotFound>()(
   "CodeIntelligenceProjectNotFound",
@@ -78,27 +90,45 @@ class CodeIntelligenceWorkerError extends Schema.TaggedError<CodeIntelligenceWor
   },
 ) {}
 
+type CodeIndexTarget = Pick<ProjectCodeQueryInputType, "projectId" | "threadId">;
+
+type CheckoutLookupError =
+  | CodeIntelligenceProjectNotFound
+  | CodeIntelligenceThreadMismatch
+  | ProjectStore.ProjectStoreV2Error
+  | ProjectionStore.ProjectionStoreV2Error
+  | WorkspacePaths.WorkspacePathsError;
+
+/** How one build of a checkout's index ended. */
+export type CodeIndexRefreshOutcome =
+  | { readonly _tag: "Published"; readonly generation: number }
+  // The published generation already matches the checkout, or there is none to refresh.
+  | { readonly _tag: "Unchanged" }
+  | { readonly _tag: "Failed"; readonly reason: CodeIntelligenceWorkerError["reason"] | "listing" };
+
 export class CodeIntelligence extends Context.Service<
   CodeIntelligence,
   {
+    /** Answers from the published index generation and never waits for a build. */
     readonly query: (
       input: ProjectCodeQueryInputType,
     ) => Effect.Effect<
       ProjectCodeQueryResultType,
-      | CodeIntelligenceProjectNotFound
-      | CodeIntelligenceThreadMismatch
+      | CheckoutLookupError
       | CodeIntelligencePathOutsideCheckout
       | CodeIntelligenceInspectionFailed
-      | ProjectStore.ProjectStoreV2Error
-      | ProjectionStore.ProjectionStoreV2Error
-      | WorkspacePaths.WorkspacePathsError
       | WorkspaceEntries.WorkspaceEntriesError
     >;
+    /** Builds a successor generation, coalesced per checkout, and waits for the outcome. */
+    readonly refresh: (
+      input: CodeIndexTarget,
+    ) => Effect.Effect<CodeIndexRefreshOutcome, CheckoutLookupError>;
   }
 >()("t3/project/knowledge/CodeIntelligence") {}
 
 const WorkerReply = Schema.Union([
   Schema.Struct({ result: ProjectCodeQueryResult }),
+  Schema.Struct({ built: Schema.Struct({ changed: Schema.Boolean }) }),
   Schema.Struct({
     progress: Schema.Struct({
       phase: Schema.Literals(["scanning", "parsing", "storing", "resolving", "linking"]),
@@ -109,6 +139,7 @@ const WorkerReply = Schema.Union([
   Schema.Struct({ error: Schema.String }),
 ]);
 const decodeWorkerReply = Schema.decodeUnknownSync(WorkerReply);
+type WorkerTerminal = Exclude<typeof WorkerReply.Type, { readonly progress: unknown }>;
 
 function normalizeQueryPaths(
   query: ProjectCodeQueryType,
@@ -211,20 +242,15 @@ function analysisCommand(launch: AnalysisLaunch): ReadonlyArray<string> {
  */
 function analysisEnvironment(): NodeJS.ProcessEnv {
   const { WATCH_REPORT_DEPENDENCIES: _watchReport, ...environment } = process.env;
-  // ELECTRON_RUN_AS_NODE keeps the desktop's Electron binary a plain Node runtime.
+  // ELECTRON_RUN_AS_NODE keeps the desktop's Electron binary a plain Node runtime. The worker
+  // selects each generation itself; the control directory is a default that holds no index.
   return { ...environment, CODEGRAPH_DIR: INDEX_DIRECTORY, ELECTRON_RUN_AS_NODE: "1" };
 }
 
-function queryInAnalysisProcess(
+function runInAnalysisProcess(
   launch: AnalysisLaunch,
-  input: {
-    readonly checkoutPath: string;
-    readonly files: ReadonlyArray<string>;
-    readonly filesListed: number;
-    readonly listingTruncated: boolean;
-    readonly query: ProjectCodeQueryType;
-  },
-): Effect.Effect<ProjectCodeQueryResultType, CodeIntelligenceWorkerError> {
+  command: CodeIntelligenceCommand,
+): Effect.Effect<WorkerTerminal, CodeIntelligenceWorkerError> {
   return Effect.callback((resume) => {
     let child: NodeChildProcess.ChildProcess;
     try {
@@ -238,7 +264,7 @@ function queryInAnalysisProcess(
       return;
     }
     let terminal:
-      | { readonly _tag: "result"; readonly value: ProjectCodeQueryResultType }
+      | { readonly _tag: "reply"; readonly value: WorkerTerminal }
       | { readonly _tag: "error"; readonly error: CodeIntelligenceWorkerError }
       | undefined;
     let closed = false;
@@ -270,7 +296,7 @@ function queryInAnalysisProcess(
                 : "worker-failed",
           }),
         );
-      } else terminal = { _tag: "result", value: decoded.result };
+      } else terminal = { _tag: "reply", value: decoded };
     });
     child.once("error", () => {
       fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }));
@@ -293,7 +319,7 @@ function queryInAnalysisProcess(
         resume(Effect.succeed(terminal.value));
       }
     });
-    child.send({ type: "query", input }, (error) => {
+    child.send(command, (error) => {
       if (error !== null) fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }), true);
     });
     // The SDK's sync ignores abort signals, so only killing the process stops the indexing,
@@ -305,45 +331,22 @@ function queryInAnalysisProcess(
   });
 }
 
-function indexingResult(checkoutPath: string): ProjectCodeQueryResultType {
-  return {
-    operation: "freshness",
-    checkoutPath,
-    matches: [],
-    nodes: [],
-    edges: [],
-    files: [],
-    unresolvedReferences: [],
-    selection: { state: "not-required", candidates: [] },
-    sourceDigests: [],
-    stats: null,
-    coverage: {
-      state: "partial",
-      catalogRevision: "",
-      relationSemantics: "static-candidates",
-      columnEncoding: "utf16-code-units",
-      languages: [],
-      indexedLanguages: [],
-      filesListed: 0,
-      filesIndexed: 0,
-      filesSkipped: 0,
-      filesUnsupported: 0,
-      filesFailed: 0,
-      pendingReferences: 0,
-      resultLimitReached: false,
-      limitations: ["Another code query is indexing this checkout right now."],
-    },
-    index: {
-      state: "indexing",
-      indexedCommit: null,
-      headCommit: null,
-      generation: 0,
-      indexedAt: null,
-      changedFiles: 0,
-      changedPaths: [],
-    },
-  };
+/** One checkout's builds: the one running and the one queued behind it. */
+interface CheckoutBuilds {
+  // Covers every request made before it started.
+  running: Deferred.Deferred<CodeIndexRefreshOutcome> | null;
+  // Covers requests made while `running` was in flight, which it may have read past.
+  queued: Deferred.Deferred<CodeIndexRefreshOutcome> | null;
 }
+
+const removeGeneration = (checkoutPath: string, generation: number) =>
+  Effect.promise(() =>
+    // `rm` unlinks a planted link instead of following it.
+    NodeFSP.rm(NodePath.join(checkoutPath, generationDirectory(generation)), {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined),
+  );
 
 const make = Effect.gen(function* () {
   const projects = yield* ProjectStore.ProjectStoreV2;
@@ -354,93 +357,231 @@ const make = Effect.gen(function* () {
     executablePath: yield* HostProcess.ExecutablePath,
     isExecutable: yield* HostProcess.IsExecutable,
   };
+  const serviceScope = yield* Effect.scope;
+  const builds = new Map<string, CheckoutBuilds>();
 
-  const query: CodeIntelligence["Service"]["query"] = Effect.fn("CodeIntelligence.query")(
-    function* (input) {
-      const projectOption = yield* projects.get(input.projectId);
-      if (Option.isNone(projectOption) || projectOption.value.deletedAt !== null) {
-        return yield* new CodeIntelligenceProjectNotFound({ projectId: input.projectId });
+  const resolveCheckout = Effect.fn("CodeIntelligence.resolveCheckout")(function* (
+    input: CodeIndexTarget,
+  ) {
+    const projectOption = yield* projects.get(input.projectId);
+    if (Option.isNone(projectOption) || projectOption.value.deletedAt !== null) {
+      return yield* new CodeIntelligenceProjectNotFound({ projectId: input.projectId });
+    }
+    let registeredRoot = projectOption.value.workspaceRoot;
+    if (input.threadId !== undefined) {
+      const thread = yield* threads.getThread(input.threadId);
+      if (thread.projectId !== input.projectId) {
+        return yield* new CodeIntelligenceThreadMismatch({
+          projectId: input.projectId,
+          threadId: input.threadId,
+        });
       }
-      let registeredRoot = projectOption.value.workspaceRoot;
-      if (input.threadId !== undefined) {
-        const thread = yield* threads.getThread(input.threadId);
-        if (thread.projectId !== input.projectId) {
-          return yield* new CodeIntelligenceThreadMismatch({
-            projectId: input.projectId,
-            threadId: input.threadId,
-          });
-        }
-        registeredRoot = thread.worktreePath ?? registeredRoot;
+      registeredRoot = thread.worktreePath ?? registeredRoot;
+    }
+    return yield* workspacePaths.normalizeWorkspaceRoot(registeredRoot);
+  });
+
+  const listCheckout = Effect.fn("CodeIntelligence.listCheckout")(function* (checkoutPath: string) {
+    yield* workspaceEntries.refresh(checkoutPath);
+    const listing = yield* workspaceEntries.list({ cwd: checkoutPath });
+    const files = listing.entries
+      // The index lives in the checkout; counting it would report its files as unsupported
+      // source.
+      .filter(
+        (entry) => entry.kind === "file" && entry.ignored !== true && !isIndexPath(entry.path),
+      )
+      .map((entry) => entry.path);
+    return {
+      checkoutPath,
+      files: files.slice(0, MAX_LISTED_FILES),
+      filesListed: files.length,
+      listingTruncated: listing.truncated || files.length > MAX_LISTED_FILES,
+    };
+  });
+
+  const buildGeneration = Effect.fn("CodeIntelligence.buildGeneration")(function* (
+    checkoutPath: string,
+  ): Effect.fn.Return<
+    CodeIndexRefreshOutcome,
+    CodeIntelligenceWorkerError | WorkspaceEntries.WorkspaceEntriesError
+  > {
+    const plan = yield* Effect.try({
+      try: () => {
+        const published = readPublishedGeneration(checkoutPath);
+        removeLegacyIndexFiles(checkoutPath);
+        return { published, existing: listGenerations(checkoutPath) };
+      },
+      catch: (cause) =>
+        new CodeIntelligenceWorkerError({
+          reason:
+            cause instanceof IndexOutsideCheckout ? "index-outside-checkout" : "worker-failed",
+        }),
+    });
+    const generation = Math.max(plan.published ?? 0, ...plan.existing) + 1;
+    const listing = yield* listCheckout(checkoutPath);
+    const reply = yield* runInAnalysisProcess(launch, {
+      type: "build",
+      input: {
+        ...listing,
+        from: plan.published === null ? null : generationDirectory(plan.published),
+        to: generationDirectory(generation),
+        generation,
+      },
+    }).pipe(Effect.onError(() => removeGeneration(checkoutPath, generation)));
+    if (!("built" in reply)) {
+      yield* removeGeneration(checkoutPath, generation);
+      return yield* new CodeIntelligenceWorkerError({ reason: "invalid-result" });
+    }
+    if (!reply.built.changed) return { _tag: "Unchanged" } as const;
+    yield* Effect.try({
+      try: () => publishGeneration(checkoutPath, generation),
+      catch: (cause) =>
+        new CodeIntelligenceWorkerError({
+          reason:
+            cause instanceof IndexOutsideCheckout ? "index-outside-checkout" : "worker-failed",
+        }),
+    }).pipe(Effect.onError(() => removeGeneration(checkoutPath, generation)));
+    return { _tag: "Published", generation } as const;
+  });
+
+  const buildOnce = (checkoutPath: string): Effect.Effect<CodeIndexRefreshOutcome> =>
+    // The lease serializes this checkout's builders across every instance in the process.
+    withWorkspaceLease(
+      NodePath.join(checkoutPath, INDEX_DIRECTORY),
+      buildGeneration(checkoutPath),
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.succeed({
+          _tag: "Failed",
+          reason: error._tag === "CodeIntelligenceWorkerError" ? error.reason : "listing",
+        } as const),
+      ),
+      Effect.tap((outcome) =>
+        outcome._tag === "Failed"
+          ? Effect.logWarning("Code index build failed", { checkoutPath, reason: outcome.reason })
+          : Effect.void,
+      ),
+    );
+
+  const runBuilds = Effect.fn("CodeIntelligence.runBuilds")(
+    function* (checkoutPath: string, state: CheckoutBuilds) {
+      let current = state.running;
+      while (current !== null) {
+        const outcome = yield* buildOnce(checkoutPath);
+        yield* Deferred.succeed(current, outcome);
+        // Promoting and reading the next build in one step keeps a concurrent request from
+        // starting a second loop for the same checkout.
+        current = yield* Effect.sync(() => {
+          state.running = state.queued;
+          state.queued = null;
+          return state.running;
+        });
       }
-      const checkoutPath = yield* workspacePaths.normalizeWorkspaceRoot(registeredRoot);
-      const indexPath = NodePath.join(checkoutPath, INDEX_DIRECTORY);
-      // Freshness must answer while another query holds the index, not queue behind it.
-      if (input.query.operation === "freshness" && isWorkspaceLeaseHeld(indexPath)) {
-        return indexingResult(checkoutPath);
-      }
-      const normalizedQuery = yield* normalizeQueryPaths(input.query, checkoutPath, workspacePaths);
-      yield* workspaceEntries.refresh(checkoutPath);
-      const workspaceListing = yield* workspaceEntries.list({ cwd: checkoutPath });
-      const listedFiles = workspaceListing.entries
-        // The index writes its own directory into the checkout; counting it would report the
-        // graph's files as unsupported source.
-        .filter(
-          (entry) =>
-            entry.kind === "file" &&
-            entry.ignored !== true &&
-            entry.path !== INDEX_DIRECTORY &&
-            !entry.path.startsWith(`${INDEX_DIRECTORY}/`),
-        )
-        .map((entry) => entry.path);
-      return yield* withWorkspaceLease(
-        indexPath,
-        queryInAnalysisProcess(launch, {
-          checkoutPath,
-          files: listedFiles.slice(0, MAX_LISTED_FILES),
-          filesListed: listedFiles.length,
-          listingTruncated: workspaceListing.truncated || listedFiles.length > MAX_LISTED_FILES,
-          query: normalizedQuery,
-        }).pipe(
-          Effect.mapError((cause) => {
-            const queryPath =
-              normalizedQuery.operation === "dependencies" ||
-              normalizedQuery.operation === "affected" ||
-              normalizedQuery.operation === "symbols"
-                ? normalizedQuery.filePath
-                : normalizedQuery.operation === "callers" ||
-                    normalizedQuery.operation === "callees" ||
-                    normalizedQuery.operation === "references" ||
-                    normalizedQuery.operation === "impact" ||
-                    normalizedQuery.operation === "tests"
-                  ? normalizedQuery.symbol.filePath
-                  : normalizedQuery.operation === "path"
-                    ? (normalizedQuery.from.filePath ?? normalizedQuery.to.filePath)
-                    : undefined;
-            if (cause.reason === "path-outside-checkout" && queryPath !== undefined) {
-              return new CodeIntelligencePathOutsideCheckout({ path: queryPath });
-            }
-            if (cause.reason === "index-outside-checkout") {
-              return new CodeIntelligencePathOutsideCheckout({ path: INDEX_DIRECTORY });
-            }
-            return new CodeIntelligenceInspectionFailed({
-              projectId: input.projectId,
-              threadId: input.threadId ?? null,
-              path:
-                queryPath ??
-                (normalizedQuery.operation === "symbols"
-                  ? (normalizedQuery.name ?? checkoutPath)
-                  : normalizedQuery.operation === "search"
-                    ? normalizedQuery.text
-                    : checkoutPath),
-              reason: cause.reason === "invalid-result" ? "invalid-result" : "worker-failed",
-            });
+    },
+    (effect, _checkoutPath, state) =>
+      effect.pipe(
+        Effect.onInterrupt(() =>
+          Effect.gen(function* () {
+            const pending = [state.running, state.queued];
+            state.running = null;
+            state.queued = null;
+            for (const deferred of pending)
+              if (deferred !== null) yield* Deferred.interrupt(deferred);
           }),
         ),
-      );
+      ),
+  );
+
+  /** The build that will cover a request made now; starts one when the checkout is idle. */
+  const requestBuild = (checkoutPath: string) =>
+    Effect.suspend(() => {
+      const state = builds.get(checkoutPath) ?? { running: null, queued: null };
+      builds.set(checkoutPath, state);
+      if (state.queued !== null) return Effect.succeed(state.queued);
+      const next = Deferred.makeUnsafe<CodeIndexRefreshOutcome>();
+      if (state.running !== null) {
+        state.queued = next;
+        return Effect.succeed(next);
+      }
+      state.running = next;
+      return runBuilds(checkoutPath, state).pipe(Effect.forkIn(serviceScope), Effect.as(next));
+    });
+
+  const refresh: CodeIntelligence["Service"]["refresh"] = Effect.fn("CodeIntelligence.refresh")(
+    function* (input) {
+      const checkoutPath = yield* resolveCheckout(input);
+      return yield* Deferred.await(yield* requestBuild(checkoutPath));
     },
   );
 
-  return CodeIntelligence.of({ query });
+  const query: CodeIntelligence["Service"]["query"] = Effect.fn("CodeIntelligence.query")(
+    function* (input) {
+      const checkoutPath = yield* resolveCheckout(input);
+      const normalizedQuery = yield* normalizeQueryPaths(input.query, checkoutPath, workspacePaths);
+      const published = yield* Effect.try({
+        try: () => readPublishedGeneration(checkoutPath),
+        catch: (cause) =>
+          cause instanceof IndexOutsideCheckout
+            ? new CodeIntelligencePathOutsideCheckout({ path: INDEX_DIRECTORY })
+            : new CodeIntelligenceInspectionFailed({
+                projectId: input.projectId,
+                threadId: input.threadId ?? null,
+                path: INDEX_DIRECTORY,
+                reason: "worker-failed",
+              }),
+      });
+      // A query converges the index on the checkout without waiting for it; freshness only
+      // observes.
+      if (normalizedQuery.operation !== "freshness") yield* requestBuild(checkoutPath);
+      const listing = yield* listCheckout(checkoutPath);
+      const queryPath =
+        normalizedQuery.operation === "dependencies" ||
+        normalizedQuery.operation === "affected" ||
+        normalizedQuery.operation === "symbols"
+          ? normalizedQuery.filePath
+          : normalizedQuery.operation === "callers" ||
+              normalizedQuery.operation === "callees" ||
+              normalizedQuery.operation === "references" ||
+              normalizedQuery.operation === "impact" ||
+              normalizedQuery.operation === "tests"
+            ? normalizedQuery.symbol.filePath
+            : normalizedQuery.operation === "path"
+              ? (normalizedQuery.from.filePath ?? normalizedQuery.to.filePath)
+              : undefined;
+      const toQueryError = (reason: CodeIntelligenceWorkerError["reason"]) => {
+        if (reason === "path-outside-checkout" && queryPath !== undefined) {
+          return new CodeIntelligencePathOutsideCheckout({ path: queryPath });
+        }
+        if (reason === "index-outside-checkout") {
+          return new CodeIntelligencePathOutsideCheckout({ path: INDEX_DIRECTORY });
+        }
+        return new CodeIntelligenceInspectionFailed({
+          projectId: input.projectId,
+          threadId: input.threadId ?? null,
+          path:
+            queryPath ??
+            (normalizedQuery.operation === "symbols"
+              ? (normalizedQuery.name ?? checkoutPath)
+              : normalizedQuery.operation === "search"
+                ? normalizedQuery.text
+                : checkoutPath),
+          reason: reason === "invalid-result" ? "invalid-result" : "worker-failed",
+        });
+      };
+      const reply = yield* runInAnalysisProcess(launch, {
+        type: "query",
+        input: {
+          ...listing,
+          query: normalizedQuery,
+          indexDirectory: published === null ? null : generationDirectory(published),
+        },
+      }).pipe(Effect.mapError((cause) => toQueryError(cause.reason)));
+      if (!("result" in reply)) return yield* toQueryError("invalid-result");
+      return reply.result;
+    },
+  );
+
+  return CodeIntelligence.of({ query, refresh });
 });
 
 export const layer = Layer.effect(CodeIntelligence, make);
