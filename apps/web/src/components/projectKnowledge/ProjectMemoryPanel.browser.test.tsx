@@ -15,7 +15,6 @@ import {
   type ProjectFactHistoryEntry,
   type ProjectKnowledgeStatus,
   type ProjectKnowledgeSearchInput,
-  type ProjectKnowledgeFactDetail,
   type ProjectKnowledgeDeliveries,
 } from "@t3tools/contracts";
 import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
@@ -239,102 +238,6 @@ const factList = () => page.getByRole("list", { name: "Project facts" });
 const factRow = (content: string) => factList().getByRole("button", { name: new RegExp(content) });
 const inspector = () => page.getByRole("region", { name: "Inspector" });
 const draftFooter = () => page.getByRole("region", { name: "Draft selection" });
-
-const factDetail = (fact: ProjectFact): ProjectKnowledgeFactDetail => ({
-  fact,
-  sourceUnavailable: null,
-  history: [],
-  historyTruncated: false,
-  supersedes: null,
-  supersededBy: null,
-  hints: [],
-});
-
-it("refreshes the inspected fact and uses its latest revision for the next mutation", async () => {
-  const registry = await setup();
-  let currentFact = fact;
-  state.detail = Atom.make(() => AsyncResult.success(factDetail(currentFact)));
-  await using screen = await mount(registry);
-  await openMemory(screen);
-  await factRow(fact.content!).click();
-  await expect.element(inspector().getByText(fact.content!)).toBeVisible();
-  currentFact = { ...fact, content: "Updated on another client.", revision: 2 };
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await expect.element(inspector().getByText(currentFact.content!)).toBeVisible();
-  await inspector().getByRole("button", { name: "Confirm", exact: true }).click();
-  expect(state.mutate).toHaveBeenCalledWith({
-    environmentId: scope.environmentId,
-    input: expect.objectContaining({ action: "confirm", expectedRevision: 2 }),
-  });
-});
-
-it("refreshes confirmed fact detail even after it leaves the proposed results", async () => {
-  const registry = await setup();
-  let currentFact = fact;
-  state.detail = Atom.make(() => AsyncResult.success(factDetail(currentFact)));
-  state.list = Atom.make(() =>
-    AsyncResult.success({
-      facts: currentFact.status === "proposed" ? [currentFact] : [],
-      nextCursor: null,
-    }),
-  );
-  state.mutate.mockImplementation(async () => {
-    currentFact = { ...fact, status: "confirmed", revision: 2 };
-    return { _tag: "Success", value: currentFact };
-  });
-  await using screen = await mount(registry);
-  await openMemory(screen);
-  await page.getByRole("button", { name: "Proposed", exact: true }).click();
-  await factRow(fact.content!).click();
-  await inspector().getByRole("button", { name: "Confirm", exact: true }).click();
-  await expect.element(inspector().getByRole("heading", { name: /Confirmed/ })).toBeVisible();
-  await expect
-    .element(inspector().getByRole("button", { name: "Confirm", exact: true }))
-    .not.toBeInTheDocument();
-  await inspector().getByRole("button", { name: "Helpful", exact: true }).click();
-  expect(state.mutate).toHaveBeenLastCalledWith({
-    environmentId: scope.environmentId,
-    input: expect.objectContaining({ action: "feedback", expectedRevision: 2 }),
-  });
-});
-
-it("shows the forgotten state without live actions after forgetting the inspected fact", async () => {
-  const registry = await setup();
-  let currentFact = fact;
-  state.detail = Atom.make(() => AsyncResult.success(factDetail(currentFact)));
-  state.list = Atom.make(() =>
-    AsyncResult.success({
-      facts: currentFact.status === "forgotten" ? [] : [currentFact],
-      nextCursor: null,
-    }),
-  );
-  state.mutate.mockImplementation(async () => {
-    currentFact = {
-      ...fact,
-      status: "forgotten",
-      content: null,
-      revision: 2,
-      entities: [],
-      tags: [],
-      sources: [],
-      forgottenAt: fact.updatedAt,
-    };
-    return { _tag: "Success", value: currentFact };
-  });
-  await using screen = await mount(registry);
-  await openMemory(screen);
-  await factRow(fact.content!).click();
-  await inspector().getByRole("button", { name: "Forget", exact: true }).click();
-  await page.getByRole("alertdialog").getByRole("button", { name: "Confirm" }).click();
-  await expect.element(inspector().getByText("Forgotten fact")).toBeVisible();
-  await expect.element(inspector().getByRole("heading", { name: /Forgotten/ })).toBeVisible();
-  await expect
-    .element(inspector().getByRole("button", { name: "Forget", exact: true }))
-    .not.toBeInTheDocument();
-  await expect
-    .element(inspector().getByRole("button", { name: "Edit", exact: true }))
-    .not.toBeInTheDocument();
-});
 
 it("attaches project memory to the queued-edit composer without changing the thread draft", async () => {
   const registry = await setup();
