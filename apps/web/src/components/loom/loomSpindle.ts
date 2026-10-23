@@ -235,8 +235,8 @@ export interface Glyph {
 }
 
 export const GLYPH_RADIUS = 7;
-export const GLYPH_SPACING = 26;
-export const GLYPH_CAP = 250;
+const GLYPH_SPACING = 26;
+const GLYPH_CAP = 250;
 
 /**
  * The events worth a glyph on a strand. Spawns and rejoins are left to Agent mode: in the overview

@@ -192,9 +192,9 @@ export interface BranchNode {
   readonly labelled: boolean;
 }
 
-export const NODE_SPACING = 72;
-export const LABEL_SPACING = 72;
-export const NODE_CAP = 400;
+const NODE_SPACING = 72;
+const LABEL_SPACING = 72;
+const NODE_CAP = 400;
 
 const rank = (event: WeaveEvent) => (event.failed ? 100 : 0) + WEAVE_KINDS[event.kind].priority;
 

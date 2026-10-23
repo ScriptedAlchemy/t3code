@@ -97,7 +97,7 @@ export const WEAVE_KIND_ORDER: ReadonlyArray<WeaveEventKind> = [
 ];
 
 /** Workstream colours cycle through these; destructive stays reserved for failure. */
-export const WORKSTREAM_COLORS = [
+const WORKSTREAM_COLORS = [
   { stroke: "stroke-primary", fill: "fill-primary", text: "text-primary", bg: "bg-primary" },
   { stroke: "stroke-info", fill: "fill-info", text: "text-info", bg: "bg-info" },
   { stroke: "stroke-success", fill: "fill-success", text: "text-success", bg: "bg-success" },
