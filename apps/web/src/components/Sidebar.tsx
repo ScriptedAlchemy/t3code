@@ -100,7 +100,7 @@ import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
-import { startNewThreadFromContext } from "../lib/chatThreadActions";
+import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
@@ -166,6 +166,7 @@ import {
   useThreadJumpHintVisibility,
   type SidebarListItem,
   type SidebarSection,
+  resolveLoomTargets,
   resolveSidebarRowThreadId,
 } from "./Sidebar.logic";
 import {
@@ -1010,17 +1011,44 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       });
     },
   );
+  const activeProjectRef = resolveThreadActionProjectRef({
+    activeDraftThread: newThreadContext.activeDraftThread,
+    activeThread: newThreadContext.activeThread ?? undefined,
+    defaultProjectRef: null,
+    handleNewThread: newThreadContext.handleNewThread,
+  });
+  const loomTargetsFor = (projectGroup: SidebarProjectSnapshot) =>
+    resolveLoomTargets({
+      members: projectGroup.memberProjects,
+      activeProjectRef,
+      supportsLoom: (environmentId) =>
+        serverConfigs.get(environmentId)?.environment.capabilities.projectLoom === true,
+    });
   const handleOpenLoom = useStableCallback(
-    (event: ReactMouseEvent<HTMLElement>, projectGroup: SidebarProjectSnapshot) => {
+    async (event: ReactMouseEvent<HTMLElement>, projectGroup: SidebarProjectSnapshot) => {
       event.preventDefault();
       event.stopPropagation();
       suppressNextScopeChangeRef.current = true;
       dispatchProjectScopeMenu({ type: "project-settings-opened" });
+      const targets = loomTargetsFor(projectGroup);
+      let member = targets.length === 1 ? targets[0] : undefined;
+      if (targets.length > 1) {
+        const api = readLocalApi();
+        if (!api) return;
+        const clicked = await settlePromise(() =>
+          api.contextMenu.show(
+            targets.map((target) => ({
+              id: `${target.environmentId}:${target.id}`,
+              label: `Open Loom on ${target.environmentLabel ?? target.environmentId}`,
+            })),
+            { x: event.clientX, y: event.clientY },
+          ),
+        );
+        if (clicked._tag === "Failure") return;
+        member = targets.find((target) => `${target.environmentId}:${target.id}` === clicked.value);
+      }
+      if (member === undefined) return;
       if (isMobile) setOpenMobile(false);
-      const member =
-        projectGroup.memberProjects.find(
-          (candidate) => candidate.environmentId === primaryEnvironmentId,
-        ) ?? projectGroup;
       void router.navigate({
         to: "/loom/$environmentId/$projectId",
         params: { environmentId: member.environmentId, projectId: member.id },
@@ -2755,7 +2783,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 machineByEnvironmentId={environmentMachineById}
                               />
                             ) : null}
-                            {project ? (
+                            {project && loomTargetsFor(project).length > 0 ? (
                               <Button
                                 size="icon-xs"
                                 variant="ghost-muted"
@@ -2764,7 +2792,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 title={`Open Loom for ${project.displayName}`}
                                 className="ml-auto"
                                 onPointerDown={(event) => event.stopPropagation()}
-                                onClick={(event) => handleOpenLoom(event, project)}
+                                onClick={(event) => void handleOpenLoom(event, project)}
                               >
                                 <ChartGanttIcon className="size-3.5" />
                               </Button>

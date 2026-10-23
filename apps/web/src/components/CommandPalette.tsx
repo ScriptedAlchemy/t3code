@@ -191,6 +191,7 @@ import {
   type SearchOverlayMode,
 } from "./CommandPalette.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
+import { resolveLoomTargets } from "./Sidebar.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
 import {
   selectCommandPaletteClientSettings,
@@ -542,7 +543,8 @@ function OpenCommandPaletteDialog(props: {
         ? scopeThreadRef(activeThread.environmentId, activeThread.id)
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
-  const activeThreadServerConfig = useServerConfigs().get(
+  const serverConfigs = useServerConfigs();
+  const activeThreadServerConfig = serverConfigs.get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
   const activeThreadReferenceCopyTarget =
@@ -1622,16 +1624,12 @@ function OpenCommandPaletteDialog(props: {
         });
       },
     });
-    // A group can span environments; each member gets its own Loom, unless a thread picks one.
-    const contextualProjectInGroup = contextualProjectGroup.memberProjects.find(
-      (member) =>
-        member.environmentId === contextualProjectRef?.environmentId &&
-        member.id === contextualProjectRef.projectId,
-    );
-    const loomTargets =
-      contextualProjectInGroup === undefined
-        ? contextualProjectGroup.memberProjects
-        : [contextualProjectInGroup];
+    const loomTargets = resolveLoomTargets({
+      members: contextualProjectGroup.memberProjects,
+      activeProjectRef: contextualProjectRef,
+      supportsLoom: (environmentId) =>
+        serverConfigs.get(environmentId)?.environment.capabilities.projectLoom === true,
+    });
     for (const member of loomTargets) {
       actionItems.push({
         kind: "action",

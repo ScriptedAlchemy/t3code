@@ -8,7 +8,13 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
-import type { ContextMenuItem, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type {
+  ContextMenuItem,
+  EnvironmentId,
+  ProjectId,
+  ScopedProjectRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/reactivity";
 import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
@@ -1346,4 +1352,24 @@ export function sortScopedProjectsForSidebar<
       left.environmentId.localeCompare(right.environmentId) ||
       left.id.localeCompare(right.id),
   );
+}
+
+/**
+ * Which grouped-project members a Loom entry opens. The active member decides when its environment
+ * has the Loom; otherwise every member that has it is offered, so the user picks the environment.
+ */
+export function resolveLoomTargets<
+  TMember extends { readonly environmentId: EnvironmentId; readonly id: ProjectId },
+>(input: {
+  readonly members: ReadonlyArray<TMember>;
+  readonly activeProjectRef: ScopedProjectRef | null;
+  readonly supportsLoom: (environmentId: EnvironmentId) => boolean;
+}): ReadonlyArray<TMember> {
+  const targets = input.members.filter((member) => input.supportsLoom(member.environmentId));
+  const active = targets.find(
+    (member) =>
+      member.environmentId === input.activeProjectRef?.environmentId &&
+      member.id === input.activeProjectRef.projectId,
+  );
+  return active === undefined ? targets : [active];
 }
