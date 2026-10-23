@@ -122,6 +122,11 @@ select evidence for your next message. Archived conversations are excluded unles
 you include them. A fact whose cited message was edited, deleted, or archived is
 flagged in the list.
 
+To search the current project's facts, conversations, and code symbols at once,
+choose **Search facts, conversations, and symbols** in the command palette or
+press `mod+alt+f`. Each kind of result is listed separately; if one is
+unavailable on the server, the others still appear.
+
 To save a fact from the conversation, choose **Remember for this project** on a
 message on web or desktop. The fact is prefilled from that message and cites it.
 
