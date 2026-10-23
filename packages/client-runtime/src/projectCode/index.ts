@@ -8,14 +8,15 @@ import {
   getInitialServerConfig,
   requestGuarded,
 } from "../rpc/client.ts";
-import { createEnvironmentQueryAtomFamily } from "../state/runtime.ts";
+import { createEnvironmentGuardedRpcQueryAtomFamily } from "../state/runtime.ts";
 
 export function createProjectCodeAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
   return {
-    query: createEnvironmentQueryAtomFamily(runtime, {
+    query: createEnvironmentGuardedRpcQueryAtomFamily(runtime, {
       label: "project-code:query",
+      tag: WS_METHODS.projectCodeQuery,
       staleTimeMs: 0,
       execute: Effect.fn("ProjectCode.query")(function* (input: ProjectCodeQueryInput) {
         const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;

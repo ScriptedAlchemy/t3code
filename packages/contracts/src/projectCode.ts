@@ -25,12 +25,20 @@ export const ProjectCodeQuery = Schema.Union([
     text: NonEmptyText.check(Schema.isMaxLength(2048)),
     limit,
   }),
+  // Without a name, lists the declarations in `filePath`.
   Schema.Struct({
     operation: Schema.Literal("symbols"),
-    name: NonEmptyText.check(Schema.isMaxLength(512)),
+    name: Schema.optional(NonEmptyText.check(Schema.isMaxLength(512))),
     filePath: Schema.optional(BoundedPath),
     limit,
-  }),
+  }).check(
+    Schema.makeFilter(
+      (query) =>
+        query.name !== undefined ||
+        query.filePath !== undefined ||
+        "A symbols query needs a name or a filePath.",
+    ),
+  ),
   Schema.Struct({
     operation: Schema.Literal("callers"),
     symbol: ProjectCodeSymbolSelector,

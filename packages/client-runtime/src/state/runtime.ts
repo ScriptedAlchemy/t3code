@@ -795,6 +795,49 @@ export function createEnvironmentRpcQueryAtomFamily<
   });
 }
 
+/**
+ * A query over a client-guarded read. It checks the destination grant before the
+ * request, and `permissionAtom` lets UI hide what the connection cannot run.
+ */
+export function createEnvironmentGuardedRpcQueryAtomFamily<
+  R,
+  ER,
+  TTag extends Extract<EnvironmentUnaryRpcTag, ClientGuardedRpcTag>,
+  E,
+>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  options: {
+    readonly label: string;
+    readonly tag: TTag;
+    readonly execute: (
+      input: EnvironmentRpcInput<TTag>,
+    ) => Effect.Effect<
+      EnvironmentRpcSuccess<TTag>,
+      E,
+      EnvironmentSupervisor.EnvironmentSupervisor | EnvironmentRegistry.EnvironmentRegistry
+    >;
+    readonly staleTimeMs?: number;
+    readonly idleTtlMs?: number;
+  },
+) {
+  const permissions = createCommandPermissions(runtime, options.tag);
+  const query = createEnvironmentQueryAtomFamily(runtime, {
+    label: options.label,
+    ...(options.staleTimeMs === undefined ? {} : { staleTimeMs: options.staleTimeMs }),
+    ...(options.idleTtlMs === undefined ? {} : { idleTtlMs: options.idleTtlMs }),
+    execute: Effect.fn("EnvironmentRpc.guardedQuery")(function* (input: EnvironmentRpcInput<TTag>) {
+      const registry = yield* AtomRegistry.AtomRegistry;
+      return yield* options.execute(input).pipe(
+        Effect.provideService(RpcPermissionGuard, {
+          authorize: (id, method, payload) =>
+            createCommandPermissions(runtime, method).authorize(registry, id, payload),
+        }),
+      );
+    }),
+  });
+  return Object.assign(query, { permissionAtom: permissions.permissionAtom });
+}
+
 export function createEnvironmentRpcSubscriptionAtomFamily<
   R,
   ER,

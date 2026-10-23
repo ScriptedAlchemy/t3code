@@ -306,6 +306,17 @@ it.effect(
           );
           assert.equal(outsidePathError._tag, "CodeIntelligencePathOutsideCheckout");
 
+          const outline = yield* runQuery({ operation: "symbols", filePath: "src/use.ts" });
+          assert.deepEqual(
+            outline.nodes.map((node) => [node.name, node.path]),
+            [
+              ["example", "src/use.ts"],
+              ["caller", "src/use.ts"],
+              ["shadowed", "src/use.ts"],
+              ["sayHello", "src/use.ts"],
+            ],
+          );
+
           const callerQuery = yield* runQuery({
             operation: "callers",
             symbol: { name: "greet", filePath: "src/defs.ts" },

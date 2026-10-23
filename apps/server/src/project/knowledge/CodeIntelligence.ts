@@ -332,7 +332,7 @@ const make = Effect.gen(function* () {
               path:
                 queryPath ??
                 (normalizedQuery.operation === "symbols"
-                  ? normalizedQuery.name
+                  ? (normalizedQuery.name ?? checkoutPath)
                   : normalizedQuery.operation === "search"
                     ? normalizedQuery.text
                     : checkoutPath),

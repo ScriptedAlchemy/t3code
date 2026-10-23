@@ -267,6 +267,14 @@ function exactDigest(
   }
 }
 
+// A file outline lists declarations; these kinds are structure or noise there.
+const FILE_OUTLINE_EXCLUDED_KINDS: ReadonlySet<string> = new Set([
+  "file",
+  "import",
+  "export",
+  "parameter",
+]);
+
 export async function inspectCodeInWorker(
   input: CodeIntelligenceWorkerInput,
   signal: AbortSignal,
@@ -401,8 +409,19 @@ export async function inspectCodeInWorker(
       }
       case "symbols": {
         const query = input.query;
-        for (const node of graph
-          .getNodesByName(query.name)
+        const found =
+          query.name === undefined
+            ? query.filePath === undefined
+              ? []
+              : graph
+                  .getNodesInFile(query.filePath)
+                  .filter((candidate) => !FILE_OUTLINE_EXCLUDED_KINDS.has(candidate.kind))
+                  .toSorted(
+                    (left, right) =>
+                      left.startLine - right.startLine || left.startColumn - right.startColumn,
+                  )
+            : graph.getNodesByName(query.name);
+        for (const node of found
           .filter((candidate) => listedPathSet.has(candidate.filePath))
           .filter(
             (candidate) => query.filePath === undefined || candidate.filePath === query.filePath,
