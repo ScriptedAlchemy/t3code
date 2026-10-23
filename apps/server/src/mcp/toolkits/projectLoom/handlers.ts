@@ -16,6 +16,7 @@ export const layer = McpToolAccess.toLayer(ProjectLoomToolkit, {
     readCaller().pipe(
       Effect.andThen(ProjectLoom.ProjectLoom),
       Effect.flatMap((loom) => loom.readWindow(input).pipe(Effect.mapError(failure))),
+      Effect.map((window) => ({ ...window, activity: [] })),
     ),
   ),
 });
