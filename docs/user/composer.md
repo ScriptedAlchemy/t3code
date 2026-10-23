@@ -128,7 +128,19 @@ message on web or desktop. The fact is prefilled from that message and cites it.
 Agents can save observations for later recall. These remain marked as proposed
 until you confirm them. Confirmation is optional; proposed observations can still
 be recalled. You can edit or forget a fact, and its origin shows who recorded the
-current assertion.
+current assertion. Forgetting removes the fact's content everywhere T3 kept it,
+including its earlier revisions and the copy recorded as sent with past messages.
+
+When knowledge changes, **Supersede** the old fact instead of forgetting it. The
+replacement is linked to the old fact, which keeps its content but no longer comes
+up in recall unless you show superseded facts. After you save, T3 points out
+existing facts that look like duplicates or possible contradictions so you can
+compare them; it never merges or replaces them on its own.
+
+Open a fact's details to see its history: when it was created, edited, confirmed,
+superseded, and rated helpful or unhelpful, with the trust change from each
+rating. The memory summary at the top counts facts by status and shows how many
+lost their cited source; select that count to list them.
 
 Preview and attach your selection before sending. The attachment keeps references
 to the selected evidence. T3 checks those references again when the agent's turn

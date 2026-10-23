@@ -1,7 +1,11 @@
 import {
   OrchestratorMcpFailure,
-  ProjectFact,
+  ProjectKnowledgeFactDetail,
   ProjectKnowledgeMutation,
+  ProjectKnowledgeMutationResult,
+  ProjectKnowledgeReadFactInput,
+  ProjectKnowledgeStatus,
+  ProjectKnowledgeStatusInput,
   ProjectKnowledgeListInput,
   ProjectKnowledgeListResult,
   ProjectKnowledgeReadSourceInput,
@@ -30,7 +34,7 @@ export const KnowledgeToolkit = Toolkit.make(
   Tool.make("t3_knowledge_search", {
     ...shared,
     description:
-      "Recall project facts and exact conversation citations. Facts use holographic and lexical ranking. Unavailable ranking is explicit. Reuse requestId for retries so retrieval is counted once.",
+      "Recall project facts and exact conversation citations. Facts use holographic and lexical ranking. Unavailable ranking is explicit. Superseded facts are excluded unless includeSuperseded is set. Reuse requestId for retries so retrieval is counted once.",
     parameters: ProjectKnowledgeSearchInput,
     success: ProjectKnowledgeSearchResult,
   })
@@ -39,9 +43,27 @@ export const KnowledgeToolkit = Toolkit.make(
   Tool.make("t3_knowledge_list", {
     ...shared,
     description:
-      "List project facts, including proposed or forgotten facts when requested. This works independently of the retrieval kernel.",
+      "List project facts, including proposed or forgotten facts when requested. Superseded facts are excluded unless includeSuperseded is set; sourceState unavailable lists only facts whose citations no longer resolve. This works independently of the retrieval kernel.",
     parameters: ProjectKnowledgeListInput,
     success: ProjectKnowledgeListResult,
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false),
+  Tool.make("t3_knowledge_read_fact", {
+    ...shared,
+    description:
+      "Read one project fact with its recent revision, confirmation, feedback and supersession history, linked superseding facts, and possible duplicates or conflicts found by lexical similarity.",
+    parameters: ProjectKnowledgeReadFactInput,
+    success: ProjectKnowledgeFactDetail,
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false),
+  Tool.make("t3_knowledge_status", {
+    ...shared,
+    description:
+      "Summarize project memory health: fact counts by status, trust bands, facts below the default recall threshold, retrieval and feedback totals, and facts whose sources are unavailable.",
+    parameters: ProjectKnowledgeStatusInput,
+    success: ProjectKnowledgeStatus,
   })
     .annotate(Tool.Readonly, true)
     .annotate(Tool.Destructive, false),
@@ -66,8 +88,8 @@ export const KnowledgeToolkit = Toolkit.make(
   Tool.make("t3_knowledge_mutate", {
     ...shared,
     description:
-      "Propose or edit sourced project knowledge, forget a fact, or give trust feedback. Agent observations may use an empty sources array; their origin is recorded from this authenticated caller. Proposed facts can be recalled immediately. Confirmation in the app is optional and remains a separate trust action. Agents cannot confirm or claim direct user assertions. Reuse commandId when retrying. Updates require the current revision. Forgotten facts cannot be restored.",
+      "Propose or edit sourced project knowledge, supersede a fact with a replacement, forget a fact, or give trust feedback. Agent observations may use an empty sources array; their origin is recorded from this authenticated caller. Proposed facts can be recalled immediately. Confirmation in the app is optional and remains a separate trust action. Agents cannot confirm or claim direct user assertions. Reuse commandId when retrying. Updates require the current revision. Supersede creates replacementFactId and keeps the old fact's content but removes it from recall; prefer it over forget when knowledge changed. Created, edited and replacement facts return hints naming possible duplicates or conflicts to review. Forgotten facts cannot be restored.",
     parameters: Schema.Struct({ mutation: ProjectKnowledgeMutation }),
-    success: ProjectFact,
+    success: ProjectKnowledgeMutationResult,
   }).annotate(Tool.Destructive, true),
 );

@@ -51,6 +51,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("lets read-only clients inspect fact history and memory health but not supersede", () => {
+    for (const method of [WS_METHODS.projectKnowledgeReadFact, WS_METHODS.projectKnowledgeStatus]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectKnowledgeMutate)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("requires filesystem read permission for project code queries", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeQuery)).toBe(AuthFilesystemReadScope);
   });

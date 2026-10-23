@@ -73,6 +73,10 @@ const FactIdentity = {
   retrievalCount: NonNegativeInt,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+  // A superseded fact keeps its status and content but drops out of recall by default.
+  // Optional so facts from older servers still decode.
+  supersedes: Schema.optionalKey(Schema.NullOr(ProjectFactId)),
+  supersededBy: Schema.optionalKey(Schema.NullOr(ProjectFactId)),
 };
 export const ActiveProjectFact = Schema.Struct({
   ...FactIdentity,
@@ -80,18 +84,16 @@ export const ActiveProjectFact = Schema.Struct({
   status: Schema.Literals(["proposed", "confirmed"]),
   forgottenAt: Schema.Null,
 });
-const ProjectFactSchema = Schema.Union([
-  ActiveProjectFact,
-  Schema.Struct({
-    ...FactIdentity,
-    status: Schema.Literal("forgotten"),
-    content: Schema.Null,
-    entities: Schema.Array(Schema.Never),
-    tags: Schema.Array(Schema.Never),
-    sources: Schema.Array(Schema.Never),
-    forgottenAt: IsoDateTime,
-  }),
-]);
+const ForgottenProjectFact = Schema.Struct({
+  ...FactIdentity,
+  status: Schema.Literal("forgotten"),
+  content: Schema.Null,
+  entities: Schema.Array(Schema.Never),
+  tags: Schema.Array(Schema.Never),
+  sources: Schema.Array(Schema.Never),
+  forgottenAt: IsoDateTime,
+});
+const ProjectFactSchema = Schema.Union([ActiveProjectFact, ForgottenProjectFact]);
 export type ProjectFact = typeof ProjectFactSchema.Type;
 export const ProjectFact: Schema.Codec<ProjectFact, typeof ProjectFactSchema.Encoded> =
   ProjectFactSchema;
@@ -107,17 +109,48 @@ const ProjectKnowledgeMutationSchema = Schema.Union([
   Schema.Struct({ action: Schema.Literal("confirm"), ...ExistingFact }),
   Schema.Struct({ action: Schema.Literal("forget"), ...ExistingFact }),
   Schema.Struct({ action: Schema.Literal("feedback"), ...ExistingFact, helpful: Schema.Boolean }),
+  // Creates replacementFactId and links it to factId, which keeps its content (unlike forget).
+  Schema.Struct({
+    action: Schema.Literal("supersede"),
+    ...ExistingFact,
+    replacementFactId: ProjectFactId,
+    ...ProjectFactFields.fields,
+  }),
 ]);
 export type ProjectKnowledgeMutation = typeof ProjectKnowledgeMutationSchema.Type;
 export const ProjectKnowledgeMutation: Schema.Codec<
   ProjectKnowledgeMutation,
   typeof ProjectKnowledgeMutationSchema.Encoded
 > = ProjectKnowledgeMutationSchema;
+/** Lexical, not semantic: a cue for the user to compare, never an automatic decision. */
+export const KnowledgeConflictHint = Schema.Struct({
+  kind: Schema.Literals(["duplicate", "near_duplicate", "possible_conflict"]),
+  factId: ProjectFactId,
+  revision: PositiveInt,
+  excerpt: Schema.String.check(Schema.isMaxLength(320)),
+  similarity: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+});
+export type KnowledgeConflictHint = typeof KnowledgeConflictHint.Type;
+const ConflictHints = Schema.Array(KnowledgeConflictHint).check(Schema.isMaxLength(3));
+// Extra keys are ignored by older clients, which decode this as a plain ProjectFact.
+const ProjectKnowledgeMutationResultSchema = Schema.Union([
+  Schema.Struct({ ...ActiveProjectFact.fields, hints: Schema.optionalKey(ConflictHints) }),
+  Schema.Struct({ ...ForgottenProjectFact.fields, hints: Schema.optionalKey(ConflictHints) }),
+]);
+export type ProjectKnowledgeMutationResult = typeof ProjectKnowledgeMutationResultSchema.Type;
+export const ProjectKnowledgeMutationResult: Schema.Codec<
+  ProjectKnowledgeMutationResult,
+  typeof ProjectKnowledgeMutationResultSchema.Encoded
+> = ProjectKnowledgeMutationResultSchema;
 export const ProjectKnowledgeListInput = Schema.Struct({
   projectId: ProjectId,
   status: Schema.optionalKey(Schema.Literals(["confirmed", "proposed", "forgotten"])),
   afterId: Schema.optionalKey(ProjectFactId),
   limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
+  includeSuperseded: Schema.optionalKey(Schema.Boolean),
+  /** Only facts whose message citations no longer resolve (archived conversations excluded).
+      Without an explicit status this spans proposed and confirmed facts. */
+  sourceState: Schema.optionalKey(Schema.Literal("unavailable")),
 });
 export type ProjectKnowledgeListInput = typeof ProjectKnowledgeListInput.Type;
 export const KnowledgeSourceUnavailableReason = Schema.Literals([
@@ -145,6 +178,87 @@ export const ProjectKnowledgeListResult: Schema.Codec<
   ProjectKnowledgeListResult,
   typeof ProjectKnowledgeListResultSchema.Encoded
 > = ProjectKnowledgeListResultSchema;
+export const ProjectKnowledgeReadFactInput = Schema.Struct({
+  projectId: ProjectId,
+  factId: ProjectFactId,
+});
+export type ProjectKnowledgeReadFactInput = typeof ProjectKnowledgeReadFactInput.Type;
+export const ProjectFactHistoryEvent = Schema.Literals([
+  // History starts here for facts saved before history was recorded.
+  "baseline",
+  "created",
+  "edited",
+  "confirmed",
+  "forgotten",
+  "feedback",
+  "superseded",
+]);
+export type ProjectFactHistoryEvent = typeof ProjectFactHistoryEvent.Type;
+export const ProjectFactHistoryEntry = Schema.Struct({
+  sequence: PositiveInt,
+  event: ProjectFactHistoryEvent,
+  revision: PositiveInt,
+  actor: KnowledgeOrigin,
+  at: IsoDateTime,
+  contentDigest: Schema.NullOr(KnowledgeDigest),
+  // Erased with the fact when it is forgotten.
+  content: Schema.NullOr(Schema.String),
+  sources: Schema.Array(KnowledgeFactSource),
+  trustBefore: Schema.NullOr(Schema.Number),
+  trustAfter: Schema.Number,
+  helpful: Schema.NullOr(Schema.Boolean),
+  // The replacement for "superseded"; the replaced fact for a superseding "created".
+  relatedFactId: Schema.NullOr(ProjectFactId),
+  sourceUnavailable: Schema.NullOr(KnowledgeSourceUnavailableReason),
+});
+export type ProjectFactHistoryEntry = typeof ProjectFactHistoryEntry.Type;
+export const ProjectFactSummary = Schema.Struct({
+  id: ProjectFactId,
+  status: Schema.Literals(["proposed", "confirmed", "forgotten"]),
+  revision: PositiveInt,
+  excerpt: Schema.NullOr(Schema.String.check(Schema.isMaxLength(320))),
+});
+export type ProjectFactSummary = typeof ProjectFactSummary.Type;
+const ProjectKnowledgeFactDetailSchema = Schema.Struct({
+  fact: ProjectFact,
+  sourceUnavailable: Schema.NullOr(KnowledgeSourceUnavailableReason),
+  // Oldest first; the most recent 50 events.
+  history: Schema.Array(ProjectFactHistoryEntry).check(Schema.isMaxLength(50)),
+  historyTruncated: Schema.Boolean,
+  supersedes: Schema.NullOr(ProjectFactSummary),
+  supersededBy: Schema.NullOr(ProjectFactSummary),
+  hints: ConflictHints,
+});
+export type ProjectKnowledgeFactDetail = typeof ProjectKnowledgeFactDetailSchema.Type;
+export const ProjectKnowledgeFactDetail: Schema.Codec<
+  ProjectKnowledgeFactDetail,
+  typeof ProjectKnowledgeFactDetailSchema.Encoded
+> = ProjectKnowledgeFactDetailSchema;
+export const ProjectKnowledgeStatusInput = Schema.Struct({ projectId: ProjectId });
+export type ProjectKnowledgeStatusInput = typeof ProjectKnowledgeStatusInput.Type;
+export const ProjectKnowledgeStatus = Schema.Struct({
+  // proposed and confirmed exclude superseded facts, which are counted on their own.
+  counts: Schema.Struct({
+    proposed: NonNegativeInt,
+    confirmed: NonNegativeInt,
+    superseded: NonNegativeInt,
+    forgotten: NonNegativeInt,
+  }),
+  // Recallable facts (proposed or confirmed, not superseded) by trust quartile.
+  trustBands: Schema.Struct({
+    low: NonNegativeInt,
+    guarded: NonNegativeInt,
+    steady: NonNegativeInt,
+    high: NonNegativeInt,
+  }),
+  recallThreshold: Schema.Number,
+  belowRecallThreshold: NonNegativeInt,
+  retrievals: NonNegativeInt,
+  feedback: Schema.Struct({ helpful: NonNegativeInt, unhelpful: NonNegativeInt }),
+  unavailableSources: NonNegativeInt,
+  unavailableSourcesCoverage: Schema.Literals(["complete", "partial"]),
+});
+export type ProjectKnowledgeStatus = typeof ProjectKnowledgeStatus.Type;
 export const ProjectKnowledgeReadSourceInput = Schema.Struct({
   projectId: ProjectId,
   threadId: ThreadId,
@@ -207,6 +321,9 @@ export const ProjectKnowledgeDeliveryItem = Schema.Struct({
   label: Schema.String,
   context: ProjectKnowledgeContext,
   text: Schema.String,
+  // Set, with text emptied, once a fact this item selected is forgotten. The text renders all of
+  // the item's selections together, so the whole excerpt goes rather than a guessed slice.
+  contentRemoved: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectKnowledgeDeliveryItem = typeof ProjectKnowledgeDeliveryItem.Type;
 export const ProjectKnowledgeDeliveryOmission = Schema.Struct({
@@ -267,6 +384,7 @@ export const ProjectKnowledgeSearchInput = Schema.Struct({
   factCursor: Schema.optionalKey(KnowledgeSearchCursor),
   entities: Schema.optionalKey(Labels),
   entityMatch: Schema.optionalKey(Schema.Literals(["any", "all"])),
+  includeSuperseded: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectKnowledgeSearchInput = typeof ProjectKnowledgeSearchInput.Type;
 export const KnowledgeScore = Schema.Struct({
@@ -317,6 +435,7 @@ export class ProjectKnowledgeError extends Schema.TaggedError<ProjectKnowledgeEr
       "storage",
       "invalid_cursor",
       "scoring",
+      "superseded",
     ]),
     projectId: ProjectId,
     factId: Schema.optionalKey(ProjectFactId),
@@ -357,6 +476,8 @@ export class ProjectKnowledgeError extends Schema.TaggedError<ProjectKnowledgeEr
         return "Project knowledge scoring failed. Try a smaller query or try again.";
       case "storage":
         return "Project knowledge storage is unavailable.";
+      case "superseded":
+        return "This fact was superseded. Edit or supersede its replacement instead.";
     }
   }
 }

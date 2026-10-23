@@ -73,7 +73,7 @@ it.effect("registers knowledge tools and preserves the mutation and caller origi
       { readonly input: ProjectKnowledgeMutation; readonly actor: KnowledgeOrigin } | undefined
     >(undefined);
     const knowledge = Layer.mock(ProjectKnowledge.ProjectKnowledge)({
-      mutate: (input, actor) =>
+      mutateWithHints: (input, actor) =>
         Ref.set(received, { input, actor }).pipe(
           Effect.andThen(
             Effect.fail(

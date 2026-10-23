@@ -22,6 +22,16 @@ export const layer = McpToolAccess.toLayer(KnowledgeToolkit, {
       Effect.mapError((error) => (error._tag === "ProjectKnowledgeError" ? failure(error) : error)),
     ),
   ),
+  t3_knowledge_read_fact: McpToolAccess.reads((input) =>
+    Effect.flatMap(access, (service) => service.readFact(input)).pipe(
+      Effect.mapError((error) => (error._tag === "ProjectKnowledgeError" ? failure(error) : error)),
+    ),
+  ),
+  t3_knowledge_status: McpToolAccess.reads((input) =>
+    Effect.flatMap(access, (service) => service.status(input)).pipe(
+      Effect.mapError((error) => (error._tag === "ProjectKnowledgeError" ? failure(error) : error)),
+    ),
+  ),
   t3_knowledge_read_source: McpToolAccess.reads((input) =>
     Effect.flatMap(access, (service) => service.readSource(input)).pipe(
       Effect.mapError((error) => (error._tag === "ProjectKnowledgeError" ? failure(error) : error)),
@@ -38,7 +48,7 @@ export const layer = McpToolAccess.toLayer(KnowledgeToolkit, {
       const service = yield* ProjectKnowledge.ProjectKnowledge;
       if (scope.thread !== undefined) {
         return yield* service
-          .mutate(input.mutation, {
+          .mutateWithHints(input.mutation, {
             kind: "agent-thread",
             threadId: scope.thread.threadId,
             providerInstanceId: scope.thread.providerInstanceId,
@@ -47,7 +57,7 @@ export const layer = McpToolAccess.toLayer(KnowledgeToolkit, {
       }
       if (scope.client !== undefined) {
         return yield* service
-          .mutate(input.mutation, {
+          .mutateWithHints(input.mutation, {
             kind: "agent-client",
             sessionId: scope.client.sessionId,
             label: scope.client.label,

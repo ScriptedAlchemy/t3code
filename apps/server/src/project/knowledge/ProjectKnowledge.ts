@@ -1,5 +1,7 @@
 import {
   ActiveProjectFact,
+  type KnowledgeConflictHint,
+  type KnowledgeFactSource,
   KnowledgeOrigin,
   type KnowledgeSourceUnavailableReason,
   ProjectKnowledgeError,
@@ -18,6 +20,11 @@ import {
   type ProjectKnowledgeReadSourceInput,
   type ProjectKnowledgeSearchResult,
   type ProjectKnowledgeSource,
+  type ProjectKnowledgeFactDetail,
+  type ProjectKnowledgeMutationResult,
+  type ProjectKnowledgeReadFactInput,
+  type ProjectKnowledgeStatus,
+  type ProjectKnowledgeStatusInput,
 } from "@t3tools/contracts";
 import {
   formatComposerContextReference,
@@ -37,9 +44,10 @@ import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
-import { makeStore, type SearchReceipt } from "./persistence.ts";
+import { makeStore, type HistoryRecord, type SearchReceipt } from "./persistence.ts";
 import * as HolographicMemory from "./HolographicMemory.ts";
 import { projectMemorySearchTokens } from "./holographicScoring.ts";
+import { conflictHints } from "./knowledgeConflicts.ts";
 
 export class ProjectKnowledge extends Context.Service<
   ProjectKnowledge,
@@ -51,6 +59,17 @@ export class ProjectKnowledge extends Context.Service<
       input: ProjectKnowledgeMutation,
       actor: KnowledgeOrigin,
     ) => Effect.Effect<ProjectFact, ProjectKnowledgeError>;
+    /** mutate, plus duplicate and conflict hints for content it wrote. */
+    readonly mutateWithHints: (
+      input: ProjectKnowledgeMutation,
+      actor: KnowledgeOrigin,
+    ) => Effect.Effect<ProjectKnowledgeMutationResult, ProjectKnowledgeError>;
+    readonly readFact: (
+      input: ProjectKnowledgeReadFactInput,
+    ) => Effect.Effect<ProjectKnowledgeFactDetail, ProjectKnowledgeError>;
+    readonly status: (
+      input: ProjectKnowledgeStatusInput,
+    ) => Effect.Effect<ProjectKnowledgeStatus, ProjectKnowledgeError>;
     readonly readSource: (
       input: ProjectKnowledgeReadSourceInput,
     ) => Effect.Effect<ProjectKnowledgeSource, ProjectKnowledgeError>;
@@ -92,9 +111,16 @@ const encodeQuery = Schema.encodeSync(
       entityMatch: Schema.String,
       includeArchived: Schema.Boolean,
       minTrust: Schema.Number,
+      includeSuperseded: Schema.optionalKey(Schema.Boolean),
     }),
   ),
 );
+// Matches the default search minTrust, so the health strip counts what recall would skip.
+const RECALL_THRESHOLD = 0.3;
+const HISTORY_LIMIT = 50;
+// Whole-project source checks read every cited fact; beyond this the count is partial.
+const SOURCE_CHECK_LIMIT = 2000;
+const excerpt = (content: string | null) => (content === null ? null : content.slice(0, 320));
 const isKnowledgeError = Schema.is(ProjectKnowledgeError);
 // One rule for both the single-source read and the batched list check, so a
 // list badge never disagrees with what opening the citation shows.
@@ -194,9 +220,11 @@ const make = Effect.gen(function* () {
     return true;
   });
   // Two set-based reads per page instead of a projection read per citation.
-  const unavailableSources = Effect.fn("ProjectKnowledge.unavailableSources")(function* (
+  const unavailableSources = Effect.fn("ProjectKnowledge.unavailableSources")(function* <
+    K extends string,
+  >(
     projectId: ProjectId,
-    facts: ReadonlyArray<ProjectFact>,
+    facts: ReadonlyArray<{ readonly id: K; readonly sources: ReadonlyArray<KnowledgeFactSource> }>,
   ) {
     const refs = facts.flatMap((fact) =>
       fact.sources.flatMap((source) =>
@@ -226,7 +254,7 @@ const make = Effect.gen(function* () {
     const threadsById = new Map(threadRows.map((row) => [row.threadId, row]));
     const messagesById = new Map(messageRows.map((row) => [row.messageId, row]));
     const digests = new Map<string, string>();
-    const reasons = new Map<ProjectFactId, KnowledgeSourceUnavailableReason>();
+    const reasons = new Map<K, KnowledgeSourceUnavailableReason>();
     for (const { factId, source } of refs) {
       if (reasons.has(factId)) continue;
       const row = messagesById.get(source.messageId);
@@ -253,8 +281,21 @@ const make = Effect.gen(function* () {
     function* (input) {
       yield* requireProject(input.projectId);
       const limit = input.limit ?? 50;
+      // The lost-source filter matches the health count, which spans both active statuses.
+      const status = input.status ?? (input.sourceState === "unavailable" ? null : "confirmed");
+      const includeSuperseded = input.includeSuperseded ?? false;
+      const onlyIds =
+        input.sourceState === "unavailable"
+          ? yield* store
+              .citedFacts(input.projectId, status, includeSuperseded, SOURCE_CHECK_LIMIT)
+              .pipe(
+                Effect.flatMap((cited) => unavailableSources(input.projectId, cited)),
+                Effect.map((items) => items.map((item) => item.factId)),
+                Effect.mapError(storageError(input.projectId)),
+              )
+          : null;
       const rows = yield* store
-        .list(input.projectId, input.status ?? "confirmed", input.afterId ?? null, limit + 1)
+        .list(input.projectId, status, input.afterId ?? null, limit + 1, includeSuperseded, onlyIds)
         .pipe(Effect.mapError(storageError(input.projectId)));
       const facts = rows.slice(0, limit);
       return {
@@ -290,13 +331,17 @@ const make = Effect.gen(function* () {
                   factId,
                 });
               }
-              if (existing === null)
+              const replayed =
+                input.action === "supersede"
+                  ? yield* store.find(projectId, input.replacementFactId)
+                  : existing;
+              if (replayed === null)
                 return yield* new ProjectKnowledgeError({
                   reason: "missing_fact",
                   projectId,
                   factId,
                 });
-              return existing;
+              return replayed;
             }
             if (input.action === "confirm" && actor.kind !== "user") {
               return yield* new ProjectKnowledgeError({
@@ -305,7 +350,11 @@ const make = Effect.gen(function* () {
                 factId,
               });
             }
-            if (input.action === "create" || input.action === "edit") {
+            if (
+              input.action === "create" ||
+              input.action === "edit" ||
+              input.action === "supersede"
+            ) {
               if (
                 Buffer.byteLength(input.content) +
                   input.entities.reduce((size, entity) => size + Buffer.byteLength(entity), 0) >
@@ -333,7 +382,92 @@ const make = Effect.gen(function* () {
               }
             }
             const now = DateTime.formatIso(yield* DateTime.now);
+            const history = Effect.fn("ProjectKnowledge.recordHistory")(function* (
+              fact: ProjectFact,
+              event: HistoryRecord["event"],
+              extra: Partial<HistoryRecord> = {},
+            ) {
+              const content = event === "created" || event === "edited" ? fact.content : null;
+              yield* store.recordHistory({
+                projectId,
+                factId: fact.id,
+                revision: fact.revision,
+                event,
+                actor,
+                at: now,
+                contentDigest: content === null ? null : yield* digest(content),
+                content,
+                sources: content === null ? [] : fact.sources,
+                trustBefore: null,
+                trustAfter: fact.trust,
+                helpful: null,
+                relatedFactId: null,
+                ...extra,
+              });
+            });
             let fact: ProjectFact;
+            if (input.action === "supersede") {
+              if (existing === null)
+                return yield* new ProjectKnowledgeError({
+                  reason: "missing_fact",
+                  projectId,
+                  factId,
+                });
+              if (existing.status === "forgotten")
+                return yield* new ProjectKnowledgeError({ reason: "forgotten", projectId, factId });
+              if (existing.supersededBy != null)
+                return yield* new ProjectKnowledgeError({
+                  reason: "superseded",
+                  projectId,
+                  factId,
+                });
+              if (existing.revision !== input.expectedRevision)
+                return yield* new ProjectKnowledgeError({
+                  reason: "conflict",
+                  projectId,
+                  factId,
+                  currentRevision: existing.revision,
+                });
+              const taken = yield* store.find(projectId, input.replacementFactId);
+              if (taken !== null || input.replacementFactId === factId)
+                return yield* new ProjectKnowledgeError({
+                  reason: "conflict",
+                  projectId,
+                  factId: input.replacementFactId,
+                });
+              fact = {
+                id: input.replacementFactId,
+                projectId,
+                content: input.content,
+                entities: input.entities,
+                tags: input.tags,
+                kind: input.kind,
+                sources: input.sources,
+                origin: actor,
+                status: actor.kind === "user" ? "confirmed" : "proposed",
+                revision: 1,
+                trust: 0.5,
+                retrievalCount: 0,
+                createdAt: now,
+                updatedAt: now,
+                forgottenAt: null,
+                supersedes: factId,
+                supersededBy: null,
+              };
+              const replaced: ProjectFact = {
+                ...existing,
+                revision: existing.revision + 1,
+                updatedAt: now,
+                supersededBy: fact.id,
+              };
+              yield* store.insert(fact);
+              if (!(yield* store.update(replaced, input.expectedRevision)))
+                return yield* new ProjectKnowledgeError({ reason: "conflict", projectId, factId });
+              yield* history(replaced, "superseded", { relatedFactId: fact.id });
+              yield* history(fact, "created", { relatedFactId: factId });
+              yield* store.record(input.commandId, projectId, factId, requestDigest);
+              return fact;
+            }
             if (input.action === "create") {
               if (existing !== null)
                 return yield* new ProjectKnowledgeError({
@@ -358,8 +492,11 @@ const make = Effect.gen(function* () {
                 createdAt: now,
                 updatedAt: now,
                 forgottenAt: null,
+                supersedes: null,
+                supersededBy: null,
               };
               yield* store.insert(fact);
+              yield* history(fact, "created");
             } else {
               if (existing === null)
                 return yield* new ProjectKnowledgeError({
@@ -369,6 +506,15 @@ const make = Effect.gen(function* () {
                 });
               if (existing.status === "forgotten")
                 return yield* new ProjectKnowledgeError({ reason: "forgotten", projectId, factId });
+              if (
+                existing.supersededBy != null &&
+                (input.action === "edit" || input.action === "confirm")
+              )
+                return yield* new ProjectKnowledgeError({
+                  reason: "superseded",
+                  projectId,
+                  factId,
+                });
               if (existing.revision !== input.expectedRevision)
                 return yield* new ProjectKnowledgeError({
                   reason: "conflict",
@@ -419,6 +565,25 @@ const make = Effect.gen(function* () {
               }
               if (!(yield* store.update(fact, input.expectedRevision)))
                 return yield* new ProjectKnowledgeError({ reason: "conflict", projectId, factId });
+              switch (input.action) {
+                case "edit":
+                  yield* history(fact, "edited");
+                  break;
+                case "confirm":
+                  yield* history(fact, "confirmed");
+                  break;
+                case "forget":
+                  yield* store.eraseHistory(projectId, factId);
+                  yield* store.scrubDeliveries(projectId, factId);
+                  yield* history(fact, "forgotten");
+                  break;
+                case "feedback":
+                  yield* history(fact, "feedback", {
+                    trustBefore: existing.trust,
+                    helpful: input.helpful,
+                  });
+                  break;
+              }
             }
             yield* store.record(input.commandId, projectId, factId, requestDigest);
             return fact;
@@ -539,6 +704,7 @@ const make = Effect.gen(function* () {
           entityMatch: input.entityMatch ?? "any",
           includeArchived: input.includeArchived ?? false,
           minTrust,
+          ...(input.includeSuperseded ? { includeSuperseded: true } : {}),
         }),
       ).pipe(Effect.mapError(storageError(input.projectId)));
       const { cursor: _messageCursor, ...factInput } = input;
@@ -584,7 +750,13 @@ const make = Effect.gen(function* () {
       let ranking = rootReceipt?.search?.ranking ?? null;
       if (ranking === null) {
         const candidates = yield* store
-          .candidates(input.projectId, projectMemorySearchTokens(input.query), entities, minTrust)
+          .candidates(
+            input.projectId,
+            projectMemorySearchTokens(input.query),
+            entities,
+            minTrust,
+            input.includeSuperseded ?? false,
+          )
           .pipe(Effect.mapError(storageError(input.projectId)));
         const eligible = candidates.facts.filter(
           (fact): fact is typeof ActiveProjectFact.Type =>
@@ -702,6 +874,7 @@ const make = Effect.gen(function* () {
                 fact.revision !== match.revision ||
                 fact.status === "forgotten" ||
                 fact.content === null ||
+                (fact.supersededBy != null && !input.includeSuperseded) ||
                 !(yield* sourcesAvailable(fact, input.includeArchived ?? false))
               )
                 continue;
@@ -811,9 +984,125 @@ const make = Effect.gen(function* () {
     }
     return { deliveries };
   });
+  const hintsFor = Effect.fn("ProjectKnowledge.hintsFor")(function* (fact: ProjectFact) {
+    if (fact.content === null || fact.supersededBy != null) return [];
+    // The longest tokens are the most selective; a fact can tokenize into hundreds of terms.
+    const terms = projectMemorySearchTokens(fact.content)
+      .toSorted((left, right) => right.length - left.length || (left < right ? -1 : 1))
+      .slice(0, 24);
+    const candidates = yield* store.similar(
+      fact.projectId,
+      terms,
+      [fact.id, fact.supersedes, fact.supersededBy].filter((id): id is ProjectFactId => id != null),
+    );
+    return conflictHints(
+      fact.content,
+      candidates.flatMap((candidate) =>
+        candidate.content === null
+          ? []
+          : [{ id: candidate.id, revision: candidate.revision, content: candidate.content }],
+      ),
+    );
+  });
+  const mutateWithHints: ProjectKnowledge["Service"]["mutateWithHints"] = Effect.fn(
+    "ProjectKnowledge.mutateWithHints",
+  )(function* (input, actor) {
+    const fact = yield* mutate(input, actor);
+    if (input.action !== "create" && input.action !== "edit" && input.action !== "supersede")
+      return fact;
+    const hints: ReadonlyArray<KnowledgeConflictHint> = yield* hintsFor(fact).pipe(
+      Effect.mapError(storageError(input.projectId)),
+    );
+    return { ...fact, hints };
+  });
+  const readFact: ProjectKnowledge["Service"]["readFact"] = Effect.fn("ProjectKnowledge.readFact")(
+    function* (input) {
+      yield* requireProject(input.projectId);
+      return yield* Effect.gen(function* () {
+        const fact = yield* store.find(input.projectId, input.factId);
+        if (fact === null)
+          return yield* new ProjectKnowledgeError({
+            reason: "missing_fact",
+            projectId: input.projectId,
+            factId: input.factId,
+          });
+        const rows = yield* store.history(input.projectId, input.factId, HISTORY_LIMIT + 1);
+        const history = rows.slice(-HISTORY_LIMIT);
+        const reasons = new Map(
+          (yield* unavailableSources(input.projectId, [
+            { id: "fact", sources: fact.sources },
+            ...history.map((entry) => ({ id: String(entry.sequence), sources: entry.sources })),
+          ])).map((item) => [item.factId, item.reason]),
+        );
+        const linked = new Map(
+          (yield* store.findMany(
+            input.projectId,
+            [fact.supersedes, fact.supersededBy].filter((id): id is ProjectFactId => id != null),
+          )).map((linkedFact) => [
+            linkedFact.id,
+            {
+              id: linkedFact.id,
+              status: linkedFact.status,
+              revision: linkedFact.revision,
+              excerpt: excerpt(linkedFact.content),
+            },
+          ]),
+        );
+        return {
+          fact,
+          sourceUnavailable: reasons.get("fact") ?? null,
+          history: history.map((entry) => ({
+            ...entry,
+            sourceUnavailable: reasons.get(String(entry.sequence)) ?? null,
+          })),
+          historyTruncated: rows.length > HISTORY_LIMIT,
+          supersedes: (fact.supersedes && linked.get(fact.supersedes)) ?? null,
+          supersededBy: (fact.supersededBy && linked.get(fact.supersededBy)) ?? null,
+          hints: yield* hintsFor(fact),
+        };
+      }).pipe(Effect.mapError(storageError(input.projectId)));
+    },
+  );
+  const status: ProjectKnowledge["Service"]["status"] = Effect.fn("ProjectKnowledge.status")(
+    function* (input) {
+      yield* requireProject(input.projectId);
+      return yield* Effect.gen(function* () {
+        const counts = yield* store.statusCounts(input.projectId, RECALL_THRESHOLD);
+        const cited = yield* store.citedFacts(input.projectId, null, false, SOURCE_CHECK_LIMIT + 1);
+        const unavailable = yield* unavailableSources(
+          input.projectId,
+          cited.slice(0, SOURCE_CHECK_LIMIT),
+        );
+        return {
+          counts: {
+            proposed: counts.proposed,
+            confirmed: counts.confirmed,
+            superseded: counts.superseded,
+            forgotten: counts.forgotten,
+          },
+          trustBands: {
+            low: counts.low,
+            guarded: counts.guarded,
+            steady: counts.steady,
+            high: counts.high,
+          },
+          recallThreshold: RECALL_THRESHOLD,
+          belowRecallThreshold: counts.belowRecallThreshold,
+          retrievals: counts.retrievals,
+          feedback: { helpful: counts.helpful, unhelpful: counts.unhelpful },
+          unavailableSources: unavailable.length,
+          unavailableSourcesCoverage:
+            cited.length > SOURCE_CHECK_LIMIT ? ("partial" as const) : ("complete" as const),
+        };
+      }).pipe(Effect.mapError(storageError(input.projectId)));
+    },
+  );
   return ProjectKnowledge.of({
     list,
     mutate,
+    mutateWithHints,
+    readFact,
+    status,
     readSource,
     search,
     prepareContext,

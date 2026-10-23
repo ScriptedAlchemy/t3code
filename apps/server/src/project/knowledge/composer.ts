@@ -157,9 +157,12 @@ export const deliveredKnowledgeForHistory = Effect.fn("ProjectKnowledge.delivere
     for (const row of rows) {
       const itemId = input.userItemId(row.messageId);
       const message = candidates.get(itemId);
+      // Forgotten knowledge carries nothing forward, not even an empty wrapper.
+      const items = row.items.filter((item) => !item.contentRemoved);
       if (message === undefined || message.threadId !== row.threadId || row.items.length === 0)
         continue;
-      evidence.set(itemId, renderDeliveredKnowledge(row.items));
+      if (items.length === 0) evidence.delete(itemId);
+      else evidence.set(itemId, renderDeliveredKnowledge(items));
     }
     return evidence;
   },

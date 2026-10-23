@@ -1,4 +1,12 @@
-import { WS_METHODS, type ProjectKnowledgeDeliveries } from "@t3tools/contracts";
+import {
+  WS_METHODS,
+  type KnowledgeConflictHint,
+  type KnowledgeOrigin,
+  type KnowledgeSourceUnavailableReason,
+  type ProjectFact,
+  type ProjectFactHistoryEntry,
+  type ProjectKnowledgeDeliveries,
+} from "@t3tools/contracts";
 export { projectKnowledgeContextRecord } from "@t3tools/shared/composerContextReferences";
 import type { Atom } from "effect/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
@@ -29,6 +37,16 @@ export function createProjectKnowledgeAtoms<R, E>(
     readDeliveries: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "project-knowledge:deliveries",
       tag: WS_METHODS.projectKnowledgeReadDeliveries,
+      staleTimeMs: 0,
+    }),
+    readFact: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "project-knowledge:fact",
+      tag: WS_METHODS.projectKnowledgeReadFact,
+      staleTimeMs: 0,
+    }),
+    status: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "project-knowledge:status",
+      tag: WS_METHODS.projectKnowledgeStatus,
       staleTimeMs: 0,
     }),
     prepareContext: createEnvironmentRpcCommand(runtime, {
@@ -74,9 +92,77 @@ export function deliveredKnowledgeNotes(
   if (snapshot.attempts > 1) notes.push(`Prepared for ${snapshot.attempts} provider attempts.`);
   if (snapshot.item.current === "changed")
     notes.push("This knowledge has changed since it was sent.");
-  if (snapshot.item.current === "forgotten")
-    notes.push("This knowledge has since been forgotten. T3 keeps this copy of what was sent.");
+  if (snapshot.item.contentRemoved)
+    notes.push(
+      "This knowledge has since been forgotten. Its content was removed from this record.",
+    );
+  else if (snapshot.item.current === "forgotten")
+    notes.push("This knowledge has since been forgotten.");
   if (snapshot.item.current === "unavailable")
     notes.push("A source for this knowledge is no longer available.");
   return notes;
+}
+
+export const KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL: Record<KnowledgeSourceUnavailableReason, string> =
+  {
+    missing: "Source missing",
+    deleted: "Source deleted",
+    archived: "Source archived",
+    wrong_project: "Source moved",
+    streaming: "Source still streaming",
+    changed: "Source changed",
+  };
+
+export function knowledgeOriginLabel(origin: KnowledgeOrigin): string {
+  return origin.kind === "user"
+    ? "User assertion"
+    : origin.kind === "agent-thread"
+      ? `Agent observation in thread ${origin.threadId}`
+      : `Agent observation from ${origin.label}`;
+}
+
+export function isSupersededFact(fact: ProjectFact): boolean {
+  return fact.supersededBy != null;
+}
+
+export function projectFactHistoryLabel(entry: ProjectFactHistoryEntry): string {
+  switch (entry.event) {
+    case "baseline":
+      return `History begins at revision ${entry.revision}`;
+    case "created":
+      return entry.relatedFactId === null ? "Created" : "Created as a replacement";
+    case "edited":
+      return `Edited to revision ${entry.revision}`;
+    case "confirmed":
+      return "Confirmed";
+    case "forgotten":
+      return "Forgotten";
+    case "feedback":
+      return entry.helpful === false ? "Marked unhelpful" : "Marked helpful";
+    case "superseded":
+      return "Superseded";
+  }
+}
+
+/** Trust after each event, oldest first; a sparkline only says something with two points. */
+export function projectFactTrustPoints(
+  history: ReadonlyArray<ProjectFactHistoryEntry>,
+): ReadonlyArray<number> {
+  const first = history[0];
+  if (!first) return [];
+  return [
+    ...(first.trustBefore === null ? [] : [first.trustBefore]),
+    ...history.map((entry) => entry.trustAfter),
+  ];
+}
+
+export function knowledgeConflictHintLabel(hint: KnowledgeConflictHint): string {
+  switch (hint.kind) {
+    case "duplicate":
+      return "Same as an existing fact";
+    case "near_duplicate":
+      return "Possible duplicate of";
+    case "possible_conflict":
+      return "Possible conflict with";
+  }
 }

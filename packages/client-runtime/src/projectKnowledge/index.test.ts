@@ -7,10 +7,16 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  type ProjectFactHistoryEntry,
   type ProjectKnowledgeDeliveries,
 } from "@t3tools/contracts";
 import { expect, it } from "vite-plus/test";
-import { deliveredKnowledgeNotes, deliveredKnowledgeSnapshot } from "./index.ts";
+import {
+  deliveredKnowledgeNotes,
+  deliveredKnowledgeSnapshot,
+  projectFactHistoryLabel,
+  projectFactTrustPoints,
+} from "./index.ts";
 
 const delivery = (
   attemptId: string,
@@ -60,4 +66,41 @@ it("shows the copy the provider accepted, even when a later failover attempt was
     "This knowledge has changed since it was sent.",
   ]);
   expect(deliveredKnowledgeSnapshot({ deliveries: [] }, "knowledge")).toBeNull();
+});
+
+const historyEntry = (
+  sequence: number,
+  event: ProjectFactHistoryEntry["event"],
+  trustBefore: number | null,
+  trustAfter: number,
+  helpful: boolean | null = null,
+): ProjectFactHistoryEntry => ({
+  sequence,
+  event,
+  revision: sequence,
+  actor: { kind: "user" },
+  at: "2026-10-22T00:00:00.000Z",
+  contentDigest: null,
+  content: null,
+  sources: [],
+  trustBefore,
+  trustAfter,
+  helpful,
+  relatedFactId: null,
+  sourceUnavailable: null,
+});
+
+it("traces trust from before the first recorded event through each feedback", () => {
+  const history = [
+    historyEntry(1, "baseline", null, 0.5),
+    historyEntry(2, "feedback", 0.5, 0.55, true),
+    historyEntry(3, "feedback", 0.55, 0.45, false),
+  ];
+  expect(projectFactTrustPoints(history)).toEqual([0.5, 0.55, 0.45]);
+  expect(projectFactTrustPoints(history.slice(1))).toEqual([0.5, 0.55, 0.45]);
+  expect(history.map(projectFactHistoryLabel)).toEqual([
+    "History begins at revision 1",
+    "Marked helpful",
+    "Marked unhelpful",
+  ]);
 });
