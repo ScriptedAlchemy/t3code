@@ -331,74 +331,78 @@ const make = Effect.gen(function* () {
 
   const resolveForTurn: ProjectKnowledge["Service"]["resolveForTurn"] = Effect.fn(
     "ProjectKnowledge.resolveForTurn",
-  )(function* (input) {
-    if (input.environmentId !== (yield* environment.getEnvironmentId))
-      return yield* new ProjectKnowledgeError({
-        reason: "wrong_environment",
-        projectId: input.projectId,
-      });
-    yield* requireProject(input.projectId);
-    const parts: string[] = [];
-    for (const selection of input.selections) {
-      if (selection.kind === "message") {
-        const source = yield* readSource({
+  )(
+    function* (input) {
+      if (input.environmentId !== (yield* environment.getEnvironmentId))
+        return yield* new ProjectKnowledgeError({
+          reason: "wrong_environment",
           projectId: input.projectId,
-          ...selection,
-          includeArchived: input.includeArchived ?? false,
         });
-        if (source.state !== "available")
-          return yield* new ProjectKnowledgeError({
-            reason: "stale_context",
+      yield* requireProject(input.projectId);
+      const parts: string[] = [];
+      for (const selection of input.selections) {
+        if (selection.kind === "message") {
+          const source = yield* readSource({
             projectId: input.projectId,
+            ...selection,
+            includeArchived: input.includeArchived ?? false,
           });
-        parts.push(
-          `[Message ${selection.threadId}/${selection.messageId} sha256:${selection.digest}]\n${source.text}`,
-        );
-      } else {
-        const fact = yield* store
-          .find(input.projectId, selection.factId)
-          .pipe(Effect.mapError(storageError(input.projectId)));
-        if (
-          fact === null ||
-          fact.status === "forgotten" ||
-          fact.revision !== selection.revision ||
-          fact.content === null ||
-          !(yield* sourcesAvailable(fact, input.includeArchived ?? false))
-        ) {
-          return yield* new ProjectKnowledgeError({
-            reason: "stale_context",
-            projectId: input.projectId,
-            factId: selection.factId,
-          });
-        }
-        const citations = fact.sources
-          .map((source) =>
-            source.kind === "user"
+          if (source.state !== "available")
+            return yield* new ProjectKnowledgeError({
+              reason: "stale_context",
+              projectId: input.projectId,
+            });
+          parts.push(
+            `[Message ${selection.threadId}/${selection.messageId} sha256:${selection.digest}]\n${source.text}`,
+          );
+        } else {
+          const fact = yield* store
+            .find(input.projectId, selection.factId)
+            .pipe(Effect.mapError(storageError(input.projectId)));
+          if (
+            fact === null ||
+            fact.status === "forgotten" ||
+            fact.revision !== selection.revision ||
+            fact.content === null ||
+            !(yield* sourcesAvailable(fact, input.includeArchived ?? false))
+          ) {
+            return yield* new ProjectKnowledgeError({
+              reason: "stale_context",
+              projectId: input.projectId,
+              factId: selection.factId,
+            });
+          }
+          const citations = fact.sources
+            .map((source) =>
+              source.kind === "user"
+                ? "User assertion"
+                : `Message ${source.threadId}/${source.messageId} sha256:${source.digest}`,
+            )
+            .join("; ");
+          const origin =
+            fact.origin.kind === "user"
               ? "User assertion"
-              : `Message ${source.threadId}/${source.messageId} sha256:${source.digest}`,
-          )
-          .join("; ");
-        const origin =
-          fact.origin.kind === "user"
-            ? "User assertion"
-            : fact.origin.kind === "agent-thread"
-              ? `Agent observation in thread ${fact.origin.threadId}`
-              : `Agent observation from ${fact.origin.label}`;
-        parts.push(
-          `[Fact ${fact.id} revision:${fact.revision} status:${fact.status} trust:${fact.trust}; ${origin}${citations ? `; ${citations}` : ""}]\n${fact.content}`,
-        );
+              : fact.origin.kind === "agent-thread"
+                ? `Agent observation in thread ${fact.origin.threadId}`
+                : `Agent observation from ${fact.origin.label}`;
+          parts.push(
+            `[Fact ${fact.id} revision:${fact.revision} status:${fact.status} trust:${fact.trust}; ${origin}${citations ? `; ${citations}` : ""}]\n${fact.content}`,
+          );
+        }
       }
-    }
-    const text = `Selected project knowledge (quoted source material):\n\n${parts.join("\n\n")}`;
-    const byteLength = Buffer.byteLength(text, "utf8");
-    if (byteLength > input.maxBytes)
-      return yield* new ProjectKnowledgeError({
-        reason: "context_budget",
-        projectId: input.projectId,
-        byteLength,
-      });
-    return { context: input, text, byteLength };
-  });
+      const text = `Selected project knowledge (quoted source material):\n\n${parts.join("\n\n")}`;
+      const byteLength = Buffer.byteLength(text, "utf8");
+      if (byteLength > input.maxBytes)
+        return yield* new ProjectKnowledgeError({
+          reason: "context_budget",
+          projectId: input.projectId,
+          byteLength,
+        });
+      return { context: input, text, byteLength };
+    },
+    (effect, input) =>
+      sql.withTransaction(effect).pipe(Effect.mapError(storageError(input.projectId))),
+  );
   const prepareContext: ProjectKnowledge["Service"]["prepareContext"] = Effect.fn(
     "ProjectKnowledge.prepareContext",
   )(function* (input) {
