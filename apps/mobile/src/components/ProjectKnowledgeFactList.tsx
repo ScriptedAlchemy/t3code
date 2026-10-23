@@ -77,7 +77,10 @@ export function useProjectKnowledgeBrowse(props: {
   );
   const search = useEnvironmentQuery(
     searchInput
-      ? projectKnowledge.search({ environmentId: props.environmentId, input: searchInput })
+      ? projectKnowledge.search({
+          environmentId: props.environmentId,
+          input: { ...searchInput, recordRetrieval: false },
+        })
       : null,
   );
   const restartSearch = () =>

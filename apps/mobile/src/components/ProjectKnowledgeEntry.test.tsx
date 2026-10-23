@@ -386,6 +386,13 @@ it("pages both result streams without restarting the other stream", async () => 
   await screen.click("Search");
   expect(screen.container.textContent).toContain("First fact");
   const firstInput = state.searchRequest.mock.lastCall![0].input;
+  expect(firstInput).toEqual({
+    projectId: scope.projectId,
+    query: "tenant cache",
+    includeArchived: false,
+    requestId: expect.any(String),
+    recordRetrieval: false,
+  });
   await screen.click("Next conversations");
   expect(screen.container.textContent).toContain("Second conversation");
   expect(screen.container.textContent).toContain("First fact");
@@ -420,6 +427,7 @@ it("pages both result streams without restarting the other stream", async () => 
     query: "new query",
     includeArchived: false,
     requestId: expect.any(String),
+    recordRetrieval: false,
   });
 });
 

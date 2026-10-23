@@ -267,7 +267,10 @@ function MemoryContents(
   );
   const search = useEnvironmentQuery(
     searchInput
-      ? projectKnowledge.search({ environmentId: props.environmentId, input: searchInput })
+      ? projectKnowledge.search({
+          environmentId: props.environmentId,
+          input: { ...searchInput, recordRetrieval: false },
+        })
       : null,
   );
   const inspectedSource = inspection.kind === "source" ? inspection.ref : null;

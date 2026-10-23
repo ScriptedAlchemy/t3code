@@ -632,6 +632,13 @@ it("pages facts and conversations independently and resets both for a new query"
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect.element(page.getByText("Fact page 0", { exact: true })).toBeVisible();
   const firstInput = state.searchRequest.mock.lastCall![0].input;
+  expect(firstInput).toEqual({
+    projectId: scope.projectId,
+    query: "tenant cache",
+    includeArchived: false,
+    requestId: expect.any(String),
+    recordRetrieval: false,
+  });
   await page.getByRole("button", { name: "Next conversations" }).click();
   await expect.element(page.getByText("Conversation page 1", { exact: true })).toBeVisible();
   await expect.element(page.getByText("Fact page 0", { exact: true })).toBeVisible();
@@ -663,6 +670,7 @@ it("pages facts and conversations independently and resets both for a new query"
     query: "new query",
     includeArchived: false,
     requestId: expect.any(String),
+    recordRetrieval: false,
   });
 });
 
