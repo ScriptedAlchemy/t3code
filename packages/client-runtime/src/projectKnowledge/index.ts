@@ -64,21 +64,19 @@ export function createProjectKnowledgeAtoms<R, E>(
 type DeliveryRecord = ProjectKnowledgeDeliveries["deliveries"][number];
 
 /**
- * What one sent message's knowledge reference actually delivered. Prefers the latest attempt the
- * provider accepted; otherwise the latest attempt, whose status explains why it is not confirmed.
+ * What one sent message's knowledge reference delivered or why it was omitted. Prefers the latest
+ * attempt the provider accepted; otherwise the latest attempt, whose status explains why it is
+ * not confirmed.
  */
-export function deliveredKnowledgeSnapshot(
-  result: ProjectKnowledgeDeliveries,
-  contextId: string,
-): {
-  readonly status: DeliveryRecord["status"];
-  readonly item: DeliveryRecord["items"][number];
-  readonly attempts: number;
-} | null {
-  const matches = result.deliveries.flatMap((delivery) => {
-    const item = delivery.items.find((candidate) => candidate.contextId === contextId);
-    return item ? [{ status: delivery.status, item }] : [];
-  });
+export function deliveredKnowledgeSnapshot(result: ProjectKnowledgeDeliveries, contextId: string) {
+  const matches = result.deliveries
+    .map((delivery) => {
+      const item = delivery.items.find((candidate) => candidate.contextId === contextId);
+      if (item) return { status: delivery.status, item, omission: null };
+      const omission = delivery.omissions.find((candidate) => candidate.contextId === contextId);
+      return omission ? { status: delivery.status, item: null, omission } : null;
+    })
+    .filter((match) => match !== null);
   const chosen = matches.findLast((match) => match.status === "sent") ?? matches.at(-1);
   return chosen ? { ...chosen, attempts: matches.length } : null;
 }
@@ -91,6 +89,7 @@ export function deliveredKnowledgeNotes(
     notes.push("Delivery to the provider was not confirmed.");
   if (snapshot.status === "failed") notes.push("The provider refused this turn before reading it.");
   if (snapshot.attempts > 1) notes.push(`Prepared for ${snapshot.attempts} provider attempts.`);
+  if (snapshot.item === null) return notes;
   if (snapshot.item.current === "changed")
     notes.push("This knowledge has changed since it was sent.");
   if (snapshot.item.contentRemoved)
@@ -103,6 +102,13 @@ export function deliveredKnowledgeNotes(
     notes.push("A source for this knowledge is no longer available.");
   return notes;
 }
+
+export const KNOWLEDGE_DELIVERY_OMISSION_LABEL: Record<
+  DeliveryRecord["omissions"][number]["reason"],
+  string
+> = {
+  not_referenced: "not referenced in the message",
+};
 
 export const KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL: Record<KnowledgeSourceUnavailableReason, string> =
   {

@@ -14,6 +14,7 @@ import { expect, it } from "vite-plus/test";
 import {
   deliveredKnowledgeNotes,
   deliveredKnowledgeSnapshot,
+  KNOWLEDGE_DELIVERY_OMISSION_LABEL,
   projectFactHistoryLabel,
   projectFactTrustPoints,
 } from "./index.ts";
@@ -60,12 +61,41 @@ it("shows the copy the provider accepted, even when a later failover attempt was
     },
     "knowledge",
   );
-  expect(snapshot?.item.text).toBe("failover copy");
+  expect(snapshot?.item?.text).toBe("failover copy");
   expect(deliveredKnowledgeNotes(snapshot!)).toEqual([
     "Prepared for 3 provider attempts.",
     "This knowledge has changed since it was sent.",
   ]);
   expect(deliveredKnowledgeSnapshot({ deliveries: [] }, "knowledge")).toBeNull();
+});
+
+it("shows why an attached reference was omitted when nothing was delivered", () => {
+  const omission = {
+    contextId: "knowledge",
+    label: "Knowledge",
+    reason: "not_referenced" as const,
+  };
+  const snapshot = deliveredKnowledgeSnapshot(
+    {
+      deliveries: [{ ...delivery("omitted", "sent", ""), items: [], omissions: [omission] }],
+    },
+    "knowledge",
+  );
+  expect(snapshot).toEqual({ status: "sent", item: null, omission, attempts: 1 });
+  expect(deliveredKnowledgeNotes(snapshot!)).toEqual([]);
+  expect(KNOWLEDGE_DELIVERY_OMISSION_LABEL[omission.reason]).toBe("not referenced in the message");
+  expect(
+    deliveredKnowledgeSnapshot(
+      {
+        deliveries: [
+          delivery("included", "sent", "earlier copy"),
+          { ...delivery("omitted", "sent", ""), items: [], omissions: [omission] },
+          delivery("retry", "prepared", "retry copy"),
+        ],
+      },
+      "knowledge",
+    ),
+  ).toEqual({ status: "sent", item: null, omission, attempts: 3 });
 });
 
 const historyEntry = (

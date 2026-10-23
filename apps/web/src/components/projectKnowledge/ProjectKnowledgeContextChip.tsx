@@ -3,6 +3,7 @@ import type { MessageId, ProjectKnowledgeContextRecord, ThreadId } from "@t3tool
 import {
   deliveredKnowledgeNotes,
   deliveredKnowledgeSnapshot,
+  KNOWLEDGE_DELIVERY_OMISSION_LABEL,
 } from "@t3tools/client-runtime/projectKnowledge";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { BookOpenIcon } from "lucide-react";
@@ -124,7 +125,11 @@ function DeliveredKnowledge({
                 {note}
               </p>
             ))}
-            {snapshot.item.contentRemoved ? null : (
+            {snapshot.omission ? (
+              <p className="text-sm">
+                Not sent: {KNOWLEDGE_DELIVERY_OMISSION_LABEL[snapshot.omission.reason]}
+              </p>
+            ) : snapshot.item.contentRemoved ? null : (
               <pre className="whitespace-pre-wrap text-sm">{snapshot.item.text}</pre>
             )}
           </>

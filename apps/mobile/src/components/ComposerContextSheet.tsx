@@ -16,6 +16,7 @@ import type {
 import {
   deliveredKnowledgeNotes,
   deliveredKnowledgeSnapshot,
+  KNOWLEDGE_DELIVERY_OMISSION_LABEL,
 } from "@t3tools/client-runtime/projectKnowledge";
 import { projectKnowledge } from "../state/projectKnowledge";
 import { useEnvironmentQuery } from "../state/query";
@@ -116,7 +117,11 @@ function DeliveredProjectKnowledge(props: {
           {note}
         </Text>
       ))}
-      {snapshot.item.contentRemoved ? null : (
+      {snapshot.omission ? (
+        <Text className="text-sm text-foreground">
+          Not sent: {KNOWLEDGE_DELIVERY_OMISSION_LABEL[snapshot.omission.reason]}
+        </Text>
+      ) : snapshot.item.contentRemoved ? null : (
         <ContextField label="As sent" value={snapshot.item.text} code />
       )}
     </View>
