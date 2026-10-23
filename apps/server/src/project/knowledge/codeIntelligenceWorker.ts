@@ -451,6 +451,95 @@ function exactDigest(
   }
 }
 
+// What the SDK's getCallers and getCallees follow.
+const CALL_EDGE_KINDS: ReadonlySet<string> = new Set([
+  "calls",
+  "references",
+  "imports",
+  "instantiates",
+  "navigates",
+]);
+// Impact walks into these nodes' members, as the SDK's getImpactRadius does.
+const CONTAINER_KINDS: ReadonlySet<string> = new Set([
+  "class",
+  "interface",
+  "struct",
+  "union",
+  "trait",
+  "protocol",
+  "module",
+  "enum",
+]);
+
+/**
+ * Breadth first from `startId`, one node's edges at a time, so the nearest relations are the
+ * ones kept and the walk stops at its node, edge, or visit budget instead of collecting
+ * everything reachable first. Nodes outside `allowed` are neither returned nor walked through.
+ */
+function walkRelations(
+  graph: CodeGraphInstance,
+  startId: string,
+  options: {
+    readonly direction: "incoming" | "outgoing";
+    readonly follows: (edge: Edge) => boolean;
+    readonly depth: number;
+    readonly allowed: ReadonlySet<string>;
+    readonly maxNodes: number;
+    readonly maxEdges: number;
+    // Impact keeps every dependency edge between kept nodes and walks into containers.
+    readonly impact?: boolean;
+  },
+) {
+  const nodes: CodeGraphNode[] = [];
+  const edges: Edge[] = [];
+  const visited = new Set([startId]);
+  const keep = (edge: Edge) => {
+    if (edges.length >= options.maxEdges) return false;
+    edges.push(edge);
+    return true;
+  };
+  const enter = (node: CodeGraphNode, edge: Edge) => {
+    if (nodes.length >= options.maxNodes || visited.size >= MAX_WALK_NODES || !keep(edge))
+      return false;
+    visited.add(node.id);
+    nodes.push(node);
+    return true;
+  };
+  let frontier = [startId];
+  for (let hop = 0; hop < options.depth && frontier.length > 0; hop += 1) {
+    const next: string[] = [];
+    // Container members join the frontier at the hop that reached their container.
+    for (let index = 0; index < frontier.length; index += 1) {
+      const id = frontier[index]!;
+      if (options.impact && CONTAINER_KINDS.has(graph.getNode(id)?.kind ?? "")) {
+        for (const edge of graph.getOutgoingEdges(id)) {
+          if (edge.kind !== "contains" || visited.has(edge.target)) continue;
+          const member = graph.getNode(edge.target);
+          if (member === null || !options.allowed.has(member.filePath)) continue;
+          if (!enter(member, edge)) return { nodes, edges, truncated: true };
+          frontier.push(member.id);
+        }
+      }
+      const adjacent =
+        options.direction === "incoming" ? graph.getIncomingEdges(id) : graph.getOutgoingEdges(id);
+      for (const edge of adjacent) {
+        if (!options.follows(edge)) continue;
+        const neighborId = options.direction === "incoming" ? edge.source : edge.target;
+        if (visited.has(neighborId)) {
+          if (options.impact && !keep(edge)) return { nodes, edges, truncated: true };
+          continue;
+        }
+        const neighbor = graph.getNode(neighborId);
+        if (neighbor === null || !options.allowed.has(neighbor.filePath)) continue;
+        if (!enter(neighbor, edge)) return { nodes, edges, truncated: true };
+        next.push(neighborId);
+      }
+    }
+    frontier = next;
+  }
+  return { nodes, edges, truncated: false };
+}
+
 // A file outline lists declarations; these kinds are structure or noise there.
 const FILE_OUTLINE_EXCLUDED_KINDS: ReadonlySet<string> = new Set([
   "file",
@@ -762,14 +851,26 @@ export async function inspectCodeInWorker(
           break;
         }
         addNode(selectedNode);
-        if (input.query.operation === "callers") {
-          const results = graph.getCallers(selected.id, input.query.depth ?? 1);
-          results.slice(0, limit + 1).forEach(addPair);
-          if (results.length > limit) resultLimitReached = true;
-        } else if (input.query.operation === "callees") {
-          const results = graph.getCallees(selected.id, input.query.depth ?? 1);
-          results.slice(0, limit + 1).forEach(addPair);
-          if (results.length > limit) resultLimitReached = true;
+        const relations = (
+          walk: Omit<Parameters<typeof walkRelations>[2], "allowed" | "maxNodes" | "maxEdges">,
+        ) => {
+          // The selected symbol takes one of the `limit` node slots.
+          const found = walkRelations(graph, selected.id, {
+            ...walk,
+            allowed: listedPathSet,
+            maxNodes: limit - 1,
+            maxEdges: limit,
+          });
+          found.nodes.forEach(addNode);
+          found.edges.forEach(addEdge);
+          if (found.truncated) resultLimitReached = true;
+        };
+        if (input.query.operation === "callers" || input.query.operation === "callees") {
+          relations({
+            direction: input.query.operation === "callers" ? "incoming" : "outgoing",
+            follows: (edge) => CALL_EDGE_KINDS.has(edge.kind),
+            depth: input.query.depth ?? 1,
+          });
         } else if (input.query.operation === "tests") {
           const walk = reachingTests(selected.id, input.query.depth ?? 3, limit);
           if (walk.truncated) resultLimitReached = true;
@@ -782,17 +883,15 @@ export async function inspectCodeInWorker(
               .map((test) => test.id.slice(0, 2048)),
           });
         } else if (input.query.operation === "references") {
-          const results = graph.findUsages(selected.id);
-          results.slice(0, limit + 1).forEach(addPair);
-          if (results.length > limit) resultLimitReached = true;
+          relations({ direction: "incoming", follows: () => true, depth: 1 });
         } else {
-          const subgraph = graph.getImpactRadius(selected.id, input.query.depth ?? 3);
-          const subgraphNodes = [...subgraph.nodes.values()];
-          const subgraphEdges = [...subgraph.edges.values()];
-          subgraphNodes.slice(0, limit + 1).forEach(addNode);
-          subgraphEdges.slice(0, limit + 1).forEach(addEdge);
-          if (subgraphNodes.length > limit || subgraphEdges.length > limit)
-            resultLimitReached = true;
+          relations({
+            direction: "incoming",
+            // A container contains its members but does not depend on them.
+            follows: (edge) => edge.kind !== "contains",
+            depth: input.query.depth ?? 3,
+            impact: true,
+          });
         }
         for (const unresolved of graph.getUnresolvedReferencesInFile(selected.path, limit)) {
           const source = graph.getNode(unresolved.fromNodeId);

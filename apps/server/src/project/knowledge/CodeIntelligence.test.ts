@@ -940,6 +940,38 @@ it.effect("reports freshness coverage with the same classification as a query", 
   ),
 );
 
+it.effect("keeps the nearest relations when a traversal hits its budget", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const source = [
+        "export function target() { return 1; }",
+        ...[1, 2, 3].flatMap((index) => [
+          `export function near${index}() { return target(); }`,
+          `export function far${index}() { return near${index}(); }`,
+        ]),
+      ].join("\n");
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(NodePath.join(fixture.root, "src/chain.ts"), `${source}\n`),
+      );
+      const run = checkoutService(fixture.root, () => ["src/chain.ts"]);
+      for (const operation of ["callers", "impact"] as const) {
+        const result = yield* run({
+          operation,
+          symbol: { name: "target", filePath: "src/chain.ts" },
+          depth: 2,
+          limit: 3,
+        });
+        assert.deepEqual(
+          result.nodes.map((node) => node.name).toSorted(),
+          ["near1", "near2", "target"],
+          operation,
+        );
+        assert.equal(result.coverage.resultLimitReached, true, operation);
+      }
+    }),
+  ),
+);
+
 async function writeGeneratedSources(root: string, count: number) {
   await NodeFSP.mkdir(NodePath.join(root, "src/generated"), { recursive: true });
   const files = Array.from({ length: count }, (_, index) => `src/generated/g${index}.py`);
