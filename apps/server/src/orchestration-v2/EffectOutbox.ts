@@ -117,6 +117,11 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("delegated-tasks.stop"),
     reason: Schema.optional(Schema.String),
   }),
+  Schema.Struct({
+    type: Schema.Literal("project-knowledge.extract"),
+    runId: RunId,
+    runOutcome: Schema.Literals(["completed", "failed", "interrupted"]),
+  }),
 ]);
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
@@ -131,6 +136,16 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "attachment.cleanup",
   "thread-title.generate",
   "delegated-tasks.stop",
+  "project-knowledge.extract",
+] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+
+/**
+ * Model calls that run beside the thread's serial lane, each on its own per-thread lane, so a
+ * slow generation never holds back the thread's next turn.
+ */
+const SIDE_LANE_EFFECT_TYPES = [
+  "thread-title.generate",
+  "project-knowledge.extract",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const PROCESS_BOUND_EFFECT_TYPES = [
@@ -348,13 +363,13 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             )
             AND (
               (
-                candidate.effect_type = 'thread-title.generate'
-                AND active.effect_type = 'thread-title.generate'
+                candidate.effect_type IN ${sql.in(SIDE_LANE_EFFECT_TYPES)}
+                AND active.effect_type = candidate.effect_type
               )
               OR
               (
-                candidate.effect_type != 'thread-title.generate'
-                AND active.effect_type != 'thread-title.generate'
+                candidate.effect_type NOT IN ${sql.in(SIDE_LANE_EFFECT_TYPES)}
+                AND active.effect_type NOT IN ${sql.in(SIDE_LANE_EFFECT_TYPES)}
               )
             )
         )

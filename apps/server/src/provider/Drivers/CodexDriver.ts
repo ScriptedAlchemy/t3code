@@ -408,6 +408,11 @@ export const CodexDriver: ProviderDriver<
             protect("generateThreadTitle", nativeGeneration.generateThreadTitle(input)),
           generateReviewGuide: (input) =>
             protect("generateReviewGuide", nativeGeneration.generateReviewGuide(input)),
+          generateKnowledgeCandidates: (input) =>
+            protect(
+              "generateKnowledgeCandidates",
+              nativeGeneration.generateKnowledgeCandidates(input),
+            ),
         }
       : nativeGeneration;
     const snapshotForCwd = (cwd: string) =>

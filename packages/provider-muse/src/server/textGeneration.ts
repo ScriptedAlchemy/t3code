@@ -342,11 +342,19 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
   });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
+  const generateKnowledgeCandidates: ProviderTextGeneration["generateKnowledgeCandidates"] = () =>
+    Effect.fail(
+      new TextGenerationError({
+        operation: "generateKnowledgeCandidates",
+        detail: "Muse Code cannot extract project knowledge. Choose another text generation model.",
+      }),
+    );
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateKnowledgeCandidates,
   } satisfies ProviderTextGeneration;
 });

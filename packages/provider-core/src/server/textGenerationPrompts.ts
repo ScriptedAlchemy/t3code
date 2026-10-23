@@ -463,3 +463,46 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
 
   return { prompt, outputSchema };
 }
+
+export interface KnowledgeCandidatesPromptInput {
+  runOutcome: "completed" | "failed" | "interrupted";
+  messages: ReadonlyArray<{
+    readonly ref: string;
+    readonly role: "user" | "assistant";
+    readonly text: string;
+  }>;
+}
+
+export function buildKnowledgeCandidatesPrompt(input: KnowledgeCandidatesPromptInput) {
+  const prompt = [
+    "You review one finished exchange between a user and a coding agent and extract durable project knowledge a future agent working in this repository should know.",
+    "Return a JSON object with key candidates: an array of at most 3 objects with keys kind, content, entities, citations.",
+    "Rules:",
+    "- kind is one of decision, constraint, convention",
+    "- only extract decisions the user made or accepted, constraints the project must respect, or conventions the code follows",
+    "- do not summarize the work, restate the task, or record transient status, plans, or guesses",
+    "- content is one or two plain sentences that stand alone without this conversation",
+    "- entities lists up to 5 short names of files, modules, tools, or concepts the knowledge is about",
+    "- citations lists the refs (like M1) of the messages that state or directly support it; never invent a ref",
+    "- return an empty candidates array when nothing durable was established, which is the common case",
+    ...(input.runOutcome === "completed"
+      ? []
+      : [
+          `- this run ${input.runOutcome === "failed" ? "failed" : "was interrupted"} before finishing, so extract only what the user stated, not what the agent assumed`,
+        ]),
+    "",
+    "Messages:",
+    ...input.messages.map((message) => `[${message.ref}] ${message.role}:\n${message.text}\n`),
+  ].join("\n");
+  const outputSchema = Schema.Struct({
+    candidates: Schema.Array(
+      Schema.Struct({
+        kind: Schema.Literals(["decision", "constraint", "convention"]),
+        content: Schema.String,
+        entities: Schema.Array(Schema.String),
+        citations: Schema.Array(Schema.String),
+      }),
+    ),
+  });
+  return { prompt, outputSchema };
+}

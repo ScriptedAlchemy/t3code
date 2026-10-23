@@ -1993,6 +1993,80 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
+  it.effect("runs knowledge extraction on its own lane beside title and critical work", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const commandId = CommandId.make("command:foundation-extract-effect-lane");
+      const threadId = ThreadId.make("thread:foundation-extract-effect-lane");
+      const claim = (workerId: string) =>
+        outbox
+          .claimNext({ workerId, leaseDurationMs: 30_000 })
+          .pipe(Effect.map(Option.map((effect) => effect.id)));
+      yield* outbox.enqueue([
+        {
+          id: "effect:foundation-extract-effect-lane:a-extract",
+          commandId,
+          threadId,
+          request: {
+            type: "project-knowledge.extract",
+            runId: RunId.make("run:foundation-extract-effect-lane:a"),
+            runOutcome: "completed",
+          },
+        },
+        {
+          id: "effect:foundation-extract-effect-lane:b-title",
+          commandId,
+          threadId,
+          request: { type: "thread-title.generate", kind: { type: "regenerate" } },
+        },
+        {
+          id: "effect:foundation-extract-effect-lane:c-critical",
+          commandId,
+          threadId,
+          request: { type: "terminal.cleanup" },
+        },
+        {
+          id: "effect:foundation-extract-effect-lane:d-extract",
+          commandId,
+          threadId,
+          request: {
+            type: "project-knowledge.extract",
+            runId: RunId.make("run:foundation-extract-effect-lane:d"),
+            runOutcome: "failed",
+          },
+        },
+      ]);
+      assert.deepEqual(
+        [yield* claim("w1"), yield* claim("w2"), yield* claim("w3"), yield* claim("w4")],
+        [
+          Option.some("effect:foundation-extract-effect-lane:a-extract"),
+          Option.some("effect:foundation-extract-effect-lane:b-title"),
+          Option.some("effect:foundation-extract-effect-lane:c-critical"),
+          Option.none(),
+        ],
+      );
+      yield* outbox.succeed({
+        effectId: "effect:foundation-extract-effect-lane:a-extract",
+        workerId: "w1",
+      });
+      assert.deepEqual(
+        yield* claim("w1"),
+        Option.some("effect:foundation-extract-effect-lane:d-extract"),
+      );
+      // The suite shares one database; leave nothing running for later tests.
+      for (const [suffix, workerId] of [
+        ["b-title", "w2"],
+        ["c-critical", "w3"],
+        ["d-extract", "w1"],
+      ] as const) {
+        yield* outbox.succeed({
+          effectId: `effect:foundation-extract-effect-lane:${suffix}`,
+          workerId,
+        });
+      }
+    }),
+  );
+
   it.effect("ignores deadlines blocked by a running effect on the same thread", () =>
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;

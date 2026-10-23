@@ -1,4 +1,5 @@
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
+import { assistedLearningEffects } from "../project/knowledge/assistedLearningSchedule.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   isOrchestrationV2WorkActive,
@@ -17,6 +18,7 @@ import {
   type OrchestrationV2RunAttempt,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
+  type ProjectId,
   type ProviderSessionId,
   type ProviderThreadId,
   type ProviderTurnId,
@@ -616,6 +618,7 @@ export const layer: Layer.Layer<
 
     const writeFinalRunEvents = Effect.fn("RunExecutionService.writeFinalRunEvents")(
       function* (input: {
+        readonly projectId: ProjectId;
         readonly run: OrchestrationV2Run;
         readonly rootNode: OrchestrationV2ExecutionNode;
         readonly checkpointScope: OrchestrationV2CheckpointScope;
@@ -726,9 +729,22 @@ export const layer: Layer.Layer<
         // Stopped runs capture too: their checkpoint is the rollback point for
         // the next message. The capture is enqueued with these terminal events,
         // ahead of any later run's start on this thread's effect lane.
+        const settings = yield* serverSettings.getSettings.pipe(
+          Effect.catch(() => Effect.succeed(null)),
+        );
+        const assistedLearning =
+          settings === null
+            ? []
+            : assistedLearningEffects({
+                settings,
+                projectId: input.projectId,
+                threadId: input.run.threadId,
+                runId: input.run.id,
+                status: input.terminal.status,
+              });
         const finalization = {
-          effects:
-            input.terminal.status === "completed" ||
+          effects: [
+            ...(input.terminal.status === "completed" ||
             input.terminal.status === "interrupted" ||
             input.terminal.status === "cancelled"
               ? [
@@ -743,7 +759,9 @@ export const layer: Layer.Layer<
                     },
                   },
                 ]
-              : [],
+              : []),
+            ...assistedLearning,
+          ],
           events: [
             ...cascadedSubagentEvents,
             ...(input.interruptedProviderTurn === undefined
@@ -945,6 +963,7 @@ export const layer: Layer.Layer<
                 cause,
               });
               yield* writeFinalRunEvents({
+                projectId: input.appThread.projectId,
                 run: input.run,
                 rootNode: input.rootNode,
                 checkpointScope: input.checkpointScope,
@@ -1068,6 +1087,7 @@ export const layer: Layer.Layer<
           const providerThread = yield* Ref.get(latestProviderThread);
           const openSubagents = yield* Ref.get(openRunOwnedSubagents);
           yield* writeFinalRunEvents({
+            projectId: input.appThread.projectId,
             run: input.run,
             rootNode: input.rootNode,
             checkpointScope: input.checkpointScope,
@@ -1521,6 +1541,7 @@ export const layer: Layer.Layer<
                 const openSubagents = yield* Ref.get(openRunOwnedSubagents);
                 let nextRetryWarningAt = completedAt;
                 yield* writeFinalRunEvents({
+                  projectId: input.appThread.projectId,
                   run: input.run,
                   rootNode: input.rootNode,
                   checkpointScope: input.checkpointScope,
@@ -1675,6 +1696,7 @@ export const layer: Layer.Layer<
                     Ref.get(openRunOwnedSubagents).pipe(
                       Effect.flatMap((openSubagents) =>
                         writeFinalRunEvents({
+                          projectId: input.appThread.projectId,
                           run: input.run,
                           rootNode: input.rootNode,
                           checkpointScope: input.checkpointScope,

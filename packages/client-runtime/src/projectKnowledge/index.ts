@@ -1,5 +1,6 @@
 import {
   WS_METHODS,
+  type AssistedLearningRun,
   type KnowledgeConflictHint,
   type KnowledgeOrigin,
   type KnowledgeSourceUnavailableReason,
@@ -114,11 +115,32 @@ export const KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL: Record<KnowledgeSourceUnavailab
   };
 
 export function knowledgeOriginLabel(origin: KnowledgeOrigin): string {
-  return origin.kind === "user"
-    ? "User assertion"
-    : origin.kind === "agent-thread"
-      ? `Agent observation in thread ${origin.threadId}`
-      : `Agent observation from ${origin.label}`;
+  switch (origin.kind) {
+    case "user":
+      return "User assertion";
+    case "agent-thread":
+      return `Agent observation in thread ${origin.threadId}`;
+    case "agent-client":
+      return `Agent observation from ${origin.label}`;
+    case "assisted":
+      return origin.runOutcome === "completed"
+        ? "Suggested from a finished run"
+        : `Suggested from a run that ${origin.runOutcome === "failed" ? "failed" : "was interrupted"}`;
+  }
+}
+
+/** One plain line for the project's latest assisted learning outcome. */
+export function assistedLearningRunLabel(run: AssistedLearningRun): string {
+  switch (run.result) {
+    case "ran":
+      return run.proposed === 0
+        ? `Last run: nothing proposed.${run.reason ? ` ${run.reason}` : ""}`
+        : `Last run: proposed ${run.proposed}${run.suggested > 0 ? ` (${run.suggested} as updates to existing facts)` : ""}.${run.reason ? ` ${run.reason}` : ""}`;
+    case "skipped":
+      return `Last run skipped. ${run.reason ?? ""}`.trim();
+    case "failed":
+      return `Last run failed. ${run.reason ?? ""}`.trim();
+  }
 }
 
 export function isSupersededFact(fact: ProjectFact): boolean {

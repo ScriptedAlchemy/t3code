@@ -1,5 +1,6 @@
 import * as HolographicMemory from "./project/knowledge/HolographicMemory.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
+import * as AssistedLearning from "./project/knowledge/AssistedLearning.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import * as FileHistory from "./project/knowledge/FileHistory.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -509,6 +510,11 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
       Layer.provide(ProjectionStoreV2.layer),
       Layer.provide(layerPullRequestService),
       Layer.provide(RuntimeLayer.layerProjectService),
+    ),
+  ),
+  Layer.provide(
+    AssistedLearning.layerRunner.pipe(
+      Layer.provide(Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer)),
     ),
   ),
 );

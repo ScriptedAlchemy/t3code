@@ -1,5 +1,6 @@
 import {
   ActiveProjectFact,
+  AssistedLearningRun,
   CommandId,
   KnowledgeDigest,
   KnowledgeScore,
@@ -22,6 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+const decodeAssistedRuns = Schema.decodeUnknownEffect(Schema.Array(AssistedLearningRun));
 const SearchRanking = Schema.Struct({
   matches: Schema.Array(
     Schema.Struct({ factId: ProjectFactId, revision: PositiveInt, score: KnowledgeScore }),
@@ -125,6 +127,7 @@ export const makeStore = Effect.gen(function* () {
     limit: number,
     includeSuperseded: boolean,
     onlyIds: ReadonlyArray<ProjectFactId> | null = null,
+    origin: KnowledgeOrigin["kind"] | null = null,
   ) {
     if (onlyIds !== null && onlyIds.length === 0) return [];
     return yield* sql`
@@ -134,6 +137,7 @@ export const makeStore = Effect.gen(function* () {
         AND (${afterId} IS NULL OR id > ${afterId})
         AND (${includeSuperseded ? 1 : 0} = 1 OR status = 'forgotten' OR superseded_by_id IS NULL)
         AND ${onlyIds === null ? sql`1 = 1` : sql.in("id", onlyIds)}
+        AND ${origin === null ? sql`1 = 1` : sql`json_extract(origin_json, '$.kind') = ${origin}`}
       ORDER BY id ASC LIMIT ${limit}
     `.pipe(Effect.flatMap(decodeFacts));
   });
@@ -433,7 +437,42 @@ export const makeStore = Effect.gen(function* () {
       ORDER BY created_at ASC, attempt_id ASC`;
     return yield* decodeDeliveries(rows);
   });
+  const assistedRunRecorded = Effect.fn("ProjectKnowledgeStore.assistedRunRecorded")(function* (
+    runId: RunId,
+  ) {
+    const rows = yield* sql`SELECT 1 FROM project_knowledge_assisted_runs WHERE run_id = ${runId}`;
+    return rows.length > 0;
+  });
+  // First outcome wins, so a retried job cannot rewrite what an earlier attempt finished.
+  const recordAssistedRun = Effect.fn("ProjectKnowledgeStore.recordAssistedRun")(function* (
+    projectId: ProjectId,
+    run: AssistedLearningRun,
+  ) {
+    yield* sql`INSERT INTO project_knowledge_assisted_runs (
+      run_id, project_id, thread_id, run_outcome, result, reason, proposed, suggested, completed_at
+    ) VALUES (
+      ${run.runId}, ${projectId}, ${run.threadId}, ${run.runOutcome}, ${run.result}, ${run.reason},
+      ${run.proposed}, ${run.suggested}, ${run.at}
+    ) ON CONFLICT (run_id) DO NOTHING`;
+  });
+  const assistedStatus = Effect.fn("ProjectKnowledgeStore.assistedStatus")(function* (
+    projectId: ProjectId,
+  ) {
+    const runs = yield* sql`
+      SELECT thread_id AS "threadId", run_id AS "runId", run_outcome AS "runOutcome", result,
+        reason, proposed, suggested, completed_at AS at
+      FROM project_knowledge_assisted_runs WHERE project_id = ${projectId}
+      ORDER BY completed_at DESC, run_id DESC LIMIT 1`.pipe(Effect.flatMap(decodeAssistedRuns));
+    const [counts] = yield* sql<{ readonly suggested: number }>`
+      SELECT COUNT(*) AS suggested FROM project_knowledge_facts
+      WHERE project_id = ${projectId} AND status = 'proposed' AND superseded_by_id IS NULL
+        AND json_extract(origin_json, '$.kind') = 'assisted'`;
+    return { suggested: counts?.suggested ?? 0, lastRun: runs[0] ?? null };
+  });
   return {
+    assistedRunRecorded,
+    recordAssistedRun,
+    assistedStatus,
     find,
     findMany,
     list,

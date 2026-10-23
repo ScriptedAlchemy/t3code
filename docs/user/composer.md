@@ -142,6 +142,19 @@ up in recall unless you show superseded facts. After you save, T3 points out
 existing facts that look like duplicates or possible contradictions so you can
 compare them; it never merges or replaces them on its own.
 
+To have T3 suggest facts for you, turn on **Suggest facts from finished runs** in
+Project memory, or in **Settings → General** for one project or every project.
+It is off by default because each finished run in that project costs one call to
+your text generation model. After a run finishes, fails, or is stopped, T3 reads
+that run's messages and proposes up to three decisions, constraints, or
+conventions, each citing the messages it came from. Suggestions appear under
+**suggested**, are never confirmed for you, and agents do not recall them until
+you confirm them. Suggestions from a run that failed or was stopped say so. A
+suggestion that resembles an existing fact is offered as its replacement:
+confirming it supersedes the existing fact, and forgetting it leaves that fact as
+it is. A forgotten suggestion is not proposed again for the same run. Project
+memory shows what the last run did, including why it was skipped or failed.
+
 Open a fact's details to see its history: when it was created, edited, confirmed,
 superseded, and rated helpful or unhelpful, with the trust change from each
 rating. The memory summary at the top counts facts by status and shows how many

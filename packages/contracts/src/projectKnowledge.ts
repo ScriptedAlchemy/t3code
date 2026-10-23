@@ -45,6 +45,14 @@ export const KnowledgeOrigin = Schema.Union([
     sessionId: TrimmedNonEmptyString,
     label: Schema.String,
   }),
+  // Written only by the server's assisted learning job, never accepted from a client or agent.
+  Schema.Struct({
+    kind: Schema.Literal("assisted"),
+    threadId: ThreadId,
+    runId: RunId,
+    // Candidates from a failed or interrupted run are marked so a reviewer weighs them accordingly.
+    runOutcome: Schema.Literals(["completed", "failed", "interrupted"]),
+  }),
 ]);
 export type KnowledgeOrigin = typeof KnowledgeOrigin.Type;
 export const KnowledgeSelection = Schema.Union([
@@ -151,6 +159,8 @@ export const ProjectKnowledgeListInput = Schema.Struct({
   /** Only facts whose message citations no longer resolve (archived conversations excluded).
       Without an explicit status this spans proposed and confirmed facts. */
   sourceState: Schema.optionalKey(Schema.Literal("unavailable")),
+  /** Only facts proposed by assisted learning. */
+  origin: Schema.optionalKey(Schema.Literal("assisted")),
 });
 export type ProjectKnowledgeListInput = typeof ProjectKnowledgeListInput.Type;
 export const KnowledgeSourceUnavailableReason = Schema.Literals([
@@ -236,6 +246,19 @@ export const ProjectKnowledgeFactDetail: Schema.Codec<
 > = ProjectKnowledgeFactDetailSchema;
 export const ProjectKnowledgeStatusInput = Schema.Struct({ projectId: ProjectId });
 export type ProjectKnowledgeStatusInput = typeof ProjectKnowledgeStatusInput.Type;
+export const AssistedLearningRunOutcome = Schema.Literals(["completed", "failed", "interrupted"]);
+export type AssistedLearningRunOutcome = typeof AssistedLearningRunOutcome.Type;
+export const AssistedLearningRun = Schema.Struct({
+  threadId: ThreadId,
+  runId: RunId,
+  runOutcome: AssistedLearningRunOutcome,
+  result: Schema.Literals(["ran", "skipped", "failed"]),
+  reason: Schema.NullOr(Schema.String),
+  proposed: NonNegativeInt,
+  suggested: NonNegativeInt,
+  at: IsoDateTime,
+});
+export type AssistedLearningRun = typeof AssistedLearningRun.Type;
 export const ProjectKnowledgeStatus = Schema.Struct({
   // proposed and confirmed exclude superseded facts, which are counted on their own.
   counts: Schema.Struct({
@@ -257,6 +280,14 @@ export const ProjectKnowledgeStatus = Schema.Struct({
   feedback: Schema.Struct({ helpful: NonNegativeInt, unhelpful: NonNegativeInt }),
   unavailableSources: NonNegativeInt,
   unavailableSourcesCoverage: Schema.Literals(["complete", "partial"]),
+  // Optional so older servers still decode.
+  assistedLearning: Schema.optionalKey(
+    Schema.Struct({
+      // Unreviewed assisted proposals, excluding superseded ones.
+      suggested: NonNegativeInt,
+      lastRun: Schema.NullOr(AssistedLearningRun),
+    }),
+  ),
 });
 export type ProjectKnowledgeStatus = typeof ProjectKnowledgeStatus.Type;
 export const ProjectKnowledgeReadSourceInput = Schema.Struct({
