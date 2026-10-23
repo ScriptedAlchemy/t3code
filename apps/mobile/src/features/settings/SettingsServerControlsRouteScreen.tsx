@@ -153,6 +153,17 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     selectedTargets,
     projectSelected ? (selectedProject?.members.map((member) => member.project) ?? []) : null,
   );
+  const unsupportedAssistedLearning = targets.filter(
+    (target) =>
+      target.environment.serverConfig.environment.capabilities.projectKnowledgeAssistedLearning !==
+      true,
+  );
+  const assistedLearningUnavailableReason =
+    unsupportedAssistedLearning.length === 0
+      ? null
+      : unsupportedAssistedLearning.length < targets.length
+        ? `Assisted learning is supported on only some selected environments. Update T3 Code on ${unsupportedAssistedLearning.map((target) => target.environment.label).join(", ")}, or select a supported environment.`
+        : `Assisted learning is not supported on ${unsupportedAssistedLearning.map((target) => target.environment.label).join(", ")}. Update T3 Code on ${unsupportedAssistedLearning.length === 1 ? "that environment" : "those environments"}.`;
   const [pendingWrites, setPendingWrites] = useState(0);
   const writeInFlight = useRef(false);
   // A closing view can still save its drafts while a write is pending, after
@@ -178,6 +189,8 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     displayTargets.some((entry) => entry.settings[key] !== reference.settings[key]);
   const writeSettings = useSettingsWriter();
   const write = (patch: ServerSettingsPatch) => {
+    if (patch.enableAssistedLearning !== undefined && assistedLearningUnavailableReason !== null)
+      return;
     if (writeInFlight.current) {
       const queued = queuedPatch.current;
       queuedPatch.current = {
@@ -438,9 +451,15 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     <SettingsSwitchRow
                       icon="brain"
                       label="Suggest facts from finished runs"
-                      subtitle="After each run, your text generation model proposes up to three cited facts for review. Each run costs one model call."
+                      subtitle={
+                        assistedLearningUnavailableReason ??
+                        "After each run, your text generation model proposes up to three cited facts for review. Each run costs one model call."
+                      }
                       value={uniform("enableAssistedLearning")}
-                      disabled={disabledFor("enableAssistedLearning")}
+                      disabled={
+                        disabledFor("enableAssistedLearning") ||
+                        assistedLearningUnavailableReason !== null
+                      }
                       onValueChange={(value) => write({ enableAssistedLearning: value })}
                     />
                   </SettingsSection>

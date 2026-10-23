@@ -32,6 +32,7 @@ import { Switch } from "../ui/switch";
 import type { ProjectSettingsCategory } from "./ProjectSettingsPanel";
 import { searchableSetting } from "./settingsSearch";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { scopedAssistedLearningUnavailableReason } from "./scopedSettings";
 import {
   SETTINGS_PICKER_TRIGGER_CLASSNAME,
   SettingResetButton,
@@ -98,6 +99,12 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const modelSource = useScopedSettingSource(["defaultModelSelection"]);
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
   const unavailable = connectedEnvironments.length === 0;
+  const targetEnvironmentIds = new Set(targets.map((target) => target.environmentId));
+  const assistedLearningUnavailableReason = scopedAssistedLearningUnavailableReason(
+    connectedEnvironments.filter((environment) =>
+      targetEnvironmentIds.has(environment.environmentId),
+    ),
+  );
   const effective = target
     ? resolveProjectSettings(target.settings, null, null, null).settings
     : null;
@@ -384,12 +391,13 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
             mixed={mixedAssistedLearning}
             {...searchableSetting("assisted-learning")}
             description={
-              isProjectScope
+              assistedLearningUnavailableReason ??
+              (isProjectScope
                 ? "After each run in this project, your text generation model proposes up to three cited facts for review in Project memory. Each run costs one model call."
-                : "After each run, your text generation model proposes up to three cited facts for review in Project memory. Each run costs one model call. Projects can override it."
+                : "After each run, your text generation model proposes up to three cited facts for review in Project memory. Each run costs one model call. Projects can override it.")
             }
             resetAction={
-              settings.enableAssistedLearning ? (
+              assistedLearningUnavailableReason === null && settings.enableAssistedLearning ? (
                 <SettingResetButton
                   label="assisted learning"
                   tooltip="Reset assisted learning to off"
@@ -400,6 +408,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
             control={
               <Switch
                 aria-label="Suggest facts from finished runs"
+                disabled={assistedLearningUnavailableReason !== null}
                 mixed={mixedAssistedLearning}
                 checked={mixedAssistedLearning ? false : settings.enableAssistedLearning}
                 onCheckedChange={(enabled) => updateSettings({ enableAssistedLearning: enabled })}
