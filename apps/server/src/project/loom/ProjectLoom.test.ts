@@ -484,6 +484,7 @@ describe("ProjectLoom.readWindow", () => {
         runs: true,
         markers: false,
         edges: false,
+        activity: false,
         bytes: false,
       });
       // The newest runs are kept.

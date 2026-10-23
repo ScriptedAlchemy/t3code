@@ -110,12 +110,14 @@ const fullWindow: LoomWindow = {
     },
   ],
   edges: [],
+  activity: [],
   truncated: {
     lanes: false,
     ancestors: false,
     runs: true,
     markers: false,
     edges: false,
+    activity: false,
     bytes: false,
   },
   coverage: {

@@ -6,6 +6,7 @@ import {
   type LoomLaneRelationship,
   type LoomMarker,
   type LoomRun,
+  type LoomRunActivity,
   type LoomWindow,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -133,23 +134,28 @@ export function buildLoomRows(
 export interface LoomLaneActivity {
   readonly runs: ReadonlyArray<LoomRun>;
   readonly markers: ReadonlyArray<LoomMarker>;
+  readonly activity: ReadonlyArray<LoomRunActivity>;
 }
 
-/** Groups a window's runs and markers by lane so each row reads only its own. */
+/** Groups a window's runs, markers and activity by lane so each row reads only its own. */
 export function groupLoomActivity(
-  window: Pick<LoomWindow, "runs" | "markers">,
+  window: Pick<LoomWindow, "runs" | "markers" | "activity">,
 ): ReadonlyMap<string, LoomLaneActivity> {
-  const byThread = new Map<string, { runs: Array<LoomRun>; markers: Array<LoomMarker> }>();
+  const byThread = new Map<
+    string,
+    { runs: Array<LoomRun>; markers: Array<LoomMarker>; activity: Array<LoomRunActivity> }
+  >();
   const entry = (threadId: string) => {
     let value = byThread.get(threadId);
     if (value === undefined) {
-      value = { runs: [], markers: [] };
+      value = { runs: [], markers: [], activity: [] };
       byThread.set(threadId, value);
     }
     return value;
   };
   for (const run of window.runs) entry(run.threadId).runs.push(run);
   for (const marker of window.markers) entry(marker.threadId).markers.push(marker);
+  for (const activity of window.activity) entry(activity.threadId).activity.push(activity);
   return byThread;
 }
 
@@ -194,6 +200,7 @@ export function loomTruncationNotes(window: Pick<LoomWindow, "truncated">): Read
     truncated.runs ? "older runs" : null,
     truncated.markers ? "older markers" : null,
     truncated.edges ? "older transfers" : null,
+    truncated.activity ? "older tool activity" : null,
     truncated.bytes ? "older activity over the size limit" : null,
   ].filter((note): note is string => note !== null);
 }

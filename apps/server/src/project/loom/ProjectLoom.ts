@@ -663,12 +663,14 @@ const make = Effect.gen(function* () {
         runs: runEntries,
         markers,
         edges,
+        activity: [],
         truncated: {
           lanes: nextCursor !== null,
           ancestors: rows.ancestors.truncated,
           runs: rows.runRows.length > LOOM_LIMITS.runs,
           markers: allMarkers.length > LOOM_LIMITS.markers || markerCandidatesTruncated,
           edges: rows.edges.length > LOOM_LIMITS.edges,
+          activity: false,
           bytes: bytesTruncated,
         },
         coverage: {
