@@ -17,6 +17,7 @@ import {
   type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
   type ProjectKnowledgeDeliveryStatus,
+  type RunAttemptId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -212,23 +213,20 @@ export const layer: Layer.Layer<
         compact?: boolean,
       ) => ReturnType<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>,
     ) => {
-      let deliver: typeof startWithHandoffs | undefined = startWithHandoffs;
+      let deliveredAttemptId: RunAttemptId | undefined;
       const start = (
         input: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0],
         compact = false,
       ) =>
         Effect.suspend(() => {
-          if (deliver !== undefined) return deliver(input, compact);
+          if (deliveredAttemptId === undefined || deliveredAttemptId === input.attemptId) {
+            deliveredAttemptId = input.attemptId;
+            return startWithHandoffs(input, compact);
+          }
           return compact && session.compactThread !== undefined
             ? session.compactThread(input)
             : session.startTurn(input);
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              deliver = undefined;
-            }),
-          ),
-        );
+        });
       return {
         ...session,
         startTurn: (input: Parameters<typeof session.startTurn>[0]) => start(input),
@@ -1277,6 +1275,41 @@ export const layer: Layer.Layer<
       }
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
+          // The wrapper can be retried without rebuilding turn-start context. Read the
+          // committed receipt here, before any native history or prompt injection.
+          const latestReceipts =
+            composer.items.length === 0 && composer.omissions.length === 0
+              ? []
+              : (yield* knowledge.readDeliveries({
+                  projectId: projection.thread.projectId,
+                  threadId: projection.thread.id,
+                  messageId: message.id,
+                })).deliveries;
+          const sameConversation = latestReceipts.filter(
+            (receipt) =>
+              receipt.providerThreadId === runningProviderThread.id &&
+              receipt.nativeThreadId != null &&
+              receipt.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId,
+          );
+          if (
+            sameConversation.some(
+              (receipt) => receipt.attemptId === attempt.id && receipt.status === "sent",
+            )
+          )
+            return;
+          if (
+            sameConversation.some(
+              (receipt) => receipt.status === "prepared" || receipt.status === "uncertain",
+            )
+          ) {
+            return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
+              driver: session.driver,
+              threadId: projection.thread.id,
+              providerThreadId: runningProviderThread.id,
+              runId: run.id,
+              cause: "Uncertain native history injection",
+            });
+          }
           const retryHandoff =
             missedItems.length === 0
               ? []
