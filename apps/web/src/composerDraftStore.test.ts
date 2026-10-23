@@ -99,6 +99,7 @@ import {
 import { formatTerminalContextReference, type TerminalContextDraft } from "./lib/terminalContext";
 import { createDeferredStorage } from "./lib/storage";
 import { applyPreviewServerSnapshot, resetPreviewStateForTests } from "./previewStateStore";
+import { toastManager } from "./components/ui/toast";
 
 function makeImage(input: {
   id: string;
@@ -1143,6 +1144,60 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(file?.uploadedAttachmentId).toBeUndefined();
     expect(file?.uploadEnvironmentId).toBeUndefined();
     expect(file && composerFileNeedsReattach(file)).toBe(true);
+  });
+
+  it.each([
+    { method: "mapping", scope: "environment" },
+    { method: "mapping", scope: "project" },
+    { method: "context", scope: "environment" },
+    { method: "context", scope: "project" },
+  ] as const)(
+    "removes knowledge references with a notice on $method $scope retargeting",
+    ({ method, scope }) => {
+      const store = useComposerDraftStore.getState();
+      store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+      store.setPrompt(draftId, "Keep this prompt.");
+      store.setKnowledgeContext(
+        draftId,
+        projectKnowledgeContextRecord({
+          ...projectRef,
+          selections: [{ kind: "fact", factId: ProjectFactId.make("fact"), revision: 1 }],
+          maxBytes: 48000,
+        }),
+      );
+      using notice = vi.spyOn(toastManager, "add").mockReturnValue("notice");
+      const nextProject =
+        scope === "environment"
+          ? remoteProjectRef
+          : {
+              ...projectRef,
+              projectId: ProjectId.make("another-project"),
+            };
+      if (method === "mapping") store.setProjectDraftThreadId(nextProject, draftId, { threadId });
+      else store.setDraftThreadContext(draftId, { projectRef: nextProject });
+      expect(store.getComposerDraft(draftId)?.knowledgeContexts ?? []).toEqual([]);
+      expect(store.getComposerDraft(draftId)?.prompt).toBe("Keep this prompt.");
+      expect(notice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Project memory removed",
+          description: expect.stringMatching(/another machine or project/),
+        }),
+      );
+    },
+  );
+
+  it("keeps knowledge references when only the draft workspace changes", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    const record = projectKnowledgeContextRecord({
+      ...projectRef,
+      selections: [{ kind: "fact", factId: ProjectFactId.make("fact"), revision: 1 }],
+      maxBytes: 48000,
+    });
+    store.setKnowledgeContext(draftId, record);
+    store.setDraftThreadContext(draftId, { branch: "feature" });
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    expect(store.getComposerDraft(draftId)?.knowledgeContexts).toEqual([record]);
   });
 
   it("rechecks balancing when an empty draft is remapped to another project member", () => {

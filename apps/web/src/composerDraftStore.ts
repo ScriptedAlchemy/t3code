@@ -91,6 +91,7 @@ import {
   toKindScopedComposerContextId,
 } from "@t3tools/shared/composerContextReferences";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
+import { toastManager } from "./components/ui/toast";
 
 const isElementContextDetails = Schema.is(ElementContextDetails);
 import { ReviewCommentContextSchema, type ReviewCommentContext } from "./reviewCommentContext";
@@ -192,6 +193,27 @@ function clearStaleFileUploadMetadata(
   });
 
   return changed ? { ...draft, files } : draft;
+}
+
+function clearDraftKnowledgeReferences(draft: ComposerThreadDraftState): ComposerThreadDraftState {
+  if (!draft.knowledgeContexts?.length) return draft;
+  return {
+    ...draft,
+    prompt: draft.knowledgeContexts.reduce(
+      (prompt, record) => removeInlineContextReference(prompt, record.contextId).prompt,
+      draft.prompt,
+    ),
+    knowledgeContexts: [],
+  };
+}
+
+function notifyDraftKnowledgeRemoved() {
+  toastManager.add({
+    type: "info",
+    title: "Project memory removed",
+    description:
+      "This draft moved to another machine or project. Attach memory from the current project before sending.",
+  });
 }
 
 export const PersistedComposerFileAttachment = Schema.Struct({
@@ -2545,6 +2567,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           if (normalizedLogicalProjectKey.length === 0 || draftId.length === 0) {
             return;
           }
+          let removedKnowledge = false;
           set((state) => {
             const existingThread = state.draftThreadsByThreadKey[draftId];
             const previousThreadKeyForLogicalProject =
@@ -2587,11 +2610,14 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             let nextDraftsByThreadKey = state.draftsByThreadKey;
             if (
               existingThread &&
-              existingThread.environmentId !== projectRef.environmentId &&
+              (existingThread.environmentId !== projectRef.environmentId ||
+                existingThread.projectId !== projectRef.projectId) &&
               existingDraft !== undefined
             ) {
+              const withoutKnowledge = clearDraftKnowledgeReferences(existingDraft);
+              removedKnowledge = withoutKnowledge !== existingDraft;
               const nextDraft = clearStaleFileUploadMetadata(
-                existingDraft,
+                withoutKnowledge,
                 projectRef.environmentId,
               );
               if (nextDraft !== existingDraft) {
@@ -2635,6 +2661,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 nextLogicalProjectDraftThreadKeyByLogicalProjectKey,
             };
           });
+          if (removedKnowledge) notifyDraftKnowledgeRemoved();
         },
         setProjectDraftThreadId: (projectRef, draftId, options) => {
           get().setLogicalProjectDraftThreadId(
@@ -2649,6 +2676,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           if (threadKey.length === 0) {
             return;
           }
+          let removedKnowledge = false;
           set((state) => {
             const existing = state.draftThreadsByThreadKey[threadKey];
             if (!existing) {
@@ -2730,13 +2758,26 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             if (isUnchanged) {
               return state;
             }
+            const draft = state.draftsByThreadKey[threadKey];
+            const nextDraft =
+              projectChanged && draft ? clearDraftKnowledgeReferences(draft) : draft;
+            removedKnowledge = nextDraft !== draft;
             return {
+              ...(removedKnowledge
+                ? {
+                    draftsByThreadKey: {
+                      ...state.draftsByThreadKey,
+                      [threadKey]: nextDraft!,
+                    },
+                  }
+                : {}),
               draftThreadsByThreadKey: {
                 ...state.draftThreadsByThreadKey,
                 [threadKey]: nextDraftThread,
               },
             };
           });
+          if (removedKnowledge) notifyDraftKnowledgeRemoved();
         },
         clearProjectDraftThreadId: (projectRef) => {
           set((state) => {

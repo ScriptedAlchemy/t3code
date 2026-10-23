@@ -89,6 +89,7 @@ import {
   loadBalancingSendWarning,
   multipleModelSendBlock,
   referencedThreadContexts,
+  knowledgeContextSendBlock,
 } from "./composerSend.logic";
 import { usePlanFollowUpSend } from "./useProposedPlanSend";
 import { useMultipleModelSend } from "./useMultipleModelSend";
@@ -545,6 +546,21 @@ export function useComposerSend(input: ComposerSendInput) {
           type: "warning",
           title: "Attached thread is on another machine",
           description: `This machine's agent can't read "${strandedThread.title}". Remove it, or switch back to ${owner} to send.`,
+        }),
+      );
+      return;
+    }
+    const knowledgeBlock = knowledgeContextSendBlock({
+      environmentId,
+      projectId: activeThread.projectId,
+      knowledgeContexts: sendCtx.knowledgeContexts ?? [],
+    });
+    if (knowledgeBlock) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Project memory cannot be sent",
+          description: knowledgeBlock,
         }),
       );
       return;
