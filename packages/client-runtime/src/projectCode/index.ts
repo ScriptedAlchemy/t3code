@@ -68,6 +68,11 @@ export type ProjectCodeIndexBadge = {
   readonly detail: string;
 };
 
+const REFRESH_DETAIL = {
+  building: "A newer index is being built.",
+  failed: "The last refresh failed, so this index is still answering.",
+} as const;
+
 /**
  * The plain-text badge every client shows for an index. Stale names the commit the index was
  * built at when HEAD has moved since, otherwise how many files changed under it.
@@ -75,6 +80,19 @@ export type ProjectCodeIndexBadge = {
 export function projectCodeIndexBadge(
   index: ProjectCodeIndexInfo | undefined,
 ): ProjectCodeIndexBadge {
+  const badge = describeIndexState(index);
+  if (index?.refresh === undefined) return badge;
+  if (index.state === "unindexed" && index.refresh === "building") {
+    return {
+      label: "Indexing",
+      tone: "muted",
+      detail: "Building the first index for this checkout.",
+    };
+  }
+  return { ...badge, detail: `${badge.detail} ${REFRESH_DETAIL[index.refresh]}` };
+}
+
+function describeIndexState(index: ProjectCodeIndexInfo | undefined): ProjectCodeIndexBadge {
   if (index === undefined) {
     return {
       label: "Unavailable",
@@ -106,7 +124,7 @@ export function projectCodeIndexBadge(
       return {
         label: moved ? `Stale @${indexedAt}` : "Stale",
         tone: "warn",
-        detail: `${files} The next code query re-indexes them.`,
+        detail: `${files} The next code query or turn refreshes the index.`,
       };
     }
     case "indexing":

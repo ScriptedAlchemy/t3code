@@ -29,6 +29,8 @@ import {
 } from "./projectKnowledge.ts";
 import {
   ProjectCodeError,
+  ProjectCodeIndexEvent,
+  ProjectCodeIndexTarget,
   ProjectCodeQueryInput,
   ProjectCodeQueryResult,
   ProjectFileHistoryError,
@@ -424,6 +426,7 @@ import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 export const WS_METHODS = {
   projectCodeQuery: "projectCode.query",
   projectCodeFileHistory: "projectCode.fileHistory",
+  projectCodeSubscribeIndex: "projectCode.subscribeIndex",
   projectKnowledgeSearch: "projectKnowledge.search",
   projectKnowledgeList: "projectKnowledge.list",
   projectKnowledgeMutate: "projectKnowledge.mutate",
@@ -1965,6 +1968,13 @@ const WsProjectCodeQueryRpc = Rpc.make(WS_METHODS.projectCodeQuery, {
   success: ProjectCodeQueryResult,
   error: Schema.Union([ProjectCodeError, EnvironmentAuthorizationError]),
 });
+// Publications and failed builds of the target's checkout index, for clients to refetch on.
+const WsProjectCodeSubscribeIndexRpc = Rpc.make(WS_METHODS.projectCodeSubscribeIndex, {
+  payload: ProjectCodeIndexTarget,
+  success: ProjectCodeIndexEvent,
+  error: Schema.Union([ProjectCodeError, EnvironmentAuthorizationError]),
+  stream: true,
+});
 const WsProjectCodeFileHistoryRpc = Rpc.make(WS_METHODS.projectCodeFileHistory, {
   payload: ProjectFileHistoryInput,
   success: ProjectFileHistoryResult,
@@ -2047,6 +2057,7 @@ export const WsConversationSummariesRpcGroup = RpcGroup.make(
 export const WsProjectCodeRpcGroup = RpcGroup.make(
   WsProjectCodeQueryRpc,
   WsProjectCodeFileHistoryRpc,
+  WsProjectCodeSubscribeIndexRpc,
 ).middleware(RpcScopeAuthorization);
 
 export const WsRpcGroup = RpcGroup.make(

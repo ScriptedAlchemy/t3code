@@ -109,6 +109,20 @@ export const ProjectCodeQueryInput = Schema.Struct({
 });
 export type ProjectCodeQueryInput = typeof ProjectCodeQueryInput.Type;
 
+export const ProjectCodeIndexTarget = Schema.Struct({
+  projectId: ProjectId,
+  threadId: Schema.optional(ThreadId),
+});
+export type ProjectCodeIndexTarget = typeof ProjectCodeIndexTarget.Type;
+
+/** A checkout's index changed: a generation was published, or a build of one failed. */
+export const ProjectCodeIndexEvent = Schema.Struct({
+  outcome: Schema.Literals(["published", "failed"]),
+  // The generation that now answers queries; null while the checkout has none.
+  generation: Schema.NullOr(NonNegativeInt),
+});
+export type ProjectCodeIndexEvent = typeof ProjectCodeIndexEvent.Type;
+
 export const ProjectCodeError = Schema.Union([
   Schema.TaggedStruct("project-not-found", { projectId: ProjectId }),
   Schema.TaggedStruct("thread-project-mismatch", { projectId: ProjectId, threadId: ThreadId }),
@@ -226,11 +240,14 @@ export const ProjectCodeIndexInfo = Schema.Struct({
   state: Schema.Literals(["ready", "partial", "stale", "unindexed", "indexing"]),
   indexedCommit: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64))),
   headCommit: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64))),
-  // Increments each time a sync changes the index.
+  // Increments each time a build publishes a changed index.
   generation: NonNegativeInt,
   indexedAt: Schema.NullOr(Schema.Number),
   changedFiles: NonNegativeInt,
   changedPaths: Schema.Array(BoundedPath).check(Schema.isMaxLength(20)),
+  // The successor of the generation that answered: being built, or its last build failed.
+  // Absent when neither; older servers always omit it.
+  refresh: Schema.optionalKey(Schema.Literals(["building", "failed"])),
 });
 export type ProjectCodeIndexInfo = typeof ProjectCodeIndexInfo.Type;
 

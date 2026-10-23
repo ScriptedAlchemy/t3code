@@ -10,7 +10,13 @@ import * as NodeWorkerThreads from "node:worker_threads";
 
 import * as NodeCryptoEffect from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
-import { EnvironmentId, OrchestrationV2AppThread, ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  OrchestrationV2AppThread,
+  ProjectId,
+  ThreadId,
+  type ProjectCodeIndexEvent,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -18,6 +24,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -806,6 +813,7 @@ function checkoutService(root: string, listed: () => ReadonlyArray<string>) {
     return {
       run: (query: Query) => intelligence.query({ projectId, query }),
       refresh: () => intelligence.refresh({ projectId }),
+      subscribe: () => intelligence.subscribeIndex({ projectId }),
     };
   });
 }
@@ -1120,6 +1128,18 @@ function indexLockHolder(root: string, generation: number) {
   );
 }
 
+/** Edits every generated source, so the next build reparses all of them. */
+async function rewriteGeneratedSources(root: string, files: ReadonlyArray<string>) {
+  await Promise.all(
+    files.map((file, index) =>
+      NodeFSP.writeFile(
+        NodePath.join(root, file),
+        `def generated_${index}():\n    return ${index + 1}\n`,
+      ),
+    ),
+  );
+}
+
 function isProcessAlive(pid: number) {
   try {
     process.kill(pid, 0);
@@ -1257,6 +1277,80 @@ it.effect("removes the index an older version kept in the control directory", ()
         ".gitignore",
         "published",
       ]);
+    }),
+  ),
+);
+
+it.effect("answers from the published generation while its successor builds", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 400));
+      const { run, refresh } = yield* checkoutService(fixture.root, () => [
+        "src/defs.ts",
+        ...files,
+      ]);
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      yield* Effect.promise(() => rewriteGeneratedSources(fixture.root, files));
+      const holder = yield* indexLockHolder(fixture.root, 2).pipe(Effect.forkScoped);
+      const building = yield* refresh().pipe(Effect.forkScoped);
+      const pid = yield* Fiber.join(holder);
+      // The successor's build process is frozen mid-sync while these answer.
+      process.kill(pid, "SIGSTOP");
+      const [answer, freshness] = yield* Effect.all([
+        run({ operation: "symbols", name: "greet" }),
+        run({ operation: "freshness" }),
+      ]).pipe(Effect.ensuring(Effect.sync(() => process.kill(pid, "SIGCONT"))));
+      assert.ok(answer.nodes.some((node) => node.name === "greet"));
+      assert.deepInclude(answer.index, { state: "stale", generation: 1, refresh: "building" });
+      assert.deepInclude(freshness.index, { state: "stale", generation: 1, refresh: "building" });
+      assert.equal(freshness.index?.changedFiles, files.length);
+
+      assert.deepEqual(yield* Fiber.join(building), { _tag: "Published", generation: 2 });
+      // Settles the build the symbols query requested.
+      assert.deepEqual(yield* refresh(), { _tag: "Unchanged" });
+      const settled = yield* run({ operation: "freshness" });
+      assert.deepInclude(settled.index, { state: "ready", generation: 2 });
+      assert.notProperty(settled.index, "refresh");
+    }),
+  ),
+);
+
+it.effect("keeps the previous generation serving when a build fails, and says so", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 400));
+      const { run, refresh, subscribe } = yield* checkoutService(fixture.root, () => [
+        "src/defs.ts",
+        ...files,
+      ]);
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      const pull = yield* Stream.toPull(yield* subscribe());
+      yield* Effect.promise(() => rewriteGeneratedSources(fixture.root, files));
+      const holder = yield* indexLockHolder(fixture.root, 2).pipe(Effect.forkScoped);
+      const building = yield* refresh().pipe(Effect.forkScoped);
+      process.kill(yield* Fiber.join(holder), "SIGABRT");
+      assert.deepEqual(yield* Fiber.join(building), { _tag: "Failed", reason: "worker-failed" });
+
+      const freshness = yield* run({ operation: "freshness" });
+      assert.deepInclude(freshness.index, { state: "stale", generation: 1, refresh: "failed" });
+      assert.ok(
+        freshness.coverage.limitations.some((limitation) => limitation.includes("refresh failed")),
+      );
+      const answer = yield* run({ operation: "symbols", name: "greet" });
+      assert.ok(answer.nodes.some((node) => node.name === "greet"));
+      assert.deepInclude(answer.index, { generation: 1 });
+
+      // Settles the build the symbols query requested, which succeeds.
+      yield* refresh();
+      const received: Array<ProjectCodeIndexEvent> = [];
+      while (received.length < 2) received.push(...(yield* pull));
+      assert.deepEqual(received, [
+        { outcome: "failed", generation: 1 },
+        { outcome: "published", generation: 2 },
+      ]);
+      const recovered = yield* run({ operation: "freshness" });
+      assert.deepInclude(recovered.index, { state: "ready", generation: 2 });
+      assert.notProperty(recovered.index, "refresh");
     }),
   ),
 );

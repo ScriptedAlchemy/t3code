@@ -6,6 +6,8 @@ import * as NodeURL from "node:url";
 
 import {
   ProjectCodeQueryResult,
+  type ProjectCodeIndexEvent,
+  type ProjectCodeIndexTarget,
   type ProjectCodeQuery as ProjectCodeQueryType,
   type ProjectCodeQueryInput as ProjectCodeQueryInputType,
   type ProjectCodeQueryResult as ProjectCodeQueryResultType,
@@ -16,7 +18,10 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
@@ -90,8 +95,6 @@ class CodeIntelligenceWorkerError extends Schema.TaggedError<CodeIntelligenceWor
   },
 ) {}
 
-type CodeIndexTarget = Pick<ProjectCodeQueryInputType, "projectId" | "threadId">;
-
 type CheckoutLookupError =
   | CodeIntelligenceProjectNotFound
   | CodeIntelligenceThreadMismatch
@@ -121,8 +124,12 @@ export class CodeIntelligence extends Context.Service<
     >;
     /** Builds a successor generation, coalesced per checkout, and waits for the outcome. */
     readonly refresh: (
-      input: CodeIndexTarget,
+      input: ProjectCodeIndexTarget,
     ) => Effect.Effect<CodeIndexRefreshOutcome, CheckoutLookupError>;
+    /** Publications and failed builds of the target's checkout from the moment this returns. */
+    readonly subscribeIndex: (
+      input: ProjectCodeIndexTarget,
+    ) => Effect.Effect<Stream.Stream<ProjectCodeIndexEvent>, CheckoutLookupError, Scope.Scope>;
   }
 >()("t3/project/knowledge/CodeIntelligence") {}
 
@@ -337,7 +344,14 @@ interface CheckoutBuilds {
   running: Deferred.Deferred<CodeIndexRefreshOutcome> | null;
   // Covers requests made while `running` was in flight, which it may have read past.
   queued: Deferred.Deferred<CodeIndexRefreshOutcome> | null;
+  // Whether the most recent build failed, leaving an older generation answering.
+  lastFailed: boolean;
 }
+
+const REFRESH_LIMITATIONS = {
+  building: "A newer index generation is being built; these results come from the current one.",
+  failed: "The last index refresh failed; these results come from the generation before it.",
+} as const;
 
 const removeGeneration = (checkoutPath: string, generation: number) =>
   Effect.promise(() =>
@@ -359,9 +373,13 @@ const make = Effect.gen(function* () {
   };
   const serviceScope = yield* Effect.scope;
   const builds = new Map<string, CheckoutBuilds>();
+  const indexChanges = yield* PubSub.unbounded<{
+    readonly checkoutPath: string;
+    readonly event: ProjectCodeIndexEvent;
+  }>();
 
   const resolveCheckout = Effect.fn("CodeIntelligence.resolveCheckout")(function* (
-    input: CodeIndexTarget,
+    input: ProjectCodeIndexTarget,
   ) {
     const projectOption = yield* projects.get(input.projectId);
     if (Option.isNone(projectOption) || projectOption.value.deletedAt !== null) {
@@ -468,6 +486,24 @@ const make = Effect.gen(function* () {
       let current = state.running;
       while (current !== null) {
         const outcome = yield* buildOnce(checkoutPath);
+        if (outcome._tag !== "Unchanged") {
+          state.lastFailed = outcome._tag === "Failed";
+          const generation =
+            outcome._tag === "Published"
+              ? outcome.generation
+              : yield* Effect.sync(() => {
+                  try {
+                    return readPublishedGeneration(checkoutPath);
+                  } catch {
+                    return null;
+                  }
+                });
+          const event: ProjectCodeIndexEvent = {
+            outcome: outcome._tag === "Published" ? "published" : "failed",
+            generation,
+          };
+          yield* PubSub.publish(indexChanges, { checkoutPath, event });
+        } else state.lastFailed = false;
         yield* Deferred.succeed(current, outcome);
         // Promoting and reading the next build in one step keeps a concurrent request from
         // starting a second loop for the same checkout.
@@ -495,7 +531,11 @@ const make = Effect.gen(function* () {
   /** The build that will cover a request made now; starts one when the checkout is idle. */
   const requestBuild = (checkoutPath: string) =>
     Effect.suspend(() => {
-      const state = builds.get(checkoutPath) ?? { running: null, queued: null };
+      const state = builds.get(checkoutPath) ?? {
+        running: null,
+        queued: null,
+        lastFailed: false,
+      };
       builds.set(checkoutPath, state);
       if (state.queued !== null) return Effect.succeed(state.queued);
       const next = Deferred.makeUnsafe<CodeIndexRefreshOutcome>();
@@ -577,11 +617,36 @@ const make = Effect.gen(function* () {
         },
       }).pipe(Effect.mapError((cause) => toQueryError(cause.reason)));
       if (!("result" in reply)) return yield* toQueryError("invalid-result");
-      return reply.result;
+      const state = builds.get(checkoutPath);
+      const refreshing =
+        state?.running != null ? "building" : state?.lastFailed ? "failed" : undefined;
+      if (refreshing === undefined || reply.result.index === undefined) return reply.result;
+      return {
+        ...reply.result,
+        coverage: {
+          ...reply.result.coverage,
+          limitations: [
+            ...reply.result.coverage.limitations,
+            REFRESH_LIMITATIONS[refreshing],
+          ].slice(-16),
+        },
+        index: { ...reply.result.index, refresh: refreshing },
+      };
     },
   );
 
-  return CodeIntelligence.of({ query, refresh });
+  const subscribeIndex: CodeIntelligence["Service"]["subscribeIndex"] = Effect.fn(
+    "CodeIntelligence.subscribeIndex",
+  )(function* (input) {
+    const checkoutPath = yield* resolveCheckout(input);
+    const subscription = yield* PubSub.subscribe(indexChanges);
+    return Stream.fromSubscription(subscription).pipe(
+      Stream.filter((change) => change.checkoutPath === checkoutPath),
+      Stream.map((change) => change.event),
+    );
+  });
+
+  return CodeIntelligence.of({ query, refresh, subscribeIndex });
 });
 
 export const layer = Layer.effect(CodeIntelligence, make);
