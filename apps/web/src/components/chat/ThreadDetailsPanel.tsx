@@ -24,6 +24,7 @@ import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 import { ThreadCodeIndexRow } from "./ThreadCodeIndexRow";
+import { ThreadConversationSummariesRow } from "./ThreadConversationSummariesRow";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -159,6 +160,14 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
 
               {density === "full" && props.isServerThread && !props.draftId ? (
                 <ThreadCodeIndexRow
+                  environmentId={props.environmentId}
+                  projectId={props.projectId}
+                  threadId={props.threadId}
+                />
+              ) : null}
+
+              {density === "full" && props.isServerThread && !props.draftId ? (
+                <ThreadConversationSummariesRow
                   environmentId={props.environmentId}
                   projectId={props.projectId}
                   threadId={props.threadId}

@@ -59,7 +59,12 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "branchNamePrefix",
     "branchNameInstructions",
   ],
-  "agent-behavior": ["responseStreamingMode", "enableAgentBrowserAccess", "enableAssistedLearning"],
+  "agent-behavior": [
+    "responseStreamingMode",
+    "enableAgentBrowserAccess",
+    "enableAssistedLearning",
+    "enableConversationSummaries",
+  ],
   maintenance: ["continueThreadsAfterServerUpdate"],
 };
 
@@ -437,6 +442,16 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       value={uniform("enableAssistedLearning")}
                       disabled={disabledFor("enableAssistedLearning")}
                       onValueChange={(value) => write({ enableAssistedLearning: value })}
+                    />
+                  </SettingsSection>
+                  <SettingsSection title="Conversation summaries">
+                    <SettingsSwitchRow
+                      icon="doc.text"
+                      label="Summarize older messages"
+                      subtitle="After turns complete, your text generation model summarizes older messages so provider switches and forks keep their gist. Each summary costs one model call."
+                      value={uniform("enableConversationSummaries")}
+                      disabled={disabledFor("enableConversationSummaries")}
+                      onValueChange={(value) => write({ enableConversationSummaries: value })}
                     />
                   </SettingsSection>
                 </>

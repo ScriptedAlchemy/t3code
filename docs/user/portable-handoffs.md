@@ -17,8 +17,28 @@ sent, even if the fact has since been edited or forgotten. It counts toward the 
 
 The handoff includes references to omitted history. The agent can use T3 Code's thread-reading tool
 to retrieve saved messages and activity, including the remainder of a long item. For an important
-constraint, you can still repeat it in your next message. A handoff is a budgeted selection, not an
-agent-written summary.
+constraint, you can still repeat it in your next message. Unless the project has conversation
+summaries turned on, a handoff is a budgeted selection, not a summary.
+
+## Conversation summaries
+
+With conversation summaries on, older history that would not fit in a handoff can arrive as short
+summaries instead of being left out. The newest messages still arrive word for word. Each summary is
+labelled as model-written and names the messages it was written from, so the agent can open the
+exact originals.
+
+Turn on **Summarize older messages** in **Settings → General**, for one project or every project,
+or from **Conversation summaries** in a thread's details. It is off by default because each summary
+costs one call to your text generation model. After a turn completes, T3 Code summarizes settled
+stretches of up to 24 older messages, a few per turn, so a long thread catches up over several turns.
+The most recent messages are never summarized.
+
+**Conversation summaries** in a thread's details lists the thread's summaries and lets you open the
+messages behind each one. It also shows what the last pass did, including why it wrote nothing or
+failed and how many older messages are still waiting. If a summarized message is edited or removed,
+or the thread is deleted or archived, that summary is marked outdated, its text is hidden, and agents
+no longer receive it; the changed stretch is summarized again from the current messages. Summaries
+do not replace a provider's own compaction.
 
 ## Context limits
 

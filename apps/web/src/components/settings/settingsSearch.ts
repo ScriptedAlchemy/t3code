@@ -490,6 +490,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["assisted learning project memory knowledge facts extract suggestions model"],
   },
   {
+    id: "conversation-summaries",
+    title: "Summarize older messages",
+    to: "/settings/general",
+    scope: "project-defaults",
+    searchTerms: ["conversation summaries history context handoff fork provider switch model"],
+  },
+  {
     id: "start-from-origin",
     title: "Start from remote",
     to: "/settings/general",

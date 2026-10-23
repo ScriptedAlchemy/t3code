@@ -92,6 +92,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedSubmodules = useScopedSettingsMixed(["worktreeSubmodules"]);
   const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
   const mixedAssistedLearning = useScopedSettingsMixed(["enableAssistedLearning"]);
+  const mixedConversationSummaries = useScopedSettingsMixed(["enableConversationSummaries"]);
   const mixedAgentCredits = useScopedSettingsMixed(["removeAgentCreditsOnMerge"]);
   const mixedMergeMethod = useScopedSettingsMixed(["pullRequestMergeMethod"]);
   const modelSource = useScopedSettingSource(["defaultModelSelection"]);
@@ -402,6 +403,36 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 mixed={mixedAssistedLearning}
                 checked={mixedAssistedLearning ? false : settings.enableAssistedLearning}
                 onCheckedChange={(enabled) => updateSettings({ enableAssistedLearning: enabled })}
+              />
+            }
+          />
+          <SettingsRow
+            serverScoped
+            settingKeys={["enableConversationSummaries"]}
+            mixed={mixedConversationSummaries}
+            {...searchableSetting("conversation-summaries")}
+            description={
+              isProjectScope
+                ? "After turns complete in this project, your text generation model summarizes older messages so provider switches and forks keep the gist of history that no longer fits. Each summary costs one model call."
+                : "After turns complete, your text generation model summarizes older messages so provider switches and forks keep the gist of history that no longer fits. Each summary costs one model call. Projects can override it."
+            }
+            resetAction={
+              settings.enableConversationSummaries ? (
+                <SettingResetButton
+                  label="conversation summaries"
+                  tooltip="Reset conversation summaries to off"
+                  onClick={() => updateSettings({ enableConversationSummaries: false })}
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                aria-label="Summarize older messages"
+                mixed={mixedConversationSummaries}
+                checked={mixedConversationSummaries ? false : settings.enableConversationSummaries}
+                onCheckedChange={(enabled) =>
+                  updateSettings({ enableConversationSummaries: enabled })
+                }
               />
             }
           />

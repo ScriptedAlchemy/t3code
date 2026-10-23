@@ -7,6 +7,10 @@
       "types": "./src/projectCode/index.ts",
       "default": "./src/projectCode/index.ts"
     },
+    "./conversationSummaries": {
+      "types": "./src/conversationSummaries/index.ts",
+      "default": "./src/conversationSummaries/index.ts"
+    },
     "./projectKnowledge": {
       "types": "./src/projectKnowledge/index.ts",
       "default": "./src/projectKnowledge/index.ts"
