@@ -197,6 +197,18 @@ const make = Effect.gen(function* () {
       sources: summary.sources,
     });
     const unavailable = current.find((source) => source.state === "unavailable");
+    if (unavailable?.state === "unavailable" && unavailable.reason !== "archived") {
+      // Handoff references keep the summary skeleton, not text derived from a removed source.
+      yield* sql`UPDATE conversation_summaries SET payload_json = ${encodeSummary({
+        ...summary,
+        statements: [
+          {
+            text: "[Source unavailable: removed or changed.]",
+            citations: [summary.sources[0]!.messageId],
+          },
+        ],
+      })} WHERE summary_id = ${summary.id}`;
+    }
     return unavailable?.state === "unavailable"
       ? ({
           state: "stale",

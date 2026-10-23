@@ -111,6 +111,8 @@ export const make = Effect.gen(function* () {
           AND (${projectId} IS NULL OR threads.project_id = ${projectId})
           AND projects.deleted_at IS NULL
           AND messages.streaming = 0
+          AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs AS run
+            WHERE run.run_id = messages.run_id AND run.status = 'rolled_back')
           AND messages.role IN ('user', 'assistant')
           AND json_extract(messages.payload_json, '$.text') LIKE ${pattern} ESCAPE '!'
       ),

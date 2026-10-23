@@ -205,7 +205,14 @@ const make = Effect.gen(function* () {
   const readSources: ProjectKnowledge["Service"]["readSources"] = Effect.fn(
     "ProjectKnowledge.readSources",
   )(function* (input) {
-    yield* requireProject(input.projectId);
+    const project = yield* projects
+      .get(input.projectId)
+      .pipe(Effect.mapError(storageError(input.projectId)));
+    if (Option.isNone(project) || project.value.deletedAt !== null)
+      return input.sources.map(() => ({
+        state: "unavailable" as const,
+        reason: "deleted" as const,
+      }));
     if (input.sources.length === 0) return [];
     const projection = yield* projections
       .getThreadRecords(input.threadId, ["messages"], {
@@ -215,7 +222,22 @@ const make = Effect.gen(function* () {
         Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
         Effect.mapError(storageError(input.projectId)),
       );
-    const messages = new Map(projection?.messages.map((message) => [message.id, message]));
+    const rolledBack = yield* sql<{ messageId: string }>`
+      SELECT message.message_id AS "messageId"
+      FROM orchestration_v2_projection_messages AS message
+      JOIN orchestration_v2_projection_runs AS run ON run.run_id = message.run_id
+      WHERE message.thread_id = ${input.threadId} AND run.status = 'rolled_back'
+        AND ${sql.in(
+          "message.message_id",
+          input.sources.map((source) => source.messageId),
+        )}
+    `.pipe(Effect.mapError(storageError(input.projectId)));
+    const excluded = new Set(rolledBack.map((row) => row.messageId));
+    const messages = new Map(
+      projection?.messages
+        .filter((message) => !excluded.has(message.id))
+        .map((message) => [message.id, message]),
+    );
     return yield* Effect.forEach(
       input.sources,
       // Per source inside the batch, which already has its span.
@@ -286,6 +308,12 @@ const make = Effect.gen(function* () {
       ),
     );
     if (refs.length === 0) return [];
+    const project = yield* projects.get(projectId);
+    if (Option.isNone(project) || project.value.deletedAt !== null)
+      return [...new Set(refs.map((ref) => ref.factId))].map((factId) => ({
+        factId,
+        reason: "deleted" as const,
+      }));
     const threadRows = yield* sql<{
       readonly threadId: string;
       readonly projectId: string;
@@ -304,7 +332,10 @@ const make = Effect.gen(function* () {
     }>`SELECT message_id AS "messageId", thread_id AS "threadId", role, streaming,
         json_extract(payload_json, '$.text') AS text
       FROM orchestration_v2_projection_messages
-      WHERE ${sql.in("message_id", [...new Set(refs.map((ref) => ref.source.messageId))])}`;
+      WHERE ${sql.in("message_id", [...new Set(refs.map((ref) => ref.source.messageId))])}
+        AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs AS run
+          WHERE run.run_id = orchestration_v2_projection_messages.run_id
+            AND run.status = 'rolled_back')`;
     const threadsById = new Map(threadRows.map((row) => [row.threadId, row]));
     const messagesById = new Map(messageRows.map((row) => [row.messageId, row]));
     const digests = new Map<string, string>();
@@ -1091,14 +1122,68 @@ const make = Effect.gen(function* () {
   const recordDelivery: ProjectKnowledge["Service"]["recordDelivery"] = Effect.fn(
     "ProjectKnowledge.recordDelivery",
   )(function* (delivery) {
-    yield* store.recordDelivery(delivery).pipe(Effect.mapError(storageError(delivery.projectId)));
+    const checked = yield* revalidateDelivery(delivery).pipe(
+      Effect.mapError(storageError(delivery.projectId)),
+    );
+    yield* store.recordDelivery(checked).pipe(Effect.mapError(storageError(delivery.projectId)));
+  });
+  // A fact edit is not a source edit: check the citations of the revision actually sent.
+  // Scrubbing is monotone, so restoring a thread cannot restore retained excerpts.
+  const revalidateDelivery = Effect.fn("ProjectKnowledge.revalidateDelivery")(function* (
+    delivery: ProjectKnowledgeDelivery,
+  ) {
+    const project = yield* projects.get(delivery.projectId);
+    const projectUnavailable = Option.isNone(project) || project.value.deletedAt !== null;
+    const items = [];
+    for (const item of delivery.items) {
+      let unavailable = projectUnavailable;
+      for (const selection of item.context.selections) {
+        if (selection.kind === "message") {
+          const source = yield* readSource({
+            projectId: delivery.projectId,
+            ...selection,
+            includeArchived: true,
+          });
+          unavailable ||= source.state !== "available";
+        } else {
+          const fact = yield* store.find(delivery.projectId, selection.factId);
+          const history = yield* store.history(delivery.projectId, selection.factId, HISTORY_LIMIT);
+          const revision =
+            fact?.revision === selection.revision
+              ? fact
+              : history.find((entry) => entry.revision === selection.revision);
+          unavailable ||= revision === undefined || revision === null;
+          if (revision) {
+            const lost = yield* unavailableSources(
+              delivery.projectId,
+              [{ id: selection.factId, sources: revision.sources }],
+              true,
+            );
+            unavailable ||= lost.length > 0;
+          }
+        }
+      }
+      items.push(
+        unavailable && !item.contentRemoved
+          ? { ...item, text: "[Source unavailable: removed or changed.]" }
+          : item,
+      );
+    }
+    const checked = { ...delivery, items };
+    yield* store
+      .replaceDeliveryItems(checked, delivery)
+      .pipe(Effect.mapError(storageError(delivery.projectId)));
+    return checked;
   });
   const readSentDeliveries: ProjectKnowledge["Service"]["readSentDeliveries"] = Effect.fn(
     "ProjectKnowledge.readSentDeliveries",
   )(function* (input) {
-    return yield* store
+    const rows = yield* store
       .sentDeliveries(input.projectId, input.threadIds, input.runIds)
       .pipe(Effect.mapError(storageError(input.projectId)));
+    return yield* Effect.forEach(rows, revalidateDelivery).pipe(
+      Effect.mapError(storageError(input.projectId)),
+    );
   });
   const readDeliveries: ProjectKnowledge["Service"]["readDeliveries"] = Effect.fn(
     "ProjectKnowledge.readDeliveries",
@@ -1153,7 +1238,10 @@ const make = Effect.gen(function* () {
             : ("current" as const);
     });
     const deliveries = [];
-    for (const row of rows) {
+    for (const original of rows) {
+      const row = yield* revalidateDelivery(original).pipe(
+        Effect.mapError(storageError(input.projectId)),
+      );
       const items = [];
       for (const item of row.items)
         items.push({ ...item, current: yield* selectionState(item.context) });

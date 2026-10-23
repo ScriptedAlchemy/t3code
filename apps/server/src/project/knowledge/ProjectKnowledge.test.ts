@@ -8,6 +8,7 @@ import {
   EnvironmentId,
   EventId,
   MessageId,
+  NodeId,
   ProjectFactId,
   ProjectKnowledgeSearchResult,
   ProjectId,
@@ -41,6 +42,8 @@ import * as Statement from "effect/sql/Statement";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import * as EventStore from "../../orchestration-v2/EventStore.ts";
+import * as ProjectionMaintenance from "../../orchestration-v2/ProjectionMaintenance.ts";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as ProjectKnowledge from "./ProjectKnowledge.ts";
@@ -50,7 +53,15 @@ const knowledgeTestLayer = (scoring: typeof HolographicMemory.layer = Holographi
   ProjectKnowledge.layer.pipe(
     Layer.provide(scoring),
     Layer.provideMerge(
-      Layer.mergeAll(ProjectStore.layer, ProjectionStore.layer, ThreadSearch.layer),
+      Layer.mergeAll(
+        ProjectStore.layer,
+        ProjectionStore.layer,
+        ThreadSearch.layer,
+        ProjectionMaintenance.layer.pipe(
+          Layer.provideMerge(EventStore.layer),
+          Layer.provide(ProjectionStore.layer),
+        ),
+      ),
     ),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provide(
@@ -1044,12 +1055,23 @@ it.effect("reports when a delivered fact's cited message changes or disappears",
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const projectId = ProjectId.make("delivered-citations");
+    const events = yield* EventStore.EventStoreV2;
+    const apply = Effect.fn("test.persistSourceEvent")(function* (
+      event: OrchestrationV2DomainEvent,
+    ) {
+      yield* events.append({
+        events: [
+          { ...event, id: EventId.make(`${event.id}:${DateTime.formatIso(event.occurredAt)}`) },
+        ],
+      });
+      yield* projections.apply(event);
+    });
     yield* createProject(projectId);
     const deliveredFact = Effect.fn("test.deliveredFact")(function* (key: string) {
       const sourceThreadId = ThreadId.make(`${key}-source-thread`);
       const sourceMessageId = MessageId.make(`${key}-source-message`);
-      yield* projections.apply(thread(sourceThreadId, projectId));
-      yield* projections.apply(
+      yield* apply(thread(sourceThreadId, projectId));
+      yield* apply(
         message(sourceThreadId, sourceMessageId, "user", `${key}: tenant IDs in cache keys`),
       );
       const source = yield* knowledge.readSource({
@@ -1099,18 +1121,64 @@ it.effect("reports when a delivered fact's cited message changes or disappears",
         (read) => read.deliveries[0]?.items[0]?.current,
       );
       assert.equal(yield* current, "current");
-      return { sourceThreadId, sourceMessageId, current };
+      const retained = knowledge.readSentDeliveries({
+        projectId,
+        threadIds: [threadId],
+        runIds: [RunId.make(`${key}-run`)],
+      });
+      return { sourceThreadId, sourceMessageId, current, retained, factId: fact.id };
     });
     const edited = yield* deliveredFact("edited");
     const deleted = yield* deliveredFact("deleted");
+    const rolled = yield* deliveredFact("rolled");
+    const runId = RunId.make("rolled-source-run");
+    const rolledMessage = message(
+      rolled.sourceThreadId,
+      rolled.sourceMessageId,
+      "user",
+      "rolled: tenant IDs in cache keys",
+    );
+    if (rolledMessage.type !== "message.updated") return yield* Effect.die("Expected message");
+    yield* apply({
+      ...rolledMessage,
+      id: EventId.make("rolled-message-run"),
+      payload: { ...rolledMessage.payload, runId },
+    });
+    yield* apply({
+      id: EventId.make("rolled-source-event"),
+      type: "run.updated",
+      threadId: rolled.sourceThreadId,
+      runId,
+      occurredAt: at(4),
+      payload: {
+        id: runId,
+        threadId: rolled.sourceThreadId,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+        providerThreadId: null,
+        userMessageId: rolled.sourceMessageId,
+        rootNodeId: NodeId.make("rolled-root"),
+        activeAttemptId: null,
+        status: "rolled_back",
+        requestedAt: at(1),
+        startedAt: at(1),
+        completedAt: at(4),
+        checkpointId: null,
+        contextHandoffId: null,
+      },
+    });
+    assert.equal(yield* rolled.current, "unavailable");
+    const search = yield* ThreadSearch.ThreadSearch;
+    assert.deepEqual((yield* search.search({ projectId, query: "rolled: tenant" })).matches, []);
 
-    yield* projections.apply(
+    yield* apply(
       message(edited.sourceThreadId, edited.sourceMessageId, "user", "edited later", {
         minute: 3,
       }),
     );
     const deletedThread = yield* projections.getThreadRecords(deleted.sourceThreadId, []);
-    yield* projections.apply({
+    yield* apply({
       id: EventId.make("delete-delivered-citation"),
       threadId: deleted.sourceThreadId,
       type: "thread.deleted",
@@ -1120,6 +1188,78 @@ it.effect("reports when a delivered fact's cited message changes or disappears",
 
     assert.equal(yield* edited.current, "changed");
     assert.equal(yield* deleted.current, "unavailable");
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    yield* maintenance.rebuild;
+    assert.deepEqual(
+      (yield* search.search({ projectId, query: "tenant IDs in cache keys" })).matches,
+      [],
+    );
+    for (const entry of [edited, deleted, rolled]) {
+      const detail = yield* knowledge.readFact({ projectId, factId: entry.factId });
+      assert.isNotNull(detail.sourceUnavailable);
+      const resolved = yield* knowledge
+        .resolveForTurn({
+          environmentId,
+          projectId,
+          selections: [{ kind: "fact", factId: entry.factId, revision: 1 }],
+          maxBytes: 48000,
+        })
+        .pipe(Effect.result);
+      assert.isTrue(Result.isFailure(resolved));
+      const rows = yield* entry.retained;
+      assert.notInclude(rows[0]?.items[0]?.text, "Cache keys include tenant IDs.");
+      assert.include(rows[0]?.items[0]?.text, "Source unavailable");
+      const row = rows[0]!;
+      const replay = yield* deliveredKnowledgeForHistory({
+        projectId,
+        messages: [
+          {
+            itemId: TurnItemId.make("removed-source-replay"),
+            role: "user",
+            kind: "user_message",
+            text: "Use this.",
+            threadId: row.threadId,
+            runId: row.runId,
+            providerThreadId: null,
+            status: "completed",
+          },
+        ],
+        userItemId: () => "removed-source-replay",
+      });
+      assert.notInclude(replay.get("removed-source-replay"), "Cache keys include tenant IDs.");
+      assert.include(replay.get("removed-source-replay"), "Source unavailable");
+    }
+    const projects = yield* ProjectStore.ProjectStoreV2;
+    const uncited = yield* deliveredFact("project-deleted");
+    yield* projects.apply({
+      sequence: 0,
+      eventId: EventId.make("delete-delivery-project"),
+      aggregateKind: "project",
+      aggregateId: projectId,
+      occurredAt: DateTime.formatIso(at(5)),
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: "project.deleted",
+      payload: { projectId, deletedAt: DateTime.formatIso(at(5)) },
+    });
+    assert.deepEqual(
+      yield* knowledge.readSource({
+        projectId,
+        threadId: edited.sourceThreadId,
+        messageId: edited.sourceMessageId,
+      }),
+      { state: "unavailable", reason: "deleted" },
+    );
+    const afterDelete = yield* uncited.retained;
+    assert.notInclude(afterDelete[0]?.items[0]?.text, "Cache keys include tenant IDs.");
+    assert.include(afterDelete[0]?.items[0]?.text, "Source unavailable");
+    assert.isTrue(
+      Result.isFailure(
+        yield* knowledge.readFact({ projectId, factId: uncited.factId }).pipe(Effect.result),
+      ),
+    );
   }).pipe(Effect.provide(layerTest)),
 );
 
