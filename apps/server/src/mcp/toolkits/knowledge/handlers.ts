@@ -38,7 +38,7 @@ export const layer = McpToolAccess.toLayer(KnowledgeToolkit, {
       const service = yield* ProjectKnowledge.ProjectKnowledge;
       if (scope.thread !== undefined) {
         return yield* service
-          .mutate(input, {
+          .mutate(input.mutation, {
             kind: "agent-thread",
             threadId: scope.thread.threadId,
             providerInstanceId: scope.thread.providerInstanceId,
@@ -47,7 +47,7 @@ export const layer = McpToolAccess.toLayer(KnowledgeToolkit, {
       }
       if (scope.client !== undefined) {
         return yield* service
-          .mutate(input, {
+          .mutate(input.mutation, {
             kind: "agent-client",
             sessionId: scope.client.sessionId,
             label: scope.client.label,
