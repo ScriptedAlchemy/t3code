@@ -1948,12 +1948,15 @@ const WsProjectKnowledgePrepareContextRpc = Rpc.make(WS_METHODS.projectKnowledge
   error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
 });
 
-export const WsRpcGroup = RpcGroup.make(
+export const WsProjectKnowledgeRpcGroup = RpcGroup.make(
   WsProjectKnowledgeSearchRpc,
   WsProjectKnowledgeListRpc,
   WsProjectKnowledgeMutateRpc,
   WsProjectKnowledgeReadSourceRpc,
   WsProjectKnowledgePrepareContextRpc,
+).middleware(RpcScopeAuthorization);
+
+export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2154,4 +2157,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,
   WsOrchestrationV2SubscribeCommandOutputRpc,
-).middleware(RpcScopeAuthorization);
+)
+  .middleware(RpcScopeAuthorization)
+  .merge(WsProjectKnowledgeRpcGroup);
