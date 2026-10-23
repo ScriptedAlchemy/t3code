@@ -2,22 +2,14 @@ import type { LoomLaneActivity, LoomRow } from "@t3tools/client-runtime/projectL
 import { loomEdgeLabel, loomMarkerLabel } from "@t3tools/client-runtime/projectLoom";
 import type { LoomEdge, LoomMarker, LoomRun, LoomWindow } from "@t3tools/contracts";
 import { BotIcon, ChevronDownIcon, ChevronRightIcon, GitForkIcon, UnlinkIcon } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
+import { useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 
-import { useStableCallback } from "~/hooks/useStableCallback";
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
-import {
-  formatLoomTick,
-  formatLoomTime,
-  loomScale,
-  loomTicks,
-  panLoomView,
-  zoomLoomView,
-  type LoomView,
-} from "./loomScale";
+import { formatLoomTick, formatLoomTime, loomScale, loomTicks, type LoomView } from "./loomScale";
 import type { LoomSelection } from "./loomSearch";
 import { ACTIVE_RUN, loomMarkerKey } from "./loomWeave";
+import { useLoomViewGestures } from "./useLoomViewGestures";
 
 const LOOM_ROW_HEIGHT = 28;
 // Lane labels take up to this much, and never more than 40% of a narrow timeline.
@@ -87,45 +79,18 @@ export function LoomTimeline(props: LoomTimelineProps) {
     return observeResize(element, update);
   }, []);
 
-  const onWheel = useStableCallback((event: WheelEvent) => {
-    const element = scrollRef.current;
-    if (element === null || timelineWidth === 0) return;
-    const x = event.clientX - element.getBoundingClientRect().left - labelWidth;
-    if (x < 0) return;
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-      props.onViewChange(
-        zoomLoomView(props.view, props.bounds, scale.ms(x), Math.exp(event.deltaY * 0.002)),
-      );
-    } else if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
-      event.preventDefault();
-      const delta = event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX;
-      props.onViewChange(panLoomView(props.view, props.bounds, delta * scale.msPerPx));
-    }
+  const {
+    onPointerDown,
+    onPointerMove,
+    onPointerUp: endDrag,
+  } = useLoomViewGestures({
+    wheelRef: scrollRef,
+    view: props.view,
+    bounds: props.bounds,
+    width: timelineWidth,
+    leftInset: labelWidth,
+    onViewChange: props.onViewChange,
   });
-  // Wheel zoom needs preventDefault, which React's passive wheel listener cannot do.
-  useEffect(() => {
-    const element = scrollRef.current;
-    if (element === null) return;
-    element.addEventListener("wheel", onWheel, { passive: false });
-    return () => element.removeEventListener("wheel", onWheel);
-  }, [onWheel]);
-
-  const drag = useRef<{ x: number; view: LoomView } | null>(null);
-  const onPointerDown = (event: PointerEvent<SVGSVGElement>) => {
-    if (event.button !== 0 || event.target !== event.currentTarget) return;
-    drag.current = { x: event.clientX, view: props.view };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  };
-  const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
-    const start = drag.current;
-    if (start === null || timelineWidth === 0) return;
-    const { msPerPx } = loomScale(start.view, timelineWidth);
-    props.onViewChange(panLoomView(start.view, props.bounds, (start.x - event.clientX) * msPerPx));
-  };
-  const endDrag = () => {
-    drag.current = null;
-  };
 
   const firstRow = Math.max(0, Math.floor(scroll.top / LOOM_ROW_HEIGHT) - OVERSCAN_ROWS);
   const lastRow = Math.min(
