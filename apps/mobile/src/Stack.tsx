@@ -73,6 +73,7 @@ import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
 import { AddProjectNewRoute } from "./features/projects/AddProjectNewRoute";
 import { AddProjectRepositoryRoute } from "./features/projects/AddProjectRepositoryRoute";
 import { AddProjectSourceRoute } from "./features/projects/AddProjectSourceRoute";
+import { ProjectLoomRouteScreen } from "./features/loom/ProjectLoomRouteScreen";
 import {
   NewTaskBranchPickerRouteScreen,
   NewTaskEnvironmentPickerRouteScreen,
@@ -644,6 +645,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
         headerBackVisible: false,
         ...getCompactBrandHeaderOptions(),
       },
+    }),
+    ProjectLoom: createNativeStackScreen({
+      screen: ProjectLoomRouteScreen,
+      linking: "projects/:environmentId/:projectId/loom",
+      options: DETAIL_HEADER_OPTIONS,
     }),
     PullRequest: createNativeStackScreen({
       screen: PullRequestRouteScreen,

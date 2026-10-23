@@ -1,4 +1,5 @@
 import { useActiveNewTask } from "../../state/active-new-task";
+import { ProjectLoomEntry } from "../loom/ProjectLoomEntry";
 import { ThreadUndoNotice } from "../home/ThreadUndoNotice";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
 import { resolveScratchProjectScopeKey } from "@t3tools/client-runtime/state/project-grouping";
@@ -816,6 +817,9 @@ function ThreadNavigationSidebarPane(
                 showsVerticalScrollIndicator={false}
                 style={styles.threadList}
                 ListEmptyComponent={listEmpty}
+                ListHeaderComponent={
+                  <ProjectLoomEntry projects={projectScopes.flatMap((scope) => scope.projects)} />
+                }
               />
             </GestureDetector>
           </SwipeableScrollGateProvider>
@@ -851,7 +855,10 @@ function ThreadNavigationSidebarPane(
         }
       >
         {Platform.OS === "android" && listItems.length === 0 ? (
-          <View className="flex-1 items-center justify-center">{listEmpty}</View>
+          <View className="flex-1">
+            <ProjectLoomEntry projects={projectScopes.flatMap((scope) => scope.projects)} />
+            <View className="flex-1 items-center justify-center">{listEmpty}</View>
+          </View>
         ) : (
           <SwipeableScrollGateProvider enabled={swipeEnabled}>
             <GestureDetector gesture={sidebarScrollGesture}>
@@ -884,6 +891,9 @@ function ThreadNavigationSidebarPane(
                 showsVerticalScrollIndicator={false}
                 style={styles.threadList}
                 ListEmptyComponent={listEmpty}
+                ListHeaderComponent={
+                  <ProjectLoomEntry projects={projectScopes.flatMap((scope) => scope.projects)} />
+                }
               />
             </GestureDetector>
           </SwipeableScrollGateProvider>

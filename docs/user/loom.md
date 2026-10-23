@@ -1,13 +1,20 @@
 # Loom
 
 The Loom shows a project's threads and agents on one timeline, so you can see what ran when and
-how threads relate. It is available on web and desktop.
+how threads relate. Web and desktop show a timeline; mobile shows a date-grouped activity list.
 
 ## Open the Loom
 
 - In the sidebar, open the project picker and select the timeline icon next to a project.
 - In the command palette, run **Open Loom**. A project that exists in more than one environment
   lists one entry per environment.
+
+On mobile, select **Loom** in the thread list or sidebar, then choose a project and environment.
+Use **24h**, **7d**, or **30d** and the status or provider filter to narrow the activity. Delegated
+threads nest under their parent and can be collapsed. Tap a thread or run to open the thread, or
+tap a pull request to open its link. Use **Refresh** to read the latest activity.
+
+The controls described below are for the web and desktop timeline.
 
 The Loom opens on the last seven days. Use **24h**, **7d**, or **30d** to change the span, the
 arrows to move earlier or later, and **Now** to return to the latest window. The window, filters,

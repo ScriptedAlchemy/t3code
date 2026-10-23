@@ -91,6 +91,7 @@ import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-sw
 import { useFabScroll } from "./FabScrollContext";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
+import { ProjectLoomEntry } from "../loom/ProjectLoomEntry";
 
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -740,10 +741,15 @@ export function HomeScreen(props: HomeScreenProps) {
     catalogState: props.catalogState,
     projectCount: props.projects.length,
   });
+  const loomProjects = props.projects.filter(
+    (project) =>
+      props.selectedEnvironmentId === null || project.environmentId === props.selectedEnvironmentId,
+  );
 
   if (!hasAnyThreads) {
     return (
       <View className={containerClassName}>
+        <ProjectLoomEntry projects={loomProjects} />
         <View
           className={cn(
             "flex-1 items-center justify-center px-8",
@@ -792,6 +798,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const v2ListHeader = (
     <>
       {listHeader}
+      <ProjectLoomEntry projects={loomProjects} />
       {Platform.OS === "ios" && workspace ? (
         <ThreadListFilters
           environments={props.environments}
