@@ -39,6 +39,7 @@
       "entry": [
         "src/bin.ts!",
         "src/claude-history-worker.ts!",
+        "src/project/knowledge/codeIntelligenceWorkerThread.ts!",
         "scripts/cli.ts",
         "scripts/evaluate-thread-titles.ts",
         "scripts/fetch-expo-schema.ts",

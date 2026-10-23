@@ -31,6 +31,7 @@ import {
   STAGE_INSTALL_ARGS,
 } from "./build-desktop-artifact.ts";
 import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
+import { smokeCodeIntelligenceProcess } from "./lib/code-intelligence-smoke.ts";
 import { signWithJsign } from "./lib/windows-jsign.ts";
 import { windowsSystemTar } from "./lib/windows-tar.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
@@ -530,6 +531,12 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   }
   if (input.platform !== "win") {
     yield* fs.chmod(executablePath, 0o755);
+  }
+  // The staged tree is the shipped one, so this is where an analysis process that cannot
+  // start inside the executable would show up; another target's binary cannot run here.
+  if (targetKey === hostKey) {
+    yield* smokeCodeIntelligenceProcess(executablePath, []);
+    yield* Effect.log("[cli-archive] Code analysis process answered a query.");
   }
 
   yield* fs.makeDirectory(input.outputDir, { recursive: true });
