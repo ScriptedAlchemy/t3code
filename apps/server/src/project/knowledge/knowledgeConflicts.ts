@@ -21,7 +21,7 @@ const STATE_CHANGE_CUES = [
   "deprecated",
 ];
 
-export function containsStateChangeCue(text: string): boolean {
+function containsStateChangeCue(text: string): boolean {
   const lower = text.toLowerCase();
   return STATE_CHANGE_CUES.some((cue) => lower.includes(cue));
 }
@@ -29,7 +29,7 @@ export function containsStateChangeCue(text: string): boolean {
 const normalize = (text: string) => text.split(/\s+/).filter(Boolean).join(" ").toLowerCase();
 
 /** Dice coefficient over the same tokens recall uses. */
-export function lexicalSimilarity(left: string, right: string): number {
+function lexicalSimilarity(left: string, right: string): number {
   const a = projectMemorySearchTokens(left);
   const b = new Set(projectMemorySearchTokens(right));
   if (a.length === 0 || b.size === 0) return 0;

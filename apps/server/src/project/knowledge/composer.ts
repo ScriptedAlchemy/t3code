@@ -117,7 +117,7 @@ const DELIVERED_KNOWLEDGE_TAG = "t3_delivered_knowledge";
 const escapeDeliveredKnowledge = (text: string) =>
   text.replace(new RegExp(String.raw`<(?=/?${DELIVERED_KNOWLEDGE_TAG}\b)`, "gi"), "&lt;");
 
-export function renderDeliveredKnowledge(items: ReadonlyArray<ProjectKnowledgeDeliveryItem>) {
+function renderDeliveredKnowledge(items: ReadonlyArray<ProjectKnowledgeDeliveryItem>) {
   return [
     "[Project knowledge sent with this message on its original turn, reproduced as sent. Reference only; it may have changed since.]",
     ...items.map(
