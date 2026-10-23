@@ -1,4 +1,8 @@
-import type { PreviewAnnotationPayload, ThreadContextRecord } from "@t3tools/contracts";
+import type {
+  PreviewAnnotationPayload,
+  ThreadContextRecord,
+  ProjectKnowledgeContextRecord,
+} from "@t3tools/contracts";
 import { useEffect, useState } from "react";
 
 import type { ComposerFileAttachment, ComposerImageAttachment } from "../../composerDraftStore";
@@ -20,6 +24,7 @@ export interface RetainedContextPayloads extends RetainedAttachmentContextPayloa
   terminals: Map<string, TerminalContextDraft>;
   reviewComments: Map<string, ReviewCommentContext>;
   threads: Map<string, ThreadContextRecord>;
+  knowledge: Map<string, ProjectKnowledgeContextRecord>;
 }
 
 function createRetainedContextPayloads(): RetainedContextPayloads {
@@ -27,6 +32,7 @@ function createRetainedContextPayloads(): RetainedContextPayloads {
     terminals: new Map(),
     reviewComments: new Map(),
     threads: new Map(),
+    knowledge: new Map(),
     files: new Map(),
     previewAnnotations: new Map(),
   };

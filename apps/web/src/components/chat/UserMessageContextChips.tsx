@@ -1,3 +1,4 @@
+import { ProjectKnowledgeContextChip } from "../projectKnowledge/ProjectKnowledgeContextChip";
 import { useRenderedAppearance } from "../../hooks/useTheme";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { ReadOnlySourcePreview } from "../files/AttachmentFilePreview";
@@ -295,6 +296,16 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
 >({
   requiredKinds: COMPOSER_CONTEXT_KINDS,
   handlers: [
+    {
+      kind: "project-knowledge",
+      canRender: (record) => record.kind === "project-knowledge",
+      render: (record, context) =>
+        record.kind === "project-knowledge" ? (
+          <ProjectKnowledgeContextChip record={record} />
+        ) : (
+          <UnavailableUserMessageContextChip {...context} />
+        ),
+    },
     {
       kind: "mention",
       canRender: (record) => record.kind === "mention",

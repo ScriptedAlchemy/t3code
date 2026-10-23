@@ -1,3 +1,4 @@
+import type { ProjectKnowledgeContextRecord } from "@t3tools/contracts";
 import { type OrchestrationV2ProviderTurn, type RunAttemptId } from "@t3tools/contracts";
 import {
   deriveLatestThreadRun,
@@ -1306,6 +1307,7 @@ export interface PlanFollowUpComposerSnapshot {
   readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
   readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
   readonly threadContexts: ReadonlyArray<ThreadContextRecord>;
+  readonly knowledgeContexts?: ReadonlyArray<ProjectKnowledgeContextRecord>;
 }
 
 /**
@@ -1496,6 +1498,7 @@ export interface ComposerSendContents {
   readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
   readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
   readonly threadContexts: ReadonlyArray<ThreadContextRecord>;
+  readonly knowledgeContexts?: ReadonlyArray<ProjectKnowledgeContextRecord>;
 }
 
 /**
@@ -1515,6 +1518,7 @@ export function snapshotComposerSend(contents: ComposerSendContents) {
     previewAnnotations: [...contents.previewAnnotations],
     reviewComments: [...contents.reviewComments],
     threadContexts: [...contents.threadContexts],
+    ...(contents.knowledgeContexts ? { knowledgeContexts: [...contents.knowledgeContexts] } : {}),
     messageText: contents.terminalContexts
       .filter((context) => !terminalContexts.includes(context))
       .reduce(

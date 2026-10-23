@@ -1,3 +1,4 @@
+import { ProjectMemoryPanel } from "../projectKnowledge/ProjectMemoryPanel";
 import type {
   EditorId,
   EnvironmentId,
@@ -182,6 +183,12 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             </ThreadDetailsSection>
           ) : null}
 
+          <ProjectMemoryPanel
+            environmentId={props.environmentId}
+            projectId={props.projectId}
+            threadId={props.threadId}
+            {...(props.draftId ? { draftId: props.draftId } : {})}
+          />
           {density === "full" && !props.draftId ? (
             <ThreadAutomationsPanel environmentId={props.environmentId} threadId={props.threadId} />
           ) : null}

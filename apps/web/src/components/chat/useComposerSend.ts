@@ -673,12 +673,16 @@ export function useComposerSend(input: ComposerSendInput) {
           reviewComments: composerReviewComments,
           previewAnnotations: composerPreviewAnnotations,
           threadContexts: composerThreadContexts,
+          knowledgeContexts: sendCtx.knowledgeContexts,
         }),
         interactionMode: followUp.interactionMode,
       });
       if (!followUpSent) {
         promptRef.current = followUpPromptSnapshot;
         composerTerminalContextsRef.current = [...followUpTerminalContexts];
+        useComposerDraftStore
+          .getState()
+          .setKnowledgeContext(composerDraftTarget, sendCtx.knowledgeContexts?.[0] ?? null);
         restorePlanFollowUpComposer({
           snapshot: {
             prompt: followUpPromptSnapshot,
@@ -759,6 +763,7 @@ export function useComposerSend(input: ComposerSendInput) {
       previewAnnotations: composerPreviewAnnotations,
       reviewComments: composerReviewComments,
       threadContexts: composerThreadContexts,
+      knowledgeContexts: sendCtx.knowledgeContexts,
     });
     const {
       files: composerFilesSnapshot,
@@ -801,6 +806,7 @@ export function useComposerSend(input: ComposerSendInput) {
         reviewComments: composerReviewCommentsSnapshot,
         previewAnnotations: composerPreviewAnnotationsSnapshot,
         threadContexts: composerThreadContextsSnapshot,
+        knowledgeContexts: sendCtx.knowledgeContexts,
         attachments: composerAttachmentsSnapshot.map((attachment, index) => ({
           attachment,
           attachmentId: attachmentIds[index] ?? attachment.id,

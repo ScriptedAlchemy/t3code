@@ -353,6 +353,16 @@ export function useComposerContextImport(input: {
           rewritten.set(record.contextId, previewAnnotationContextId(annotation.id));
           break;
         }
+        case "project-knowledge": {
+          if (
+            record.knowledge.environmentId !== environmentId ||
+            record.knowledge.projectId !== activeThread?.projectId
+          )
+            break;
+          useComposerDraftStore.getState().setKnowledgeContext(threadDraftTarget, record);
+          rewritten.set(record.contextId, record.contextId);
+          break;
+        }
         case "thread": {
           // The agent can only read threads on its own server; a pasted foreign one is dropped.
           if (record.environmentId !== environmentId) break;

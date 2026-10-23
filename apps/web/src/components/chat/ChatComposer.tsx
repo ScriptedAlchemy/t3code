@@ -1,3 +1,4 @@
+import type { ProjectKnowledgeContextRecord } from "@t3tools/contracts";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
@@ -348,6 +349,7 @@ export interface ChatComposerHandle {
     previewAnnotations: PreviewAnnotationPayload[];
     reviewComments: ReviewCommentContext[];
     threadContexts: ThreadContextRecord[];
+    knowledgeContexts: ReadonlyArray<ProjectKnowledgeContextRecord>;
     selectedPromptEffort: string | null;
     selectedModelOptionsForDispatch: unknown;
     selectedModelSelection: ModelSelection;
@@ -790,6 +792,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     reviewComments: composerReviewComments,
     previewAnnotations: composerPreviewAnnotations,
     threadContexts: composerThreadContexts,
+    knowledgeContexts: composerDraft.knowledgeContexts ?? [],
     images: composerImages,
     files: composerFiles,
     uploadsByImageId,
@@ -1738,6 +1741,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     if (nextTerminals.length !== composerTerminalContexts.length || restoredTerminals.length > 0) {
       setComposerDraftTerminalContexts(composerDraftTarget, nextTerminals);
+    }
+
+    const knowledgeRecord = composerDraft.knowledgeContexts?.[0];
+    if (knowledgeRecord && !referenced.has(knowledgeRecord.contextId)) {
+      retained.knowledge.set(knowledgeRecord.contextId, knowledgeRecord);
+      useComposerDraftStore.getState().setKnowledgeContext(composerDraftTarget, null);
+    } else if (!knowledgeRecord) {
+      const restored = [...referenced].flatMap((id) => retained.knowledge.get(id) ?? [])[0];
+      if (restored)
+        useComposerDraftStore.getState().setKnowledgeContext(composerDraftTarget, restored);
     }
 
     const liveThreadIds = new Set<string>(composerThreadContexts.map((record) => record.contextId));
@@ -3275,6 +3288,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         previewAnnotations: composerPreviewAnnotations,
         reviewComments: composerReviewComments,
         threadContexts: composerThreadContexts,
+        knowledgeContexts: composerDraft.knowledgeContexts ?? [],
         selectedPromptEffort,
         selectedModelOptionsForDispatch,
         selectedModelSelection,

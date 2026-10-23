@@ -22,6 +22,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   EnvironmentId,
   ProjectId,
+  ProjectFactId,
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -32,6 +33,7 @@ import {
   type PreviewAnnotationPayload,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
+import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
 import { createModelSelection } from "@t3tools/shared/model";
 
 const CODEX_INSTANCE = ProviderInstanceId.make("codex");
@@ -646,6 +648,37 @@ describe("composerDraftStore context persistence", () => {
   };
 
   beforeEach(resetComposerDraftStore);
+
+  it("persists only scoped knowledge references and removes their prompt tokens on clear", () => {
+    const record = projectKnowledgeContextRecord({
+      environmentId: TEST_ENVIRONMENT_ID,
+      projectId: ProjectId.make("knowledge-project"),
+      selections: [{ kind: "fact", factId: ProjectFactId.make("remembered-fact"), revision: 3 }],
+      maxBytes: 48000,
+    });
+    useComposerDraftStore.getState().setPrompt(threadRef, "Explain the decision.");
+    useComposerDraftStore.getState().setKnowledgeContext(threadRef, record);
+    const persisted = partializeComposerDraftStoreState(useComposerDraftStore.getState());
+    const hydrated = useComposerDraftStore.persist.getOptions().merge!(
+      JSON.parse(JSON.stringify(persisted)),
+      useComposerDraftStore.getInitialState(),
+    );
+    expect(hydrated.draftsByThreadKey[scopedThreadKey(threadRef)]?.knowledgeContexts).toEqual([
+      record,
+    ]);
+    expect(hydrated.draftsByThreadKey[scopedThreadKey(threadRef)]?.prompt).toContain(
+      "t3-context://v1/project-knowledge/",
+    );
+    useComposerDraftStore.getState().setKnowledgeContext(threadRef, null);
+    expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(
+      "Explain the decision.",
+    );
+    useComposerDraftStore.getState().setKnowledgeContext(threadRef, record);
+    useComposerDraftStore.getState().clearComposerContent(threadRef);
+    expect(
+      useComposerDraftStore.getState().getComposerDraft(threadRef)?.knowledgeContexts ?? [],
+    ).toEqual([]);
+  });
 
   it("preserves snapshots and inline positions through repeated persistence and hydration", () => {
     const terminal = {
