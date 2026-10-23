@@ -426,7 +426,7 @@ const make = Effect.gen(function* () {
     ORDER BY candidate.updated_at DESC, candidate.id DESC
   `;
 
-  const readActivity = (runIds: ReadonlyArray<string>) => sql<{
+  const readActivity = (runIds: ReadonlyArray<string>, window: ResolvedWindow) => sql<{
     readonly run_id: string;
     readonly thread_id: string;
     readonly type: keyof typeof ACTIVITY_KINDS;
@@ -437,6 +437,7 @@ const make = Effect.gen(function* () {
       INDEXED BY orchestration_v2_projection_turn_items_run_ordinal_idx
     WHERE run_id IN (SELECT value FROM json_each(${ids(runIds)}))
       AND type IN (SELECT value FROM json_each(${ids(Object.keys(ACTIVITY_KINDS))}))
+      AND updated_at >= ${window.from} AND updated_at <= ${window.to}
     ORDER BY updated_at DESC, rowid DESC
     LIMIT ${LOOM_LIMITS.activityTicks + 1}
   `;
@@ -530,7 +531,7 @@ const make = Effect.gen(function* () {
               readCheckpoints(laneIds, window),
               readPullRequests(laneIds, window),
               readCommands(runIds),
-              readActivity(runIds),
+              readActivity(runIds, window),
               readNativeTasks(laneIds, window),
               countUntimedTasks(laneIds, window),
               readEdges(projectId, laneIds, window),
@@ -578,12 +579,7 @@ const make = Effect.gen(function* () {
     const inWindow = (at: string) => at >= window.from && at <= window.to;
 
     const runById = new Map(runs.map((run) => [run.run_id, run]));
-    const fromMs = Date.parse(window.from);
-    const toMs = Date.parse(window.to);
-    let activityRows = rows.activity.slice(0, LOOM_LIMITS.activityTicks).filter((row) => {
-      const at = Date.parse(row.updated_at);
-      return at >= fromMs && at <= toMs;
-    });
+    let activityRows = rows.activity.slice(0, LOOM_LIMITS.activityTicks);
 
     const pullRequestMarkers = rows.pullRequests.slice(0, LOOM_LIMITS.markers).map((link) => {
       const pullRequest = `${link.host ?? ""}/${link.repository}#${link.number}`;

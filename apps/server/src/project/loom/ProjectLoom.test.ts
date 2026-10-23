@@ -433,6 +433,21 @@ describe("ProjectLoom.readWindow", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("does not spend the tick limit on activity after the window", () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      yield* thread({ id: "late", createdHours: 0 });
+      yield* run({ thread: "late", ordinal: 1, requestedHours: 0, completedHours: 200 });
+      yield* activityItem("late", 0, "command_execution", 1);
+      yield* repeat(LOOM_LIMITS.activityTicks + 1, (index) =>
+        activityItem("late", index + 1, "assistant_message", 169 + index / HOUR),
+      );
+      const result = yield* read(window);
+      assert.deepEqual(result.activity[0]?.ticks, [[HOUR, "command"]]);
+      assert.isFalse(result.truncated.activity);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("trims activity before markers to meet the byte budget", () =>
     Effect.gen(function* () {
       yield* seedProjects;
