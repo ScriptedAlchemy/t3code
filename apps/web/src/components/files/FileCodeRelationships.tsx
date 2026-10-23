@@ -397,6 +397,8 @@ function DecisionsTab(props: {
           entityMatch: "any",
           // Message matches are not shown here, so ask for as few as the search allows.
           limit: 1,
+          // Opening a file preview is not recall; it must not reinforce ranking.
+          recordRetrieval: false,
         }
       : null;
   const search = useEnvironmentQuery(

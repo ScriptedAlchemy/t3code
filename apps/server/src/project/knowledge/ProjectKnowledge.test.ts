@@ -972,6 +972,37 @@ it.effect("reports when a delivered fact's cited message changes or disappears",
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("browsing-search");
+    yield* createProject(projectId);
+    yield* knowledge.mutate(createFact(projectId), { kind: "user" });
+    const searchCount = Effect.fn("test.searchCount")(function* (
+      requestId: string,
+      recordRetrieval?: boolean,
+    ) {
+      const result = yield* knowledge.search({
+        projectId,
+        query: "tenant cache",
+        requestId: CommandId.make(requestId),
+        ...(recordRetrieval === undefined ? {} : { recordRetrieval }),
+      });
+      return result.facts.state === "available"
+        ? result.facts.matches[0]?.fact.retrievalCount
+        : undefined;
+    });
+    const storedCount = Effect.map(
+      knowledge.list({ projectId }),
+      (listed) => listed.facts[0]?.retrievalCount,
+    );
+    assert.equal(yield* searchCount("browse", false), 0);
+    assert.equal(yield* storedCount, 0);
+    assert.equal(yield* searchCount("agent"), 1);
+    assert.equal(yield* storedCount, 1);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect(
   "MCP ranks canonical project facts through the native addon and records retrieval once",
   () =>

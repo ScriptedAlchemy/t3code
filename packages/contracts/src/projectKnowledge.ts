@@ -416,6 +416,9 @@ export const ProjectKnowledgeSearchInput = Schema.Struct({
   entities: Schema.optionalKey(Labels),
   entityMatch: Schema.optionalKey(Schema.Literals(["any", "all"])),
   includeSuperseded: Schema.optionalKey(Schema.Boolean),
+  // Retrieval reinforces ranking. Browsing surfaces (as-you-type, previews) pass false so only
+  // deliberate lookups count; omitted means true.
+  recordRetrieval: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectKnowledgeSearchInput = typeof ProjectKnowledgeSearchInput.Type;
 export const KnowledgeScore = Schema.Struct({

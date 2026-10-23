@@ -134,6 +134,8 @@ function useFactGroup(target: ProjectSearchTarget, query: string | null): GroupS
             query: active.query,
             requestId: active.requestId,
             limit: GROUP_LIMIT,
+            // As-you-type results are browsing, not recall; they must not reinforce ranking.
+            recordRetrieval: false,
           },
         })
       : null,

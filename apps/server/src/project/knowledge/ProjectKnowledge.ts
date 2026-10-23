@@ -949,11 +949,13 @@ const make = Effect.gen(function* () {
                   ? last.position + 1
                   : null
                 : searchReceipt.nextOffset;
-            if (receipt === null) {
+            const reinforce = receipt === null && input.recordRetrieval !== false;
+            if (reinforce)
               yield* store.recordRetrieval(
                 input.projectId,
                 selected.map((match) => match.fact.id),
               );
+            if (receipt === null) {
               yield* store.record(input.requestId, input.projectId, null, requestDigest, {
                 rootRequestId,
                 queryDigest,
@@ -967,8 +969,7 @@ const make = Effect.gen(function* () {
               facts: {
                 state: "available" as const,
                 matches: selected.map(({ fact, score }) => ({
-                  fact:
-                    receipt === null ? { ...fact, retrievalCount: fact.retrievalCount + 1 } : fact,
+                  fact: reinforce ? { ...fact, retrievalCount: fact.retrievalCount + 1 } : fact,
                   score,
                 })),
                 coverage: ranked.coverage,
