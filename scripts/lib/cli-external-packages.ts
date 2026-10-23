@@ -12,6 +12,9 @@
  * exists only inside the emitted bundle and is unreachable there.
  */
 export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
+  // CodeGraph loads its bundled runtime, worker files, grammar WASMs and
+  // platform bundle from package-relative paths.
+  "@colbymchenry/codegraph",
   // Cursor ships computed Webpack imports and platform helper packages.
   "@cursor/sdk",
   // Playwright reads package.json and browsers.json beside its runtime modules.

@@ -38,6 +38,8 @@ describe("shouldBundleCliDependency", () => {
       "@napi-rs/keyring",
       "@clerk/electron-passkeys",
       "node-addon-api",
+      "@colbymchenry/codegraph",
+      "@colbymchenry/codegraph-darwin-arm64",
     ]) {
       assert.strictEqual(shouldBundleCliDependency(id), false, id);
     }
@@ -45,6 +47,7 @@ describe("shouldBundleCliDependency", () => {
 
   it("treats prefix-matched siblings as external", () => {
     assert.strictEqual(shouldBundleCliDependency("node-gyp-build-optional-packages"), false);
+    assert.strictEqual(shouldBundleCliDependency("@colbymchenry/codegraph-linux-x64"), false);
   });
 });
 

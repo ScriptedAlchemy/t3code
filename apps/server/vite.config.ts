@@ -81,9 +81,15 @@ export default mergeConfig(
       },
     },
     pack: {
-      // The executable embeds one entry; the history worker becomes a hidden
-      // subcommand there instead of a sibling script.
-      entry: packExecutable ? ["src/bin.ts"] : ["src/bin.ts", "src/claude-history-worker.ts"],
+      // The history worker is a hidden subcommand. The graph worker remains a
+      // sibling script because the server starts it in a worker thread.
+      entry: packExecutable
+        ? ["src/bin.ts", "src/project/knowledge/codeIntelligenceWorkerThread.ts"]
+        : [
+            "src/bin.ts",
+            "src/claude-history-worker.ts",
+            "src/project/knowledge/codeIntelligenceWorkerThread.ts",
+          ],
       outDir: packExecutable ? "dist-exe" : "dist",
       sourcemap: !packExecutable,
       clean: true,

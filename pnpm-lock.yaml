@@ -817,6 +817,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.276
         version: 0.3.276(@anthropic-ai/sdk@0.93.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.29.0(supports-color@8.1.1)(zod@4.6.5))(zod@4.6.5)
+      '@colbymchenry/codegraph':
+        specifier: 1.6.2
+        version: 1.6.2
       '@cursor/sdk':
         specifier: 1.0.35
         version: 1.0.35
@@ -3064,6 +3067,40 @@ packages:
 
   '@coderabbitai/config@1.1.0':
     resolution: {integrity: sha512-NvQKaoOD7fWb7lMKhid57ABVlIBSczw/S+ePk5YvoPuWdrDkyY+PWdqVtq3TRq7VY8f3SNRlMFjmAtXVab66pw==}
+
+  '@colbymchenry/codegraph-darwin-arm64@1.6.2':
+    resolution: {integrity: sha512-r2gMjnZCyIABkAi5WdQ9cADHIDhfEU1K6K7DelR0Un9lDp+BFK+2ocLyfgMFfLJQeFPCiu4TL5npJRVT3tnchQ==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@colbymchenry/codegraph-darwin-x64@1.6.2':
+    resolution: {integrity: sha512-28WglI4BwqxLXNFYlkvZXs5Ye3WYdMLeoFRKFmRA/NwlnH4if8IKGVt6oS7YiQ8qspB9nWo18O+8IDhxkFXXqA==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@colbymchenry/codegraph-linux-arm64@1.6.2':
+    resolution: {integrity: sha512-4sUICiYzHgC3brCKw4FDiY10jVQ79oIm2wwE978IOAXj36sDxji6d9l5SEvGyHyolgSXsLImLtagTsIEN2Pvnw==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@colbymchenry/codegraph-linux-x64@1.6.2':
+    resolution: {integrity: sha512-DJWizz1qHNr1MsbK6fz1mjVUQjeTH3T+L0D2BGaLkygWzBnNMG30MvLq1ae0m6cUV414U8aEow5Eb/kIORA8+w==}
+    cpu: [x64]
+    os: [linux]
+
+  '@colbymchenry/codegraph-win32-arm64@1.6.2':
+    resolution: {integrity: sha512-Gl3zS0VlWfBSqbJ9zzBByrH3Mjqzq81Ub33llTmShK1UUQOO7EtC9GE5fOR3YU43CnBTws2d7lcfy+KPIsmy8Q==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@colbymchenry/codegraph-win32-x64@1.6.2':
+    resolution: {integrity: sha512-3psrtVSdZIoqHLmdeL1b9OCPeKtuPKmVjg2/3XcOLaBwu0osMRwYFHG6uN1iSKQOKfre8jL+t2KXV8fYl1VxAQ==}
+    cpu: [x64]
+    os: [win32]
+
+  '@colbymchenry/codegraph@1.6.2':
+    resolution: {integrity: sha512-hODH/mGnCf3IUMs6rzktv/zbecJIKJfdZAYHZ9mqecb0G7ZkHaA8CZafDVnswANFEL1YFcG+lfAwc5SIXzUH6Q==}
+    hasBin: true
 
   '@connectrpc/connect-web@1.7.0':
     resolution: {integrity: sha512-qyP0YOnUPRWwCc/VfsoydMJvkb7EyUPr2q9sHgBuJzbADjiqck1gKH5V5ZPzPhTLBvmz5UvG+wiZ5sMRQHU1MQ==}
@@ -13249,6 +13286,33 @@ snapshots:
   '@coderabbitai/config@1.1.0':
     dependencies:
       zod: 4.5.4
+
+  '@colbymchenry/codegraph-darwin-arm64@1.6.2':
+    optional: true
+
+  '@colbymchenry/codegraph-darwin-x64@1.6.2':
+    optional: true
+
+  '@colbymchenry/codegraph-linux-arm64@1.6.2':
+    optional: true
+
+  '@colbymchenry/codegraph-linux-x64@1.6.2':
+    optional: true
+
+  '@colbymchenry/codegraph-win32-arm64@1.6.2':
+    optional: true
+
+  '@colbymchenry/codegraph-win32-x64@1.6.2':
+    optional: true
+
+  '@colbymchenry/codegraph@1.6.2':
+    optionalDependencies:
+      '@colbymchenry/codegraph-darwin-arm64': 1.6.2
+      '@colbymchenry/codegraph-darwin-x64': 1.6.2
+      '@colbymchenry/codegraph-linux-arm64': 1.6.2
+      '@colbymchenry/codegraph-linux-x64': 1.6.2
+      '@colbymchenry/codegraph-win32-arm64': 1.6.2
+      '@colbymchenry/codegraph-win32-x64': 1.6.2
 
   '@connectrpc/connect-web@1.7.0(@bufbuild/protobuf@1.10.0)(@connectrpc/connect@1.7.0(@bufbuild/protobuf@1.10.0))':
     dependencies:

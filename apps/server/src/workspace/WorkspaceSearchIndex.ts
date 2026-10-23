@@ -509,6 +509,7 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
           pageSize: rawPageSize,
           cursor: nextCursor,
           timeBudgetMs: remainingTimeBudgetMs,
+          enforceTimeBudget: true,
         }),
       );
 

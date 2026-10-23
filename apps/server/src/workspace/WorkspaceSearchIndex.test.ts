@@ -136,6 +136,7 @@ it.effect("continues whole-word searches after a filtered grep page", () =>
       });
       expect(grep).toHaveBeenCalledTimes(2);
       expect(grep.mock.calls[1]?.[1]?.cursor).toBe(nextCursor);
+      expect(grep.mock.calls[0]?.[1]?.enforceTimeBudget).toBe(true);
     }),
   ),
 );

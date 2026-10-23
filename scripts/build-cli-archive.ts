@@ -464,6 +464,10 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
     : targetKey === hostKey
       ? path.join(serverDir, "dist-exe", executableName)
       : targetExecutable;
+  const codeIntelligenceWorker = path.join(
+    serverDir,
+    "dist-exe/project/knowledge/codeIntelligenceWorkerThread.mjs",
+  );
   const webClient = path.join(serverDir, "dist/client");
   const resourceMonitorDir = Option.getOrElse(input.resourceMonitorDir, () =>
     path.join(serverDir, "dist/resource-monitor"),
@@ -471,6 +475,10 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
 
   yield* requireInput(
     builtExecutable,
+    `Run \`node apps/server/scripts/cli.ts build-exe --target ${targetKey}\` first.`,
+  );
+  yield* requireInput(
+    codeIntelligenceWorker,
     `Run \`node apps/server/scripts/cli.ts build-exe --target ${targetKey}\` first.`,
   );
   yield* requireInput(path.join(webClient, "index.html"), "Run `vp run --filter t3 build` first.");
@@ -486,6 +494,12 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
 
   yield* Effect.log(`[cli-archive] Staging ${stem}...`);
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
+  const codeIntelligenceWorkerTarget = path.join(
+    contentDir,
+    "project/knowledge/codeIntelligenceWorkerThread.mjs",
+  );
+  yield* fs.makeDirectory(path.dirname(codeIntelligenceWorkerTarget), { recursive: true });
+  yield* fs.copyFile(codeIntelligenceWorker, codeIntelligenceWorkerTarget);
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
   const rustArch = input.arch === "arm64" ? "aarch64" : "x86_64";
