@@ -12,6 +12,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { serverEnvironment } from "../../state/server";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { Switch } from "../ui/switch";
 
 /** The project's opt-in for model-suggested facts and what the last run did with it. */
 export function AssistedLearningSection(props: {
@@ -49,15 +50,15 @@ export function AssistedLearningSection(props: {
   };
   return (
     <section aria-label="Assisted learning" className="flex flex-col gap-1 rounded-md border p-3">
-      <label>
-        <input
-          type="checkbox"
+      <div className="flex items-center justify-between gap-3 font-medium text-sm">
+        <span>Suggest facts from finished runs</span>
+        <Switch
+          aria-label="Suggest facts from finished runs"
           checked={enabled}
           disabled={!canWrite || busy}
-          onChange={(event) => void toggle(event.target.checked)}
-        />{" "}
-        Suggest facts from finished runs
-      </label>
+          onCheckedChange={(checked) => void toggle(checked)}
+        />
+      </div>
       <p className="text-xs text-muted-foreground">
         After each run in this project, your text generation model reads that run and proposes up to
         three cited facts for you to review. Each run costs one model call.

@@ -24,6 +24,7 @@ const state = vi.hoisted(() => ({
   mutate: vi.fn(),
   insert: vi.fn(),
   setText: vi.fn(),
+  confirm: vi.fn(),
 }));
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
   squashAtomCommandFailure: () => new Error("Request failed"),
@@ -108,6 +109,7 @@ vi.mock("./ui/Sheet", () => ({
     </div>
   ),
 }));
+vi.mock("./ui/Dialog", () => ({ confirm: (request: unknown) => state.confirm(request) }));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: (value: unknown) => value }));
 vi.mock("../state/server", () => ({
   serverEnvironment: {
@@ -191,6 +193,7 @@ function setup() {
   state.mutate.mockReset().mockResolvedValue({ _tag: "Success", value: { ...fact, revision: 2 } });
   state.insert.mockReset().mockReturnValue(true);
   state.setText.mockReset();
+  state.confirm.mockReset();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");
   const root = createRoot(container);
@@ -438,6 +441,37 @@ it.each([
       factId: fact.id,
       expectedRevision: 3,
       helpful,
+    },
+  });
+});
+
+it("forgets a fact only after the permanent-erase warning is confirmed", async () => {
+  using screen = setup();
+  await screen.click("Project memory");
+  await screen.click(`Inspect fact: ${fact.content}`);
+
+  await screen.click("Forget");
+  expect(state.confirm).toHaveBeenCalledTimes(1);
+  const warning = state.confirm.mock.lastCall![0];
+  expect(warning).toMatchObject({
+    title: "Forget this fact permanently?",
+    confirmText: "Forget",
+    destructive: true,
+  });
+  expect(warning.message).toContain("cannot be restored");
+  expect(warning.message).toContain("supersede it instead");
+  // Dismissing the alert runs neither callback, so nothing is sent.
+  expect(state.mutate).not.toHaveBeenCalled();
+
+  await act(async () => warning.onConfirm());
+  expect(state.mutate).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: {
+      action: "forget",
+      commandId: expect.any(String),
+      projectId: scope.projectId,
+      factId: fact.id,
+      expectedRevision: 1,
     },
   });
 });

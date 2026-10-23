@@ -83,6 +83,7 @@ vi.mock(
     }) as never,
 );
 
+import { ConfirmDialogHost } from "../ConfirmDialogHost";
 import { useComposerDraftStore, partializeComposerDraftStoreState } from "../../composerDraftStore";
 import {
   ProjectMemoryDialogHost,
@@ -208,6 +209,7 @@ async function mount(registry: ReturnType<typeof AtomRegistry.make>) {
     <RegistryContext.Provider value={registry}>
       <ProjectMemoryPanel environmentId={scope.environmentId} projectId={scope.projectId} />
       <ProjectMemoryDialogHost {...scope} />
+      <ConfirmDialogHost />
     </RegistryContext.Provider>,
   );
 }
@@ -385,6 +387,38 @@ it("shows real score components and sends the viewed revision for feedback", asy
   });
 });
 
+it("forgets a fact only after the permanent-erase warning is confirmed", async () => {
+  const registry = await setup();
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await factRow(fact.content!).click();
+  const forget = inspector().getByRole("button", { name: "Forget", exact: true });
+  const warning = page.getByRole("alertdialog");
+
+  await forget.click();
+  await expect.element(warning.getByText("Forget this fact permanently?")).toBeVisible();
+  await expect.element(warning.getByText(/cannot be restored/)).toBeVisible();
+  await expect.element(warning.getByText(/supersede it instead/)).toBeVisible();
+  await warning.getByRole("button", { name: "Cancel" }).click();
+  await expect.element(warning).not.toBeInTheDocument();
+  expect(state.mutate).not.toHaveBeenCalled();
+
+  await forget.click();
+  await warning.getByRole("button", { name: "Confirm" }).click();
+  await vi.waitFor(() =>
+    expect(state.mutate).toHaveBeenCalledWith({
+      environmentId: scope.environmentId,
+      input: {
+        action: "forget",
+        commandId: expect.any(String),
+        projectId: scope.projectId,
+        factId: fact.id,
+        expectedRevision: 1,
+      },
+    }),
+  );
+});
+
 it("hides unsupported memory", async () => {
   const registry = await setup();
   state.config = Atom.make({ environment: { capabilities: {} } });
@@ -459,6 +493,7 @@ it("remembers a timeline message with a citation to that exact message", async (
     <RegistryContext.Provider value={registry}>
       <RememberEvidence />
       <ProjectMemoryDialogHost {...scope} />
+      <ConfirmDialogHost />
     </RegistryContext.Provider>,
   );
   await screen.getByRole("button", { name: "Remember evidence" }).click();
@@ -830,7 +865,7 @@ it("reviews assisted suggestions with their citations and controls the project o
   await using screen = await mount(registry);
   await openMemory(screen);
   await page.getByRole("button", { name: "Memory health" }).click();
-  const optIn = page.getByRole("checkbox", { name: "Suggest facts from finished runs" });
+  const optIn = page.getByRole("switch", { name: "Suggest facts from finished runs" });
   await expect.element(optIn).toBeChecked();
   await expect
     .element(page.getByText("Last run: proposed 1 (1 as updates to existing facts)."))

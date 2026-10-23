@@ -27,6 +27,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Dialog, DialogDescription, DialogHeader, DialogPopup, DialogTitle } from "../ui/dialog";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { requestConfirmDialog } from "../../confirmDialog";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { serverEnvironment } from "../../state/server";
@@ -76,6 +77,9 @@ const openRequestAtom = Atom.make<OpenRequest | null>(null).pipe(
 let nextRequestKey = 0;
 // Module scope: the React Compiler cannot lower an update of a global inside a hook.
 const takeRequestKey = () => ++nextRequestKey;
+
+const FORGET_CONFIRM_DETAIL =
+  "Its content, history and every copy sent to agents are removed and cannot be restored. If the fact changed rather than became wrong, supersede it instead.";
 
 export function useProjectMemoryAvailable(environmentId: EnvironmentId | null): boolean {
   const config = useAtomValue(
@@ -376,7 +380,18 @@ function MemoryContents(
     }
     refresh();
   };
-  const revise = (fact: ProjectFact, action: "confirm" | "forget" | "feedback", helpful = true) => {
+  const revise = async (
+    fact: ProjectFact,
+    action: "confirm" | "forget" | "feedback",
+    helpful = true,
+  ) => {
+    if (action === "forget") {
+      const message = `Forget this fact permanently?\n${FORGET_CONFIRM_DETAIL}`;
+      const confirmed =
+        (await requestConfirmDialog(message, { variant: "destructive" })) ??
+        window.confirm(message);
+      if (!confirmed) return;
+    }
     const fields = {
       commandId: CommandId.make(randomUUID()),
       projectId: props.projectId,

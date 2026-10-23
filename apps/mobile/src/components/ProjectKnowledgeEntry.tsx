@@ -55,6 +55,7 @@ import {
 import { ProjectKnowledgeFactList, useProjectKnowledgeBrowse } from "./ProjectKnowledgeFactList";
 import { AppText } from "./ui/AppText";
 import { Button } from "./ui/Button";
+import * as Dialog from "./ui/Dialog";
 import { Sheet } from "./ui/Sheet";
 
 type Scope = {
@@ -470,7 +471,18 @@ function ProjectKnowledgeSheet(
                   if (inspectedFact.status !== "forgotten")
                     push({ kind: "editor", mode: { kind, fact: inspectedFact } });
                 }}
-                onRevise={(action) => void apply({ action, ...factMutation(inspectedFact) })}
+                onRevise={(action) => {
+                  const revise = () => void apply({ action, ...factMutation(inspectedFact) });
+                  if (action !== "forget") return revise();
+                  Dialog.confirm({
+                    title: "Forget this fact permanently?",
+                    message:
+                      "Its content, history and every copy sent to agents are removed and cannot be restored. If the fact changed rather than became wrong, supersede it instead.",
+                    confirmText: "Forget",
+                    destructive: true,
+                    onConfirm: revise,
+                  });
+                }}
                 onFeedback={(helpful) =>
                   void apply({ action: "feedback", helpful, ...factMutation(inspectedFact) })
                 }

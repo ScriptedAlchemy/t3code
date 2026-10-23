@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   CommandId,
   ProjectFactId,
@@ -10,9 +10,11 @@ import {
 import { randomUUID } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 
-type FactKind = "decision" | "constraint" | "convention" | "note";
+const FACT_KINDS = ["decision", "constraint", "convention", "note"] as const;
+type FactKind = (typeof FACT_KINDS)[number];
 export type EditableFact = Extract<ProjectFact, { content: string }>;
 
 /** What the editor starts from: a new fact (optionally cited) or an existing revision. */
@@ -53,6 +55,7 @@ export function ProjectFactEditor(props: {
   const [entities, setEntities] = useState(base?.entities.join(", ") ?? "");
   const [tags, setTags] = useState(base?.tags.join(", ") ?? "");
   const [kind, setKind] = useState<FactKind>(base?.kind ?? "note");
+  const kindLabelId = useId();
   const sources: ReadonlyArray<KnowledgeFactSource> = base
     ? base.sources.length
       ? base.sources
@@ -119,14 +122,26 @@ export function ProjectFactEditor(props: {
         value={tags}
         onChange={(event) => setTags(event.target.value)}
       />
-      <label className="flex items-center gap-2 text-sm">
-        Kind
-        <select value={kind} onChange={(event) => setKind(event.target.value as FactKind)}>
-          {(["decision", "constraint", "convention", "note"] as const).map((value) => (
-            <option key={value}>{value}</option>
-          ))}
-        </select>
-      </label>
+      <div className="flex items-center gap-2 text-sm">
+        <span id={kindLabelId}>Kind</span>
+        <Select
+          value={kind}
+          onValueChange={(value) => {
+            if (value !== null) setKind(value);
+          }}
+        >
+          <SelectTrigger size="sm" aria-labelledby={kindLabelId} className="w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup alignItemWithTrigger={false}>
+            {FACT_KINDS.map((value) => (
+              <SelectItem hideIndicator key={value} value={value}>
+                {value}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      </div>
       <p className="text-muted-foreground text-sm">
         {sources.some((ref) => ref.kind === "message")
           ? "Saved with the selected message citation."
