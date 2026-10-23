@@ -150,6 +150,20 @@ function normalizeQueryPaths(
         })),
       );
   }
+  if (query.operation === "path") {
+    const normalize = (symbol: typeof query.from) =>
+      symbol.filePath === undefined
+        ? Effect.succeed(symbol)
+        : workspacePaths
+            .resolveRelativePathWithinRoot({
+              workspaceRoot: checkoutPath,
+              relativePath: symbol.filePath,
+            })
+            .pipe(Effect.map(({ relativePath }) => ({ ...symbol, filePath: relativePath })));
+    return Effect.all([normalize(query.from), normalize(query.to)]).pipe(
+      Effect.map(([from, to]) => ({ ...query, from, to })),
+    );
+  }
   if (query.operation === "symbols" && query.filePath !== undefined) {
     return workspacePaths
       .resolveRelativePathWithinRoot({
@@ -374,7 +388,9 @@ const make = Effect.gen(function* () {
                     normalizedQuery.operation === "impact" ||
                     normalizedQuery.operation === "tests"
                   ? normalizedQuery.symbol.filePath
-                  : undefined;
+                  : normalizedQuery.operation === "path"
+                    ? (normalizedQuery.from.filePath ?? normalizedQuery.to.filePath)
+                    : undefined;
             if (cause.reason === "path-outside-checkout" && queryPath !== undefined) {
               return new CodeIntelligencePathOutsideCheckout({ path: queryPath });
             }

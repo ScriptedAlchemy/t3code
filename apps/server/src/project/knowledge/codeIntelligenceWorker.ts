@@ -22,12 +22,14 @@ import type {
   ProjectCodeIndexInfo,
   ProjectCodeSymbolGroup,
   ProjectCodeMatch,
+  ProjectCodePathSearch,
   ProjectCodeQuery,
   ProjectCodeQueryResult,
   ProjectCodeSelection,
   ProjectCodeSourceDigest,
   ProjectCodeStats,
   ProjectCodeSymbol,
+  ProjectCodeSymbolSelector,
   ProjectCodeUnresolvedReference,
 } from "@t3tools/contracts";
 
@@ -37,8 +39,9 @@ const MAX_RESULTS = 200;
 const MAX_FILES_FOR_UNRESOLVED = 50;
 const MAX_LISTED_FILES = 10_000;
 const INDEX_META_FILE = "t3-index.json";
-// A test walk stops after this many visited symbols, whatever the depth.
-const MAX_TEST_WALK_NODES = 2_000;
+// A test or path walk stops after this many visited symbols, whatever the depth.
+const MAX_WALK_NODES = 2_000;
+const DEFAULT_PATH_DEPTH = 6;
 const MAX_AFFECTED_SYMBOLS = 20;
 const AFFECTED_CALLERS_PER_SYMBOL = 8;
 const AFFECTED_TESTS_PER_SYMBOL = 5;
@@ -306,10 +309,7 @@ function changedSinceIndex(
 
 function selectSymbols(
   graph: CodeGraphInstance,
-  input: Extract<
-    ProjectCodeQuery,
-    { readonly operation: "callers" | "callees" | "references" | "impact" | "tests" }
-  >["symbol"],
+  input: ProjectCodeSymbolSelector,
   limit: number,
   allowedPaths: ReadonlySet<string>,
 ): ProjectCodeSymbol[] {
@@ -426,12 +426,18 @@ export async function inspectCodeInWorker(
           input.query.operation === "tests"
         ? input.query.symbol.filePath
         : undefined;
-  if (
-    queryPath !== undefined &&
-    safeRelativePath(input.checkoutPath, queryPath) !== null &&
-    authorizedSourcePath(input.checkoutPath, queryPath) === null
-  ) {
-    throw new Error("path-outside-checkout");
+  const queryPaths =
+    input.query.operation === "path"
+      ? [input.query.from.filePath, input.query.to.filePath]
+      : [queryPath];
+  for (const path of queryPaths) {
+    if (
+      path !== undefined &&
+      safeRelativePath(input.checkoutPath, path) !== null &&
+      authorizedSourcePath(input.checkoutPath, path) === null
+    ) {
+      throw new Error("path-outside-checkout");
+    }
   }
   if (input.query.operation === "freshness") {
     return await inspectFreshness(input, listedPaths, sdk());
@@ -490,7 +496,9 @@ export async function inspectCodeInWorker(
       ).length;
     const stats = graph.getStats();
     const limit = Math.min(
-      input.query.operation === "status" ? MAX_RESULTS : (input.query.limit ?? 100),
+      input.query.operation === "status" || input.query.operation === "path"
+        ? MAX_RESULTS
+        : (input.query.limit ?? 100),
       MAX_RESULTS,
     );
     const matches: ProjectCodeMatch[] = [];
@@ -501,6 +509,7 @@ export async function inspectCodeInWorker(
     let selection: ProjectCodeSelection = { state: "not-required", candidates: [] };
     let resultLimitReached = false;
     const symbolGroups: ProjectCodeSymbolGroup[] = [];
+    let pathSearch: ProjectCodePathSearch | null = null;
 
     const addNode = (node: CodeGraphNode) => {
       if (!listedPathSet.has(node.filePath)) return;
@@ -549,7 +558,7 @@ export async function inspectCodeInWorker(
         for (const id of frontier) {
           for (const usage of graph.findUsages(id)) {
             if (visited.has(usage.node.id) || !listedPathSet.has(usage.node.filePath)) continue;
-            if (visited.size >= MAX_TEST_WALK_NODES)
+            if (visited.size >= MAX_WALK_NODES)
               return { tests: preferDeclarations(tests), via, truncated: true };
             visited.add(usage.node.id);
             via.set(usage.node.id, usage.edge);
@@ -728,6 +737,85 @@ export async function inspectCodeInWorker(
         }
         break;
       }
+      case "path": {
+        const query = input.query;
+        const maxDepth = query.depth ?? DEFAULT_PATH_DEPTH;
+        const fromCandidates = selectSymbols(graph, query.from, limit, listedPathSet);
+        const toCandidates =
+          fromCandidates.length === 1 ? selectSymbols(graph, query.to, limit, listedPathSet) : [];
+        const unresolvedEndpoint =
+          fromCandidates.length !== 1 ? "from" : toCandidates.length !== 1 ? "to" : null;
+        if (unresolvedEndpoint !== null) {
+          const candidates = unresolvedEndpoint === "from" ? fromCandidates : toCandidates;
+          selection = {
+            state: candidates.length === 0 ? "not-found" : "ambiguous",
+            candidates: candidates.slice(0, limit),
+          };
+          resultLimitReached = candidates.length > limit;
+          pathSearch = {
+            found: false,
+            maxDepth,
+            visitedSymbols: 0,
+            walkTruncated: false,
+            unresolvedEndpoint,
+          };
+          break;
+        }
+        const from = fromCandidates[0]!;
+        const targetId = toCandidates[0]!.id;
+        selection = { state: "matched", candidates: [from, toCandidates[0]!] };
+        // Breadth first over the same outgoing kinds `callees` follows, so the shortest route
+        // within the bound is the one returned.
+        const via = new Map<string, Edge>();
+        const visited = new Set([from.id]);
+        let frontier = [from.id];
+        let found = from.id === targetId;
+        let walkTruncated = false;
+        walk: for (let hop = 0; hop < maxDepth && frontier.length > 0 && !found; hop += 1) {
+          const next: string[] = [];
+          for (const id of frontier) {
+            for (const callee of graph.getCallees(id, 1)) {
+              if (visited.has(callee.node.id) || !listedPathSet.has(callee.node.filePath)) continue;
+              if (visited.size >= MAX_WALK_NODES) {
+                walkTruncated = true;
+                break walk;
+              }
+              visited.add(callee.node.id);
+              via.set(callee.node.id, callee.edge);
+              if (callee.node.id === targetId) {
+                found = true;
+                break walk;
+              }
+              next.push(callee.node.id);
+            }
+          }
+          frontier = next;
+        }
+        if (found) {
+          const route: Edge[] = [];
+          for (let id = targetId; id !== from.id;) {
+            const edge = via.get(id);
+            if (edge === undefined) break;
+            route.unshift(edge);
+            id = edge.source;
+          }
+          const fromNode = graph.getNode(from.id);
+          if (fromNode !== null) addNode(fromNode);
+          for (const edge of route) {
+            const target = graph.getNode(edge.target);
+            if (target !== null) addNode(target);
+            addEdge(edge);
+          }
+        }
+        pathSearch = {
+          found,
+          maxDepth,
+          visitedSymbols: visited.size,
+          walkTruncated,
+          unresolvedEndpoint: null,
+        };
+        break;
+      }
       case "dependencies": {
         const path = safeRelativePath(input.checkoutPath, input.query.filePath);
         if (path === null || !listedPathSet.has(path)) break;
@@ -843,6 +931,7 @@ export async function inspectCodeInWorker(
         changedPaths: [],
       },
       ...(symbolGroups.length > 0 ? { symbolGroups } : {}),
+      ...(pathSearch !== null ? { pathSearch } : {}),
     };
   } finally {
     graph.close();

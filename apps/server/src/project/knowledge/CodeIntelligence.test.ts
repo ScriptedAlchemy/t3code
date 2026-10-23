@@ -380,6 +380,42 @@ it.effect(
           );
           assert.equal(callerQuery.coverage.state, "complete");
 
+          const reaches = yield* runQuery({
+            operation: "path",
+            from: { name: "caller", filePath: "src/use.ts" },
+            to: { name: "greet", filePath: "src/defs.ts" },
+          });
+          assert.equal(reaches.pathSearch?.found, true);
+          assert.equal(reaches.pathSearch?.maxDepth, 6);
+          assert.equal(reaches.pathSearch?.walkTruncated, false);
+          assert.equal(reaches.pathSearch?.unresolvedEndpoint, null);
+          // The route runs from `from` to `to`, one edge per hop.
+          assert.deepEqual(
+            reaches.nodes.map((node) => node.name),
+            ["caller", "greet"],
+          );
+          assert.deepEqual(
+            reaches.edges.map((edge) => [edge.source, edge.target]),
+            [[reaches.nodes[0]!.id, reaches.nodes[1]!.id]],
+          );
+          const reverse = yield* runQuery({
+            operation: "path",
+            from: { name: "greet", filePath: "src/defs.ts" },
+            to: { name: "caller", filePath: "src/use.ts" },
+            depth: 2,
+          });
+          assert.equal(reverse.pathSearch?.found, false);
+          assert.equal(reverse.pathSearch?.maxDepth, 2);
+          assert.deepEqual(reverse.nodes, []);
+          const ambiguousTarget = yield* runQuery({
+            operation: "path",
+            from: { name: "caller", filePath: "src/use.ts" },
+            to: { name: "greet" },
+          });
+          assert.equal(ambiguousTarget.selection.state, "ambiguous");
+          assert.equal(ambiguousTarget.pathSearch?.unresolvedEndpoint, "to");
+          assert.equal(ambiguousTarget.pathSearch?.found, false);
+
           const ambiguous = yield* runQuery({ operation: "callers", symbol: { name: "greet" } });
           assert.equal(ambiguous.selection.state, "ambiguous");
           assert.ok(ambiguous.selection.candidates.some((node) => node.language === "go"));

@@ -4,6 +4,7 @@ import { IsoDateTime, ProjectId, ThreadId } from "./baseSchemas.ts";
 
 const limit = Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 })));
 const depth = Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 4 })));
+const pathDepth = Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 8 })));
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0));
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const NonEmptyText = Schema.String.check(Schema.isNonEmpty());
@@ -86,6 +87,14 @@ export const ProjectCodeQuery = Schema.Union([
       ),
     ),
     limit,
+  }),
+  // Whether `from` reaches `to` along outgoing call edges, breadth first, within `depth` hops
+  // and a fixed visit budget. Not finding a path is bounded, never proof there is none.
+  Schema.Struct({
+    operation: Schema.Literal("path"),
+    from: ProjectCodeSymbolSelector,
+    to: ProjectCodeSymbolSelector,
+    depth: pathDepth,
   }),
   Schema.Struct({ operation: Schema.Literal("status") }),
   // Compares the existing index to the checkout without indexing anything.
@@ -232,6 +241,17 @@ export const ProjectCodeSymbolGroup = Schema.Struct({
 });
 export type ProjectCodeSymbolGroup = typeof ProjectCodeSymbolGroup.Type;
 
+export const ProjectCodePathSearch = Schema.Struct({
+  found: Schema.Boolean,
+  maxDepth: PositiveInt,
+  visitedSymbols: NonNegativeInt,
+  // The walk hit its visit budget before exhausting `maxDepth`.
+  walkTruncated: Schema.Boolean,
+  // Which endpoint `selection` describes when it is not matched.
+  unresolvedEndpoint: Schema.NullOr(Schema.Literals(["from", "to"])),
+});
+export type ProjectCodePathSearch = typeof ProjectCodePathSearch.Type;
+
 export const ProjectCodeQueryResult = Schema.Struct({
   operation: Schema.Literals([
     "search",
@@ -245,6 +265,7 @@ export const ProjectCodeQueryResult = Schema.Struct({
     "tests",
     "affected",
     "freshness",
+    "path",
   ]),
   checkoutPath: Schema.String.check(Schema.isMaxLength(4096)),
   matches: Schema.Array(ProjectCodeMatch).check(Schema.isMaxLength(200)),
@@ -261,6 +282,8 @@ export const ProjectCodeQueryResult = Schema.Struct({
   symbolGroups: Schema.optionalKey(
     Schema.Array(ProjectCodeSymbolGroup).check(Schema.isMaxLength(20)),
   ),
+  // For `path`, `nodes` and `edges` are the route in order, `from` first.
+  pathSearch: Schema.optionalKey(ProjectCodePathSearch),
 });
 export type ProjectCodeQueryResult = typeof ProjectCodeQueryResult.Type;
 
