@@ -4,8 +4,10 @@ import { expect, it, vi } from "vite-plus/test";
 import {
   CommandId,
   EnvironmentId,
+  MessageId,
   ProjectId,
   ProjectFactId,
+  ThreadId,
   type ProjectFact,
   type ProjectKnowledgeSearchInput,
 } from "@t3tools/contracts";
@@ -15,6 +17,7 @@ const state = vi.hoisted(() => ({
   draft: {} as { text: string; context?: { records: unknown[] } },
   list: null as unknown,
   search: null as unknown,
+  source: null as unknown,
   searchRequest: vi.fn(),
   prepare: vi.fn(),
   mutate: vi.fn(),
@@ -96,7 +99,7 @@ vi.mock("../state/projectKnowledge", () => ({
     search: (request: unknown) => {
       return state.searchRequest(request);
     },
-    readSource: () => null,
+    readSource: () => state.source,
     prepareContext: "prepare",
     mutate: { permissionAtom: () => true },
   },
@@ -118,7 +121,7 @@ vi.mock("../state/use-composer-drafts", () => ({
   insertComposerDraftContext: (...args: unknown[]) => state.insert(...args),
   setComposerDraftText: (...args: unknown[]) => state.setText(...args),
 }));
-import { ProjectKnowledgeEntry } from "./ProjectKnowledgeEntry";
+import { ProjectKnowledgeEntry, requestRememberMessage } from "./ProjectKnowledgeEntry";
 
 const scope = {
   environmentId: EnvironmentId.make("mobile-memory"),
@@ -146,6 +149,7 @@ const fact: ProjectFact = {
 function setup() {
   state.draft = { text: "" };
   state.list = { facts: [fact], nextCursor: null };
+  state.source = null;
   state.search = {
     messages: { matches: [], nextCursor: null },
     facts: { state: "available", matches: [], coverage: "complete", nextCursor: null },
@@ -225,6 +229,55 @@ it.each(["selection", "archive", "close", "unmount", "removal"] as const)(
     expect(state.insert).not.toHaveBeenCalled();
   },
 );
+
+it("flags a fact whose citation is unavailable in the list", async () => {
+  using screen = setup();
+  state.list = {
+    facts: [fact],
+    nextCursor: null,
+    unavailableSources: [{ factId: fact.id, reason: "changed" }],
+  };
+  await screen.click("Project memory");
+  expect(screen.container.textContent).toContain("Source changed");
+});
+
+it("saves a remembered feed message with a citation to that message", async () => {
+  using screen = setup();
+  const source = {
+    kind: "message" as const,
+    threadId: ThreadId.make("thread"),
+    messageId: MessageId.make("message"),
+    digest: "b".repeat(64),
+  };
+  state.source = {
+    state: "available",
+    source,
+    text: "Use tenant IDs in cache keys.",
+    title: "Thread",
+    role: "assistant",
+    createdAt: fact.createdAt,
+    archived: false,
+  };
+  act(() =>
+    requestRememberMessage({
+      environmentId: scope.environmentId,
+      projectId: scope.projectId,
+      message: { threadId: source.threadId, messageId: source.messageId },
+    }),
+  );
+  expect(
+    (screen.container.querySelector('[aria-label="Fact content"]') as HTMLInputElement).value,
+  ).toBe("Use tenant IDs in cache keys.");
+  await screen.click("Save");
+  expect(state.mutate).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: expect.objectContaining({
+      action: "create",
+      content: "Use tenant IDs in cache keys.",
+      sources: [source],
+    }),
+  });
+});
 
 it("attaches the current selection", async () => {
   using screen = setup();

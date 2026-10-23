@@ -56,7 +56,11 @@ vi.mock(
 );
 
 import { useComposerDraftStore, partializeComposerDraftStoreState } from "../../composerDraftStore";
-import { ProjectMemoryPanel } from "./ProjectMemoryPanel";
+import {
+  ProjectMemoryDialogHost,
+  ProjectMemoryPanel,
+  useOpenProjectMemory,
+} from "./ProjectMemoryPanel";
 
 const scope = {
   environmentId: EnvironmentId.make("memory-browser"),
@@ -141,7 +145,8 @@ function setup() {
 async function mount(registry: ReturnType<typeof AtomRegistry.make>) {
   return render(
     <RegistryContext.Provider value={registry}>
-      <ProjectMemoryPanel {...scope} />
+      <ProjectMemoryPanel environmentId={scope.environmentId} projectId={scope.projectId} />
+      <ProjectMemoryDialogHost {...scope} />
     </RegistryContext.Provider>,
   );
 }
@@ -229,6 +234,75 @@ it("shows a stale source without exposing an old excerpt", async () => {
   await expect
     .element(page.getByRole("button", { name: "Select message" }))
     .not.toBeInTheDocument();
+});
+
+it("flags facts whose citations are unavailable before any citation is opened", async () => {
+  const registry = setup();
+  const intact = { ...fact, id: ProjectFactId.make("intact"), content: "Intact fact." };
+  state.list = Atom.make(
+    AsyncResult.success({
+      facts: [fact, intact],
+      nextCursor: null,
+      unavailableSources: [{ factId: fact.id, reason: "deleted" }],
+    }),
+  );
+  await using screen = await mount(registry);
+  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  const flagged = page.getByRole("article").filter({ hasText: fact.content! });
+  await expect.element(flagged.getByText("Source deleted")).toBeVisible();
+  const clean = page.getByRole("article").filter({ hasText: "Intact fact." });
+  await expect.element(clean.getByText(/^Source /)).not.toBeInTheDocument();
+  expect(state.readSource).not.toHaveBeenCalled();
+});
+
+it("remembers a timeline message with a citation to that exact message", async () => {
+  const registry = setup();
+  function RememberEvidence() {
+    const open = useOpenProjectMemory();
+    return (
+      <button
+        type="button"
+        onClick={() =>
+          open({
+            environmentId: scope.environmentId,
+            projectId: scope.projectId,
+            message: { threadId: source.threadId, messageId: source.messageId },
+          })
+        }
+      >
+        Remember evidence
+      </button>
+    );
+  }
+  await using screen = await render(
+    <RegistryContext.Provider value={registry}>
+      <RememberEvidence />
+      <ProjectMemoryDialogHost {...scope} />
+    </RegistryContext.Provider>,
+  );
+  await screen.getByRole("button", { name: "Remember evidence" }).click();
+  await expect
+    .element(page.getByRole("textbox", { name: "Fact content" }))
+    .toHaveValue("Exact canonical evidence.");
+  expect(state.readSource).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: {
+      projectId: scope.projectId,
+      threadId: source.threadId,
+      messageId: source.messageId,
+      includeArchived: false,
+    },
+  });
+  await page.getByRole("button", { name: "Save fact", exact: true }).click();
+  expect(state.mutate).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: expect.objectContaining({
+      action: "create",
+      projectId: scope.projectId,
+      content: "Exact canonical evidence.",
+      sources: [source],
+    }),
+  });
 });
 
 it("does not reattach a selection removed while its preview is pending", async () => {

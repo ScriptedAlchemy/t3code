@@ -336,6 +336,83 @@ it.effect(
     }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("lists which facts cite sources that were edited, deleted or archived", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const projectId = ProjectId.make("badges");
+    yield* createProject(projectId);
+    const cite = Effect.fn("test.cite")(function* (key: string) {
+      const threadId = ThreadId.make(`${key}-thread`);
+      const messageId = MessageId.make(`${key}-message`);
+      yield* projections.apply(thread(threadId, projectId));
+      yield* projections.apply(message(threadId, messageId, "assistant", `${key} decision`));
+      const source = yield* knowledge.readSource({ projectId, threadId, messageId });
+      assert.equal(source.state, "available");
+      if (source.state !== "available") return yield* Effect.die("source unavailable");
+      yield* knowledge.mutate(
+        {
+          ...createFact(projectId, key),
+          commandId: CommandId.make(`create:${key}`),
+          sources: [source.source],
+        },
+        { kind: "user" },
+      );
+      return { threadId, messageId };
+    });
+    yield* cite("intact");
+    const edited = yield* cite("edited");
+    const deleted = yield* cite("deleted");
+    const archived = yield* cite("archived");
+    yield* knowledge.mutate(createFact(projectId, "asserted"), { kind: "user" });
+
+    yield* projections.apply(
+      message(edited.threadId, edited.messageId, "assistant", "edited later", { minute: 3 }),
+    );
+    const deletedThread = yield* projections.getThreadRecords(deleted.threadId, []);
+    yield* projections.apply({
+      id: EventId.make("delete-badge-source"),
+      threadId: deleted.threadId,
+      type: "thread.deleted",
+      occurredAt: at(4),
+      payload: { ...deletedThread.thread, deletedAt: at(4) },
+    });
+    const archivedThread = yield* projections.getThreadRecords(archived.threadId, []);
+    yield* projections.apply({
+      id: EventId.make("archive-badge-source"),
+      threadId: archived.threadId,
+      type: "thread.archived",
+      occurredAt: at(5),
+      payload: { ...archivedThread.thread, archivedAt: at(5) },
+    });
+
+    const listed = yield* knowledge.list({ projectId });
+    assert.equal(listed.facts.length, 5);
+    assert.sameDeepMembers(
+      [...(listed.unavailableSources ?? [])],
+      [
+        { factId: ProjectFactId.make("edited"), reason: "changed" },
+        { factId: ProjectFactId.make("deleted"), reason: "deleted" },
+        { factId: ProjectFactId.make("archived"), reason: "archived" },
+      ],
+    );
+    // The badge must agree with what opening the citation reports.
+    for (const [key, ref, reason] of [
+      ["edited", edited, "changed"],
+      ["deleted", deleted, "deleted"],
+      ["archived", archived, "archived"],
+    ] as const) {
+      const source = listed.facts.find((item) => item.id === key)?.sources[0];
+      assert.equal(source?.kind, "message");
+      if (source?.kind !== "message") continue;
+      assert.deepEqual(yield* knowledge.readSource({ projectId, ...ref, digest: source.digest }), {
+        state: "unavailable",
+        reason,
+      });
+    }
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect(
   "isolates projects and environments, honors archives and bounds UTF-8 context bytes",
   () =>

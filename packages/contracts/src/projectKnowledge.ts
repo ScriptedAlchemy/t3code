@@ -120,9 +120,25 @@ export const ProjectKnowledgeListInput = Schema.Struct({
   limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
 });
 export type ProjectKnowledgeListInput = typeof ProjectKnowledgeListInput.Type;
+export const KnowledgeSourceUnavailableReason = Schema.Literals([
+  "missing",
+  "deleted",
+  "archived",
+  "wrong_project",
+  "streaming",
+  "changed",
+]);
+export type KnowledgeSourceUnavailableReason = typeof KnowledgeSourceUnavailableReason.Type;
 const ProjectKnowledgeListResultSchema = Schema.Struct({
   facts: Schema.Array(ProjectFact),
   nextCursor: Schema.NullOr(ProjectFactId),
+  // Facts on this page whose message citations no longer resolve, read as if
+  // archived conversations are excluded. Optional so older servers still decode.
+  unavailableSources: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({ factId: ProjectFactId, reason: KnowledgeSourceUnavailableReason }),
+    ),
+  ),
 });
 export type ProjectKnowledgeListResult = typeof ProjectKnowledgeListResultSchema.Type;
 export const ProjectKnowledgeListResult: Schema.Codec<
@@ -149,14 +165,7 @@ const ProjectKnowledgeSourceSchema = Schema.Union([
   }),
   Schema.Struct({
     state: Schema.Literal("unavailable"),
-    reason: Schema.Literals([
-      "missing",
-      "deleted",
-      "archived",
-      "wrong_project",
-      "streaming",
-      "changed",
-    ]),
+    reason: KnowledgeSourceUnavailableReason,
   }),
 ]);
 export type ProjectKnowledgeSource = typeof ProjectKnowledgeSourceSchema.Type;

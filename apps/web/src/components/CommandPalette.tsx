@@ -48,6 +48,7 @@ import {
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
+  BrainIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -66,6 +67,10 @@ import {
   TextSearchIcon,
 } from "lucide-react";
 import { requestThreadFindOpen } from "./chat/threadFindActionBus";
+import {
+  useOpenProjectMemory,
+  useProjectMemoryAvailable,
+} from "./projectKnowledge/ProjectMemoryPanel";
 import {
   useDeferredValue,
   useEffect,
@@ -731,6 +736,8 @@ function OpenCommandPaletteDialog(props: {
   const currentProjectEnvironmentId =
     activeThread?.environmentId ?? activeDraftThread?.environmentId ?? null;
   const currentProjectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? null;
+  const projectMemoryAvailable = useProjectMemoryAvailable(currentProjectEnvironmentId);
+  const openProjectMemory = useOpenProjectMemory();
   const scratchTargetEnvironmentId = scratchEnvironmentId(
     currentProjectEnvironmentId ?? primaryEnvironmentId,
   );
@@ -1246,6 +1253,21 @@ function OpenCommandPaletteDialog(props: {
       shortcutCommand: "chat.find",
       run: async () => {
         requestThreadFindOpen();
+      },
+    });
+  }
+
+  if (projectMemoryAvailable && currentProjectEnvironmentId && currentProjectId) {
+    const scope = { environmentId: currentProjectEnvironmentId, projectId: currentProjectId };
+    actionItems.push({
+      kind: "action",
+      value: "action:open-project-memory",
+      title: "Open project memory",
+      searchTerms: ["project", "memory", "knowledge", "facts", "remember"],
+      icon: <BrainIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "projectMemory.open",
+      run: async () => {
+        openProjectMemory(scope);
       },
     });
   }

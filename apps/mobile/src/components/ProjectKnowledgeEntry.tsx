@@ -6,13 +6,17 @@ import {
   CommandId,
   ProjectFactId,
   type EnvironmentId,
+  type KnowledgeFactSource,
   type KnowledgeMessageRef,
   type KnowledgeSelection,
+  type KnowledgeSourceUnavailableReason,
+  type MessageId,
   type ProjectFact,
   type ProjectId,
   type ProjectKnowledgeContextRecord,
   type ProjectKnowledgeMutation,
   type ProjectKnowledgeSearchInput,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
@@ -56,32 +60,70 @@ type Scope = {
   readonly draftKey: string;
   readonly disabled: boolean;
 };
+type MessageCitation = { readonly threadId: ThreadId; readonly messageId: MessageId };
+// The digest is optional so a feed message can be cited before the server has
+// hashed it; readSource returns the canonical ref.
+type SourceRef = MessageCitation & { readonly digest?: KnowledgeMessageRef["digest"] };
+type RememberRequest = {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly message: MessageCitation;
+};
+
+const UNAVAILABLE_SOURCE_LABEL: Record<KnowledgeSourceUnavailableReason, string> = {
+  missing: "Source missing",
+  deleted: "Source deleted",
+  archived: "Source archived",
+  wrong_project: "Source moved",
+  streaming: "Source still streaming",
+  changed: "Source changed",
+};
+
+// The feed asks the composer's entry to open, since the sheet writes to that draft.
+const rememberListeners = new Set<(request: RememberRequest) => void>();
+export function requestRememberMessage(request: RememberRequest): void {
+  for (const listener of rememberListeners) listener(request);
+}
 
 export function ProjectKnowledgeEntry(props: Scope) {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState<{ readonly seed: MessageCitation | null } | null>(null);
+  const { environmentId, projectId } = props;
+  useEffect(() => {
+    const listener = (request: RememberRequest) => {
+      if (request.environmentId === environmentId && request.projectId === projectId)
+        setOpen({ seed: request.message });
+    };
+    rememberListeners.add(listener);
+    return () => {
+      rememberListeners.delete(listener);
+    };
+  }, [environmentId, projectId]);
   if (config?.environment.capabilities.projectKnowledge !== true) return null;
   return (
     <>
       <Button
         label="Project memory"
         icon="brain"
-        onPress={() => setOpen(true)}
+        onPress={() => setOpen({ seed: null })}
         tone="text"
         accessibilityHint="Search and attach evidence from this project"
       />
       {open ? (
         <ProjectKnowledgeSheet
-          key={`${props.environmentId}:${props.projectId}:${props.draftKey}`}
+          key={`${props.environmentId}:${props.projectId}:${props.draftKey}:${open.seed?.messageId ?? ""}`}
           {...props}
-          onClose={() => setOpen(false)}
+          seedMessage={open.seed}
+          onClose={() => setOpen(null)}
         />
       ) : null}
     </>
   );
 }
 
-function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) {
+function ProjectKnowledgeSheet(
+  props: Scope & { readonly seedMessage: MessageCitation | null; readonly onClose: () => void },
+) {
   const scope = { environmentId: props.environmentId, projectId: props.projectId };
   const draft = useComposerDraft(props.draftKey);
   const attached = draft.context?.records.find(
@@ -100,10 +142,14 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
   const [includeArchived, setIncludeArchived] = useState(false);
   const [searchText, setSearchText] = useState("");
   const [searchInput, setSearchInput] = useState<ProjectKnowledgeSearchInput | null>(null);
-  const [source, setSource] = useState<KnowledgeMessageRef | null>(null);
+  const [source, setSource] = useState<SourceRef | null>(props.seedMessage);
   const [editor, setEditor] = useState<
     { readonly kind: "create" } | { readonly kind: "edit"; readonly fact: ProjectFact } | null
-  >(null);
+  >(props.seedMessage ? { kind: "create" } : null);
+  const [citations, setCitations] = useState<ReadonlyArray<KnowledgeFactSource>>([
+    { kind: "user" },
+  ]);
+  const [prefillPending, setPrefillPending] = useState(props.seedMessage !== null);
   const [content, setContent] = useState("");
   const [entities, setEntities] = useState("");
   const [tags, setTags] = useState("");
@@ -137,6 +183,15 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
         })
       : null,
   );
+  if (
+    prefillPending &&
+    sourceQuery.data?.state === "available" &&
+    sourceQuery.data.source.messageId === props.seedMessage?.messageId
+  ) {
+    setPrefillPending(false);
+    setContent(sourceQuery.data.text.slice(0, 12_000));
+    setCitations([sourceQuery.data.source]);
+  }
   const mutate = useAtomCommand(projectKnowledge.mutate, { reportFailure: false });
   const prepare = useAtomCommand(projectKnowledge.prepareContext, { reportFailure: false });
 
@@ -208,7 +263,7 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
         commandId: CommandId.make(uuidv4()),
         projectId: props.projectId,
         factId: ProjectFactId.make(uuidv4()),
-        sources: [{ kind: "user" }],
+        sources: citations,
         ...fields,
       });
     }
@@ -264,6 +319,12 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
       ? search.data.facts.matches.map((match) => match.fact)
       : []
     : (list.data?.facts ?? []);
+  // Search already drops facts whose citations no longer resolve.
+  const unavailableReasons = new Map(
+    searchInput
+      ? []
+      : (list.data?.unavailableSources ?? []).map((item) => [item.factId, item.reason]),
+  );
 
   return (
     <Sheet title="Project memory" onClose={props.onClose}>
@@ -409,6 +470,8 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
             disabled={!canMutate || busy}
             onPress={() => {
               setEditor({ kind: "create" });
+              setCitations([{ kind: "user" }]);
+              setPrefillPending(false);
               setContent("");
               setEntities("");
               setTags("");
@@ -422,6 +485,11 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
             <AppText className="font-t3-semibold">
               {editor.kind === "edit" ? "Edit fact" : "New fact"}
             </AppText>
+            {editor.kind === "create" && citations.some((ref) => ref.kind === "message") ? (
+              <AppText className="text-xs text-foreground-muted">
+                Cites the selected message.
+              </AppText>
+            ) : null}
             <AppTextInput
               accessibilityLabel="Fact content"
               value={content}
@@ -469,6 +537,11 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
 
         {facts.map((fact) => (
           <View key={fact.id} className="gap-2 rounded-2xl border border-border p-3">
+            {unavailableReasons.has(fact.id) ? (
+              <AppText className="text-xs text-warning-foreground">
+                {UNAVAILABLE_SOURCE_LABEL[unavailableReasons.get(fact.id)!]}
+              </AppText>
+            ) : null}
             <AppText className="text-base">{fact.content ?? "Forgotten fact"}</AppText>
             <AppText className="text-xs text-foreground-muted">
               {fact.kind} · {fact.status} · trust {fact.trust.toFixed(2)} · revision {fact.revision}
@@ -568,7 +641,6 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
                     tone="text"
                     onPress={() =>
                       setSource({
-                        kind: "message",
                         threadId: match.threadId,
                         messageId: match.messageId!,
                         digest: match.digest!,

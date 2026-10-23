@@ -1,6 +1,7 @@
 import { randomUUID } from "../../lib/utils";
 import { useEffect, useRef, useState } from "react";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Atom } from "effect/reactivity";
 import {
   CommandId,
   ProjectFactId,
@@ -8,6 +9,8 @@ import {
   type KnowledgeFactSource,
   type KnowledgeMessageRef,
   type KnowledgeSelection,
+  type KnowledgeSourceUnavailableReason,
+  type MessageId,
   type ProjectFact,
   type ProjectId,
   type ProjectKnowledgeMutation,
@@ -16,10 +19,18 @@ import {
 } from "@t3tools/contracts";
 import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
-import { Dialog, DialogPopup, DialogTitle, DialogDescription } from "../ui/dialog";
+import {
+  Dialog,
+  DialogDescription,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../ui/dialog";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { serverEnvironment } from "../../state/server";
@@ -49,36 +60,103 @@ type Scope = {
   threadId: ThreadId;
   draftId?: DraftId;
 };
+type ProjectScope = Pick<Scope, "environmentId" | "projectId">;
+type MessageCitation = { readonly threadId: ThreadId; readonly messageId: MessageId };
+// The digest is optional so a timeline message can be cited before the server
+// has hashed it; readSource returns the canonical ref.
+type SourceRef = MessageCitation & { readonly digest?: KnowledgeMessageRef["digest"] };
 
-export function ProjectMemoryPanel(props: Scope) {
-  const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
-  const [open, setOpen] = useState(false);
-  if (config?.environment.capabilities.projectKnowledge !== true) return null;
+const UNAVAILABLE_SOURCE_LABEL: Record<KnowledgeSourceUnavailableReason, string> = {
+  missing: "Source missing",
+  deleted: "Source deleted",
+  archived: "Source archived",
+  wrong_project: "Source moved",
+  streaming: "Source still streaming",
+  changed: "Source changed",
+};
+
+// The dialog is opened from the thread panel, timeline messages, the command
+// palette and a keybinding, so its open state lives outside any one of them.
+type OpenRequest = ProjectScope & {
+  readonly message: MessageCitation | null;
+  readonly key: number;
+};
+const openRequestAtom = Atom.make<OpenRequest | null>(null).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("chat:project-memory"),
+);
+let nextRequestKey = 0;
+
+export function useProjectMemoryAvailable(environmentId: EnvironmentId | null): boolean {
+  const config = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId ?? ("" as EnvironmentId)),
+  );
+  return environmentId !== null && config?.environment.capabilities.projectKnowledge === true;
+}
+
+export function useOpenProjectMemory() {
+  const setRequest = useAtomSet(openRequestAtom);
+  return (scope: ProjectScope & { readonly message?: MessageCitation }) =>
+    setRequest({
+      environmentId: scope.environmentId,
+      projectId: scope.projectId,
+      message: scope.message ?? null,
+      key: ++nextRequestKey,
+    });
+}
+
+export function ProjectMemoryPanel(props: ProjectScope) {
+  const available = useProjectMemoryAvailable(props.environmentId);
+  const open = useOpenProjectMemory();
+  if (!available) return null;
   return (
-    <>
-      <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        Project memory
-      </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogPopup>
+    <Button variant="ghost" size="sm" onClick={() => open(props)}>
+      Project memory
+    </Button>
+  );
+}
+
+export function ProjectMemoryDialogHost(props: Scope) {
+  const available = useProjectMemoryAvailable(props.environmentId);
+  const [request, setRequest] = useAtom(openRequestAtom);
+  useEffect(() => () => setRequest(null), [setRequest]);
+  const active =
+    available &&
+    request !== null &&
+    request.environmentId === props.environmentId &&
+    request.projectId === props.projectId
+      ? request
+      : null;
+  return (
+    <Dialog
+      open={active !== null}
+      onOpenChange={(open) => {
+        if (!open) setRequest(null);
+      }}
+    >
+      <DialogPopup>
+        <DialogHeader>
           <DialogTitle>Project memory</DialogTitle>
           <DialogDescription>
             Find cited conversations, curate project facts, and choose evidence for your next
             message.
           </DialogDescription>
-          {open ? (
+        </DialogHeader>
+        <DialogPanel>
+          {active ? (
             <MemoryContents
-              key={`${props.environmentId}:${props.projectId}:${props.threadId}:${props.draftId ?? ""}`}
+              key={`${active.key}:${props.threadId}:${props.draftId ?? ""}`}
               {...props}
+              seedMessage={active.message}
             />
           ) : null}
-        </DialogPopup>
-      </Dialog>
-    </>
+        </DialogPanel>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
-function MemoryContents(props: Scope) {
+function MemoryContents(props: Scope & { readonly seedMessage: MessageCitation | null }) {
   const target: ComposerThreadTarget = props.draftId ?? {
     environmentId: props.environmentId,
     threadId: props.threadId,
@@ -93,13 +171,14 @@ function MemoryContents(props: Scope) {
   const [status, setStatus] = useState<"confirmed" | "proposed" | "forgotten">("confirmed");
   const [afterId, setAfterId] = useState<ProjectFactId | undefined>();
   const [includeArchived, setIncludeArchived] = useState(false);
-  const [source, setSource] = useState<KnowledgeMessageRef | null>(null);
+  const [source, setSource] = useState<SourceRef | null>(props.seedMessage);
   const [editing, setEditing] = useState<ProjectFact | null>(null);
   const [content, setContent] = useState("");
   const [entities, setEntities] = useState("");
   const [tags, setTags] = useState("");
   const [kind, setKind] = useState<"decision" | "constraint" | "convention" | "note">("note");
   const [sources, setSources] = useState<ReadonlyArray<KnowledgeFactSource>>([{ kind: "user" }]);
+  const [prefillPending, setPrefillPending] = useState(props.seedMessage !== null);
   const selectionVersion = useRef(0);
   useEffect(
     () => () => {
@@ -130,6 +209,15 @@ function MemoryContents(props: Scope) {
         })
       : null,
   );
+  if (
+    prefillPending &&
+    sourceQuery.data?.state === "available" &&
+    sourceQuery.data.source.messageId === props.seedMessage?.messageId
+  ) {
+    setPrefillPending(false);
+    setContent(sourceQuery.data.text.slice(0, 12000));
+    setSources([sourceQuery.data.source]);
+  }
   const mutate = useAtomCommand(projectKnowledge.mutate, { reportFailure: false });
   const prepare = useAtomCommand(projectKnowledge.prepareContext, { reportFailure: false });
   const toggle = (selection: KnowledgeSelection) => {
@@ -209,8 +297,14 @@ function MemoryContents(props: Scope) {
       ? search.data.facts.matches.map((match) => match.fact)
       : []
     : (list.data?.facts ?? []);
+  // Search already drops facts whose citations no longer resolve.
+  const unavailableReasons = new Map(
+    searchInput
+      ? []
+      : (list.data?.unavailableSources ?? []).map((item) => [item.factId, item.reason]),
+  );
   return (
-    <div className="flex max-h-[70vh] flex-col gap-3 overflow-auto py-3">
+    <div className="flex flex-col gap-3">
       <form
         className="flex gap-2"
         onSubmit={(event) => {
@@ -295,8 +389,12 @@ function MemoryContents(props: Scope) {
           search.data?.facts.state === "available"
             ? search.data.facts.matches.find((match) => match.fact.id === fact.id)?.score
             : undefined;
+        const unavailableReason = unavailableReasons.get(fact.id);
         return (
           <article className="rounded-md border p-3" key={fact.id}>
+            {unavailableReason ? (
+              <Badge variant="warning">{UNAVAILABLE_SOURCE_LABEL[unavailableReason]}</Badge>
+            ) : null}
             <p className="whitespace-pre-wrap">{fact.content ?? "Forgotten fact"}</p>
             <p className="text-xs text-muted-foreground">
               {fact.kind} · {fact.status} · trust {fact.trust.toFixed(2)} · revision {fact.revision}
@@ -422,7 +520,6 @@ function MemoryContents(props: Scope) {
               size="sm"
               onClick={() =>
                 setSource({
-                  kind: "message",
                   threadId: match.threadId,
                   messageId: match.messageId!,
                   digest: match.digest!,
@@ -466,7 +563,8 @@ function MemoryContents(props: Scope) {
         <section className="rounded-md border p-3">
           <h3>Exact source</h3>
           <p className="break-all text-xs">
-            {source.threadId}/{source.messageId} · sha256:{source.digest}
+            {source.threadId}/{source.messageId}
+            {source.digest ? ` · sha256:${source.digest}` : null}
           </p>
           {sourceQuery.error ? (
             <p role="alert">{sourceQuery.error}</p>
@@ -474,10 +572,14 @@ function MemoryContents(props: Scope) {
             <p>Source unavailable. {sourceQuery.data.reason}</p>
           ) : sourceQuery.data?.state === "available" ? (
             <>
-              <pre className="max-h-52 overflow-auto whitespace-pre-wrap text-sm">
-                {sourceQuery.data.text}
-              </pre>
-              <Button variant="outline" size="sm" onClick={() => toggle(source)}>
+              <pre className="whitespace-pre-wrap text-sm">{sourceQuery.data.text}</pre>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (sourceQuery.data?.state === "available") toggle(sourceQuery.data.source);
+                }}
+              >
                 Select message
               </Button>
               <Button
@@ -487,7 +589,7 @@ function MemoryContents(props: Scope) {
                 onClick={() => {
                   if (sourceQuery.data?.state === "available") {
                     setContent(sourceQuery.data.text.slice(0, 12000));
-                    setSources([source]);
+                    setSources([sourceQuery.data.source]);
                     setEditing(null);
                   }
                 }}
@@ -558,6 +660,7 @@ function MemoryContents(props: Scope) {
         <h3>{editing ? "Edit fact" : "Save a fact"}</h3>
         <Textarea
           aria-label="Fact content"
+          autoFocus={props.seedMessage !== null}
           value={content}
           maxLength={12000}
           onChange={(event) => setContent(event.target.value)}

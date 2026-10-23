@@ -115,10 +115,15 @@ Leaving reasoning level or service tier unset uses the provider's own configurat
 
 ## Project memory
 
-Open **Project memory** from the thread details on web or desktop, or from the
-composer on mobile. Search conversations and saved facts in the current project,
-inspect their sources, and select evidence for your next message. Archived
-conversations are excluded unless you include them.
+Open **Project memory** from the thread details, the command palette, or
+`mod+shift+u` on web or desktop, or from the composer on mobile. Search
+conversations and saved facts in the current project, inspect their sources, and
+select evidence for your next message. Archived conversations are excluded unless
+you include them. A fact whose cited message was edited, deleted, or archived is
+flagged in the list.
+
+To save a fact from the conversation, choose **Remember for this project** on a
+message on web or desktop. The fact is prefilled from that message and cites it.
 
 Agents can save observations for later recall. These remain marked as proposed
 until you confirm them. Confirmation is optional; proposed observations can still

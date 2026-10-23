@@ -14,6 +14,7 @@ import { useFileContextMenuHandler } from "../../fileContextMenu";
 import { useProject, useThreadShell } from "../../state/entities";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { AssistantCitationSource } from "./AssistantCitationSource";
+import { RememberMessageButton } from "../projectKnowledge/RememberMessageButton";
 import { resolveAssistantMessageCopyState } from "./MessagesTimeline.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
@@ -177,6 +178,13 @@ function AssistantMessageMeta({
       />
       {projectedItem?.item.type === "assistant_message" ? (
         <AssistantForkButton projectedItem={projectedItem} />
+      ) : null}
+      {!message.streaming && message.text ? (
+        <RememberMessageButton
+          threadRef={ctx.threadRef}
+          sourceThreadId={projectedItem?.sourceThreadId}
+          messageId={message.id}
+        />
       ) : null}
       {!message.streaming && (
         <Tooltip>

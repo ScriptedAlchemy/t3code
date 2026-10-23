@@ -1,6 +1,7 @@
 import {
   ActiveProjectFact,
   KnowledgeOrigin,
+  type KnowledgeSourceUnavailableReason,
   ProjectKnowledgeError,
   type ProjectFact,
   type ProjectId,
@@ -89,6 +90,26 @@ const encodeQuery = Schema.encodeSync(
   ),
 );
 const isKnowledgeError = Schema.is(ProjectKnowledgeError);
+// One rule for both the single-source read and the batched list check, so a
+// list badge never disagrees with what opening the citation shows.
+const sourceUnavailableReason = (
+  projectId: ProjectId,
+  includeArchived: boolean,
+  thread: {
+    readonly projectId: string;
+    readonly deletedAt: unknown;
+    readonly archivedAt: unknown;
+  } | null,
+  message: { readonly role: string; readonly streaming: boolean } | undefined,
+): KnowledgeSourceUnavailableReason | null => {
+  if (thread === null) return "missing";
+  if (thread.projectId !== projectId) return "wrong_project";
+  if (thread.deletedAt !== null) return "deleted";
+  if (thread.archivedAt !== null && !includeArchived) return "archived";
+  if (!message || (message.role !== "user" && message.role !== "assistant")) return "missing";
+  if (message.streaming) return "streaming";
+  return null;
+};
 const storageError = (projectId: ProjectId) => (cause: unknown) =>
   isKnowledgeError(cause)
     ? cause
@@ -124,16 +145,17 @@ const make = Effect.gen(function* () {
         Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
         Effect.mapError(storageError(input.projectId)),
       );
-    if (projection === null) return { state: "unavailable", reason: "missing" };
-    if (projection.thread.projectId !== input.projectId)
-      return { state: "unavailable", reason: "wrong_project" };
-    if (projection.thread.deletedAt !== null) return { state: "unavailable", reason: "deleted" };
-    const archived = projection.thread.archivedAt !== null;
-    if (archived && !input.includeArchived) return { state: "unavailable", reason: "archived" };
-    const message = projection.messages.find((item) => item.id === input.messageId);
-    if (!message || (message.role !== "user" && message.role !== "assistant"))
+    const message = projection?.messages.find((item) => item.id === input.messageId);
+    const reason = sourceUnavailableReason(
+      input.projectId,
+      input.includeArchived ?? false,
+      projection?.thread ?? null,
+      message,
+    );
+    if (reason !== null) return { state: "unavailable", reason };
+    if (!projection || !message || (message.role !== "user" && message.role !== "assistant"))
       return { state: "unavailable", reason: "missing" };
-    if (message.streaming) return { state: "unavailable", reason: "streaming" };
+    const archived = projection.thread.archivedAt !== null;
     const contentDigest = yield* digest(message.text).pipe(
       Effect.mapError(storageError(input.projectId)),
     );
@@ -165,6 +187,62 @@ const make = Effect.gen(function* () {
     }
     return true;
   });
+  // Two set-based reads per page instead of a projection read per citation.
+  const unavailableSources = Effect.fn("ProjectKnowledge.unavailableSources")(function* (
+    projectId: ProjectId,
+    facts: ReadonlyArray<ProjectFact>,
+  ) {
+    const refs = facts.flatMap((fact) =>
+      fact.sources.flatMap((source) =>
+        source.kind === "message" ? [{ factId: fact.id, source }] : [],
+      ),
+    );
+    if (refs.length === 0) return [];
+    const threadRows = yield* sql<{
+      readonly threadId: string;
+      readonly projectId: string;
+      readonly archivedAt: string | null;
+      readonly deletedAt: string | null;
+    }>`SELECT thread_id AS "threadId", project_id AS "projectId", archived_at AS "archivedAt",
+        deleted_at AS "deletedAt"
+      FROM orchestration_v2_projection_threads
+      WHERE ${sql.in("thread_id", [...new Set(refs.map((ref) => ref.source.threadId))])}`;
+    const messageRows = yield* sql<{
+      readonly messageId: string;
+      readonly threadId: string;
+      readonly role: string;
+      readonly streaming: number;
+      readonly text: string | null;
+    }>`SELECT message_id AS "messageId", thread_id AS "threadId", role, streaming,
+        json_extract(payload_json, '$.text') AS text
+      FROM orchestration_v2_projection_messages
+      WHERE ${sql.in("message_id", [...new Set(refs.map((ref) => ref.source.messageId))])}`;
+    const threadsById = new Map(threadRows.map((row) => [row.threadId, row]));
+    const messagesById = new Map(messageRows.map((row) => [row.messageId, row]));
+    const digests = new Map<string, string>();
+    const reasons = new Map<ProjectFactId, KnowledgeSourceUnavailableReason>();
+    for (const { factId, source } of refs) {
+      if (reasons.has(factId)) continue;
+      const row = messagesById.get(source.messageId);
+      const message = row?.threadId === source.threadId ? row : undefined;
+      let reason = sourceUnavailableReason(
+        projectId,
+        false,
+        threadsById.get(source.threadId) ?? null,
+        message && { role: message.role, streaming: message.streaming !== 0 },
+      );
+      if (reason === null && message) {
+        let contentDigest = digests.get(message.messageId);
+        if (contentDigest === undefined) {
+          contentDigest = yield* digest(message.text ?? "");
+          digests.set(message.messageId, contentDigest);
+        }
+        if (contentDigest !== source.digest) reason = "changed";
+      }
+      if (reason !== null) reasons.set(factId, reason);
+    }
+    return [...reasons].map(([factId, reason]) => ({ factId, reason }));
+  });
   const list: ProjectKnowledge["Service"]["list"] = Effect.fn("ProjectKnowledge.list")(
     function* (input) {
       yield* requireProject(input.projectId);
@@ -173,7 +251,13 @@ const make = Effect.gen(function* () {
         .list(input.projectId, input.status ?? "confirmed", input.afterId ?? null, limit + 1)
         .pipe(Effect.mapError(storageError(input.projectId)));
       const facts = rows.slice(0, limit);
-      return { facts, nextCursor: rows.length > limit ? (facts.at(-1)?.id ?? null) : null };
+      return {
+        facts,
+        nextCursor: rows.length > limit ? (facts.at(-1)?.id ?? null) : null,
+        unavailableSources: yield* unavailableSources(input.projectId, facts).pipe(
+          Effect.mapError(storageError(input.projectId)),
+        ),
+      };
     },
   );
   const mutate: ProjectKnowledge["Service"]["mutate"] = Effect.fn("ProjectKnowledge.mutate")(
