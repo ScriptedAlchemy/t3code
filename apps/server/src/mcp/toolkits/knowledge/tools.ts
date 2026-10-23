@@ -34,7 +34,7 @@ export const KnowledgeToolkit = Toolkit.make(
   Tool.make("t3_knowledge_search", {
     ...shared,
     description:
-      "Recall project facts and exact conversation citations. Facts use holographic and lexical ranking. Unavailable ranking is explicit. Superseded facts are excluded unless includeSuperseded is set. Reuse requestId for retries so retrieval is counted once.",
+      "Use when a task depends on prior project decisions, conventions, constraints, or agent observations. Resolve projectId from this environment's registered projects with t3_project_list and t3_project_read. Recall is on demand; facts are not automatically added to the prompt. Read returned message citations with t3_knowledge_read_source before relying on them. Facts use holographic and lexical ranking. Unavailable ranking is explicit. Superseded facts are excluded unless includeSuperseded is set. Reuse requestId for retries so retrieval is counted once.",
     parameters: ProjectKnowledgeSearchInput,
     success: ProjectKnowledgeSearchResult,
   })
@@ -88,7 +88,7 @@ export const KnowledgeToolkit = Toolkit.make(
   Tool.make("t3_knowledge_mutate", {
     ...shared,
     description:
-      "Propose or edit sourced project knowledge, supersede a fact with a replacement, forget a fact, or give trust feedback. Agent observations may use an empty sources array; their origin is recorded from this authenticated caller. Proposed facts can be recalled immediately. Confirmation in the app is optional and remains a separate trust action. Agents cannot confirm or claim direct user assertions. Reuse commandId when retrying. Updates require the current revision. Supersede creates replacementFactId and keeps the old fact's content but removes it from recall; prefer it over forget when knowledge changed. Created, edited and replacement facts return hints naming possible duplicates or conflicts to review. Forgotten facts cannot be restored.",
+      "Propose or edit project knowledge, supersede a fact with a replacement, forget a fact, or give trust feedback. When a fact comes from a conversation message, attach that exact message citation. Leave sources empty only for an agent observation with no message source; its origin is recorded from this authenticated caller. Proposed facts can be recalled immediately, but are not automatically added to the prompt. Confirmation in the app is optional and remains a separate trust action. Agents cannot confirm facts or claim direct user assertions. Reuse commandId when retrying. Updates require the current revision. Supersede creates replacementFactId and keeps the old fact's content but removes it from recall; prefer it over forget when knowledge changed. Created, edited and replacement facts return hints naming possible duplicates or conflicts to review. Forgotten facts cannot be restored.",
     parameters: Schema.Struct({ mutation: ProjectKnowledgeMutation }),
     success: ProjectKnowledgeMutationResult,
   }).annotate(Tool.Destructive, true),
