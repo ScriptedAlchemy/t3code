@@ -403,6 +403,9 @@ it.effect(
           assert.ok(search.coverage.languages.includes("typescript"));
           assert.ok(search.coverage.languages.includes("go"));
           assert.ok(search.coverage.languages.includes("python"));
+          // The catalog is what the analyzer supports; only these were indexed in the checkout.
+          assert.ok(search.coverage.languages.includes("rust"));
+          assert.deepEqual(search.coverage.indexedLanguages, ["go", "python", "typescript"]);
 
           const boundedSearch = yield* runQuery({ operation: "search", text: "greet", limit: 1 });
           assert.equal(boundedSearch.matches.length, 1);

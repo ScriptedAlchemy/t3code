@@ -14,12 +14,17 @@ export const GRADE_LABEL: Record<ProjectCodeEdge["evidenceGrade"], string> = {
   "heuristic-candidate": "heuristic",
 };
 
+// Only languages seen in this checkout; `languages` is the analyzer's catalog.
+function indexedLanguagesSuffix(coverage: ProjectCodeCoverage): string {
+  return coverage.indexedLanguages?.length ? ` (${coverage.indexedLanguages.join(", ")})` : "";
+}
+
 function coverageSummary(coverage: ProjectCodeCoverage): string {
   switch (coverage.state) {
     case "complete":
-      return `Static candidates · ${coverage.filesIndexed} files indexed`;
+      return `Static candidates · ${coverage.filesIndexed} files indexed${indexedLanguagesSuffix(coverage)}`;
     case "partial":
-      return `Static candidates · partial coverage, ${coverage.filesIndexed} of ${coverage.filesListed} files indexed`;
+      return `Static candidates · partial coverage, ${coverage.filesIndexed} of ${coverage.filesListed} files indexed${indexedLanguagesSuffix(coverage)}`;
     case "stale":
       return "Stale · some returned files changed since indexing. Verify in source.";
     case "unavailable":

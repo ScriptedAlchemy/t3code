@@ -36,12 +36,17 @@ const GRADE_LABEL = {
   "heuristic-candidate": "heuristic",
 } as const;
 
+// Only languages seen in this checkout; `languages` is the analyzer's catalog.
+function indexedLanguagesSuffix(coverage: ProjectCodeCoverage): string {
+  return coverage.indexedLanguages?.length ? ` (${coverage.indexedLanguages.join(", ")})` : "";
+}
+
 function coverageLine(coverage: ProjectCodeCoverage): string {
   switch (coverage.state) {
     case "complete":
-      return `Static candidates · ${coverage.filesIndexed} files indexed`;
+      return `Static candidates · ${coverage.filesIndexed} files indexed${indexedLanguagesSuffix(coverage)}`;
     case "partial":
-      return `Static candidates · ${coverage.filesIndexed} of ${coverage.filesListed} files indexed`;
+      return `Static candidates · ${coverage.filesIndexed} of ${coverage.filesListed} files indexed${indexedLanguagesSuffix(coverage)}`;
     case "stale":
       return "Stale · some files changed since indexing. Verify in source.";
     case "unavailable":

@@ -800,6 +800,7 @@ export async function inspectCodeInWorker(
       relationSemantics: "static-candidates",
       columnEncoding: "utf16-code-units",
       languages: [...languageCatalog],
+      indexedLanguages: indexedLanguages(files),
       filesListed: input.filesListed,
       filesIndexed: files.length,
       filesSkipped,
@@ -846,6 +847,13 @@ export async function inspectCodeInWorker(
   } finally {
     graph.close();
   }
+}
+
+function indexedLanguages(files: ReadonlyArray<{ readonly language: string }>): string[] {
+  return [...new Set(files.map((file) => file.language))]
+    .filter((language) => language !== "unknown")
+    .toSorted()
+    .slice(0, 64);
 }
 
 function emptyResult(
@@ -895,6 +903,7 @@ async function inspectFreshness(
         ...baseCoverage,
         state: "unavailable",
         filesIndexed: 0,
+        indexedLanguages: [],
         pendingReferences: 0,
         limitations: ["This checkout has not been indexed yet. The first code query indexes it."],
       },
@@ -934,12 +943,14 @@ async function inspectFreshness(
     if (buildState !== null && buildState !== "complete")
       limitations.push(`The last full index run reported '${buildState}'.`);
     const listed = new Set(listedPaths);
+    const indexedFiles = graph.getFiles().filter((file) => listed.has(file.path));
     return emptyResult(
       input,
       {
         ...baseCoverage,
         state: changed.length > 0 ? "stale" : incomplete ? "partial" : "complete",
-        filesIndexed: graph.getFiles().filter((file) => listed.has(file.path)).length,
+        filesIndexed: indexedFiles.length,
+        indexedLanguages: indexedLanguages(indexedFiles),
         pendingReferences,
         limitations,
       },

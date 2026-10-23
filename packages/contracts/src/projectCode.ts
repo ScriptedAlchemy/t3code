@@ -190,7 +190,10 @@ export const ProjectCodeCoverage = Schema.Struct({
   catalogRevision: Schema.String,
   relationSemantics: Schema.Literal("static-candidates"),
   columnEncoding: Schema.Literal("utf16-code-units"),
+  // The analyzer's supported-language catalog, not what this checkout contains.
   languages: Schema.Array(BoundedName).check(Schema.isMaxLength(64)),
+  // Languages of files actually indexed in this checkout. Older servers omit it.
+  indexedLanguages: Schema.optionalKey(Schema.Array(BoundedName).check(Schema.isMaxLength(64))),
   filesListed: NonNegativeInt,
   filesIndexed: NonNegativeInt,
   filesSkipped: NonNegativeInt,

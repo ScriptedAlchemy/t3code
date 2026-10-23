@@ -288,6 +288,7 @@ function indexingResult(checkoutPath: string): ProjectCodeQueryResultType {
       relationSemantics: "static-candidates",
       columnEncoding: "utf16-code-units",
       languages: [],
+      indexedLanguages: [],
       filesListed: 0,
       filesIndexed: 0,
       filesSkipped: 0,
