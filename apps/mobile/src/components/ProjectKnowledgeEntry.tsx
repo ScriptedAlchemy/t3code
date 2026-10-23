@@ -1,5 +1,6 @@
 import { uuidv4 } from "../lib/uuid";
 import { useEffect, useRef, useState } from "react";
+import { useIsFocused } from "@react-navigation/native";
 import { BackHandler, ScrollView, View } from "react-native";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -81,6 +82,7 @@ type Page =
 type RememberRequest = {
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
+  readonly draftKey: string;
   readonly message: MessageCitation;
 };
 
@@ -91,19 +93,25 @@ export function requestRememberMessage(request: RememberRequest): void {
 }
 
 export function ProjectKnowledgeEntry(props: Scope) {
+  const isFocused = useIsFocused();
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const [open, setOpen] = useState<{ readonly seed: MessageCitation | null } | null>(null);
-  const { environmentId, projectId } = props;
+  const { environmentId, projectId, draftKey } = props;
   useEffect(() => {
     const listener = (request: RememberRequest) => {
-      if (request.environmentId === environmentId && request.projectId === projectId)
+      if (
+        isFocused &&
+        request.environmentId === environmentId &&
+        request.projectId === projectId &&
+        request.draftKey === draftKey
+      )
         setOpen({ seed: request.message });
     };
     rememberListeners.add(listener);
     return () => {
       rememberListeners.delete(listener);
     };
-  }, [environmentId, projectId]);
+  }, [environmentId, projectId, draftKey, isFocused]);
   if (config?.environment.capabilities.projectKnowledge !== true) return null;
   return (
     <>
@@ -114,7 +122,7 @@ export function ProjectKnowledgeEntry(props: Scope) {
         tone="text"
         accessibilityHint="Search and attach evidence from this project"
       />
-      {open ? (
+      {open && isFocused ? (
         <ProjectKnowledgeSheet
           key={`${props.environmentId}:${props.projectId}:${props.draftKey}:${open.seed?.messageId ?? ""}`}
           {...props}

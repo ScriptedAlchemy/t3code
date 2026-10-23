@@ -211,7 +211,7 @@ export function ComposerEditor({
       {importing ? (
         <Text className="py-2 text-xs text-foreground-muted">Copying context…</Text>
       ) : null}
-      {environmentId && projectId && draftKey ? (
+      {environmentId && projectId && draftKey && !hidden ? (
         <ProjectKnowledgeEntry
           environmentId={environmentId}
           projectId={projectId}

@@ -14,6 +14,7 @@ import {
 import { projectKnowledgeComposerReference } from "../lib/projectKnowledgeComposer";
 
 const state = vi.hoisted(() => ({
+  focused: true,
   draft: {} as { text: string; context?: { records: unknown[] } },
   list: null as unknown,
   listInputs: [] as unknown[],
@@ -30,6 +31,7 @@ vi.mock("@t3tools/client-runtime/state/runtime", () => ({
   squashAtomCommandFailure: () => new Error("Request failed"),
 }));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => crypto.randomUUID() }));
+vi.mock("@react-navigation/native", () => ({ useIsFocused: () => state.focused }));
 vi.mock("../state/session", () => ({ useEnvironmentScope: () => true }));
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -176,7 +178,8 @@ const fact: ProjectFact = {
   updatedAt: "2026-10-22T00:00:00.000Z",
   forgottenAt: null,
 };
-function setup() {
+function setup(entries = [scope]) {
+  state.focused = true;
   state.draft = { text: "" };
   state.list = { facts: [fact], nextCursor: null };
   state.listInputs = [];
@@ -197,9 +200,12 @@ function setup() {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");
   const root = createRoot(container);
-  act(() => root.render(<ProjectKnowledgeEntry {...scope} />));
+  const renderEntries = () =>
+    entries.map((entry) => <ProjectKnowledgeEntry key={entry.draftKey} {...entry} />);
+  act(() => root.render(renderEntries()));
   return {
     container,
+    rerender: () => act(() => root.render(renderEntries())),
     click: async (label: string) => {
       const button = [...container.querySelectorAll("button")].find(
         (item) => item.textContent === label || item.getAttribute("aria-label") === label,
@@ -294,6 +300,7 @@ it("saves a remembered feed message with a citation to that message", async () =
     requestRememberMessage({
       environmentId: scope.environmentId,
       projectId: scope.projectId,
+      draftKey: scope.draftKey,
       message: { threadId: source.threadId, messageId: source.messageId },
     }),
   );
@@ -659,4 +666,56 @@ it("drops a revised fact from the selection and the draft after saving", async (
   expect(state.setText).toHaveBeenCalledWith(scope.draftKey, "");
   expect(screen.container.textContent).toContain("0 selected");
   expect(screen.container.textContent).toContain("removed from the draft");
+});
+
+it("opens only the destination composer for a remembered message from another thread", async () => {
+  using screen = setup([scope, { ...scope, draftKey: "other-thread-draft" }]);
+  const source = {
+    kind: "message" as const,
+    threadId: ThreadId.make("cited-thread"),
+    messageId: MessageId.make("cited-message"),
+    digest: "b".repeat(64),
+  };
+  state.source = {
+    state: "available",
+    source,
+    text: "Use tenant IDs.",
+    title: "Cited thread",
+    role: "assistant",
+    createdAt: fact.createdAt,
+    archived: false,
+  };
+  act(() =>
+    requestRememberMessage({
+      environmentId: scope.environmentId,
+      projectId: scope.projectId,
+      draftKey: "other-thread-draft",
+      message: source,
+    }),
+  );
+  expect(screen.container.querySelectorAll('[aria-label="Fact content"]')).toHaveLength(1);
+  await screen.click("Save");
+  expect(state.mutate.mock.lastCall![0].input.sources).toEqual([source]);
+  await screen.click("Select for draft");
+  await screen.click("Attach to draft");
+  expect(state.insert).toHaveBeenCalledTimes(1);
+  expect(state.insert.mock.lastCall![0]).toBe("other-thread-draft");
+});
+
+it("ignores remember requests while the destination entry is unfocused", () => {
+  using screen = setup();
+  state.focused = false;
+  screen.rerender();
+  act(() =>
+    requestRememberMessage({
+      environmentId: scope.environmentId,
+      projectId: scope.projectId,
+      draftKey: scope.draftKey,
+      message: { threadId: ThreadId.make("cited-thread"), messageId: MessageId.make("message") },
+    }),
+  );
+  expect(screen.container.textContent).not.toContain("Close");
+  state.focused = true;
+  screen.rerender();
+  expect(screen.container.textContent).not.toContain("Close");
 });

@@ -8,7 +8,11 @@ import { environmentThreadShells } from "../state/threads";
 import { requestRememberMessage } from "./ProjectKnowledgeEntry";
 
 /** Returns a "Remember for this project" action, or null when this thread cannot save facts. */
-export function useRememberMessage(environmentId: EnvironmentId, threadId: ThreadId) {
+export function useRememberMessage(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  draftKey: string,
+) {
   const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const canMutate = useAtomValue(projectKnowledge.mutate.permissionAtom(environmentId));
   const thread = useAtomValue(
@@ -18,5 +22,5 @@ export function useRememberMessage(environmentId: EnvironmentId, threadId: Threa
   if (config?.environment.capabilities.projectKnowledge !== true || !canMutate || !projectId)
     return null;
   return (message: { readonly threadId: ThreadId; readonly messageId: MessageId }) =>
-    requestRememberMessage({ environmentId, projectId, message });
+    requestRememberMessage({ environmentId, projectId, draftKey, message });
 }
