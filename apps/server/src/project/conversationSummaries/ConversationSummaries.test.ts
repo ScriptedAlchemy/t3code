@@ -363,8 +363,9 @@ it.effect(
       assert.equal(model.calls.length, 2);
       assert.equal(model.calls[1]!.messages[0]!.text, "Edited request");
       const states = (yield* list).summaries.map((read) => read.state).toSorted();
-      assert.deepEqual(states, ["available", "stale"]);
+      assert.deepEqual(states, ["available"]);
 
+      const replacement = yield* onlySummary;
       yield* projections.apply({
         id: EventId.make("thread-deleted"),
         type: "thread.deleted",
@@ -373,13 +374,105 @@ it.effect(
         occurredAt: at,
         payload: { ...threadPayload, deletedAt: at },
       });
-      const afterDelete = yield* service.expand({ ...scope, summaryId: summary.id });
+      const afterDelete = yield* service.expand({ ...scope, summaryId: replacement.id });
       assert.isTrue(
         afterDelete.sources.every(
           (source) => source.result.state === "unavailable" && source.result.reason === "deleted",
         ),
       );
       assert.isTrue((yield* list).summaries.every((read) => read.state === "stale"));
+    }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+  },
+);
+
+it.effect(
+  "cleans replaced and deleted summaries in bounded passes but preserves handoff references",
+  () => {
+    const model = citing();
+    return Effect.gen(function* () {
+      yield* seed;
+      yield* summarize;
+      const original = yield* onlySummary;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const handoffs = yield* ContextHandoffService.ContextHandoffServiceV2;
+      const handoff = yield* handoffs.prepareProviderHandoff({
+        threadId,
+        targetRunId: RunId.make("cleanup-target"),
+        transferId: null,
+        fromProviderThreadIds: [],
+        toProviderThreadId: providerThread.id,
+        fromProviderInstanceId: instanceId,
+        toProviderInstanceId: instanceId,
+        coveredRunOrdinals: { from: 1, to: 1 },
+        strategy: "full_thread_summary",
+        items: Array.from({ length: MESSAGE_COUNT }, (_, index) => item(index)),
+        createdAt: at,
+      });
+      yield* projections.apply({
+        id: EventId.make("referenced-summary"),
+        type: "context-handoff.updated",
+        threadId,
+        providerInstanceId: instanceId,
+        occurredAt: at,
+        payload: {
+          ...handoff,
+          delivery: {
+            nativeThreadId: "native-target",
+            status: "inline",
+            itemIds: [],
+            omittedItemIds: [],
+            summaryIds: [original.id],
+            summarizedItemIds: [itemId(0)],
+          },
+        },
+      });
+      yield* projections.apply(messageEvent(0, "First edit"));
+      yield* summarize;
+      const second = (yield* list).summaries.find((read) => read.state === "available");
+      if (second?.state !== "available") throw new Error("Expected replacement");
+      yield* projections.apply(messageEvent(0, "Second edit"));
+      // Stale but not yet replaced rows must survive.
+      assert.equal((yield* list).summaries.length, 2);
+      yield* summarize;
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly summary_id: string }>`
+      SELECT summary_id FROM conversation_summaries
+    `;
+      assert.equal(rows.length, 2);
+      assert.isTrue(rows.some((row) => row.summary_id === original.id));
+      assert.isFalse(rows.some((row) => row.summary_id === second.summary.id));
+
+      yield* projections.apply({
+        id: EventId.make("cleanup-thread-deleted"),
+        type: "thread.deleted",
+        threadId,
+        providerInstanceId: instanceId,
+        occurredAt: at,
+        payload: { ...threadPayload, deletedAt: at },
+      });
+      // More abandoned rows than one pass may delete, on a different thread from the pass.
+      for (let index = 0; index < 101; index++) {
+        yield* sql`
+        INSERT INTO conversation_summaries
+        SELECT ${"summary:" + index.toString(16).padStart(64, "0")}, project_id, thread_id,
+          first_source_at, created_at, payload_json
+        FROM conversation_summaries WHERE summary_id = ${original.id}
+      `;
+      }
+      const service = yield* ConversationSummaries.ConversationSummaries;
+      yield* service.summarizeThread({ threadId: ThreadId.make("missing-thread"), runId });
+      const remaining = yield* sql<{ readonly count: number }>`
+      SELECT count(*) AS count FROM conversation_summaries
+    `;
+      assert.equal(remaining[0]!.count, 3);
+      yield* service.summarizeThread({ threadId: ThreadId.make("missing-thread"), runId });
+      const retained = yield* sql<{ readonly summary_id: string }>`
+      SELECT summary_id FROM conversation_summaries
+    `;
+      assert.deepEqual(
+        retained.map((row) => row.summary_id),
+        [original.id],
+      );
     }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
   },
 );

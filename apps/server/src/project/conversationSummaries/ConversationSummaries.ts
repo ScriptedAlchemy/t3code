@@ -54,6 +54,7 @@ const MAX_CITATIONS = 8;
 // Rows read when matching a thread's summaries against a handoff or computing coverage.
 const THREAD_SUMMARY_LIMIT = 500;
 const HANDOFF_CANDIDATE_LIMIT = 40;
+const CLEANUP_LIMIT = 100;
 
 export class ConversationSummaries extends Context.Service<
   ConversationSummaries,
@@ -312,10 +313,83 @@ const make = Effect.gen(function* () {
     `;
   });
 
+  // Delivered handoffs keep retrieval ids, including handoffs on forked threads. Check all
+  // deliveries at deletion time, not only the thread currently being summarized.
+  const unreferenced = sql`NOT EXISTS (
+    SELECT 1 FROM orchestration_v2_projection_context_handoffs AS handoff,
+      json_each(handoff.payload_json, '$.delivery.summaryIds') AS reference
+    WHERE reference.value = conversation_summaries.summary_id
+  )`;
+
+  const cleanupDeleted = Effect.fn("ConversationSummaries.cleanupDeleted")(function* () {
+    yield* sql`
+      DELETE FROM conversation_summaries WHERE summary_id IN (
+        SELECT summary_id FROM conversation_summaries
+        WHERE NOT EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_threads AS thread
+          WHERE thread.thread_id = conversation_summaries.thread_id
+            AND thread.deleted_at IS NULL
+        ) AND ${unreferenced}
+        ORDER BY summary_id LIMIT ${CLEANUP_LIMIT}
+      ) AND ${unreferenced}
+    `;
+  });
+
+  const cleanupSuperseded = Effect.fn("ConversationSummaries.cleanupSuperseded")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+  ) {
+    const summaries = yield* threadSummaries(projectId, threadId);
+    if (summaries.length === 0) return;
+    // One canonical read for the bounded thread range, rather than reloading the whole
+    // conversation once per summary. Different digests of one message remain distinct.
+    const refs = [
+      ...new Map(
+        summaries.flatMap((summary) =>
+          summary.sources.map(
+            (source) => [source.messageId + ":" + source.digest, source] as const,
+          ),
+        ),
+      ).values(),
+    ];
+    const results = yield* knowledge.readSources({ projectId, threadId, sources: refs });
+    const available = new Set(
+      refs.flatMap((ref, index) =>
+        results[index]?.state === "available" ? [ref.messageId + ":" + ref.digest] : [],
+      ),
+    );
+    const fresh = summaries.map((summary) =>
+      summary.sources.every((source) => available.has(source.messageId + ":" + source.digest)),
+    );
+    const freshCoverage = new Set(
+      summaries.flatMap((summary, index) =>
+        fresh[index] ? summary.sources.map((source) => source.messageId) : [],
+      ),
+    );
+    const replaced = summaries.filter(
+      (summary, index) =>
+        !fresh[index] && summary.sources.every((source) => freshCoverage.has(source.messageId)),
+    );
+    if (replaced.length === 0) return;
+    yield* sql`
+      DELETE FROM conversation_summaries
+      WHERE summary_id IN (
+        SELECT summary_id FROM conversation_summaries
+        WHERE ${sql.in(
+          "summary_id",
+          replaced.map((summary) => summary.id),
+        )}
+          AND ${unreferenced}
+        ORDER BY summary_id LIMIT ${CLEANUP_LIMIT}
+      ) AND ${unreferenced}
+    `;
+  });
+
   const summarizeThread: ConversationSummaries["Service"]["summarizeThread"] = Effect.fn(
     "ConversationSummaries.summarizeThread",
   )(
     function* ({ threadId, runId }) {
+      yield* cleanupDeleted();
       const records = yield* projections
         .getThreadRecords(threadId, ["messages"], { messageRoles: ["user", "assistant"] })
         .pipe(Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }));
@@ -327,7 +401,8 @@ const make = Effect.gen(function* () {
         generated: number,
         waitingMessages: number,
       ) =>
-        DateTime.now.pipe(
+        cleanupSuperseded(projectId, threadId).pipe(
+          Effect.andThen(DateTime.now),
           Effect.flatMap((now) =>
             recordPass(projectId, threadId, {
               runId,
