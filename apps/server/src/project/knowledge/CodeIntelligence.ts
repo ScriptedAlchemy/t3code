@@ -126,6 +126,11 @@ export class CodeIntelligence extends Context.Service<
     readonly refresh: (
       input: ProjectCodeIndexTarget,
     ) => Effect.Effect<CodeIndexRefreshOutcome, CheckoutLookupError>;
+    /**
+     * Requests a coalesced rebuild of a checkout that already has a published index and returns
+     * at once. A checkout nobody has queried is left unindexed.
+     */
+    readonly refreshIfIndexed: (cwd: string) => Effect.Effect<void>;
     /** Publications and failed builds of the target's checkout from the moment this returns. */
     readonly subscribeIndex: (
       input: ProjectCodeIndexTarget,
@@ -635,6 +640,21 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const refreshIfIndexed: CodeIntelligence["Service"]["refreshIfIndexed"] = Effect.fn(
+    "CodeIntelligence.refreshIfIndexed",
+  )(function* (cwd) {
+    const checkoutPath = yield* workspacePaths.normalizeWorkspaceRoot(cwd).pipe(Effect.option);
+    if (Option.isNone(checkoutPath)) return;
+    const published = yield* Effect.sync(() => {
+      try {
+        return readPublishedGeneration(checkoutPath.value);
+      } catch {
+        return null;
+      }
+    });
+    if (published !== null) yield* requestBuild(checkoutPath.value);
+  });
+
   const subscribeIndex: CodeIntelligence["Service"]["subscribeIndex"] = Effect.fn(
     "CodeIntelligence.subscribeIndex",
   )(function* (input) {
@@ -646,7 +666,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  return CodeIntelligence.of({ query, refresh, subscribeIndex });
+  return CodeIntelligence.of({ query, refresh, refreshIfIndexed, subscribeIndex });
 });
 
 export const layer = Layer.effect(CodeIntelligence, make);

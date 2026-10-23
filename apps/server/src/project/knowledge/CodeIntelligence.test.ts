@@ -1354,3 +1354,41 @@ it.effect("keeps the previous generation serving when a build fails, and says so
     }),
   ),
 );
+
+it.effect("coalesces refresh requests made while a build is in flight into one follow-up", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      // Every query and every build lists the checkout once.
+      let listings = 0;
+      const { run, refresh } = yield* checkoutService(fixture.root, () => {
+        listings += 1;
+        return ["src/defs.ts", "src/use.ts"];
+      });
+      const leaseHeld = yield* Deferred.make<void>();
+      const releaseLease = yield* Deferred.make<void>();
+      const lease = yield* withWorkspaceLease(
+        NodePath.join(fixture.root, ".codegraph-t3"),
+        Deferred.succeed(leaseHeld, undefined).pipe(Effect.andThen(Deferred.await(releaseLease))),
+      ).pipe(Effect.forkScoped);
+      yield* Deferred.await(leaseHeld);
+
+      // Starts the first build, which waits for the lease.
+      yield* run({ operation: "symbols", name: "greet" });
+      const refreshes = yield* Effect.forEach(Array.from({ length: 5 }), () =>
+        refresh().pipe(Effect.forkScoped),
+      );
+      yield* run({ operation: "search", text: "greet" });
+      yield* run({ operation: "status" });
+      yield* Deferred.succeed(releaseLease, undefined);
+      yield* Fiber.await(lease);
+
+      for (const fiber of refreshes) {
+        assert.deepEqual(yield* Fiber.join(fiber), { _tag: "Unchanged" });
+      }
+      assert.equal(listings, 3 + 2, "three queries and two builds listed the checkout");
+      assert.deepEqual(yield* Effect.promise(() => generationDirectories(fixture.root)), [
+        ".codegraph-t3-g1",
+      ]);
+    }),
+  ),
+);
