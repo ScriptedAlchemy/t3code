@@ -250,6 +250,14 @@ const factDetail = (fact: ProjectFact): ProjectKnowledgeFactDetail => ({
   hints: [],
 });
 
+function deferredSaveResponse() {
+  let resolve!: (value: unknown) => void;
+  const promise = new Promise<unknown>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 it("refreshes the inspected fact and uses its latest revision for the next mutation", async () => {
   const registry = await setup();
   let currentFact: ProjectFact = fact;
@@ -539,6 +547,55 @@ it("edits only after an explicit Edit, and Cancel returns to the fact unchanged"
     }),
   });
   await expect.element(content).not.toBeInTheDocument();
+});
+
+it.each(["create", "edit"] as const)(
+  "preserves a new editor when an earlier %s save finishes after cancellation",
+  async (mode) => {
+    const registry = await setup();
+    const response = deferredSaveResponse();
+    state.mutate.mockImplementation(() => response.promise);
+    const savedFact = { ...fact, content: "Saved fact A.", revision: 2 };
+    await using screen = await mount(registry);
+    await openMemory(screen);
+    if (mode === "edit") {
+      await factRow(fact.content!).click();
+      await inspector().getByRole("button", { name: "Edit", exact: true }).click();
+    } else await page.getByRole("button", { name: "New fact" }).click();
+    const content = page.getByRole("textbox", { name: "Fact content" });
+    await content.fill(savedFact.content);
+    await page
+      .getByRole("button", { name: mode === "edit" ? "Save edit" : "Save fact", exact: true })
+      .click();
+    await vi.waitFor(() => expect(state.mutate).toHaveBeenCalledOnce());
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.getByRole("button", { name: "New fact" }).click();
+    await content.fill("Unsaved fact B.");
+    await expect.element(content).toHaveFocus();
+    await act(async () => response.resolve({ _tag: "Success", value: savedFact }));
+    await expect.element(content).toHaveValue("Unsaved fact B.");
+    await expect.element(content).toHaveFocus();
+    await expect
+      .element(page.getByRole("button", { name: "Save fact", exact: true }))
+      .toBeEnabled();
+  },
+);
+
+it("starts a fresh editor when New fact replaces a pending new-fact save", async () => {
+  const registry = await setup();
+  const response = deferredSaveResponse();
+  state.mutate.mockImplementation(() => response.promise);
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await page.getByRole("button", { name: "New fact" }).click();
+  const content = page.getByRole("textbox", { name: "Fact content" });
+  await content.fill("Saved fact A.");
+  await page.getByRole("button", { name: "Save fact", exact: true }).click();
+  await page.getByRole("button", { name: "New fact" }).click();
+  await expect.element(content).toHaveValue("");
+  await content.fill("Unsaved fact B.");
+  await act(async () => response.resolve({ _tag: "Success", value: { ...fact, revision: 2 } }));
+  await expect.element(content).toHaveValue("Unsaved fact B.");
 });
 
 it("moves through facts with the keyboard and selects without changing the inspected fact", async () => {

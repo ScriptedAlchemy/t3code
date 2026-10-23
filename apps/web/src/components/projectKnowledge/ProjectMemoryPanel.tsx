@@ -28,6 +28,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Dialog, DialogDescription, DialogHeader, DialogPopup, DialogTitle } from "../ui/dialog";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { useStableCallback } from "../../hooks/useStableCallback";
 import { requestConfirmDialog } from "../../confirmDialog";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -176,9 +177,6 @@ type Inspection =
   | { readonly kind: "fact"; readonly factId: ProjectFactId }
   | { readonly kind: "source"; readonly ref: SourceRef; readonly returnTo: ProjectFactId | null };
 
-const editorKey = (seed: FactEditorSeed) =>
-  seed.mode === "create" ? "create" : `${seed.mode}:${seed.base.id}:${seed.base.revision}`;
-
 function MemoryContents(
   props: Scope & {
     readonly seedMessage: MessageCitation | null;
@@ -214,7 +212,10 @@ function MemoryContents(
         ? { kind: "source", ref: props.seedMessage, returnTo: null }
         : { kind: "empty" },
   );
-  const [editor, setEditor] = useState<FactEditorSeed | null>(null);
+  const [editor, setEditor] = useState<{
+    readonly key: string;
+    readonly seed: FactEditorSeed;
+  } | null>(null);
   // Below md the list and inspector stack; this picks which one is visible.
   const [showDetail, setShowDetail] = useState(inspection.kind !== "empty");
   const [healthOpen, setHealthOpen] = useState(false);
@@ -314,7 +315,7 @@ function MemoryContents(
     else focusIn("[data-memory-search]");
   };
   const openEditor = (seed: FactEditorSeed) => {
-    setEditor(seed);
+    setEditor({ key: randomUUID(), seed });
     setShowDetail(true);
   };
   const cancelEditor = () => {
@@ -368,7 +369,16 @@ function MemoryContents(
     ]))
       refreshFact(factId);
   };
-  const apply = async (input: ProjectKnowledgeMutation) => {
+  const finishEditor = useStableCallback((savedEditor: typeof editor, factId: ProjectFactId) => {
+    // A delayed save must not close or steal focus from an editor opened in the meantime.
+    if (savedEditor === null || editor !== savedEditor) return;
+    flushSync(() => {
+      setEditor(null);
+      setInspection({ kind: "fact", factId });
+    });
+    focusIn(INSPECTOR_HEADING);
+  });
+  const apply = async (input: ProjectKnowledgeMutation, savedEditor: typeof editor = null) => {
     setBusy(true);
     setError(null);
     setHintNotice(null);
@@ -384,13 +394,7 @@ function MemoryContents(
       );
       if (result.value.hints?.length)
         setHintNotice({ content: result.value.content, hints: result.value.hints });
-      if (editor) {
-        flushSync(() => {
-          setEditor(null);
-          setInspection({ kind: "fact", factId: result.value.id });
-        });
-        focusIn(INSPECTOR_HEADING);
-      }
+      finishEditor(savedEditor, result.value.id);
     }
     refresh([input.factId, ...(result._tag === "Success" ? [result.value.id] : [])]);
   };
@@ -754,13 +758,13 @@ function MemoryContents(
               ) : null}
               {editor ? (
                 <ProjectFactEditor
-                  key={editorKey(editor)}
+                  key={editor.key}
                   projectId={props.projectId}
-                  seed={editor}
+                  seed={editor.seed}
                   historyAvailable={historyAvailable}
                   canMutate={canMutate}
                   busy={busy}
-                  onSubmit={(input) => void apply(input)}
+                  onSubmit={(input) => void apply(input, editor)}
                   onCancel={cancelEditor}
                 />
               ) : inspection.kind === "fact" ? (
