@@ -973,6 +973,31 @@ it.effect("scrubs as-sent excerpts of a fact whose id needs JSON escaping", () =
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("a delivery recorded after its fact was forgotten never restores the excerpt", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("late-delivery-project");
+    yield* createProject(projectId);
+    const sql = yield* SqlClient.SqlClient;
+    const stored = sql`SELECT attempt_id FROM project_knowledge_deliveries WHERE items_json LIKE '%tenant IDs%'`;
+
+    // The turn prepared the excerpt, the user forgot the fact, then the provider accepted.
+    const settled = yield* composeDelivery(projectId, "settled-after-forget");
+    yield* knowledge.recordDelivery(settled.delivery("settled-attempt", "prepared", 1));
+    yield* settled.forget;
+    yield* knowledge.recordDelivery(settled.delivery("settled-attempt", "sent", 2));
+    assert.deepEqual(yield* settled.excerpts, [["settled-attempt", "sent", "", true]]);
+
+    // A record first written after the forget, from an excerpt resolved before it.
+    const late = yield* composeDelivery(projectId, "prepared-after-forget");
+    yield* late.forget;
+    yield* knowledge.recordDelivery(late.delivery("late-attempt", "prepared", 1));
+    assert.deepEqual(yield* late.excerpts, [["late-attempt", "prepared", "", true]]);
+
+    assert.deepEqual(yield* stored, []);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("reports when a delivered fact's cited message changes or disappears", () =>
   Effect.gen(function* () {
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;

@@ -376,22 +376,49 @@ export const makeStore = Effect.gen(function* () {
       WHERE project_id = ${projectId} AND status IN ('confirmed', 'proposed') AND ${sql.in("id", ids)}`;
   });
   // A sent record is final: a later re-preparation of the same attempt cannot rewrite what
-  // the provider already received.
+  // the provider already received. Only a preparation writes excerpts; a status change keeps the
+  // stored ones, which a forget may have blanked since they were resolved. Written excerpts are
+  // checked against forgotten facts in the same transaction, so a write racing a forget loses.
   const recordDelivery = Effect.fn("ProjectKnowledgeStore.recordDelivery")(function* (
-    delivery: typeof ProjectKnowledgeDelivery.Type,
+    delivery: ProjectKnowledgeDelivery,
   ) {
-    yield* sql`INSERT INTO project_knowledge_deliveries (
-      attempt_id, run_id, thread_id, message_id, project_id, provider_instance_id, status,
-      items_json, omissions_json, created_at, updated_at
-    ) VALUES (
-      ${delivery.attemptId}, ${delivery.runId}, ${delivery.threadId}, ${delivery.messageId},
-      ${delivery.projectId}, ${delivery.providerInstanceId}, ${delivery.status},
-      ${encodeDeliveryItems(delivery.items)}, ${encodeDeliveryOmissions(delivery.omissions)},
-      ${delivery.createdAt}, ${delivery.updatedAt}
-    ) ON CONFLICT (attempt_id) DO UPDATE SET
-      status = excluded.status, items_json = excluded.items_json,
-      omissions_json = excluded.omissions_json, updated_at = excluded.updated_at
-    WHERE project_knowledge_deliveries.status != 'sent'`;
+    const factIds = [
+      ...new Set(
+        delivery.items.flatMap((item) =>
+          item.context.selections.flatMap((selection) =>
+            selection.kind === "fact" ? [selection.factId] : [],
+          ),
+        ),
+      ),
+    ];
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const forgotten =
+          factIds.length === 0
+            ? []
+            : yield* sql<{ readonly id: ProjectFactId }>`
+                SELECT id FROM project_knowledge_facts
+                WHERE project_id = ${delivery.projectId} AND status = 'forgotten'
+                  AND ${sql.in("id", factIds)}`;
+        const items = withoutForgotten(delivery.items, new Set(forgotten.map((row) => row.id)));
+        yield* sql`INSERT INTO project_knowledge_deliveries (
+          attempt_id, run_id, thread_id, message_id, project_id, provider_instance_id, status,
+          items_json, omissions_json, created_at, updated_at
+        ) VALUES (
+          ${delivery.attemptId}, ${delivery.runId}, ${delivery.threadId}, ${delivery.messageId},
+          ${delivery.projectId}, ${delivery.providerInstanceId}, ${delivery.status},
+          ${encodeDeliveryItems(items)}, ${encodeDeliveryOmissions(delivery.omissions)},
+          ${delivery.createdAt}, ${delivery.updatedAt}
+        ) ON CONFLICT (attempt_id) DO UPDATE SET
+          status = excluded.status, updated_at = excluded.updated_at
+          ${
+            delivery.status === "prepared"
+              ? sql`, items_json = excluded.items_json, omissions_json = excluded.omissions_json`
+              : sql``
+          }
+        WHERE project_knowledge_deliveries.status != 'sent'`;
+      }),
+    );
   });
   // Forget must not leave a recoverable copy: as-sent excerpts of the fact go with it, while the
   // record skeleton (ids, revisions, digests, status) stays to explain what was sent. Matching
