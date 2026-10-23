@@ -13,6 +13,7 @@ import {
   ProjectKnowledgeSearchResult,
   ProjectId,
   ProviderInstanceId,
+  ProviderThreadId,
   RunAttemptId,
   RunId,
   ThreadId,
@@ -2090,4 +2091,77 @@ it.effect("bounds message matches independently of fact pages without recording 
       [0, 0, 0],
     );
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "keeps a prepared native delivery decodable across SQLite restart and persists its uncertain recovery",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped();
+      const database = SqlitePersistence.layerFromPath(directory + "/delivery.sqlite");
+      const reopened = () =>
+        ProjectKnowledge.layer.pipe(
+          Layer.provide(HolographicMemory.layer),
+          Layer.provideMerge(
+            Layer.mergeAll(ProjectStore.layer, ProjectionStore.layer, ThreadSearch.layer),
+          ),
+          Layer.provideMerge(database),
+          Layer.provide(
+            Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+              getEnvironmentId: Effect.succeed(environmentId),
+            }),
+          ),
+          Layer.provide(NodeServices.layer),
+        );
+      const projectId = ProjectId.make("restart-delivery-project");
+      const threadId = ThreadId.make("restart-delivery-thread");
+      const messageId = MessageId.make("restart-delivery-message");
+      const receipt = {
+        projectId,
+        threadId,
+        messageId,
+        attemptId: RunAttemptId.make("restart-attempt"),
+        runId: RunId.make("restart-run"),
+        providerInstanceId,
+        providerThreadId: ProviderThreadId.make("restart-provider-thread"),
+        nativeThreadId: "restart-native-conversation",
+        status: "prepared" as const,
+        items: [],
+        omissions: [],
+        createdAt: DateTime.formatIso(at(1)),
+        updatedAt: DateTime.formatIso(at(1)),
+      };
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* createProject(projectId);
+          yield* (yield* ProjectKnowledge.ProjectKnowledge).recordDelivery(receipt);
+        }).pipe(Effect.provide(reopened())),
+      );
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+          const persisted = (yield* knowledge.readDeliveries({ projectId, threadId, messageId }))
+            .deliveries[0]!;
+          assert.equal(persisted.status, "prepared");
+          assert.equal(persisted.nativeThreadId, receipt.nativeThreadId);
+          assert.equal(persisted.providerThreadId, receipt.providerThreadId);
+          yield* knowledge.recordDelivery({
+            ...persisted,
+            status: "uncertain",
+            updatedAt: DateTime.formatIso(at(2)),
+          });
+        }).pipe(Effect.provide(reopened())),
+      );
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+          const persisted = (yield* knowledge.readDeliveries({ projectId, threadId, messageId }))
+            .deliveries;
+          assert.equal(persisted.length, 1);
+          assert.equal(persisted[0]?.status, "uncertain");
+          assert.equal(persisted[0]?.nativeThreadId, receipt.nativeThreadId);
+        }).pipe(Effect.provide(reopened())),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
