@@ -1433,6 +1433,63 @@ effectIt.effect.each([false, true])(
     }),
 );
 
+effectIt.effect("records a delivery receipt when every attached knowledge record is omitted", () =>
+  Effect.gen(function* () {
+    const record = {
+      version: 1 as const,
+      kind: "project-knowledge" as const,
+      contextId: ComposerContextId.make("project-knowledge"),
+      label: "Project knowledge",
+      knowledge: {
+        environmentId: EnvironmentId.make("test"),
+        projectId: ProjectId.make("project-native-account-command"),
+        selections: [{ kind: "fact" as const, factId: ProjectFactId.make("fact"), revision: 1 }],
+        maxBytes: 48000,
+      },
+    };
+    const harness = makeLocalCommandHarness({
+      text: "The reference token was deleted from this message.",
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    });
+    const projection = harness.projection();
+    harness.setProjection({
+      ...projection,
+      messages: projection.messages.map((message) => ({
+        ...message,
+        context: { version: 1, records: [record] },
+      })),
+    });
+    yield* harness.start;
+    const start = harness.startRootRun.mock.calls[0]![0];
+    yield* start.session.startTurn({
+      appThread: start.appThread,
+      threadId: start.appThread.id,
+      runId: start.run.id,
+      runOrdinal: start.run.ordinal,
+      providerTurnOrdinal: start.providerTurnOrdinal,
+      attemptId: start.attemptId,
+      rootNodeId: start.rootNode.id,
+      providerThread: start.providerThread,
+      message: start.message,
+      modelSelection: start.modelSelection,
+      runtimePolicy: start.runtimePolicy,
+    });
+    expect(
+      harness.knowledgeDeliveries.map((delivery) => [
+        delivery.status,
+        delivery.items,
+        delivery.omissions,
+      ]),
+    ).toEqual(
+      ["prepared", "sent"].map((status) => [
+        status,
+        [],
+        [{ contextId: record.contextId, label: record.label, reason: "not_referenced" }],
+      ]),
+    );
+  }),
+);
+
 effectIt.effect(
   "replays the knowledge an earlier message was sent with into a provider handoff once",
   () =>

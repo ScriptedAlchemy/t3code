@@ -1039,7 +1039,8 @@ export const layer: Layer.Layer<
       // attempt (account failover) keeps its own account of what its provider received.
       const recordKnowledgeDelivery = Effect.fn("ProviderTurnStartService.recordKnowledgeDelivery")(
         function* (status: ProjectKnowledgeDeliveryStatus) {
-          if (composer.items.length === 0) return;
+          // An omission-only attempt still gets a receipt so the inspector can say why nothing went.
+          if (composer.items.length === 0 && composer.omissions.length === 0) return;
           const now = DateTime.formatIso(yield* DateTime.now);
           yield* knowledge.recordDelivery({
             attemptId: attempt.id,
@@ -1378,7 +1379,8 @@ export const layer: Layer.Layer<
         missedItems.length === 0 &&
         restartNote === "" &&
         !noteContinuation &&
-        composer.byteLength === 0
+        composer.byteLength === 0 &&
+        composer.omissions.length === 0
           ? session
           : makeDeliverySession(session, startWithHandoffs);
       return runExecution.startRootRun({
