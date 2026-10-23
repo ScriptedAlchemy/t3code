@@ -652,9 +652,11 @@ function makeLocalCommandHarness(input: {
         )
       : Effect.die("A local command must not start a native turn."),
   );
+  let executionStarted = false;
+  // Startup can recheck a running run before handing it to native execution.
+  // Inject storage failure at that boundary so the long-lived controls are exercised.
   const failReadIfRunning = Effect.suspend(() =>
-    input.failReadsAfterRunning === true &&
-    projection.runs.find((candidate) => candidate.id === runId)?.status === "running"
+    input.failReadsAfterRunning === true && executionStarted
       ? Effect.fail(
           new ProjectionStore.ProjectionStoreReadError({ threadId, cause: "database unavailable" }),
         )
@@ -823,7 +825,12 @@ function makeLocalCommandHarness(input: {
             ),
         }),
         Layer.mock(ProviderAuthService.ProviderAuthService)({ tryHandlePromptCommand }),
-        Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
+        Layer.mock(RunExecutionService.RunExecutionServiceV2)({
+          startRootRun: (request) =>
+            Effect.sync(() => {
+              executionStarted = true;
+            }).pipe(Effect.andThen(() => startRootRun(request))),
+        }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,
         }),
