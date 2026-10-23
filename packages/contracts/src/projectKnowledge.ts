@@ -391,9 +391,26 @@ export type ProjectKnowledgeDeliveryItem = typeof ProjectKnowledgeDeliveryItem.T
 export const ProjectKnowledgeDeliveryOmission = Schema.Struct({
   contextId: TrimmedNonEmptyString,
   label: Schema.String,
-  reason: Schema.Literal("not_referenced"),
+  reason: Schema.Literals([
+    "over_budget",
+    "source_unavailable",
+    "stale_revision",
+    "not_permitted",
+    "recall_failed",
+    "not_referenced",
+  ]),
+});
+export const ProjectKnowledgeDeliveryBudget = Schema.Struct({
+  capacity: Schema.Number,
+  occupancy: Schema.Number,
+  requestSize: Schema.Number,
+  headroom: Schema.Number,
+  knowledgeAllowance: Schema.Number,
+  tokenCap: Schema.Number,
+  byteCap: Schema.Number,
 });
 export const ProjectKnowledgeDelivery = Schema.Struct({
+  budget: Schema.optionalKey(ProjectKnowledgeDeliveryBudget),
   attemptId: RunAttemptId,
   runId: RunId,
   threadId: ThreadId,

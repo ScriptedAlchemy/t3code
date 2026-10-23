@@ -1256,6 +1256,7 @@ it.effect("reports when a delivered fact's cited message changes or disappears",
     const afterDelete = yield* uncited.retained;
     assert.notInclude(afterDelete[0]?.items[0]?.text, "Cache keys include tenant IDs.");
     assert.include(afterDelete[0]?.items[0]?.text, "Source unavailable");
+    assert.equal(afterDelete[0]?.omissions.at(-1)?.reason, "source_unavailable");
     assert.isTrue(
       Result.isFailure(
         yield* knowledge.readFact({ projectId, factId: uncited.factId }).pipe(Effect.result),
@@ -2127,6 +2128,15 @@ it.effect(
         providerThreadId: ProviderThreadId.make("restart-provider-thread"),
         nativeThreadId: "restart-native-conversation",
         status: "prepared" as const,
+        budget: {
+          capacity: 128000,
+          occupancy: 1000,
+          requestSize: 200,
+          headroom: 32000,
+          knowledgeAllowance: 16000,
+          tokenCap: 16000,
+          byteCap: 64000,
+        },
         items: [],
         omissions: [],
         createdAt: DateTime.formatIso(at(1)),
@@ -2143,6 +2153,7 @@ it.effect(
           const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
           const persisted = (yield* knowledge.readDeliveries({ projectId, threadId, messageId }))
             .deliveries[0]!;
+          assert.deepEqual(persisted.budget, receipt.budget);
           assert.equal(persisted.status, "prepared");
           assert.equal(persisted.nativeThreadId, receipt.nativeThreadId);
           assert.equal(persisted.providerThreadId, receipt.providerThreadId);

@@ -13,6 +13,7 @@ import {
   ProjectFactId,
   ProjectId,
   ProjectKnowledgeDelivery,
+  ProjectKnowledgeDeliveryBudget,
   ProjectKnowledgeDeliveryItem,
   ProjectKnowledgeDeliveryOmission,
   type MessageId,
@@ -89,6 +90,7 @@ export type HistoryRecord = Omit<
 
 const DeliveryRow = Schema.Struct({
   ...ProjectKnowledgeDelivery.fields,
+  budget: Schema.NullOr(Schema.fromJsonString(ProjectKnowledgeDeliveryBudget)),
   providerThreadId: Schema.NullOr(ProjectKnowledgeDelivery.fields.providerThreadId),
   items: Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryItem)),
   omissions: Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryOmission)),
@@ -427,16 +429,16 @@ export const makeStore = Effect.gen(function* () {
         const items = withoutForgotten(delivery.items, new Set(forgotten.map((row) => row.id)));
         yield* sql`INSERT INTO project_knowledge_deliveries (
           attempt_id, run_id, thread_id, message_id, project_id, provider_instance_id, status,
-          items_json, omissions_json, created_at, updated_at, provider_thread_id, native_thread_id
+          items_json, omissions_json, created_at, updated_at, provider_thread_id, native_thread_id, budget_json
         ) VALUES (
           ${delivery.attemptId}, ${delivery.runId}, ${delivery.threadId}, ${delivery.messageId},
           ${delivery.projectId}, ${delivery.providerInstanceId}, ${delivery.status},
           ${encodeDeliveryItems(items)}, ${encodeDeliveryOmissions(delivery.omissions)},
           ${delivery.createdAt}, ${delivery.updatedAt}, ${delivery.providerThreadId ?? null},
-          ${delivery.nativeThreadId ?? null}
+          ${delivery.nativeThreadId ?? null}, ${delivery.budget === undefined ? null : yield* Schema.encodeEffect(Schema.fromJsonString(ProjectKnowledgeDeliveryBudget))(delivery.budget)}
         ) ON CONFLICT (attempt_id) DO UPDATE SET
           status = excluded.status, updated_at = excluded.updated_at,
-          provider_thread_id = excluded.provider_thread_id, native_thread_id = excluded.native_thread_id
+          provider_thread_id = excluded.provider_thread_id, native_thread_id = excluded.native_thread_id, budget_json = excluded.budget_json, omissions_json = excluded.omissions_json
           ${
             delivery.status === "prepared"
               ? sql`, items_json = excluded.items_json, omissions_json = excluded.omissions_json`
@@ -476,7 +478,7 @@ export const makeStore = Effect.gen(function* () {
     original: ProjectKnowledgeDelivery,
   ) {
     yield* sql`UPDATE project_knowledge_deliveries
-      SET items_json = ${encodeDeliveryItems(delivery.items)}
+      SET items_json = ${encodeDeliveryItems(delivery.items)}, omissions_json = ${encodeDeliveryOmissions(delivery.omissions)}
       WHERE attempt_id = ${delivery.attemptId} AND project_id = ${delivery.projectId}
         AND items_json = ${encodeDeliveryItems(original.items)}`;
   });
@@ -490,12 +492,13 @@ export const makeStore = Effect.gen(function* () {
         message_id AS "messageId", project_id AS "projectId",
         provider_instance_id AS "providerInstanceId", provider_thread_id AS "providerThreadId",
         native_thread_id AS "nativeThreadId", status, items_json AS items,
-        omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
+        budget_json AS budget, omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
       FROM project_knowledge_deliveries
       WHERE project_id = ${projectId} AND thread_id = ${threadId} AND message_id = ${messageId}
       ORDER BY created_at ASC, attempt_id ASC LIMIT 20`;
-    return (yield* decodeDeliveries(rows)).map(({ providerThreadId, ...row }) => ({
+    return (yield* decodeDeliveries(rows)).map(({ providerThreadId, budget, ...row }) => ({
       ...row,
+      ...(budget == null ? {} : { budget }),
       ...(providerThreadId == null ? {} : { providerThreadId }),
     }));
   });
@@ -510,13 +513,14 @@ export const makeStore = Effect.gen(function* () {
         message_id AS "messageId", project_id AS "projectId",
         provider_instance_id AS "providerInstanceId", provider_thread_id AS "providerThreadId",
         native_thread_id AS "nativeThreadId", status, items_json AS items,
-        omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
+        budget_json AS budget, omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
       FROM project_knowledge_deliveries
       WHERE project_id = ${projectId} AND ${sql.in("thread_id", threadIds)}
         AND ${sql.in("run_id", runIds)} AND status = 'sent'
       ORDER BY created_at ASC, attempt_id ASC`;
-    return (yield* decodeDeliveries(rows)).map(({ providerThreadId, ...row }) => ({
+    return (yield* decodeDeliveries(rows)).map(({ providerThreadId, budget, ...row }) => ({
       ...row,
+      ...(budget == null ? {} : { budget }),
       ...(providerThreadId == null ? {} : { providerThreadId }),
     }));
   });

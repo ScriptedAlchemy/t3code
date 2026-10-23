@@ -1449,7 +1449,7 @@ effectIt.effect.each([false, true])(
       if (stale) {
         expect(result._tag).toBe("Failure");
         expect(harness.nativeStart).not.toHaveBeenCalled();
-        expect(harness.knowledgeDeliveries).toEqual([]);
+        expect(harness.knowledgeDeliveries.at(-1)?.omissions[0]?.reason).toBe("stale_revision");
       } else {
         expect(
           harness.knowledgeDeliveries.map((delivery) => [
@@ -1918,4 +1918,117 @@ effectIt.effect(
       expect(retried).not.toContain("ORIGINAL fact text");
       expect(retried).toContain("Continue on the new provider");
     }),
+);
+effectIt.effect("records optional recall failure while starting the provider turn", () =>
+  Effect.gen(function* () {
+    const projectId = ProjectId.make("project-native-account-command");
+    const sourceRunId = RunId.make("run-knowledge-source");
+    const sourceMessageId = MessageId.make("message-knowledge-source");
+
+    const harness = makeLocalCommandHarness({
+      text: "Continue on the new provider",
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+      // The fact was edited after the earlier message was sent; the handoff must not re-hydrate.
+      resolveKnowledge: (context) =>
+        Effect.succeed({ context, text: "EDITED fact text", byteLength: 16 }),
+      readSentDeliveries: () =>
+        Effect.fail(new ProjectKnowledgeError({ reason: "storage", projectId })),
+    });
+    const projection = harness.projection();
+    const run = projection.runs.at(-1)!;
+    const historical = (
+      id: string,
+      role: "user" | "assistant",
+      text: string,
+    ): OrchestrationV2HistoricalMessage => ({
+      itemId: TurnItemId.make(id),
+      role,
+      text,
+      threadId: projection.thread.id,
+      runId: sourceRunId,
+      providerThreadId: ProviderThreadId.make("existing-native-provider-thread"),
+      status: "completed",
+      kind: role === "user" ? "user_message" : "assistant_message",
+    });
+    const handoff: OrchestrationV2ContextHandoff = {
+      id: ContextHandoffId.make("handoff-provider-switch"),
+      transferId: null,
+      threadId: projection.thread.id,
+      targetRunId: run.id,
+      fromProviderThreadIds: [ProviderThreadId.make("existing-native-provider-thread")],
+      toProviderThreadId: run.providerThreadId!,
+      coveredRunOrdinals: { from: 1, to: 1 },
+      strategy: "full_thread_summary",
+      status: "ready",
+      summaryMessageId: null,
+      summaryText: "",
+      history: {
+        messages: [
+          historical(
+            IdAllocator.derive.userTurnItem({ messageId: sourceMessageId }),
+            "user",
+            "Follow the deploy rule",
+          ),
+          historical("turn-item-knowledge-answer", "assistant", "Done"),
+        ],
+        coverage: "Provider context handoff.",
+        omittedItems: 0,
+        omittedItemIds: [],
+      },
+      createdByProviderInstanceId: null,
+      createdAt: run.requestedAt,
+      updatedAt: run.requestedAt,
+    };
+    harness.setProjection({ ...projection, contextHandoffs: [handoff] });
+
+    const startNativeTurn = Effect.gen(function* () {
+      yield* harness.start;
+      const start = harness.startRootRun.mock.calls.at(-1)![0];
+      yield* start.session.startTurn({
+        appThread: start.appThread,
+        threadId: start.appThread.id,
+        runId: start.run.id,
+        runOrdinal: start.run.ordinal,
+        providerTurnOrdinal: start.providerTurnOrdinal,
+        attemptId: start.attemptId,
+        rootNodeId: start.rootNode.id,
+        providerThread: start.providerThread,
+        message: start.message,
+        modelSelection: start.modelSelection,
+        runtimePolicy: start.runtimePolicy,
+      });
+      return harness.nativeStart.mock.calls.at(-1)![0].message.text;
+    });
+
+    yield* startNativeTurn;
+    expect(harness.nativeStart).toHaveBeenCalled();
+    expect(
+      harness.knowledgeDeliveries.at(-1)?.omissions.some((item) => item.reason === "recall_failed"),
+    ).toBe(true);
+    expect(harness.knowledgeDeliveries.at(-1)?.status).toBe("sent");
+  }),
+);
+
+effectIt.effect("records an over-budget mandatory attachment without starting the provider", () =>
+  Effect.gen(function* () {
+    const harness = knowledgeRetryHarness();
+    const projection = harness.projection();
+    harness.setProjection({
+      ...projection,
+      messages: projection.messages.map((message) => ({
+        ...message,
+        context: {
+          version: 1,
+          records: (message.context?.records ?? []).map((record) =>
+            record.kind === "project-knowledge" && "knowledge" in record
+              ? { ...record, knowledge: { ...record.knowledge, maxBytes: 1 } }
+              : record,
+          ),
+        },
+      })),
+    });
+    yield* harness.start.pipe(Effect.result);
+    expect(harness.nativeStart).not.toHaveBeenCalled();
+    expect(harness.knowledgeDeliveries.at(-1)?.omissions[0]?.reason).toBe("over_budget");
+  }),
 );

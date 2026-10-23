@@ -1,4 +1,7 @@
-import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import {
+  collectComposerContextReferences,
+  projectComposerContextForProvider,
+} from "@t3tools/shared/composerContextReferences";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import {
   deliveredKnowledgeForHistory,
@@ -46,6 +49,7 @@ import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
   handoffBudget,
+  handoffBudgetAssumptions,
   attachmentTokenAllowance,
   contextUsageForHandoff,
   historicalMessage,
@@ -1054,11 +1058,55 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
+      let knowledgeBudget: ReturnType<typeof handoffBudgetAssumptions> | undefined;
+      const recordKnowledgeRefusal = Effect.fn("ProviderTurnStartService.recordKnowledgeRefusal")(
+        function* (error: ProjectKnowledgeError) {
+          const reason =
+            error.reason === "context_budget"
+              ? ("over_budget" as const)
+              : error.reason === "stale_context"
+                ? ("stale_revision" as const)
+                : error.reason === "wrong_project" || error.reason === "wrong_environment"
+                  ? ("not_permitted" as const)
+                  : error.reason === "storage" || error.reason === "scoring"
+                    ? ("recall_failed" as const)
+                    : ("source_unavailable" as const);
+          const referenced = new Set(
+            collectComposerContextReferences(message.text).map((reference) => reference.contextId),
+          );
+          const omissions = (message.context?.records ?? []).flatMap((record) =>
+            record.kind === "project-knowledge"
+              ? [{ contextId: record.contextId, label: record.label, reason }]
+              : [],
+          );
+          if (omissions.length === 0) return;
+          const now = DateTime.formatIso(yield* DateTime.now);
+          yield* knowledge.recordDelivery({
+            attemptId: attempt.id,
+            runId: run.id,
+            threadId: projection.thread.id,
+            messageId: message.id,
+            projectId: projection.thread.projectId,
+            providerInstanceId: run.providerInstanceId,
+            providerThreadId: runningProviderThread.id,
+            nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? null,
+            status: "failed",
+            items: [],
+            omissions,
+            ...(knowledgeBudget === undefined ? {} : { budget: knowledgeBudget }),
+            createdAt: now,
+            updatedAt: now,
+          });
+        },
+      );
       const composer = yield* resolveKnowledgeComposer({
         projectId: projection.thread.projectId,
         text: message.text,
         records: message.context?.records ?? [],
-      }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge));
+      }).pipe(
+        Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge),
+        Effect.tapError(recordKnowledgeRefusal),
+      );
       if (composer.byteLength > 0 && !(yield* isCurrentAttemptInStatus("running"))) return;
       const receipts =
         composer.items.length === 0 && composer.omissions.length === 0
@@ -1094,6 +1142,7 @@ export const layer: Layer.Layer<
             providerThreadId: runningProviderThread.id,
             nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? null,
             status,
+            ...(knowledgeBudget === undefined ? {} : { budget: knowledgeBudget }),
             items: composer.items,
             omissions: composer.omissions,
             createdAt: now,
@@ -1251,8 +1300,8 @@ export const layer: Layer.Layer<
                 !coveredItemIds.has(item.id) &&
                 historicalMessage(item) !== null,
             );
-      if (composer.byteLength > 0) {
-        const allowance = handoffBudget({
+      {
+        knowledgeBudget = handoffBudgetAssumptions({
           tokenCap,
           modelContextWindow,
           userText:
@@ -1264,12 +1313,14 @@ export const layer: Layer.Layer<
               ? yield* nativeContextEstimate
               : 0,
         });
-        if (composer.byteLength > allowance) {
-          return yield* new ProjectKnowledgeError({
+        if (composer.byteLength > knowledgeBudget.knowledgeAllowance) {
+          const error = new ProjectKnowledgeError({
             reason: "context_budget",
             projectId: projection.thread.projectId,
             byteLength: composer.byteLength,
           });
+          yield* recordKnowledgeRefusal(error);
+          return yield* error;
         }
         if (!(yield* isCurrentAttemptInStatus("running"))) return;
       }
@@ -1364,12 +1415,23 @@ export const layer: Layer.Layer<
               }).pipe(
                 Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge),
                 // Missing evidence degrades the replay; it must not block the turn.
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("Failed to read delivered project knowledge for handoff", {
-                    runId: run.id,
-                    cause,
-                  }).pipe(Effect.as(new Map<string, string>())),
-                ),
+                Effect.catchCause((cause) => {
+                  for (const historical of messages) {
+                    if (historical.kind !== "user_message") continue;
+                    composer.omissions.push({
+                      contextId: historical.itemId,
+                      label: "Historical project knowledge",
+                      reason: "recall_failed",
+                    });
+                  }
+                  return Effect.logWarning(
+                    "Failed to read delivered project knowledge for handoff",
+                    {
+                      runId: run.id,
+                      cause,
+                    },
+                  ).pipe(Effect.as(new Map<string, string>()));
+                }),
               ),
             ...(session.injectHistory === undefined
               ? {}
@@ -1406,6 +1468,7 @@ export const layer: Layer.Layer<
               records: message.context?.records ?? [],
             }).pipe(
               Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge),
+              Effect.tapError(recordKnowledgeRefusal),
               Effect.tapError(() => delivery.unsent),
             );
           }

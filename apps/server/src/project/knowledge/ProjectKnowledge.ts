@@ -1135,6 +1135,7 @@ const make = Effect.gen(function* () {
     const project = yield* projects.get(delivery.projectId);
     const projectUnavailable = Option.isNone(project) || project.value.deletedAt !== null;
     const items = [];
+    const omissions = [...delivery.omissions];
     for (const item of delivery.items) {
       let unavailable = projectUnavailable;
       for (const selection of item.context.selections) {
@@ -1163,13 +1164,25 @@ const make = Effect.gen(function* () {
           }
         }
       }
+      if (
+        unavailable &&
+        !omissions.some(
+          (omission) =>
+            omission.contextId === item.contextId && omission.reason === "source_unavailable",
+        )
+      )
+        omissions.push({
+          contextId: item.contextId,
+          label: item.label,
+          reason: "source_unavailable",
+        });
       items.push(
         unavailable && !item.contentRemoved
           ? { ...item, text: "[Source unavailable: removed or changed.]" }
           : item,
       );
     }
-    const checked = { ...delivery, items };
+    const checked = { ...delivery, items, omissions };
     yield* store
       .replaceDeliveryItems(checked, delivery)
       .pipe(Effect.mapError(storageError(delivery.projectId)));
