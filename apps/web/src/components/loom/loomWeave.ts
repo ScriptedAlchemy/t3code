@@ -125,6 +125,8 @@ export interface Weave {
   readonly workstreams: ReadonlyArray<Workstream>;
   readonly strands: ReadonlyMap<string, WeaveStrand>;
   readonly asOfMs: number;
+  /** Where the loaded record ends: the as-of time, or the window's end when that comes first. */
+  readonly tailMs: number;
 }
 
 const SPAWN_EDGES = new Set<LoomEdge["type"]>(["subagent_spawn", "fork"]);
@@ -262,6 +264,14 @@ export function buildWeave(window: LoomWindow): Weave {
       (latest, run) => (latest === null || run.requestedAt > latest.requestedAt ? run : latest),
       null,
     );
+    const spawn =
+      spawnEdge !== undefined
+        ? { ms: Date.parse(spawnEdge.at), exact: true }
+        : parent !== null && row.lane !== null
+          ? { ms: Date.parse(row.lane.createdAt), exact: false }
+          : null;
+    const rejoin =
+      rejoinEdge === undefined ? null : { ms: Date.parse(rejoinEdge.at), edgeId: rejoinEdge.id };
     const strand: WeaveStrand = {
       threadId: row.threadId,
       title: row.title,
@@ -269,15 +279,12 @@ export function buildWeave(window: LoomWindow): Weave {
       rootId,
       depth: row.depth,
       lane: row.lane,
-      extent: row.lane === null ? null : laneExtent(row.lane, laneActivity, asOfMs),
-      spawn:
-        spawnEdge !== undefined
-          ? { ms: Date.parse(spawnEdge.at), exact: true }
-          : parent !== null && row.lane !== null
-            ? { ms: Date.parse(row.lane.createdAt), exact: false }
-            : null,
-      rejoin:
-        rejoinEdge === undefined ? null : { ms: Date.parse(rejoinEdge.at), edgeId: rejoinEdge.id },
+      extent:
+        row.lane === null
+          ? null
+          : withTransfers(laneExtent(row.lane, laneActivity, asOfMs), spawn, rejoin),
+      spawn,
+      rejoin,
       end: lastRun === null ? "unknown" : RUN_END[lastRun.status],
       events: strandEvents(row.threadId, laneActivity),
     };
@@ -308,7 +315,27 @@ export function buildWeave(window: LoomWindow): Weave {
     })
     .sort((left, right) => right.lastActiveMs - left.lastActiveMs)
     .map((workstream, colorIndex) => ({ ...workstream, colorIndex }));
-  return { workstreams, strands, asOfMs };
+  return { workstreams, strands, asOfMs, tailMs: Math.min(asOfMs, Date.parse(window.to)) };
+}
+
+/**
+ * A subagent that recorded no run of its own (a provider-native task, say) still worked from the
+ * recorded spawn to the recorded result, so those transfers bound its extent too.
+ */
+function withTransfers(
+  extent: LaneExtent,
+  spawn: WeaveStrand["spawn"],
+  rejoin: WeaveStrand["rejoin"],
+): LaneExtent {
+  const exact = [spawn?.exact === true ? spawn.ms : null, rejoin?.ms ?? null].filter(
+    (ms): ms is number => ms !== null,
+  );
+  if (exact.length === 0) return extent;
+  return {
+    ...extent,
+    startMs: Math.min(extent.startMs, ...exact),
+    endMs: Math.max(extent.endMs, ...exact),
+  };
 }
 
 /** The workstream to put on the spine: the requested one when loaded, else the most recent. */
@@ -318,6 +345,33 @@ export function spineWorkstream(weave: Weave, rootId: string | undefined): Works
     weave.workstreams[0] ??
     null
   );
+}
+
+/**
+ * Each strand's colour index. Workstreams keep their own colour, except the one on the spine:
+ * there each of the root's children takes the next colour and its descendants inherit it, so its
+ * branches stay apart and a subagent keeps its colour between Workstream and Agent mode.
+ */
+export function strandColors(weave: Weave, spine: Workstream | null): ReadonlyMap<string, number> {
+  const colors = new Map<string, number>();
+  for (const workstream of weave.workstreams) {
+    if (workstream !== spine) {
+      for (const strand of workstream.strands) colors.set(strand.threadId, workstream.colorIndex);
+      continue;
+    }
+    let next = workstream.colorIndex + 1;
+    for (const strand of workstream.strands) {
+      const inherited =
+        strand.parentThreadId === null || strand.parentThreadId === workstream.rootId
+          ? undefined
+          : colors.get(strand.parentThreadId);
+      colors.set(
+        strand.threadId,
+        strand.parentThreadId === null ? workstream.colorIndex : (inherited ?? next++),
+      );
+    }
+  }
+  return colors;
 }
 
 /** The strand a selection belongs to, if any. An edge belongs to the strand it lands on. */

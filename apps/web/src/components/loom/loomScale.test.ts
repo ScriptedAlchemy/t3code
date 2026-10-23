@@ -66,6 +66,23 @@ describe("fitLoomView", () => {
     expect(view.toMs).toBeLessThanOrEqual(TO);
   });
 
+  it("keeps the loaded tail in frame when asked to", () => {
+    const start = TO - 5 * HOUR;
+    const data = loomWindow({
+      runs: [
+        {
+          requestedAt: iso(start),
+          startedAt: iso(start),
+          completedAt: iso(start + 60_000),
+        } as LoomWindow["runs"][number],
+      ],
+    });
+    expect(fitLoomView(data, bounds).toMs).toBeLessThan(TO - HOUR);
+    const view = fitLoomView(data, bounds, TO - 60_000);
+    expect(view.fromMs).toBeLessThanOrEqual(start);
+    expect(view.toMs).toBeGreaterThanOrEqual(TO - 60_000);
+  });
+
   it("shows the whole window when nothing happened in it", () => {
     expect(fitLoomView(loomWindow({}), bounds)).toEqual(bounds);
   });

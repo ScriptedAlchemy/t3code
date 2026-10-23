@@ -2,7 +2,13 @@ import type { LoomLaneActivity } from "@t3tools/client-runtime/projectLoom";
 import type { LoomEdge, LoomLane, LoomMarker, LoomRun, LoomWindow } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildWeave, isLoomEventMarker, laneExtent, spineWorkstream } from "./loomWeave";
+import {
+  buildWeave,
+  isLoomEventMarker,
+  laneExtent,
+  spineWorkstream,
+  strandColors,
+} from "./loomWeave";
 
 const MINUTE = 60_000;
 const T0 = Date.parse("2026-10-22T12:00:00.000Z");
@@ -284,6 +290,49 @@ describe("buildWeave", () => {
     ]);
     expect(root.events.at(-1)!.ms).toBe(T0 + 40 * MINUTE);
     expect(root.events[1]!.selection).toEqual({ kind: "lane", id: "root" });
+  });
+
+  it("spans a runless subagent from its recorded spawn to its recorded result", () => {
+    const native = buildWeave(
+      window({
+        lanes: [
+          lane("root", null),
+          lane("native", "root", { createdAt: iso(T0 + 2 * MINUTE) }),
+          lane("unrecorded", "root", { createdAt: iso(T0 + 3 * MINUTE) }),
+        ],
+        edges: [
+          edge("subagent_spawn", "root", "native", T0 + 2 * MINUTE),
+          edge("subagent_result", "native", "root", T0 + 9 * MINUTE),
+        ],
+      }),
+    );
+    expect(native.strands.get("native")!.extent).toMatchObject({
+      startMs: T0 + 2 * MINUTE,
+      endMs: T0 + 9 * MINUTE,
+    });
+    expect(native.strands.get("unrecorded")!.extent).toMatchObject({
+      startMs: T0 + 3 * MINUTE,
+      endMs: T0 + 3 * MINUTE,
+    });
+  });
+
+  it("ends the loaded tail at the window's end when the as-of time is later", () => {
+    expect(weave.tailMs).toBe(Math.min(Date.parse(data.asOf), Date.parse(data.to)));
+    const late = buildWeave({ ...data, to: iso(T0 + 50 * MINUTE), asOf: iso(T0 + 90 * MINUTE) });
+    expect(late.tailMs).toBe(T0 + 50 * MINUTE);
+  });
+
+  it("colours the spine's branches apart and every other workstream as one", () => {
+    const colors = strandColors(weave, weave.workstreams[0]!);
+    expect(colors.get("root")).toBe(0);
+    expect(colors.get("exact-child")).toBe(1);
+    expect(colors.get("grandchild")).toBe(1);
+    expect(colors.get("inferred-child")).toBe(2);
+    expect(colors.get("old-root")).toBe(1);
+    const other = strandColors(weave, weave.workstreams[1]!);
+    expect(new Set(["root", "exact-child", "inferred-child"].map((id) => other.get(id)))).toEqual(
+      new Set([0]),
+    );
   });
 
   it("puts the requested workstream on the spine, or the most recent one", () => {

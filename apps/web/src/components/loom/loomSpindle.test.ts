@@ -71,11 +71,24 @@ describe("spindleLayout", () => {
   });
   const weave = buildWeave(data);
 
-  it("puts the spine root on the centre line and its strands tight around it", () => {
+  it("puts the spine root on the centre line and its strands next to it", () => {
     const layout = spindleLayout(weave, weave.workstreams[1]!, 400);
     expect(layout.spine?.rootId).toBe("busy");
     expect(layout.homeY.get("busy")).toBe(200);
-    expect(layout.homeY.get("busy-child")).toBe(200 - STRAND_GAP);
+    const childOffset = 200 - layout.homeY.get("busy-child")!;
+    expect(childOffset).toBeGreaterThanOrEqual(STRAND_GAP);
+    expect(childOffset).toBeLessThan(200 - layout.bands[0]!.y);
+  });
+
+  it("spreads a sparse weave to fill the field, but only so far", () => {
+    const spread = (height: number) => {
+      const layout = spindleLayout(weave, weave.workstreams[0]!, height);
+      const ys = [...layout.homeY.values()];
+      return Math.max(...ys) - Math.min(...ys);
+    };
+    expect(spread(200)).toBeGreaterThan(spread(120));
+    expect(spread(2000)).toBe(spread(4000));
+    expect(spread(2000)).toBeLessThan(2000 / 4);
   });
 
   it("alternates the other bands above and below, nearest first", () => {
@@ -136,20 +149,25 @@ describe("strandDots", () => {
 });
 
 describe("glyphCandidates and cullGlyphs", () => {
-  const glyph = (threadId: string, x: number, kind: Glyph["kind"], failed = false): Glyph => ({
+  const glyph = (
+    threadId: string,
+    x: number,
+    kind: Glyph["kind"],
+    failed = false,
+    y = 0,
+  ): Glyph => ({
     key: `${threadId}:${x}:${kind}`,
     threadId,
     x,
-    y: 0,
+    y,
     ms: x,
     kind,
     failed,
     selection: { kind: "lane", id: threadId },
     detail: null,
-    inferred: false,
   });
 
-  it("offers the spawn, rejoin and significant events of a strand inside the field", () => {
+  it("offers the significant events of a strand inside the field, not its spawn or rejoin", () => {
     const weave = buildWeave(
       window({
         lanes: [lane("root", null), lane("child", "root", { createdAt: iso(T0 + 5 * MINUTE) })],
@@ -177,30 +195,33 @@ describe("glyphCandidates and cullGlyphs", () => {
       () => 0,
       20,
     );
-    expect(
-      candidates.map((candidate) => [candidate.kind, candidate.x, candidate.inferred]),
-    ).toEqual([
-      ["spawn", 5, true],
-      ["edit", 12, false],
-      ["checkpoint", 15, false],
+    expect(candidates.map((candidate) => [candidate.kind, candidate.x])).toEqual([
+      ["edit", 12],
+      ["checkpoint", 15],
     ]);
   });
 
-  it("keeps a failure over an edit in the same spot but both on different strands", () => {
+  it("keeps a failure over an edit that would touch it, but not over one clear of it", () => {
     const kept = cullGlyphs(
-      [glyph("a", 100, "edit"), glyph("a", 110, "error", true), glyph("b", 100, "edit")],
+      [
+        glyph("a", 100, "edit"),
+        glyph("a", 110, "error", true),
+        glyph("b", 104, "edit", false, 8),
+        glyph("c", 100, "edit", false, 30),
+      ],
       26,
       250,
+      6,
     );
     expect(kept.map((entry) => [entry.threadId, entry.kind])).toEqual([
-      ["b", "edit"],
+      ["c", "edit"],
       ["a", "error"],
     ]);
   });
 
   it("never returns more than the cap, preferring the higher ranked", () => {
     const many = Array.from({ length: 300 }, (_, index) =>
-      glyph(`s${index}`, index, index % 2 === 0 ? "command" : "test"),
+      glyph(`s${index}`, index, index % 2 === 0 ? "command" : "test", false, index * 20),
     );
     const kept = cullGlyphs(many, 26, 250);
     expect(kept).toHaveLength(250);

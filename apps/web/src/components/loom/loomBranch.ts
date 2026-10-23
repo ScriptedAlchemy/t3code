@@ -5,7 +5,7 @@ import type { WeaveEvent, WeaveStrand, Workstream } from "./loomWeave";
 export const BRANCH_LANE_SPACING = 84;
 /** Room above the top lane and below the bottom one for nodes and their labels. */
 export const BRANCH_MARGIN = 56;
-/** The horizontal run of the S-curve that leaves or rejoins a parent. */
+/** The shortest horizontal run of the S-curve that leaves or rejoins a parent. */
 export const BRANCH_RUN = 40;
 
 export interface BranchLayout {
@@ -14,43 +14,86 @@ export interface BranchLayout {
   readonly laneY: ReadonlyMap<string, number>;
 }
 
-const spawnOrder = (strand: WeaveStrand) =>
+const startOf = (strand: WeaveStrand) =>
   strand.spawn?.ms ?? strand.extent?.startMs ?? Number.POSITIVE_INFINITY;
+const endOf = (strand: WeaveStrand) =>
+  Math.max(startOf(strand), strand.rejoin?.ms ?? strand.extent?.endMs ?? 0);
 
 /**
- * The root takes the centre lane. Its children alternate above and below in spawn order, and a
- * child's own children nest on its side beyond it, so a subtree reads as one wedge.
+ * Children that recorded nothing but their creation: no run, event or result, and no children of
+ * their own. A lane for each would be a curve to nowhere, so they show only as a spawn node on
+ * their parent.
+ */
+export function quietChildren(workstream: Workstream): ReadonlySet<string> {
+  const parents = new Set(workstream.strands.map((strand) => strand.parentThreadId));
+  return new Set(
+    workstream.strands
+      .filter(
+        (strand) =>
+          strand.parentThreadId !== null &&
+          strand.events.length === 0 &&
+          strand.rejoin === null &&
+          !parents.has(strand.threadId),
+      )
+      .map((strand) => strand.threadId),
+  );
+}
+
+/**
+ * The root takes the centre lane. Children take lanes in spawn order, alternating above and below,
+ * and a child's own children go beyond it on its side, so a subtree reads as one wedge. A lane is
+ * reused once the strand on it has ended `padMs` earlier: dozens of short-lived subagents pack into
+ * a few lanes instead of a column too tall to see. Packing works in time, not pixels, so lanes stay
+ * put while the view zooms.
  */
 export function branchLayout(
   workstream: Workstream,
+  padMs: number,
   spacing = BRANCH_LANE_SPACING,
   margin = BRANCH_MARGIN,
 ): BranchLayout {
-  const children = new Map<string, WeaveStrand[]>();
-  for (const strand of workstream.strands) {
-    if (strand.parentThreadId === null) continue;
-    const siblings = children.get(strand.parentThreadId) ?? [];
-    siblings.push(strand);
-    children.set(strand.parentThreadId, siblings);
-  }
+  const byId = new Map(workstream.strands.map((strand) => [strand.threadId, strand]));
+  const quiet = quietChildren(workstream);
   const slots = new Map<string, number>([[workstream.rootId, 0]]);
-  const extent = { above: 0, below: 0 };
-  const place = (parentId: string, side: "above" | "below" | null) => {
-    const ordered = (children.get(parentId) ?? []).toSorted(
-      (left, right) => spawnOrder(left) - spawnOrder(right),
-    );
-    ordered.forEach((child, index) => {
-      const own = side ?? (index % 2 === 0 ? "above" : "below");
-      extent[own] += 1;
-      slots.set(child.threadId, own === "above" ? -extent[own] : extent[own]);
-      place(child.threadId, own);
-    });
+  const occupied = new Map<number, Array<readonly [number, number]>>();
+  let nextSide = -1;
+  const fits = (slot: number, from: number, to: number) =>
+    (occupied.get(slot) ?? []).every(([start, end]) => to <= start || from >= end);
+  const place = (strand: WeaveStrand): number | undefined => {
+    const known = slots.get(strand.threadId);
+    if (known !== undefined) return known;
+    if (strand.parentThreadId === null || strand.extent === null || quiet.has(strand.threadId))
+      return undefined;
+    const parent = byId.get(strand.parentThreadId);
+    const parentSlot = parent === undefined ? 0 : (place(parent) ?? 0);
+    const from = startOf(strand);
+    const to = endOf(strand) + padMs;
+    let slot = 0;
+    if (parentSlot === 0) {
+      for (let k = 1; slot === 0; k++) {
+        if (fits(nextSide * k, from, to)) slot = nextSide * k;
+        else if (fits(-nextSide * k, from, to)) slot = -nextSide * k;
+      }
+      nextSide = -Math.sign(slot);
+    } else {
+      const side = Math.sign(parentSlot);
+      for (let k = Math.abs(parentSlot) + 1; slot === 0; k++) {
+        if (fits(side * k, from, to)) slot = side * k;
+      }
+    }
+    occupied.set(slot, [...(occupied.get(slot) ?? []), [from, to]]);
+    slots.set(strand.threadId, slot);
+    return slot;
   };
-  place(workstream.rootId, null);
-  const cy = margin + extent.above * spacing;
+  for (const strand of workstream.strands.toSorted((left, right) => startOf(left) - startOf(right)))
+    place(strand);
+  const values = [...slots.values()];
+  const above = -Math.min(0, ...values);
+  const below = Math.max(0, ...values);
+  const cy = margin + above * spacing;
   return {
     cy,
-    height: cy + extent.below * spacing + margin,
+    height: cy + below * spacing + margin,
     laneY: new Map([...slots].map(([threadId, slot]) => [threadId, cy + slot * spacing])),
   };
 }
@@ -61,38 +104,60 @@ export interface BranchSegment {
   readonly inferred: boolean;
 }
 
+export interface BranchStrandPath {
+  readonly segments: ReadonlyArray<BranchSegment>;
+  /** Where the strand's own lane begins, after the curve off its parent. */
+  readonly laneX: number;
+  /** Where it ends: the rejoin on the parent, or the terminal node on its lane. */
+  readonly endX: number;
+}
+
 /**
  * A root runs flat across its extent. A child leaves its parent at the spawn time with an
- * S-curve, runs flat on its lane, and curves back at its rejoin or stops at its end.
+ * S-curve, runs flat on its lane, and curves back at its rejoin or stops at its end. The curve off
+ * the parent is always drawn whole, so a child with no recorded duration still shows where it
+ * branched.
  */
 export function branchSegments(
   strand: WeaveStrand,
   layout: BranchLayout,
   x: (ms: number) => number,
-): ReadonlyArray<BranchSegment> {
+): BranchStrandPath | null {
   const y = layout.laneY.get(strand.threadId);
-  if (y === undefined || strand.extent === null) return [];
+  if (y === undefined || strand.extent === null) return null;
   const parentY =
     strand.parentThreadId === null ? undefined : layout.laneY.get(strand.parentThreadId);
-  const endMs = strand.rejoin?.ms ?? strand.extent.endMs;
-  const endX = x(endMs);
   const f = (n: number) => n.toFixed(1);
   if (strand.spawn === null || parentY === undefined) {
     const startX = x(strand.extent.startMs);
-    return endX > startX ? [{ d: `M${f(startX)} ${f(y)}H${f(endX)}`, inferred: false }] : [];
+    const endX = Math.max(startX, x(strand.extent.endMs));
+    return {
+      segments: endX > startX ? [{ d: `M${f(startX)} ${f(y)}H${f(endX)}`, inferred: false }] : [],
+      laneX: startX,
+      endX,
+    };
   }
   const spawnX = x(strand.spawn.ms);
-  const run = Math.max(0, Math.min(BRANCH_RUN, (endX - spawnX) / 2));
+  const rejoinX = strand.rejoin === null ? null : x(strand.rejoin.ms);
+  // A branch that climbs several lanes gets a longer run, so it reads as a curve, not a wall.
+  const climb = Math.min(BRANCH_RUN * 2, Math.max(BRANCH_RUN, Math.abs(y - parentY) * 0.3));
+  const run = rejoinX === null ? climb : Math.max(0, Math.min(climb, (rejoinX - spawnX) / 2));
+  const laneX = spawnX + run;
+  const endX = rejoinX ?? Math.max(laneX, x(strand.extent.endMs));
   const curve = (fromX: number, fromY: number, toX: number, toY: number) =>
     `C${f(fromX + run / 2)} ${f(fromY)} ${f(toX - run / 2)} ${f(toY)} ${f(toX)} ${f(toY)}`;
   const leave: BranchSegment = {
-    d: `M${f(spawnX)} ${f(parentY)}${curve(spawnX, parentY, spawnX + run, y)}`,
+    d: `M${f(spawnX)} ${f(parentY)}${curve(spawnX, parentY, laneX, y)}`,
     inferred: !strand.spawn.exact,
   };
-  const bodyEnd = strand.rejoin === null ? endX : endX - run;
-  const body = `M${f(spawnX + run)} ${f(y)}H${f(bodyEnd)}`;
-  const back = strand.rejoin === null ? "" : curve(bodyEnd, y, endX, parentY);
-  return [leave, { d: body + back, inferred: false }];
+  const bodyEnd = rejoinX === null ? endX : endX - run;
+  const back = rejoinX === null ? "" : curve(bodyEnd, y, endX, parentY);
+  const body = bodyEnd > laneX || back !== "" ? `M${f(laneX)} ${f(y)}H${f(bodyEnd)}${back}` : "";
+  return {
+    segments: body === "" ? [leave] : [leave, { d: body, inferred: false }],
+    laneX,
+    endX,
+  };
 }
 
 export interface BranchNode {
@@ -110,15 +175,16 @@ export interface BranchNode {
   readonly labelled: boolean;
 }
 
-export const NODE_SPACING = 24;
-export const LABEL_SPACING = 64;
+export const NODE_SPACING = 72;
+export const LABEL_SPACING = 72;
 export const NODE_CAP = 400;
 
 const rank = (event: WeaveEvent) => (event.failed ? 100 : 0) + WEAVE_KINDS[event.kind].priority;
 
 /**
  * Events within `spacing` px of each other become one node that takes the most telling event's
- * kind, selection and detail, and counts the rest.
+ * kind, selection and detail, and counts the rest. Events left of `minX` sit at `minX`: a child's
+ * first events come seconds after its spawn, before its curve has reached its lane.
  */
 export function clusterEvents(
   threadId: string,
@@ -127,11 +193,12 @@ export function clusterEvents(
   y: number,
   width: number,
   spacing = NODE_SPACING,
+  minX = Number.NEGATIVE_INFINITY,
 ): BranchNode[] {
   const nodes: Array<{ first: number; last: number; lead: WeaveEvent; count: number }> = [];
   for (const event of events) {
-    const px = x(event.ms);
-    if (px < -spacing || px > width + spacing) continue;
+    const px = Math.max(minX, x(event.ms));
+    if (px < 0 || px > width) continue;
     const current = nodes.at(-1);
     if (current !== undefined && px - current.first < spacing) {
       current.last = px;
@@ -162,8 +229,9 @@ export function clusterEvents(
 }
 
 /**
- * Nodes for every strand in the workstream. When the total passes the cap the spacing doubles
- * until it fits, so a busy workstream still renders a bounded number of elements.
+ * Nodes for every strand in the workstream, with each child's spawn and rejoin among its parent's
+ * events, so transfers at the same moment cluster instead of stacking. When the total passes the cap the spacing doubles until it fits, so a busy workstream
+ * still renders a bounded number of elements.
  */
 export function workstreamNodes(
   workstream: Workstream,
@@ -172,13 +240,57 @@ export function workstreamNodes(
   width: number,
   cap = NODE_CAP,
 ): ReadonlyMap<string, ReadonlyArray<BranchNode>> {
+  const transfers = new Map<string, WeaveEvent[]>();
+  const add = (parentId: string, event: WeaveEvent) => {
+    const list = transfers.get(parentId) ?? [];
+    list.push(event);
+    transfers.set(parentId, list);
+  };
+  for (const strand of workstream.strands) {
+    if (strand.parentThreadId === null) continue;
+    if (strand.spawn !== null) {
+      add(strand.parentThreadId, {
+        key: `spawn:${strand.threadId}`,
+        ms: strand.spawn.ms,
+        kind: "spawn",
+        failed: false,
+        selection: { kind: "lane", id: strand.threadId },
+        detail: strand.title,
+      });
+    }
+    if (strand.rejoin !== null) {
+      add(strand.parentThreadId, {
+        key: `rejoin:${strand.threadId}`,
+        ms: strand.rejoin.ms,
+        kind: "rejoin",
+        failed: false,
+        selection: { kind: "edge", id: strand.rejoin.edgeId },
+        detail: strand.title,
+      });
+    }
+  }
+  const eventsOf = (strand: WeaveStrand) => {
+    const extra = transfers.get(strand.threadId);
+    return extra === undefined
+      ? strand.events
+      : [...strand.events, ...extra].sort((left, right) => left.ms - right.ms);
+  };
   for (let spacing = NODE_SPACING; ; spacing *= 2) {
     const result = new Map<string, BranchNode[]>();
     let total = 0;
     for (const strand of workstream.strands) {
       const y = layout.laneY.get(strand.threadId);
       if (y === undefined) continue;
-      const nodes = clusterEvents(strand.threadId, strand.events, x, y, width, spacing);
+      const laneX = branchSegments(strand, layout, x)?.laneX;
+      const nodes = clusterEvents(
+        strand.threadId,
+        eventsOf(strand),
+        x,
+        y,
+        width,
+        spacing,
+        strand.parentThreadId === null ? undefined : laneX,
+      );
       total += nodes.length;
       result.set(strand.threadId, nodes);
     }

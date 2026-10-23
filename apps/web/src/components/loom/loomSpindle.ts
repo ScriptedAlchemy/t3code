@@ -5,7 +5,14 @@ import type { Weave, WeaveEvent, WeaveStrand, Workstream } from "./loomWeave";
 /** Distance between strands inside a band, and between bands. */
 export const STRAND_GAP = 6;
 export const BAND_GAP = 20;
-const FIELD_MARGIN = 12;
+const FIELD_MARGIN = 28;
+/**
+ * A sparse weave spreads to fill the field, at least to MIN_OCCUPY of its height, but its strands
+ * never sit further apart than MAX_STRAND_GAP or they stop reading as one weave.
+ */
+const MAX_SPREAD = 4;
+const MIN_OCCUPY = 0.35;
+const MAX_STRAND_GAP = 48;
 
 export interface SpindleGeometry {
   readonly cy: number;
@@ -77,9 +84,10 @@ export interface SpindleLayout {
 }
 
 /**
- * The spine workstream sits on the centre line, its other strands tight around it. Remaining
- * workstreams alternate above and below, most recently active nearest, and the whole stack
- * compresses toward the centre when the field is too short for it.
+ * The spine workstream sits on the centre line, its other strands close around it, busiest
+ * nearest. Remaining
+ * workstreams alternate above and below, most recently active nearest. The whole stack scales
+ * about the centre to fill the field: compressed when it is too tall, spread when it is sparse.
  */
 export function spindleLayout(
   weave: Weave,
@@ -92,7 +100,14 @@ export function spindleLayout(
   let above = 0;
   let below = 0;
   if (spine !== null) {
-    spine.strands.forEach((strand, index) => {
+    // The busiest strands sit next to the spine, where the eye starts; the ones that recorded
+    // little take the outer edge.
+    const [root, ...rest] = spine.strands;
+    const ordered = [
+      root!,
+      ...rest.toSorted((left, right) => right.events.length - left.events.length),
+    ];
+    ordered.forEach((strand, index) => {
       const k = Math.ceil(index / 2) * STRAND_GAP;
       offsets.set(strand.threadId, index % 2 === 1 ? -k : k);
     });
@@ -114,7 +129,12 @@ export function spindleLayout(
       else below += size;
     });
   const needed = Math.max(-above, below) * 2;
-  const scale = needed > 0 ? Math.min(1, (height - 2 * FIELD_MARGIN) / needed) : 1;
+  const margin = Math.min(FIELD_MARGIN, height / 8);
+  const spread = Math.min(
+    MAX_STRAND_GAP / STRAND_GAP,
+    Math.max(MAX_SPREAD, (height * MIN_OCCUPY) / needed),
+  );
+  const scale = needed > 0 ? Math.min(spread, (height - 2 * margin) / needed) : 1;
   return {
     cy,
     spine,
@@ -180,85 +200,67 @@ export interface Glyph {
   readonly failed: boolean;
   readonly selection: LoomSelection;
   readonly detail: string | null;
-  /** A spawn placed from creation time rather than a recorded transfer. */
-  readonly inferred: boolean;
 }
 
+export const GLYPH_RADIUS = 7;
 export const GLYPH_SPACING = 26;
 export const GLYPH_CAP = 250;
 
-/** The events worth a glyph on a strand: significant kinds plus its spawn and rejoin. */
+/**
+ * The events worth a glyph on a strand. Spawns and rejoins are left to Agent mode: in the overview
+ * the strand leaving and returning to the spine already shows them.
+ */
 export function glyphCandidates(
   strand: WeaveStrand,
   x: (ms: number) => number,
   y: (x: number) => number,
   width: number,
 ): Glyph[] {
-  const place = (
-    key: string,
-    ms: number,
-    kind: WeaveEventKind,
-    rest: Pick<Glyph, "failed" | "selection" | "detail" | "inferred">,
-  ): Glyph | null => {
-    const px = x(ms);
-    if (px < 0 || px > width) return null;
-    return { key, threadId: strand.threadId, x: px, y: y(px), ms, kind, ...rest };
-  };
-  const lane = { kind: "lane", id: strand.threadId } as const;
-  const glyphs: Array<Glyph | null> = [
-    strand.spawn === null
-      ? null
-      : place(`spawn:${strand.threadId}`, strand.spawn.ms, "spawn", {
-          failed: false,
-          selection: lane,
-          detail: strand.title,
-          inferred: !strand.spawn.exact,
-        }),
-    strand.rejoin === null
-      ? null
-      : place(`rejoin:${strand.threadId}`, strand.rejoin.ms, "rejoin", {
-          failed: false,
-          selection: { kind: "edge", id: strand.rejoin.edgeId },
-          detail: strand.title,
-          inferred: false,
-        }),
-    ...strand.events
-      .filter((event) => WEAVE_KINDS[event.kind].significant)
-      .map((event) =>
-        place(event.key, event.ms, event.kind, {
-          failed: event.failed,
-          selection: event.selection,
-          detail: event.detail,
-          inferred: false,
-        }),
-      ),
-  ];
-  return glyphs.filter((glyph): glyph is Glyph => glyph !== null);
+  return strand.events.flatMap((event) => {
+    if (!WEAVE_KINDS[event.kind].significant) return [];
+    const px = x(event.ms);
+    if (px < 0 || px > width) return [];
+    return [
+      {
+        key: event.key,
+        threadId: strand.threadId,
+        x: px,
+        y: y(px),
+        ms: event.ms,
+        kind: event.kind,
+        failed: event.failed,
+        selection: event.selection,
+        detail: event.detail,
+      },
+    ];
+  });
 }
 
 const glyphRank = (glyph: Glyph) => (glyph.failed ? 100 : 0) + WEAVE_KINDS[glyph.kind].priority;
 
 /**
- * Keeps the most telling glyphs: failures first, then by kind, each at least `spacing` from any
- * kept glyph on its strand, and never more than `cap` in all. Returned left to right.
+ * Keeps the most telling glyphs: failures first, then by kind. A glyph is dropped when a kept one
+ * is within `spacing` along the time axis and close enough vertically to touch it, which covers
+ * both a busy strand and strands that crowd together inside the fans. Never more than `cap` in
+ * all, returned left to right.
  */
 export function cullGlyphs(
   candidates: ReadonlyArray<Glyph>,
   spacing = GLYPH_SPACING,
   cap = GLYPH_CAP,
+  radius = GLYPH_RADIUS,
 ): ReadonlyArray<Glyph> {
   const ordered = candidates.toSorted(
     (left, right) => glyphRank(right) - glyphRank(left) || left.ms - right.ms,
   );
   const kept: Glyph[] = [];
-  const perStrand = new Map<string, number[]>();
   for (const glyph of ordered) {
     if (kept.length >= cap) break;
-    const xs = perStrand.get(glyph.threadId) ?? [];
-    if (xs.some((x) => Math.abs(x - glyph.x) < spacing)) continue;
-    xs.push(glyph.x);
-    perStrand.set(glyph.threadId, xs);
-    kept.push(glyph);
+    const touches = kept.some(
+      (other) =>
+        Math.abs(other.x - glyph.x) < spacing && Math.abs(other.y - glyph.y) < 2 * radius + 2,
+    );
+    if (!touches) kept.push(glyph);
   }
   return kept.sort((left, right) => left.x - right.x);
 }

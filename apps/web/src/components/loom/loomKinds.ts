@@ -5,9 +5,8 @@ import {
   FilePenIcon,
   FlaskConicalIcon,
   GitForkIcon,
-  GitMergeIcon,
-  GitPullRequestIcon,
   ListTodoIcon,
+  MergeIcon,
   PlayIcon,
   TerminalIcon,
   TriangleAlertIcon,
@@ -15,6 +14,8 @@ import {
   WrenchIcon,
   type LucideIcon,
 } from "lucide-react";
+
+import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 
 /** Everything the weave can place on a strand: activity ticks plus the window's markers and runs. */
 export type WeaveEventKind =
@@ -67,14 +68,16 @@ export const WEAVE_KINDS: Record<WeaveEventKind, WeaveKindStyle> = {
   run: style("Run", 2, PlayIcon, "muted-foreground", false),
   tool: style("Tool", 3, WrenchIcon, "primary", false),
   command: style("Command", 4, TerminalIcon, "info", true),
-  edit: style("Edit", 5, FilePenIcon, "success", true),
-  task: style("Agent task", 6, ListTodoIcon, "primary", true),
-  pull_request: style("Pull request", 7, GitPullRequestIcon, "info", true),
-  checkpoint: style("Checkpoint", 8, DiamondIcon, "success", true),
-  test: style("Test", 9, FlaskConicalIcon, "warning", true),
-  error: style("Error", 10, TriangleAlertIcon, "destructive", true),
-  spawn: style("Spawn", 11, GitForkIcon, "foreground", true),
-  rejoin: style("Rejoin", 12, GitMergeIcon, "foreground", true),
+  // A branch's curve already shows where it left and rejoined, so a transfer gives way to the
+  // work recorded at the same moment.
+  spawn: style("Spawn", 5, GitForkIcon, "foreground", true),
+  rejoin: style("Rejoin", 6, MergeIcon, "foreground", true),
+  edit: style("Edit", 7, FilePenIcon, "success", true),
+  task: style("Agent task", 8, ListTodoIcon, "primary", true),
+  pull_request: style("Pull request", 9, PullRequestGlyph.pullRequest, "info", true),
+  checkpoint: style("Checkpoint", 10, DiamondIcon, "success", true),
+  test: style("Test", 11, FlaskConicalIcon, "warning", true),
+  error: style("Error", 12, TriangleAlertIcon, "destructive", true),
 };
 
 /** Legend order: the quiet ticks first, then the events that get glyphs. */

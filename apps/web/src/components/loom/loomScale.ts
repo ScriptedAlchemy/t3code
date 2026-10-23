@@ -39,8 +39,11 @@ export function loomScale(view: LoomView, width: number) {
   };
 }
 
-/** Frames the window's activity with a margin, or the whole window when nothing happened. */
-export function fitLoomView(window: LoomWindow, bounds: LoomView): LoomView {
+/**
+ * Frames the window's activity with a margin, or the whole window when nothing happened. The weave
+ * converges on the loaded tail, so it passes `tailMs` to keep that in frame too.
+ */
+export function fitLoomView(window: LoomWindow, bounds: LoomView, tailMs?: number): LoomView {
   const times = [
     ...window.runs.flatMap((run) => [
       run.requestedAt,
@@ -54,6 +57,7 @@ export function fitLoomView(window: LoomWindow, bounds: LoomView): LoomView {
     ...window.edges.map((edge) => edge.at),
   ]
     .flatMap((iso) => (iso === null ? [] : [Date.parse(iso)]))
+    .concat(tailMs === undefined ? [] : [tailMs])
     .filter((ms) => ms >= bounds.fromMs && ms <= bounds.toMs);
   if (times.length === 0) return bounds;
   const first = Math.min(...times);
@@ -85,6 +89,11 @@ export function formatLoomTick(ms: number, view: LoomView): string {
     return date.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "numeric" });
   }
   return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+/** Hours and minutes only, for labels that sit under a dated axis. */
+export function formatLoomClock(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 export function formatLoomTime(iso: string): string {
