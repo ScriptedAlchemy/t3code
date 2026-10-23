@@ -20,6 +20,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
@@ -88,6 +89,66 @@ it.effect("starts a follow-up turn while assisted learning is held", () =>
     }).pipe(Effect.provide(layer));
   }),
 );
+
+for (const target of ["provider-turn.start", "thread-title.generate"] as const) {
+  it.effect(`admits ${target} while heavy maintenance is held`, () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const completed = yield* Deferred.make<void>();
+      const executor = Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+        execute: (effect) =>
+          effect.request.type === "project-knowledge.extract"
+            ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Deferred.succeed(completed, undefined).pipe(Effect.asVoid),
+      });
+      const dependencies = Layer.merge(
+        EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+        executor,
+      );
+      const layer = EffectWorker.layer.pipe(Layer.provideMerge(dependencies));
+      yield* Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        // Independent threads expose global pool saturation rather than per-thread ordering.
+        yield* outbox.enqueue(
+          Array.from({ length: target === "provider-turn.start" ? 5 : 1 }, (_, index) => ({
+            id: `effect:heavy:${index}`,
+            commandId: CommandId.make(`command:heavy:${index}`),
+            threadId: ThreadId.make(`thread:heavy:${index}`),
+            request: {
+              type: "project-knowledge.extract" as const,
+              runId: RunId.make(`run:heavy:${index}`),
+              runOutcome: "completed" as const,
+            },
+          })),
+        );
+        yield* EffectWorker.runDaemonWithOptions({ concurrency: 4 }).pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        yield* outbox.enqueue([
+          {
+            id: "effect:visible",
+            commandId: CommandId.make("command:visible"),
+            threadId,
+            request:
+              target === "provider-turn.start"
+                ? { type: target, runId }
+                : { type: target, kind: { type: "regenerate" } },
+          },
+        ]);
+        // Settle runnable daemon fibers through its safety wakeup on the virtual clock.
+        yield* TestClock.adjust("30 seconds");
+        assert.isTrue(
+          yield* Deferred.isDone(completed),
+          `${target} must complete while maintenance is held`,
+        );
+        yield* outbox.awaitSettled("effect:visible");
+        assert.isFalse(yield* Deferred.isDone(release));
+        yield* Deferred.succeed(release, undefined);
+        yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+}
 
 function restartEffect(
   now: DateTime.Utc,

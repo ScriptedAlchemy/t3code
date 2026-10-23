@@ -154,6 +154,13 @@ const SIDE_LANE_EFFECT_TYPES = [
   "conversation-summary.generate",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
+// Short, user-visible titles retain their side-lane ordering but share turn capacity,
+// never the worker occupied by heavy model maintenance.
+const MAINTENANCE_EFFECT_TYPES = [
+  "project-knowledge.extract",
+  "conversation-summary.generate",
+] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+
 export const PROCESS_BOUND_EFFECT_TYPES = [
   "provider-turn.start",
   "provider-turn.interrupt",
@@ -574,7 +581,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               SELECT candidate.effect_id
               FROM orchestration_v2_effect_outbox AS candidate
               WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations)}
-                AND ${lane === undefined ? sql`1 = 1` : lane === "maintenance" ? sql`candidate.effect_type IN ${sql.in(SIDE_LANE_EFFECT_TYPES)}` : sql`candidate.effect_type NOT IN ${sql.in(SIDE_LANE_EFFECT_TYPES)}`}
+                AND ${lane === undefined ? sql`1 = 1` : lane === "maintenance" ? sql`candidate.effect_type IN ${sql.in(MAINTENANCE_EFFECT_TYPES)}` : sql`candidate.effect_type NOT IN ${sql.in(MAINTENANCE_EFFECT_TYPES)}`}
                 AND ${excludeRestartContinuations ? sql`candidate.effect_type != 'provider-runtime.continue'` : sql`1 = 1`}
               ORDER BY candidate.available_at ASC, candidate.created_at ASC, candidate.effect_id ASC
               LIMIT 1
