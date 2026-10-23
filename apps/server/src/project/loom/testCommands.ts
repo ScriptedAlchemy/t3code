@@ -52,6 +52,23 @@ const WRAPPERS: ReadonlyArray<ReadonlyArray<string>> = [
   ["env"],
 ];
 
+// Flags that make a runner build, list or describe its tests instead of running them.
+const NON_RUN_FLAGS = new Set([
+  "--no-run",
+  "--collect-only",
+  "--co",
+  "--listTests",
+  "--list-tests",
+  "--list",
+  "--help",
+  "-h",
+  "--version",
+]);
+// `vitest list`, `pytest help`: a first argument that names a listing mode.
+const NON_RUN_SUBCOMMANDS = new Set(["list", "ls", "help"]);
+// `go test -list .` lists and `go test -c` only compiles.
+const GO_NON_RUN_FLAGS = new Set(["-list", "-c"]);
+
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const SHELL_WRAPPER = /^\s*(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1\s*$/;
 const TEST_SCRIPT = /^test(?:[:\-_].*)?$/;
@@ -72,22 +89,33 @@ function stripPrefix(words: ReadonlyArray<string>): ReadonlyArray<string> {
   }
 }
 
-function isTestSegment(segment: string): boolean {
-  const words = stripPrefix(segment.trim().split(/\s+/).filter(Boolean));
+function invokesTests(words: ReadonlyArray<string>): number | null {
   const program = words[0];
-  if (program === undefined) return false;
+  if (program === undefined) return null;
   const name = basename(program);
   if (name === "python" || name === "python3") {
-    return words[1] === "-m" && (words[2] === "pytest" || words[2] === "unittest");
+    return words[1] === "-m" && (words[2] === "pytest" || words[2] === "unittest") ? 3 : null;
   }
-  if (TEST_RUNNERS.has(name)) return true;
-  if (!TEST_SUBCOMMAND_TOOLS.has(name)) return false;
+  if (TEST_RUNNERS.has(name)) return 1;
+  if (!TEST_SUBCOMMAND_TOOLS.has(name)) return null;
   const subcommand = words[1];
-  if (subcommand === undefined) return false;
-  if (TEST_SCRIPT.test(subcommand)) return true;
-  // `npm run test:unit`, `vp run test`, `cargo nextest run`.
-  if (subcommand === "run" && words[2] !== undefined) return TEST_SCRIPT.test(words[2]);
-  return name === "cargo" && subcommand === "nextest";
+  if (subcommand === undefined) return null;
+  // Only `cargo nextest run` runs; `cargo nextest list` and friends do not.
+  if (name === "cargo" && subcommand === "nextest") return words[2] === "run" ? 3 : null;
+  if (TEST_SCRIPT.test(subcommand)) return 2;
+  // `npm run test:unit`, `vp run test`.
+  if (subcommand === "run" && words[2] !== undefined && TEST_SCRIPT.test(words[2])) return 3;
+  return null;
+}
+
+function isTestSegment(segment: string): boolean {
+  const words = stripPrefix(segment.trim().split(/\s+/).filter(Boolean));
+  const argsFrom = invokesTests(words);
+  if (argsFrom === null) return false;
+  const args = words.slice(argsFrom).map((arg) => arg.split("=")[0]!);
+  if (args[0] !== undefined && NON_RUN_SUBCOMMANDS.has(args[0])) return false;
+  const goTest = basename(words[0]!) === "go";
+  return !args.some((arg) => NON_RUN_FLAGS.has(arg) || (goTest && GO_NON_RUN_FLAGS.has(arg)));
 }
 
 /**

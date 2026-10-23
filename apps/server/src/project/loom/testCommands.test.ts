@@ -38,6 +38,26 @@ describe("recognizeTestCommand", () => {
     expect(recognizeTestCommand(command)).toBeNull();
   });
 
+  it.each([
+    "cargo test --no-run",
+    "cargo nextest list",
+    "cargo nextest",
+    "pytest --collect-only",
+    "python -m pytest --co -q",
+    "jest --listTests",
+    "vitest --help",
+    "vitest list",
+    "npx vitest --version",
+    "go test -list .",
+    "go test -c ./pkg",
+    "vp test --help",
+    "npm test -- --listTests",
+    "mocha -h",
+    "phpunit --version",
+  ])("ignores %s, which builds, lists or explains tests without running them", (command) => {
+    expect(recognizeTestCommand(command)).toBeNull();
+  });
+
   it("returns the command a shell wrapper ran", () => {
     expect(recognizeTestCommand("/bin/zsh -lc 'go test ./...'")).toBe("go test ./...");
   });
