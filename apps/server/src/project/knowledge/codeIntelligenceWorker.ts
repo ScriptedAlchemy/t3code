@@ -557,20 +557,11 @@ export async function inspectCodeInWorker(
       : { ...priorMeta, commit };
     if (indexChanged || priorMeta.commit !== commit) writeIndexMeta(input.checkoutPath, meta);
     const languageCatalog = getSupportedLanguages();
-    const supportedLanguages = new Set(languageCatalog);
-    const filesUnsupported = listedPaths.filter((path) => {
-      const language = detectLanguage(path);
-      return language === "unknown" || !supportedLanguages.has(language);
-    }).length;
-    const files = graph.getFiles().filter((file) => listedPathSet.has(file.path));
-    const filesFailed = files.filter((file) => (file.errors?.length ?? 0) > 0).length;
-    const indexedPaths = new Set(files.map((file) => file.path));
-    const filesSkipped =
-      input.files.slice(0, MAX_LISTED_FILES).length -
-      listedPaths.length +
-      listedPaths.filter(
-        (path) => supportedLanguages.has(detectLanguage(path)) && !indexedPaths.has(path),
-      ).length;
+    const indexCoverage = classifyIndexCoverage(input, listedPaths, graph, {
+      languages: languageCatalog,
+      detectLanguage,
+    });
+    const files = indexCoverage.files;
     const stats = graph.getStats();
     const limit = Math.min(
       input.query.operation === "status" || input.query.operation === "path"
@@ -921,33 +912,8 @@ export async function inspectCodeInWorker(
     limitations.push(
       "Relations are static candidates. Import/name resolution can misresolve shadowed names, and SDK confidence is a heuristic score rather than certainty.",
     );
-    let coverageIncomplete = false;
-    if (input.listingTruncated || input.files.length > MAX_LISTED_FILES) {
-      coverageIncomplete = true;
-      limitations.push("Workspace file listing is truncated.");
-    }
-    if (filesUnsupported > 0) {
-      coverageIncomplete = true;
-      limitations.push(
-        `${filesUnsupported} listed files use languages outside the SDK runtime catalog.`,
-      );
-    }
-    if (filesSkipped > 0) {
-      coverageIncomplete = true;
-      limitations.push(
-        `${filesSkipped} listed source files were outside the checkout or were not indexed.`,
-      );
-    }
-    if (filesFailed > 0) {
-      coverageIncomplete = true;
-      limitations.push(`${filesFailed} indexed files report extraction errors.`);
-    }
-    if (graph.getPendingReferenceCount() > 0) {
-      coverageIncomplete = true;
-      limitations.push(
-        "The graph index has unresolved pending references from an interrupted resolution pass.",
-      );
-    }
+    limitations.push(...indexCoverage.limitations);
+    let coverageIncomplete = indexCoverage.limitations.length > 0;
     if (sourceDigests.some((source) => !source.verified)) {
       coverageIncomplete = true;
       limitations.push(
@@ -968,10 +934,10 @@ export async function inspectCodeInWorker(
       indexedLanguages: indexedLanguages(files),
       filesListed: input.filesListed,
       filesIndexed: files.length,
-      filesSkipped,
-      filesUnsupported,
-      filesFailed,
-      pendingReferences: graph.getPendingReferenceCount(),
+      filesSkipped: indexCoverage.filesSkipped,
+      filesUnsupported: indexCoverage.filesUnsupported,
+      filesFailed: indexCoverage.filesFailed,
+      pendingReferences: indexCoverage.pendingReferences,
       resultLimitReached,
       limitations,
     };
@@ -1015,6 +981,64 @@ export async function inspectCodeInWorker(
   }
 }
 
+/**
+ * How much of the listed checkout the index covers, counted the same way for a query and for
+ * freshness. Any limitation it reports makes coverage partial.
+ */
+function classifyIndexCoverage(
+  input: CodeIntelligenceWorkerInput,
+  listedPaths: ReadonlyArray<string>,
+  graph: CodeGraphInstance,
+  catalog: {
+    readonly languages: ReadonlyArray<Language>;
+    readonly detectLanguage: (path: string) => Language;
+  },
+) {
+  const supported = new Set(catalog.languages);
+  const isSupported = (path: string) => {
+    const language = catalog.detectLanguage(path);
+    return language !== "unknown" && supported.has(language);
+  };
+  const listed = new Set(listedPaths);
+  const files = graph.getFiles().filter((file) => listed.has(file.path));
+  const indexedPaths = new Set(files.map((file) => file.path));
+  const filesUnsupported = listedPaths.filter((path) => !isSupported(path)).length;
+  const filesFailed = files.filter((file) => (file.errors?.length ?? 0) > 0).length;
+  const filesSkipped =
+    input.files.slice(0, MAX_LISTED_FILES).length -
+    listedPaths.length +
+    listedPaths.filter((path) => isSupported(path) && !indexedPaths.has(path)).length;
+  const pendingReferences = graph.getPendingReferenceCount();
+  const buildState = graph.getIndexState();
+  const limitations: string[] = [];
+  if (input.listingTruncated || input.files.length > MAX_LISTED_FILES)
+    limitations.push("Workspace file listing is truncated.");
+  if (filesUnsupported > 0)
+    limitations.push(
+      `${filesUnsupported} listed files use languages outside the SDK runtime catalog.`,
+    );
+  if (filesSkipped > 0)
+    limitations.push(
+      `${filesSkipped} listed source files were outside the checkout or were not indexed.`,
+    );
+  if (filesFailed > 0) limitations.push(`${filesFailed} indexed files report extraction errors.`);
+  if (pendingReferences > 0)
+    limitations.push(
+      "The graph index has unresolved pending references from an interrupted resolution pass.",
+    );
+  if (buildState !== null && buildState !== "complete")
+    limitations.push(`The last full index run reported '${buildState}'.`);
+  return {
+    files,
+    filesSkipped,
+    filesUnsupported,
+    filesFailed,
+    pendingReferences,
+    limitations,
+    isSupported,
+  };
+}
+
 function indexedLanguages(files: ReadonlyArray<{ readonly language: string }>): string[] {
   return [...new Set(files.map((file) => file.language))]
     .filter((language) => language !== "unknown")
@@ -1049,7 +1073,6 @@ async function inspectFreshness(
   { CodeGraph, detectLanguage, getSupportedLanguages }: CodeGraphModule,
 ): Promise<ProjectCodeQueryResult> {
   const languages = getSupportedLanguages();
-  const supported = new Set(languages);
   const commit = headCommit(input.checkoutPath);
   const baseCoverage = {
     catalogRevision: CATALOG_REVISION,
@@ -1087,37 +1110,36 @@ async function inspectFreshness(
   const graph = await CodeGraph.open(input.checkoutPath, { sync: false, readOnly: true });
   try {
     const meta = readIndexMeta(input.checkoutPath);
-    const changed = changedSinceIndex(input.checkoutPath, graph, listedPaths, (path) => {
-      const language = detectLanguage(path);
-      return language !== "unknown" && supported.has(language);
+    const indexCoverage = classifyIndexCoverage(input, listedPaths, graph, {
+      languages,
+      detectLanguage,
     });
-    const pendingReferences = graph.getPendingReferenceCount();
-    const buildState = graph.getIndexState();
-    const truncated = input.listingTruncated || input.files.length > MAX_LISTED_FILES;
-    const incomplete =
-      truncated || pendingReferences > 0 || (buildState !== null && buildState !== "complete");
-    const limitations: string[] = [];
-    if (changed.length > 0)
-      limitations.push(
-        `${changed.length} source ${changed.length === 1 ? "file has" : "files have"} changed since the last index. The next code query re-indexes them.`,
-      );
-    if (truncated) limitations.push("Workspace file listing is truncated.");
-    if (pendingReferences > 0)
-      limitations.push(
-        "The graph index has unresolved pending references from an interrupted resolution pass.",
-      );
-    if (buildState !== null && buildState !== "complete")
-      limitations.push(`The last full index run reported '${buildState}'.`);
-    const listed = new Set(listedPaths);
-    const indexedFiles = graph.getFiles().filter((file) => listed.has(file.path));
+    const changed = changedSinceIndex(
+      input.checkoutPath,
+      graph,
+      listedPaths,
+      indexCoverage.isSupported,
+    );
+    const incomplete = indexCoverage.limitations.length > 0;
+    const limitations = [
+      ...(changed.length > 0
+        ? [
+            `${changed.length} source ${changed.length === 1 ? "file has" : "files have"} changed since the last index. The next code query re-indexes them.`,
+          ]
+        : []),
+      ...indexCoverage.limitations,
+    ];
     return emptyResult(
       input,
       {
         ...baseCoverage,
         state: changed.length > 0 ? "stale" : incomplete ? "partial" : "complete",
-        filesIndexed: indexedFiles.length,
-        indexedLanguages: indexedLanguages(indexedFiles),
-        pendingReferences,
+        filesIndexed: indexCoverage.files.length,
+        filesSkipped: indexCoverage.filesSkipped,
+        filesUnsupported: indexCoverage.filesUnsupported,
+        filesFailed: indexCoverage.filesFailed,
+        indexedLanguages: indexedLanguages(indexCoverage.files),
+        pendingReferences: indexCoverage.pendingReferences,
         limitations,
       },
       {

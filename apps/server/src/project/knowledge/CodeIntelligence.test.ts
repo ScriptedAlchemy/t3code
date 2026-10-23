@@ -913,6 +913,33 @@ it.effect("compares oversize and non-UTF-8 sources the way the index hashed them
   ),
 );
 
+it.effect("reports freshness coverage with the same classification as a query", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(NodePath.join(fixture.root, "README.md"), "# Fixture\n"),
+      );
+      const run = checkoutService(fixture.root, () => ["src/defs.ts", "src/use.ts", "README.md"]);
+      const status = yield* run({ operation: "status" });
+      const freshness = yield* run({ operation: "freshness" });
+      const counts = (result: typeof status) => ({
+        state: result.coverage.state,
+        filesUnsupported: result.coverage.filesUnsupported,
+        filesSkipped: result.coverage.filesSkipped,
+        filesFailed: result.coverage.filesFailed,
+      });
+      assert.deepEqual(counts(status), {
+        state: "partial",
+        filesUnsupported: 1,
+        filesSkipped: 0,
+        filesFailed: 0,
+      });
+      assert.deepEqual(counts(freshness), counts(status));
+      assert.equal(freshness.index?.state, "partial");
+    }),
+  ),
+);
+
 async function writeGeneratedSources(root: string, count: number) {
   await NodeFSP.mkdir(NodePath.join(root, "src/generated"), { recursive: true });
   const files = Array.from({ length: count }, (_, index) => `src/generated/g${index}.py`);
