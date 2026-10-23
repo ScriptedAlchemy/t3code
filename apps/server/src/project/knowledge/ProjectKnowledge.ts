@@ -4,6 +4,7 @@ import {
   type KnowledgeConflictHint,
   type KnowledgeFactSource,
   KnowledgeOrigin,
+  KnowledgeScore,
   type KnowledgeSourceUnavailableReason,
   ProjectKnowledgeError,
   type ProjectFact,
@@ -150,6 +151,8 @@ const RECALL_THRESHOLD = 0.3;
 const HISTORY_LIMIT = 50;
 // Whole-project source checks read every cited fact; beyond this the count is partial.
 const SOURCE_CHECK_LIMIT = 2000;
+// Smallest batch of ranked facts whose citations recall checks at once.
+const RESOLVE_BATCH = 20;
 const excerpt = (content: string | null) => (content === null ? null : content.slice(0, 320));
 const isKnowledgeError = Schema.is(ProjectKnowledgeError);
 // One rule for both the single-source read and the batched list check, so a
@@ -928,6 +931,67 @@ const make = Effect.gen(function* () {
         };
       }
       const initialRanking = ranking;
+      const limit = input.limit ?? 20;
+      const recallable = (
+        fact: ProjectFact | undefined,
+        revision: number,
+      ): fact is typeof ActiveProjectFact.Type =>
+        fact !== undefined &&
+        fact.revision === revision &&
+        fact.status !== "forgotten" &&
+        fact.content !== null &&
+        (fact.supersededBy == null || input.includeSuperseded === true);
+      // Walks ranked positions in order and checks citations a batch at a time, so a page reads
+      // sources for about as many facts as it returns instead of for the whole ranking.
+      const resolveMatches = Effect.fn("ProjectKnowledge.resolveMatches")(function* (
+        searchReceipt: SearchReceipt | null,
+      ) {
+        const ranked = searchReceipt?.ranking ?? initialRanking;
+        const positions =
+          searchReceipt?.positions ??
+          ranked.matches.map((_, position) => position).slice(input.factCursor?.offset ?? 0);
+        // A fresh page looks one past the limit to know whether a continuation exists.
+        const take = searchReceipt === null ? limit + 1 : positions.length;
+        const resolved: Array<{
+          readonly fact: typeof ActiveProjectFact.Type;
+          readonly score: typeof KnowledgeScore.Type;
+          readonly position: number;
+        }> = [];
+        let next = 0;
+        while (resolved.length < take && next < positions.length) {
+          const batch = positions.slice(
+            next,
+            next + Math.max(take - resolved.length, RESOLVE_BATCH),
+          );
+          next += batch.length;
+          const current = new Map(
+            (yield* store.findMany(
+              input.projectId,
+              batch.map((position) => ranked.matches[position]!.factId),
+            )).map((fact) => [fact.id, fact]),
+          );
+          const candidates = batch.flatMap((position) => {
+            const match = ranked.matches[position]!;
+            const fact = current.get(match.factId);
+            return recallable(fact, match.revision) ? [{ fact, score: match.score, position }] : [];
+          });
+          const lost = new Set(
+            (yield* unavailableSources(
+              input.projectId,
+              candidates.map((candidate) => candidate.fact),
+              input.includeArchived ?? false,
+            )).map((item) => item.factId),
+          );
+          for (const candidate of candidates)
+            if (!lost.has(candidate.fact.id) && resolved.length < take) resolved.push(candidate);
+        }
+        return { ranked, resolved };
+      });
+      // Citation checks are reads; they run before the write transaction, which only re-reads
+      // the rows of the facts it returns.
+      const early = yield* resolveMatches(prior?.search ?? null).pipe(
+        Effect.mapError(storageError(input.projectId)),
+      );
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
@@ -945,36 +1009,26 @@ const make = Effect.gen(function* () {
               });
             }
             const searchReceipt = receipt?.search ?? null;
-            const ranked = searchReceipt?.ranking ?? initialRanking;
-            const positions =
-              searchReceipt?.positions ??
-              ranked.matches.map((_, position) => position).slice(input.factCursor?.offset ?? 0);
+            // A duplicate request can commit its receipt after the early read; follow it.
+            const { ranked, resolved } =
+              (searchReceipt === null) === (prior?.search == null)
+                ? early
+                : yield* resolveMatches(searchReceipt);
+            const page = searchReceipt === null ? resolved.slice(0, limit) : resolved;
             const current = new Map(
               (yield* store.findMany(
                 input.projectId,
-                positions.map((position) => ranked.matches[position]!.factId),
+                page.map((match) => match.fact.id),
               )).map((fact) => [fact.id, fact]),
             );
-            const matches = [];
-            for (const position of positions) {
-              const match = ranked.matches[position]!;
-              const fact = current.get(match.factId);
-              if (
-                !fact ||
-                fact.revision !== match.revision ||
-                fact.status === "forgotten" ||
-                fact.content === null ||
-                (fact.supersededBy != null && !input.includeSuperseded) ||
-                !(yield* sourcesAvailable(fact, input.includeArchived ?? false))
-              )
-                continue;
-              matches.push({ fact, score: match.score, position });
-            }
-            const selected = matches.slice(0, input.limit ?? 20);
-            const last = selected.at(-1);
+            const selected = page.flatMap((match) => {
+              const fact = current.get(match.fact.id);
+              return recallable(fact, match.fact.revision) ? [{ ...match, fact }] : [];
+            });
+            const last = page.at(-1);
             const nextOffset =
               searchReceipt === null
-                ? matches.length > selected.length && last !== undefined
+                ? resolved.length > page.length && last !== undefined
                   ? last.position + 1
                   : null
                 : searchReceipt.nextOffset;

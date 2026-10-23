@@ -36,6 +36,7 @@ import * as KnowledgeHandlers from "../../mcp/toolkits/knowledge/handlers.ts";
 import { KnowledgeToolkit } from "../../mcp/toolkits/knowledge/tools.ts";
 import * as Result from "effect/Result";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -1110,6 +1111,60 @@ it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
     assert.equal(yield* storedCount, 0);
     assert.equal(yield* searchCount("agent"), 1);
     assert.equal(yield* storedCount, 1);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("checks citations for one page of recall, not for every ranked fact", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const projectId = ProjectId.make("recall-citations");
+    yield* createProject(projectId);
+    const threadId = ThreadId.make("recall-citations-thread");
+    yield* projections.apply(thread(threadId, projectId));
+    yield* projections.apply(message(threadId, "recall-citation", "user", "tenant IDs in keys"));
+    const source = yield* knowledge.readSource({
+      projectId,
+      threadId,
+      messageId: MessageId.make("recall-citation"),
+    });
+    if (source.state !== "available") return yield* Effect.die("source unavailable");
+    for (let index = 0; index < 100; index++)
+      yield* knowledge.mutate(
+        {
+          ...createFact(projectId, `cited-${index}`),
+          content: `Cache keys include tenant IDs, variant ${index}.`,
+          sources: [source.source],
+        },
+        { kind: "user" },
+      );
+    let citationReads = 0;
+    const countCitationReads: Statement.Transformer = (statement) => {
+      const [query] = statement.compile();
+      if (query.includes("orchestration_v2_projection_messages")) citationReads++;
+      return Effect.succeed(statement);
+    };
+    const page = (requestId: string, factCursor?: { requestId: CommandId; offset: number }) =>
+      knowledge
+        .search({
+          projectId,
+          query: "tenant cache",
+          requestId: CommandId.make(requestId),
+          limit: 1,
+          ...(factCursor ? { factCursor } : {}),
+        })
+        .pipe(Effect.provideService(Statement.CurrentTransformer, countCitationReads));
+    const first = yield* page("recall-first");
+    assert.isAtMost(citationReads, 3);
+    if (first.facts.state !== "available") return assert.fail("ranking must be available");
+    assert.equal(first.facts.matches.length, 1);
+    assert.isNotNull(first.facts.nextCursor);
+    const second = yield* page("recall-second", first.facts.nextCursor!);
+    assert.equal(second.facts.state === "available" && second.facts.matches.length, 1);
+    assert.notEqual(
+      second.facts.state === "available" && second.facts.matches[0]?.fact.id,
+      first.facts.matches[0]?.fact.id,
+    );
   }).pipe(Effect.provide(layerTest)),
 );
 
