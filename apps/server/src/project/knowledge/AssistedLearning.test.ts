@@ -19,6 +19,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -353,8 +354,8 @@ it.effect("suggests replacing a near duplicate instead of duplicating it", () =>
     const { facts } = yield* knowledge.list({ projectId, status: "proposed", origin: "assisted" });
     // The exact duplicate created nothing; the near duplicate names what it would replace.
     assert.deepEqual(
-      facts.map((fact) => [fact.id, fact.supersedes]),
-      [[ProjectFactId.make(`assisted:${runId}:0`), existing.id]],
+      facts.map((fact) => [fact.content, fact.supersedes]),
+      [["API responses use snake_case keys for every public endpoint.", existing.id]],
     );
     assert.equal((yield* knowledge.status({ projectId })).assistedLearning?.lastRun?.suggested, 1);
     // The existing fact stays recalled until a user accepts the replacement.
@@ -376,8 +377,16 @@ it.effect("suggests replacing a near duplicate instead of duplicating it", () =>
   }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
 });
 
+const testsCommand = {
+  kind: "convention" as const,
+  content: "Tests run with vp test.",
+  entities: [],
+  citations: ["M2"],
+};
+
 it.effect("does not bring back a forgotten proposal when the job runs again", () => {
-  const model = scripted([{ candidates: [snakeCase] }]);
+  // The retried model call returns the same candidate at a different position.
+  const model = scripted([{ candidates: [snakeCase] }, { candidates: [testsCommand, snakeCase] }]);
   return Effect.gen(function* () {
     yield* seedRun;
     const runner = yield* AssistedLearningRunner;
@@ -399,7 +408,10 @@ it.effect("does not bring back a forgotten proposal when the job runs again", ()
     yield* sql`DELETE FROM project_knowledge_assisted_runs`;
     yield* runner.extractRun({ threadId, runId, runOutcome: "completed" });
     assert.equal(model.calls.length, 2);
-    assert.deepEqual((yield* knowledge.list({ projectId, status: "proposed" })).facts, []);
+    assert.deepEqual(
+      (yield* knowledge.list({ projectId, status: "proposed" })).facts.map((fact) => fact.content),
+      [testsCommand.content],
+    );
     assert.deepEqual(
       (yield* knowledge.list({ projectId, status: "forgotten" })).facts.map((fact) => fact.id),
       [proposal!.id],
@@ -407,12 +419,55 @@ it.effect("does not bring back a forgotten proposal when the job runs again", ()
   }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
 });
 
-const testsCommand = {
-  kind: "convention" as const,
-  content: "Tests run with vp test.",
-  entities: [],
-  citations: ["M2"],
-};
+it.effect("commits a run's proposals only together with its outcome", () => {
+  const model = scripted([{ candidates: [snakeCase, testsCommand] }]);
+  return Effect.gen(function* () {
+    yield* seedRun;
+    const runner = yield* AssistedLearningRunner;
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const sql = yield* SqlClient.SqlClient;
+    const proposals = Effect.map(knowledge.list({ projectId, status: "proposed" }), (listed) =>
+      listed.facts.map((fact) => fact.content).toSorted(),
+    );
+    yield* sql`CREATE TEMP TRIGGER lose_outcome BEFORE INSERT ON project_knowledge_assisted_runs
+      BEGIN SELECT RAISE(ABORT, 'outcome lost'); END`;
+    const lost = yield* runner
+      .extractRun({ threadId, runId, runOutcome: "completed" })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isFailure(lost));
+    // Nothing a user could review, and so forget, exists without the outcome.
+    assert.deepEqual(yield* proposals, []);
+    yield* sql`DROP TRIGGER lose_outcome`;
+    yield* runner.extractRun({ threadId, runId, runOutcome: "completed" });
+    assert.deepEqual(yield* proposals, [snakeCase.content, testsCommand.content].toSorted());
+    assert.equal((yield* knowledge.status({ projectId })).assistedLearning?.lastRun?.proposed, 2);
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
+
+it.effect("proposes nothing for a run another attempt finished while the model ran", () => {
+  let finishElsewhere: Effect.Effect<void> = Effect.void;
+  const generate: Generate = () =>
+    Effect.suspend(() => finishElsewhere).pipe(Effect.as({ candidates: [snakeCase] }));
+  return Effect.gen(function* () {
+    yield* seedRun;
+    const runner = yield* AssistedLearningRunner;
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    finishElsewhere = knowledge
+      .recordAssistedRun(projectId, {
+        threadId,
+        runId,
+        runOutcome: "completed",
+        result: "ran",
+        reason: null,
+        proposed: 0,
+        suggested: 0,
+        at: DateTime.formatIso(at),
+      })
+      .pipe(Effect.orDie);
+    yield* runner.extractRun({ threadId, runId, runOutcome: "completed" });
+    assert.deepEqual((yield* knowledge.list({ projectId, status: "proposed" })).facts, []);
+  }).pipe(Effect.provide(makeLayer(generate, optedIn)));
+});
 
 it.effect("drops a candidate citing more messages than a fact may carry", () => {
   const model = scripted([
