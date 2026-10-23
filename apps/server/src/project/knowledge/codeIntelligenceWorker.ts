@@ -280,9 +280,53 @@ function headCommit(checkoutPath: string): string | null {
   }
 }
 
-function sha256File(path: string): string | null {
+// Mirrors the SDK's file limit: it never parses a larger file and stores a hash of a size
+// stamp in place of its content.
+const MAX_SOURCE_FILE_SIZE_BYTES = 1024 * 1024;
+const READ_CHUNK_BYTES = 64 * 1024;
+
+const sha256 = (input: string | Buffer) =>
+  NodeCrypto.createHash("sha256").update(input).digest("hex");
+
+/** A source's bytes when within the SDK's limit, `null` over it; never reads past limit + 1. */
+function readBoundedSource(descriptor: number): {
+  readonly size: number;
+  readonly bytes: Buffer | null;
+} {
+  const stats = NodeFS.fstatSync(descriptor);
+  if (!stats.isFile()) throw new Error("not a regular file");
+  if (stats.size > MAX_SOURCE_FILE_SIZE_BYTES) return { size: stats.size, bytes: null };
+  const chunks: Buffer[] = [];
+  let size = 0;
+  while (size <= MAX_SOURCE_FILE_SIZE_BYTES) {
+    const chunk = Buffer.allocUnsafe(
+      Math.min(READ_CHUNK_BYTES, MAX_SOURCE_FILE_SIZE_BYTES + 1 - size),
+    );
+    const read = NodeFS.readSync(descriptor, chunk, 0, chunk.length, size);
+    if (read === 0) break;
+    chunks.push(chunk.subarray(0, read));
+    size += read;
+  }
+  return size > MAX_SOURCE_FILE_SIZE_BYTES
+    ? { size, bytes: null }
+    : { size, bytes: Buffer.concat(chunks, size) };
+}
+
+/** The hash the index stores for these contents: of the decoded text, or of the size stamp. */
+function indexedContentHash(source: ReturnType<typeof readBoundedSource>): string {
+  return sha256(
+    source.bytes === null ? `codegraph:oversize:${source.size}` : source.bytes.toString("utf8"),
+  );
+}
+
+function indexedContentHashOfFile(path: string): string | null {
   try {
-    return NodeCrypto.createHash("sha256").update(NodeFS.readFileSync(path)).digest("hex");
+    const descriptor = NodeFS.openSync(path, "r");
+    try {
+      return indexedContentHash(readBoundedSource(descriptor));
+    } finally {
+      NodeFS.closeSync(descriptor);
+    }
   } catch {
     return null;
   }
@@ -317,7 +361,7 @@ function changedSinceIndex(
     }
     if (stat.size === record.size && Math.trunc(stat.mtimeMs) === Math.trunc(record.modifiedAt))
       continue;
-    if (sha256File(absolute) !== record.contentHash) changed.push(path);
+    if (indexedContentHashOfFile(absolute) !== record.contentHash) changed.push(path);
   }
   for (const path of indexed.keys()) {
     if (!listed.has(path) && !NodeFS.existsSync(NodePath.resolve(checkoutPath, path)))
@@ -364,12 +408,11 @@ function exactDigest(
       return { path: normalizedPath, digest: "", verified: false };
     }
     const descriptor = NodeFS.openSync(realSource, "r");
-    let digest: string;
+    let source: ReturnType<typeof readBoundedSource>;
     let stableRead: boolean;
-    let validUtf8 = true;
     try {
       const before = NodeFS.fstatSync(descriptor);
-      const bytes = NodeFS.readFileSync(descriptor);
+      source = readBoundedSource(descriptor);
       const after = NodeFS.fstatSync(descriptor);
       stableRead =
         before.dev === after.dev &&
@@ -378,20 +421,30 @@ function exactDigest(
         before.mtimeMs === after.mtimeMs &&
         before.ctimeMs === after.ctimeMs &&
         NodeFS.realpathSync(absolutePath) === realSource;
-      digest = NodeCrypto.createHash("sha256").update(bytes).digest("hex");
-      try {
-        new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      } catch {
-        validUtf8 = false;
-      }
     } finally {
       NodeFS.closeSync(descriptor);
     }
-    const indexed = graph.getFile(normalizedPath);
+    const indexedHash = graph.getFile(normalizedPath)?.contentHash;
+    // Over the limit the index knows only the size, so that is all there is to verify, and
+    // the bytes are not read to produce a digest.
+    if (source.bytes === null) {
+      return {
+        path: normalizedPath,
+        digest: "",
+        verified: stableRead && indexedHash === indexedContentHash(source),
+      };
+    }
+    const digest = sha256(source.bytes);
+    let validUtf8 = true;
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(source.bytes);
+    } catch {
+      validUtf8 = false;
+    }
     return {
       path: normalizedPath,
       digest,
-      verified: stableRead && validUtf8 && indexed?.contentHash === digest,
+      verified: stableRead && validUtf8 && indexedHash === digest,
     };
   } catch {
     return { path: normalizedPath, digest: "", verified: false };

@@ -871,6 +871,48 @@ it.effect("never widens an empty canonical allowlist into a full checkout scan",
   ),
 );
 
+it.effect("compares oversize and non-UTF-8 sources the way the index hashed them", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const big = NodePath.join(fixture.root, "src/big.ts");
+      const latin = NodePath.join(fixture.root, "src/latin.ts");
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(
+          big,
+          `export function huge() { return 1; }\n/*${"x".repeat(1024 * 1024)}*/\n`,
+        );
+        await NodeFSP.writeFile(
+          latin,
+          Buffer.concat([
+            Buffer.from("export function latin() { return 1; }\n// "),
+            Buffer.from([0xe9, 0xff]),
+            Buffer.from("\n"),
+          ]),
+        );
+      });
+      const run = checkoutService(fixture.root, () => [
+        "src/defs.ts",
+        "src/big.ts",
+        "src/latin.ts",
+      ]);
+      yield* run({ operation: "status" });
+      yield* Effect.promise(async () => {
+        for (const path of [big, latin]) {
+          const later = (await NodeFSP.stat(path)).mtimeMs / 1000 + 60;
+          await NodeFSP.utimes(path, later, later);
+        }
+      });
+      const freshness = yield* run({ operation: "freshness" });
+      assert.deepEqual(freshness.index?.changedPaths, []);
+      const affected = yield* run({ operation: "affected", filePath: "src/big.ts" });
+      assert.deepEqual(affected.sourceDigests, [
+        { path: "src/big.ts", digest: "", verified: true },
+      ]);
+      assert.notEqual(affected.coverage.state, "stale");
+    }),
+  ),
+);
+
 async function writeGeneratedSources(root: string, count: number) {
   await NodeFSP.mkdir(NodePath.join(root, "src/generated"), { recursive: true });
   const files = Array.from({ length: count }, (_, index) => `src/generated/g${index}.py`);
