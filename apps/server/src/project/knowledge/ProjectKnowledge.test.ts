@@ -29,6 +29,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
@@ -1272,6 +1273,49 @@ it.effect(
         [ProjectFactId.make("b"), ProjectFactId.make("c")],
       );
     }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("search receipts expire with their cursors and stay bounded in number", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const sql = yield* SqlClient.SqlClient;
+    const projectId = ProjectId.make("search-receipts");
+    yield* createProject(projectId);
+    yield* knowledge.mutate(createFact(projectId, "receipt-a"), { kind: "user" });
+    yield* knowledge.mutate(createFact(projectId, "receipt-b"), { kind: "user" });
+    const search = (requestId: string, factCursor?: { requestId: CommandId; offset: number }) =>
+      knowledge.search({
+        projectId,
+        query: "tenant cache",
+        requestId: CommandId.make(requestId),
+        limit: 1,
+        recordRetrieval: false,
+        ...(factCursor ? { factCursor } : {}),
+      });
+    const first = yield* search("receipt-root");
+    if (first.facts.state !== "available") return assert.fail("ranking must be available");
+    const cursor = first.facts.nextCursor!;
+    yield* TestClock.adjust("59 minutes");
+    const page = yield* search("receipt-page", cursor);
+    assert.equal(page.facts.state === "available" && page.facts.matches.length, 1);
+
+    yield* TestClock.adjust("2 minutes");
+    const expired = yield* search("receipt-late-page", cursor).pipe(Effect.result);
+    assert.equal(Result.isFailure(expired) && expired.failure.reason, "invalid_cursor");
+
+    for (let index = 0; index < 120; index++) yield* search(`receipt-browse-${index}`);
+    const [stored] = yield* sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM project_knowledge_commands WHERE search_json IS NOT NULL`;
+    assert.isAtMost(stored!.count, 100);
+    // The newest browsing ranking still pages.
+    const latest = yield* search("receipt-browse-latest");
+    assert.isNotNull(latest.facts.state === "available" && latest.facts.nextCursor);
+    const latestPage = yield* search(
+      "receipt-browse-latest-page",
+      latest.facts.state === "available" ? latest.facts.nextCursor! : cursor,
+    );
+    assert.equal(latestPage.facts.state === "available" && latestPage.facts.matches.length, 1);
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("traverses native rankings once despite unequal retrieval reinforcement", () =>

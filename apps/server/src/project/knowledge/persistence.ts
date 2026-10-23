@@ -38,6 +38,7 @@ const SearchReceipt = Schema.Struct({
   nextOffset: Schema.NullOr(NonNegativeInt),
 });
 export type SearchReceipt = typeof SearchReceipt.Type;
+const MAX_SEARCH_RECEIPTS = 100;
 const ReceiptRow = Schema.Struct({
   projectId: ProjectId,
   factId: Schema.NullOr(ProjectFactId),
@@ -183,10 +184,15 @@ export const makeStore = Effect.gen(function* () {
       RETURNING id`;
     return changed.length === 1;
   });
-  const receipt = Effect.fn("ProjectKnowledgeStore.receipt")(function* (commandId: string) {
+  // A search receipt older than searchNotBefore reads as absent: its cursor has expired.
+  const receipt = Effect.fn("ProjectKnowledgeStore.receipt")(function* (
+    commandId: string,
+    searchNotBefore: string | null = null,
+  ) {
     const rows = yield* sql`
       SELECT project_id AS "projectId", fact_id AS "factId", request_digest AS digest, search_json AS search
-      FROM project_knowledge_commands WHERE command_id = ${commandId}`;
+      FROM project_knowledge_commands WHERE command_id = ${commandId}
+        AND (${searchNotBefore} IS NULL OR search_json IS NULL OR created_at >= ${searchNotBefore})`;
     return (yield* decodeReceipts(rows))[0] ?? null;
   });
   const record = Effect.fn("ProjectKnowledgeStore.record")(function* (
@@ -194,10 +200,27 @@ export const makeStore = Effect.gen(function* () {
     projectId: ProjectId,
     factId: ProjectFactId | null,
     digest: string,
-    search: SearchReceipt | null = null,
   ) {
-    yield* sql`INSERT INTO project_knowledge_commands (command_id, project_id, fact_id, request_digest, search_json)
-      VALUES (${commandId}, ${projectId}, ${factId}, ${digest}, ${search === null ? null : encodeSearchReceipt(search)})`;
+    yield* sql`INSERT INTO project_knowledge_commands (command_id, project_id, fact_id, request_digest)
+      VALUES (${commandId}, ${projectId}, ${factId}, ${digest})`;
+  });
+  // Search receipts are paging state, not history: each write drops expired ones and keeps at
+  // most MAX_SEARCH_RECEIPTS, which bounds their total size.
+  const recordSearch = Effect.fn("ProjectKnowledgeStore.recordSearch")(function* (
+    commandId: string,
+    projectId: ProjectId,
+    digest: string,
+    search: SearchReceipt,
+    createdAt: string,
+    notBefore: string,
+  ) {
+    yield* sql`DELETE FROM project_knowledge_commands
+      WHERE search_json IS NOT NULL AND (created_at < ${notBefore} OR command_id NOT IN (
+        SELECT command_id FROM project_knowledge_commands WHERE search_json IS NOT NULL
+        ORDER BY created_at DESC LIMIT ${MAX_SEARCH_RECEIPTS - 1}
+      ))`;
+    yield* sql`INSERT INTO project_knowledge_commands (command_id, project_id, fact_id, request_digest, search_json, created_at)
+      VALUES (${commandId}, ${projectId}, NULL, ${digest}, ${encodeSearchReceipt(search)}, ${createdAt})`;
   });
   const findMany = Effect.fn("ProjectKnowledgeStore.findMany")(function* (
     projectId: ProjectId,
@@ -519,6 +542,7 @@ export const makeStore = Effect.gen(function* () {
     update,
     receipt,
     record,
+    recordSearch,
     candidates,
     similar,
     recordHistory,

@@ -153,6 +153,8 @@ const HISTORY_LIMIT = 50;
 const SOURCE_CHECK_LIMIT = 2000;
 // Smallest batch of ranked facts whose citations recall checks at once.
 const RESOLVE_BATCH = 20;
+// How long a search ranking stays pageable and replayable.
+const SEARCH_RECEIPT_TTL_MILLIS = 60 * 60 * 1000;
 const excerpt = (content: string | null) => (content === null ? null : content.slice(0, 320));
 const isKnowledgeError = Schema.is(ProjectKnowledgeError);
 // One rule for both the single-source read and the batched list check, so a
@@ -802,8 +804,12 @@ const make = Effect.gen(function* () {
       const requestDigest = yield* digest(encodeSearch(factInput)).pipe(
         Effect.mapError(storageError(input.projectId)),
       );
+      const searchedAt = yield* DateTime.now;
+      const receiptsNotBefore = DateTime.formatIso(
+        DateTime.subtract(searchedAt, { milliseconds: SEARCH_RECEIPT_TTL_MILLIS }),
+      );
       const prior = yield* store
-        .receipt(input.requestId)
+        .receipt(input.requestId, receiptsNotBefore)
         .pipe(Effect.mapError(storageError(input.projectId)));
       if (
         prior !== null &&
@@ -823,7 +829,7 @@ const make = Effect.gen(function* () {
         rootRequestId === input.requestId
           ? prior
           : yield* store
-              .receipt(rootRequestId)
+              .receipt(rootRequestId, receiptsNotBefore)
               .pipe(Effect.mapError(storageError(input.projectId)));
       if (
         (input.factCursor !== undefined || prior !== null) &&
@@ -996,7 +1002,7 @@ const make = Effect.gen(function* () {
         .withTransaction(
           Effect.gen(function* () {
             yield* requireProject(input.projectId);
-            const receipt = yield* store.receipt(input.requestId);
+            const receipt = yield* store.receipt(input.requestId, receiptsNotBefore);
             if (
               receipt !== null &&
               (receipt.projectId !== input.projectId ||
@@ -1039,13 +1045,20 @@ const make = Effect.gen(function* () {
                 selected.map((match) => match.fact.id),
               );
             if (receipt === null) {
-              yield* store.record(input.requestId, input.projectId, null, requestDigest, {
-                rootRequestId,
-                queryDigest,
-                ranking: input.factCursor === undefined ? ranked : null,
-                positions: selected.map((match) => match.position),
-                nextOffset,
-              } satisfies SearchReceipt);
+              yield* store.recordSearch(
+                input.requestId,
+                input.projectId,
+                requestDigest,
+                {
+                  rootRequestId,
+                  queryDigest,
+                  ranking: input.factCursor === undefined ? ranked : null,
+                  positions: selected.map((match) => match.position),
+                  nextOffset,
+                },
+                DateTime.formatIso(searchedAt),
+                receiptsNotBefore,
+              );
             }
             return {
               messages,
