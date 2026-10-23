@@ -199,6 +199,14 @@ function validateIndexDirectory(checkoutPath: string): void {
     ) {
       throw new Error("index-outside-checkout");
     }
+    // The SDK opens the database, its -wal/-shm sidecars, its lock and .gitignore by path, and
+    // follows a link or shared inode out of the checkout; anything but a plain entry is refused.
+    for (const name of NodeFS.readdirSync(indexPath)) {
+      const child = NodeFS.lstatSync(NodePath.join(indexPath, name));
+      if (!(child.isDirectory() || (child.isFile() && child.nlink === 1))) {
+        throw new Error("index-outside-checkout");
+      }
+    }
   } catch (cause) {
     if (cause instanceof Error && cause.message === "index-outside-checkout") throw cause;
     if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
@@ -213,9 +221,17 @@ interface IndexMeta {
 
 function readIndexMeta(checkoutPath: string): IndexMeta {
   try {
-    const raw: unknown = JSON.parse(
-      NodeFS.readFileSync(NodePath.join(checkoutPath, INDEX_DIRECTORY, INDEX_META_FILE), "utf8"),
+    const descriptor = NodeFS.openSync(
+      NodePath.join(checkoutPath, INDEX_DIRECTORY, INDEX_META_FILE),
+      NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NOFOLLOW ?? 0),
     );
+    let text: string;
+    try {
+      text = NodeFS.readFileSync(descriptor, "utf8");
+    } finally {
+      NodeFS.closeSync(descriptor);
+    }
+    const raw: unknown = JSON.parse(text);
     if (typeof raw !== "object" || raw === null) throw new Error("invalid");
     const { commit, generation, indexedAt } = raw as Record<string, unknown>;
     return {
@@ -232,12 +248,15 @@ function readIndexMeta(checkoutPath: string): IndexMeta {
 }
 
 function writeIndexMeta(checkoutPath: string, meta: IndexMeta): void {
+  const target = NodePath.join(checkoutPath, INDEX_DIRECTORY, INDEX_META_FILE);
+  const temporary = `${target}.${process.pid}.tmp`;
   try {
-    NodeFS.writeFileSync(
-      NodePath.join(checkoutPath, INDEX_DIRECTORY, INDEX_META_FILE),
-      JSON.stringify(meta),
-    );
+    // An exclusive create never follows a planted link, and the rename replaces the entry
+    // rather than writing through whatever it pointed at.
+    NodeFS.writeFileSync(temporary, JSON.stringify(meta), { flag: "wx" });
+    NodeFS.renameSync(temporary, target);
   } catch {
+    NodeFS.rmSync(temporary, { force: true });
     // The marker only labels freshness; an unwritable one reads back as an unknown commit.
   }
 }

@@ -801,6 +801,30 @@ function checkoutService(root: string, listed: () => ReadonlyArray<string>) {
     ).pipe(Effect.provide(provided));
 }
 
+it.effect("refuses a symlinked index child instead of writing through it", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const victim = NodePath.join(fixture.worktree, "victim");
+      const run = checkoutService(fixture.root, () => ["src/defs.ts", "src/use.ts"]);
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(victim, "untouched");
+        await NodeFSP.mkdir(NodePath.join(fixture.root, ".codegraph-t3"));
+      });
+      for (const child of ["t3-index.json", "codegraph.db-wal"]) {
+        const link = NodePath.join(fixture.root, ".codegraph-t3", child);
+        yield* Effect.promise(() => NodeFSP.symlink(victim, link));
+        const result = yield* Effect.result(run({ operation: "status" }));
+        assert.equal(yield* Effect.promise(() => NodeFSP.readFile(victim, "utf8")), "untouched");
+        assert.equal(result._tag, "Failure", child);
+        if (result._tag === "Failure") {
+          assert.equal(result.failure._tag, "CodeIntelligencePathOutsideCheckout", child);
+        }
+        yield* Effect.promise(() => NodeFSP.rm(link));
+      }
+    }),
+  ),
+);
+
 async function writeGeneratedSources(root: string, count: number) {
   await NodeFSP.mkdir(NodePath.join(root, "src/generated"), { recursive: true });
   const files = Array.from({ length: count }, (_, index) => `src/generated/g${index}.py`);
