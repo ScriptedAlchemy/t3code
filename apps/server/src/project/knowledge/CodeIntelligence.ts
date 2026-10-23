@@ -343,14 +343,18 @@ function runInAnalysisProcess(
   });
 }
 
-/** One checkout's builds: the one running and the one queued behind it. */
-interface CheckoutBuilds {
+/** One checkout's builds and the generations its readers hold open. */
+interface CheckoutIndex {
   // Covers every request made before it started.
   running: Deferred.Deferred<CodeIndexRefreshOutcome> | null;
   // Covers requests made while `running` was in flight, which it may have read past.
   queued: Deferred.Deferred<CodeIndexRefreshOutcome> | null;
   // Whether the most recent build failed, leaving an older generation answering.
   lastFailed: boolean;
+  // Queries reading each generation; a generation is deleted only once this drops to zero.
+  readonly readers: Map<number, number>;
+  // Superseded generations still being read.
+  readonly retiring: Set<number>;
 }
 
 const REFRESH_LIMITATIONS = {
@@ -377,7 +381,20 @@ const make = Effect.gen(function* () {
     isExecutable: yield* HostProcess.IsExecutable,
   };
   const serviceScope = yield* Effect.scope;
-  const builds = new Map<string, CheckoutBuilds>();
+  const checkouts = new Map<string, CheckoutIndex>();
+  const stateOf = (checkoutPath: string) => {
+    const existing = checkouts.get(checkoutPath);
+    if (existing !== undefined) return existing;
+    const created: CheckoutIndex = {
+      running: null,
+      queued: null,
+      lastFailed: false,
+      readers: new Map(),
+      retiring: new Set(),
+    };
+    checkouts.set(checkoutPath, created);
+    return created;
+  };
   const indexChanges = yield* PubSub.unbounded<{
     readonly checkoutPath: string;
     readonly event: ProjectCodeIndexEvent;
@@ -440,6 +457,14 @@ const make = Effect.gen(function* () {
             cause instanceof IndexOutsideCheckout ? "index-outside-checkout" : "worker-failed",
         }),
     });
+    const state = stateOf(checkoutPath);
+    // Interrupted builds and generations whose deletion failed; nobody reads them.
+    yield* Effect.forEach(
+      plan.existing.filter(
+        (existing) => existing !== plan.published && !state.readers.has(existing),
+      ),
+      (orphan) => removeGeneration(checkoutPath, orphan),
+    );
     const generation = Math.max(plan.published ?? 0, ...plan.existing) + 1;
     const listing = yield* listCheckout(checkoutPath);
     const reply = yield* runInAnalysisProcess(launch, {
@@ -464,6 +489,11 @@ const make = Effect.gen(function* () {
             cause instanceof IndexOutsideCheckout ? "index-outside-checkout" : "worker-failed",
         }),
     }).pipe(Effect.onError(() => removeGeneration(checkoutPath, generation)));
+    const previous = plan.published;
+    // New readers pin the new generation from here on, so the old one's count only falls.
+    if (previous !== null && !state.readers.has(previous)) {
+      yield* removeGeneration(checkoutPath, previous);
+    } else if (previous !== null) state.retiring.add(previous);
     return { _tag: "Published", generation } as const;
   });
 
@@ -487,7 +517,7 @@ const make = Effect.gen(function* () {
     );
 
   const runBuilds = Effect.fn("CodeIntelligence.runBuilds")(
-    function* (checkoutPath: string, state: CheckoutBuilds) {
+    function* (checkoutPath: string, state: CheckoutIndex) {
       let current = state.running;
       while (current !== null) {
         const outcome = yield* buildOnce(checkoutPath);
@@ -536,12 +566,7 @@ const make = Effect.gen(function* () {
   /** The build that will cover a request made now; starts one when the checkout is idle. */
   const requestBuild = (checkoutPath: string) =>
     Effect.suspend(() => {
-      const state = builds.get(checkoutPath) ?? {
-        running: null,
-        queued: null,
-        lastFailed: false,
-      };
-      builds.set(checkoutPath, state);
+      const state = stateOf(checkoutPath);
       if (state.queued !== null) return Effect.succeed(state.queued);
       const next = Deferred.makeUnsafe<CodeIndexRefreshOutcome>();
       if (state.running !== null) {
@@ -559,22 +584,48 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /** Reads the published generation and counts this query as its reader, in one step. */
+  const pinPublished = (checkoutPath: string) => {
+    const generation = readPublishedGeneration(checkoutPath);
+    if (generation !== null) {
+      const { readers } = stateOf(checkoutPath);
+      readers.set(generation, (readers.get(generation) ?? 0) + 1);
+    }
+    return generation;
+  };
+
+  const unpin = (checkoutPath: string, generation: number | null) =>
+    Effect.suspend(() => {
+      if (generation === null) return Effect.void;
+      const { readers, retiring } = stateOf(checkoutPath);
+      const remaining = (readers.get(generation) ?? 1) - 1;
+      if (remaining > 0) {
+        readers.set(generation, remaining);
+        return Effect.void;
+      }
+      readers.delete(generation);
+      return retiring.delete(generation) ? removeGeneration(checkoutPath, generation) : Effect.void;
+    });
+
   const query: CodeIntelligence["Service"]["query"] = Effect.fn("CodeIntelligence.query")(
     function* (input) {
       const checkoutPath = yield* resolveCheckout(input);
       const normalizedQuery = yield* normalizeQueryPaths(input.query, checkoutPath, workspacePaths);
-      const published = yield* Effect.try({
-        try: () => readPublishedGeneration(checkoutPath),
-        catch: (cause) =>
-          cause instanceof IndexOutsideCheckout
-            ? new CodeIntelligencePathOutsideCheckout({ path: INDEX_DIRECTORY })
-            : new CodeIntelligenceInspectionFailed({
-                projectId: input.projectId,
-                threadId: input.threadId ?? null,
-                path: INDEX_DIRECTORY,
-                reason: "worker-failed",
-              }),
-      });
+      const published = yield* Effect.acquireRelease(
+        Effect.try({
+          try: () => pinPublished(checkoutPath),
+          catch: (cause) =>
+            cause instanceof IndexOutsideCheckout
+              ? new CodeIntelligencePathOutsideCheckout({ path: INDEX_DIRECTORY })
+              : new CodeIntelligenceInspectionFailed({
+                  projectId: input.projectId,
+                  threadId: input.threadId ?? null,
+                  path: INDEX_DIRECTORY,
+                  reason: "worker-failed",
+                }),
+        }),
+        (generation) => unpin(checkoutPath, generation),
+      );
       // A query converges the index on the checkout without waiting for it; freshness only
       // observes.
       if (normalizedQuery.operation !== "freshness") yield* requestBuild(checkoutPath);
@@ -622,8 +673,8 @@ const make = Effect.gen(function* () {
         },
       }).pipe(Effect.mapError((cause) => toQueryError(cause.reason)));
       if (!("result" in reply)) return yield* toQueryError("invalid-result");
-      const state = builds.get(checkoutPath);
-      const refreshing =
+      const state = checkouts.get(checkoutPath);
+      const refreshing: keyof typeof REFRESH_LIMITATIONS | undefined =
         state?.running != null ? "building" : state?.lastFailed ? "failed" : undefined;
       if (refreshing === undefined || reply.result.index === undefined) return reply.result;
       return {
@@ -638,6 +689,7 @@ const make = Effect.gen(function* () {
         index: { ...reply.result.index, refresh: refreshing },
       };
     },
+    Effect.scoped,
   );
 
   const refreshIfIndexed: CodeIntelligence["Service"]["refreshIfIndexed"] = Effect.fn(

@@ -780,7 +780,11 @@ it.effect("reports index freshness against the checkout and walks usages to reac
   ),
 );
 
-function checkoutService(root: string, listed: () => ReadonlyArray<string>) {
+function checkoutService(
+  root: string,
+  listed: () => ReadonlyArray<string>,
+  beforeListing: () => Effect.Effect<void> = () => Effect.void,
+) {
   const project = {
     projectId,
     workspaceRoot: root,
@@ -799,10 +803,14 @@ function checkoutService(root: string, listed: () => ReadonlyArray<string>) {
       Layer.mock(WorkspaceEntries.WorkspaceEntries)({
         refresh: () => Effect.void,
         list: () =>
-          Effect.sync(() => ({
-            entries: listed().map((path) => ({ path, kind: "file" as const })),
-            truncated: false,
-          })),
+          Effect.suspend(beforeListing).pipe(
+            Effect.andThen(
+              Effect.sync(() => ({
+                entries: listed().map((path) => ({ path, kind: "file" as const })),
+                truncated: false,
+              })),
+            ),
+          ),
       }),
     ),
   );
@@ -1168,6 +1176,10 @@ it.effect("stops a build when the service shuts down and never publishes the cut
       const afterShutdown = yield* restarted.run({ operation: "freshness" });
       assert.equal(afterShutdown.index?.state, "unindexed");
       assert.deepInclude(yield* restarted.refresh(), { _tag: "Published" });
+      // The cut generation is swept, leaving only the published one.
+      assert.deepEqual(yield* Effect.promise(() => generationDirectories(fixture.root)), [
+        yield* Effect.promise(() => publishedDirectory(fixture.root)),
+      ]);
       const recovered = yield* restarted.run({ operation: "status" });
       assert.equal(recovered.coverage.filesIndexed, listed.length);
       assert.equal(recovered.coverage.state, "complete");
@@ -1219,12 +1231,34 @@ it.effect("keeps the index out of the checkout's git status", () =>
       const git = (...args: ReadonlyArray<string>) =>
         NodeChildProcess.execFileSync("git", args, { cwd: fixture.root, encoding: "utf8" });
       git("init", "--quiet");
-      const { refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"]);
+      const gate = listingGate();
+      const { run, refresh } = yield* checkoutService(
+        fixture.root,
+        () => ["src/defs.ts"],
+        gate.beforeListing,
+      );
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      // A reader keeps generation 1 while generation 2 is published, so both are on disk.
+      const held = yield* gate.holdNext;
+      const reader = yield* run({ operation: "freshness" }).pipe(Effect.forkScoped);
+      yield* Deferred.await(held.entered);
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          NodePath.join(fixture.root, "src/defs.ts"),
+          "export const changed = 1;\n",
+        ),
+      );
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
+      assert.deepEqual(yield* Effect.promise(() => generationDirectories(fixture.root)), [
+        ".codegraph-t3-g1",
+        ".codegraph-t3-g2",
+      ]);
       const untracked = git("status", "--porcelain", "--untracked-files=all")
         .split("\n")
         .filter((line) => /\.codegraph-t3(-g\d+)?\//.test(line));
       assert.deepEqual(untracked, []);
+      yield* Deferred.succeed(held.release, undefined);
+      yield* Fiber.join(reader);
     }),
   ),
 );
@@ -1389,6 +1423,64 @@ it.effect("coalesces refresh requests made while a build is in flight into one f
       assert.deepEqual(yield* Effect.promise(() => generationDirectories(fixture.root)), [
         ".codegraph-t3-g1",
       ]);
+    }),
+  ),
+);
+
+/** Holds the next checkout listing, which a query makes after pinning its generation. */
+function listingGate() {
+  let next: Effect.Effect<void> = Effect.void;
+  return {
+    beforeListing: () => next,
+    holdNext: Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      next = Effect.sync(() => {
+        next = Effect.void;
+      }).pipe(
+        Effect.andThen(Deferred.succeed(entered, undefined)),
+        Effect.andThen(Deferred.await(release)),
+      );
+      return { entered, release };
+    }),
+  };
+}
+
+it.effect("deletes a retired generation only after its last reader finishes", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const gate = listingGate();
+      const { run, refresh } = yield* checkoutService(
+        fixture.root,
+        () => ["src/defs.ts", "src/use.ts"],
+        gate.beforeListing,
+      );
+      const generations = () => Effect.promise(() => generationDirectories(fixture.root));
+      const edit = (body: string) =>
+        Effect.promise(() =>
+          NodeFSP.writeFile(
+            NodePath.join(fixture.root, "src/defs.ts"),
+            `export function greet() { return "${body}"; }\n`,
+          ),
+        );
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      const held = yield* gate.holdNext;
+      // Freshness requests no build, so the only listing it holds is its own.
+      const reader = yield* run({ operation: "freshness" }).pipe(Effect.forkScoped);
+      yield* Deferred.await(held.entered);
+
+      yield* edit("second");
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
+      assert.deepEqual(yield* generations(), [".codegraph-t3-g1", ".codegraph-t3-g2"]);
+      // Nobody reads generation 2, so it goes as soon as it is superseded.
+      yield* edit("third");
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 3 });
+      assert.deepEqual(yield* generations(), [".codegraph-t3-g1", ".codegraph-t3-g3"]);
+
+      yield* Deferred.succeed(held.release, undefined);
+      const answer = yield* Fiber.join(reader);
+      assert.deepInclude(answer.index, { generation: 1, state: "stale" });
+      assert.deepEqual(yield* generations(), [".codegraph-t3-g3"]);
     }),
   ),
 );
