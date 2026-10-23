@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
-import { expect, it, vi } from "vitest";
+import { expect, it, vi } from "vite-plus/test";
 
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn(), spawnSync: vi.fn() }));
 vi.mock("node:fs", () => ({ existsSync: () => true, readdirSync: () => [] }));
