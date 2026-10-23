@@ -455,7 +455,7 @@ it.effect("MCP rejects unauthorized mutations and cannot confirm its own proposa
         ),
       );
       const results = yield* toolkit
-        .handle("t3_knowledge_mutate", input)
+        .handle("t3_knowledge_mutate", { mutation: input })
         .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
       return results.at(-1)?.result;
     });
