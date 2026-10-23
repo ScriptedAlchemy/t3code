@@ -90,8 +90,9 @@ it.effect("starts a follow-up turn while assisted learning is held", () =>
   }),
 );
 
-for (const target of ["provider-turn.start", "thread-title.generate"] as const) {
-  it.effect(`admits ${target} while heavy maintenance is held`, () =>
+it.effect.each(["provider-turn.start", "thread-title.generate"] as const)(
+  "admits %s while heavy maintenance is held",
+  (target) =>
     Effect.gen(function* () {
       const entered = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
@@ -147,8 +148,7 @@ for (const target of ["provider-turn.start", "thread-title.generate"] as const) 
         yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
       }).pipe(Effect.provide(layer));
     }),
-  );
-}
+);
 
 function restartEffect(
   now: DateTime.Utc,
