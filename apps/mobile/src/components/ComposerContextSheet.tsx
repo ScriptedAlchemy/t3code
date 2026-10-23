@@ -314,6 +314,19 @@ export function ComposerContextSheet(props: {
                 ) : null}
               </View>
             ) : null}
+            {record.kind === "project-knowledge" ? (
+              <View className="gap-2">
+                <ContextField label="Project" value={record.knowledge.projectId} code />
+                <ContextField label="Environment" value={record.knowledge.environmentId} code />
+                <ContextField
+                  label="Selected evidence"
+                  value={`${record.knowledge.selections.length} reference${record.knowledge.selections.length === 1 ? "" : "s"}`}
+                />
+                <Text className="text-sm text-foreground-muted">
+                  The current evidence is loaded when this message is sent.
+                </Text>
+              </View>
+            ) : null}
             {record.kind === "skill" ? (
               <View className="gap-3">
                 <ContextField label="Skill" value={record.name} />
