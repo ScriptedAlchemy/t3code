@@ -197,3 +197,17 @@ export function loomTruncationNotes(window: Pick<LoomWindow, "truncated">): Read
     truncated.bytes ? "older activity over the size limit" : null,
   ].filter((note): note is string => note !== null);
 }
+
+/** What the window's scans could not cover, for the same note as the truncation notes. */
+export function loomCoverageNotes(window: Pick<LoomWindow, "coverage">): ReadonlyArray<string> {
+  const { coverage } = window;
+  const untimed = coverage.untimedTasksTruncated
+    ? `more than ${coverage.untimedTasks} agent tasks`
+    : `${coverage.untimedTasks} agent ${coverage.untimedTasks === 1 ? "task" : "tasks"}`;
+  return [
+    coverage.commandsTruncated
+      ? `test commands from the newest ${coverage.commandsScanned} commands only`
+      : null,
+    coverage.untimedTasks > 0 ? `${untimed} with no recorded time, not shown` : null,
+  ].filter((note): note is string => note !== null);
+}

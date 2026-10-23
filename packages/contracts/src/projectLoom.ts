@@ -128,7 +128,10 @@ export const LoomMarker = Schema.Union([
     additions: NonNegativeInt,
     deletions: NonNegativeInt,
   }),
-  /** Placed when T3 linked the PR, which may be later than its creation. */
+  /**
+   * Placed when T3 linked the PR, which may be later than its creation. The id names the lane
+   * too, since a fork keeps its parent's links.
+   */
   Schema.Struct({
     ...MarkerBase,
     kind: Schema.Literal("pull_request"),
@@ -197,6 +200,8 @@ export const LoomWindow = Schema.Struct({
   coverage: Schema.Struct({
     /** Native tasks without a recorded start, which cannot be placed in time. */
     untimedTasks: NonNegativeInt,
+    /** The untimed count hit its bound, so there are more than untimedTasks. */
+    untimedTasksTruncated: Schema.Boolean,
     /** Command items examined for test recognition, and whether that scan hit its bound. */
     commandsScanned: NonNegativeInt,
     commandsTruncated: Schema.Boolean,

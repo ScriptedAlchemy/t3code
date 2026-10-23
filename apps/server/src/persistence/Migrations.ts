@@ -80,6 +80,7 @@ import Migration0073 from "./Migrations/073_ConversationSummaries.ts";
 import Migration0074 from "./Migrations/074_ProjectKnowledgeSearchReceiptExpiry.ts";
 import Migration0075 from "./Migrations/075_ProjectLoomTimeIndexes.ts";
 import Migration0076 from "./Migrations/076_ProjectCodeFileHistoryPages.ts";
+import Migration0077 from "./Migrations/077_ProjectLoomBoundedReads.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -159,6 +160,7 @@ const migrationEntries = [
   [74, "ProjectKnowledgeSearchReceiptExpiry", Migration0074],
   [75, "ProjectLoomTimeIndexes", Migration0075],
   [76, "ProjectCodeFileHistoryPages", Migration0076],
+  [77, "ProjectLoomBoundedReads", Migration0077],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

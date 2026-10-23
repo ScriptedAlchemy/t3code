@@ -1,7 +1,7 @@
 import { ProviderInstanceId, ThreadId, type LoomLane } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildLoomRows } from "./index.ts";
+import { buildLoomRows, loomCoverageNotes } from "./index.ts";
 
 const lane = (id: string, parent: string | null, createdAt: string): LoomLane => ({
   threadId: ThreadId.make(id),
@@ -44,5 +44,33 @@ describe("buildLoomRows", () => {
   it("keeps the ancestry of a search match and opens collapsed lanes on the way", () => {
     const rows = buildLoomRows(window, new Set(["root"]), "grandchild");
     expect(ids(rows)).toEqual(["root", "early-child", "grandchild"]);
+  });
+});
+
+describe("loomCoverageNotes", () => {
+  it("names a capped command scan and says when the untimed count is only a bound", () => {
+    expect(
+      loomCoverageNotes({
+        coverage: {
+          untimedTasks: 1_000,
+          untimedTasksTruncated: true,
+          commandsScanned: 4_000,
+          commandsTruncated: true,
+        },
+      }),
+    ).toEqual([
+      "test commands from the newest 4000 commands only",
+      "more than 1000 agent tasks with no recorded time, not shown",
+    ]);
+    expect(
+      loomCoverageNotes({
+        coverage: {
+          untimedTasks: 0,
+          untimedTasksTruncated: false,
+          commandsScanned: 12,
+          commandsTruncated: false,
+        },
+      }),
+    ).toEqual([]);
   });
 });

@@ -19,6 +19,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import { recognizeTestCommand } from "./testCommands.ts";
@@ -26,6 +28,10 @@ import { recognizeTestCommand } from "./testCommands.ts";
 // Command items examined per page for test recognition; newest first.
 const COMMAND_CANDIDATE_LIMIT = 4_000;
 const COMMAND_SCAN_CHARS = 600;
+// Titles, models, branches and URLs are cut in SQL, so 50 lanes and 50 ancestors always fit the
+// byte cap and an oversized value never reaches the server's memory whole.
+const LABEL_CHARS = 200;
+const URL_CHARS = 1_000;
 
 const STATUS_BUCKETS: Record<LoomRunStatusFilter, ReadonlyArray<OrchestrationV2RunStatus>> = {
   active: ["preparing", "queued", "starting", "running", "waiting"],
@@ -78,6 +84,7 @@ function normalizedFilters(filters: LoomFilters | undefined) {
   };
 }
 type NormalizedFilters = ReturnType<typeof normalizedFilters>;
+const NO_FILTERS = normalizedFilters(undefined);
 
 // FNV-1a: a cursor only has to notice that its window or filters changed, not resist forgery.
 function bindingKey(window: ResolvedWindow, filters: NormalizedFilters): string {
@@ -99,7 +106,6 @@ const encodeCursor = (cursor: LaneCursor) =>
 const decodeCursor = (cursor: string) =>
   decodeLaneCursor(Buffer.from(cursor, "base64url").toString("utf8"));
 
-const ACTIVE_STATUSES = JSON.stringify(STATUS_BUCKETS.active);
 const ids = (values: ReadonlyArray<string>) => JSON.stringify(values);
 const byteLength = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 
@@ -114,17 +120,6 @@ interface LaneRow {
   readonly relationship: string | null;
   readonly model: string | null;
   readonly branch: string | null;
-  readonly pull_requests: string | null;
-}
-
-interface PullRequestLinkJson {
-  readonly host?: string;
-  readonly repository?: string;
-  readonly number?: number;
-  readonly url?: string;
-  readonly source?: string;
-  readonly linkedAt?: string;
-  readonly snapshot?: { readonly title?: string } | null;
 }
 
 const relationshipOf = (row: Pick<LaneRow, "relationship">) =>
@@ -145,28 +140,17 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectStore.ProjectStoreV2;
 
   const laneColumns = sql`
-    t.thread_id, t.title, t.provider_instance_id, t.default_provider, t.created_at, t.archived_at,
+    t.thread_id, substr(trim(t.title), 1, ${LABEL_CHARS}) AS title, t.provider_instance_id,
+    t.default_provider, t.created_at, t.archived_at,
     json_extract(t.payload_json, '$.lineage.parentThreadId') AS parent_thread_id,
     json_extract(t.payload_json, '$.lineage.relationshipToParent') AS relationship,
-    json_extract(t.payload_json, '$.modelSelection.model') AS model,
-    json_extract(t.payload_json, '$.branch') AS branch
+    substr(json_extract(t.payload_json, '$.modelSelection.model'), 1, ${LABEL_CHARS}) AS model,
+    substr(json_extract(t.payload_json, '$.branch'), 1, ${LABEL_CHARS}) AS branch
   `;
 
-  // A run with no completion time overlaps only while it is still active; a finished run whose
-  // end was never recorded is placed by its request time alone.
-  const runOverlaps = (window: ResolvedWindow, alias: string) => {
-    const run = sql.literal(alias);
-    return sql`
-      ${run}.requested_at <= ${window.to}
-      AND (
-        ${run}.completed_at >= ${window.from}
-        OR (${run}.completed_at IS NULL AND (
-          ${run}.requested_at >= ${window.from}
-          OR ${run}.status IN (SELECT value FROM json_each(${ACTIVE_STATUSES}))
-        ))
-      )
-    `;
-  };
+  // Matches the runs recovery index's predicate word for word, which lets SQLite use it.
+  const isActiveRun = (alias: string) =>
+    sql`${sql.literal(alias)}.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')`;
 
   const runFilter = (filters: NormalizedFilters, alias: string) => {
     const run = sql.literal(alias);
@@ -183,37 +167,99 @@ const make = Effect.gen(function* () {
     filters.providerInstanceIds !== undefined ||
     filters.models !== undefined;
 
-  // Every projected thread event advances the thread's updated_at, so a thread untouched since
-  // the window opened has nothing in it.
+  // A run overlaps when it was requested inside the window, was requested earlier and completed
+  // inside or after it, or was requested earlier and is still active. A finished run whose end
+  // was never recorded is placed by its request time alone. Each case is pinned to the index
+  // whose range it is, so no read walks a lane's history from before the window.
+  const overlappingRuns = (
+    threads: Statement.Fragment,
+    window: ResolvedWindow,
+    filters: NormalizedFilters,
+  ) => [
+    sql`
+      SELECT r.rowid AS id, r.requested_at, r.run_id FROM orchestration_v2_projection_runs r
+        INDEXED BY orchestration_v2_projection_runs_thread_requested_idx
+      WHERE r.thread_id IN ${threads}
+        AND r.requested_at >= ${window.from} AND r.requested_at <= ${window.to}
+        ${runFilter(filters, "r")}
+    `,
+    sql`
+      SELECT r.rowid AS id, r.requested_at, r.run_id FROM orchestration_v2_projection_runs r
+        INDEXED BY orchestration_v2_projection_runs_thread_completed_idx
+      WHERE r.thread_id IN ${threads}
+        AND r.completed_at >= ${window.from} AND r.requested_at < ${window.from}
+        ${runFilter(filters, "r")}
+    `,
+    sql`
+      SELECT r.rowid AS id, r.requested_at, r.run_id FROM orchestration_v2_projection_runs r
+        INDEXED BY orchestration_v2_projection_runs_recovery_idx
+      WHERE r.thread_id IN ${threads} AND ${isActiveRun("r")}
+        AND r.completed_at IS NULL AND r.requested_at < ${window.from}
+        ${runFilter(filters, "r")}
+    `,
+  ];
+
+  const laneHasRun = (window: ResolvedWindow, filters: NormalizedFilters) =>
+    sql.or(
+      overlappingRuns(sql`(t.thread_id)`, window, filters).map((select) => sql`EXISTS (${select})`),
+    );
+
+  // A lane is any thread with something to draw in the window. Every projected thread event
+  // advances updated_at, except pull request links, so candidates are the threads updated since
+  // the window opened, threads with a run still active, and threads with links. CROSS JOIN keeps
+  // the candidates as the outer loop instead of every thread in the project.
   const readLanes = (
     projectId: ProjectId,
     window: ResolvedWindow,
     filters: NormalizedFilters,
     after: LaneCursor | null,
   ) => sql<LaneRow>`
-    SELECT ${laneColumns}, json_extract(t.payload_json, '$.pullRequests') AS pull_requests
-    FROM orchestration_v2_projection_threads t
+    WITH candidate(thread_id) AS (
+      SELECT thread_id FROM orchestration_v2_projection_threads
+      WHERE project_id = ${projectId} AND updated_at >= ${window.from}
+      UNION
+      SELECT r.thread_id FROM orchestration_v2_projection_runs r WHERE ${isActiveRun("r")}
+      UNION
+      SELECT thread_id FROM orchestration_v2_projection_threads
+      WHERE project_id = ${projectId} AND updated_at < ${window.from}
+        AND json_array_length(payload_json, '$.pullRequests') > 0
+    )
+    SELECT ${laneColumns}
+    FROM candidate CROSS JOIN orchestration_v2_projection_threads t
+      ON t.thread_id = candidate.thread_id
     WHERE t.project_id = ${projectId}
       AND t.deleted_at IS NULL
       AND t.created_at <= ${window.to}
-      AND t.updated_at >= ${window.from}
       AND (
         t.created_at >= ${window.from}
+        OR ${laneHasRun(window, NO_FILTERS)}
         OR EXISTS (
-          SELECT 1 FROM orchestration_v2_projection_runs r
-          WHERE r.thread_id = t.thread_id AND ${runOverlaps(window, "r")}
+          SELECT 1 FROM orchestration_v2_projection_checkpoints c
+          WHERE c.thread_id = t.thread_id
+            AND c.captured_at >= ${window.from} AND c.captured_at <= ${window.to}
+        )
+        OR EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_subagents s
+            INDEXED BY orchestration_v2_projection_subagents_thread_idx
+          WHERE s.thread_id = t.thread_id
+            AND s.started_at >= ${window.from} AND s.started_at <= ${window.to}
+            AND s.child_thread_id IS NULL
+        )
+        OR EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_context_transfers x
+          WHERE (x.source_thread_id = t.thread_id OR x.target_thread_id = t.thread_id)
+            AND json_extract(x.payload_json, '$.createdAt') >= ${window.from}
+            AND json_extract(x.payload_json, '$.createdAt') <= ${window.to}
+        )
+        OR EXISTS (
+          SELECT 1 FROM json_each(t.payload_json, '$.pullRequests') link
+          WHERE json_extract(link.value, '$.linkedAt') >= ${window.from}
+            AND json_extract(link.value, '$.linkedAt') <= ${window.to}
         )
       )
       ${filters.title === undefined ? sql`` : sql`AND instr(lower(t.title), ${filters.title}) > 0`}
       ${filters.branches === undefined ? sql`` : sql`AND json_extract(t.payload_json, '$.branch') IN (SELECT value FROM json_each(${ids(filters.branches)}))`}
-      ${
-        hasRunFilter(filters)
-          ? sql`AND EXISTS (
-              SELECT 1 FROM orchestration_v2_projection_runs fr
-              WHERE fr.thread_id = t.thread_id AND ${runOverlaps(window, "fr")} ${runFilter(filters, "fr")}
-            )`
-          : sql``
-      }
+      ${hasRunFilter(filters) ? sql`AND ${laneHasRun(window, filters)}` : sql``}
       ${after === null ? sql`` : sql`AND (t.created_at < ${after.c} OR (t.created_at = ${after.c} AND t.thread_id < ${after.t}))`}
     ORDER BY t.created_at DESC, t.thread_id DESC
     LIMIT ${LOOM_LIMITS.lanes + 1}
@@ -233,7 +279,7 @@ const make = Effect.gen(function* () {
       if (next.length === 0) break;
       for (const id of next) known.add(id);
       const rows = yield* sql<LaneRow>`
-        SELECT ${laneColumns}, NULL AS pull_requests
+        SELECT ${laneColumns}
         FROM orchestration_v2_projection_threads t
         WHERE t.project_id = ${projectId} AND t.deleted_at IS NULL
           AND t.thread_id IN (SELECT value FROM json_each(${ids(next)}))
@@ -248,6 +294,10 @@ const make = Effect.gen(function* () {
     return { ancestors, truncated };
   });
 
+  const laneSet = (laneIds: ReadonlyArray<string>) =>
+    sql`(SELECT value FROM json_each(${ids(laneIds)}))`;
+
+  // Run ids are chosen first, so the sort never carries payload columns.
   const readRuns = (
     laneIds: ReadonlyArray<string>,
     window: ResolvedWindow,
@@ -265,19 +315,20 @@ const make = Effect.gen(function* () {
     readonly started_at: string | null;
     readonly completed_at: string | null;
   }>`
+    WITH picked AS (
+      ${sql.join(" UNION ALL ", false)(overlappingRuns(laneSet(laneIds), window, filters))}
+      ORDER BY 2 DESC, 3 DESC
+      LIMIT ${LOOM_LIMITS.runs + 1}
+    )
     SELECT
       r.run_id, r.thread_id, r.ordinal, r.status, r.provider_instance_id, r.provider,
-      json_extract(r.payload_json, '$.modelSelection.model') AS model,
+      substr(json_extract(r.payload_json, '$.modelSelection.model'), 1, ${LABEL_CHARS}) AS model,
       json_extract(r.payload_json, '$.userMessageId') AS user_message_id,
       r.requested_at,
       json_extract(r.payload_json, '$.startedAt') AS started_at,
       r.completed_at
-    FROM orchestration_v2_projection_runs r
-    WHERE r.thread_id IN (SELECT value FROM json_each(${ids(laneIds)}))
-      AND ${runOverlaps(window, "r")}
-      ${runFilter(filters, "r")}
-    ORDER BY r.requested_at DESC, r.run_id DESC
-    LIMIT ${LOOM_LIMITS.runs + 1}
+    FROM picked JOIN orchestration_v2_projection_runs r ON r.rowid = picked.id
+    ORDER BY picked.requested_at DESC, picked.run_id DESC
   `;
 
   const readCheckpoints = (laneIds: ReadonlyArray<string>, window: ResolvedWindow) => sql<{
@@ -296,13 +347,45 @@ const make = Effect.gen(function* () {
       (SELECT COALESCE(SUM(json_extract(f.value, '$.additions')), 0) FROM json_each(c.payload_json, '$.files') f) AS additions,
       (SELECT COALESCE(SUM(json_extract(f.value, '$.deletions')), 0) FROM json_each(c.payload_json, '$.files') f) AS deletions
     FROM orchestration_v2_projection_checkpoints c
-    WHERE c.thread_id IN (SELECT value FROM json_each(${ids(laneIds)}))
+    WHERE c.thread_id IN ${laneSet(laneIds)}
       AND c.captured_at >= ${window.from} AND c.captured_at <= ${window.to}
     ORDER BY c.captured_at DESC, c.checkpoint_id DESC
     LIMIT ${LOOM_LIMITS.markers + 1}
   `;
 
-  // The inner LIMIT bounds the rows whose payload is parsed; output is never read.
+  // Links live in the thread payload beside their snapshots, stacks and watches; only the
+  // marker fields leave SQLite.
+  const readPullRequests = (laneIds: ReadonlyArray<string>, window: ResolvedWindow) => sql<{
+    readonly thread_id: string;
+    readonly host: string | null;
+    readonly repository: string;
+    readonly number: number;
+    readonly url: string;
+    readonly source: string;
+    readonly linked_at: string;
+    readonly title: string | null;
+  }>`
+    SELECT thread_id, host, repository, number, url, source, linked_at, title
+    FROM (
+      SELECT
+        t.thread_id,
+        substr(json_extract(link.value, '$.host'), 1, ${LABEL_CHARS}) AS host,
+        substr(json_extract(link.value, '$.repository'), 1, ${LABEL_CHARS}) AS repository,
+        json_extract(link.value, '$.number') AS number,
+        substr(json_extract(link.value, '$.url'), 1, ${URL_CHARS}) AS url,
+        json_extract(link.value, '$.source') AS source,
+        json_extract(link.value, '$.linkedAt') AS linked_at,
+        substr(json_extract(link.value, '$.snapshot.title'), 1, ${LABEL_CHARS}) AS title
+      FROM orchestration_v2_projection_threads t, json_each(t.payload_json, '$.pullRequests') link
+      WHERE t.thread_id IN ${laneSet(laneIds)}
+    )
+    WHERE linked_at >= ${window.from} AND linked_at <= ${window.to}
+      AND repository IS NOT NULL AND number IS NOT NULL AND url IS NOT NULL
+    ORDER BY linked_at DESC, thread_id DESC, number DESC
+    LIMIT ${LOOM_LIMITS.markers + 1}
+  `;
+
+  // Candidates are picked from the run and type index alone; only they have payloads parsed.
   const readCommands = (runIds: ReadonlyArray<string>) => sql<{
     readonly turn_item_id: string;
     readonly thread_id: string;
@@ -313,41 +396,57 @@ const make = Effect.gen(function* () {
     readonly input: string | null;
   }>`
     SELECT
-      candidate.turn_item_id, candidate.thread_id, candidate.run_id,
-      json_extract(candidate.payload_json, '$.startedAt') AS started_at,
-      json_extract(candidate.payload_json, '$.completedAt') AS completed_at,
-      json_extract(candidate.payload_json, '$.exitCode') AS exit_code,
-      substr(json_extract(candidate.payload_json, '$.input'), 1, ${COMMAND_SCAN_CHARS}) AS input
+      item.turn_item_id, item.thread_id, item.run_id,
+      json_extract(item.payload_json, '$.startedAt') AS started_at,
+      json_extract(item.payload_json, '$.completedAt') AS completed_at,
+      json_extract(item.payload_json, '$.exitCode') AS exit_code,
+      substr(json_extract(item.payload_json, '$.input'), 1, ${COMMAND_SCAN_CHARS}) AS input
     FROM (
-      SELECT turn_item_id, thread_id, run_id, payload_json
+      SELECT rowid AS id, updated_at
       FROM orchestration_v2_projection_turn_items
+        INDEXED BY orchestration_v2_projection_turn_items_run_command_updated_idx
       WHERE run_id IN (SELECT value FROM json_each(${ids(runIds)}))
         AND type = 'command_execution'
-      ORDER BY updated_at DESC, turn_item_id DESC
+      ORDER BY updated_at DESC, rowid DESC
       LIMIT ${COMMAND_CANDIDATE_LIMIT + 1}
     ) candidate
+    JOIN orchestration_v2_projection_turn_items item ON item.rowid = candidate.id
+    ORDER BY candidate.updated_at DESC, candidate.id DESC
   `;
 
+  // Named, because SQLite otherwise reads child_thread_id IS NULL through the child thread
+  // index, which holds every other project's native tasks too.
   const readNativeTasks = (laneIds: ReadonlyArray<string>, window: ResolvedWindow) => sql<{
     readonly subagent_id: string;
     readonly thread_id: string;
     readonly run_id: string | null;
     readonly status: string;
-    readonly started_at: string | null;
+    readonly started_at: string;
     readonly completed_at: string | null;
     readonly title: string | null;
   }>`
     SELECT s.subagent_id, s.thread_id, s.run_id, s.status, s.started_at, s.completed_at,
-      json_extract(s.payload_json, '$.title') AS title
+      substr(json_extract(s.payload_json, '$.title'), 1, ${LABEL_CHARS}) AS title
     FROM orchestration_v2_projection_subagents s
-    WHERE s.thread_id IN (SELECT value FROM json_each(${ids(laneIds)}))
+      INDEXED BY orchestration_v2_projection_subagents_thread_idx
+    WHERE s.thread_id IN ${laneSet(laneIds)}
+      AND s.started_at >= ${window.from} AND s.started_at <= ${window.to}
       AND s.child_thread_id IS NULL
-      AND (
-        (s.started_at >= ${window.from} AND s.started_at <= ${window.to})
-        OR (s.started_at IS NULL AND s.updated_at >= ${window.from} AND s.updated_at <= ${window.to})
-      )
     ORDER BY s.started_at DESC, s.subagent_id DESC
     LIMIT ${LOOM_LIMITS.markers + 1}
+  `;
+
+  const countUntimedTasks = (laneIds: ReadonlyArray<string>, window: ResolvedWindow) => sql<{
+    readonly count: number;
+  }>`
+    SELECT COUNT(*) AS count FROM (
+      SELECT 1 FROM orchestration_v2_projection_subagents s
+        INDEXED BY orchestration_v2_projection_subagents_thread_idx
+      WHERE s.thread_id IN ${laneSet(laneIds)}
+        AND s.started_at IS NULL AND s.child_thread_id IS NULL
+        AND s.updated_at >= ${window.from} AND s.updated_at <= ${window.to}
+      LIMIT ${LOOM_LIMITS.markers + 1}
+    )
   `;
 
   // Both endpoints must belong to the project, so an edge never names another project's thread.
@@ -371,8 +470,8 @@ const make = Effect.gen(function* () {
     FROM (
       SELECT ct.*, json_extract(ct.payload_json, '$.createdAt') AS created_at
       FROM orchestration_v2_projection_context_transfers ct
-      WHERE ct.source_thread_id IN (SELECT value FROM json_each(${ids(laneIds)}))
-         OR ct.target_thread_id IN (SELECT value FROM json_each(${ids(laneIds)}))
+      WHERE ct.source_thread_id IN ${laneSet(laneIds)}
+         OR ct.target_thread_id IN ${laneSet(laneIds)}
     ) x
     WHERE x.created_at >= ${window.from} AND x.created_at <= ${window.to}
       AND EXISTS (SELECT 1 FROM orchestration_v2_projection_threads s
@@ -382,6 +481,46 @@ const make = Effect.gen(function* () {
     ORDER BY x.created_at DESC, x.context_transfer_id DESC
     LIMIT ${LOOM_LIMITS.edges + 1}
   `;
+
+  // One read transaction on the reader connection: a consistent snapshot, off the writer.
+  const readRows = (
+    projectId: ProjectId,
+    window: ResolvedWindow,
+    filters: NormalizedFilters,
+    after: LaneCursor | null,
+  ) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const laneRows = yield* readLanes(projectId, window, filters, after);
+          const lanes = laneRows.slice(0, LOOM_LIMITS.lanes);
+          const laneIds = lanes.map((lane) => lane.thread_id);
+          const ancestors = yield* readAncestors(projectId, lanes);
+          const runRows = yield* readRuns(laneIds, window, filters);
+          const runIds = runRows.slice(0, LOOM_LIMITS.runs).map((run) => run.run_id);
+          const [checkpoints, pullRequests, commands, tasks, untimed, edges] = yield* Effect.all([
+            readCheckpoints(laneIds, window),
+            readPullRequests(laneIds, window),
+            readCommands(runIds),
+            readNativeTasks(laneIds, window),
+            countUntimedTasks(laneIds, window),
+            readEdges(projectId, laneIds, window),
+          ]);
+          return {
+            moreLanes: laneRows.length > LOOM_LIMITS.lanes,
+            lanes,
+            ancestors,
+            runRows,
+            checkpoints,
+            pullRequests,
+            commands,
+            tasks,
+            untimedTasks: untimed[0]?.count ?? 0,
+            edges,
+          };
+        }),
+      )
+      .pipe(NodeSqliteClient.readOnly);
 
   const readWindow = Effect.fn("ProjectLoom.readWindow")(function* (input: LoomWindowInput) {
     const { projectId } = input;
@@ -404,54 +543,26 @@ const make = Effect.gen(function* () {
       after = cursor.value;
     }
 
-    const laneRows = yield* readLanes(projectId, window, filters, after);
-    const lanes = laneRows.slice(0, LOOM_LIMITS.lanes);
-    const lastLane = lanes.at(-1);
-    const nextCursor =
-      laneRows.length > LOOM_LIMITS.lanes && lastLane !== undefined
-        ? encodeCursor({ k: key, c: lastLane.created_at, t: lastLane.thread_id })
-        : null;
-    const laneIds = lanes.map((lane) => lane.thread_id);
-    const ancestors = yield* readAncestors(projectId, lanes);
-
-    const runRows = yield* readRuns(laneIds, window, filters);
-    const runs = runRows.slice(0, LOOM_LIMITS.runs);
-    const runIds = runs.map((run) => run.run_id);
-    const [checkpoints, commandRows, tasks, edgeRows] = yield* Effect.all([
-      readCheckpoints(laneIds, window),
-      readCommands(runIds),
-      readNativeTasks(laneIds, window),
-      readEdges(projectId, laneIds, window),
-    ]);
-
+    const rows = yield* readRows(projectId, window, filters, after);
+    const runs = rows.runRows.slice(0, LOOM_LIMITS.runs);
     const inWindow = (at: string) => at >= window.from && at <= window.to;
-    const pullRequestMarkers = lanes.flatMap((lane) => {
-      if (lane.pull_requests === null) return [];
-      const links: ReadonlyArray<PullRequestLinkJson> = JSON.parse(lane.pull_requests);
-      return links.flatMap((link) =>
-        link.linkedAt === undefined ||
-        !inWindow(link.linkedAt) ||
-        link.url === undefined ||
-        link.repository === undefined ||
-        link.number === undefined
-          ? []
-          : [
-              {
-                kind: "pull_request" as const,
-                id: `${link.host ?? ""}/${link.repository}#${link.number}`,
-                threadId: lane.thread_id,
-                runId: null,
-                at: link.linkedAt,
-                repository: link.repository,
-                number: link.number,
-                url: link.url,
-                source: link.source,
-                title: link.snapshot?.title ?? null,
-              },
-            ],
-      );
+
+    const pullRequestMarkers = rows.pullRequests.slice(0, LOOM_LIMITS.markers).map((link) => {
+      const pullRequest = `${link.host ?? ""}/${link.repository}#${link.number}`;
+      return {
+        kind: "pull_request" as const,
+        id: `${link.thread_id}:${pullRequest}`,
+        threadId: link.thread_id,
+        runId: null,
+        at: link.linked_at,
+        repository: link.repository,
+        number: link.number,
+        url: link.url,
+        source: link.source,
+        title: link.title,
+      };
     });
-    const commandCandidates = commandRows.slice(0, COMMAND_CANDIDATE_LIMIT);
+    const commandCandidates = rows.commands.slice(0, COMMAND_CANDIDATE_LIMIT);
     const testMarkers = commandCandidates.flatMap((row) => {
       const at = row.started_at ?? row.completed_at;
       const command = row.input === null ? null : recognizeTestCommand(row.input);
@@ -470,23 +581,17 @@ const make = Effect.gen(function* () {
             },
           ];
     });
-    const timedTasks = tasks.flatMap((task) =>
-      task.started_at === null
-        ? []
-        : [
-            {
-              kind: "subagent_task" as const,
-              id: task.subagent_id,
-              threadId: task.thread_id,
-              runId: task.run_id,
-              at: task.started_at,
-              completedAt: task.completed_at,
-              status: task.status,
-              title: task.title,
-            },
-          ],
-    );
-    const checkpointMarkers = checkpoints.map((checkpoint) => ({
+    const taskMarkers = rows.tasks.slice(0, LOOM_LIMITS.markers).map((task) => ({
+      kind: "subagent_task" as const,
+      id: task.subagent_id,
+      threadId: task.thread_id,
+      runId: task.run_id,
+      at: task.started_at,
+      completedAt: task.completed_at,
+      status: task.status,
+      title: task.title,
+    }));
+    const checkpointMarkers = rows.checkpoints.slice(0, LOOM_LIMITS.markers).map((checkpoint) => ({
       kind: "checkpoint" as const,
       id: checkpoint.checkpoint_id,
       threadId: checkpoint.thread_id,
@@ -501,11 +606,16 @@ const make = Effect.gen(function* () {
       ...checkpointMarkers,
       ...pullRequestMarkers,
       ...testMarkers,
-      ...timedTasks,
+      ...taskMarkers,
     ].toSorted((left, right) =>
       left.at === right.at ? (left.id < right.id ? 1 : -1) : left.at < right.at ? 1 : -1,
     );
+    const markerCandidatesTruncated = [rows.checkpoints, rows.pullRequests, rows.tasks].some(
+      (candidates) => candidates.length > LOOM_LIMITS.markers,
+    );
 
+    let lanes = rows.lanes;
+    let moreLanes = rows.moreLanes;
     let markers = allMarkers.slice(0, LOOM_LIMITS.markers);
     let runEntries = runs.map((run) => ({
       id: run.run_id,
@@ -519,7 +629,7 @@ const make = Effect.gen(function* () {
       startedAt: run.started_at,
       completedAt: run.completed_at,
     }));
-    let edges = edgeRows.slice(0, LOOM_LIMITS.edges).map((edge) => ({
+    let edges = rows.edges.slice(0, LOOM_LIMITS.edges).map((edge) => ({
       id: edge.context_transfer_id,
       type: edge.type,
       sourceThreadId: edge.source_thread_id,
@@ -529,55 +639,65 @@ const make = Effect.gen(function* () {
       at: edge.created_at,
       status: edge.status,
     }));
-    const base = {
-      projectId,
-      asOf: isoAt(nowMs),
-      from: window.from,
-      to: window.to,
-      lanes: lanes.map((lane) => ({
-        ...laneIdentity(lane),
-        providerInstanceId: lane.provider_instance_id ?? lane.default_provider,
-        model: lane.model ?? "",
-        branch: lane.branch,
-        createdAt: lane.created_at,
-        archivedAt: lane.archived_at,
-      })),
-      ancestors: ancestors.ancestors.map(laneIdentity),
-      coverage: {
-        untimedTasks: tasks.length - timedTasks.length,
-        commandsScanned: commandCandidates.length,
-        commandsTruncated: commandRows.length > COMMAND_CANDIDATE_LIMIT,
-      },
-      nextCursor,
+    let bytesTruncated = false;
+    const response = () => {
+      const lastLane = lanes.at(-1);
+      const nextCursor =
+        moreLanes && lastLane !== undefined
+          ? encodeCursor({ k: key, c: lastLane.created_at, t: lastLane.thread_id })
+          : null;
+      return {
+        projectId,
+        asOf: isoAt(nowMs),
+        from: window.from,
+        to: window.to,
+        lanes: lanes.map((lane) => ({
+          ...laneIdentity(lane),
+          providerInstanceId: lane.provider_instance_id ?? lane.default_provider,
+          model: lane.model ?? "",
+          branch: lane.branch,
+          createdAt: lane.created_at,
+          archivedAt: lane.archived_at,
+        })),
+        ancestors: rows.ancestors.ancestors.map(laneIdentity),
+        runs: runEntries,
+        markers,
+        edges,
+        truncated: {
+          lanes: nextCursor !== null,
+          ancestors: rows.ancestors.truncated,
+          runs: rows.runRows.length > LOOM_LIMITS.runs,
+          markers: allMarkers.length > LOOM_LIMITS.markers || markerCandidatesTruncated,
+          edges: rows.edges.length > LOOM_LIMITS.edges,
+          bytes: bytesTruncated,
+        },
+        coverage: {
+          untimedTasks: Math.min(rows.untimedTasks, LOOM_LIMITS.markers),
+          untimedTasksTruncated: rows.untimedTasks > LOOM_LIMITS.markers,
+          commandsScanned: commandCandidates.length,
+          commandsTruncated: rows.commands.length > COMMAND_CANDIDATE_LIMIT,
+        },
+        nextCursor,
+      };
     };
 
-    // Oldest marks go first, then oldest runs, then oldest edges; lanes always fit.
-    let bytesTruncated = false;
-    const size = () => byteLength({ ...base, markers, runs: runEntries, edges });
-    while (size() > LOOM_LIMITS.bytes) {
+    // Oldest marks go first, then oldest runs, then oldest edges. Lanes and ancestors fit by
+    // construction; if oversized ids still overflow, later lanes move to the next page.
+    let result = response();
+    while (byteLength(result) > LOOM_LIMITS.bytes) {
       bytesTruncated = true;
       if (markers.length > 0) markers = markers.slice(0, Math.floor(markers.length * 0.8));
       else if (runEntries.length > 0)
         runEntries = runEntries.slice(0, Math.floor(runEntries.length * 0.8));
       else if (edges.length > 0) edges = edges.slice(0, Math.floor(edges.length * 0.8));
-      else break;
+      else if (lanes.length > 1) {
+        lanes = lanes.slice(0, Math.floor(lanes.length * 0.8));
+        moreLanes = true;
+      } else break;
+      result = response();
     }
 
-    return yield* decodeWindow({
-      ...base,
-      markers,
-      runs: runEntries,
-      edges,
-      truncated: {
-        lanes: nextCursor !== null,
-        ancestors: ancestors.truncated,
-        runs: runRows.length > LOOM_LIMITS.runs,
-        markers:
-          allMarkers.length > LOOM_LIMITS.markers || checkpoints.length > LOOM_LIMITS.markers,
-        edges: edgeRows.length > LOOM_LIMITS.edges,
-        bytes: bytesTruncated,
-      },
-    });
+    return yield* decodeWindow(result);
   });
 
   return {

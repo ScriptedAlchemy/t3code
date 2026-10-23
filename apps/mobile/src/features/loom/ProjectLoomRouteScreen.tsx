@@ -1,7 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { loomMarkerLabel, loomTruncationNotes } from "@t3tools/client-runtime/projectLoom";
+import {
+  loomCoverageNotes,
+  loomMarkerLabel,
+  loomTruncationNotes,
+} from "@t3tools/client-runtime/projectLoom";
 import {
   EnvironmentId,
   ProjectId,
@@ -305,7 +309,7 @@ function ProjectLoomScreen(props: {
                       <Text className="text-xs text-foreground-muted">
                         As of {new Date(data.asOf).toLocaleString()}
                       </Text>
-                      {loomTruncationNotes(data).map((note) => (
+                      {[...loomTruncationNotes(data), ...loomCoverageNotes(data)].map((note) => (
                         <Text key={note} className="text-xs text-foreground-muted">
                           Limited window: {note}.
                         </Text>
@@ -313,10 +317,6 @@ function ProjectLoomScreen(props: {
                       <Text className="text-xs text-foreground-muted">
                         Test commands are recognized commands, not test results.{" "}
                         {data.coverage.commandsScanned} commands examined.
-                        {data.coverage.commandsTruncated ? " Command coverage is limited." : ""}
-                        {data.coverage.untimedTasks > 0
-                          ? ` ${data.coverage.untimedTasks} agent tasks have no recorded time and are not shown.`
-                          : ""}
                       </Text>
                       <Text className="text-xs text-foreground-muted">
                         Runs requested before the window appear on its first date.

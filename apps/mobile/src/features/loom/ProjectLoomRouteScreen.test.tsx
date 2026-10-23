@@ -225,7 +225,12 @@ function setup() {
       edges: false,
       bytes: false,
     },
-    coverage: { untimedTasks: 2, commandsScanned: 3, commandsTruncated: true },
+    coverage: {
+      untimedTasks: 2,
+      untimedTasksTruncated: false,
+      commandsScanned: 3,
+      commandsTruncated: true,
+    },
     nextCursor: null,
   };
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -279,8 +284,8 @@ it("groups dates, nests delegated activity, collapses descendants and navigates 
       .querySelector('[data-item="2026-10-22:thread:child"] > div')
       ?.getAttribute("style"),
   ).toBe("margin-left: 16px;");
-  expect(screen.container.textContent).toContain("2 agent tasks have no recorded time");
-  expect(screen.container.textContent).toContain("Command coverage is limited");
+  expect(screen.container.textContent).toContain("2 agent tasks with no recorded time");
+  expect(screen.container.textContent).toContain("test commands from the newest 3 commands only");
   await screen.press("Collapse root");
   expect(screen.container.textContent).toContain("2 hidden threads");
   expect(

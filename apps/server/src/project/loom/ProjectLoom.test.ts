@@ -20,6 +20,8 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -92,6 +94,9 @@ interface ThreadSpec {
   readonly branch?: string;
   readonly deleted?: boolean;
   readonly pullRequestLinkedHours?: number;
+  /** Links PRs #1..count at pullRequestLinkedHours, each watched with watchBytes of check names. */
+  readonly pullRequestCount?: number;
+  readonly watchBytes?: number;
 }
 
 const thread = (spec: ThreadSpec) => {
@@ -124,18 +129,34 @@ const thread = (spec: ThreadSpec) => {
       ...(spec.pullRequestLinkedHours === undefined
         ? {}
         : {
-            pullRequests: [
-              {
+            pullRequests: Array.from({ length: spec.pullRequestCount ?? 1 }, (_, index) => {
+              const number = spec.pullRequestCount === undefined ? 7 : index + 1;
+              return {
                 host: "github.com",
                 repository: "acme/app",
-                number: 7,
-                url: "https://github.com/acme/app/pull/7",
+                number,
+                url: `https://github.com/acme/app/pull/${number}`,
                 source: "created" as const,
-                linkedAt: DateTime.formatIso(at(spec.pullRequestLinkedHours)),
+                linkedAt: DateTime.formatIso(at(spec.pullRequestLinkedHours!)),
                 snapshot: null,
                 stack: null,
-              },
-            ],
+                ...(spec.watchBytes === undefined
+                  ? {}
+                  : {
+                      watch: {
+                        startedAt: DateTime.formatIso(at(spec.pullRequestLinkedHours!)),
+                        headSha: null,
+                        failedChecks: ["c".repeat(spec.watchBytes)],
+                        passed: false,
+                        passedChecks: [],
+                        remarksThrough: DateTime.formatIso(at(spec.pullRequestLinkedHours!)),
+                        remarkIds: [],
+                        conflicting: false,
+                        wakes: 0,
+                      },
+                    }),
+              };
+            }),
           }),
       createdAt: at(spec.createdHours),
       updatedAt: at(spec.updatedHours ?? spec.createdHours),
@@ -252,7 +273,7 @@ const command = (spec: {
 
 const transfer = (spec: {
   readonly id: string;
-  readonly type: "fork" | "provider_handoff";
+  readonly type: "fork" | "provider_handoff" | "merge_back";
   readonly source: string;
   readonly target: string;
   readonly hours: number;
@@ -310,6 +331,32 @@ const nativeTask = (threadId: string, id: string, startedHours: number | null) =
       updatedAt: at(startedHours ?? 10),
     },
   });
+
+/** Runs a read while recording the statements it sends, for plan and volume checks. */
+const recordReads = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const statements: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+    const record: Statement.Transformer = (statement) => {
+      const compiled = statement.compile();
+      if (compiled[0].includes("orchestration_v2_projection_")) statements.push(compiled);
+      return Effect.succeed(statement);
+    };
+    const result = yield* effect.pipe(Effect.provideService(Statement.CurrentTransformer, record));
+    return { result, statements };
+  });
+
+const queryPlans = (statements: ReadonlyArray<readonly [string, ReadonlyArray<unknown>]>) =>
+  Effect.flatMap(SqlClient.SqlClient, (sql) =>
+    Effect.forEach(statements, ([query, params]) =>
+      sql.unsafe<{ readonly detail: string }>(`EXPLAIN QUERY PLAN ${query}`, params),
+    ),
+  ).pipe(Effect.map((plans) => plans.flat().map((row) => row.detail)));
+
+/** Bytes the statements hand back from SQLite, replayed against the same data. */
+const bytesRead = (statements: ReadonlyArray<readonly [string, ReadonlyArray<unknown>]>) =>
+  Effect.flatMap(SqlClient.SqlClient, (sql) =>
+    Effect.forEach(statements, ([query, params]) => sql.unsafe(query, params)),
+  ).pipe(Effect.map((rows) => Buffer.byteLength(JSON.stringify(rows))));
 
 const seedProjects = Effect.all([createProject(projectId), createProject(otherProjectId)]);
 const repeat = <E, R>(count: number, make: (index: number) => Effect.Effect<void, E, R>) =>
@@ -666,4 +713,196 @@ describe("ProjectLoom.readWindow", () => {
       );
     }).pipe(Effect.provide(layer)),
   );
+
+  it.effect(
+    "keeps older lanes whose only activity in the window is a marker or an active run",
+    () =>
+      Effect.gen(function* () {
+        yield* seedProjects;
+        // Each thread and its runs predate the window; only the named activity falls inside it.
+        const older = (id: string, extra: Partial<ThreadSpec> = {}) =>
+          Effect.andThen(thread({ id, createdHours: -100, updatedHours: -90, ...extra }), () =>
+            run({ thread: id, ordinal: 1, requestedHours: -95, completedHours: -94 }),
+          );
+        yield* older("still-running");
+        yield* run({
+          thread: "still-running",
+          ordinal: 2,
+          requestedHours: -20,
+          startedHours: -19,
+          status: "running",
+        });
+        yield* older("late-checkpoint");
+        yield* checkpoint("late-checkpoint", 0, 5);
+        yield* older("linked-later", { pullRequestLinkedHours: 12 });
+        yield* older("native-task");
+        yield* nativeTask("native-task", "native-task-1", 6);
+        yield* older("merge-target");
+        yield* thread({ id: "merge-source", createdHours: 2 });
+        yield* transfer({
+          id: "merge",
+          type: "merge_back",
+          source: "merge-source",
+          target: "merge-target",
+          hours: 8,
+        });
+        yield* older("quiet");
+
+        const result = yield* read(window);
+        assert.deepEqual(result.lanes.map((lane) => lane.threadId).toSorted(), [
+          "late-checkpoint",
+          "linked-later",
+          "merge-source",
+          "merge-target",
+          "native-task",
+          "still-running",
+        ]);
+        assert.deepEqual(
+          result.runs.map((entry) => entry.id),
+          ["still-running-run-2"],
+        );
+        assert.deepEqual(result.markers.map((marker) => marker.kind).toSorted(), [
+          "checkpoint",
+          "pull_request",
+          "subagent_task",
+        ]);
+        assert.deepEqual(
+          result.edges.map((edge) => edge.id),
+          ["merge"],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("gives a fork and its parent distinct markers for the same pull request", () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      yield* thread({ id: "parent", createdHours: 1, pullRequestLinkedHours: 3 });
+      yield* thread({
+        id: "fork",
+        createdHours: 2,
+        parent: { id: "parent", relationship: "fork" },
+        pullRequestLinkedHours: 3,
+      });
+      const result = yield* read(window);
+      const pullRequests = result.markers.filter((marker) => marker.kind === "pull_request");
+      assert.deepEqual(pullRequests.map((marker) => marker.threadId).toSorted(), [
+        "fork",
+        "parent",
+      ]);
+      assert.equal(new Set(pullRequests.map((marker) => marker.id)).size, 2);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps the whole response under the byte cap when lane text is huge", () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      const huge = "t".repeat(300 * 1024);
+      yield* thread({ id: "ancestor", createdHours: -500, updatedHours: -400, title: huge });
+      yield* thread({
+        id: "verbose",
+        createdHours: 1,
+        title: huge,
+        branch: huge,
+        parent: { id: "ancestor", relationship: "fork" },
+      });
+      const { result, statements } = yield* recordReads(read(window));
+      assert.deepEqual(
+        result.lanes.map((lane) => lane.threadId),
+        ["verbose"],
+      );
+      assert.deepEqual(
+        result.ancestors.map((ancestor) => ancestor.threadId),
+        ["ancestor"],
+      );
+      assert.isAtMost(Buffer.byteLength(JSON.stringify(result)), LOOM_LIMITS.bytes);
+      assert.isBelow(yield* bytesRead(statements), 64 * 1024);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reads pull request links compactly and flags the ones past the marker cap", () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      yield* thread({
+        id: "linked",
+        createdHours: 1,
+        pullRequestLinkedHours: 2,
+        pullRequestCount: LOOM_LIMITS.markers + 200,
+        watchBytes: 2_000,
+      });
+      const { result, statements } = yield* recordReads(read(window));
+      assert.isTrue(result.truncated.markers);
+      assert.isAtMost(result.markers.length, LOOM_LIMITS.markers);
+      // The links' watches total 2.4 MB; only compact marker fields should leave SQLite.
+      assert.isBelow(yield* bytesRead(statements), 512 * 1024);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("bounds the untimed task count and says when it hit the bound", () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      yield* thread({ id: "tasks", createdHours: 1, updatedHours: 20 });
+      yield* repeat(LOOM_LIMITS.markers + 2, (index) =>
+        nativeTask("tasks", `untimed-${index}`, null),
+      );
+      const result = yield* read(window);
+      assert.equal(result.coverage.untimedTasks, LOOM_LIMITS.markers);
+      assert.isTrue(result.coverage.untimedTasksTruncated);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  describe("query plans", () => {
+    const seedBusyLane = Effect.gen(function* () {
+      yield* seedProjects;
+      yield* thread({ id: "busy", createdHours: -400, updatedHours: 10 });
+      yield* run({ thread: "busy", ordinal: 1, requestedHours: -300, completedHours: -299 });
+      yield* run({
+        thread: "busy",
+        ordinal: 2,
+        requestedHours: 2,
+        startedHours: 2,
+        completedHours: 3,
+      });
+      yield* command({ thread: "busy", ordinal: 2, id: "cmd", input: "vp test run", hours: 2.5 });
+      yield* nativeTask("busy", "task", 4);
+      return yield* recordReads(read(window));
+    });
+
+    it.effect("reads native tasks by lane, not by the child thread index", () =>
+      Effect.gen(function* () {
+        const plans = yield* queryPlans((yield* seedBusyLane).statements);
+        assert.isFalse(plans.some((detail) => detail.includes("subagents_child_thread_idx")));
+        assert.isTrue(plans.some((detail) => detail.includes("subagents_thread_idx")));
+      }).pipe(Effect.provide(layer)),
+    );
+
+    it.effect("bounds every run read by the window instead of a lane's whole history", () =>
+      Effect.gen(function* () {
+        const plans = yield* queryPlans((yield* seedBusyLane).statements);
+        const runReads = plans.filter((detail) =>
+          /USING .*INDEX orchestration_v2_projection_runs_/.test(detail),
+        );
+        assert.isNotEmpty(runReads);
+        // A requested_at search with only an upper bound walks every earlier run of the lane.
+        assert.isFalse(
+          runReads.some(
+            (detail) => /requested_at<\?\)/.test(detail) && !/requested_at>\?/.test(detail),
+          ),
+        );
+        assert.isTrue(runReads.some((detail) => detail.includes("runs_thread_completed_idx")));
+      }).pipe(Effect.provide(layer)),
+    );
+
+    it.effect("orders command candidates from a covering index, never sorting payloads", () =>
+      Effect.gen(function* () {
+        const plans = yield* queryPlans((yield* seedBusyLane).statements);
+        assert.isTrue(
+          plans.some((detail) =>
+            detail.includes(
+              "COVERING INDEX orchestration_v2_projection_turn_items_run_command_updated_idx",
+            ),
+          ),
+        );
+      }).pipe(Effect.provide(layer)),
+    );
+  });
 });
