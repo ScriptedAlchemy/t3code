@@ -1122,3 +1122,16 @@ it.effect("leaves import statements out of symbol search", () =>
     }),
   ),
 );
+
+it.effect("returns index not ready for a cold checkout without synchronizing sources", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const result = yield* checkoutService(fixture.root, () => ["src/defs.ts"])({
+        operation: "symbols",
+        name: "greet",
+      });
+      assert.equal(result.index?.state, "unindexed");
+      assert.deepEqual(result.nodes, []);
+    }),
+  ),
+);
