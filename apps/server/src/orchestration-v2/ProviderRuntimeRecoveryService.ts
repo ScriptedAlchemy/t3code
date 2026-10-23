@@ -7,6 +7,7 @@ import {
   type OrchestrationV2RestartCancelledBackgroundWork,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
+  type ServerSettings as ServerSettingsValue,
   isOrchestrationV2WorkActive,
   ThreadId,
 } from "@t3tools/contracts";
@@ -23,6 +24,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { restartContinuationRun } from "./RestartContinuation.ts";
+import { assistedLearningEffects } from "../project/knowledge/assistedLearningSchedule.ts";
 import { isBufferedProviderNotification } from "./NotificationMailbox.ts";
 import {
   endOrphanedNativeSubagent,
@@ -200,6 +202,7 @@ export const make = Effect.gen(function* () {
       projection: ProjectionStore.ProjectionRuntimeRecoveryState,
       trigger: "startup" | "shutdown",
       continueAfterRestart: boolean,
+      serverSettings: ServerSettingsValue | null,
       stoppedThisPass: ReadonlyMap<string, RecoverySession> = new Map(),
     ) {
       const now = yield* DateTime.now;
@@ -628,16 +631,33 @@ export const make = Effect.gen(function* () {
               now,
             )
           : undefined;
-      const effects: Array<EffectOutbox.PendingOrchestrationEffectV2> = continuationRun
-        ? [
-            {
-              id: `effect:restart-continuation:${continuationRun.id}`,
-              commandId,
-              threadId: projection.thread.id,
-              request: { type: "provider-runtime.continue", sourceRunId: continuationRun.id },
-            },
-          ]
-        : [];
+      const effects: Array<EffectOutbox.PendingOrchestrationEffectV2> = [
+        ...(continuationRun
+          ? [
+              {
+                id: `effect:restart-continuation:${continuationRun.id}`,
+                commandId,
+                threadId: projection.thread.id,
+                request: {
+                  type: "provider-runtime.continue" as const,
+                  sourceRunId: continuationRun.id,
+                },
+              },
+            ]
+          : []),
+        // A run the restart cancelled settles here instead of through finalization or Stop.
+        ...(serverSettings === null
+          ? []
+          : runs.flatMap((run) =>
+              assistedLearningEffects({
+                settings: serverSettings,
+                projectId: projection.thread.projectId,
+                threadId: projection.thread.id,
+                runId: run.id,
+                status: "cancelled",
+              }),
+            )),
+      ];
       const stoppedSessions = projection.providerSessions.filter(
         (candidate) => candidate.status !== "stopped" && candidate.status !== "error",
       ).length;
@@ -727,7 +747,13 @@ export const make = Effect.gen(function* () {
         continueAfterRestart !== null &&
         resolveProjectSettings(continueAfterRestart, projection.thread.projectId).settings
           .continueThreadsAfterServerUpdate;
-      const result = yield* reconcileProjection(projection, trigger, enabled, stoppedThisPass);
+      const result = yield* reconcileProjection(
+        projection,
+        trigger,
+        enabled,
+        continueAfterRestart,
+        stoppedThisPass,
+      );
       for (const session of projection.providerSessions) {
         if (session.status !== "stopped" && session.status !== "error") {
           stoppedThisPass.set(session.id, session);
