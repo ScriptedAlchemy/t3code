@@ -204,6 +204,17 @@ function analysisCommand(launch: AnalysisLaunch): ReadonlyArray<string> {
   ];
 }
 
+/**
+ * A server run under `node --watch` exports WATCH_REPORT_DEPENDENCIES, which makes any Node
+ * child report its imports over its IPC channel; on the analysis channel those reports would
+ * read as malformed replies.
+ */
+function analysisEnvironment(): NodeJS.ProcessEnv {
+  const { WATCH_REPORT_DEPENDENCIES: _watchReport, ...environment } = process.env;
+  // ELECTRON_RUN_AS_NODE keeps the desktop's Electron binary a plain Node runtime.
+  return { ...environment, CODEGRAPH_DIR: INDEX_DIRECTORY, ELECTRON_RUN_AS_NODE: "1" };
+}
+
 function queryInAnalysisProcess(
   launch: AnalysisLaunch,
   input: {
@@ -218,8 +229,7 @@ function queryInAnalysisProcess(
     let child: NodeChildProcess.ChildProcess;
     try {
       child = NodeChildProcess.spawn(launch.executablePath, analysisCommand(launch), {
-        // ELECTRON_RUN_AS_NODE keeps the desktop's Electron binary a plain Node runtime.
-        env: { ...process.env, CODEGRAPH_DIR: INDEX_DIRECTORY, ELECTRON_RUN_AS_NODE: "1" },
+        env: analysisEnvironment(),
         stdio: ["ignore", "ignore", "ignore", "ipc"],
         windowsHide: true,
       });

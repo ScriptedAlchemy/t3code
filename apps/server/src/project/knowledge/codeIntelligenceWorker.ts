@@ -213,6 +213,26 @@ function validateIndexDirectory(checkoutPath: string): void {
   }
 }
 
+const INDEX_GITIGNORE = "# T3 code index, local to this machine.\n*\n";
+
+/**
+ * The SDK's .gitignore keeps itself tracked, which leaves the index directory in the user's
+ * `git status`; T3's index is private to the machine, so the file ignores itself too.
+ */
+function ignoreIndexDirectory(checkoutPath: string): void {
+  const target = NodePath.join(checkoutPath, INDEX_DIRECTORY, ".gitignore");
+  try {
+    if (NodeFS.readFileSync(target, "utf8") === INDEX_GITIGNORE) return;
+  } catch {}
+  const temporary = `${target}.${process.pid}.tmp`;
+  try {
+    NodeFS.writeFileSync(temporary, INDEX_GITIGNORE, { flag: "wx" });
+    NodeFS.renameSync(temporary, target);
+  } catch {
+    NodeFS.rmSync(temporary, { force: true });
+  }
+}
+
 interface IndexMeta {
   readonly commit: string | null;
   readonly generation: number;
@@ -606,6 +626,7 @@ export async function inspectCodeInWorker(
   let graph = initialized
     ? await CodeGraph.open(input.checkoutPath, { sync: false })
     : await CodeGraph.init(input.checkoutPath, { index: false });
+  ignoreIndexDirectory(input.checkoutPath);
   try {
     let recreated = false;
     const stalePaths = graph

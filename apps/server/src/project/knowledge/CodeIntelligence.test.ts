@@ -1071,3 +1071,38 @@ it.effect("fails the query, not the server, when the analysis process aborts", (
     }),
   ),
 );
+
+it.effect("answers queries when the server itself runs under node --watch", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const previous = process.env.WATCH_REPORT_DEPENDENCIES;
+      process.env.WATCH_REPORT_DEPENDENCIES = "1";
+      const result = yield* Effect.result(
+        checkoutService(fixture.root, () => ["src/defs.ts"])({ operation: "status" }),
+      ).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (previous === undefined) delete process.env.WATCH_REPORT_DEPENDENCIES;
+            else process.env.WATCH_REPORT_DEPENDENCIES = previous;
+          }),
+        ),
+      );
+      assert.equal(result._tag, "Success");
+    }),
+  ),
+);
+
+it.effect("keeps the index out of the checkout's git status", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const git = (...args: ReadonlyArray<string>) =>
+        NodeChildProcess.execFileSync("git", args, { cwd: fixture.root, encoding: "utf8" });
+      git("init", "--quiet");
+      yield* checkoutService(fixture.root, () => ["src/defs.ts"])({ operation: "status" });
+      const untracked = git("status", "--porcelain", "--untracked-files=all")
+        .split("\n")
+        .filter((line) => line.includes(".codegraph-t3/"));
+      assert.deepEqual(untracked, []);
+    }),
+  ),
+);
