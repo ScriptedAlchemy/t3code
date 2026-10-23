@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - fixtures use isolated temporary checkouts and verify source bytes against SHA-256 digests.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -27,6 +28,7 @@ import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
 import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 import * as CodeIntelligence from "./CodeIntelligence.ts";
+import * as FileHistory from "./FileHistory.ts";
 
 const projectId = ProjectId.make("project:code-intelligence");
 const threadId = ThreadId.make("thread:code-intelligence");
@@ -239,6 +241,7 @@ it.effect(
           const toolLayer = McpHttpServer.layerProjectCodeToolkit.pipe(
             Layer.provide(provided),
             Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
+            Layer.provide(Layer.mock(FileHistory.FileHistory)({})),
             Layer.provideMerge(McpServer.McpServer.layer),
             Layer.provide(NodeCryptoEffect.layer),
             Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
@@ -697,6 +700,137 @@ it.effect("runs a graph query while the checkout lease is held", () =>
       yield* Deferred.succeed(releaseCheckoutLease, undefined);
       yield* Fiber.await(checkoutLease);
       assert.ok(result.nodes.some(({ name }) => name === "greet"));
+    }),
+  ),
+);
+
+it.effect("reports index freshness against the checkout and walks usages to reaching tests", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const testSource =
+        'import { caller } from "./use";\nexport function checksCaller() { return caller(); }\n';
+      const head = yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(NodePath.join(fixture.root, "src/defs.test.ts"), testSource);
+        const git = (...args: string[]) =>
+          NodeChildProcess.execFileSync(
+            "git",
+            ["-c", "user.email=t3@example.com", "-c", "user.name=T3", ...args],
+            { cwd: fixture.root, encoding: "utf8" },
+          ).trim();
+        git("init", "-q");
+        git("add", "src");
+        git("commit", "-qm", "fixture");
+        return git("rev-parse", "HEAD");
+      });
+      const project = {
+        projectId,
+        workspaceRoot: fixture.root,
+        deletedAt: null,
+      } as unknown as ProjectStore.ProjectRow;
+      const provided = Layer.provide(
+        CodeIntelligence.layer,
+        Layer.mergeAll(
+          Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeedSome(project) }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThread: () => Effect.die("unused") }),
+          Layer.mock(WorkspacePaths.WorkspacePaths)({
+            normalizeWorkspaceRoot: () => Effect.succeed(fixture.root),
+            resolveRelativePathWithinRoot: ({ relativePath }) =>
+              Effect.succeed({ absolutePath: relativePath, relativePath }),
+          }),
+          Layer.mock(WorkspaceEntries.WorkspaceEntries)({
+            refresh: () => Effect.void,
+            list: () =>
+              Effect.succeed({
+                entries: ["src/defs.ts", "src/use.ts", "src/defs.test.ts"].map((path) => ({
+                  path,
+                  kind: "file" as const,
+                })),
+                truncated: false,
+              }),
+          }),
+        ),
+      );
+      const run = (
+        query: Parameters<CodeIntelligence.CodeIntelligence["Service"]["query"]>[0]["query"],
+      ) =>
+        Effect.flatMap(CodeIntelligence.CodeIntelligence, (intelligence) =>
+          intelligence.query({ projectId, query }),
+        ).pipe(Effect.provide(provided));
+
+      // Freshness never indexes: an unindexed checkout stays unindexed.
+      assert.equal((yield* run({ operation: "freshness" })).index?.state, "unindexed");
+      assert.isFalse(NodeFS.existsSync(NodePath.join(fixture.root, ".codegraph-t3")));
+
+      const indexed = yield* run({ operation: "status" });
+      assert.deepInclude(indexed.index, { state: "ready", indexedCommit: head, generation: 1 });
+      assert.deepInclude((yield* run({ operation: "freshness" })).index, {
+        state: "ready",
+        changedFiles: 0,
+        indexedCommit: head,
+        headCommit: head,
+      });
+
+      const name = (result: typeof indexed, id: string) =>
+        result.nodes.find((node) => node.id === id)?.name;
+      const tests = yield* run({
+        operation: "tests",
+        symbol: { name: "greet", filePath: "src/defs.ts" },
+      });
+      assert.deepEqual(
+        tests.symbolGroups?.[0]?.tests.map((id) => name(tests, id)),
+        ["checksCaller"],
+      );
+      // The chain through the intermediate caller comes back so a client can show the hops.
+      assert.ok(tests.nodes.some((node) => node.name === "caller"));
+
+      const affected = yield* run({
+        operation: "affected",
+        filePath: "src/defs.ts",
+        lineRanges: [{ start: 1, end: 1 }],
+      });
+      const group = affected.symbolGroups?.find(
+        (entry) => name(affected, entry.symbol) === "greet",
+      );
+      assert.ok(group);
+      assert.include(
+        group.callers.map((id) => name(affected, id)),
+        "caller",
+      );
+      assert.deepEqual(
+        group.tests.map((id) => name(affected, id)),
+        ["checksCaller"],
+      );
+
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          NodePath.join(fixture.root, "src/defs.ts"),
+          'export function greet() { return "changed"; }\n',
+        ),
+      );
+      assert.deepInclude((yield* run({ operation: "freshness" })).index, {
+        state: "stale",
+        changedFiles: 1,
+        changedPaths: ["src/defs.ts"],
+        indexedCommit: head,
+      });
+
+      // While another query holds the index, freshness answers instead of queueing.
+      const leaseHeld = yield* Deferred.make<void>();
+      const releaseLease = yield* Deferred.make<void>();
+      const lease = yield* withWorkspaceLease(
+        NodePath.join(fixture.root, ".codegraph-t3"),
+        Deferred.succeed(leaseHeld, undefined).pipe(Effect.andThen(Deferred.await(releaseLease))),
+      ).pipe(Effect.forkScoped);
+      yield* Deferred.await(leaseHeld);
+      assert.equal((yield* run({ operation: "freshness" })).index?.state, "indexing");
+      yield* Deferred.succeed(releaseLease, undefined);
+      yield* Fiber.await(lease);
+
+      assert.deepInclude((yield* run({ operation: "status" })).index, {
+        state: "ready",
+        generation: 2,
+      });
+      assert.equal((yield* run({ operation: "freshness" })).index?.changedFiles, 0);
     }),
   ),
 );

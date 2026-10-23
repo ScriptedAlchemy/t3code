@@ -18,7 +18,7 @@ import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
-import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
+import { isWorkspaceLeaseHeld, withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 
 const WORKER_MEMORY_LIMIT_MB = 768;
 const MAX_LISTED_FILES = 10_000;
@@ -114,7 +114,7 @@ function normalizeQueryPaths(
   checkoutPath: string,
   workspacePaths: WorkspacePaths.WorkspacePaths["Service"],
 ): Effect.Effect<ProjectCodeQueryType, WorkspacePaths.WorkspacePathsError> {
-  if (query.operation === "dependencies") {
+  if (query.operation === "dependencies" || query.operation === "affected") {
     return workspacePaths
       .resolveRelativePathWithinRoot({
         workspaceRoot: checkoutPath,
@@ -131,7 +131,8 @@ function normalizeQueryPaths(
     query.operation === "callers" ||
     query.operation === "callees" ||
     query.operation === "references" ||
-    query.operation === "impact"
+    query.operation === "impact" ||
+    query.operation === "tests"
   ) {
     if (query.symbol.filePath === undefined) return Effect.succeed(query);
     return workspacePaths
@@ -269,6 +270,45 @@ function queryWithWorker(input: {
   });
 }
 
+function indexingResult(checkoutPath: string): ProjectCodeQueryResultType {
+  return {
+    operation: "freshness",
+    checkoutPath,
+    matches: [],
+    nodes: [],
+    edges: [],
+    files: [],
+    unresolvedReferences: [],
+    selection: { state: "not-required", candidates: [] },
+    sourceDigests: [],
+    stats: null,
+    coverage: {
+      state: "partial",
+      catalogRevision: "",
+      relationSemantics: "static-candidates",
+      columnEncoding: "utf16-code-units",
+      languages: [],
+      filesListed: 0,
+      filesIndexed: 0,
+      filesSkipped: 0,
+      filesUnsupported: 0,
+      filesFailed: 0,
+      pendingReferences: 0,
+      resultLimitReached: false,
+      limitations: ["Another code query is indexing this checkout right now."],
+    },
+    index: {
+      state: "indexing",
+      indexedCommit: null,
+      headCommit: null,
+      generation: 0,
+      indexedAt: null,
+      changedFiles: 0,
+      changedPaths: [],
+    },
+  };
+}
+
 const make = Effect.gen(function* () {
   const projects = yield* ProjectStore.ProjectStoreV2;
   const threads = yield* ProjectionStore.ProjectionStoreV2;
@@ -293,6 +333,11 @@ const make = Effect.gen(function* () {
         registeredRoot = thread.worktreePath ?? registeredRoot;
       }
       const checkoutPath = yield* workspacePaths.normalizeWorkspaceRoot(registeredRoot);
+      const indexPath = NodePath.join(checkoutPath, INDEX_DIRECTORY);
+      // Freshness must answer while another query holds the index, not queue behind it.
+      if (input.query.operation === "freshness" && isWorkspaceLeaseHeld(indexPath)) {
+        return indexingResult(checkoutPath);
+      }
       const normalizedQuery = yield* normalizeQueryPaths(input.query, checkoutPath, workspacePaths);
       yield* workspaceEntries.refresh(checkoutPath);
       const workspaceListing = yield* workspaceEntries.list({ cwd: checkoutPath });
@@ -300,7 +345,7 @@ const make = Effect.gen(function* () {
         .filter((entry) => entry.kind === "file" && entry.ignored !== true)
         .map((entry) => entry.path);
       return yield* withWorkspaceLease(
-        NodePath.join(checkoutPath, INDEX_DIRECTORY),
+        indexPath,
         queryWithWorker({
           checkoutPath,
           files: listedFiles.slice(0, MAX_LISTED_FILES),
@@ -310,16 +355,17 @@ const make = Effect.gen(function* () {
         }).pipe(
           Effect.mapError((cause) => {
             const queryPath =
-              normalizedQuery.operation === "dependencies"
+              normalizedQuery.operation === "dependencies" ||
+              normalizedQuery.operation === "affected" ||
+              normalizedQuery.operation === "symbols"
                 ? normalizedQuery.filePath
                 : normalizedQuery.operation === "callers" ||
                     normalizedQuery.operation === "callees" ||
                     normalizedQuery.operation === "references" ||
-                    normalizedQuery.operation === "impact"
+                    normalizedQuery.operation === "impact" ||
+                    normalizedQuery.operation === "tests"
                   ? normalizedQuery.symbol.filePath
-                  : normalizedQuery.operation === "symbols"
-                    ? normalizedQuery.filePath
-                    : undefined;
+                  : undefined;
             if (cause.reason === "path-outside-checkout" && queryPath !== undefined) {
               return new CodeIntelligencePathOutsideCheckout({ path: queryPath });
             }

@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { ProjectId, ThreadId } from "./baseSchemas.ts";
+import { IsoDateTime, ProjectId, ThreadId } from "./baseSchemas.ts";
 
 const limit = Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 })));
 const depth = Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 4 })));
@@ -68,7 +68,28 @@ export const ProjectCodeQuery = Schema.Union([
     depth,
     limit,
   }),
+  // Callers walked toward test files; a static reachability candidate, not coverage.
+  Schema.Struct({
+    operation: Schema.Literal("tests"),
+    symbol: ProjectCodeSymbolSelector,
+    depth,
+    limit,
+  }),
+  // Declarations in `filePath` overlapping `lineRanges` (all of them when omitted), each with
+  // its callers and the tests that reach it. One request so a review costs one index pass.
+  Schema.Struct({
+    operation: Schema.Literal("affected"),
+    filePath: NonEmptyText.check(Schema.isMaxLength(2048)),
+    lineRanges: Schema.optional(
+      Schema.Array(Schema.Struct({ start: PositiveInt, end: PositiveInt })).check(
+        Schema.isMaxLength(200),
+      ),
+    ),
+    limit,
+  }),
   Schema.Struct({ operation: Schema.Literal("status") }),
+  // Compares the existing index to the checkout without indexing anything.
+  Schema.Struct({ operation: Schema.Literal("freshness") }),
 ]);
 export type ProjectCodeQuery = typeof ProjectCodeQuery.Type;
 
@@ -189,6 +210,25 @@ export const ProjectCodeStats = Schema.Struct({
 });
 export type ProjectCodeStats = typeof ProjectCodeStats.Type;
 
+export const ProjectCodeIndexInfo = Schema.Struct({
+  state: Schema.Literals(["ready", "partial", "stale", "unindexed", "indexing"]),
+  indexedCommit: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64))),
+  headCommit: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64))),
+  // Increments each time a sync changes the index.
+  generation: NonNegativeInt,
+  indexedAt: Schema.NullOr(Schema.Number),
+  changedFiles: NonNegativeInt,
+  changedPaths: Schema.Array(BoundedPath).check(Schema.isMaxLength(20)),
+});
+export type ProjectCodeIndexInfo = typeof ProjectCodeIndexInfo.Type;
+
+export const ProjectCodeSymbolGroup = Schema.Struct({
+  symbol: BoundedIdentifier,
+  callers: Schema.Array(BoundedIdentifier).check(Schema.isMaxLength(200)),
+  tests: Schema.Array(BoundedIdentifier).check(Schema.isMaxLength(200)),
+});
+export type ProjectCodeSymbolGroup = typeof ProjectCodeSymbolGroup.Type;
+
 export const ProjectCodeQueryResult = Schema.Struct({
   operation: Schema.Literals([
     "search",
@@ -199,6 +239,9 @@ export const ProjectCodeQueryResult = Schema.Struct({
     "dependencies",
     "impact",
     "status",
+    "tests",
+    "affected",
+    "freshness",
   ]),
   checkoutPath: Schema.String.check(Schema.isMaxLength(4096)),
   matches: Schema.Array(ProjectCodeMatch).check(Schema.isMaxLength(200)),
@@ -210,5 +253,53 @@ export const ProjectCodeQueryResult = Schema.Struct({
   sourceDigests: Schema.Array(ProjectCodeSourceDigest).check(Schema.isMaxLength(50)),
   stats: Schema.NullOr(ProjectCodeStats),
   coverage: ProjectCodeCoverage,
+  // Optional so clients keep decoding servers from before index tracking.
+  index: Schema.optionalKey(ProjectCodeIndexInfo),
+  symbolGroups: Schema.optionalKey(
+    Schema.Array(ProjectCodeSymbolGroup).check(Schema.isMaxLength(20)),
+  ),
 });
 export type ProjectCodeQueryResult = typeof ProjectCodeQueryResult.Type;
+
+const TEST_PATH = /(^|\/)(__tests__|tests?|spec)\/|[._-](test|spec)\.[^/]+$|_test\.[^/]+$/;
+/** A path-convention guess shared by the server's test walk and every client's labels. */
+export const isLikelyTestPath = (path: string): boolean => TEST_PATH.test(path);
+
+export const ProjectFileHistoryInput = Schema.Struct({
+  projectId: ProjectId,
+  path: NonEmptyText.check(Schema.isMaxLength(2048)),
+  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+});
+export type ProjectFileHistoryInput = typeof ProjectFileHistoryInput.Type;
+
+export const ProjectFileHistoryEntry = Schema.Struct({
+  threadId: ThreadId,
+  title: Schema.String.check(Schema.isMaxLength(512)),
+  archived: Schema.Boolean,
+  checkpoints: PositiveInt,
+  lastCheckpointAt: IsoDateTime,
+  lastKind: BoundedName,
+  additions: NonNegativeInt,
+  deletions: NonNegativeInt,
+});
+export type ProjectFileHistoryEntry = typeof ProjectFileHistoryEntry.Type;
+
+export const ProjectFileHistoryResult = Schema.Struct({
+  path: BoundedPath,
+  // A checkpoint lists files that changed in its workspace since the previous one, whoever
+  // changed them; shared workspaces make "authored" a claim this index cannot back.
+  relation: Schema.Literal("present-at-checkpoint"),
+  entries: Schema.Array(ProjectFileHistoryEntry).check(Schema.isMaxLength(50)),
+  limitReached: Schema.Boolean,
+  index: Schema.Struct({
+    state: Schema.Literals(["complete", "catching-up"]),
+    pendingCheckpoints: NonNegativeInt,
+  }),
+});
+export type ProjectFileHistoryResult = typeof ProjectFileHistoryResult.Type;
+
+export const ProjectFileHistoryError = Schema.Union([
+  Schema.TaggedStruct("project-not-found", { projectId: ProjectId }),
+  Schema.TaggedStruct("history-unavailable", {}),
+]);
+export type ProjectFileHistoryError = typeof ProjectFileHistoryError.Type;

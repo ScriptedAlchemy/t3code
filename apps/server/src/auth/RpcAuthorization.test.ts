@@ -64,6 +64,12 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeQuery)).toBe(AuthFilesystemReadScope);
   });
 
+  it("requires thread read permission for file history, which joins files to threads", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeFileHistory)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
   it("separates passive terminal observation from operations that can change a shell", () => {
     for (const method of [
       WS_METHODS.terminalObserve,
@@ -94,22 +100,39 @@ describe("RPC authorization scopes", () => {
   });
 });
 
-it.effect("denies project code queries before the handler without filesystem read permission", () =>
+const projectCodeClient = (scopes: Parameters<typeof RpcAuthorization.layer>[0]) =>
   Effect.gen(function* () {
     const group = WsProjectCodeRpcGroup;
-    let handled = false;
+    const handled: string[] = [];
     const client = yield* RpcTest.makeClient(group).pipe(
       Effect.provide(
         Layer.mergeAll(
           group.toLayerHandler(WS_METHODS.projectCodeQuery, () =>
-            Effect.sync(() => {
-              handled = true;
-            }).pipe(Effect.andThen(Effect.never)),
+            Effect.sync(() => handled.push(WS_METHODS.projectCodeQuery)).pipe(
+              Effect.andThen(Effect.never),
+            ),
           ),
-          RpcAuthorization.layer([AuthOrchestrationReadScope]),
+          group.toLayerHandler(WS_METHODS.projectCodeFileHistory, (input) =>
+            Effect.sync(() => handled.push(WS_METHODS.projectCodeFileHistory)).pipe(
+              Effect.as({
+                path: input.path,
+                relation: "present-at-checkpoint" as const,
+                entries: [],
+                limitReached: false,
+                index: { state: "complete" as const, pendingCheckpoints: 0 },
+              }),
+            ),
+          ),
+          RpcAuthorization.layer(scopes),
         ),
       ),
     );
+    return { client, handled };
+  });
+
+it.effect("denies project code queries before the handler without filesystem read permission", () =>
+  Effect.gen(function* () {
+    const { client, handled } = yield* projectCodeClient([AuthOrchestrationReadScope]);
     expect(
       yield* client[WS_METHODS.projectCodeQuery]({
         projectId: ProjectId.make("project-1"),
@@ -119,7 +142,27 @@ it.effect("denies project code queries before the handler without filesystem rea
       _tag: "EnvironmentAuthorizationError",
       requiredPermission: AuthFilesystemReadScope,
     });
-    expect(handled).toBe(false);
+    expect(handled).toEqual([]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("joins file history to threads only for credentials that can read threads", () =>
+  Effect.gen(function* () {
+    const input = { projectId: ProjectId.make("project-1"), path: "src/a.ts" };
+    const filesOnly = yield* projectCodeClient([AuthFilesystemReadScope]);
+    expect(
+      yield* filesOnly.client[WS_METHODS.projectCodeFileHistory](input).pipe(Effect.flip),
+    ).toMatchObject({
+      _tag: "EnvironmentAuthorizationError",
+      requiredPermission: AuthOrchestrationReadScope,
+    });
+    expect(filesOnly.handled).toEqual([]);
+
+    const threadReader = yield* projectCodeClient([AuthOrchestrationReadScope]);
+    expect((yield* threadReader.client[WS_METHODS.projectCodeFileHistory](input)).relation).toBe(
+      "present-at-checkpoint",
+    );
+    expect(threadReader.handled).toEqual([WS_METHODS.projectCodeFileHistory]);
   }).pipe(Effect.scoped),
 );
 

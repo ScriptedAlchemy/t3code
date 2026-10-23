@@ -1,5 +1,6 @@
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
+import * as FileHistory from "./project/knowledge/FileHistory.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -294,6 +295,7 @@ it.live.each(["thread", "shell"] as const)(
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(CodeIntelligence.CodeIntelligence)({}),
+  Layer.mock(FileHistory.FileHistory)({}),
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),
   Layer.mock(WorkspacePaths.WorkspacePaths)({}),
   Layer.mock(TraceDiagnostics.TraceDiagnostics)({}),

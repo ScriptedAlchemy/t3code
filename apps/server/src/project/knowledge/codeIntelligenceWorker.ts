@@ -1,4 +1,5 @@
-// @effect-diagnostics nodeBuiltinImport:off - this isolated worker uses synchronous Node APIs for bounded file hashing and SDK path handling.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - this isolated worker runs outside the Effect runtime and uses synchronous Node APIs for bounded file hashing and SDK path handling.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeModule from "node:module";
@@ -13,18 +14,21 @@ import type {
   SearchResult,
   UnresolvedReference,
 } from "@colbymchenry/codegraph";
-import type {
-  ProjectCodeCoverage,
-  ProjectCodeEdge,
-  ProjectCodeFile,
-  ProjectCodeMatch,
-  ProjectCodeQuery,
-  ProjectCodeQueryResult,
-  ProjectCodeSelection,
-  ProjectCodeSourceDigest,
-  ProjectCodeStats,
-  ProjectCodeSymbol,
-  ProjectCodeUnresolvedReference,
+import {
+  isLikelyTestPath,
+  type ProjectCodeCoverage,
+  type ProjectCodeEdge,
+  type ProjectCodeFile,
+  type ProjectCodeIndexInfo,
+  type ProjectCodeSymbolGroup,
+  type ProjectCodeMatch,
+  type ProjectCodeQuery,
+  type ProjectCodeQueryResult,
+  type ProjectCodeSelection,
+  type ProjectCodeSourceDigest,
+  type ProjectCodeStats,
+  type ProjectCodeSymbol,
+  type ProjectCodeUnresolvedReference,
 } from "@t3tools/contracts";
 
 const INDEX_DIRECTORY = ".codegraph-t3";
@@ -32,12 +36,18 @@ const CATALOG_REVISION = "@colbymchenry/codegraph@1.6.2";
 const MAX_RESULTS = 200;
 const MAX_FILES_FOR_UNRESOLVED = 50;
 const MAX_LISTED_FILES = 10_000;
+const INDEX_META_FILE = "t3-index.json";
+// A test walk stops after this many visited symbols, whatever the depth.
+const MAX_TEST_WALK_NODES = 2_000;
+const MAX_AFFECTED_SYMBOLS = 20;
+const AFFECTED_CALLERS_PER_SYMBOL = 8;
+const AFFECTED_TESTS_PER_SYMBOL = 5;
 
 interface CodeGraphModule {
   readonly CodeGraph: {
     isInitialized(root: string): boolean;
     init(root: string, options: { index: false }): Promise<CodeGraphInstance>;
-    open(root: string, options: { sync: false }): Promise<CodeGraphInstance>;
+    open(root: string, options: { sync: false; readOnly?: boolean }): Promise<CodeGraphInstance>;
     recreate(root: string): Promise<CodeGraphInstance>;
   };
   readonly getSupportedLanguages: () => Language[];
@@ -192,11 +202,113 @@ function validateIndexDirectory(checkoutPath: string): void {
   }
 }
 
+interface IndexMeta {
+  readonly commit: string | null;
+  readonly generation: number;
+  readonly indexedAt: number | null;
+}
+
+function readIndexMeta(checkoutPath: string): IndexMeta {
+  try {
+    const raw: unknown = JSON.parse(
+      NodeFS.readFileSync(NodePath.join(checkoutPath, INDEX_DIRECTORY, INDEX_META_FILE), "utf8"),
+    );
+    if (typeof raw !== "object" || raw === null) throw new Error("invalid");
+    const { commit, generation, indexedAt } = raw as Record<string, unknown>;
+    return {
+      commit: typeof commit === "string" && /^[0-9a-f]{7,64}$/.test(commit) ? commit : null,
+      generation:
+        typeof generation === "number" && Number.isSafeInteger(generation) && generation >= 0
+          ? generation
+          : 0,
+      indexedAt: typeof indexedAt === "number" && Number.isFinite(indexedAt) ? indexedAt : null,
+    };
+  } catch {
+    return { commit: null, generation: 0, indexedAt: null };
+  }
+}
+
+function writeIndexMeta(checkoutPath: string, meta: IndexMeta): void {
+  try {
+    NodeFS.writeFileSync(
+      NodePath.join(checkoutPath, INDEX_DIRECTORY, INDEX_META_FILE),
+      JSON.stringify(meta),
+    );
+  } catch {
+    // The marker only labels freshness; an unwritable one reads back as an unknown commit.
+  }
+}
+
+// The worker owns its thread, so a short synchronous git call blocks nothing else.
+function headCommit(checkoutPath: string): string | null {
+  try {
+    const output = NodeChildProcess.execFileSync(
+      "git",
+      ["rev-parse", "--verify", "--quiet", "HEAD"],
+      {
+        cwd: checkoutPath,
+        encoding: "utf8",
+        timeout: 2_000,
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
+    return /^[0-9a-f]{7,64}$/.test(output) ? output : null;
+  } catch {
+    return null;
+  }
+}
+
+function sha256File(path: string): string | null {
+  try {
+    return NodeCrypto.createHash("sha256").update(NodeFS.readFileSync(path)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Listed source files whose bytes no longer match the index, plus supported files the index
+ * has never seen. Size and mtime screen out unchanged files so only candidates are hashed.
+ */
+function changedSinceIndex(
+  checkoutPath: string,
+  graph: CodeGraphInstance,
+  listedPaths: ReadonlyArray<string>,
+  isSupported: (path: string) => boolean,
+): string[] {
+  const listed = new Set(listedPaths);
+  const indexed = new Map(graph.getFiles().map((file) => [file.path, file]));
+  const changed: string[] = [];
+  for (const path of listedPaths) {
+    const record = indexed.get(path);
+    const absolute = NodePath.resolve(checkoutPath, path);
+    if (record === undefined) {
+      if (isSupported(path)) changed.push(path);
+      continue;
+    }
+    let stat: NodeFS.Stats;
+    try {
+      stat = NodeFS.statSync(absolute);
+    } catch {
+      changed.push(path);
+      continue;
+    }
+    if (stat.size === record.size && Math.trunc(stat.mtimeMs) === Math.trunc(record.modifiedAt))
+      continue;
+    if (sha256File(absolute) !== record.contentHash) changed.push(path);
+  }
+  for (const path of indexed.keys()) {
+    if (!listed.has(path) && !NodeFS.existsSync(NodePath.resolve(checkoutPath, path)))
+      changed.push(path);
+  }
+  return changed;
+}
+
 function selectSymbols(
   graph: CodeGraphInstance,
   input: Extract<
     ProjectCodeQuery,
-    { readonly operation: "callers" | "callees" | "references" | "impact" }
+    { readonly operation: "callers" | "callees" | "references" | "impact" | "tests" }
   >["symbol"],
   limit: number,
   allowedPaths: ReadonlySet<string>,
@@ -275,6 +387,21 @@ const FILE_OUTLINE_EXCLUDED_KINDS: ReadonlySet<string> = new Set([
   "parameter",
 ]);
 
+/**
+ * Top-level test code (an `it` callback) is attributed to the file, so a test file node is kept
+ * only when the walk found no declaration in that file to name instead.
+ */
+function preferDeclarations(tests: ReadonlyArray<CodeGraphNode>): CodeGraphNode[] {
+  const named = new Set(
+    tests
+      .filter((test) => !FILE_OUTLINE_EXCLUDED_KINDS.has(test.kind))
+      .map((test) => test.filePath),
+  );
+  return tests.filter(
+    (test) => !FILE_OUTLINE_EXCLUDED_KINDS.has(test.kind) || !named.has(test.filePath),
+  );
+}
+
 export async function inspectCodeInWorker(
   input: CodeIntelligenceWorkerInput,
   signal: AbortSignal,
@@ -288,16 +415,17 @@ export async function inspectCodeInWorker(
   });
   const listedPathSet = new Set(listedPaths);
   const queryPath =
-    input.query.operation === "dependencies"
+    input.query.operation === "dependencies" ||
+    input.query.operation === "symbols" ||
+    input.query.operation === "affected"
       ? input.query.filePath
-      : input.query.operation === "symbols"
-        ? input.query.filePath
-        : input.query.operation === "callers" ||
-            input.query.operation === "callees" ||
-            input.query.operation === "references" ||
-            input.query.operation === "impact"
-          ? input.query.symbol.filePath
-          : undefined;
+      : input.query.operation === "callers" ||
+          input.query.operation === "callees" ||
+          input.query.operation === "references" ||
+          input.query.operation === "impact" ||
+          input.query.operation === "tests"
+        ? input.query.symbol.filePath
+        : undefined;
   if (
     queryPath !== undefined &&
     safeRelativePath(input.checkoutPath, queryPath) !== null &&
@@ -305,10 +433,15 @@ export async function inspectCodeInWorker(
   ) {
     throw new Error("path-outside-checkout");
   }
-  let graph = CodeGraph.isInitialized(input.checkoutPath)
+  if (input.query.operation === "freshness") {
+    return await inspectFreshness(input, listedPaths, sdk());
+  }
+  const initialized = CodeGraph.isInitialized(input.checkoutPath);
+  let graph = initialized
     ? await CodeGraph.open(input.checkoutPath, { sync: false })
     : await CodeGraph.init(input.checkoutPath, { index: false });
   try {
+    let recreated = false;
     const stalePaths = graph
       .getFiles()
       .filter(
@@ -319,6 +452,7 @@ export async function inspectCodeInWorker(
     if (stalePaths.length > 0) {
       graph.close();
       graph = await CodeGraph.recreate(input.checkoutPath);
+      recreated = true;
     }
     const reconcilePaths = new Set(listedPaths);
     for (const file of graph.getFiles()) {
@@ -328,7 +462,17 @@ export async function inspectCodeInWorker(
       else if (!NodeFS.existsSync(NodePath.resolve(input.checkoutPath, file.path)))
         reconcilePaths.add(file.path);
     }
-    await graph.sync({ signal, onProgress, paths: [...reconcilePaths] });
+    const synced = await graph.sync({ signal, onProgress, paths: [...reconcilePaths] });
+    const priorMeta = readIndexMeta(input.checkoutPath);
+    const commit = headCommit(input.checkoutPath);
+    const indexChanged =
+      !initialized ||
+      recreated ||
+      synced.filesAdded + synced.filesModified + synced.filesRemoved > 0;
+    const meta: IndexMeta = indexChanged
+      ? { commit, generation: priorMeta.generation + 1, indexedAt: Date.now() }
+      : { ...priorMeta, commit };
+    if (indexChanged || priorMeta.commit !== commit) writeIndexMeta(input.checkoutPath, meta);
     const languageCatalog = getSupportedLanguages();
     const supportedLanguages = new Set(languageCatalog);
     const filesUnsupported = listedPaths.filter((path) => {
@@ -356,6 +500,7 @@ export async function inspectCodeInWorker(
     const unresolvedReferences: ProjectCodeUnresolvedReference[] = [];
     let selection: ProjectCodeSelection = { state: "not-required", candidates: [] };
     let resultLimitReached = false;
+    const symbolGroups: ProjectCodeSymbolGroup[] = [];
 
     const addNode = (node: CodeGraphNode) => {
       if (!listedPathSet.has(node.filePath)) return;
@@ -387,6 +532,47 @@ export async function inspectCodeInWorker(
     const addPair = (pair: { readonly node: CodeGraphNode; readonly edge: Edge }) => {
       addNode(pair.node);
       addEdge(pair.edge);
+    };
+
+    /**
+     * Walks usages outward from `startId`, breadth first, and returns the test-file symbols it
+     * reaches with the edges that led to each. Use sites are static candidates, so a reached
+     * test is a reachability claim, never a coverage one.
+     */
+    const reachingTests = (startId: string, depth: number, maxTests: number) => {
+      const via = new Map<string, Edge>();
+      const visited = new Set([startId]);
+      const tests: CodeGraphNode[] = [];
+      let frontier = [startId];
+      for (let hop = 0; hop < depth && frontier.length > 0; hop += 1) {
+        const next: string[] = [];
+        for (const id of frontier) {
+          for (const usage of graph.findUsages(id)) {
+            if (visited.has(usage.node.id) || !listedPathSet.has(usage.node.filePath)) continue;
+            if (visited.size >= MAX_TEST_WALK_NODES)
+              return { tests: preferDeclarations(tests), via, truncated: true };
+            visited.add(usage.node.id);
+            via.set(usage.node.id, usage.edge);
+            if (isLikelyTestPath(usage.node.filePath)) {
+              tests.push(usage.node);
+              if (tests.length >= maxTests)
+                return { tests: preferDeclarations(tests), via, truncated: true };
+            } else next.push(usage.node.id);
+          }
+        }
+        frontier = next;
+      }
+      return { tests: preferDeclarations(tests), via, truncated: false };
+    };
+    const addTestChain = (test: CodeGraphNode, startId: string, via: Map<string, Edge>) => {
+      let current: CodeGraphNode | null = test;
+      while (current !== null && current.id !== startId) {
+        addNode(current);
+        const edge = via.get(current.id);
+        if (edge === undefined) break;
+        addEdge(edge);
+        current = graph.getNode(edge.target);
+      }
     };
 
     switch (input.query.operation) {
@@ -435,10 +621,51 @@ export async function inspectCodeInWorker(
         }
         break;
       }
+      case "affected": {
+        const query = input.query;
+        const path = safeRelativePath(input.checkoutPath, query.filePath);
+        if (path === null || !listedPathSet.has(path)) break;
+        relatedFiles.add(path);
+        const ranges = query.lineRanges;
+        const changed = graph
+          .getNodesInFile(path)
+          .filter((node) => !FILE_OUTLINE_EXCLUDED_KINDS.has(node.kind))
+          .filter(
+            (node) =>
+              ranges === undefined ||
+              ranges.some((range) => node.startLine <= range.end && range.start <= node.endLine),
+          )
+          .toSorted((left, right) => left.startLine - right.startLine);
+        const symbolLimit = Math.min(query.limit ?? MAX_AFFECTED_SYMBOLS, MAX_AFFECTED_SYMBOLS);
+        if (changed.length > symbolLimit) resultLimitReached = true;
+        for (const node of changed.slice(0, symbolLimit)) {
+          addNode(node);
+          const callers = graph
+            .getCallers(node.id, 1)
+            .filter((usage) => listedPathSet.has(usage.node.filePath));
+          if (callers.length > AFFECTED_CALLERS_PER_SYMBOL) resultLimitReached = true;
+          const keptCallers = callers.slice(0, AFFECTED_CALLERS_PER_SYMBOL);
+          keptCallers.forEach(addPair);
+          const walk = reachingTests(node.id, 3, AFFECTED_TESTS_PER_SYMBOL);
+          if (walk.truncated) resultLimitReached = true;
+          walk.tests.forEach(addNode);
+          symbolGroups.push({
+            symbol: node.id.slice(0, 2048),
+            callers: keptCallers
+              .filter((usage) => nodes.has(usage.node.id))
+              .map((usage) => usage.node.id.slice(0, 2048)),
+            tests: walk.tests
+              .filter((test) => nodes.has(test.id))
+              .map((test) => test.id.slice(0, 2048)),
+          });
+        }
+        break;
+      }
       case "callers":
       case "callees":
       case "references":
-      case "impact": {
+      case "impact":
+      case "tests": {
         const candidates = selectSymbols(graph, input.query.symbol, limit, listedPathSet);
         if (candidates.length === 0) {
           selection = { state: "not-found", candidates: [] };
@@ -466,6 +693,17 @@ export async function inspectCodeInWorker(
           const results = graph.getCallees(selected.id, input.query.depth ?? 1);
           results.slice(0, limit + 1).forEach(addPair);
           if (results.length > limit) resultLimitReached = true;
+        } else if (input.query.operation === "tests") {
+          const walk = reachingTests(selected.id, input.query.depth ?? 3, limit);
+          if (walk.truncated) resultLimitReached = true;
+          for (const test of walk.tests) addTestChain(test, selected.id, walk.via);
+          symbolGroups.push({
+            symbol: selected.id.slice(0, 2048),
+            callers: [],
+            tests: walk.tests
+              .filter((test) => nodes.has(test.id))
+              .map((test) => test.id.slice(0, 2048)),
+          });
         } else if (input.query.operation === "references") {
           const results = graph.findUsages(selected.id);
           results.slice(0, limit + 1).forEach(addPair);
@@ -589,7 +827,132 @@ export async function inspectCodeInWorker(
       sourceDigests,
       stats: input.query.operation === "status" ? outputStats : null,
       coverage,
+      index: {
+        state:
+          coverage.state === "stale"
+            ? "stale"
+            : coverage.state === "complete"
+              ? "ready"
+              : "partial",
+        indexedCommit: meta.commit,
+        headCommit: commit,
+        generation: meta.generation,
+        indexedAt: meta.indexedAt,
+        changedFiles: 0,
+        changedPaths: [],
+      },
+      ...(symbolGroups.length > 0 ? { symbolGroups } : {}),
     };
+  } finally {
+    graph.close();
+  }
+}
+
+function emptyResult(
+  input: CodeIntelligenceWorkerInput,
+  coverage: ProjectCodeCoverage,
+  index: ProjectCodeIndexInfo,
+): ProjectCodeQueryResult {
+  return {
+    operation: input.query.operation,
+    checkoutPath: input.checkoutPath,
+    matches: [],
+    nodes: [],
+    edges: [],
+    files: [],
+    unresolvedReferences: [],
+    selection: { state: "not-required", candidates: [] },
+    sourceDigests: [],
+    stats: null,
+    coverage,
+    index,
+  };
+}
+
+async function inspectFreshness(
+  input: CodeIntelligenceWorkerInput,
+  listedPaths: ReadonlyArray<string>,
+  { CodeGraph, detectLanguage, getSupportedLanguages }: CodeGraphModule,
+): Promise<ProjectCodeQueryResult> {
+  const languages = getSupportedLanguages();
+  const supported = new Set(languages);
+  const commit = headCommit(input.checkoutPath);
+  const baseCoverage = {
+    catalogRevision: CATALOG_REVISION,
+    relationSemantics: "static-candidates" as const,
+    columnEncoding: "utf16-code-units" as const,
+    languages: [...languages],
+    filesListed: input.filesListed,
+    filesSkipped: 0,
+    filesUnsupported: 0,
+    filesFailed: 0,
+    resultLimitReached: false,
+  };
+  if (!CodeGraph.isInitialized(input.checkoutPath)) {
+    return emptyResult(
+      input,
+      {
+        ...baseCoverage,
+        state: "unavailable",
+        filesIndexed: 0,
+        pendingReferences: 0,
+        limitations: ["This checkout has not been indexed yet. The first code query indexes it."],
+      },
+      {
+        state: "unindexed",
+        indexedCommit: null,
+        headCommit: commit,
+        generation: 0,
+        indexedAt: null,
+        changedFiles: 0,
+        changedPaths: [],
+      },
+    );
+  }
+  const graph = await CodeGraph.open(input.checkoutPath, { sync: false, readOnly: true });
+  try {
+    const meta = readIndexMeta(input.checkoutPath);
+    const changed = changedSinceIndex(input.checkoutPath, graph, listedPaths, (path) => {
+      const language = detectLanguage(path);
+      return language !== "unknown" && supported.has(language);
+    });
+    const pendingReferences = graph.getPendingReferenceCount();
+    const buildState = graph.getIndexState();
+    const truncated = input.listingTruncated || input.files.length > MAX_LISTED_FILES;
+    const incomplete =
+      truncated || pendingReferences > 0 || (buildState !== null && buildState !== "complete");
+    const limitations: string[] = [];
+    if (changed.length > 0)
+      limitations.push(
+        `${changed.length} source ${changed.length === 1 ? "file has" : "files have"} changed since the last index. The next code query re-indexes them.`,
+      );
+    if (truncated) limitations.push("Workspace file listing is truncated.");
+    if (pendingReferences > 0)
+      limitations.push(
+        "The graph index has unresolved pending references from an interrupted resolution pass.",
+      );
+    if (buildState !== null && buildState !== "complete")
+      limitations.push(`The last full index run reported '${buildState}'.`);
+    const listed = new Set(listedPaths);
+    return emptyResult(
+      input,
+      {
+        ...baseCoverage,
+        state: changed.length > 0 ? "stale" : incomplete ? "partial" : "complete",
+        filesIndexed: graph.getFiles().filter((file) => listed.has(file.path)).length,
+        pendingReferences,
+        limitations,
+      },
+      {
+        state: changed.length > 0 ? "stale" : incomplete ? "partial" : "ready",
+        indexedCommit: meta.commit,
+        headCommit: commit,
+        generation: meta.generation,
+        indexedAt: meta.indexedAt,
+        changedFiles: changed.length,
+        changedPaths: changed.slice(0, 20).map((path) => path.slice(0, 2048)),
+      },
+    );
   } finally {
     graph.close();
   }

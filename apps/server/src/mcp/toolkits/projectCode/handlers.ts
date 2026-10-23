@@ -1,6 +1,7 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as CodeIntelligence from "../../../project/knowledge/CodeIntelligence.ts";
+import * as FileHistory from "../../../project/knowledge/FileHistory.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { readCaller, unavailable } from "../../threadAccess.ts";
@@ -75,6 +76,22 @@ export const layer = McpToolAccess.toLayer(ProjectCodeToolkit, {
               : unavailable(),
           ),
         );
+    }),
+  ),
+  t3_project_file_history: McpToolAccess.reads((input) =>
+    Effect.gen(function* () {
+      yield* readCaller();
+      const history = yield* FileHistory.FileHistory;
+      return yield* history.read(input).pipe(
+        Effect.mapError((error) =>
+          error._tag === "FileHistoryProjectNotFound"
+            ? new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "The project is not available for file history.",
+              })
+            : unavailable(),
+        ),
+      );
     }),
   ),
 });

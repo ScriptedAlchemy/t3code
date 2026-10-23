@@ -42,6 +42,7 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import * as PreviewBrowser from "../../preview/PreviewBrowser.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import * as FileHistory from "../../project/knowledge/FileHistory.ts";
 import * as CodeIntelligence from "../../project/knowledge/CodeIntelligence.ts";
 import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
@@ -76,6 +77,7 @@ const layerThreadToolkit = McpHttpServer.layerThreadToolkit.pipe(
 );
 const layerProjectCodeToolkit = McpHttpServer.layerProjectCodeToolkit.pipe(
   Layer.provide(Layer.mock(CodeIntelligence.CodeIntelligence)({})),
+  Layer.provide(Layer.mock(FileHistory.FileHistory)({})),
   Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
 );
 
@@ -158,6 +160,26 @@ it.effect(
           Effect.provideService(McpSchema.McpServerClient, client),
         );
       expect(declaredFailure(denied)).toMatchObject({ code: "capability_denied" });
+
+      const history = server.tools.find(
+        ({ tool }) => tool.name === "t3_project_file_history",
+      )?.tool;
+      expect(history?.annotations?.readOnlyHint).toBe(true);
+      expect(history?.description).toContain("not that the thread authored the change");
+      // File history joins files to threads, so it needs thread access, not filesystem access.
+      const historyDenied = yield* server
+        .callTool({
+          name: "t3_project_file_history",
+          arguments: { projectId: ProjectId.make("mcp-code-project"), path: "src/a.ts" },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, {
+            ...scope,
+            capabilities: new Set(["project-code"] as const),
+          }),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(declaredFailure(historyDenied)).toMatchObject({ code: "capability_denied" });
     }).pipe(
       Effect.provide(
         layerProjectCodeToolkit.pipe(

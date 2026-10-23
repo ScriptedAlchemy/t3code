@@ -1,6 +1,7 @@
 import * as HolographicMemory from "./project/knowledge/HolographicMemory.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
+import * as FileHistory from "./project/knowledge/FileHistory.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
@@ -676,7 +677,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerCodeIntelligence = CodeIntelligence.layer.pipe(
+const layerCodeIntelligence = Layer.mergeAll(CodeIntelligence.layer, FileHistory.layer).pipe(
   Layer.provideMerge(Layer.mergeAll(ProjectStore.layer, ProjectionStoreV2.layer, layerWorkspace)),
 );
 

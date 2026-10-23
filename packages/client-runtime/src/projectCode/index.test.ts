@@ -25,7 +25,7 @@ import {
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type { RpcSession } from "../rpc/session.ts";
-import { createProjectCodeAtoms } from "./index.ts";
+import { createProjectCodeAtoms, projectCodeIndexBadge } from "./index.ts";
 
 vi.mock("../state/session.ts", () => ({
   createEnvironmentSessionAtoms: () => ({ sessionStateAtom: sessions }),
@@ -134,4 +134,23 @@ describe("project code atoms", () => {
       }),
     ),
   );
+
+  it("names the indexed commit only when HEAD has moved past a stale index", () => {
+    const index = {
+      state: "stale" as const,
+      indexedCommit: "abcdef0123456789",
+      headCommit: "abcdef0123456789",
+      generation: 3,
+      indexedAt: 0,
+      changedFiles: 2,
+      changedPaths: ["a.ts", "b.ts"],
+    };
+    expect(projectCodeIndexBadge(index).label).toBe("Stale");
+    expect(projectCodeIndexBadge({ ...index, headCommit: "1234567890abcdef" }).label).toBe(
+      "Stale @abcdef0",
+    );
+    expect(projectCodeIndexBadge({ ...index, state: "unindexed" }).label).toBe("Unavailable");
+    // A server from before index tracking cannot claim the index is ready.
+    expect(projectCodeIndexBadge(undefined).label).toBe("Unavailable");
+  });
 });

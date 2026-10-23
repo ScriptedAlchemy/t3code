@@ -1,8 +1,10 @@
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
+import * as FileHistory from "./project/knowledge/FileHistory.ts";
 import {
   OrchestrationDispatchCommandError,
   ProjectCodeError,
+  type ProjectFileHistoryError,
   ProjectId as ProjectIdSchema,
   ThreadId as ThreadIdSchema,
 } from "@t3tools/contracts";
@@ -557,6 +559,7 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
 const ServerCoreWsRpcGroup = ServerWsRpcGroup.omit(
   WS_METHODS.projectCodeQuery,
+  WS_METHODS.projectCodeFileHistory,
   WS_METHODS.projectKnowledgeSearch,
   WS_METHODS.projectKnowledgeList,
   WS_METHODS.projectKnowledgeReadSource,
@@ -587,7 +590,18 @@ const layerKnowledgeRpc = WsProjectKnowledgeRpcGroup.middleware(RpcInstrumentati
 const layerProjectCodeRpc = WsProjectCodeRpcGroup.middleware(RpcInstrumentation).toLayer(
   Effect.gen(function* () {
     const codeIntelligence = yield* CodeIntelligence.CodeIntelligence;
+    const fileHistory = yield* FileHistory.FileHistory;
     return {
+      [WS_METHODS.projectCodeFileHistory]: (input) =>
+        fileHistory
+          .read(input)
+          .pipe(
+            Effect.mapError((error): ProjectFileHistoryError =>
+              error._tag === "FileHistoryProjectNotFound"
+                ? { _tag: "project-not-found", projectId: ProjectIdSchema.make(error.projectId) }
+                : { _tag: "history-unavailable" },
+            ),
+          ),
       [WS_METHODS.projectCodeQuery]: (input) =>
         codeIntelligence.query(input).pipe(
           Effect.mapError((error): ProjectCodeError => {
