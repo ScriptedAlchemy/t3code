@@ -1,6 +1,7 @@
 import {
   CommandId,
   ProjectFactId,
+  ProjectKnowledgeMutation,
   type AssistedLearningRun,
   type KnowledgeMessageRef,
   type ProjectId,
@@ -42,6 +43,8 @@ const Candidate = Schema.Struct({
   citations: Schema.Array(Schema.String),
 });
 const decodeCandidate = Schema.decodeUnknownOption(Candidate);
+// The proposal must also satisfy the mutation contract, which caps citations per fact.
+const isMutation = Schema.is(ProjectKnowledgeMutation);
 
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
@@ -174,37 +177,37 @@ const make = Effect.gen(function* () {
           dropped += 1;
           continue;
         }
-        const result = yield* knowledge
-          .proposeAssisted(
-            {
-              action: "create",
-              // Derived from the run so a retried job lands on the same ids and cannot bring
-              // back a proposal that was since forgotten.
-              commandId: CommandId.make(`assisted:${runId}:${index}`),
-              factId: ProjectFactId.make(`assisted:${runId}:${index}`),
-              projectId,
-              kind: candidate.kind,
-              content: candidate.content,
-              entities: [
-                ...new Set(
-                  candidate.entities
-                    .map((entity) => entity.trim().slice(0, 200))
-                    .filter((entity) => entity !== ""),
-                ),
-              ].slice(0, MAX_ENTITIES),
-              tags: [],
-              sources,
-            },
-            actor,
-          )
-          .pipe(
-            Effect.catchTags({
-              ProjectKnowledgeError: (error) =>
-                error.reason === "storage" || error.reason === "missing_project"
-                  ? Effect.fail(error)
-                  : Effect.succeed({ outcome: "dropped" as const }),
-            }),
-          );
+        const proposal = {
+          action: "create" as const,
+          // Derived from the run so a retried job lands on the same ids and cannot bring
+          // back a proposal that was since forgotten.
+          commandId: CommandId.make(`assisted:${runId}:${index}`),
+          factId: ProjectFactId.make(`assisted:${runId}:${index}`),
+          projectId,
+          kind: candidate.kind,
+          content: candidate.content,
+          entities: [
+            ...new Set(
+              candidate.entities
+                .map((entity) => entity.trim().slice(0, 200))
+                .filter((entity) => entity !== ""),
+            ),
+          ].slice(0, MAX_ENTITIES),
+          tags: [],
+          sources,
+        };
+        if (!isMutation(proposal)) {
+          dropped += 1;
+          continue;
+        }
+        const result = yield* knowledge.proposeAssisted(proposal, actor).pipe(
+          Effect.catchTags({
+            ProjectKnowledgeError: (error) =>
+              error.reason === "storage" || error.reason === "missing_project"
+                ? Effect.fail(error)
+                : Effect.succeed({ outcome: "dropped" as const }),
+          }),
+        );
         if (result.outcome === "proposed") proposed += 1;
         else if (result.outcome === "suggested") {
           proposed += 1;
@@ -216,7 +219,7 @@ const make = Effect.gen(function* () {
         proposed === 0 && dropped === 0
           ? "Nothing durable to propose."
           : dropped > 0
-            ? `${dropped} candidate${dropped === 1 ? "" : "s"} dropped: citations did not verify.`
+            ? `${dropped} candidate${dropped === 1 ? "" : "s"} dropped: citations did not verify or exceeded the limit.`
             : null,
         { proposed, suggested },
       );

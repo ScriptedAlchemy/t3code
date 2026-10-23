@@ -160,6 +160,38 @@ const seedRun = Effect.gen(function* () {
   }
 });
 
+/** More finished replies in the same run, after the two seedRun writes. */
+const seedReplies = (count: number) =>
+  Effect.flatMap(ProjectionStore.ProjectionStoreV2, (projections) =>
+    Effect.forEach(
+      Array.from({ length: count }, (_, index) => index),
+      (index) => {
+        const createdAt = DateTime.add(at, { minutes: 3 + index });
+        return projections.apply({
+          id: EventId.make(`message:learning-extra-${index}`),
+          type: "message.updated",
+          threadId,
+          providerInstanceId,
+          occurredAt: createdAt,
+          payload: {
+            createdBy: "agent",
+            creationSource: "provider",
+            id: MessageId.make(`learning-extra-${index}`),
+            threadId,
+            runId,
+            nodeId: null,
+            role: "assistant",
+            text: `Converted handler ${index} to snake_case keys.`,
+            attachments: [],
+            streaming: false,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        });
+      },
+    ),
+  );
+
 const sha256 = (text: string) =>
   Effect.flatMap(Crypto.Crypto, (crypto) =>
     crypto.digest("SHA-256", new TextEncoder().encode(text)),
@@ -241,7 +273,11 @@ it.effect("turns a settled run into cited proposals exactly once", () => {
         proposed: status.assistedLearning.lastRun.proposed,
         reason: status.assistedLearning.lastRun.reason,
       },
-      { result: "ran", proposed: 1, reason: "1 candidate dropped: citations did not verify." },
+      {
+        result: "ran",
+        proposed: 1,
+        reason: "1 candidate dropped: citations did not verify or exceeded the limit.",
+      },
     );
     // Unreviewed model text stays out of agent recall.
     const recalled = yield* knowledge.search({
@@ -367,6 +403,40 @@ it.effect("does not bring back a forgotten proposal when the job runs again", ()
     assert.deepEqual(
       (yield* knowledge.list({ projectId, status: "forgotten" })).facts.map((fact) => fact.id),
       [proposal!.id],
+    );
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
+
+const testsCommand = {
+  kind: "convention" as const,
+  content: "Tests run with vp test.",
+  entities: [],
+  citations: ["M2"],
+};
+
+it.effect("drops a candidate citing more messages than a fact may carry", () => {
+  const model = scripted([
+    {
+      candidates: [
+        { ...snakeCase, citations: Array.from({ length: 18 }, (_, index) => `M${index + 1}`) },
+        testsCommand,
+      ],
+    },
+  ]);
+  return Effect.gen(function* () {
+    yield* seedRun;
+    yield* seedReplies(20);
+    const runner = yield* AssistedLearningRunner;
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    yield* runner.extractRun({ threadId, runId, runOutcome: "completed" });
+    assert.deepEqual(
+      (yield* knowledge.list({ projectId, status: "proposed" })).facts.map((fact) => fact.content),
+      [testsCommand.content],
+    );
+    const lastRun = (yield* knowledge.status({ projectId })).assistedLearning?.lastRun;
+    assert.deepEqual(
+      [lastRun?.result, lastRun?.proposed, lastRun?.reason],
+      ["ran", 1, "1 candidate dropped: citations did not verify or exceeded the limit."],
     );
   }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
 });
