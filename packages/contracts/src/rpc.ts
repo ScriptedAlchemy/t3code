@@ -7,6 +7,7 @@ import {
   ConversationSummaryListInput,
   ConversationSummaryRead,
 } from "./conversationSummaries.ts";
+import { LoomWindow, LoomWindowInput, ProjectLoomError } from "./projectLoom.ts";
 import {
   ProjectKnowledgeError,
   ProjectKnowledgeMutation,
@@ -434,6 +435,7 @@ export const WS_METHODS = {
   conversationSummariesList: "conversationSummaries.list",
   conversationSummariesDescribe: "conversationSummaries.describe",
   conversationSummariesExpand: "conversationSummaries.expand",
+  projectReadLoomWindow: "project.readLoomWindow",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -2016,6 +2018,14 @@ export const WsProjectKnowledgeRpcGroup = RpcGroup.make(
   WsProjectKnowledgeStatusRpc,
 ).middleware(RpcScopeAuthorization);
 
+export const WsProjectLoomRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.projectReadLoomWindow, {
+    payload: LoomWindowInput,
+    success: LoomWindow,
+    error: Schema.Union([ProjectLoomError, EnvironmentAuthorizationError]),
+  }),
+).middleware(RpcScopeAuthorization);
+
 export const WsConversationSummariesRpcGroup = RpcGroup.make(
   Rpc.make(WS_METHODS.conversationSummariesList, {
     payload: ConversationSummaryListInput,
@@ -2244,4 +2254,5 @@ export const WsRpcGroup = RpcGroup.make(
   .middleware(RpcScopeAuthorization)
   .merge(WsProjectKnowledgeRpcGroup)
   .merge(WsConversationSummariesRpcGroup)
+  .merge(WsProjectLoomRpcGroup)
   .merge(WsProjectCodeRpcGroup);

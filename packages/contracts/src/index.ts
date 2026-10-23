@@ -73,3 +73,5 @@ export * from "./clientRpcPermissions.ts";
 export * from "./projectKnowledge.ts";
 
 export * from "./conversationSummaries.ts";
+
+export * from "./projectLoom.ts";

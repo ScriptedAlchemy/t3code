@@ -1,5 +1,6 @@
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
+import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import * as FileHistory from "./project/knowledge/FileHistory.ts";
 import {
@@ -107,6 +108,7 @@ import {
   WsRpcGroup,
   WsProjectKnowledgeRpcGroup,
   WsConversationSummariesRpcGroup,
+  WsProjectLoomRpcGroup,
   WsProjectCodeRpcGroup,
 } from "@t3tools/contracts";
 import {
@@ -573,6 +575,13 @@ const ServerCoreWsRpcGroup = ServerWsRpcGroup.omit(
   WS_METHODS.conversationSummariesList,
   WS_METHODS.conversationSummariesDescribe,
   WS_METHODS.conversationSummariesExpand,
+  WS_METHODS.projectReadLoomWindow,
+);
+const layerProjectLoomRpc = WsProjectLoomRpcGroup.middleware(RpcInstrumentation).toLayer(
+  Effect.gen(function* () {
+    const loom = yield* ProjectLoom.ProjectLoom;
+    return { [WS_METHODS.projectReadLoomWindow]: (input) => loom.readWindow(input) };
+  }),
 );
 const layerConversationSummariesRpc = WsConversationSummariesRpcGroup.middleware(
   RpcInstrumentation,
@@ -3249,6 +3258,7 @@ export const layerWsRpc = (
   ).pipe(
     Layer.merge(layerKnowledgeRpc),
     Layer.merge(layerConversationSummariesRpc),
+    Layer.merge(layerProjectLoomRpc),
     Layer.merge(layerProjectCodeRpc),
   );
 

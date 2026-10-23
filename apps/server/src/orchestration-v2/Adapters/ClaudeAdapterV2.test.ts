@@ -82,6 +82,7 @@ import { HtmlToolkit } from "../../mcp/toolkits/html/tools.ts";
 import { EnvironmentToolkit } from "../../mcp/toolkits/environment/tools.ts";
 import { KnowledgeToolkit } from "../../mcp/toolkits/knowledge/tools.ts";
 import { ConversationSummariesToolkit } from "../../mcp/toolkits/conversationSummaries/tools.ts";
+import { ProjectLoomToolkit } from "../../mcp/toolkits/projectLoom/tools.ts";
 import { ProjectCodeToolkit } from "../../mcp/toolkits/projectCode/tools.ts";
 import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
@@ -503,6 +504,7 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
       ...Object.values(ProjectToolkit.tools),
       ...Object.values(KnowledgeToolkit.tools),
       ...Object.values(ConversationSummariesToolkit.tools),
+      ...Object.values(ProjectLoomToolkit.tools),
       ...Object.values(ProjectCodeToolkit.tools),
       ...Object.values(EnvironmentToolkit.tools),
       ...Object.values(PreviewControlsToolkit.tools),

@@ -70,6 +70,12 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("treats the project Loom as a thread read", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectReadLoomWindow)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
   it("requires filesystem read permission for project code queries", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeQuery)).toBe(AuthFilesystemReadScope);
   });

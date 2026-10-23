@@ -80,6 +80,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectCode: Schema.optionalKey(Schema.Boolean),
   /** conversationSummaries.* reads and the enableConversationSummaries project setting. */
   conversationSummaries: Schema.optionalKey(Schema.Boolean),
+  /** project.readLoomWindow and the project Loom view. */
+  projectLoom: Schema.optionalKey(Schema.Boolean),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
   attachmentUploads: Schema.optionalKey(Schema.Boolean),

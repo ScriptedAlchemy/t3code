@@ -44,6 +44,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.conversationSummariesList]: AuthOrchestrationReadScope,
   [WS_METHODS.conversationSummariesDescribe]: AuthOrchestrationReadScope,
   [WS_METHODS.conversationSummariesExpand]: AuthOrchestrationReadScope,
+  // The Loom shows thread titles, runs and commands across a project.
+  [WS_METHODS.projectReadLoomWindow]: AuthOrchestrationReadScope,
   [WS_METHODS.projectKnowledgeList]: AuthOrchestrationReadScope,
   [WS_METHODS.projectKnowledgeReadSource]: AuthOrchestrationReadScope,
   [WS_METHODS.projectKnowledgePrepareContext]: AuthOrchestrationReadScope,

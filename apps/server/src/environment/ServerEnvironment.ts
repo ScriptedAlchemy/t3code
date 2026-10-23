@@ -228,6 +228,7 @@ export const make = Effect.gen(function* () {
       projectKnowledgeHistory: true,
       projectKnowledgeAssistedLearning: true,
       conversationSummaries: true,
+      projectLoom: true,
       projectCode: true,
       requiredWorktreeBootstrap: true,
       threadSettlement: true,
