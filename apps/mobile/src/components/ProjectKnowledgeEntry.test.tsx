@@ -17,12 +17,15 @@ import {
   type ProjectKnowledgeSearchInput,
 } from "@t3tools/contracts";
 import { projectKnowledgeComposerReference } from "../lib/projectKnowledgeComposer";
+import { Sheet as AndroidSheet } from "./ui/Sheet.android";
+import type { SheetProps } from "./ui/Sheet.types";
 
 const state = vi.hoisted(() => ({
   deliveryCapabilities: {} as Record<string, boolean | undefined>,
   deliveries: null as unknown,
   readDeliveries: vi.fn(),
   focused: true,
+  androidSheet: false,
   draft: {} as { text: string; context?: { records: unknown[] } },
   list: null as unknown,
   listInputs: [] as unknown[],
@@ -40,6 +43,35 @@ vi.mock("@t3tools/client-runtime/state/runtime", () => ({
 }));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => crypto.randomUUID() }));
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => state.focused }));
+vi.mock("uniwind", () => ({ useResolveClassNames: () => ({}) }));
+vi.mock("react-native-screens", () => ({
+  FormSheet: ({
+    children,
+    isOpen,
+    preventNativeDismiss,
+    onNativeDismiss,
+    onNativeDismissPrevented,
+  }: {
+    children: ReactNode;
+    isOpen: boolean;
+    preventNativeDismiss?: boolean;
+    onNativeDismiss: () => void;
+    onNativeDismissPrevented?: () => void;
+  }) =>
+    isOpen ? (
+      <div>
+        <button onClick={preventNativeDismiss ? onNativeDismissPrevented : onNativeDismiss}>
+          Hardware Back
+        </button>
+        {children}
+      </div>
+    ) : null,
+}));
+vi.mock("./ui/AndroidScreenHeader", () => ({
+  AndroidSheetHeader: ({ onBack }: { onBack: () => void }) => (
+    <button onClick={onBack}>Header Back</button>
+  ),
+}));
 vi.mock("../state/session", () => ({ useEnvironmentScope: () => true }));
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -113,12 +145,15 @@ vi.mock("./ui/Button", () => ({
   ),
 }));
 vi.mock("./ui/Sheet", () => ({
-  Sheet: ({ children, onClose }: { children: ReactNode; onClose: () => void }) => (
-    <div>
-      <button onClick={onClose}>Close</button>
-      {children}
-    </div>
-  ),
+  Sheet: (props: SheetProps) =>
+    state.androidSheet ? (
+      <AndroidSheet {...props} />
+    ) : (
+      <div>
+        <button onClick={props.onClose}>Close</button>
+        {props.children}
+      </div>
+    ),
 }));
 vi.mock("./ui/Dialog", () => ({ confirm: (request: unknown) => state.confirm(request) }));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: (value: unknown) => value }));
@@ -253,6 +288,7 @@ function setup(entries = [scope]) {
   state.deliveries = null;
   state.readDeliveries.mockReset();
   state.focused = true;
+  state.androidSheet = false;
   state.draft = { text: "" };
   state.list = { facts: [fact], nextCursor: null };
   state.listInputs = [];
@@ -843,3 +879,56 @@ it("ignores remember requests while the destination entry is unfocused", () => {
   screen.rerender();
   expect(screen.container.textContent).not.toContain("Close");
 });
+
+it.each(["Hardware Back", "Header Back"])(
+  "pops an Android sheet inspector on %s and keeps the selection",
+  async (back) => {
+    using screen = setup();
+    state.androidSheet = true;
+    await screen.click("Project memory");
+    await screen.click("Select for draft");
+    await screen.click("Inspect fact: " + fact.content);
+    await screen.click(back);
+    expect(screen.container.textContent).toContain("Search");
+    expect(screen.container.textContent).toContain("1 selected");
+    await screen.click("Attach to draft");
+    expect(state.insert).toHaveBeenCalledWith(scope.draftKey, expect.anything());
+  },
+);
+
+it.each(["Hardware Back", "Header Back"])(
+  "dismisses the Android sheet root on %s",
+  async (back) => {
+    using screen = setup();
+    state.androidSheet = true;
+    await screen.click("Project memory");
+    await screen.click(back);
+    expect(screen.container.textContent).not.toContain("Search");
+  },
+);
+
+it.each(["Hardware Back", "Header Back", "Back", "Cancel"])(
+  "protects unsaved Android editor fields on %s until discard is confirmed",
+  async (back) => {
+    using screen = setup();
+    state.androidSheet = true;
+    await screen.click("Project memory");
+    await screen.click("Inspect fact: " + fact.content);
+    await screen.click("Edit");
+    const input = screen.container.querySelector('[aria-label="Fact content"]') as HTMLInputElement;
+    await act(async () => {
+      input.value = "Unsaved correction";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await screen.click(back);
+    expect(state.confirm).toHaveBeenCalledTimes(1);
+    expect(screen.container.contains(input)).toBe(true);
+    expect(input.value).toBe("Unsaved correction");
+    expect(state.mutate).not.toHaveBeenCalled();
+    const warning = state.confirm.mock.lastCall![0];
+    expect(warning).toMatchObject({ title: "Discard fact changes?", confirmText: "Discard" });
+    await act(async () => warning.onConfirm());
+    expect(screen.container.querySelector('[aria-label="Fact content"]')).toBeNull();
+    expect(screen.container.textContent).toContain("Edit");
+  },
+);

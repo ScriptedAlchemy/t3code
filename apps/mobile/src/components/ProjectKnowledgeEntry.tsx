@@ -1,7 +1,7 @@
 import { uuidv4 } from "../lib/uuid";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useIsFocused } from "@react-navigation/native";
-import { BackHandler, ScrollView, View } from "react-native";
+import { ScrollView, View } from "react-native";
 import { useAtomValue } from "@effect/atom-react";
 import {
   CommandId,
@@ -170,6 +170,10 @@ function ProjectKnowledgeSheet(
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const editorDirty = useRef(false);
+  const onEditorDirtyChange = useCallback((dirty: boolean) => {
+    editorDirty.current = dirty;
+  }, []);
   const selectionVersion = useRef(0);
   useEffect(
     () => () => {
@@ -244,18 +248,27 @@ function ProjectKnowledgeSheet(
     setError(null);
     setStack((current) => [...current, next]);
   };
-  const pop = () => {
-    setError(null);
-    setStack((current) => (current.length > 1 ? current.slice(0, -1) : current));
-  };
-  useEffect(() => {
-    if (stack.length < 2) return;
-    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-      setStack((current) => current.slice(0, -1));
-      return true;
+  const confirmLeavingEditor = (leave: () => void) => {
+    if (busy) return;
+    if (!editorDirty.current) return leave();
+    Dialog.confirm({
+      title: "Discard fact changes?",
+      message: "Your unsaved fact changes will be lost.",
+      confirmText: "Discard",
+      destructive: true,
+      onConfirm: leave,
     });
-    return () => subscription.remove();
-  }, [stack.length]);
+  };
+  const pop = () =>
+    confirmLeavingEditor(() => {
+      setError(null);
+      setStack((current) => (current.length > 1 ? current.slice(0, -1) : current));
+    });
+  const back = () => {
+    if (stack.length < 2) return false;
+    pop();
+    return true;
+  };
 
   const apply = async (input: ProjectKnowledgeMutation) => {
     selectionVersion.current += 1;
@@ -412,7 +425,12 @@ function ProjectKnowledgeSheet(
             : factEditorTitle(page.mode);
 
   return (
-    <Sheet title={title} onClose={props.onClose}>
+    <Sheet
+      title={title}
+      onClose={props.onClose}
+      onBack={back}
+      onRequestClose={() => confirmLeavingEditor(props.onClose)}
+    >
       <View className="flex-1">
         <ScrollView
           className="flex-1"
@@ -529,6 +547,7 @@ function ProjectKnowledgeSheet(
                 busy={busy}
                 onSave={save}
                 onCancel={pop}
+                onDirtyChange={onEditorDirtyChange}
               />
             ) : sourceQuery.error ? (
               <AppText accessibilityRole="alert" className="text-danger">
@@ -545,6 +564,7 @@ function ProjectKnowledgeSheet(
               busy={busy}
               onSave={(fields) => save(page.mode, fields)}
               onCancel={pop}
+              onDirtyChange={onEditorDirtyChange}
             />
           ) : null}
         </ScrollView>
@@ -582,6 +602,7 @@ function RememberEditor(props: {
   readonly busy: boolean;
   readonly onSave: (mode: FactEditorMode, fields: FactEditorFields) => void;
   readonly onCancel: () => void;
+  readonly onDirtyChange: (dirty: boolean) => void;
 }) {
   const mode: FactEditorMode =
     props.source.state === "available"
@@ -603,6 +624,7 @@ function RememberEditor(props: {
       busy={props.busy}
       onSave={(fields) => props.onSave(mode, fields)}
       onCancel={props.onCancel}
+      onDirtyChange={props.onDirtyChange}
     />
   );
 }

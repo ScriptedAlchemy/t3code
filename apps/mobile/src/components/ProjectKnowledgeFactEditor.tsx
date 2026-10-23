@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View } from "react-native";
 import type { KnowledgeFactSource, ProjectFact } from "@t3tools/contracts";
 
@@ -43,6 +43,7 @@ export function ProjectKnowledgeFactEditor(props: {
   readonly busy: boolean;
   readonly onSave: (fields: FactEditorFields) => void;
   readonly onCancel: () => void;
+  readonly onDirtyChange: (dirty: boolean) => void;
 }) {
   const { mode } = props;
   const base = mode.kind === "create" ? null : mode.fact;
@@ -50,6 +51,17 @@ export function ProjectKnowledgeFactEditor(props: {
   const [entities, setEntities] = useState(base?.entities.join(", ") ?? "");
   const [tags, setTags] = useState(base?.tags.join(", ") ?? "");
   const [kind, setKind] = useState<ProjectFact["kind"]>(base?.kind ?? "note");
+  const dirty =
+    content !== (mode.kind === "create" ? mode.content : mode.fact.content) ||
+    (mode.kind === "create" && content.trim().length > 0) ||
+    entities !== (base?.entities.join(", ") ?? "") ||
+    tags !== (base?.tags.join(", ") ?? "") ||
+    kind !== (base?.kind ?? "note");
+  const { onDirtyChange } = props;
+  useEffect(() => {
+    onDirtyChange(dirty);
+    return () => onDirtyChange(false);
+  }, [dirty, onDirtyChange]);
   return (
     <View className="gap-3">
       {mode.kind === "create" && mode.sources.some((ref) => ref.kind === "message") ? (
