@@ -1,41 +1,32 @@
-import { randomUUID } from "../../lib/utils";
+import { cn, randomUUID } from "../../lib/utils";
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import {
   CommandId,
-  ProjectFactId,
   type EnvironmentId,
+  type KnowledgeConflictHint,
   type KnowledgeFactSource,
   type KnowledgeMessageRef,
-  type KnowledgeConflictHint,
   type KnowledgeSelection,
   type MessageId,
   type ProjectFact,
+  type ProjectFactId,
   type ProjectId,
   type ProjectKnowledgeMutation,
   type ProjectKnowledgeSearchInput,
   type ThreadId,
 } from "@t3tools/contracts";
-import {
-  KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL,
-  isSupersededFact,
-  knowledgeOriginLabel,
-  projectKnowledgeContextRecord,
-} from "@t3tools/client-runtime/projectKnowledge";
+import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
-import { Textarea } from "../ui/textarea";
-import {
-  Dialog,
-  DialogDescription,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "../ui/dialog";
+import { ScrollArea } from "../ui/scroll-area";
+import { Toggle, ToggleGroup } from "../ui/toggle-group";
+import { Dialog, DialogDescription, DialogHeader, DialogPopup, DialogTitle } from "../ui/dialog";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { serverEnvironment } from "../../state/server";
@@ -46,21 +37,20 @@ import {
   type ComposerThreadTarget,
   type DraftId,
 } from "../../composerDraftStore";
-import { ConflictHintRow, KnowledgeHealthStrip, ProjectFactDetailPane } from "./ProjectFactDetail";
+import { ConflictHintRow, KnowledgeHealthStrip } from "./ProjectFactDetail";
 import { AssistedLearningSection } from "./AssistedLearningSection";
+import { ProjectFactEditor, type EditableFact, type FactEditorSeed } from "./ProjectFactEditor";
+import { ProjectMemoryFactList } from "./ProjectMemoryFactList";
+import {
+  FactInspector,
+  INSPECTOR_HEADING,
+  InspectorEmpty,
+  SourceInspector,
+  type SourceRef,
+} from "./ProjectMemoryInspector";
+import { MAX_DRAFT_SELECTIONS, ProjectMemoryDraftFooter } from "./ProjectMemoryDraftFooter";
+import { factRowKey, messageRowKey, selectionKey, shortFactId } from "./projectMemoryLabels";
 
-const selectionKey = (selection: KnowledgeSelection) =>
-  selection.kind === "fact"
-    ? `fact:${selection.factId}`
-    : `message:${selection.threadId}:${selection.messageId}`;
-const labels = (text: string) => [
-  ...new Set(
-    text
-      .split(",")
-      .map((label) => label.trim())
-      .filter(Boolean),
-  ),
-];
 type Scope = {
   environmentId: EnvironmentId;
   projectId: ProjectId;
@@ -69,12 +59,6 @@ type Scope = {
 };
 type ProjectScope = Pick<Scope, "environmentId" | "projectId">;
 type MessageCitation = { readonly threadId: ThreadId; readonly messageId: MessageId };
-// The digest is optional so a timeline message can be cited before the server
-// has hashed it; readSource returns the canonical ref.
-type SourceRef = MessageCitation & { readonly digest?: KnowledgeMessageRef["digest"] };
-
-// Facts carry UUIDs; the prefix is enough to tell linked facts apart on a card.
-const shortFactId = (id: ProjectFactId) => id.slice(0, 8);
 
 // The dialog is opened from the thread panel, timeline messages, the command
 // palette and a keybinding, so its open state lives outside any one of them.
@@ -85,12 +69,13 @@ type OpenRequest = ProjectScope & {
   readonly fact: FactFocus | null;
   readonly key: number;
 };
-const revealOnMount = (node: HTMLElement | null) => node?.scrollIntoView({ block: "nearest" });
 const openRequestAtom = Atom.make<OpenRequest | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("chat:project-memory"),
 );
 let nextRequestKey = 0;
+// Module scope: the React Compiler cannot lower an update of a global inside a hook.
+const takeRequestKey = () => ++nextRequestKey;
 
 export function useProjectMemoryAvailable(environmentId: EnvironmentId | null): boolean {
   const config = useAtomValue(
@@ -111,10 +96,6 @@ function useProjectMemoryAssistedAvailable(environmentId: EnvironmentId): boolea
   return config?.environment.capabilities.projectKnowledgeAssistedLearning === true;
 }
 
-// A pending assisted replacement names its target before the target is marked superseded.
-const isPendingReplacement = (fact: ProjectFact) =>
-  fact.status === "proposed" && fact.origin.kind === "assisted" && fact.supersedes != null;
-
 export function useOpenProjectMemory() {
   const setRequest = useAtomSet(openRequestAtom);
   return (
@@ -125,7 +106,7 @@ export function useOpenProjectMemory() {
       projectId: scope.projectId,
       message: scope.message ?? null,
       fact: scope.fact ?? null,
-      key: ++nextRequestKey,
+      key: takeRequestKey(),
     });
 }
 
@@ -158,28 +139,42 @@ export function ProjectMemoryDialogHost(props: Scope) {
         if (!open) setRequest(null);
       }}
     >
-      <DialogPopup>
+      <DialogPopup className="h-[min(48rem,calc(100dvh-2rem))] max-w-5xl max-sm:h-[calc(100dvh-3rem)]">
         <DialogHeader>
           <DialogTitle>Project memory</DialogTitle>
           <DialogDescription>
-            Find cited conversations, curate project facts, and choose evidence for your next
-            message.
+            Review project facts and their evidence, and choose what belongs in this draft.
           </DialogDescription>
         </DialogHeader>
-        <DialogPanel>
-          {active ? (
-            <MemoryContents
-              key={`${active.key}:${props.threadId}:${props.draftId ?? ""}`}
-              {...props}
-              seedMessage={active.message}
-              focusFact={active.fact}
-            />
-          ) : null}
-        </DialogPanel>
+        {active ? (
+          <MemoryContents
+            key={`${active.key}:${props.threadId}:${props.draftId ?? ""}`}
+            {...props}
+            seedMessage={active.message}
+            focusFact={active.fact}
+          />
+        ) : null}
       </DialogPopup>
     </Dialog>
   );
 }
+
+type ListFilter = "confirmed" | "proposed" | "suggested" | "forgotten" | "lost";
+const FILTER_LABEL: Record<Exclude<ListFilter, "lost">, string> = {
+  confirmed: "Confirmed",
+  proposed: "Proposed",
+  suggested: "Suggested",
+  forgotten: "Forgotten",
+};
+
+// What the inspector shows. Selecting for the draft is separate state: inspecting never selects.
+type Inspection =
+  | { readonly kind: "empty" }
+  | { readonly kind: "fact"; readonly factId: ProjectFactId }
+  | { readonly kind: "source"; readonly ref: SourceRef; readonly returnTo: ProjectFactId | null };
+
+const editorKey = (seed: FactEditorSeed) =>
+  seed.mode === "create" ? "create" : `${seed.mode}:${seed.base.id}:${seed.base.revision}`;
 
 function MemoryContents(
   props: Scope & {
@@ -207,28 +202,26 @@ function MemoryContents(
         }
       : null,
   );
-  const [status, setStatus] = useState<"confirmed" | "proposed" | "suggested" | "forgotten">(
-    "confirmed",
-  );
+  const [filter, setFilter] = useState<ListFilter>("confirmed");
   const [afterId, setAfterId] = useState<ProjectFactId | undefined>();
   const [includeArchived, setIncludeArchived] = useState(false);
-  const [source, setSource] = useState<SourceRef | null>(props.seedMessage);
-  const [editing, setEditing] = useState<ProjectFact | null>(null);
-  // Only meaningful with `editing`: submit replaces that fact instead of revising it.
-  const [superseding, setSuperseding] = useState(false);
-  const [detailId, setDetailId] = useState<ProjectFactId | null>(null);
   const [includeSuperseded, setIncludeSuperseded] = useState(false);
-  const [lostSourcesOnly, setLostSourcesOnly] = useState(false);
+  const [inspection, setInspection] = useState<Inspection>(() =>
+    props.focusFact
+      ? { kind: "fact", factId: props.focusFact.id }
+      : props.seedMessage
+        ? { kind: "source", ref: props.seedMessage, returnTo: null }
+        : { kind: "empty" },
+  );
+  const [editor, setEditor] = useState<FactEditorSeed | null>(null);
+  // Below md the list and inspector stack; this picks which one is visible.
+  const [showDetail, setShowDetail] = useState(inspection.kind !== "empty");
+  const [healthOpen, setHealthOpen] = useState(false);
   const [hintNotice, setHintNotice] = useState<{
     readonly content: string | null;
     readonly hints: ReadonlyArray<KnowledgeConflictHint>;
   } | null>(null);
-  const [content, setContent] = useState("");
-  const [entities, setEntities] = useState("");
-  const [tags, setTags] = useState("");
-  const [kind, setKind] = useState<"decision" | "constraint" | "convention" | "note">("note");
-  const [sources, setSources] = useState<ReadonlyArray<KnowledgeFactSource>>([{ kind: "user" }]);
-  const [prefillPending, setPrefillPending] = useState(props.seedMessage !== null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const selectionVersion = useRef(0);
   useEffect(
     () => () => {
@@ -239,6 +232,7 @@ function MemoryContents(
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const narrow = useMediaQuery("max-md");
   const canMutate = useAtomValue(projectKnowledge.mutate.permissionAtom(props.environmentId));
   const historyAvailable = useProjectMemoryHistoryAvailable(props.environmentId);
   const showSuperseded = historyAvailable && includeSuperseded;
@@ -249,11 +243,11 @@ function MemoryContents(
       input: {
         projectId: props.projectId,
         // The lost-source filter spans proposed and confirmed, matching the health count.
-        ...(historyAvailable && lostSourcesOnly
+        ...(historyAvailable && filter === "lost"
           ? { sourceState: "unavailable" as const }
-          : status === "suggested"
+          : filter === "suggested"
             ? { status: "proposed" as const, origin: "assisted" as const }
-            : { status }),
+            : { status: filter === "lost" ? ("confirmed" as const) : filter }),
         ...(afterId ? { afterId } : {}),
         ...(showSuperseded ? { includeSuperseded: true } : {}),
       },
@@ -272,33 +266,71 @@ function MemoryContents(
       ? projectKnowledge.search({ environmentId: props.environmentId, input: searchInput })
       : null,
   );
+  const inspectedSource = inspection.kind === "source" ? inspection.ref : null;
   const sourceQuery = useEnvironmentQuery(
-    source
+    inspectedSource
       ? projectKnowledge.readSource({
           environmentId: props.environmentId,
-          input: { projectId: props.projectId, ...source, includeArchived },
+          input: { projectId: props.projectId, ...inspectedSource, includeArchived },
         })
       : null,
   );
-  if (
-    prefillPending &&
-    sourceQuery.data?.state === "available" &&
-    sourceQuery.data.source.messageId === props.seedMessage?.messageId
-  ) {
-    setPrefillPending(false);
-    setContent(sourceQuery.data.text.slice(0, 12000));
-    setSources([sourceQuery.data.source]);
-  }
   const mutate = useAtomCommand(projectKnowledge.mutate, { reportFailure: false });
   const prepare = useAtomCommand(projectKnowledge.prepareContext, { reportFailure: false });
-  const toggle = (selection: KnowledgeSelection) => {
+
+  const focusIn = (selector: string) =>
+    rootRef.current?.querySelector<HTMLElement>(selector)?.focus();
+  // Desktop keeps focus on the list row so arrow-key browsing continues; when the inspector
+  // replaces the list (narrow) or a source opens, focus moves to the inspector heading.
+  const inspect = (next: Inspection, moveFocus: boolean) => {
+    flushSync(() => {
+      setInspection(next);
+      setEditor(null);
+      setShowDetail(true);
+    });
+    if (moveFocus || narrow) focusIn(INSPECTOR_HEADING);
+  };
+  const inspectFact = (factId: ProjectFactId) => inspect({ kind: "fact", factId }, false);
+  const openSource = (ref: SourceRef, returnTo: ProjectFactId | null) =>
+    inspect({ kind: "source", ref, returnTo }, true);
+  const inspectedRowKey =
+    inspection.kind === "fact"
+      ? factRowKey(inspection.factId)
+      : inspection.kind === "source"
+        ? messageRowKey(inspection.ref)
+        : null;
+  const backToList = () => {
+    flushSync(() => setShowDetail(false));
+    const row = inspectedRowKey
+      ? rootRef.current?.querySelector<HTMLElement>(
+          `[data-memory-row="${CSS.escape(inspectedRowKey)}"]`,
+        )
+      : null;
+    if (row) row.focus();
+    else focusIn("[data-memory-search]");
+  };
+  const openEditor = (seed: FactEditorSeed) => {
+    setEditor(seed);
+    setShowDetail(true);
+  };
+  const cancelEditor = () => {
+    flushSync(() => setEditor(null));
+    if (inspection.kind === "fact") focusIn("[data-inspector-edit]");
+    else if (inspection.kind === "empty") setShowDetail(false);
+    else focusIn(INSPECTOR_HEADING);
+  };
+
+  const invalidateAttachment = () => {
     selectionVersion.current += 1;
     setPreview(null);
     useComposerDraftStore.getState().setKnowledgeContext(target, null);
+  };
+  const toggle = (selection: KnowledgeSelection) => {
+    invalidateAttachment();
     setSelections((current) =>
       current.some((item) => selectionKey(item) === selectionKey(selection))
         ? current.filter((item) => selectionKey(item) !== selectionKey(selection))
-        : [...current, selection].slice(0, 20),
+        : [...current, selection].slice(0, MAX_DRAFT_SELECTIONS),
     );
   };
   const restartSearch = (superseded = showSuperseded) =>
@@ -313,33 +345,20 @@ function MemoryContents(
             requestId: CommandId.make(randomUUID()),
           },
     );
-  const resetEditor = () => {
-    setEditing(null);
-    setSuperseding(false);
-    setContent("");
-    setSources([{ kind: "user" }]);
-  };
-  const startEditing = (fact: ProjectFact & { content: string }, supersede: boolean) => {
-    setEditing(fact);
-    setSuperseding(supersede);
-    setContent(fact.content);
-    setEntities(fact.entities.join(", "));
-    setTags(fact.tags.join(", "));
-    setKind(fact.kind);
-    setSources(fact.sources.length ? fact.sources : [{ kind: "user" }]);
+  const refresh = () => {
+    list.refresh();
+    health.refresh();
+    restartSearch();
   };
   const apply = async (input: ProjectKnowledgeMutation) => {
     setBusy(true);
     setError(null);
-    setPreview(null);
     setHintNotice(null);
-    selectionVersion.current += 1;
+    invalidateAttachment();
     const result = await mutate({ environmentId: props.environmentId, input });
     setBusy(false);
     if (result._tag === "Failure") setError(String(squashAtomCommandFailure(result)));
     else {
-      useComposerDraftStore.getState().setKnowledgeContext(target, null);
-      resetEditor();
       // A superseded fact drops out of recall, so its selection goes with the revised one.
       const replaced = new Set<ProjectFactId>([result.value.id, input.factId]);
       setSelections((current) =>
@@ -347,10 +366,15 @@ function MemoryContents(
       );
       if (result.value.hints?.length)
         setHintNotice({ content: result.value.content, hints: result.value.hints });
+      if (editor) {
+        flushSync(() => {
+          setEditor(null);
+          setInspection({ kind: "fact", factId: result.value.id });
+        });
+        focusIn(INSPECTOR_HEADING);
+      }
     }
-    list.refresh();
-    health.refresh();
-    restartSearch();
+    refresh();
   };
   const revise = (fact: ProjectFact, action: "confirm" | "forget" | "feedback", helpful = true) => {
     const fields = {
@@ -359,7 +383,7 @@ function MemoryContents(
       factId: fact.id,
       expectedRevision: fact.revision,
     };
-    return apply(action === "feedback" ? { ...fields, action, helpful } : { ...fields, action });
+    void apply(action === "feedback" ? { ...fields, action, helpful } : { ...fields, action });
   };
   const attach = async () => {
     const version = ++selectionVersion.current;
@@ -384,542 +408,397 @@ function MemoryContents(
         .setKnowledgeContext(target, projectKnowledgeContextRecord(result.value.context));
     }
   };
-  const facts = searchInput
-    ? search.data?.facts.state === "available"
-      ? search.data.facts.matches.map((match) => match.fact)
-      : []
-    : (list.data?.facts ?? []);
+  const runSearch = () =>
+    setSearchInput(
+      query.trim().length < 2
+        ? null
+        : {
+            projectId: props.projectId,
+            query: query.trim(),
+            includeArchived,
+            ...(showSuperseded ? { includeSuperseded: true } : {}),
+            requestId: CommandId.make(randomUUID()),
+          },
+    );
+
+  const rankedFacts = search.data?.facts.state === "available" ? search.data.facts.matches : [];
+  const facts = searchInput ? rankedFacts.map((match) => match.fact) : (list.data?.facts ?? []);
+  const messages = searchInput ? (search.data?.messages.matches ?? []) : [];
   // Search already drops facts whose citations no longer resolve.
   const unavailableReasons = new Map(
     searchInput
       ? []
       : (list.data?.unavailableSources ?? []).map((item) => [item.factId, item.reason]),
   );
+  const selectedFactIds = new Set(
+    selections.flatMap((item) => (item.kind === "fact" ? [item.factId] : [])),
+  );
+  const pending = searchInput ? search.isPending : list.isPending;
+  const listError = searchInput ? search.error : list.error;
+  const lostCount = health.data?.unavailableSources ?? 0;
+  const suggestedCount = health.data?.assistedLearning?.suggested ?? 0;
+  const filters: ReadonlyArray<ListFilter> = [
+    "confirmed",
+    "proposed",
+    ...(assistedAvailable ? (["suggested"] as const) : []),
+    "forgotten",
+    ...(historyAvailable && (lostCount > 0 || filter === "lost") ? (["lost"] as const) : []),
+  ];
+  const filterLabel = (value: ListFilter) =>
+    value === "lost"
+      ? `Lost source (${health.data?.unavailableSourcesCoverage === "partial" ? "at least " : ""}${lostCount})`
+      : value === "suggested" && suggestedCount > 0
+        ? `Suggested (${suggestedCount})`
+        : FILTER_LABEL[value];
+  const resultSummary = pending
+    ? "Reading project knowledge…"
+    : searchInput
+      ? `${facts.length} ${facts.length === 1 ? "fact" : "facts"} · ${messages.length} ${messages.length === 1 ? "conversation" : "conversations"}`
+      : `${facts.length} ${facts.length === 1 ? "fact" : "facts"}`;
+  const labelFor = (selection: KnowledgeSelection) => {
+    if (selection.kind === "message") return `Message ${selection.messageId}`;
+    const content = facts.find((fact) => fact.id === selection.factId)?.content;
+    return content ? content.slice(0, 60) : `Fact ${shortFactId(selection.factId)}`;
+  };
+  const inspectedFactId = inspection.kind === "fact" ? inspection.factId : null;
+  const inspectedFact = facts.find((fact) => fact.id === inspectedFactId);
+  const inspectedScore = rankedFacts.find((match) => match.fact.id === inspectedFactId)?.score;
+  const sourceRef: SourceRef | null = inspection.kind === "source" ? inspection.ref : null;
+  const sourceReturnTo = inspection.kind === "source" ? inspection.returnTo : null;
+
   return (
-    <div className="flex flex-col gap-3">
-      {health.data ? (
-        <KnowledgeHealthStrip
-          status={health.data}
-          onShowUnavailable={() => {
-            setLostSourcesOnly(true);
-            setAfterId(undefined);
-            setSearchInput(null);
-            setDetailId(null);
-          }}
-        />
-      ) : null}
-      {assistedAvailable ? (
-        <AssistedLearningSection
-          environmentId={props.environmentId}
-          projectId={props.projectId}
-          status={health.data ?? null}
-        />
-      ) : null}
-      <form
-        className="flex gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setSearchInput(
-            query.trim().length < 2
-              ? null
-              : {
-                  projectId: props.projectId,
-                  query: query.trim(),
-                  includeArchived,
-                  ...(showSuperseded ? { includeSuperseded: true } : {}),
-                  requestId: CommandId.make(randomUUID()),
-                },
-          );
-        }}
-      >
-        <Input
-          aria-label="Search project knowledge"
-          value={query}
-          maxLength={200}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <Button type="submit" variant="outline">
-          Search
-        </Button>
-      </form>
-      <label>
-        <input
-          type="checkbox"
-          checked={includeArchived}
-          onChange={(event) => {
-            selectionVersion.current += 1;
-            setIncludeArchived(event.target.checked);
-            useComposerDraftStore.getState().setKnowledgeContext(target, null);
-            setSearchInput(null);
-            setPreview(null);
-          }}
-        />{" "}
-        Include archived conversations
-      </label>
-      {historyAvailable ? (
-        <label>
-          <input
-            type="checkbox"
-            checked={includeSuperseded}
-            onChange={(event) => {
-              setIncludeSuperseded(event.target.checked);
-              setAfterId(undefined);
-              restartSearch(event.target.checked);
+    <div ref={rootRef} className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 flex-col gap-2 border-b px-4 pb-3 sm:px-6">
+        <div className="flex flex-wrap items-center gap-2">
+          <form
+            role="search"
+            className="flex min-w-48 flex-1 gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              runSearch();
             }}
-          />{" "}
-          Show superseded
-        </label>
-      ) : null}
-      <div className="flex flex-wrap gap-2">
-        {(assistedAvailable
-          ? (["confirmed", "proposed", "suggested", "forgotten"] as const)
-          : (["confirmed", "proposed", "forgotten"] as const)
-        ).map((value) => (
-          <Button
-            key={value}
-            variant={status === value && !searchInput && !lostSourcesOnly ? "default" : "outline"}
-            size="sm"
-            onClick={() => {
-              setStatus(value);
-              setLostSourcesOnly(false);
+          >
+            <Input
+              aria-label="Search project knowledge"
+              data-memory-search
+              placeholder="Search facts and conversations"
+              size="sm"
+              type="search"
+              value={query}
+              maxLength={200}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            <Button type="submit" variant="outline" size="sm">
+              Search
+            </Button>
+          </form>
+          <ToggleGroup
+            aria-label="Filter facts"
+            value={searchInput ? [] : [filter]}
+            onValueChange={(next) => {
+              const value = next[0] as ListFilter | undefined;
+              if (!value) return;
+              setFilter(value);
               setAfterId(undefined);
               setSearchInput(null);
             }}
           >
-            {value === "suggested" && health.data?.assistedLearning?.suggested
-              ? `suggested (${health.data.assistedLearning.suggested})`
-              : value}
-          </Button>
-        ))}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            list.refresh();
-            health.refresh();
-            restartSearch();
-          }}
-        >
-          Refresh
-        </Button>
-      </div>
-      {(error ?? list.error ?? search.error) ? (
-        <p role="alert">{error ?? list.error ?? search.error}</p>
-      ) : null}
-      {list.isPending || search.isPending ? <p>Reading project knowledge…</p> : null}
-      {hintNotice ? (
-        <section
-          aria-label="Possible conflicts"
-          className="flex flex-col gap-2 rounded-md border p-3"
-        >
-          {hintNotice.hints.map((hint) => (
-            <ConflictHintRow
-              key={hint.factId}
-              hint={hint}
-              currentContent={hintNotice.content}
-              onOpenFact={historyAvailable ? setDetailId : null}
-            />
-          ))}
-          <Button variant="ghost" size="sm" onClick={() => setHintNotice(null)}>
-            Dismiss
-          </Button>
-        </section>
-      ) : null}
-      {lostSourcesOnly && historyAvailable && !searchInput ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <span>Showing facts that lost their source.</span>
-          <Button
-            variant="link"
-            size="sm"
-            onClick={() => {
-              setLostSourcesOnly(false);
-              setAfterId(undefined);
-            }}
-          >
-            Show all facts
-          </Button>
+            {filters.map((value) => (
+              <Toggle key={value} value={value}>
+                {filterLabel(value)}
+              </Toggle>
+            ))}
+          </ToggleGroup>
         </div>
-      ) : null}
-      {detailId ? (
-        <ProjectFactDetailPane
-          environmentId={props.environmentId}
-          projectId={props.projectId}
-          factId={detailId}
-          onOpenFact={setDetailId}
-          onOpenSource={setSource}
-          onClose={() => setDetailId(null)}
-        />
-      ) : null}
-      {search.data?.facts.state === "unavailable" ? (
-        <p>
-          Fact ranking is unavailable on this environment. Conversation search and saved facts
-          remain available.
-        </p>
-      ) : null}
-      {search.data?.facts.state === "available" && search.data.facts.coverage === "partial" ? (
-        <p>Partial coverage. Narrow the query to reach more facts.</p>
-      ) : null}
-      {(detailId ? [] : facts).map((fact) => {
-        const score =
-          search.data?.facts.state === "available"
-            ? search.data.facts.matches.find((match) => match.fact.id === fact.id)?.score
-            : undefined;
-        const unavailableReason = unavailableReasons.get(fact.id);
-        const superseded = isSupersededFact(fact);
-        return (
-          <article
-            className={`rounded-md border p-3${superseded ? " border-dashed" : ""}`}
-            key={fact.id}
-          >
-            {unavailableReason ? (
-              <Badge variant="warning">
-                {KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL[unavailableReason]}
-              </Badge>
-            ) : null}
-            {fact.supersededBy ? (
-              <Badge variant="secondary">Superseded by {shortFactId(fact.supersededBy)}</Badge>
-            ) : null}
-            {fact.supersedes ? (
-              <Badge variant="outline">
-                {`${isPendingReplacement(fact) ? "Would replace" : "Supersedes"} ${shortFactId(fact.supersedes)}`}
-              </Badge>
-            ) : null}
-            {fact.id === props.focusFact?.id ? (
-              <p className="whitespace-pre-wrap font-semibold" ref={revealOnMount}>
-                {fact.content ?? "Forgotten fact"}
-              </p>
-            ) : (
-              <p className="whitespace-pre-wrap">{fact.content ?? "Forgotten fact"}</p>
-            )}
-            <p className="text-xs text-muted-foreground">
-              {fact.kind} · {fact.status} · trust {fact.trust.toFixed(2)} · revision {fact.revision}
-            </p>
-            <p>{knowledgeOriginLabel(fact.origin)}</p>
-            {isPendingReplacement(fact) && fact.supersedes ? (
-              <p className="text-xs">
-                Confirming replaces fact {shortFactId(fact.supersedes)}; forgetting leaves it as it
-                is.
-              </p>
-            ) : null}
-            <div className="flex flex-wrap gap-2">
-              {fact.sources.map((ref, index) =>
-                ref.kind === "user" ? (
-                  <span key={index}>User assertion</span>
-                ) : (
-                  <Button key={index} variant="link" size="sm" onClick={() => setSource(ref)}>
-                    Message {ref.messageId}
-                  </Button>
-                ),
-              )}
-            </div>
-            {score ? (
-              <details>
-                <summary>Why this matched</summary>
-                <p>
-                  Holographic {score.holographic.toFixed(3)} · Text {score.lexical.toFixed(3)} ·
-                  Overlap {score.tokenOverlap.toFixed(3)} · Age {score.temporalDecay.toFixed(3)} ·
-                  Use {score.reinforcement.toFixed(3)} · Trust {score.trust.toFixed(2)} · Score{" "}
-                  {score.combined.toFixed(6)}
-                </p>
-                <p>
-                  Ranking combines lexical evidence and deterministic holographic similarity. It
-                  does not establish truth.
-                </p>
-              </details>
-            ) : null}
-            <div className="flex flex-wrap gap-2">
-              {fact.status !== "forgotten" ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => toggle({ kind: "fact", factId: fact.id, revision: fact.revision })}
-                >
-                  {selections.some((item) => item.kind === "fact" && item.factId === fact.id)
-                    ? "Remove selection"
-                    : "Select"}
-                </Button>
-              ) : null}
-              {historyAvailable ? (
-                <Button size="sm" variant="ghost" onClick={() => setDetailId(fact.id)}>
-                  Details
-                </Button>
-              ) : null}
-              {fact.status !== "forgotten" ? (
-                <>
-                  {/* The server rejects revisions of a superseded fact; its replacement is the one to change. */}
-                  {!superseded ? (
-                    <Button
-                      disabled={!canMutate || busy}
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => startEditing(fact, false)}
-                    >
-                      Edit
-                    </Button>
-                  ) : null}
-                  {historyAvailable && !superseded ? (
-                    <Button
-                      disabled={!canMutate || busy}
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => startEditing(fact, true)}
-                    >
-                      Supersede
-                    </Button>
-                  ) : null}
-                  {fact.status === "proposed" && !superseded ? (
-                    <Button
-                      disabled={!canMutate || busy}
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void revise(fact, "confirm")}
-                    >
-                      Confirm
-                    </Button>
-                  ) : null}
-                  <Button
-                    disabled={!canMutate || busy}
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => void revise(fact, "forget")}
-                  >
-                    Forget
-                  </Button>
-                  <Button
-                    disabled={!canMutate || busy}
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => void revise(fact, "feedback", true)}
-                  >
-                    Helpful
-                  </Button>
-                  <Button
-                    disabled={!canMutate || busy}
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => void revise(fact, "feedback", false)}
-                  >
-                    Unhelpful
-                  </Button>
-                </>
-              ) : null}
-            </div>
-          </article>
-        );
-      })}
-      {!searchInput && !detailId && list.data?.nextCursor ? (
-        <Button variant="outline" onClick={() => setAfterId(list.data?.nextCursor ?? undefined)}>
-          Next facts
-        </Button>
-      ) : null}
-      {afterId && !detailId ? (
-        <Button variant="ghost" onClick={() => setAfterId(undefined)}>
-          First facts
-        </Button>
-      ) : null}
-      {search.data?.messages.matches.map((match) =>
-        match.messageId && match.digest ? (
-          <article key={`${match.threadId}:${match.messageId}`}>
-            <p>{match.snippet}</p>
-            <Button
-              variant="link"
-              size="sm"
-              onClick={() =>
-                setSource({
-                  threadId: match.threadId,
-                  messageId: match.messageId!,
-                  digest: match.digest!,
-                })
-              }
-            >
-              Read exact message
-            </Button>
-          </article>
-        ) : null,
-      )}
-      {searchInput && search.data?.facts.state === "available" && search.data.facts.nextCursor ? (
-        <Button
-          variant="outline"
-          disabled={search.isPending}
-          onClick={() => {
-            if (search.data?.facts.state === "available" && search.data.facts.nextCursor)
-              setSearchInput({
-                ...searchInput,
-                requestId: CommandId.make(randomUUID()),
-                factCursor: search.data.facts.nextCursor,
-              });
-          }}
-        >
-          Next fact matches
-        </Button>
-      ) : null}
-      {searchInput && search.data?.messages.nextCursor ? (
-        <Button
-          variant="outline"
-          disabled={search.isPending}
-          onClick={() => {
-            if (search.data?.messages.nextCursor)
-              setSearchInput({ ...searchInput, cursor: search.data.messages.nextCursor });
-          }}
-        >
-          Next conversations
-        </Button>
-      ) : null}
-      {source ? (
-        <section className="rounded-md border p-3">
-          <h3>Exact source</h3>
-          <p className="break-all text-xs">
-            {source.threadId}/{source.messageId}
-            {source.digest ? ` · sha256:${source.digest}` : null}
-          </p>
-          {sourceQuery.error ? (
-            <p role="alert">{sourceQuery.error}</p>
-          ) : sourceQuery.data?.state === "unavailable" ? (
-            <p>Source unavailable. {sourceQuery.data.reason}</p>
-          ) : sourceQuery.data?.state === "available" ? (
-            <>
-              <pre className="whitespace-pre-wrap text-sm">{sourceQuery.data.text}</pre>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  if (sourceQuery.data?.state === "available") toggle(sourceQuery.data.source);
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+          <label className="flex items-center gap-2">
+            <Checkbox
+              checked={includeArchived}
+              onCheckedChange={(checked) => {
+                invalidateAttachment();
+                setIncludeArchived(checked);
+                setSearchInput(null);
+              }}
+            />
+            Include archived conversations
+          </label>
+          {historyAvailable ? (
+            <label className="flex items-center gap-2">
+              <Checkbox
+                checked={includeSuperseded}
+                onCheckedChange={(checked) => {
+                  setIncludeSuperseded(checked);
+                  setAfterId(undefined);
+                  restartSearch(checked);
                 }}
-              >
-                Select message
-              </Button>
+              />
+              Show superseded
+            </label>
+          ) : null}
+          <div className="ms-auto flex flex-wrap gap-1">
+            {health.data || assistedAvailable ? (
               <Button
-                disabled={!canMutate}
+                aria-controls="project-memory-health"
+                aria-expanded={healthOpen}
+                size="sm"
                 variant="ghost"
-                size="sm"
-                onClick={() => {
-                  if (sourceQuery.data?.state === "available") {
-                    setContent(sourceQuery.data.text.slice(0, 12000));
-                    setSources([sourceQuery.data.source]);
-                    setEditing(null);
-                  }
-                }}
+                onClick={() => setHealthOpen((value) => !value)}
               >
-                Save as fact
+                Memory health
               </Button>
-            </>
-          ) : (
-            <p>Reading source…</p>
-          )}
-        </section>
-      ) : null}
-      <section>
-        <h3>{selections.length} selected</h3>
-        {selections.map((selection) => (
-          <div className="flex items-center gap-2" key={selectionKey(selection)}>
-            <span className="truncate">{selectionKey(selection)}</span>
-            <Button variant="ghost" size="sm" onClick={() => toggle(selection)}>
-              Remove
+            ) : null}
+            <Button size="sm" variant="ghost" onClick={refresh}>
+              Refresh
+            </Button>
+            <Button
+              disabled={!canMutate}
+              size="sm"
+              variant="outline"
+              onClick={() => openEditor({ mode: "create", content: "", sources: [] })}
+            >
+              New fact
             </Button>
           </div>
-        ))}
-        <div className="flex gap-2">
-          <Button disabled={busy || selections.length === 0} onClick={() => void attach()}>
-            Preview and attach
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => {
-              selectionVersion.current += 1;
-              setSelections([]);
-              setPreview(null);
-              useComposerDraftStore.getState().setKnowledgeContext(target, null);
-            }}
-          >
-            Remove attachment
-          </Button>
         </div>
-        {preview ? (
-          <pre className="max-h-52 overflow-auto whitespace-pre-wrap text-sm">{preview}</pre>
+        {healthOpen ? (
+          <div id="project-memory-health" className="flex flex-col gap-3 rounded-lg border p-3">
+            {health.data ? <KnowledgeHealthStrip status={health.data} /> : null}
+            {assistedAvailable ? (
+              <AssistedLearningSection
+                environmentId={props.environmentId}
+                projectId={props.projectId}
+                status={health.data ?? null}
+              />
+            ) : null}
+          </div>
         ) : null}
-      </section>
-      <form
-        className="flex flex-col gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const fields = {
-            commandId: CommandId.make(randomUUID()),
-            projectId: props.projectId,
-            content,
-            entities: labels(entities),
-            tags: labels(tags),
-            kind,
-            sources,
-          };
-          void apply(
-            editing
-              ? {
-                  ...fields,
-                  factId: editing.id,
-                  expectedRevision: editing.revision,
-                  ...(superseding
-                    ? {
-                        action: "supersede" as const,
-                        replacementFactId: ProjectFactId.make(randomUUID()),
-                      }
-                    : { action: "edit" as const }),
-                }
-              : { ...fields, action: "create", factId: ProjectFactId.make(randomUUID()) },
-          );
-        }}
-      >
-        <h3>{editing ? (superseding ? "Supersede fact" : "Edit fact") : "Save a fact"}</h3>
-        {editing && superseding ? (
-          <p>The original stays readable but is no longer recalled once replaced.</p>
-        ) : null}
-        <Textarea
-          aria-label="Fact content"
-          autoFocus={props.seedMessage !== null}
-          value={content}
-          maxLength={12000}
-          onChange={(event) => setContent(event.target.value)}
-          required
-        />
-        <Input
-          aria-label="Entities, comma separated"
-          placeholder="Entities, comma separated"
-          value={entities}
-          onChange={(event) => setEntities(event.target.value)}
-        />
-        <Input
-          aria-label="Tags, comma separated"
-          placeholder="Tags, comma separated"
-          value={tags}
-          onChange={(event) => setTags(event.target.value)}
-        />
-        <label>
-          Kind{" "}
-          <select value={kind} onChange={(event) => setKind(event.target.value as typeof kind)}>
-            {["decision", "constraint", "convention", "note"].map((value) => (
-              <option key={value}>{value}</option>
-            ))}
-          </select>
-        </label>
-        <p>
-          {sources.some((ref) => ref.kind === "message")
-            ? "Saved with the selected message citation."
-            : "Saved as your assertion."}
-        </p>
-        {!canMutate ? <p>This environment grants read access only.</p> : null}
-        <div className="flex gap-2">
-          <Button disabled={!canMutate || busy || content.trim() === ""} type="submit">
-            {editing ? (superseding ? "Save replacement" : "Save edit") : "Save fact"}
-          </Button>
-          {editing && historyAvailable ? (
-            <Button variant="ghost" onClick={() => setSuperseding((value) => !value)}>
-              {superseding ? "Edit instead" : "Supersede instead"}
+      </div>
+      <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(17rem,2fr)_3fr]">
+        <section
+          aria-labelledby="project-memory-results"
+          className={cn("flex min-h-0 flex-col md:border-e", showDetail && "max-md:hidden")}
+        >
+          <div className="flex shrink-0 items-baseline justify-between gap-2 px-5 pt-3 pb-2">
+            <h3 id="project-memory-results" className="font-medium text-xs">
+              {searchInput ? "Search results" : "Project facts"}
+            </h3>
+            <p role="status" className="text-muted-foreground text-xs">
+              {resultSummary}
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-col gap-1 px-5 empty:hidden">
+            {listError ? (
+              <p role="alert" className="text-sm">
+                {listError}
+              </p>
+            ) : null}
+            {!searchInput && filter === "lost" ? (
+              <p className="text-muted-foreground text-xs">
+                Facts whose cited message changed, moved or was deleted.
+              </p>
+            ) : null}
+            {search.data?.facts.state === "unavailable" ? (
+              <p className="text-muted-foreground text-xs">
+                Fact ranking is unavailable on this environment. Conversation search and saved facts
+                remain available.
+              </p>
+            ) : null}
+            {search.data?.facts.state === "available" &&
+            search.data.facts.coverage === "partial" ? (
+              <p className="text-muted-foreground text-xs">
+                Partial coverage. Narrow the query to reach more facts.
+              </p>
+            ) : null}
+          </div>
+          <ScrollArea className="flex-1" scrollFade>
+            <ProjectMemoryFactList
+              facts={facts}
+              unavailableReasons={unavailableReasons}
+              messages={messages}
+              inspectedKey={inspectedRowKey}
+              selectedFactIds={selectedFactIds}
+              revealFactId={props.focusFact?.id ?? null}
+              onInspectFact={inspectFact}
+              onInspectMessage={(ref) => openSource(ref, null)}
+              onToggleFact={(fact) =>
+                toggle({ kind: "fact", factId: fact.id, revision: fact.revision })
+              }
+            >
+              {!pending && !listError && facts.length === 0 && messages.length === 0 ? (
+                <p className="px-3 py-6 text-center text-muted-foreground text-sm">
+                  {searchInput
+                    ? `No matches for “${searchInput.query}”.`
+                    : filter === "lost"
+                      ? "No facts have lost their source."
+                      : `No ${FILTER_LABEL[filter].toLowerCase()} facts.`}
+                </p>
+              ) : null}
+              <div className="flex flex-wrap gap-2 px-1 empty:hidden">
+                {!searchInput && list.data?.nextCursor ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setAfterId(list.data?.nextCursor ?? undefined)}
+                  >
+                    Next facts
+                  </Button>
+                ) : null}
+                {!searchInput && afterId ? (
+                  <Button size="sm" variant="ghost" onClick={() => setAfterId(undefined)}>
+                    First facts
+                  </Button>
+                ) : null}
+                {searchInput &&
+                search.data?.facts.state === "available" &&
+                search.data.facts.nextCursor ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={search.isPending}
+                    onClick={() => {
+                      if (search.data?.facts.state === "available" && search.data.facts.nextCursor)
+                        setSearchInput({
+                          ...searchInput,
+                          requestId: CommandId.make(randomUUID()),
+                          factCursor: search.data.facts.nextCursor,
+                        });
+                    }}
+                  >
+                    Next fact matches
+                  </Button>
+                ) : null}
+                {searchInput && search.data?.messages.nextCursor ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={search.isPending}
+                    onClick={() => {
+                      if (search.data?.messages.nextCursor)
+                        setSearchInput({ ...searchInput, cursor: search.data.messages.nextCursor });
+                    }}
+                  >
+                    Next conversations
+                  </Button>
+                ) : null}
+              </div>
+            </ProjectMemoryFactList>
+          </ScrollArea>
+        </section>
+        <section
+          aria-label="Inspector"
+          className={cn("flex min-h-0 flex-col", !showDetail && "max-md:hidden")}
+        >
+          <div className="flex shrink-0 px-3 pt-2 md:hidden">
+            <Button size="sm" variant="ghost" onClick={backToList}>
+              Back to list
             </Button>
-          ) : null}
-          <Button variant="ghost" onClick={resetEditor}>
-            New assertion
-          </Button>
-        </div>
-      </form>
+          </div>
+          <ScrollArea className="flex-1" scrollFade viewportTabIndex={0}>
+            <div className="flex flex-col gap-4 p-5">
+              {error ? (
+                <p role="alert" className="text-sm">
+                  {error}
+                </p>
+              ) : null}
+              {hintNotice ? (
+                <section
+                  aria-label="Possible conflicts"
+                  className="flex flex-col gap-2 rounded-md border p-3"
+                >
+                  {hintNotice.hints.map((hint) => (
+                    <ConflictHintRow
+                      key={hint.factId}
+                      hint={hint}
+                      currentContent={hintNotice.content}
+                      onOpenFact={historyAvailable ? inspectFact : null}
+                    />
+                  ))}
+                  <Button
+                    className="self-start"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setHintNotice(null)}
+                  >
+                    Dismiss
+                  </Button>
+                </section>
+              ) : null}
+              {editor ? (
+                <ProjectFactEditor
+                  key={editorKey(editor)}
+                  projectId={props.projectId}
+                  seed={editor}
+                  historyAvailable={historyAvailable}
+                  canMutate={canMutate}
+                  busy={busy}
+                  onSubmit={(input) => void apply(input)}
+                  onCancel={cancelEditor}
+                />
+              ) : inspection.kind === "fact" ? (
+                <FactInspector
+                  environmentId={props.environmentId}
+                  projectId={props.projectId}
+                  factId={inspection.factId}
+                  listedFact={inspectedFact}
+                  score={inspectedScore}
+                  unavailableReason={unavailableReasons.get(inspection.factId)}
+                  historyAvailable={historyAvailable}
+                  canMutate={canMutate}
+                  busy={busy}
+                  onEdit={(fact: EditableFact, supersede) =>
+                    openEditor({ mode: supersede ? "supersede" : "edit", base: fact })
+                  }
+                  onRevise={revise}
+                  onOpenSource={(ref: KnowledgeMessageRef) => openSource(ref, inspection.factId)}
+                  onOpenFact={inspectFact}
+                  onBackToResults={() => {
+                    setInspection({ kind: "empty" });
+                    backToList();
+                  }}
+                />
+              ) : sourceRef ? (
+                <SourceInspector
+                  source={sourceRef}
+                  data={sourceQuery.data}
+                  error={sourceQuery.error}
+                  selected={selections.some(
+                    (item) => selectionKey(item) === messageRowKey(sourceRef),
+                  )}
+                  canMutate={canMutate}
+                  onBack={
+                    sourceReturnTo
+                      ? () => inspect({ kind: "fact", factId: sourceReturnTo }, true)
+                      : null
+                  }
+                  onToggleSelect={toggle}
+                  onSaveAsFact={(text, ref) =>
+                    openEditor({
+                      mode: "create",
+                      content: text.slice(0, 12000),
+                      sources: [ref] satisfies ReadonlyArray<KnowledgeFactSource>,
+                    })
+                  }
+                />
+              ) : (
+                <InspectorEmpty />
+              )}
+            </div>
+          </ScrollArea>
+        </section>
+      </div>
+      <ProjectMemoryDraftFooter
+        selections={selections}
+        labelFor={labelFor}
+        attached={attached !== undefined}
+        preview={preview}
+        busy={busy}
+        onRemove={toggle}
+        onClear={() => {
+          invalidateAttachment();
+          setSelections([]);
+        }}
+        onAttach={() => void attach()}
+      />
     </div>
   );
 }

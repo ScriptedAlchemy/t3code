@@ -16,8 +16,8 @@ import {
 } from "@t3tools/contracts";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser";
-import { act, render } from "../../../test/render";
+import { page, userEvent } from "vite-plus/test/browser";
+import { act, render, type Screen } from "../../../test/render";
 
 const state = vi.hoisted(() => ({
   config: null as unknown,
@@ -144,7 +144,8 @@ const historyEntry = (
   sourceUnavailable: null,
   ...entry,
 });
-function setup() {
+async function setup(viewport: "desktop" | "narrow" = "desktop") {
+  await page.viewport(viewport === "desktop" ? 1280 : 390, 900);
   const registry = AtomRegistry.make();
   state.config = Atom.make({
     environment: { capabilities: { projectKnowledge: true, projectKnowledgeHistory: true } },
@@ -211,17 +212,27 @@ async function mount(registry: ReturnType<typeof AtomRegistry.make>) {
   );
 }
 
-it("opens exact evidence and attaches only references, then removes the attachment", async () => {
-  const registry = setup();
-  await using screen = await mount(registry);
+const factList = () => page.getByRole("list", { name: "Project facts" });
+const factRow = (content: string) => factList().getByRole("button", { name: new RegExp(content) });
+const inspector = () => page.getByRole("region", { name: "Inspector" });
+const draftFooter = () => page.getByRole("region", { name: "Draft selection" });
+
+async function openMemory(screen: { getByRole: Screen["getByRole"] }) {
   await screen.getByRole("button", { name: "Project memory", exact: true }).click();
-  await page.getByRole("button", { name: "Message evidence" }).click();
+}
+
+it("opens exact evidence and attaches only references, then removes the attachment", async () => {
+  const registry = await setup();
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await factRow(fact.content!).click();
+  await inspector().getByRole("button", { name: "Message evidence" }).click();
   await expect.element(page.getByText("Exact canonical evidence.")).toBeVisible();
   expect(state.readSource).toHaveBeenCalledWith({
     environmentId: scope.environmentId,
     input: { projectId: scope.projectId, ...source, includeArchived: false },
   });
-  await page.getByRole("button", { name: "Select", exact: true }).click();
+  await page.getByRole("checkbox", { name: /Select for draft/ }).click();
   await page.getByRole("button", { name: "Preview and attach" }).click();
   await expect.element(page.getByText("Escaped provider preview.")).toBeVisible();
   const draft = useComposerDraftStore.getState().getComposerDraft(target);
@@ -236,19 +247,128 @@ it("opens exact evidence and attaches only references, then removes the attachme
   expect(useComposerDraftStore.getState().getComposerDraft(target)?.knowledgeContexts).toEqual([]);
   await page.getByRole("button", { name: "Preview and attach" }).click();
   await expect.element(page.getByText("Escaped provider preview.")).toBeVisible();
-  await page.getByRole("button", { name: "Remove attachment" }).click();
+  await page.getByRole("button", { name: "Clear selection" }).click();
   expect(useComposerDraftStore.getState().getComposerDraft(target)?.knowledgeContexts).toEqual([]);
   expect(useComposerDraftStore.getState().getComposerDraft(target)?.prompt).not.toContain(
     "t3-context",
   );
 });
 
-it("shows real score components and sends the viewed revision for feedback", async () => {
-  const registry = setup();
+it("inspecting a fact shows its evidence without selecting it for the draft", async () => {
+  const registry = await setup();
+  const other = { ...fact, id: ProjectFactId.make("other"), content: "Workers retry twice." };
+  state.list = Atom.make(AsyncResult.success({ facts: [fact, other], nextCursor: null }));
   await using screen = await mount(registry);
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
-  await page.getByRole("textbox", { name: "Search project knowledge" }).fill("tenant cache");
+  await openMemory(screen);
+  await expect.element(inspector().getByText("Select a fact to inspect")).toBeVisible();
+
+  await factRow(fact.content!).click();
+  await expect.element(factRow(fact.content!)).toHaveAttribute("aria-current", "true");
+  await expect.element(inspector().getByText(fact.content!)).toBeVisible();
+  await expect.element(inspector().getByText("Agent observation from Code agent")).toBeVisible();
+  await expect.element(draftFooter().getByText("Nothing selected")).toBeVisible();
+  expect(state.readFact).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: { projectId: scope.projectId, factId: fact.id },
+  });
+
+  await page.getByRole("checkbox", { name: `Select for draft: ${other.content}` }).click();
+  await expect.element(draftFooter().getByText("1 selected")).toBeVisible();
+  await expect.element(inspector().getByText(fact.content!)).toBeVisible();
+
+  await factRow(other.content).click();
+  await expect.element(inspector().getByText(other.content)).toBeVisible();
+  await expect.element(draftFooter().getByText("1 selected")).toBeVisible();
+  await expect
+    .element(page.getByRole("checkbox", { name: `Select for draft: ${fact.content}` }))
+    .not.toBeChecked();
+  expect(
+    useComposerDraftStore.getState().getComposerDraft(target)?.knowledgeContexts ?? [],
+  ).toEqual([]);
+});
+
+it("edits only after an explicit Edit, and Cancel returns to the fact unchanged", async () => {
+  const registry = await setup();
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await factRow(fact.content!).click();
+  await expect.element(page.getByRole("textbox", { name: "Fact content" })).not.toBeInTheDocument();
+  const edit = inspector().getByRole("button", { name: "Edit", exact: true });
+  await edit.click();
+  const content = page.getByRole("textbox", { name: "Fact content" });
+  await expect.element(content).toHaveValue(fact.content);
+  await expect.element(content).toHaveFocus();
+  await content.fill("Unsaved change.");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect.element(content).not.toBeInTheDocument();
+  await expect.element(inspector().getByText(fact.content!)).toBeVisible();
+  await expect.element(edit).toHaveFocus();
+  expect(state.mutate).not.toHaveBeenCalled();
+
+  await edit.click();
+  await expect.element(content).toHaveValue(fact.content);
+  await content.fill("Cache keys include tenant and region IDs.");
+  await page.getByRole("button", { name: "Save edit" }).click();
+  expect(state.mutate).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: expect.objectContaining({
+      action: "edit",
+      factId: fact.id,
+      expectedRevision: 1,
+      content: "Cache keys include tenant and region IDs.",
+    }),
+  });
+  await expect.element(content).not.toBeInTheDocument();
+});
+
+it("moves through facts with the keyboard and selects without changing the inspected fact", async () => {
+  const registry = await setup();
+  const second = { ...fact, id: ProjectFactId.make("second"), content: "Second fact." };
+  const third = { ...fact, id: ProjectFactId.make("third"), content: "Third fact." };
+  state.list = Atom.make(AsyncResult.success({ facts: [fact, second, third], nextCursor: null }));
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  (factRow(fact.content!).element() as HTMLElement).focus();
+  await userEvent.keyboard("{ArrowDown}");
+  await expect.element(factRow(second.content)).toHaveFocus();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(inspector().getByText(second.content)).toBeVisible();
+  // Desktop keeps focus on the row so browsing can continue.
+  await expect.element(factRow(second.content)).toHaveFocus();
+  await userEvent.keyboard("{End}");
+  await expect.element(factRow(third.content)).toHaveFocus();
+  await userEvent.keyboard("{Home}");
+  await expect.element(factRow(fact.content!)).toHaveFocus();
+  await userEvent.keyboard("{ArrowDown}");
+  await userEvent.keyboard("{Tab}");
+  const checkbox = page.getByRole("checkbox", { name: `Select for draft: ${second.content}` });
+  await expect.element(checkbox).toHaveFocus();
+  await userEvent.keyboard(" ");
+  await expect.element(checkbox).toBeChecked();
+  await expect.element(draftFooter().getByText("1 selected")).toBeVisible();
+  await expect.element(inspector().getByText(second.content)).toBeVisible();
+});
+
+it("stacks list and inspector on narrow screens and returns focus to the inspected row", async () => {
+  const registry = await setup("narrow");
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await factRow(fact.content!).click();
+  await expect.element(inspector().getByRole("heading", { name: /Proposed/ })).toHaveFocus();
+  // Hidden columns leave the accessibility tree, so only one of the two is reachable.
+  await expect.element(factList()).not.toBeInTheDocument();
+  await page.getByRole("button", { name: "Back to list" }).click();
+  await expect.element(factRow(fact.content!)).toHaveFocus();
+  await expect.element(inspector()).not.toBeInTheDocument();
+});
+
+it("shows real score components and sends the viewed revision for feedback", async () => {
+  const registry = await setup();
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await page.getByRole("searchbox", { name: "Search project knowledge" }).fill("tenant cache");
   await page.getByRole("button", { name: "Search", exact: true }).click();
+  await factRow(fact.content!).click();
   await page.getByText("Why this matched").click();
   await expect.element(page.getByText(/Holographic 0.800/)).toBeVisible();
   await page.getByRole("button", { name: "Helpful", exact: true }).click();
@@ -266,7 +386,7 @@ it("shows real score components and sends the viewed revision for feedback", asy
 });
 
 it("hides unsupported memory", async () => {
-  const registry = setup();
+  const registry = await setup();
   state.config = Atom.make({ environment: { capabilities: {} } });
   await using screen = await mount(registry);
   await expect
@@ -274,30 +394,33 @@ it("hides unsupported memory", async () => {
     .not.toBeInTheDocument();
 });
 it("disables writes for a read-only connection", async () => {
-  const registry = setup();
+  const registry = await setup();
   state.permission = Atom.make(false);
   await using screen = await mount(registry);
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  await openMemory(screen);
+  await factRow(fact.content!).click();
   await expect.element(page.getByRole("button", { name: "Forget", exact: true })).toBeDisabled();
   await expect.element(page.getByRole("button", { name: "Confirm", exact: true })).toBeDisabled();
+  await expect.element(page.getByRole("button", { name: "New fact" })).toBeDisabled();
   expect(state.mutate).not.toHaveBeenCalled();
 });
 
 it("shows a stale source without exposing an old excerpt", async () => {
-  const registry = setup();
+  const registry = await setup();
   state.source = Atom.make(AsyncResult.success({ state: "unavailable", reason: "changed" }));
   await using screen = await mount(registry);
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  await openMemory(screen);
+  await factRow(fact.content!).click();
   await page.getByRole("button", { name: "Message evidence" }).click();
   await expect.element(page.getByText("Source unavailable. changed")).toBeVisible();
   await expect.element(page.getByText("Exact canonical evidence.")).not.toBeInTheDocument();
   await expect
-    .element(page.getByRole("button", { name: "Select message" }))
+    .element(page.getByRole("button", { name: "Select message for draft" }))
     .not.toBeInTheDocument();
 });
 
 it("flags facts whose citations are unavailable before any citation is opened", async () => {
-  const registry = setup();
+  const registry = await setup();
   const intact = { ...fact, id: ProjectFactId.make("intact"), content: "Intact fact." };
   state.list = Atom.make(
     AsyncResult.success({
@@ -307,16 +430,14 @@ it("flags facts whose citations are unavailable before any citation is opened", 
     }),
   );
   await using screen = await mount(registry);
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
-  const flagged = page.getByRole("article").filter({ hasText: fact.content! });
-  await expect.element(flagged.getByText("Source deleted")).toBeVisible();
-  const clean = page.getByRole("article").filter({ hasText: "Intact fact." });
-  await expect.element(clean.getByText(/^Source /)).not.toBeInTheDocument();
+  await openMemory(screen);
+  await expect.element(factRow(fact.content!).getByText("Source deleted")).toBeVisible();
+  await expect.element(factRow("Intact fact.").getByText(/^Source /)).not.toBeInTheDocument();
   expect(state.readSource).not.toHaveBeenCalled();
 });
 
 it("remembers a timeline message with a citation to that exact message", async () => {
-  const registry = setup();
+  const registry = await setup();
   function RememberEvidence() {
     const open = useOpenProjectMemory();
     return (
@@ -341,9 +462,7 @@ it("remembers a timeline message with a citation to that exact message", async (
     </RegistryContext.Provider>,
   );
   await screen.getByRole("button", { name: "Remember evidence" }).click();
-  await expect
-    .element(page.getByRole("textbox", { name: "Fact content" }))
-    .toHaveValue("Exact canonical evidence.");
+  await expect.element(inspector().getByText("Exact canonical evidence.")).toBeVisible();
   expect(state.readSource).toHaveBeenCalledWith({
     environmentId: scope.environmentId,
     input: {
@@ -353,6 +472,10 @@ it("remembers a timeline message with a citation to that exact message", async (
       includeArchived: false,
     },
   });
+  await page.getByRole("button", { name: "Save as fact" }).click();
+  await expect
+    .element(page.getByRole("textbox", { name: "Fact content" }))
+    .toHaveValue("Exact canonical evidence.");
   await page.getByRole("button", { name: "Save fact", exact: true }).click();
   expect(state.mutate).toHaveBeenCalledWith({
     environmentId: scope.environmentId,
@@ -366,7 +489,7 @@ it("remembers a timeline message with a citation to that exact message", async (
 });
 
 it("does not reattach a selection removed while its preview is pending", async () => {
-  const registry = setup();
+  const registry = await setup();
   let complete!: (value: unknown) => void;
   state.prepare.mockImplementation(
     () =>
@@ -375,10 +498,10 @@ it("does not reattach a selection removed while its preview is pending", async (
       }),
   );
   await using screen = await mount(registry);
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
-  await page.getByRole("button", { name: "Select", exact: true }).click();
+  await openMemory(screen);
+  await page.getByRole("checkbox", { name: /Select for draft/ }).click();
   await page.getByRole("button", { name: "Preview and attach" }).click();
-  await page.getByRole("button", { name: "Remove attachment" }).click();
+  await page.getByRole("button", { name: "Clear selection" }).click();
   await act(async () =>
     complete({
       _tag: "Success",
@@ -396,7 +519,7 @@ it("does not reattach a selection removed while its preview is pending", async (
 });
 
 it("does not attach after the panel closes and a new panel removes the selection", async () => {
-  const registry = setup();
+  const registry = await setup();
   let complete!: (value: unknown) => void;
   state.prepare.mockImplementation(
     () =>
@@ -405,12 +528,13 @@ it("does not attach after the panel closes and a new panel removes the selection
       }),
   );
   await using screen = await mount(registry);
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
-  await page.getByRole("button", { name: "Select", exact: true }).click();
+  await openMemory(screen);
+  await page.getByRole("checkbox", { name: /Select for draft/ }).click();
   await page.getByRole("button", { name: "Preview and attach" }).click();
   await page.getByRole("button", { name: "Close", exact: true }).click();
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
-  await page.getByRole("button", { name: "Remove attachment" }).click();
+  await openMemory(screen);
+  // The pending preview never attached, so the reopened panel starts with no selection.
+  await expect.element(draftFooter().getByText("Nothing selected")).toBeVisible();
   await act(async () =>
     complete({
       _tag: "Success",
@@ -428,7 +552,7 @@ it("does not attach after the panel closes and a new panel removes the selection
 });
 
 it("pages facts and conversations independently and resets both for a new query", async () => {
-  const registry = setup();
+  const registry = await setup();
   const factCursor = { requestId: CommandId.make("ranking"), offset: 1 };
   const messageCursor = {
     query: "tenant cache",
@@ -468,8 +592,8 @@ it("pages facts and conversations independently and resets both for a new query"
     input.factCursor ? both : input.cursor ? messages : first,
   );
   await using screen = await mount(registry);
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
-  await page.getByRole("textbox", { name: "Search project knowledge" }).fill("tenant cache");
+  await openMemory(screen);
+  await page.getByRole("searchbox", { name: "Search project knowledge" }).fill("tenant cache");
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect.element(page.getByText("Fact page 0", { exact: true })).toBeVisible();
   const firstInput = state.searchRequest.mock.lastCall![0].input;
@@ -495,7 +619,7 @@ it("pages facts and conversations independently and resets both for a new query"
   await expect.element(page.getByText("Fact page 0", { exact: true })).toBeVisible();
   await expect.element(page.getByText("Conversation page 0", { exact: true })).toBeVisible();
   expect(state.searchRequest.mock.lastCall![0].input.requestId).not.toBe(factInput.requestId);
-  await page.getByRole("textbox", { name: "Search project knowledge" }).fill("new query");
+  await page.getByRole("searchbox", { name: "Search project knowledge" }).fill("new query");
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect.element(page.getByText("Conversation page 0", { exact: true })).toBeVisible();
   await expect.element(page.getByText("Fact page 0", { exact: true })).toBeVisible();
@@ -508,7 +632,7 @@ it("pages facts and conversations independently and resets both for a new query"
 });
 
 it("opens a fact's history as an ordered timeline with its trust trend", async () => {
-  const registry = setup();
+  const registry = await setup();
   state.detail = Atom.make(
     AsyncResult.success({
       fact: { ...fact, revision: 2, trust: 0.6 },
@@ -548,8 +672,8 @@ it("opens a fact's history as an ordered timeline with its trust trend", async (
     }),
   );
   await using screen = await mount(registry);
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
-  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await openMemory(screen);
+  await factRow(fact.content!).click();
   expect(state.readFact).toHaveBeenCalledWith({
     environmentId: scope.environmentId,
     input: { projectId: scope.projectId, factId: fact.id },
@@ -568,12 +692,12 @@ it("opens a fact's history as an ordered timeline with its trust trend", async (
   await expect
     .element(page.getByRole("img", { name: "Trust from 0.50 to 0.60" }))
     .toBeInTheDocument();
-  await page.getByRole("button", { name: "Back to facts" }).click();
-  await expect.element(page.getByRole("article")).toBeVisible();
+  // The list stays beside the inspector, so the next fact is one click away.
+  await expect.element(factRow(fact.content!)).toBeVisible();
 });
 
 it("marks superseded facts read-only and filters to facts that lost their source", async () => {
-  const registry = setup();
+  const registry = await setup();
   const replacement = ProjectFactId.make("replacement-fact-id");
   state.list = Atom.make(
     AsyncResult.success({
@@ -583,32 +707,34 @@ it("marks superseded facts read-only and filters to facts that lost their source
   );
   state.status = Atom.make(AsyncResult.success({ ...healthStatus, unavailableSources: 1 }));
   await using screen = await mount(registry);
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
-  const card = page.getByRole("article");
-  await expect.element(card.getByText("Superseded by replacem")).toBeVisible();
+  await openMemory(screen);
+  await expect.element(factRow(fact.content!).getByText("Superseded by replacem")).toBeVisible();
+  await factRow(fact.content!).click();
+  await expect.element(inspector().getByText("Superseded by replacem")).toBeVisible();
   await expect
-    .element(card.getByRole("button", { name: "Edit", exact: true }))
+    .element(inspector().getByRole("button", { name: "Edit", exact: true }))
     .not.toBeInTheDocument();
   await expect
-    .element(card.getByRole("button", { name: "Supersede", exact: true }))
+    .element(inspector().getByRole("button", { name: "Supersede", exact: true }))
     .not.toBeInTheDocument();
-  await expect.element(card.getByRole("button", { name: "Forget", exact: true })).toBeEnabled();
+  await expect
+    .element(inspector().getByRole("button", { name: "Forget", exact: true }))
+    .toBeEnabled();
   expect(state.listRequest.mock.lastCall![0].input).not.toHaveProperty("sourceState");
-  await page.getByRole("button", { name: "1 fact lost its source" }).click();
-  await expect.element(page.getByText("Showing facts that lost their source.")).toBeVisible();
+  const lost = page.getByRole("button", { name: "Lost source (1)" });
+  await lost.click();
+  await expect.element(lost).toHaveAttribute("aria-pressed", "true");
   expect(state.listRequest.mock.lastCall![0].input).toEqual({
     projectId: scope.projectId,
     sourceState: "unavailable",
   });
-  await page.getByRole("button", { name: "Show all facts" }).click();
-  await expect
-    .element(page.getByText("Showing facts that lost their source."))
-    .not.toBeInTheDocument();
+  await page.getByRole("button", { name: "Confirmed", exact: true }).click();
+  await expect.element(lost).toHaveAttribute("aria-pressed", "false");
   expect(state.listRequest.mock.lastCall![0].input).not.toHaveProperty("sourceState");
 });
 
 it("supersedes a fact and surfaces the conflict hints the server returns", async () => {
-  const registry = setup();
+  const registry = await setup();
   state.mutate.mockResolvedValue({
     _tag: "Success",
     value: {
@@ -628,7 +754,8 @@ it("supersedes a fact and surfaces the conflict hints the server returns", async
     },
   });
   await using screen = await mount(registry);
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  await openMemory(screen);
+  await factRow(fact.content!).click();
   await page.getByRole("button", { name: "Supersede", exact: true }).click();
   await expect
     .element(page.getByRole("textbox", { name: "Fact content" }))
@@ -656,7 +783,7 @@ it("supersedes a fact and surfaces the conflict hints the server returns", async
 });
 
 it("reviews assisted suggestions with their citations and controls the project opt-in", async () => {
-  const registry = setup();
+  const registry = await setup();
   const runId = RunId.make("run");
   const suggestion: ProjectFact = {
     ...fact,
@@ -701,24 +828,28 @@ it("reviews assisted suggestions with their citations and controls the project o
   );
   state.list = Atom.make(AsyncResult.success({ facts: [suggestion], nextCursor: null }));
   await using screen = await mount(registry);
-  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  await openMemory(screen);
+  await page.getByRole("button", { name: "Memory health" }).click();
   const optIn = page.getByRole("checkbox", { name: "Suggest facts from finished runs" });
   await expect.element(optIn).toBeChecked();
   await expect
     .element(page.getByText("Last run: proposed 1 (1 as updates to existing facts)."))
     .toBeVisible();
 
-  await page.getByRole("button", { name: "suggested (1)" }).click();
+  await page.getByRole("button", { name: "Suggested (1)" }).click();
   expect(state.listRequest).toHaveBeenLastCalledWith({
     environmentId: scope.environmentId,
     input: { projectId: scope.projectId, status: "proposed", origin: "assisted" },
   });
-  const card = page.getByRole("article").filter({ hasText: suggestion.content! });
-  await expect.element(card.getByText("Suggested from a run that failed")).toBeVisible();
-  await expect.element(card.getByText("Would replace existing")).toBeVisible();
-  await card.getByRole("button", { name: "Message evidence" }).click();
+  const row = factRow(suggestion.content!);
+  await expect.element(row.getByText("Suggested", { exact: true })).toBeVisible();
+  await row.click();
+  await expect.element(inspector().getByText("Suggested from a run that failed")).toBeVisible();
+  await expect.element(inspector().getByText("Would replace existing")).toBeVisible();
+  await inspector().getByRole("button", { name: "Message evidence" }).click();
   await expect.element(page.getByText("Exact canonical evidence.")).toBeVisible();
-  await card.getByRole("button", { name: "Confirm", exact: true }).click();
+  await page.getByRole("button", { name: "Back to fact" }).click();
+  await inspector().getByRole("button", { name: "Confirm", exact: true }).click();
   expect(state.mutate).toHaveBeenCalledWith({
     environmentId: scope.environmentId,
     input: {

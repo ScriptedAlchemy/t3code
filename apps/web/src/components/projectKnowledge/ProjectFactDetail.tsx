@@ -1,12 +1,11 @@
 import { useState } from "react";
 import type {
-  EnvironmentId,
   KnowledgeConflictHint,
   KnowledgeMessageRef,
   ProjectFactHistoryEntry,
   ProjectFactId,
   ProjectFactSummary,
-  ProjectId,
+  ProjectKnowledgeFactDetail,
   ProjectKnowledgeStatus,
 } from "@t3tools/contracts";
 import {
@@ -18,8 +17,6 @@ import {
 } from "@t3tools/client-runtime/projectKnowledge";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { useEnvironmentQuery } from "../../state/query";
-import { projectKnowledge } from "../../state/projectKnowledge";
 
 type OpenFact = (factId: ProjectFactId) => void;
 
@@ -170,90 +167,65 @@ function HistoryRow(props: {
   );
 }
 
-export function ProjectFactDetailPane(props: {
-  readonly environmentId: EnvironmentId;
-  readonly projectId: ProjectId;
-  readonly factId: ProjectFactId;
+/** Supersede links and conflict hints the server computed for the inspected fact. */
+export function ProjectFactRelations(props: {
+  readonly detail: ProjectKnowledgeFactDetail;
   readonly onOpenFact: OpenFact;
-  readonly onOpenSource: (source: KnowledgeMessageRef) => void;
-  readonly onClose: () => void;
 }) {
-  const detail = useEnvironmentQuery(
-    projectKnowledge.readFact({
-      environmentId: props.environmentId,
-      input: { projectId: props.projectId, factId: props.factId },
-    }),
-  );
-  const data = detail.data?.fact.id === props.factId ? detail.data : null;
-  const trust = data ? projectFactTrustPoints(data.history) : [];
+  const { detail } = props;
+  if (!detail.supersedes && !detail.supersededBy && detail.hints.length === 0) return null;
   return (
-    <section aria-label="Fact details" className="flex flex-col gap-3 rounded-md border p-3">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="font-medium">Fact details</h3>
-        <Button variant="ghost" size="sm" onClick={props.onClose}>
-          Back to facts
-        </Button>
-      </div>
-      {detail.error ? <p role="alert">{detail.error}</p> : null}
-      {data === null && !detail.error ? <p>Reading fact history…</p> : null}
-      {data ? (
-        <>
-          <p className="whitespace-pre-wrap">{data.fact.content ?? "Forgotten fact"}</p>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>
-              {data.fact.kind} · {data.fact.status} · trust {data.fact.trust.toFixed(2)} · revision{" "}
-              {data.fact.revision}
-            </span>
-            {data.sourceUnavailable !== null ? (
-              <Badge variant="warning">
-                {KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL[data.sourceUnavailable]}
-              </Badge>
-            ) : null}
-            {trust.length >= 2 ? <TrustSparkline points={trust} /> : null}
-          </div>
-          {data.supersedes ? (
-            <SummaryRow
-              label="Supersedes"
-              summary={data.supersedes}
-              onOpenFact={props.onOpenFact}
-            />
-          ) : null}
-          {data.supersededBy ? (
-            <SummaryRow
-              label="Superseded by"
-              summary={data.supersededBy}
-              onOpenFact={props.onOpenFact}
-            />
-          ) : null}
-          {data.hints.map((hint) => (
-            <ConflictHintRow
-              key={hint.factId}
-              hint={hint}
-              currentContent={data.fact.content}
-              onOpenFact={props.onOpenFact}
-            />
-          ))}
-          <h4 className="text-sm font-medium">History</h4>
-          {data.historyTruncated ? (
-            <p className="text-xs text-muted-foreground">Earlier history not shown</p>
-          ) : null}
-          <ol aria-label="Fact history" className="flex flex-col gap-2">
-            {data.history.map((entry) => (
-              <HistoryRow key={entry.sequence} entry={entry} onOpenSource={props.onOpenSource} />
-            ))}
-          </ol>
-        </>
+    <div className="flex flex-col gap-2">
+      {detail.supersedes ? (
+        <SummaryRow label="Supersedes" summary={detail.supersedes} onOpenFact={props.onOpenFact} />
       ) : null}
+      {detail.supersededBy ? (
+        <SummaryRow
+          label="Superseded by"
+          summary={detail.supersededBy}
+          onOpenFact={props.onOpenFact}
+        />
+      ) : null}
+      {detail.hints.map((hint) => (
+        <ConflictHintRow
+          key={hint.factId}
+          hint={hint}
+          currentContent={detail.fact.content}
+          onOpenFact={props.onOpenFact}
+        />
+      ))}
+    </div>
+  );
+}
+
+export function ProjectFactHistory(props: {
+  readonly detail: ProjectKnowledgeFactDetail;
+  readonly onOpenSource: (source: KnowledgeMessageRef) => void;
+}) {
+  const { detail } = props;
+  const trust = projectFactTrustPoints(detail.history);
+  return (
+    <section aria-labelledby="project-fact-history" className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <h4 id="project-fact-history" className="font-medium text-sm">
+          History
+        </h4>
+        {trust.length >= 2 ? <TrustSparkline points={trust} /> : null}
+      </div>
+      {detail.historyTruncated ? (
+        <p className="text-xs text-muted-foreground">Earlier history not shown</p>
+      ) : null}
+      <ol aria-label="Fact history" className="flex flex-col gap-2">
+        {detail.history.map((entry) => (
+          <HistoryRow key={entry.sequence} entry={entry} onOpenSource={props.onOpenSource} />
+        ))}
+      </ol>
     </section>
   );
 }
 
-export function KnowledgeHealthStrip(props: {
-  readonly status: ProjectKnowledgeStatus;
-  readonly onShowUnavailable: () => void;
-}) {
+export function KnowledgeHealthStrip(props: { readonly status: ProjectKnowledgeStatus }) {
   const { status } = props;
-  const lost = status.unavailableSources;
   const counters = [
     ["Confirmed", status.counts.confirmed],
     ["Proposed", status.counts.proposed],
@@ -264,21 +236,16 @@ export function KnowledgeHealthStrip(props: {
     ["Unhelpful", status.feedback.unhelpful],
   ] as const;
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-      <dl aria-label="Memory health" className="flex flex-wrap gap-x-3 gap-y-1">
-        {counters.map(([label, value]) => (
-          <div key={label} className="flex gap-1">
-            <dt>{label}</dt>
-            <dd className="tabular-nums text-foreground">{value}</dd>
-          </div>
-        ))}
-      </dl>
-      {lost > 0 ? (
-        <Button variant="link" size="sm" onClick={props.onShowUnavailable}>
-          {status.unavailableSourcesCoverage === "partial" ? "At least " : ""}
-          {lost === 1 ? "1 fact lost its source" : `${lost} facts lost their source`}
-        </Button>
-      ) : null}
-    </div>
+    <dl
+      aria-label="Memory health"
+      className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"
+    >
+      {counters.map(([label, value]) => (
+        <div key={label} className="flex gap-1">
+          <dt>{label}</dt>
+          <dd className="tabular-nums text-foreground">{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
