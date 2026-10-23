@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  KnowledgeSelection,
   ProjectId,
   ProjectKnowledgeContext,
   ProjectKnowledgeContextRecord,
@@ -48,4 +49,49 @@ export function removeProjectKnowledgeReference(
     result = result.slice(0, start) + result.slice(end);
   }
   return result;
+}
+
+export const MAX_KNOWLEDGE_SELECTIONS = 20;
+
+/**
+ * Identity of a selection, without the message digest or fact revision. A refreshed source is the
+ * same selection at a newer version, so toggling it removes the old one instead of adding a second.
+ */
+export const knowledgeSelectionKey = (selection: KnowledgeSelection) =>
+  selection.kind === "fact"
+    ? `fact:${selection.factId}`
+    : `message:${selection.threadId}:${selection.messageId}`;
+
+const sameVersion = (a: KnowledgeSelection, b: KnowledgeSelection) =>
+  a.kind === "fact" && b.kind === "fact"
+    ? a.revision === b.revision
+    : a.kind === "message" && b.kind === "message" && a.digest === b.digest;
+
+/** "changed" means the selection pins an older revision or digest than `current`. */
+export function knowledgeSelectionState(
+  selections: ReadonlyArray<KnowledgeSelection>,
+  current: KnowledgeSelection,
+): "unselected" | "selected" | "changed" {
+  const key = knowledgeSelectionKey(current);
+  const selected = selections.find((item) => knowledgeSelectionKey(item) === key);
+  if (!selected) return "unselected";
+  return sameVersion(selected, current) ? "selected" : "changed";
+}
+
+export function toggleKnowledgeSelection(
+  selections: ReadonlyArray<KnowledgeSelection>,
+  selection: KnowledgeSelection,
+): ReadonlyArray<KnowledgeSelection> {
+  const key = knowledgeSelectionKey(selection);
+  return selections.some((item) => knowledgeSelectionKey(item) === key)
+    ? selections.filter((item) => knowledgeSelectionKey(item) !== key)
+    : [...selections, selection].slice(0, MAX_KNOWLEDGE_SELECTIONS);
+}
+
+export function refreshKnowledgeSelection(
+  selections: ReadonlyArray<KnowledgeSelection>,
+  current: KnowledgeSelection,
+): ReadonlyArray<KnowledgeSelection> {
+  const key = knowledgeSelectionKey(current);
+  return selections.map((item) => (knowledgeSelectionKey(item) === key ? current : item));
 }

@@ -1,26 +1,34 @@
 import { View } from "react-native";
 import type {
-  EnvironmentId,
   KnowledgeConflictHint,
+  KnowledgeMessageRef,
+  KnowledgeSelection,
+  KnowledgeSourceUnavailableReason,
+  MessageId,
+  ProjectFact,
   ProjectFactHistoryEntry,
   ProjectFactId,
   ProjectFactSummary,
-  ProjectId,
+  ProjectKnowledgeFactDetail,
+  ProjectKnowledgeSource,
   ProjectKnowledgeStatus,
+  ThreadId,
 } from "@t3tools/contracts";
 import {
   KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL,
+  isSupersededFact,
   knowledgeConflictHintLabel,
   knowledgeOriginLabel,
   projectFactHistoryLabel,
 } from "@t3tools/client-runtime/projectKnowledge";
 
-import { projectKnowledge } from "../state/projectKnowledge";
-import { useEnvironmentQuery } from "../state/query";
+import { knowledgeSelectionState } from "../lib/projectKnowledgeComposer";
+import { SelectForDraftControl } from "./ProjectKnowledgeDraftFooter";
 import { AppText } from "./ui/AppText";
 import { Button } from "./ui/Button";
 
 type OpenFact = (factId: ProjectFactId) => void;
+type KnowledgeSelectionState = ReturnType<typeof knowledgeSelectionState>;
 
 const historyTimeFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -102,71 +110,244 @@ function HistoryRow(props: { readonly entry: ProjectFactHistoryEntry }) {
   );
 }
 
-export function ProjectFactDetailPane(props: {
-  readonly environmentId: EnvironmentId;
-  readonly projectId: ProjectId;
-  readonly factId: ProjectFactId;
+export function ProjectFactInspector(props: {
+  readonly fact: ProjectFact;
+  /** Null when the server lacks history, or while it loads. */
+  readonly detail: ProjectKnowledgeFactDetail | null;
+  readonly detailError: string | null;
+  readonly history: boolean;
+  readonly sourceUnavailable: KnowledgeSourceUnavailableReason | null;
+  readonly hints: ReadonlyArray<KnowledgeConflictHint>;
+  readonly selection: KnowledgeSelectionState | null;
+  readonly canMutate: boolean;
+  readonly busy: boolean;
+  readonly onToggleSelection: (selection: KnowledgeSelection) => void;
+  readonly onRefreshSelection: (selection: KnowledgeSelection) => void;
+  readonly onReadSource: (ref: KnowledgeMessageRef) => void;
   readonly onOpenFact: OpenFact;
-  readonly onClose: () => void;
+  readonly onEdit: (mode: "edit" | "supersede") => void;
+  readonly onRevise: (action: "confirm" | "forget") => void;
+  readonly onFeedback: (helpful: boolean) => void;
+  readonly onDismissHints: () => void;
 }) {
-  const detail = useEnvironmentQuery(
-    projectKnowledge.readFact({
-      environmentId: props.environmentId,
-      input: { projectId: props.projectId, factId: props.factId },
-    }),
-  );
-  // The query keeps the previous fact's data while a linked fact loads.
-  const data = detail.data?.fact.id === props.factId ? detail.data : null;
+  const { fact, detail } = props;
+  const superseded = isSupersededFact(fact);
+  const active = fact.status !== "forgotten";
+  const mutable = props.canMutate && !props.busy;
   return (
-    <View className="gap-3 rounded-2xl border border-border p-3">
-      <View className="flex-row items-center justify-between gap-2">
-        <AppText className="font-t3-semibold">Fact details</AppText>
-        <Button label="Back to facts" tone="text" onPress={props.onClose} />
+    <View className="gap-4">
+      {props.hints.length > 0 ? (
+        <View className="gap-2">
+          {props.hints.map((hint) => (
+            <ConflictHintRow
+              key={hint.factId}
+              hint={hint}
+              onOpenFact={props.history ? props.onOpenFact : null}
+            />
+          ))}
+          <Button label="Dismiss" tone="text" onPress={props.onDismissHints} />
+        </View>
+      ) : null}
+      <View className="gap-2">
+        {superseded ? (
+          <AppText className="text-xs font-t3-medium text-foreground-muted">Superseded</AppText>
+        ) : null}
+        <AppText selectable className="text-base">
+          {fact.content ?? "Forgotten fact"}
+        </AppText>
+        <AppText className="text-xs text-foreground-muted">
+          {fact.kind} · {fact.status} · {knowledgeOriginLabel(fact.origin)}
+        </AppText>
+        <AppText className="text-xs text-foreground-muted">
+          Trust signal {fact.trust.toFixed(2)} · revision {fact.revision}
+        </AppText>
+        {fact.status === "proposed" &&
+        fact.origin.kind === "assisted" &&
+        fact.supersedes != null ? (
+          <AppText className="text-xs">
+            Confirming replaces fact {fact.supersedes.slice(0, 8)}; forgetting leaves it as it is.
+          </AppText>
+        ) : null}
       </View>
-      {detail.error ? (
-        <AppText accessibilityRole="alert" className="text-danger">
-          {detail.error}
+
+      <View className="gap-2">
+        <AppText className="text-sm font-t3-medium">Evidence</AppText>
+        {props.sourceUnavailable !== null ? (
+          <AppText className="text-xs text-warning-foreground">
+            {KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL[props.sourceUnavailable]}
+          </AppText>
+        ) : null}
+        {fact.sources.length === 0 ? (
+          <AppText className="text-sm text-foreground-muted">No cited source</AppText>
+        ) : null}
+        {fact.sources.map((ref, index) =>
+          ref.kind === "user" ? (
+            <AppText key={`user:${index}`} className="text-sm">
+              User assertion
+            </AppText>
+          ) : (
+            <Button
+              key={`${ref.threadId}:${ref.messageId}`}
+              label="Read source message"
+              tone="text"
+              onPress={() => props.onReadSource(ref)}
+            />
+          ),
+        )}
+      </View>
+
+      {active && props.selection ? (
+        <SelectForDraftControl
+          current={{ kind: "fact", factId: fact.id, revision: fact.revision }}
+          state={props.selection}
+          onToggle={props.onToggleSelection}
+          onRefresh={props.onRefreshSelection}
+        />
+      ) : null}
+
+      {active ? (
+        <View className="flex-row flex-wrap gap-2">
+          {fact.status === "proposed" && !superseded ? (
+            <Button
+              label="Confirm"
+              tone="secondary"
+              disabled={!mutable}
+              onPress={() => props.onRevise("confirm")}
+            />
+          ) : null}
+          {!superseded ? (
+            <Button
+              label="Edit"
+              tone="secondary"
+              disabled={!mutable}
+              onPress={() => props.onEdit("edit")}
+            />
+          ) : null}
+          {props.history && !superseded ? (
+            <Button
+              label="Supersede"
+              tone="text"
+              disabled={!mutable}
+              onPress={() => props.onEdit("supersede")}
+            />
+          ) : null}
+          <Button
+            label="Helpful"
+            tone="text"
+            disabled={!mutable}
+            onPress={() => props.onFeedback(true)}
+          />
+          <Button
+            label="Unhelpful"
+            tone="text"
+            disabled={!mutable}
+            onPress={() => props.onFeedback(false)}
+          />
+          <Button
+            label="Forget"
+            tone="danger"
+            disabled={!mutable}
+            onPress={() => props.onRevise("forget")}
+          />
+        </View>
+      ) : null}
+      {!props.canMutate && active ? (
+        <AppText className="text-xs text-foreground-muted">
+          This connection can read project memory but not change it.
         </AppText>
       ) : null}
-      {data === null && !detail.error ? <AppText>Reading fact history…</AppText> : null}
-      {data ? (
-        <>
-          <AppText selectable>{data.fact.content ?? "Forgotten fact"}</AppText>
-          <AppText className="text-xs text-foreground-muted">
-            {data.fact.kind} · {data.fact.status} · trust {data.fact.trust.toFixed(2)} · revision{" "}
-            {data.fact.revision}
-          </AppText>
-          {data.sourceUnavailable !== null ? (
-            <AppText className="text-xs text-warning-foreground">
-              {KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL[data.sourceUnavailable]}
+
+      {props.history ? (
+        <View className="gap-3">
+          {props.detailError ? (
+            <AppText accessibilityRole="alert" className="text-danger">
+              {props.detailError}
             </AppText>
           ) : null}
-          {data.supersedes ? (
+          {detail === null && !props.detailError ? <AppText>Reading fact history…</AppText> : null}
+          {detail?.supersedes ? (
             <SummaryRow
               label="Supersedes"
-              summary={data.supersedes}
+              summary={detail.supersedes}
               onOpenFact={props.onOpenFact}
             />
           ) : null}
-          {data.supersededBy ? (
+          {detail?.supersededBy ? (
             <SummaryRow
               label="Superseded by"
-              summary={data.supersededBy}
+              summary={detail.supersededBy}
               onOpenFact={props.onOpenFact}
             />
           ) : null}
-          {data.hints.map((hint) => (
+          {detail?.hints.map((hint) => (
             <ConflictHintRow key={hint.factId} hint={hint} onOpenFact={props.onOpenFact} />
           ))}
-          <AppText className="text-sm font-t3-medium">History</AppText>
-          {data.historyTruncated ? (
-            <AppText className="text-xs text-foreground-muted">Earlier history not shown</AppText>
+          {detail ? (
+            <>
+              <AppText className="text-sm font-t3-medium">History</AppText>
+              {detail.historyTruncated ? (
+                <AppText className="text-xs text-foreground-muted">
+                  Earlier history not shown
+                </AppText>
+              ) : null}
+              {detail.history.map((entry) => (
+                <HistoryRow key={entry.sequence} entry={entry} />
+              ))}
+            </>
           ) : null}
-          <View className="gap-3">
-            {data.history.map((entry) => (
-              <HistoryRow key={entry.sequence} entry={entry} />
-            ))}
-          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** Exact message text, read through readSource so the citation is the canonical one. */
+export function ProjectKnowledgeSourceInspector(props: {
+  readonly reference: { readonly threadId: ThreadId; readonly messageId: MessageId };
+  readonly source: ProjectKnowledgeSource | null;
+  readonly error: string | null;
+  readonly selections: ReadonlyArray<KnowledgeSelection>;
+  readonly canMutate: boolean;
+  readonly onToggleSelection: (selection: KnowledgeSelection) => void;
+  readonly onRefreshSelection: (selection: KnowledgeSelection) => void;
+  readonly onSaveAsFact: (text: string, source: KnowledgeMessageRef) => void;
+}) {
+  const { source } = props;
+  return (
+    <View className="gap-3">
+      <AppText className="text-xs text-foreground-muted">
+        {props.reference.threadId} / {props.reference.messageId}
+      </AppText>
+      {props.error ? (
+        <AppText accessibilityRole="alert" className="text-danger">
+          {props.error}
+        </AppText>
+      ) : null}
+      {source === null && !props.error ? <AppText>Reading source…</AppText> : null}
+      {source?.state === "unavailable" ? (
+        <AppText>
+          This message is unavailable ({KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL[source.reason]}).
+        </AppText>
+      ) : null}
+      {source?.state === "available" ? (
+        <>
+          <AppText className="text-xs text-foreground-muted">
+            {source.title} · {source.role} · {source.createdAt}
+            {source.archived ? " · archived" : ""}
+          </AppText>
+          <AppText selectable>{source.text}</AppText>
+          <SelectForDraftControl
+            current={source.source}
+            state={knowledgeSelectionState(props.selections, source.source)}
+            onToggle={props.onToggleSelection}
+            onRefresh={props.onRefreshSelection}
+          />
+          <Button
+            label="Save as fact"
+            tone="text"
+            disabled={!props.canMutate}
+            onPress={() => props.onSaveAsFact(source.text, source.source)}
+          />
         </>
       ) : null}
     </View>

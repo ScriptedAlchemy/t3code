@@ -30,9 +30,26 @@ vi.mock("@t3tools/client-runtime/state/runtime", () => ({
 }));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => crypto.randomUUID() }));
 vi.mock("../state/session", () => ({ useEnvironmentScope: () => true }));
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 vi.mock("react-native", () => ({
+  BackHandler: { addEventListener: () => ({ remove: () => {} }) },
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Pressable: ({
+    children,
+    accessibilityLabel,
+    onPress,
+  }: {
+    children?: ReactNode;
+    accessibilityLabel: string;
+    onPress: () => void;
+  }) => (
+    <button aria-label={accessibilityLabel} onClick={onPress}>
+      {children}
+    </button>
+  ),
   Switch: ({
     accessibilityLabel,
     value,
@@ -182,7 +199,7 @@ function setup() {
     container,
     click: async (label: string) => {
       const button = [...container.querySelectorAll("button")].find(
-        (item) => item.textContent === label,
+        (item) => item.textContent === label || item.getAttribute("aria-label") === label,
       );
       expect(button, label).toBeDefined();
       await act(async () => button!.click());
@@ -215,9 +232,9 @@ it.each(["selection", "archive", "close", "unmount", "removal"] as const)(
         }),
     );
     await screen.click("Project memory");
-    if (change !== "removal") await screen.click("Select");
+    if (change !== "removal") await screen.click("Select for draft");
     await screen.click("Attach to draft");
-    if (change === "selection") await screen.click("Selected");
+    if (change === "selection") await screen.click("Selected for draft");
     if (change === "archive")
       await act(async () =>
         (screen.container.querySelector('[type="checkbox"]') as HTMLInputElement).click(),
@@ -294,7 +311,7 @@ it("saves a remembered feed message with a citation to that message", async () =
 it("attaches the current selection", async () => {
   using screen = setup();
   await screen.click("Project memory");
-  await screen.click("Select");
+  await screen.click("Select for draft");
   await screen.click("Attach to draft");
   expect(state.insert).toHaveBeenCalledWith(
     scope.draftKey,
@@ -311,6 +328,7 @@ it("attaches the current selection", async () => {
 it("edits a citationless agent observation as an explicit user assertion", async () => {
   using screen = setup();
   await screen.click("Project memory");
+  await screen.click(`Inspect fact: ${fact.content}`);
   await screen.click("Edit");
   await screen.click("Save");
   expect(state.mutate).toHaveBeenCalledWith({
@@ -409,6 +427,7 @@ it.each([
   using screen = setup();
   state.list = { facts: [{ ...fact, revision: 3 }], nextCursor: null };
   await screen.click("Project memory");
+  await screen.click(`Inspect fact: ${fact.content}`);
   await screen.click(label);
   expect(state.mutate).toHaveBeenCalledWith({
     environmentId: scope.environmentId,
@@ -430,11 +449,13 @@ it("marks a superseded fact read-only and lists superseded facts on request", as
     nextCursor: null,
   };
   await screen.click("Project memory");
-  const labels = [...screen.container.querySelectorAll("button")].map((item) => item.textContent);
   expect(screen.container.textContent).toContain("Superseded");
+  await screen.click(`Inspect fact: ${fact.content}`);
+  const labels = [...screen.container.querySelectorAll("button")].map((item) => item.textContent);
   expect(labels).not.toContain("Edit");
   expect(labels).not.toContain("Confirm");
   expect(labels).not.toContain("Supersede");
+  await screen.click("Back");
   expect(state.listInputs.at(-1)).not.toHaveProperty("includeSuperseded");
   await act(async () =>
     (
@@ -464,6 +485,7 @@ it("supersedes a fact with a new replacement and shows the returned conflict hin
     },
   });
   await screen.click("Project memory");
+  await screen.click(`Inspect fact: ${fact.content}`);
   await screen.click("Supersede");
   await screen.click("Save");
   const input = state.mutate.mock.lastCall![0].input;
@@ -478,4 +500,121 @@ it("supersedes a fact with a new replacement and shows the returned conflict hin
   expect(screen.container.textContent).toContain(
     "Possible conflict with: “Cache keys omit tenant IDs.”",
   );
+});
+
+it("treats a changed message source as the same selection and shows it as changed", async () => {
+  using screen = setup();
+  const match = (digest: string) => ({
+    messages: {
+      nextCursor: null,
+      matches: [{ threadId: "conversation", messageId: "message", digest, snippet: "Tenant" }],
+    },
+    facts: { state: "available", matches: [], coverage: "complete", nextCursor: null },
+  });
+  state.search = match("a".repeat(64));
+  await screen.click("Project memory");
+  const input = screen.container.querySelector(
+    '[aria-label="Search project knowledge"]',
+  ) as HTMLInputElement;
+  await act(async () => {
+    input.value = "tenant";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await screen.click("Search");
+  await screen.click("Select for draft");
+  state.search = match("b".repeat(64));
+  await screen.click("Refresh");
+  expect(screen.container.textContent).toContain("Source changed");
+  expect(screen.container.textContent).toContain(
+    "1 selected · up to 20 · 1 changed since selected",
+  );
+  await screen.click("Selected for draft");
+  expect(screen.container.textContent).not.toContain("selected · up to 20");
+  await screen.click("Select for draft");
+  await screen.click("Attach to draft");
+  expect(state.prepare.mock.lastCall![0].input.selections).toEqual([
+    {
+      kind: "message",
+      threadId: "conversation",
+      messageId: "message",
+      digest: "b".repeat(64),
+    },
+  ]);
+});
+
+it("replaces a changed source with its current version on request", async () => {
+  using screen = setup();
+  state.search = {
+    messages: {
+      nextCursor: null,
+      matches: [
+        { threadId: "conversation", messageId: "message", digest: "b".repeat(64), snippet: "T" },
+      ],
+    },
+    facts: { state: "available", matches: [], coverage: "complete", nextCursor: null },
+  };
+  const stale = {
+    kind: "message" as const,
+    threadId: ThreadId.make("conversation"),
+    messageId: MessageId.make("message"),
+    digest: "a".repeat(64),
+  };
+  const reference = projectKnowledgeComposerReference({
+    ...scope,
+    selections: [stale],
+    maxBytes: 48_000,
+  });
+  state.draft = { text: reference.text, context: { records: [reference.record] } };
+  await screen.click("Project memory");
+  const input = screen.container.querySelector(
+    '[aria-label="Search project knowledge"]',
+  ) as HTMLInputElement;
+  await act(async () => {
+    input.value = "tenant";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await screen.click("Search");
+  await screen.click("Use current version");
+  expect(screen.container.textContent).not.toContain("Source changed");
+  await screen.click("Attach to draft");
+  expect(state.prepare.mock.lastCall![0].input.selections).toEqual([
+    { ...stale, digest: "b".repeat(64) },
+  ]);
+});
+
+it("removes the attached draft reference when the selection changes and says so", async () => {
+  using screen = setup();
+  const reference = projectKnowledgeComposerReference({
+    ...scope,
+    selections: [{ kind: "fact", factId: fact.id, revision: 1 }],
+    maxBytes: 48_000,
+  });
+  state.draft = { text: `See ${reference.text}`, context: { records: [reference.record] } };
+  state.setText.mockImplementation((_key: string, text: string) => {
+    state.draft = { text };
+  });
+  await screen.click("Project memory");
+  expect(screen.container.textContent).toContain("is attached to this draft");
+  await screen.click("Selected for draft");
+  expect(state.setText).toHaveBeenCalledWith(scope.draftKey, "See");
+  expect(screen.container.textContent).toContain("removed from the draft");
+});
+
+it("drops a revised fact from the selection and the draft after saving", async () => {
+  using screen = setup();
+  const reference = projectKnowledgeComposerReference({
+    ...scope,
+    selections: [{ kind: "fact", factId: fact.id, revision: 1 }],
+    maxBytes: 48_000,
+  });
+  state.draft = { text: reference.text, context: { records: [reference.record] } };
+  state.setText.mockImplementation((_key: string, text: string) => {
+    state.draft = { text };
+  });
+  await screen.click("Project memory");
+  await screen.click(`Inspect fact: ${fact.content}`);
+  await screen.click("Confirm");
+  expect(state.setText).toHaveBeenCalledWith(scope.draftKey, "");
+  expect(screen.container.textContent).toContain("0 selected");
+  expect(screen.container.textContent).toContain("removed from the draft");
 });

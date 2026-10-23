@@ -1,15 +1,12 @@
 import { uuidv4 } from "../lib/uuid";
 import { useEffect, useRef, useState } from "react";
-import { ScrollView, Switch, View } from "react-native";
+import { BackHandler, ScrollView, View } from "react-native";
 import { useAtomValue } from "@effect/atom-react";
 import {
-  AuthSettingsWriteScope,
   CommandId,
   ProjectFactId,
-  type AssistedLearningRun,
   type EnvironmentId,
   type KnowledgeConflictHint,
-  type KnowledgeFactSource,
   type KnowledgeMessageRef,
   type KnowledgeSelection,
   type MessageId,
@@ -17,22 +14,19 @@ import {
   type ProjectId,
   type ProjectKnowledgeContextRecord,
   type ProjectKnowledgeMutation,
-  type ProjectKnowledgeSearchInput,
+  type ProjectKnowledgeSource,
   type ThreadId,
 } from "@t3tools/contracts";
-import {
-  KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL,
-  assistedLearningRunLabel,
-  isSupersededFact,
-  knowledgeOriginLabel,
-} from "@t3tools/client-runtime/projectKnowledge";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 import {
+  knowledgeSelectionKey,
+  knowledgeSelectionState,
   projectKnowledgeComposerReference,
   projectKnowledgeRecordInScope,
+  refreshKnowledgeSelection,
   removeProjectKnowledgeReference,
+  toggleKnowledgeSelection,
 } from "../lib/projectKnowledgeComposer";
 import {
   getComposerDraftSnapshot,
@@ -44,30 +38,24 @@ import { projectKnowledge } from "../state/projectKnowledge";
 import { serverEnvironment } from "../state/server";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useEnvironmentQuery } from "../state/query";
-import { useEnvironmentScope } from "../state/session";
 import {
-  ConflictHintRow,
-  KnowledgeHealthRow,
-  ProjectFactDetailPane,
+  ProjectKnowledgeDraftFooter,
+  type DescribedSelection,
+} from "./ProjectKnowledgeDraftFooter";
+import {
+  ProjectFactInspector,
+  ProjectKnowledgeSourceInspector,
 } from "./ProjectKnowledgeFactDetail";
-import { AppText, AppTextInput } from "./ui/AppText";
+import {
+  ProjectKnowledgeFactEditor,
+  factEditorTitle,
+  type FactEditorFields,
+  type FactEditorMode,
+} from "./ProjectKnowledgeFactEditor";
+import { ProjectKnowledgeFactList, useProjectKnowledgeBrowse } from "./ProjectKnowledgeFactList";
+import { AppText } from "./ui/AppText";
 import { Button } from "./ui/Button";
 import { Sheet } from "./ui/Sheet";
-
-const selectionKey = (selection: KnowledgeSelection) =>
-  selection.kind === "fact"
-    ? `fact:${selection.factId}`
-    : `message:${selection.threadId}:${selection.messageId}:${selection.digest}`;
-
-const parseLabels = (value: string) =>
-  [
-    ...new Set(
-      value
-        .split(",")
-        .map((label) => label.trim())
-        .filter(Boolean),
-    ),
-  ].slice(0, 32);
 
 type Scope = {
   readonly environmentId: EnvironmentId;
@@ -79,6 +67,16 @@ type MessageCitation = { readonly threadId: ThreadId; readonly messageId: Messag
 // The digest is optional so a feed message can be cited before the server has
 // hashed it; readSource returns the canonical ref.
 type SourceRef = MessageCitation & { readonly digest?: KnowledgeMessageRef["digest"] };
+/**
+ * The sheet is a small stack: the fact list pushes a fact or source inspector, and editing is its
+ * own page so reading a fact never changes it.
+ */
+type Page =
+  | { readonly kind: "list" }
+  | { readonly kind: "fact"; readonly factId: ProjectFactId; readonly snapshot: ProjectFact | null }
+  | { readonly kind: "source"; readonly ref: SourceRef }
+  | { readonly kind: "remember"; readonly ref: SourceRef }
+  | { readonly kind: "editor"; readonly mode: FactEditorMode };
 type RememberRequest = {
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
@@ -145,37 +143,22 @@ function ProjectKnowledgeSheet(
       record.kind === "project-knowledge" && "knowledge" in record,
   );
   const attachedInScope =
-    attached?.kind === "project-knowledge" && projectKnowledgeRecordInScope(attached, scope)
-      ? attached
-      : undefined;
+    attached && projectKnowledgeRecordInScope(attached, scope) ? attached : undefined;
   const [selections, setSelections] = useState<ReadonlyArray<KnowledgeSelection>>(
     attachedInScope?.knowledge.selections ?? [],
   );
-  const [status, setStatus] = useState<"confirmed" | "proposed" | "suggested" | "forgotten">(
-    "confirmed",
+  // Set when a selection change removed the reference this sheet opened with.
+  const [detached, setDetached] = useState(false);
+  const [stack, setStack] = useState<ReadonlyArray<Page>>(
+    props.seedMessage
+      ? [{ kind: "list" }, { kind: "remember", ref: props.seedMessage }]
+      : [{ kind: "list" }],
   );
-  const [afterId, setAfterId] = useState<ProjectFactId | undefined>();
-  const [includeArchived, setIncludeArchived] = useState(false);
-  const [searchText, setSearchText] = useState("");
-  const [searchInput, setSearchInput] = useState<ProjectKnowledgeSearchInput | null>(null);
-  const [source, setSource] = useState<SourceRef | null>(props.seedMessage);
-  const [showSuperseded, setShowSuperseded] = useState(false);
-  const [lostSourcesOnly, setLostSourcesOnly] = useState(false);
-  const [detailId, setDetailId] = useState<ProjectFactId | null>(null);
-  const [hints, setHints] = useState<ReadonlyArray<KnowledgeConflictHint>>([]);
-  const [editor, setEditor] = useState<
-    | { readonly kind: "create" }
-    | { readonly kind: "edit" | "supersede"; readonly fact: ProjectFact }
-    | null
-  >(props.seedMessage ? { kind: "create" } : null);
-  const [citations, setCitations] = useState<ReadonlyArray<KnowledgeFactSource>>([
-    { kind: "user" },
-  ]);
-  const [prefillPending, setPrefillPending] = useState(props.seedMessage !== null);
-  const [content, setContent] = useState("");
-  const [entities, setEntities] = useState("");
-  const [tags, setTags] = useState("");
-  const [kind, setKind] = useState<"decision" | "constraint" | "convention" | "note">("note");
+  const page = stack.at(-1)!;
+  const [hints, setHints] = useState<{
+    readonly factId: ProjectFactId;
+    readonly hints: ReadonlyArray<KnowledgeConflictHint>;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const selectionVersion = useRef(0);
@@ -186,90 +169,85 @@ function ProjectKnowledgeSheet(
     [],
   );
   const canMutate = useAtomValue(projectKnowledge.mutate.permissionAtom(props.environmentId));
-  const list = useEnvironmentQuery(
-    projectKnowledge.list({
-      environmentId: props.environmentId,
-      input: {
-        projectId: props.projectId,
-        // The lost-source filter spans proposed and confirmed, matching the health count.
-        ...(props.history && lostSourcesOnly
-          ? { sourceState: "unavailable" as const }
-          : status === "suggested"
-            ? { status: "proposed" as const, origin: "assisted" as const }
-            : { status }),
-        ...(afterId ? { afterId } : {}),
-        ...(props.history && showSuperseded ? { includeSuperseded: true } : {}),
-      },
-    }),
-  );
-  const health = useEnvironmentQuery(
-    props.history
-      ? projectKnowledge.status({
+
+  const detachDraftReference = () => {
+    if (!attachedInScope) return;
+    setComposerDraftText(
+      props.draftKey,
+      removeProjectKnowledgeReference(
+        getComposerDraftSnapshot(props.draftKey).text,
+        attachedInScope,
+      ),
+    );
+    setDetached(true);
+  };
+  // What the draft references must never silently differ from what the sheet shows as selected,
+  // so any change removes the attached reference, as the web draft selection does.
+  const changeSelections = (
+    next: (current: ReadonlyArray<KnowledgeSelection>) => ReadonlyArray<KnowledgeSelection>,
+  ) => {
+    selectionVersion.current += 1;
+    setSelections(next);
+    detachDraftReference();
+  };
+  const toggleSelection = (selection: KnowledgeSelection) =>
+    changeSelections((current) => toggleKnowledgeSelection(current, selection));
+  const refreshSelection = (selection: KnowledgeSelection) =>
+    changeSelections((current) => refreshKnowledgeSelection(current, selection));
+
+  const browse = useProjectKnowledgeBrowse({
+    environmentId: props.environmentId,
+    projectId: props.projectId,
+    history: props.history,
+    onArchivedChange: () => {
+      selectionVersion.current += 1;
+      detachDraftReference();
+    },
+  });
+  const detail = useEnvironmentQuery(
+    props.history && page.kind === "fact"
+      ? projectKnowledge.readFact({
           environmentId: props.environmentId,
-          input: { projectId: props.projectId },
+          input: { projectId: props.projectId, factId: page.factId },
         })
       : null,
   );
-  const search = useEnvironmentQuery(
-    searchInput
-      ? projectKnowledge.search({ environmentId: props.environmentId, input: searchInput })
-      : null,
-  );
+  // The query keeps the previous fact's data while a linked fact loads.
+  const detailData =
+    page.kind === "fact" && detail.data?.fact.id === page.factId ? detail.data : null;
+  const sourceRef = page.kind === "source" || page.kind === "remember" ? page.ref : null;
   const sourceQuery = useEnvironmentQuery(
-    source
+    sourceRef
       ? projectKnowledge.readSource({
           environmentId: props.environmentId,
-          input: { projectId: props.projectId, ...source, includeArchived },
+          input: {
+            projectId: props.projectId,
+            ...sourceRef,
+            includeArchived: browse.includeArchived,
+          },
         })
       : null,
   );
-  if (
-    prefillPending &&
-    sourceQuery.data?.state === "available" &&
-    sourceQuery.data.source.messageId === props.seedMessage?.messageId
-  ) {
-    setPrefillPending(false);
-    setContent(sourceQuery.data.text.slice(0, 12_000));
-    setCitations([sourceQuery.data.source]);
-  }
   const mutate = useAtomCommand(projectKnowledge.mutate, { reportFailure: false });
   const prepare = useAtomCommand(projectKnowledge.prepareContext, { reportFailure: false });
 
-  const toggleSelection = (selection: KnowledgeSelection) => {
-    selectionVersion.current += 1;
-    setSelections((current) =>
-      current.some((item) => selectionKey(item) === selectionKey(selection))
-        ? current.filter((item) => selectionKey(item) !== selectionKey(selection))
-        : [...current, selection].slice(0, 20),
-    );
+  const push = (next: Page) => {
+    setError(null);
+    setStack((current) => [...current, next]);
   };
+  const pop = () => {
+    setError(null);
+    setStack((current) => (current.length > 1 ? current.slice(0, -1) : current));
+  };
+  useEffect(() => {
+    if (stack.length < 2) return;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      setStack((current) => current.slice(0, -1));
+      return true;
+    });
+    return () => subscription.remove();
+  }, [stack.length]);
 
-  const restartSearch = () =>
-    setSearchInput((current) =>
-      current === null
-        ? null
-        : {
-            projectId: current.projectId,
-            query: current.query,
-            includeArchived: current.includeArchived ?? false,
-            requestId: CommandId.make(uuidv4()),
-            ...(current.includeSuperseded ? { includeSuperseded: true } : {}),
-          },
-    );
-  const startSearch = () => {
-    const query = searchText.trim();
-    setSearchInput(
-      query.length < 2
-        ? null
-        : {
-            projectId: props.projectId,
-            query,
-            includeArchived,
-            requestId: CommandId.make(uuidv4()),
-            ...(props.history && showSuperseded ? { includeSuperseded: true } : {}),
-          },
-    );
-  };
   const apply = async (input: ProjectKnowledgeMutation) => {
     selectionVersion.current += 1;
     setBusy(true);
@@ -280,77 +258,53 @@ function ProjectKnowledgeSheet(
       setError(String(squashAtomCommandFailure(result)));
       return;
     }
-    setHints(result.value.hints ?? []);
-    setEditor(null);
-    setContent("");
-    list.refresh();
-    health.refresh();
-    restartSearch();
-  };
-
-  const revise = (fact: ProjectFact, action: "confirm" | "forget") =>
-    apply({
-      action,
-      commandId: CommandId.make(uuidv4()),
-      projectId: props.projectId,
-      factId: fact.id,
-      expectedRevision: fact.revision,
+    const fact = result.value;
+    // A revised fact's old revision is no longer what the selection meant, as on web.
+    const revised = new Set<ProjectFactId>([input.factId, fact.id]);
+    if (selections.some((item) => item.kind === "fact" && revised.has(item.factId)))
+      changeSelections((current) =>
+        current.filter((item) => item.kind !== "fact" || !revised.has(item.factId)),
+      );
+    setHints(fact.hints?.length ? { factId: fact.id, hints: fact.hints } : null);
+    const inspected: Page = { kind: "fact", factId: fact.id, snapshot: fact };
+    setStack((current) => {
+      const base = current.filter((item) => item.kind !== "editor" && item.kind !== "remember");
+      const top = base.at(-1);
+      return top?.kind === "fact" && revised.has(top.factId)
+        ? [...base.slice(0, -1), inspected]
+        : [...base, inspected];
     });
-  const giveFeedback = (fact: ProjectFact, helpful: boolean) =>
-    apply({
-      action: "feedback",
-      commandId: CommandId.make(uuidv4()),
-      projectId: props.projectId,
-      factId: fact.id,
-      expectedRevision: fact.revision,
-      helpful,
-    });
-  const openEditor = (kind: "edit" | "supersede", fact: ProjectFact) => {
-    setEditor({ kind, fact });
-    setContent(fact.content ?? "");
-    setEntities(fact.entities.join(", "));
-    setTags(fact.tags.join(", "));
-    setKind(fact.kind);
+    browse.refresh();
+    detail.refresh();
   };
-
-  const saveFact = () => {
-    const fields = {
-      content: content.trim(),
-      entities: parseLabels(entities),
-      tags: parseLabels(tags),
-      kind,
-    };
-    if (editor?.kind === "edit") {
-      void apply({
-        action: "edit",
-        commandId: CommandId.make(uuidv4()),
-        projectId: props.projectId,
-        factId: editor.fact.id,
-        expectedRevision: editor.fact.revision,
-        sources: editor.fact.sources.length ? editor.fact.sources : [{ kind: "user" }],
-        ...fields,
-      });
-    } else if (editor?.kind === "supersede") {
-      void apply({
-        action: "supersede",
-        commandId: CommandId.make(uuidv4()),
-        projectId: props.projectId,
-        factId: editor.fact.id,
-        expectedRevision: editor.fact.revision,
-        replacementFactId: ProjectFactId.make(uuidv4()),
-        sources: editor.fact.sources.length ? editor.fact.sources : [{ kind: "user" }],
-        ...fields,
-      });
-    } else {
+  const factMutation = (fact: ProjectFact) => ({
+    commandId: CommandId.make(uuidv4()),
+    projectId: props.projectId,
+    factId: fact.id,
+    expectedRevision: fact.revision,
+  });
+  const save = (mode: FactEditorMode, fields: FactEditorFields) => {
+    if (mode.kind === "create") {
       void apply({
         action: "create",
         commandId: CommandId.make(uuidv4()),
         projectId: props.projectId,
         factId: ProjectFactId.make(uuidv4()),
-        sources: citations,
+        sources: mode.sources,
         ...fields,
       });
+      return;
     }
+    const base = {
+      ...factMutation(mode.fact),
+      sources: mode.fact.sources.length ? mode.fact.sources : [{ kind: "user" as const }],
+      ...fields,
+    };
+    void apply(
+      mode.kind === "edit"
+        ? { action: "edit", ...base }
+        : { action: "supersede", replacementFactId: ProjectFactId.make(uuidv4()), ...base },
+    );
   };
 
   const attach = async () => {
@@ -364,7 +318,7 @@ function ProjectKnowledgeSheet(
         environmentId: props.environmentId,
         projectId: props.projectId,
         selections,
-        includeArchived,
+        includeArchived: browse.includeArchived,
         maxBytes: 48_000,
       },
     });
@@ -398,616 +352,237 @@ function ProjectKnowledgeSheet(
     props.onClose();
   };
 
-  const facts = searchInput
-    ? search.data?.facts.state === "available"
-      ? search.data.facts.matches.map((match) => match.fact)
-      : []
-    : (list.data?.facts ?? []);
-  // Search already drops facts whose citations no longer resolve.
-  const unavailableReasons = new Map(
-    searchInput
-      ? []
-      : (list.data?.unavailableSources ?? []).map((item) => [item.factId, item.reason]),
-  );
+  // The newest version of each item this sheet has loaded, to show selections that went stale.
+  const loaded = new Map<
+    string,
+    { readonly current: KnowledgeSelection; readonly label: string }
+  >();
+  const track = (current: KnowledgeSelection, label: string) =>
+    loaded.set(knowledgeSelectionKey(current), { current, label });
+  for (const fact of browse.facts)
+    if (fact.status !== "forgotten")
+      track({ kind: "fact", factId: fact.id, revision: fact.revision }, fact.content);
+  for (const message of browse.messages) track(message.ref, message.snippet);
+  if (sourceQuery.data?.state === "available")
+    track(sourceQuery.data.source, sourceQuery.data.text);
+  const inspectedFact =
+    page.kind === "fact"
+      ? detailData && detailData.fact.revision >= (page.snapshot?.revision ?? 0)
+        ? detailData.fact
+        : page.snapshot
+      : null;
+  if (inspectedFact && inspectedFact.status !== "forgotten")
+    track(
+      { kind: "fact", factId: inspectedFact.id, revision: inspectedFact.revision },
+      inspectedFact.content,
+    );
+  const described: ReadonlyArray<DescribedSelection> = selections.map((selection) => {
+    const known = loaded.get(knowledgeSelectionKey(selection));
+    return {
+      selection,
+      current: known?.current ?? null,
+      label:
+        known?.label ??
+        (selection.kind === "fact"
+          ? `Fact ${selection.factId.slice(0, 8)} · revision ${selection.revision}`
+          : `Message ${selection.messageId.slice(0, 8)}`),
+    };
+  });
+  const selectionState = (current: KnowledgeSelection) =>
+    knowledgeSelectionState(selections, current);
+
+  const title =
+    page.kind === "list"
+      ? "Project memory"
+      : page.kind === "fact"
+        ? "Fact"
+        : page.kind === "source"
+          ? "Source message"
+          : page.kind === "remember"
+            ? "New fact"
+            : factEditorTitle(page.mode);
 
   return (
-    <Sheet title="Project memory" onClose={props.onClose}>
-      <ScrollView
-        className="flex-1"
-        contentInsetAdjustmentBehavior="automatic"
-        contentContainerStyle={{ padding: 20, gap: 14 }}
-      >
-        <AppText className="text-sm text-foreground-muted">
-          {props.projectId} · {props.environmentId}
-        </AppText>
-        {props.history && detailId !== null ? (
-          <ProjectFactDetailPane
-            environmentId={props.environmentId}
-            projectId={props.projectId}
-            factId={detailId}
-            onOpenFact={setDetailId}
-            onClose={() => setDetailId(null)}
-          />
-        ) : (
-          <>
-            {attached && !attachedInScope ? (
-              <View className="gap-2 rounded-2xl bg-subtle p-3">
-                <AppText className="text-sm">
-                  Attached evidence belongs to another project or environment.
-                </AppText>
-                <Button
-                  label="Remove mismatched reference"
-                  tone="secondary"
-                  onPress={() => {
-                    selectionVersion.current += 1;
-                    setSelections([]);
-                    setComposerDraftText(
-                      props.draftKey,
-                      removeProjectKnowledgeReference(draft.text, attached),
-                    );
-                  }}
-                />
-              </View>
-            ) : attachedInScope ? (
-              <View className="gap-2 rounded-2xl bg-subtle p-3">
-                <AppText>{attachedInScope.label} is attached to this draft.</AppText>
-                <Button
-                  label="Remove from draft"
-                  tone="secondary"
-                  onPress={() => {
-                    selectionVersion.current += 1;
-                    setSelections([]);
-                    setComposerDraftText(
-                      props.draftKey,
-                      removeProjectKnowledgeReference(draft.text, attachedInScope),
-                    );
-                  }}
-                />
-              </View>
-            ) : null}
-
-            {props.assisted ? (
-              <AssistedLearningRow
-                environmentId={props.environmentId}
-                projectId={props.projectId}
-                lastRun={health.data?.assistedLearning?.lastRun ?? null}
-              />
-            ) : null}
-            <View className="flex-row items-center gap-3">
-              <AppText className="flex-1">Include archived conversations</AppText>
-              <Switch
-                value={includeArchived}
-                onValueChange={(value) => {
-                  selectionVersion.current += 1;
-                  setIncludeArchived(value);
-                  setSearchInput(null);
-                }}
-              />
+    <Sheet title={title} onClose={props.onClose}>
+      <View className="flex-1">
+        <ScrollView
+          className="flex-1"
+          contentInsetAdjustmentBehavior="automatic"
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ padding: 20, gap: 14 }}
+        >
+          {stack.length > 1 ? (
+            <View className="flex-row">
+              <Button label="Back" icon="chevron.left" tone="text" onPress={pop} />
             </View>
-            <View className="flex-row flex-wrap gap-2">
-              {(props.assisted
-                ? (["confirmed", "proposed", "suggested", "forgotten"] as const)
-                : (["confirmed", "proposed", "forgotten"] as const)
-              ).map((value) => (
-                <Button
-                  key={value}
-                  label={
-                    value === "suggested" && health.data?.assistedLearning?.suggested
-                      ? `suggested (${health.data.assistedLearning.suggested})`
-                      : value
-                  }
-                  tone={
-                    status === value && !searchInput && !lostSourcesOnly ? "primary" : "secondary"
-                  }
-                  onPress={() => {
-                    setStatus(value);
-                    setLostSourcesOnly(false);
-                    setAfterId(undefined);
-                    setSearchInput(null);
-                  }}
-                />
-              ))}
-              <Button
-                label="Refresh"
-                tone="text"
-                onPress={() => {
-                  list.refresh();
-                  health.refresh();
-                  restartSearch();
-                }}
-              />
-            </View>
-            {props.history ? (
-              <View className="flex-row items-center gap-3">
-                <AppText className="flex-1">Show superseded facts</AppText>
-                <Switch
-                  accessibilityLabel="Show superseded facts"
-                  value={showSuperseded}
-                  onValueChange={(value) => {
-                    setShowSuperseded(value);
-                    setAfterId(undefined);
-                    setSearchInput(null);
-                  }}
-                />
-              </View>
-            ) : null}
-            {health.data ? (
-              <KnowledgeHealthRow
-                status={health.data}
-                onShowUnavailable={() => {
-                  setLostSourcesOnly(true);
-                  setAfterId(undefined);
-                  setSearchInput(null);
-                }}
-              />
-            ) : null}
-            {props.history && lostSourcesOnly ? (
-              <View className="flex-row flex-wrap items-center gap-2">
-                <AppText className="text-sm">Showing facts that lost their source</AppText>
-                <Button
-                  label="Show all facts"
-                  tone="text"
-                  onPress={() => {
-                    setLostSourcesOnly(false);
-                    setAfterId(undefined);
-                  }}
-                />
-              </View>
-            ) : null}
-            <View className="gap-2">
-              <AppTextInput
-                accessibilityLabel="Search project knowledge"
-                value={searchText}
-                onChangeText={setSearchText}
-                placeholder="Search facts and conversations"
-                maxLength={200}
-                returnKeyType="search"
-                onSubmitEditing={startSearch}
-              />
-              <Button label="Search" tone="secondary" onPress={startSearch} />
-            </View>
-            {(error ?? list.error ?? search.error) ? (
-              <AppText accessibilityRole="alert" className="text-danger">
-                {error ?? list.error ?? search.error}
-              </AppText>
-            ) : null}
-            {list.isPending || search.isPending ? <AppText>Reading project memory…</AppText> : null}
-            {search.data?.facts.state === "unavailable" ? (
-              <AppText className="text-sm text-foreground-muted">
-                Fact ranking is unavailable. Conversation search and saved facts remain available.
-              </AppText>
-            ) : null}
-            {search.data?.facts.state === "available" &&
-            search.data.facts.coverage === "partial" ? (
-              <AppText className="text-sm text-foreground-muted">
-                Partial coverage. Narrow the query to reach more facts.
-              </AppText>
-            ) : null}
-
-            {hints.length > 0 ? (
-              <View className="gap-2">
-                {hints.map((hint) => (
-                  <ConflictHintRow
-                    key={hint.factId}
-                    hint={hint}
-                    onOpenFact={props.history ? setDetailId : null}
-                  />
-                ))}
-                <Button label="Dismiss" tone="text" onPress={() => setHints([])} />
-              </View>
-            ) : null}
-            {!editor ? (
-              <Button
-                label="Save project fact"
-                icon="plus"
-                tone="primary"
-                disabled={!canMutate || busy}
-                onPress={() => {
-                  setEditor({ kind: "create" });
-                  setCitations([{ kind: "user" }]);
-                  setPrefillPending(false);
-                  setContent("");
-                  setEntities("");
-                  setTags("");
-                  setKind("note");
-                  setError(null);
-                }}
-              />
-            ) : null}
-            {editor ? (
-              <View className="gap-3 rounded-2xl bg-subtle p-3">
-                <AppText className="font-t3-semibold">
-                  {editor.kind === "edit"
-                    ? "Edit fact"
-                    : editor.kind === "supersede"
-                      ? "Replace fact"
-                      : "New fact"}
-                </AppText>
-                {editor.kind === "create" && citations.some((ref) => ref.kind === "message") ? (
-                  <AppText className="text-xs text-foreground-muted">
-                    Cites the selected message.
-                  </AppText>
-                ) : null}
-                {editor.kind === "supersede" ? (
-                  <AppText className="text-xs text-foreground-muted">
-                    Saves a new fact and marks the current one as superseded. The old text stays in
-                    its history.
-                  </AppText>
-                ) : null}
-                <AppTextInput
-                  accessibilityLabel="Fact content"
-                  value={content}
-                  onChangeText={setContent}
-                  placeholder="A durable project fact"
-                  multiline
-                  maxLength={12_000}
-                  textAlignVertical="top"
-                  style={{ minHeight: 96 }}
-                />
-                <AppTextInput
-                  accessibilityLabel="Entities"
-                  value={entities}
-                  onChangeText={setEntities}
-                  placeholder="Entities, comma separated"
-                  maxLength={2_048}
-                />
-                <AppTextInput
-                  accessibilityLabel="Tags"
-                  value={tags}
-                  onChangeText={setTags}
-                  placeholder="Tags, comma separated"
-                  maxLength={2_048}
-                />
-                <View className="flex-row flex-wrap gap-2">
-                  {(["decision", "constraint", "convention", "note"] as const).map((value) => (
-                    <Button
-                      key={value}
-                      label={value}
-                      tone={kind === value ? "primary" : "secondary"}
-                      onPress={() => setKind(value)}
-                    />
-                  ))}
-                </View>
-                <Button
-                  label="Save"
-                  tone="primary"
-                  disabled={!canMutate || busy || !content.trim()}
-                  loading={busy}
-                  onPress={saveFact}
-                />
-                <Button
-                  label="Cancel"
-                  tone="text"
-                  disabled={busy}
-                  onPress={() => setEditor(null)}
-                />
-              </View>
-            ) : null}
-
-            {facts.map((fact) => {
-              const superseded = isSupersededFact(fact);
-              const active = fact.status !== "forgotten";
-              return (
-                <View
-                  key={fact.id}
-                  className={
-                    superseded
-                      ? "gap-2 rounded-2xl border border-dashed border-border p-3 opacity-70"
-                      : "gap-2 rounded-2xl border border-border p-3"
-                  }
-                >
-                  {superseded ? (
-                    <AppText className="text-xs font-t3-medium text-foreground-muted">
-                      Superseded
-                    </AppText>
-                  ) : null}
-                  {unavailableReasons.has(fact.id) ? (
-                    <AppText className="text-xs text-warning-foreground">
-                      {KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL[unavailableReasons.get(fact.id)!]}
-                    </AppText>
-                  ) : null}
-                  <AppText className="text-base">{fact.content ?? "Forgotten fact"}</AppText>
-                  <AppText className="text-xs text-foreground-muted">
-                    {fact.kind} · {fact.status} · trust {fact.trust.toFixed(2)} · revision{" "}
-                    {fact.revision}
-                  </AppText>
-                  <AppText className="text-xs text-foreground-muted">
-                    {knowledgeOriginLabel(fact.origin)}
-                  </AppText>
-                  {fact.status === "proposed" &&
-                  fact.origin.kind === "assisted" &&
-                  fact.supersedes != null ? (
-                    <AppText className="text-xs">
-                      Confirming replaces fact {fact.supersedes.slice(0, 8)}; forgetting leaves it
-                      as it is.
-                    </AppText>
-                  ) : null}
-                  <View className="flex-row flex-wrap gap-2">
-                    {fact.sources.map((ref, index) =>
-                      ref.kind === "user" ? (
-                        <AppText key={`user:${index}`} className="text-sm">
-                          User assertion
-                        </AppText>
-                      ) : (
-                        <Button
-                          key={`${ref.threadId}:${ref.messageId}`}
-                          label="Read source"
-                          tone="text"
-                          onPress={() => setSource(ref)}
-                        />
-                      ),
-                    )}
-                    {active ? (
-                      <Button
-                        label={
-                          selections.some(
-                            (selection) =>
-                              selection.kind === "fact" && selection.factId === fact.id,
-                          )
-                            ? "Selected"
-                            : "Select"
-                        }
-                        tone="secondary"
-                        onPress={() =>
-                          toggleSelection({
-                            kind: "fact",
-                            factId: fact.id,
-                            revision: fact.revision,
-                          })
-                        }
-                      />
-                    ) : null}
-                    {active && !superseded ? (
-                      <Button
-                        label="Edit"
-                        tone="text"
-                        disabled={!canMutate || busy}
-                        onPress={() => openEditor("edit", fact)}
-                      />
-                    ) : null}
-                    {props.history && active && !superseded ? (
-                      <Button
-                        label="Supersede"
-                        tone="text"
-                        disabled={!canMutate || busy}
-                        onPress={() => openEditor("supersede", fact)}
-                      />
-                    ) : null}
-                    {fact.status === "proposed" && !superseded ? (
-                      <Button
-                        label="Confirm"
-                        tone="secondary"
-                        disabled={!canMutate || busy}
-                        onPress={() => void revise(fact, "confirm")}
-                      />
-                    ) : null}
-                    {active ? (
-                      <Button
-                        label="Forget"
-                        tone="danger"
-                        disabled={!canMutate || busy}
-                        onPress={() => void revise(fact, "forget")}
-                      />
-                    ) : null}
-                    {active ? (
-                      <Button
-                        label="Helpful"
-                        tone="text"
-                        disabled={!canMutate || busy}
-                        onPress={() => void giveFeedback(fact, true)}
-                      />
-                    ) : null}
-                    {active ? (
-                      <Button
-                        label="Unhelpful"
-                        tone="text"
-                        disabled={!canMutate || busy}
-                        onPress={() => void giveFeedback(fact, false)}
-                      />
-                    ) : null}
-                    {props.history ? (
-                      <Button label="History" tone="text" onPress={() => setDetailId(fact.id)} />
-                    ) : null}
-                  </View>
-                </View>
-              );
-            })}
-            {!searchInput && list.data?.nextCursor ? (
-              <Button
-                label="Next facts"
-                tone="secondary"
-                onPress={() => setAfterId(list.data?.nextCursor ?? undefined)}
-              />
-            ) : null}
-            {afterId ? (
-              <Button label="First facts" tone="text" onPress={() => setAfterId(undefined)} />
-            ) : null}
-
-            {searchInput
-              ? search.data?.messages.matches.map((match) =>
-                  match.messageId && match.digest ? (
-                    <View
-                      key={`${match.threadId}:${match.messageId}`}
-                      className="gap-2 rounded-2xl bg-subtle p-3"
-                    >
-                      <AppText>{match.snippet}</AppText>
-                      <Button
-                        label="Read exact message"
-                        tone="text"
-                        onPress={() =>
-                          setSource({
-                            threadId: match.threadId,
-                            messageId: match.messageId!,
-                            digest: match.digest!,
-                          })
-                        }
-                      />
-                      <Button
-                        label={
-                          selections.some(
-                            (selection) =>
-                              selection.kind === "message" &&
-                              selection.threadId === match.threadId &&
-                              selection.messageId === match.messageId,
-                          )
-                            ? "Selected"
-                            : "Select evidence"
-                        }
-                        tone="secondary"
-                        onPress={() =>
-                          toggleSelection({
-                            kind: "message",
-                            threadId: match.threadId,
-                            messageId: match.messageId!,
-                            digest: match.digest!,
-                          })
-                        }
-                      />
-                    </View>
-                  ) : null,
-                )
-              : null}
-            {searchInput &&
-            search.data?.facts.state === "available" &&
-            search.data.facts.nextCursor ? (
-              <Button
-                label="Next fact matches"
-                tone="secondary"
-                disabled={search.isPending}
-                onPress={() => {
-                  if (search.data?.facts.state === "available" && search.data.facts.nextCursor)
-                    setSearchInput({
-                      ...searchInput,
-                      requestId: CommandId.make(uuidv4()),
-                      factCursor: search.data.facts.nextCursor,
-                    });
-                }}
-              />
-            ) : null}
-            {searchInput && search.data?.messages.nextCursor ? (
-              <Button
-                label="Next conversations"
-                tone="secondary"
-                disabled={search.isPending}
-                onPress={() => {
-                  if (search.data?.messages.nextCursor)
-                    setSearchInput({ ...searchInput, cursor: search.data.messages.nextCursor });
-                }}
-              />
-            ) : null}
-            {source ? (
-              <View className="gap-2 rounded-2xl bg-subtle p-3">
-                <AppText className="font-t3-semibold">Exact source</AppText>
-                <AppText className="text-xs text-foreground-muted">
-                  {source.threadId} / {source.messageId}
-                </AppText>
-                {sourceQuery.isPending ? <AppText>Reading source…</AppText> : null}
-                {sourceQuery.error ? (
-                  <AppText accessibilityRole="alert" className="text-danger">
-                    {sourceQuery.error}
-                  </AppText>
-                ) : null}
-                {sourceQuery.data?.state === "unavailable" ? (
-                  <AppText>This message is unavailable ({sourceQuery.data.reason}).</AppText>
-                ) : null}
-                {sourceQuery.data?.state === "available" ? (
-                  <>
-                    <AppText className="text-xs text-foreground-muted">
-                      {sourceQuery.data.title} · {sourceQuery.data.role} ·{" "}
-                      {sourceQuery.data.createdAt}
-                    </AppText>
-                    <AppText selectable>{sourceQuery.data.text}</AppText>
-                  </>
-                ) : null}
-                <Button label="Close source" tone="text" onPress={() => setSource(null)} />
-              </View>
-            ) : null}
-
-            <View className="gap-2 rounded-2xl border border-border p-3">
-              <AppText className="font-t3-semibold">Attach selected evidence</AppText>
-              <AppText className="text-sm text-foreground-muted">
-                The draft keeps references and revision numbers. Current evidence is reloaded when
-                sent.
-              </AppText>
-              <AppText className="text-xs text-foreground-muted">
-                {selections.length} selected · up to 20
-              </AppText>
-              <Button
-                label="Attach to draft"
-                tone="primary"
-                disabled={
-                  props.disabled ||
-                  busy ||
-                  selections.length === 0 ||
-                  Boolean(attached && !attachedInScope)
+          ) : null}
+          {error ? (
+            <AppText accessibilityRole="alert" className="text-danger">
+              {error}
+            </AppText>
+          ) : null}
+          {page.kind === "list" ? (
+            <ProjectKnowledgeFactList
+              environmentId={props.environmentId}
+              projectId={props.projectId}
+              browse={browse}
+              assisted={props.assisted}
+              canMutate={canMutate}
+              busy={busy}
+              selectionState={selectionState}
+              onToggleSelection={toggleSelection}
+              onRefreshSelection={refreshSelection}
+              onInspectFact={(fact) => push({ kind: "fact", factId: fact.id, snapshot: fact })}
+              onReadMessage={(ref) => push({ kind: "source", ref })}
+              onNewFact={() =>
+                push({
+                  kind: "editor",
+                  mode: { kind: "create", content: "", sources: [{ kind: "user" }] },
+                })
+              }
+            />
+          ) : null}
+          {page.kind === "fact" ? (
+            inspectedFact ? (
+              <ProjectFactInspector
+                fact={inspectedFact}
+                detail={detailData}
+                detailError={detail.error}
+                history={props.history}
+                sourceUnavailable={
+                  detailData?.sourceUnavailable ??
+                  browse.unavailableReasons.get(inspectedFact.id) ??
+                  null
                 }
-                loading={busy}
-                onPress={() => void attach()}
+                hints={hints?.factId === inspectedFact.id ? hints.hints : []}
+                selection={selectionState({
+                  kind: "fact",
+                  factId: inspectedFact.id,
+                  revision: inspectedFact.revision,
+                })}
+                canMutate={canMutate}
+                busy={busy}
+                onToggleSelection={toggleSelection}
+                onRefreshSelection={refreshSelection}
+                onReadSource={(ref) => push({ kind: "source", ref })}
+                onOpenFact={(factId) => push({ kind: "fact", factId, snapshot: null })}
+                onEdit={(kind) => {
+                  if (inspectedFact.status !== "forgotten")
+                    push({ kind: "editor", mode: { kind, fact: inspectedFact } });
+                }}
+                onRevise={(action) => void apply({ action, ...factMutation(inspectedFact) })}
+                onFeedback={(helpful) =>
+                  void apply({ action: "feedback", helpful, ...factMutation(inspectedFact) })
+                }
+                onDismissHints={() => setHints(null)}
               />
-            </View>
-          </>
+            ) : detail.error ? (
+              <AppText accessibilityRole="alert" className="text-danger">
+                {detail.error}
+              </AppText>
+            ) : (
+              <AppText>Reading fact…</AppText>
+            )
+          ) : null}
+          {page.kind === "source" ? (
+            <ProjectKnowledgeSourceInspector
+              reference={page.ref}
+              source={sourceQuery.data ?? null}
+              error={sourceQuery.error}
+              selections={selections}
+              canMutate={canMutate}
+              onToggleSelection={toggleSelection}
+              onRefreshSelection={refreshSelection}
+              onSaveAsFact={(text, source) =>
+                push({
+                  kind: "editor",
+                  mode: { kind: "create", content: text.slice(0, 12_000), sources: [source] },
+                })
+              }
+            />
+          ) : null}
+          {page.kind === "remember" ? (
+            sourceQuery.data ? (
+              <RememberEditor
+                source={sourceQuery.data}
+                canMutate={canMutate}
+                busy={busy}
+                onSave={save}
+                onCancel={pop}
+              />
+            ) : sourceQuery.error ? (
+              <AppText accessibilityRole="alert" className="text-danger">
+                {sourceQuery.error}
+              </AppText>
+            ) : (
+              <AppText>Reading message…</AppText>
+            )
+          ) : null}
+          {page.kind === "editor" ? (
+            <ProjectKnowledgeFactEditor
+              mode={page.mode}
+              canMutate={canMutate}
+              busy={busy}
+              onSave={(fields) => save(page.mode, fields)}
+              onCancel={pop}
+            />
+          ) : null}
+        </ScrollView>
+        {page.kind === "editor" || page.kind === "remember" ? null : (
+          <ProjectKnowledgeDraftFooter
+            selections={described}
+            attachedLabel={attachedInScope?.label ?? null}
+            mismatched={Boolean(attached && !attachedInScope)}
+            detached={detached}
+            disabled={props.disabled}
+            busy={busy}
+            onToggle={toggleSelection}
+            onRefresh={refreshSelection}
+            onAttach={() => void attach()}
+            onRemoveAttached={() => {
+              if (!attached) return;
+              selectionVersion.current += 1;
+              setSelections([]);
+              setComposerDraftText(
+                props.draftKey,
+                removeProjectKnowledgeReference(draft.text, attached),
+              );
+            }}
+          />
         )}
-      </ScrollView>
+      </View>
     </Sheet>
   );
 }
 
-/** The project's opt-in for model-suggested facts and what the last run did with it. */
-function AssistedLearningRow(props: {
-  readonly environmentId: EnvironmentId;
-  readonly projectId: ProjectId;
-  readonly lastRun: AssistedLearningRun | null;
+/** A remembered feed message opens straight into a new fact citing that message. */
+function RememberEditor(props: {
+  readonly source: ProjectKnowledgeSource;
+  readonly canMutate: boolean;
+  readonly busy: boolean;
+  readonly onSave: (mode: FactEditorMode, fields: FactEditorFields) => void;
+  readonly onCancel: () => void;
 }) {
-  const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
-  const canWrite = useEnvironmentScope(props.environmentId, AuthSettingsWriteScope);
-  const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const settings = config?.settings;
-  if (!settings || config.environment.capabilities.projectSettingsOverrides !== true) return null;
-  const enabled = resolveProjectSettings(settings, props.projectId).settings.enableAssistedLearning;
-  const toggle = async (next: boolean) => {
-    setBusy(true);
-    setError(null);
-    const result = await update({
-      environmentId: props.environmentId,
-      input: {
-        patch: {
-          projectSettingsOverrides: {
-            [props.projectId]: {
-              ...settings.projectSettingsOverrides[props.projectId],
-              enableAssistedLearning: next,
-            },
-          },
-        },
-      },
-    });
-    setBusy(false);
-    if (result._tag === "Failure") setError(String(squashAtomCommandFailure(result)));
-  };
+  const mode: FactEditorMode =
+    props.source.state === "available"
+      ? {
+          kind: "create",
+          content: props.source.text.slice(0, 12_000),
+          sources: [props.source.source],
+        }
+      : {
+          kind: "create",
+          content: "",
+          sources: [{ kind: "user" }],
+          note: "That message can no longer be read, so the fact will be saved as your own assertion.",
+        };
   return (
-    <View className="gap-1 rounded-2xl bg-subtle p-3">
-      <View className="flex-row items-center gap-3">
-        <AppText className="flex-1">Suggest facts from finished runs</AppText>
-        <Switch
-          accessibilityLabel="Suggest facts from finished runs"
-          value={enabled}
-          disabled={!canWrite || busy}
-          onValueChange={(value) => void toggle(value)}
-        />
-      </View>
-      <AppText className="text-xs text-foreground-muted">
-        After each run in this project, your text generation model proposes up to three cited facts
-        for review. Each run costs one model call.
-      </AppText>
-      {props.lastRun ? (
-        <AppText className="text-xs">{assistedLearningRunLabel(props.lastRun)}</AppText>
-      ) : null}
-      {error ? (
-        <AppText accessibilityRole="alert" className="text-xs text-danger">
-          {error}
-        </AppText>
-      ) : null}
-    </View>
+    <ProjectKnowledgeFactEditor
+      mode={mode}
+      canMutate={props.canMutate}
+      busy={props.busy}
+      onSave={(fields) => props.onSave(mode, fields)}
+      onCancel={props.onCancel}
+    />
   );
 }
