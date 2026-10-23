@@ -1,6 +1,7 @@
 import "../../index.css";
 import { RegistryContext } from "@effect/atom-react";
 import {
+  CommandId,
   EnvironmentId,
   ProjectFactId,
   ProjectId,
@@ -12,6 +13,7 @@ import {
   type ProjectCodeQueryInput,
   type ProjectCodeQueryResult,
   type ProjectCodeSymbol,
+  type ProjectKnowledgeSearchInput,
 } from "@t3tools/contracts";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
@@ -20,7 +22,8 @@ import { render } from "../../../test/render";
 const state = vi.hoisted(() => ({
   results: new Map<string, unknown>(),
   queries: [] as Array<{ environmentId: string; input: unknown }>,
-  searches: [] as Array<{ environmentId: string; input: unknown }>,
+  searches: [] as Array<{ environmentId: string; input: ProjectKnowledgeSearchInput }>,
+  searchAtoms: new Map<string, unknown>(),
   capabilities: { projectCode: true, projectKnowledge: true } as Record<string, boolean>,
   canReadThreads: true,
 }));
@@ -50,11 +53,17 @@ vi.mock(
           { permissionAtom: () => Atom.make(true) },
         ),
         freshness: Object.assign(
-          () => state.results.get("freshness") ?? Atom.make(AsyncResult.initial(true)),
+          (target: { environmentId: string; input: ProjectCodeQueryInput }) => {
+            state.queries.push(target);
+            return state.results.get("freshness") ?? Atom.make(AsyncResult.initial(true));
+          },
           { permissionAtom: () => Atom.make(true) },
         ),
         fileHistory: Object.assign(
-          () => state.results.get("history") ?? Atom.make(AsyncResult.initial(true)),
+          (target: { environmentId: string; input: unknown }) => {
+            state.queries.push(target);
+            return state.results.get("history") ?? Atom.make(AsyncResult.initial(true));
+          },
           { permissionAtom: () => Atom.make(state.canReadThreads) },
         ),
       },
@@ -65,9 +74,18 @@ vi.mock(
   () =>
     ({
       projectKnowledge: {
-        search: (target: { environmentId: string; input: unknown }) => {
-          state.searches.push(target);
-          return state.results.get("decisions") ?? Atom.make(AsyncResult.initial(true));
+        search: (target: { environmentId: string; input: ProjectKnowledgeSearchInput }) => {
+          const key = JSON.stringify(target);
+          if (!state.searchAtoms.has(key)) {
+            state.searches.push(target);
+            state.searchAtoms.set(
+              key,
+              state.results.get(`decisions:${target.input.factCursor?.offset ?? 0}`) ??
+                state.results.get("decisions") ??
+                Atom.make(AsyncResult.initial(true)),
+            );
+          }
+          return state.searchAtoms.get(key);
         },
       },
     }) as never,
@@ -153,7 +171,16 @@ const edge = (source: string, line: number | null) => ({
 function setup(outline: ProjectCodeQueryResult) {
   state.queries.length = 0;
   state.searches.length = 0;
-  state.capabilities = { projectCode: true, projectKnowledge: true };
+  state.searchAtoms.clear();
+  state.capabilities = {
+    projectCode: true,
+    projectKnowledge: true,
+    projectCodeFreshness: true,
+    projectCodeTests: true,
+    projectCodeFileHistory: true,
+    projectCodePath: true,
+    projectCodeAffected: true,
+  };
   state.canReadThreads = true;
   state.results.clear();
   state.results.set("symbols", Atom.make(AsyncResult.success(outline)));
@@ -205,7 +232,11 @@ it("queries only on demand, labels stale static evidence, and opens results at t
 
   await header.click();
   await expect.element(screen.getByText(/Stale · some returned files changed/)).toBeVisible();
-  expect(state.queries[0]).toEqual({
+  expect(
+    state.queries.find(
+      ({ input }) => (input as ProjectCodeQueryInput).query?.operation === "symbols",
+    ),
+  ).toEqual({
     environmentId: threadRef.environmentId,
     input: {
       projectId: ProjectId.make("project"),
@@ -410,4 +441,71 @@ it("shows a static index badge and tests reaching the selected symbol", async ()
   expect(row.element().textContent).toContain("2 hops · static");
   await row.click();
   expect(activeSurface()).toMatchObject({ relativePath: "src/defs.test.ts", revealLine: 3 });
+});
+
+it("does not request unsupported freshness, tests or prior work and explains the server update", async () => {
+  const registry = setup(result("symbols", { nodes: [greet] }));
+  state.capabilities = { projectCode: true, projectKnowledge: true };
+  await using screen = await renderSection(registry);
+  await screen.getByRole("button", { name: "Code relationships" }).click();
+  await screen.getByRole("button", { name: /^greet/ }).click();
+  await screen.getByRole("button", { name: "Tests", exact: true }).click();
+  await expect.element(screen.getByText("Update the server to use tests.")).toBeVisible();
+  await screen.getByRole("button", { name: "Prior work", exact: true }).click();
+  await expect.element(screen.getByText("Update the server to use prior work.")).toBeVisible();
+  expect(
+    state.queries.every(({ input }) =>
+      ["symbols", "callers"].includes((input as ProjectCodeQueryInput).query?.operation),
+    ),
+  ).toBe(true);
+});
+
+it("requests a bounded decisions page and appends more facts without reinforcing retrieval", async () => {
+  const registry = setup(result("symbols", { nodes: [greet] }));
+  const page = (
+    matches: ProjectFact[],
+    nextCursor: { requestId: CommandId; offset: number } | null,
+  ): ProjectKnowledgeSearchResult => ({
+    messages: { matches: [] },
+    facts: {
+      state: "available",
+      coverage: "complete",
+      nextCursor,
+      matches: matches.map((fact) => ({ fact, score: {} as never })),
+    },
+  });
+  const first = fact("first", ["src/defs.ts"], "First decision.");
+  const second = fact("second", ["greet"], "Second decision.");
+  const cursor = { requestId: CommandId.make("root-search"), offset: 10 };
+  state.results.set("decisions:0", Atom.make(AsyncResult.success(page([first, second], cursor))));
+  state.results.set(
+    "decisions:10",
+    Atom.make(
+      AsyncResult.success(page([second, fact("third", ["defs.ts"], "Third decision.")], null)),
+    ),
+  );
+  await using screen = await renderSection(registry);
+  await screen.getByRole("button", { name: "Code relationships" }).click();
+  await screen.getByRole("button", { name: "Decisions", exact: true }).click();
+  expect(state.searches[0]!.input).toMatchObject({
+    limit: 10,
+    messageLimit: 1,
+    recordRetrieval: false,
+  });
+  await expect.element(screen.getByText("First decision.")).toBeVisible();
+  await expect.element(screen.getByText("Second decision.")).toBeVisible();
+  await screen.getByRole("button", { name: "Show more", exact: true }).click();
+  await expect.element(screen.getByText("Third decision.")).toBeVisible();
+  await expect.element(screen.getByText("First decision.")).toBeVisible();
+  expect(
+    screen.getByRole("list", { name: "Decisions for this file" }).getByRole("listitem").elements(),
+  ).toHaveLength(3);
+  expect(state.searches[1]!.input).toMatchObject({
+    factCursor: cursor,
+    limit: 10,
+    messageLimit: 1,
+    recordRetrieval: false,
+  });
+  expect(state.searches[1]!.input.requestId).not.toBe(state.searches[0]!.input.requestId);
+  expect(screen.getByRole("button", { name: "Show more", exact: true }).query()).toBeNull();
 });

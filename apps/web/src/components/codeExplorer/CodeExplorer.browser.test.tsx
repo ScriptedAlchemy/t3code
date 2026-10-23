@@ -21,7 +21,18 @@ const state = vi.hoisted(() => ({
   freshness: null as unknown,
   atoms: new Map<string, unknown>(),
   queries: [] as unknown[],
+  capabilities: {} as Record<string, boolean>,
+  freshnessRequests: 0,
 }));
+vi.mock(
+  import("../../state/server"),
+  () =>
+    ({
+      serverEnvironment: {
+        configValueAtom: () => Atom.make({ environment: { capabilities: state.capabilities } }),
+      },
+    }) as never,
+);
 vi.mock(
   import("../../state/projectCode"),
   () =>
@@ -44,12 +55,14 @@ vi.mock(
           { permissionAtom: () => Atom.make(true) },
         ),
         freshness: Object.assign(
-          () =>
-            Atom.make(
+          () => {
+            state.freshnessRequests += 1;
+            return Atom.make(
               state.freshness === null
                 ? AsyncResult.initial(true)
                 : AsyncResult.success(state.freshness),
-            ),
+            );
+          },
           { permissionAtom: () => Atom.make(true) },
         ),
       },
@@ -229,6 +242,8 @@ function setup(options?: {
   readonly index?: ProjectCodeIndexInfo["state"];
   readonly empty?: boolean;
 }) {
+  state.capabilities = { projectCode: true, projectCodePath: true, projectCodeFreshness: true };
+  state.freshnessRequests = 0;
   state.atoms.clear();
   state.queries.length = 0;
   state.respond = (query) => {
@@ -404,4 +419,16 @@ it("says the index is unavailable instead of drawing an empty graph", async () =
   await expect.element(screen.getByText(/No static callers or callees found/)).toBeVisible();
   expect(graph(screen, "greet").query()).toBeNull();
   await expect.element(screen.getByText("Unavailable")).toBeVisible();
+});
+
+it("keeps the legacy explorer usable without sending unsupported path or freshness queries", async () => {
+  const registry = setup();
+  state.capabilities = { projectCode: true };
+  await using screen = await renderHost(registry);
+  await expect.element(graph(screen, "greet")).toBeVisible();
+  await expect.element(screen.getByText("Update the server to use call paths.")).toBeVisible();
+  expect(screen.getByRole("searchbox", { name: "Path target symbol" }).query()).toBeNull();
+  expect(state.queries).not.toContainEqual(expect.objectContaining({ operation: "path" }));
+  expect(state.queries).not.toContainEqual(expect.objectContaining({ operation: "search" }));
+  expect(state.freshnessRequests).toBe(0);
 });

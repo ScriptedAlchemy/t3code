@@ -206,13 +206,15 @@ function ImpactBody(props: {
   readonly detail: PullRequestDetailView;
   readonly fileDiffs: ReadonlyArray<FileDiffMetadata>;
 }) {
+  const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
+  const canReadFreshness = config?.environment.capabilities.projectCodeFreshness === true;
   const shells = useThreadShellsForProjectRefs([
     { environmentId: props.environmentId, projectId: props.reference.projectId },
   ]);
   const checkout = pullRequestCheckoutThread(shells, props.environmentId, props.detail.headBranch);
   // Shares the badge's cached freshness read; it names the commit the checkout is at.
   const freshness = useEnvironmentQuery(
-    checkout === null
+    checkout === null || !canReadFreshness
       ? null
       : projectCode.freshness({
           environmentId: props.environmentId,
@@ -299,12 +301,16 @@ export function PullRequestImpactPanel(props: {
         <CollapsiblePanel>
           {open ? (
             <div className="max-h-80 overflow-auto px-2 pb-3">
-              <ImpactBody
-                environmentId={props.environmentId}
-                reference={props.reference}
-                detail={props.detail}
-                fileDiffs={props.fileDiffs}
-              />
+              {config.environment.capabilities.projectCodeAffected === true ? (
+                <ImpactBody
+                  environmentId={props.environmentId}
+                  reference={props.reference}
+                  detail={props.detail}
+                  fileDiffs={props.fileDiffs}
+                />
+              ) : (
+                <EmptyNote>Update the server to use potentially affected symbols.</EmptyNote>
+              )}
             </div>
           ) : null}
         </CollapsiblePanel>

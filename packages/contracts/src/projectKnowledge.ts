@@ -438,6 +438,8 @@ export const ProjectKnowledgeSearchInput = Schema.Struct({
   projectId: ProjectId,
   requestId: CommandId,
   minTrust: Schema.optionalKey(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+  /** Browsing facts can keep the unused conversation results smaller than the fact page. */
+  messageLimit: OrchestrationSearchThreadsInput.fields.limit,
   factCursor: Schema.optionalKey(KnowledgeSearchCursor),
   entities: Schema.optionalKey(Labels),
   entityMatch: Schema.optionalKey(Schema.Literals(["any", "all"])),

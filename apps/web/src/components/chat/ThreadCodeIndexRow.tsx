@@ -19,7 +19,12 @@ export function ThreadCodeIndexRow(props: {
 }) {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const canQuery = useAtomValue(projectCode.freshness.permissionAtom(props.environmentId));
-  if (config?.environment.capabilities.projectCode !== true || !canQuery) return null;
+  if (
+    config?.environment.capabilities.projectCode !== true ||
+    config.environment.capabilities.projectCodeFreshness !== true ||
+    !canQuery
+  )
+    return null;
   return (
     <div
       className={cn(

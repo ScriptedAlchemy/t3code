@@ -783,7 +783,10 @@ const make = Effect.gen(function* () {
     function* (input) {
       yield* requireProject(input.projectId);
       const messages = yield* threads
-        .search(input)
+        .search({
+          ...input,
+          ...(input.messageLimit === undefined ? {} : { limit: input.messageLimit }),
+        })
         .pipe(Effect.mapError(storageError(input.projectId)));
       const entities = [
         ...new Set((input.entities ?? []).map((entity) => entity.toLowerCase())),

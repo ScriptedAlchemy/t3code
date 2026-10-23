@@ -1867,3 +1867,48 @@ it.effect("summarizes memory health by status, trust, feedback and lost sources"
     );
   }).pipe(Effect.provide(layerTest)),
 );
+
+it.effect("bounds message matches independently of fact pages without recording retrieval", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const projectId = ProjectId.make("separate-search-limits");
+    yield* createProject(projectId);
+    for (const id of ["a", "b", "c"]) {
+      const threadId = ThreadId.make("limited-" + id);
+      yield* projections.apply(thread(threadId, projectId));
+      yield* projections.apply(message(threadId, "limited-message-" + id, "user", "tenant cache"));
+      yield* knowledge.mutate(createFact(projectId, id), { kind: "user" });
+    }
+    const input = {
+      projectId,
+      query: "tenant cache",
+      requestId: CommandId.make("limited-first"),
+      limit: 2,
+      messageLimit: 1,
+      recordRetrieval: false,
+    };
+    const first = yield* knowledge.search(input);
+    if (first.facts.state !== "available") return assert.fail("Native ranking must be available");
+    assert.equal(first.messages.matches.length, 1);
+    assert.equal(first.facts.matches.length, 2);
+    assert.isNotNull(first.facts.nextCursor);
+    const second = yield* knowledge.search({
+      ...input,
+      requestId: CommandId.make("limited-second"),
+      factCursor: first.facts.nextCursor!,
+    });
+    if (second.facts.state !== "available") return assert.fail("Native ranking must be available");
+    assert.equal(second.messages.matches.length, 1);
+    assert.equal(second.facts.matches.length, 1);
+    assert.isNull(second.facts.nextCursor);
+    const sql = yield* SqlClient.SqlClient;
+    const counts = yield* sql<{
+      count: number;
+    }>`SELECT retrieval_count AS count FROM project_knowledge_facts`;
+    assert.deepEqual(
+      counts.map(({ count }) => count),
+      [0, 0, 0],
+    );
+  }).pipe(Effect.provide(layerTest)),
+);

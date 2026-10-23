@@ -80,6 +80,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Assisted proposals from settled runs, the origin list filter and status.assistedLearning. */
   projectKnowledgeAssistedLearning: Schema.optionalKey(Schema.Boolean),
   projectCode: Schema.optionalKey(Schema.Boolean),
+  /** Extended queries are absent from servers that only advertise the original code index. */
+  projectCodeFreshness: Schema.optionalKey(Schema.Boolean),
+  projectCodeTests: Schema.optionalKey(Schema.Boolean),
+  projectCodeAffected: Schema.optionalKey(Schema.Boolean),
+  projectCodePath: Schema.optionalKey(Schema.Boolean),
+  projectCodeFileHistory: Schema.optionalKey(Schema.Boolean),
   /** conversationSummaries.* reads and the enableConversationSummaries project setting. */
   conversationSummaries: Schema.optionalKey(Schema.Boolean),
   /** project.readLoomWindow and the project Loom view. */

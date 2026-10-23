@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
   ProjectCodeCoverage,
@@ -17,6 +18,7 @@ import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
 import { cn } from "~/lib/utils";
 import { projectCode } from "~/state/projectCode";
 import { useEnvironmentQuery } from "~/state/query";
+import { serverEnvironment } from "~/state/server";
 import { CodeIndexBadge } from "../files/CodeIndexBadge";
 import {
   CoverageNote,
@@ -394,6 +396,8 @@ export default function CodeExplorer(
     readonly onOpen: (path: string, line: number) => void;
   },
 ) {
+  const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
+  const canQueryPath = config?.environment.capabilities.projectCodePath === true;
   const [history, setHistory] = useState<ReadonlyArray<ProjectCodeSymbol>>([props.symbol]);
   const [hops, setHops] = useState<ExplorerHops>(1);
   const current = history.at(-1) ?? props.symbol;
@@ -555,14 +559,18 @@ export default function CodeExplorer(
           onOpen={props.onOpen}
         />
       </div>
-      <PathQuery
-        key={focus.id}
-        environmentId={props.environmentId}
-        projectId={props.projectId}
-        serverThreadId={props.serverThreadId}
-        focus={focus}
-        onRecenter={recenter}
-      />
+      {canQueryPath ? (
+        <PathQuery
+          key={focus.id}
+          environmentId={props.environmentId}
+          projectId={props.projectId}
+          serverThreadId={props.serverThreadId}
+          focus={focus}
+          onRecenter={recenter}
+        />
+      ) : (
+        <EmptyNote>Update the server to use call paths.</EmptyNote>
+      )}
     </div>
   );
 }

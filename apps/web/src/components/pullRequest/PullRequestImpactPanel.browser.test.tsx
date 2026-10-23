@@ -18,13 +18,15 @@ const state = vi.hoisted(() => ({
   queries: [] as Array<{ environmentId: string; input: unknown }>,
   results: new Map<string, unknown>(),
   shells: [] as unknown[],
+  freshnessRequests: 0,
+  capabilities: {} as Record<string, boolean>,
 }));
 vi.mock(
   import("../../state/server"),
   () =>
     ({
       serverEnvironment: {
-        configValueAtom: () => Atom.make({ environment: { capabilities: { projectCode: true } } }),
+        configValueAtom: () => Atom.make({ environment: { capabilities: state.capabilities } }),
       },
     }) as never,
 );
@@ -44,7 +46,10 @@ vi.mock(
           { permissionAtom: () => Atom.make(true) },
         ),
         freshness: Object.assign(
-          () => state.results.get("freshness") ?? Atom.make(AsyncResult.initial(true)),
+          () => {
+            state.freshnessRequests += 1;
+            return state.results.get("freshness") ?? Atom.make(AsyncResult.initial(true));
+          },
           { permissionAtom: () => Atom.make(true) },
         ),
       },
@@ -123,6 +128,8 @@ const checkout = {
 };
 
 function setup(shells: unknown[]) {
+  state.capabilities = { projectCode: true, projectCodeAffected: true, projectCodeFreshness: true };
+  state.freshnessRequests = 0;
   state.queries.length = 0;
   state.results.clear();
   state.shells = shells;
@@ -225,4 +232,32 @@ it("says there is nothing to analyze when no thread has the head branch checked 
     .element(screen.getByText(/No thread here has feat\/greet checked out/))
     .toBeVisible();
   expect(state.queries).toEqual([]);
+});
+
+it("does not request affected symbols on legacy servers and explains the update", async () => {
+  const registry = setup([checkout]);
+  state.capabilities = { projectCode: true };
+  await using screen = await renderPanel(registry);
+  await screen.getByRole("button", { name: "Potentially affected" }).click();
+  await expect
+    .element(screen.getByText("Update the server to use potentially affected symbols."))
+    .toBeVisible();
+  expect(state.queries).toEqual([]);
+  expect(state.freshnessRequests).toBe(0);
+});
+
+it("does not request freshness when only affected queries are supported", async () => {
+  const registry = setup([checkout]);
+  state.capabilities = { projectCode: true, projectCodeAffected: true };
+  state.results.set("affected", Atom.make(AsyncResult.success(result({}))));
+  await using screen = await renderPanel(registry);
+  await screen.getByRole("button", { name: "Potentially affected" }).click();
+  await screen.getByRole("button", { name: /src\/defs\.ts/ }).click();
+  await expect.element(screen.getByText(/No indexed declarations overlap/)).toBeVisible();
+  expect(state.queries).toContainEqual(
+    expect.objectContaining({
+      input: expect.objectContaining({ query: expect.objectContaining({ operation: "affected" }) }),
+    }),
+  );
+  expect(state.freshnessRequests).toBe(0);
 });

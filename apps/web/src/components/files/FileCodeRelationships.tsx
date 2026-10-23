@@ -10,6 +10,7 @@ import {
   type ProjectFact,
   type ProjectId,
   type ProjectKnowledgeSearchInput,
+  type ProjectKnowledgeSearchResult,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -182,6 +183,7 @@ function RelationResults(props: {
   readonly projectId: ProjectId;
   readonly threadRef: ScopedThreadRef;
   readonly symbol: ProjectCodeSymbol;
+  readonly canQueryTests: boolean;
 }) {
   const [mode, setMode] = useState<RelationMode>("callers");
   const symbol = {
@@ -190,14 +192,16 @@ function RelationResults(props: {
     line: props.symbol.startLine,
   };
   const relation = useEnvironmentQuery(
-    projectCode.query({
-      environmentId: props.environmentId,
-      input: {
-        projectId: props.projectId,
-        threadId: props.threadRef.threadId,
-        query: { operation: mode, symbol, limit: RESULT_LIMIT },
-      },
-    }),
+    mode === "tests" && !props.canQueryTests
+      ? null
+      : projectCode.query({
+          environmentId: props.environmentId,
+          input: {
+            projectId: props.projectId,
+            threadId: props.threadRef.threadId,
+            query: { operation: mode, symbol, limit: RESULT_LIMIT },
+          },
+        }),
   );
   const data = relation.data;
   const locations = data ? relationLocations(mode, data, props.symbol.id) : [];
@@ -218,7 +222,9 @@ function RelationResults(props: {
           </Toggle>
         ))}
       </ToggleGroup>
-      {data === null ? (
+      {mode === "tests" && !props.canQueryTests ? (
+        <EmptyNote>Update the server to use tests.</EmptyNote>
+      ) : data === null ? (
         <QueryState pending error={relation.error} onRetry={relation.refresh} />
       ) : data.selection.state === "ambiguous" ? (
         <EmptyNote>
@@ -273,6 +279,7 @@ function SymbolsTab(props: {
   readonly projectId: ProjectId;
   readonly threadRef: ScopedThreadRef;
   readonly relativePath: string;
+  readonly canQueryTests: boolean;
 }) {
   const [selected, setSelected] = useState<ProjectCodeSymbol | null>(null);
   const openExplorer = useOpenCodeExplorer();
@@ -358,6 +365,7 @@ function SymbolsTab(props: {
           projectId={props.projectId}
           threadRef={props.threadRef}
           symbol={selected}
+          canQueryTests={props.canQueryTests}
         />
       ) : null}
     </>
@@ -411,29 +419,60 @@ function DecisionsTab(props: {
       .filter((name) => !pathNames.has(name)),
   );
   const entities = [...pathNames, ...symbolNames].slice(0, MAX_ENTITIES);
-  const searchKey = JSON.stringify([props.projectId, entities]);
-  // A search request id is a receipt for exactly one query, so a new entity set needs a new id.
-  const [request, setRequest] = useState({ key: searchKey, id: CommandId.make(randomUUID()) });
-  if (request.key !== searchKey) setRequest({ key: searchKey, id: CommandId.make(randomUUID()) });
-  const input: ProjectKnowledgeSearchInput | null =
-    outlineSettled && request.key === searchKey
-      ? {
-          projectId: props.projectId,
-          // Entities filter the facts; the query only ranks them and must be two characters.
-          query: basename(props.relativePath).padEnd(2, "_").slice(0, 200),
-          requestId: request.id,
-          entities,
-          entityMatch: "any",
-          // Message matches are not shown here, so ask for as few as the search allows.
-          limit: 1,
-          // Opening a file preview is not recall; it must not reinforce ranking.
-          recordRetrieval: false,
-        }
-      : null;
-  const search = useEnvironmentQuery(
-    input ? projectKnowledge.search({ environmentId: props.environmentId, input }) : null,
+  if (!outlineSettled)
+    return (
+      <QueryState
+        pending
+        error={null}
+        onRetry={outline.refresh}
+        pendingLabel="Searching project knowledge…"
+      />
+    );
+  return (
+    <DecisionPages
+      key={JSON.stringify([props.environmentId, props.projectId, props.relativePath, entities])}
+      {...props}
+      entities={entities}
+      pathNames={pathNames}
+      symbolNames={symbolNames}
+    />
   );
-  if (!outlineSettled || search.data === null) {
+}
+
+type FactSearchPage = Extract<ProjectKnowledgeSearchResult["facts"], { state: "available" }>;
+
+function DecisionPages(props: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly relativePath: string;
+  readonly canReadCode: boolean;
+  readonly entities: string[];
+  readonly pathNames: ReadonlySet<string>;
+  readonly symbolNames: ReadonlySet<string>;
+}) {
+  const [page, setPage] = useState(() => ({
+    id: CommandId.make(randomUUID()),
+    cursor: null as FactSearchPage["nextCursor"],
+    previous: [] as FactSearchPage["matches"],
+  }));
+  const input: ProjectKnowledgeSearchInput = {
+    projectId: props.projectId,
+    // Entities filter the facts; the query only ranks them and must be two characters.
+    query: basename(props.relativePath).padEnd(2, "_").slice(0, 200),
+    requestId: page.id,
+    ...(page.cursor ? { factCursor: page.cursor } : {}),
+    entities: props.entities,
+    entityMatch: "any",
+    limit: 10,
+    // Old servers ignore this additive option and still return a bounded page.
+    messageLimit: 1,
+    // Opening a file preview is not recall; it must not reinforce ranking.
+    recordRetrieval: false,
+  };
+  const search = useEnvironmentQuery(
+    projectKnowledge.search({ environmentId: props.environmentId, input }),
+  );
+  if (search.data === null && page.previous.length === 0) {
     return (
       <QueryState
         pending
@@ -443,19 +482,25 @@ function DecisionsTab(props: {
       />
     );
   }
-  const facts = search.data.facts;
-  if (facts.state === "unavailable") {
+  const facts = search.data?.facts;
+  if (facts?.state === "unavailable") {
     return <EmptyNote>Project knowledge search is unavailable on this server right now.</EmptyNote>;
   }
-  const rows = facts.matches.flatMap(({ fact }) => {
+  const matches = [
+    ...new Map(
+      [...page.previous, ...(facts?.matches ?? [])].map((match) => [match.fact.id, match]),
+    ).values(),
+  ];
+  const rows = matches.flatMap(({ fact }) => {
     if (fact.status === "forgotten") return [];
-    const match = factMatch(fact, pathNames, symbolNames);
+    const match = factMatch(fact, props.pathNames, props.symbolNames);
     return match === null ? [] : [{ fact, match }];
   });
   return (
     <div className="flex flex-col gap-1">
       <p className="px-2 text-2xs text-muted-foreground">
-        Facts whose entities name this file{symbolNames.size > 0 ? " or one of its symbols" : ""}.
+        Facts whose entities name this file
+        {props.symbolNames.size > 0 ? " or one of its symbols" : ""}.
         {props.canReadCode ? "" : " Symbol names need file access, so only the path is matched."}
       </p>
       {rows.length === 0 ? (
@@ -484,7 +529,33 @@ function DecisionsTab(props: {
           ))}
         </ul>
       )}
-      {facts.coverage === "partial" ? (
+      {search.data === null ? (
+        <QueryState
+          pending
+          error={search.error}
+          onRetry={search.refresh}
+          pendingLabel="Searching project knowledge…"
+        />
+      ) : null}
+      {facts?.nextCursor ? (
+        <div className="px-2">
+          <Button
+            variant="ghost-muted"
+            size="micro"
+            disabled={search.isPending}
+            onClick={() =>
+              setPage({
+                id: CommandId.make(randomUUID()),
+                cursor: facts.nextCursor,
+                previous: matches,
+              })
+            }
+          >
+            Show more
+          </Button>
+        </div>
+      ) : null}
+      {facts?.coverage === "partial" ? (
         <EmptyNote>Only the most relevant facts were ranked; some may be missing.</EmptyNote>
       ) : null}
     </div>
@@ -638,6 +709,7 @@ export function FileCodeRelationships(props: {
                 projectId={thread.projectId}
                 threadRef={props.threadRef}
                 relativePath={props.relativePath}
+                canQueryTests={capabilities?.projectCodeTests === true}
               />
             ) : tab === "decisions" ? (
               <DecisionsTab
@@ -647,6 +719,8 @@ export function FileCodeRelationships(props: {
                 relativePath={props.relativePath}
                 canReadCode={available.symbols}
               />
+            ) : capabilities?.projectCodeFileHistory !== true ? (
+              <EmptyNote>Update the server to use prior work.</EmptyNote>
             ) : (
               <PriorWorkTab
                 environmentId={props.environmentId}
