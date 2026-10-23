@@ -693,6 +693,7 @@ const make = Effect.gen(function* () {
         });
       yield* requireProject(input.projectId);
       const parts: string[] = [];
+      const items: { label: string; text: string }[] = [];
       for (const selection of input.selections) {
         if (selection.kind === "message") {
           const source = yield* readSource({
@@ -708,6 +709,7 @@ const make = Effect.gen(function* () {
           parts.push(
             `[Message ${selection.threadId}/${selection.messageId} sha256:${selection.digest}]\n${source.text}`,
           );
+          items.push({ label: `Message ${selection.messageId}`, text: source.text });
         } else {
           const fact = yield* store
             .find(input.projectId, selection.factId)
@@ -726,12 +728,12 @@ const make = Effect.gen(function* () {
             });
           }
           const citations = fact.sources
-            .map((source) =>
-              source.kind === "user"
-                ? "User assertion"
-                : `Message ${source.threadId}/${source.messageId} sha256:${source.digest}`,
+            .flatMap((source) => (source.kind === "message" ? [source] : []))
+            .map(
+              (source) => `Message ${source.threadId}/${source.messageId} sha256:${source.digest}`,
             )
             .join("; ");
+          items.push({ label: `Fact ${fact.id.slice(0, 8)}`, text: fact.content });
           const origin =
             fact.origin.kind === "user"
               ? "User assertion"
@@ -755,7 +757,7 @@ const make = Effect.gen(function* () {
           projectId: input.projectId,
           byteLength,
         });
-      return { context: input, text, byteLength };
+      return { context: input, text, byteLength, items };
     },
     (effect, input) =>
       sql.withTransaction(effect).pipe(Effect.mapError(storageError(input.projectId))),
@@ -777,7 +779,12 @@ const make = Effect.gen(function* () {
         projectId: input.projectId,
         byteLength,
       });
-    return { context: input, text, byteLength };
+    return {
+      context: input,
+      text,
+      byteLength,
+      ...(resolved.items ? { items: resolved.items } : {}),
+    };
   });
   const search: ProjectKnowledge["Service"]["search"] = Effect.fn("ProjectKnowledge.search")(
     function* (input) {

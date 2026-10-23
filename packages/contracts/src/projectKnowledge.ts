@@ -360,6 +360,10 @@ const ProjectKnowledgePreparedContextSchema = Schema.Struct({
   context: ProjectKnowledgeContext,
   text: Schema.String,
   byteLength: NonNegativeInt,
+  // Older remote servers return only the exact payload.
+  items: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ label: Schema.String, text: Schema.String })),
+  ),
 });
 export type ProjectKnowledgePreparedContext = typeof ProjectKnowledgePreparedContextSchema.Type;
 export const ProjectKnowledgePreparedContext: Schema.Codec<

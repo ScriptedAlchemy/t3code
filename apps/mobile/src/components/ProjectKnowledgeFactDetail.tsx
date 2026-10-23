@@ -134,6 +134,7 @@ export function ProjectFactInspector(props: {
   const superseded = isSupersededFact(fact);
   const active = fact.status !== "forgotten";
   const mutable = props.canMutate && !props.busy;
+  const citations = fact.sources.flatMap((source) => (source.kind === "message" ? [source] : []));
   return (
     <View className="gap-4">
       {props.hints.length > 0 ? (
@@ -177,23 +178,17 @@ export function ProjectFactInspector(props: {
             {KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL[props.sourceUnavailable]}
           </AppText>
         ) : null}
-        {fact.sources.length === 0 ? (
+        {citations.length === 0 ? (
           <AppText className="text-sm text-foreground-muted">No cited source</AppText>
         ) : null}
-        {fact.sources.map((ref, index) =>
-          ref.kind === "user" ? (
-            <AppText key={`user:${index}`} className="text-sm">
-              User assertion
-            </AppText>
-          ) : (
-            <Button
-              key={`${ref.threadId}:${ref.messageId}`}
-              label="Read source message"
-              tone="text"
-              onPress={() => props.onReadSource(ref)}
-            />
-          ),
-        )}
+        {citations.map((ref) => (
+          <Button
+            key={`${ref.threadId}:${ref.messageId}`}
+            label="Read source message"
+            tone="text"
+            onPress={() => props.onReadSource(ref)}
+          />
+        ))}
       </View>
 
       {active && props.selection ? (

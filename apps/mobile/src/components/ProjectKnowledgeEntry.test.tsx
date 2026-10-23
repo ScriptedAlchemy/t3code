@@ -478,6 +478,22 @@ it("saves a remembered feed message with a citation to that message", async () =
   });
 });
 
+it("shows user origin once without treating the assertion as a citation", async () => {
+  using screen = setup();
+  const asserted: ProjectFact = {
+    ...fact,
+    origin: { kind: "user" },
+    status: "confirmed",
+    sources: [{ kind: "user" }],
+  };
+  state.list = { facts: [asserted], nextCursor: null };
+  await screen.click("Project memory");
+  await screen.click("Inspect fact: " + asserted.content);
+  expect(screen.container.textContent?.match(/User assertion/g)).toHaveLength(1);
+  expect(screen.container.textContent).toContain("No cited source");
+  expect(screen.container.textContent).not.toContain("Read source message");
+});
+
 it("attaches the current selection", async () => {
   using screen = setup();
   await screen.click("Project memory");

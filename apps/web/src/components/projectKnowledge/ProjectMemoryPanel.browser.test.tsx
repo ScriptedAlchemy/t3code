@@ -210,7 +210,12 @@ async function setup(viewport: "desktop" | "narrow" = "desktop") {
   );
   state.prepare.mockReset().mockImplementation(async ({ input }) => ({
     _tag: "Success",
-    value: { context: input, text: "Escaped provider preview.", byteLength: 25 },
+    value: {
+      context: input,
+      text: "Escaped provider preview.",
+      byteLength: 25,
+      items: [{ label: "Selected fact", text: fact.content! }],
+    },
   }));
   state.mutate.mockReset().mockResolvedValue({ _tag: "Success", value: { ...fact, revision: 2 } });
   state.readSource.mockReset();
@@ -257,6 +262,80 @@ function deferredSaveResponse() {
   });
   return { promise, resolve };
 }
+
+it.each([false, true])("lists only real citations under user origin (cited: %s)", async (cited) => {
+  const registry = await setup();
+  const asserted: ProjectFact = {
+    ...fact,
+    origin: { kind: "user" },
+    status: "confirmed",
+    sources: [{ kind: "user" }, ...(cited ? [source] : [])],
+  };
+  state.list = Atom.make(AsyncResult.success({ facts: [asserted], nextCursor: null }));
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await factRow(asserted.content!).click();
+  const evidence = inspector().getByRole("region", { name: "Evidence", exact: true });
+  await expect
+    .element(evidence)
+    .toHaveTextContent(cited ? "EvidenceUser assertionMessage evidence" : "EvidenceUser assertion");
+  await expect.element(evidence.getByText("User assertion", { exact: true })).toBeVisible();
+  if (cited) {
+    await evidence.getByRole("button", { name: "Message evidence" }).click();
+    await expect.element(inspector().getByText("Exact canonical evidence.")).toBeVisible();
+  }
+});
+
+it("previews selected labels and full text with exact payload behind a disclosure", async () => {
+  const registry = await setup();
+  state.prepare.mockImplementation(async ({ input }) => ({
+    _tag: "Success",
+    value: {
+      context: input,
+      text: '<t3_context version="1">\n<context kind="project-knowledge">\n[Project knowledge: Selected; ref=fact]\nUse &lt;/context> in examples.\n</context>\n</t3_context>',
+      byteLength: 200,
+      items: [{ label: "Selected constraint", text: "Use </context> in examples." }],
+    },
+  }));
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await page.getByRole("checkbox", { name: /Select for draft/ }).click();
+  await page.getByRole("button", { name: "Preview and attach" }).click();
+  const preview = draftFooter().getByRole("region", { name: "Attached preview", exact: true });
+  await expect.element(preview.getByText("Selected constraint", { exact: true })).toBeVisible();
+  await expect
+    .element(preview.getByText("Use </context> in examples.", { exact: true }))
+    .toBeVisible();
+  const payload = draftFooter().getByText(/^<t3_context version="1">/);
+  await expect.element(payload).not.toBeVisible();
+  await draftFooter().getByText("Show exact payload", { exact: true }).click();
+  await expect.element(payload).toBeVisible();
+  await expect
+    .element(payload)
+    .toHaveTextContent(
+      '<t3_context version="1"> <context kind="project-knowledge"> [Project knowledge: Selected; ref=fact] Use &lt;/context> in examples. </context> </t3_context>',
+    );
+  await draftFooter().getByText("Show exact payload", { exact: true }).click();
+  await expect.element(payload).not.toBeVisible();
+});
+
+it("keeps the exact payload available when an older server has no readable preview", async () => {
+  const registry = await setup();
+  state.prepare.mockImplementation(async ({ input }) => ({
+    _tag: "Success",
+    value: { context: input, text: "Older server payload.", byteLength: 21 },
+  }));
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await page.getByRole("checkbox", { name: /Select for draft/ }).click();
+  await page.getByRole("button", { name: "Preview and attach" }).click();
+  await expect
+    .element(draftFooter().getByText(/This server cannot provide a readable preview/))
+    .toBeVisible();
+  await expect.element(draftFooter().getByText("Older server payload.")).not.toBeVisible();
+  await draftFooter().getByText("Show exact payload", { exact: true }).click();
+  await expect.element(draftFooter().getByText("Older server payload.")).toBeVisible();
+});
 
 it("refreshes the inspected fact and uses its latest revision for the next mutation", async () => {
   const registry = await setup();
@@ -355,7 +434,7 @@ it("attaches project memory to the queued-edit composer without changing the thr
   await openMemory(screen);
   await page.getByRole("checkbox", { name: /Select for draft/ }).click();
   await page.getByRole("button", { name: "Preview and attach" }).click();
-  await expect.element(page.getByText("Escaped provider preview.")).toBeVisible();
+  await expect.element(draftFooter().getByText("Selected fact", { exact: true })).toBeVisible();
   expect(store.getComposerDraft(editTarget)?.knowledgeContexts?.[0]?.knowledge.selections).toEqual([
     { kind: "fact", factId: fact.id, revision: 1 },
   ]);
@@ -462,7 +541,7 @@ it("opens exact evidence and attaches only references, then removes the attachme
   });
   await page.getByRole("checkbox", { name: /Select for draft/ }).click();
   await page.getByRole("button", { name: "Preview and attach" }).click();
-  await expect.element(page.getByText("Escaped provider preview.")).toBeVisible();
+  await expect.element(draftFooter().getByText("Selected fact", { exact: true })).toBeVisible();
   const draft = useComposerDraftStore.getState().getComposerDraft(target);
   expect(draft?.knowledgeContexts?.[0]?.knowledge.selections).toEqual([
     { kind: "fact", factId: fact.id, revision: 1 },
@@ -474,7 +553,7 @@ it("opens exact evidence and attaches only references, then removes the attachme
   await page.getByRole("checkbox", { name: "Include archived conversations" }).click();
   expect(useComposerDraftStore.getState().getComposerDraft(target)?.knowledgeContexts).toEqual([]);
   await page.getByRole("button", { name: "Preview and attach" }).click();
-  await expect.element(page.getByText("Escaped provider preview.")).toBeVisible();
+  await expect.element(draftFooter().getByText("Selected fact", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Clear selection" }).click();
   expect(useComposerDraftStore.getState().getComposerDraft(target)?.knowledgeContexts).toEqual([]);
   expect(useComposerDraftStore.getState().getComposerDraft(target)?.prompt).not.toContain(
@@ -819,13 +898,14 @@ it("does not reattach a selection removed while its preview is pending", async (
         context: state.prepare.mock.calls[0]![0].input,
         text: "Old selection preview.",
         byteLength: 22,
+        items: [{ label: "Old selected fact", text: fact.content! }],
       },
     }),
   );
   expect(
     useComposerDraftStore.getState().getComposerDraft(target)?.knowledgeContexts ?? [],
   ).toEqual([]);
-  await expect.element(page.getByText("Old selection preview.")).not.toBeInTheDocument();
+  await expect.element(page.getByText("Old selected fact")).not.toBeInTheDocument();
 });
 
 it("does not attach after the panel closes and a new panel removes the selection", async () => {
@@ -852,13 +932,14 @@ it("does not attach after the panel closes and a new panel removes the selection
         context: state.prepare.mock.calls[0]![0].input,
         text: "Closed panel preview.",
         byteLength: 21,
+        items: [{ label: "Closed panel selected fact", text: fact.content! }],
       },
     }),
   );
   expect(
     useComposerDraftStore.getState().getComposerDraft(target)?.knowledgeContexts ?? [],
   ).toEqual([]);
-  await expect.element(page.getByText("Closed panel preview.")).not.toBeInTheDocument();
+  await expect.element(page.getByText("Closed panel selected fact")).not.toBeInTheDocument();
 });
 
 it("pages facts and conversations independently and resets both for a new query", async () => {

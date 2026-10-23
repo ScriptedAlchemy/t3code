@@ -15,6 +15,7 @@ import {
   type ProjectFactId,
   type ProjectId,
   type ProjectKnowledgeMutation,
+  type ProjectKnowledgePreparedContext,
   type ProjectKnowledgeSearchInput,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -231,7 +232,7 @@ function MemoryContents(
     },
     [],
   );
-  const [preview, setPreview] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ProjectKnowledgePreparedContext | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const narrow = useMediaQuery("max-md");
@@ -435,7 +436,7 @@ function MemoryContents(
     if (selectionVersion.current !== version) return;
     if (result._tag === "Failure") setError(String(squashAtomCommandFailure(result)));
     else {
-      setPreview(result.value.text);
+      setPreview(result.value);
       useComposerDraftStore
         .getState()
         .setKnowledgeContext(target, projectKnowledgeContextRecord(result.value.context));

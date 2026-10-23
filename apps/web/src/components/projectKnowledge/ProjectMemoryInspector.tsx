@@ -140,6 +140,7 @@ export function FactInspector(props: {
   const superseded = isSupersededFact(fact);
   const sourceUnavailable = props.unavailableReason ?? detail?.sourceUnavailable ?? null;
   const locked = !props.canMutate || props.busy;
+  const citations = fact.sources.flatMap((source) => (source.kind === "message" ? [source] : []));
   return (
     <article className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
@@ -245,24 +246,18 @@ export function FactInspector(props: {
           Evidence
         </h4>
         <p className="text-muted-foreground text-sm">{knowledgeOriginLabel(fact.origin)}</p>
-        {fact.sources.length > 0 ? (
+        {citations.length > 0 ? (
           <div className="flex flex-wrap items-center gap-2">
-            {fact.sources.map((ref) =>
-              ref.kind === "user" ? (
-                <span key="user" className="text-sm">
-                  User assertion
-                </span>
-              ) : (
-                <Button
-                  key={`${ref.threadId}:${ref.messageId}`}
-                  variant="link"
-                  size="sm"
-                  onClick={() => props.onOpenSource(ref)}
-                >
-                  Message {ref.messageId}
-                </Button>
-              ),
-            )}
+            {citations.map((ref) => (
+              <Button
+                key={`${ref.threadId}:${ref.messageId}`}
+                variant="link"
+                size="sm"
+                onClick={() => props.onOpenSource(ref)}
+              >
+                Message {ref.messageId}
+              </Button>
+            ))}
           </div>
         ) : null}
       </section>

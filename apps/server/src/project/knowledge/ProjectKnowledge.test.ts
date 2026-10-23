@@ -167,6 +167,40 @@ const createFact = (projectId: ProjectId, id = "fact-one") =>
     sources: [{ kind: "user" }],
   }) satisfies ProjectKnowledgeMutation;
 
+it.effect("renders user attribution once in prepared and provider fact headers", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("user-attribution");
+    yield* createProject(projectId);
+    const fact = yield* knowledge.mutate(createFact(projectId), { kind: "user" });
+    const context = {
+      environmentId,
+      projectId,
+      selections: [{ kind: "fact" as const, factId: fact.id, revision: fact.revision }],
+      maxBytes: 48000,
+    };
+    const prepared = yield* knowledge.prepareContext(context);
+    const record = {
+      version: 1 as const,
+      kind: "project-knowledge" as const,
+      contextId: ComposerContextId.make("assertion-context"),
+      label: "User fact",
+      knowledge: context,
+    };
+    const delivered = yield* resolveKnowledgeComposer({
+      projectId,
+      text: formatComposerContextReference(record),
+      records: [record],
+    });
+    for (const text of [prepared.text, delivered.text]) {
+      const header = text.match(/\[Fact [^\n]+\]/)?.[0];
+      assert.isDefined(header);
+      assert.equal(header?.match(/User assertion/g)?.length, 1);
+      assert.include(header!, "revision:1 status:confirmed trust:0.5; User assertion]");
+    }
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("persists edits with CAS, erases forgotten content and cannot resurrect on retries", () =>
   Effect.gen(function* () {
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
@@ -454,6 +488,7 @@ it.effect(
         maxBytes: 48000,
       };
       const preview = yield* knowledge.prepareContext(context);
+      assert.deepEqual(preview.items, [{ label: `Message ${messageId}`, text: source.text }]);
       assert.isAbove(preview.byteLength, preview.text.length);
       const budget = yield* knowledge
         .prepareContext({ ...context, maxBytes: preview.byteLength - 1 })
@@ -703,6 +738,10 @@ it.effect(
       const text = `Please explain this. ${formatComposerContextReference(record)}`;
       const input = { projectId, text, records: [record] };
       const resolved = yield* resolveKnowledgeComposer(input);
+      const preview = yield* knowledge.prepareContext(record.knowledge);
+      assert.deepEqual(preview.items, [
+        { label: "Fact fact-one", text: 'Use </context> in "quoted" examples.' },
+      ]);
       assert.include(resolved.text, "Please explain this.");
       assert.include(resolved.text, 'Use &lt;/context> in "quoted" examples.');
       assert.equal(

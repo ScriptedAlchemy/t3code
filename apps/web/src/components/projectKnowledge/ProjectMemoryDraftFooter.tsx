@@ -1,4 +1,4 @@
-import type { KnowledgeSelection } from "@t3tools/contracts";
+import type { KnowledgeSelection, ProjectKnowledgePreparedContext } from "@t3tools/contracts";
 import { XIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { selectionKey } from "./projectMemoryLabels";
@@ -10,7 +10,7 @@ export function ProjectMemoryDraftFooter(props: {
   readonly selections: ReadonlyArray<KnowledgeSelection>;
   readonly labelFor: (selection: KnowledgeSelection) => string;
   readonly attached: boolean;
-  readonly preview: string | null;
+  readonly preview: ProjectKnowledgePreparedContext | null;
   readonly busy: boolean;
   readonly onRemove: (selection: KnowledgeSelection) => void;
   readonly onClear: () => void;
@@ -75,12 +75,41 @@ export function ProjectMemoryDraftFooter(props: {
         </div>
       </div>
       {props.preview ? (
-        <pre
-          aria-label="Attached preview"
-          className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md border bg-background p-2 text-xs"
-        >
-          {props.preview}
-        </pre>
+        <div className="flex flex-col gap-2">
+          <section
+            aria-label="Attached preview"
+            className="max-h-48 overflow-auto rounded-md border bg-background p-2 text-sm"
+          >
+            {props.preview.items ? (
+              <ul className="flex flex-col gap-3">
+                {props.preview.items.map((item, index) => (
+                  <li
+                    key={selectionKey(props.preview!.context.selections[index]!)}
+                    className="flex flex-col gap-1"
+                  >
+                    <h4 className="font-medium">{item.label}</h4>
+                    <p className="whitespace-pre-wrap">{item.text}</p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-muted-foreground">
+                This server cannot provide a readable preview. Expand the exact payload to review
+                what will be sent.
+              </p>
+            )}
+          </section>
+          <details>
+            <summary className="cursor-pointer text-xs">Show exact payload</summary>
+            <pre
+              role="region"
+              aria-label="Exact payload"
+              className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-md border bg-background p-2 text-xs"
+            >
+              {props.preview.text}
+            </pre>
+          </details>
+        </div>
       ) : null}
     </section>
   );
