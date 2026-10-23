@@ -2,7 +2,9 @@ import "../../index.css";
 import { RegistryContext } from "@effect/atom-react";
 import {
   CommandId,
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  RunId,
   ProjectId,
   ThreadId,
   ProjectFactId,
@@ -31,11 +33,19 @@ const state = vi.hoisted(() => ({
   prepare: vi.fn(),
   mutate: vi.fn(),
   readSource: vi.fn(),
+  updateSettings: vi.fn(),
 }));
 vi.mock(
   import("../../state/server"),
-  () => ({ serverEnvironment: { configValueAtom: () => state.config } }) as never,
+  () =>
+    ({
+      serverEnvironment: {
+        configValueAtom: () => state.config,
+        updateSettings: { label: "updateSettings" },
+      },
+    }) as never,
 );
+vi.mock(import("../../state/session"), () => ({ useEnvironmentScope: () => true }) as never);
 vi.mock(
   import("../../state/projectKnowledge"),
   () =>
@@ -65,7 +75,11 @@ vi.mock(
   () =>
     ({
       useAtomCommand: (command: { label: string }) =>
-        command.label === "prepare" ? state.prepare : state.mutate,
+        command.label === "prepare"
+          ? state.prepare
+          : command.label === "updateSettings"
+            ? state.updateSettings
+            : state.mutate,
     }) as never,
 );
 
@@ -182,6 +196,7 @@ function setup() {
   }));
   state.mutate.mockReset().mockResolvedValue({ _tag: "Success", value: { ...fact, revision: 2 } });
   state.readSource.mockReset();
+  state.updateSettings.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
   state.searchRequest.mockReset().mockImplementation(() => state.search);
   useComposerDraftStore.getState().clearComposerContent(target);
   return registry;
@@ -638,4 +653,93 @@ it("supersedes a fact and surfaces the conflict hints the server returns", async
   await expect.element(notice.getByText("This fact")).toBeVisible();
   await notice.getByRole("button", { name: "Dismiss" }).click();
   await expect.element(notice).not.toBeInTheDocument();
+});
+
+it("reviews assisted suggestions with their citations and controls the project opt-in", async () => {
+  const registry = setup();
+  const runId = RunId.make("run");
+  const suggestion: ProjectFact = {
+    ...fact,
+    id: ProjectFactId.make("assisted:run:0"),
+    origin: { kind: "assisted", threadId: scope.threadId, runId, runOutcome: "failed" },
+    content: "Cache keys include tenant and region IDs.",
+    supersedes: ProjectFactId.make("existing-fact"),
+  };
+  state.config = Atom.make({
+    environment: {
+      capabilities: {
+        projectKnowledge: true,
+        projectKnowledgeHistory: true,
+        projectKnowledgeAssistedLearning: true,
+        projectSettingsOverrides: true,
+      },
+    },
+    settings: {
+      ...DEFAULT_SERVER_SETTINGS,
+      projectSettingsOverrides: {
+        [scope.projectId]: { defaultAutoPull: true, enableAssistedLearning: true },
+      },
+    },
+  });
+  state.status = Atom.make(
+    AsyncResult.success({
+      ...healthStatus,
+      assistedLearning: {
+        suggested: 1,
+        lastRun: {
+          threadId: scope.threadId,
+          runId,
+          runOutcome: "failed",
+          result: "ran",
+          reason: null,
+          proposed: 1,
+          suggested: 1,
+          at: fact.createdAt,
+        },
+      },
+    } satisfies ProjectKnowledgeStatus),
+  );
+  state.list = Atom.make(AsyncResult.success({ facts: [suggestion], nextCursor: null }));
+  await using screen = await mount(registry);
+  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  const optIn = page.getByRole("checkbox", { name: "Suggest facts from finished runs" });
+  await expect.element(optIn).toBeChecked();
+  await expect
+    .element(page.getByText("Last run: proposed 1 (1 as updates to existing facts)."))
+    .toBeVisible();
+
+  await page.getByRole("button", { name: "suggested (1)" }).click();
+  expect(state.listRequest).toHaveBeenLastCalledWith({
+    environmentId: scope.environmentId,
+    input: { projectId: scope.projectId, status: "proposed", origin: "assisted" },
+  });
+  const card = page.getByRole("article").filter({ hasText: suggestion.content! });
+  await expect.element(card.getByText("Suggested from a run that failed")).toBeVisible();
+  await expect.element(card.getByText("Would replace existing")).toBeVisible();
+  await card.getByRole("button", { name: "Message evidence" }).click();
+  await expect.element(page.getByText("Exact canonical evidence.")).toBeVisible();
+  await card.getByRole("button", { name: "Confirm", exact: true }).click();
+  expect(state.mutate).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: {
+      action: "confirm",
+      commandId: expect.any(String),
+      projectId: scope.projectId,
+      factId: suggestion.id,
+      expectedRevision: 1,
+    },
+  });
+
+  await optIn.click();
+  // Other overrides for the project survive the write, which replaces the whole entry.
+  expect(state.updateSettings).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: {
+      patch: {
+        projectSettingsOverrides: {
+          [scope.projectId]: { defaultAutoPull: true, enableAssistedLearning: false },
+        },
+      },
+    },
+  });
 });

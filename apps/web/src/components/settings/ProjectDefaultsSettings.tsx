@@ -91,6 +91,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedWorkspace = useScopedSettingsMixed(["defaultThreadEnvMode"]);
   const mixedSubmodules = useScopedSettingsMixed(["worktreeSubmodules"]);
   const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
+  const mixedAssistedLearning = useScopedSettingsMixed(["enableAssistedLearning"]);
   const mixedAgentCredits = useScopedSettingsMixed(["removeAgentCreditsOnMerge"]);
   const mixedMergeMethod = useScopedSettingsMixed(["pullRequestMergeMethod"]);
   const modelSource = useScopedSettingSource(["defaultModelSelection"]);
@@ -374,6 +375,34 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                   ))}
                 </SelectPopup>
               </Select>
+            }
+          />
+          <SettingsRow
+            serverScoped
+            settingKeys={["enableAssistedLearning"]}
+            mixed={mixedAssistedLearning}
+            {...searchableSetting("assisted-learning")}
+            description={
+              isProjectScope
+                ? "After each run in this project, your text generation model proposes up to three cited facts for review in Project memory. Each run costs one model call."
+                : "After each run, your text generation model proposes up to three cited facts for review in Project memory. Each run costs one model call. Projects can override it."
+            }
+            resetAction={
+              settings.enableAssistedLearning ? (
+                <SettingResetButton
+                  label="assisted learning"
+                  tooltip="Reset assisted learning to off"
+                  onClick={() => updateSettings({ enableAssistedLearning: false })}
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                aria-label="Suggest facts from finished runs"
+                mixed={mixedAssistedLearning}
+                checked={mixedAssistedLearning ? false : settings.enableAssistedLearning}
+                onCheckedChange={(enabled) => updateSettings({ enableAssistedLearning: enabled })}
+              />
             }
           />
         </>

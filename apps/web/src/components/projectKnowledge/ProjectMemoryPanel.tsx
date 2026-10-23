@@ -47,6 +47,7 @@ import {
   type DraftId,
 } from "../../composerDraftStore";
 import { ConflictHintRow, KnowledgeHealthStrip, ProjectFactDetailPane } from "./ProjectFactDetail";
+import { AssistedLearningSection } from "./AssistedLearningSection";
 
 const selectionKey = (selection: KnowledgeSelection) =>
   selection.kind === "fact"
@@ -103,6 +104,16 @@ function useProjectMemoryHistoryAvailable(environmentId: EnvironmentId): boolean
   const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   return config?.environment.capabilities.projectKnowledgeHistory === true;
 }
+
+// Older servers lack assisted proposals and the origin filter.
+function useProjectMemoryAssistedAvailable(environmentId: EnvironmentId): boolean {
+  const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  return config?.environment.capabilities.projectKnowledgeAssistedLearning === true;
+}
+
+// A pending assisted replacement names its target before the target is marked superseded.
+const isPendingReplacement = (fact: ProjectFact) =>
+  fact.status === "proposed" && fact.origin.kind === "assisted" && fact.supersedes != null;
 
 export function useOpenProjectMemory() {
   const setRequest = useAtomSet(openRequestAtom);
@@ -196,7 +207,9 @@ function MemoryContents(
         }
       : null,
   );
-  const [status, setStatus] = useState<"confirmed" | "proposed" | "forgotten">("confirmed");
+  const [status, setStatus] = useState<"confirmed" | "proposed" | "suggested" | "forgotten">(
+    "confirmed",
+  );
   const [afterId, setAfterId] = useState<ProjectFactId | undefined>();
   const [includeArchived, setIncludeArchived] = useState(false);
   const [source, setSource] = useState<SourceRef | null>(props.seedMessage);
@@ -229,6 +242,7 @@ function MemoryContents(
   const canMutate = useAtomValue(projectKnowledge.mutate.permissionAtom(props.environmentId));
   const historyAvailable = useProjectMemoryHistoryAvailable(props.environmentId);
   const showSuperseded = historyAvailable && includeSuperseded;
+  const assistedAvailable = useProjectMemoryAssistedAvailable(props.environmentId);
   const list = useEnvironmentQuery(
     projectKnowledge.list({
       environmentId: props.environmentId,
@@ -237,7 +251,9 @@ function MemoryContents(
         // The lost-source filter spans proposed and confirmed, matching the health count.
         ...(historyAvailable && lostSourcesOnly
           ? { sourceState: "unavailable" as const }
-          : { status }),
+          : status === "suggested"
+            ? { status: "proposed" as const, origin: "assisted" as const }
+            : { status }),
         ...(afterId ? { afterId } : {}),
         ...(showSuperseded ? { includeSuperseded: true } : {}),
       },
@@ -392,6 +408,13 @@ function MemoryContents(
           }}
         />
       ) : null}
+      {assistedAvailable ? (
+        <AssistedLearningSection
+          environmentId={props.environmentId}
+          projectId={props.projectId}
+          status={health.data ?? null}
+        />
+      ) : null}
       <form
         className="flex gap-2"
         onSubmit={(event) => {
@@ -448,7 +471,10 @@ function MemoryContents(
         </label>
       ) : null}
       <div className="flex flex-wrap gap-2">
-        {(["confirmed", "proposed", "forgotten"] as const).map((value) => (
+        {(assistedAvailable
+          ? (["confirmed", "proposed", "suggested", "forgotten"] as const)
+          : (["confirmed", "proposed", "forgotten"] as const)
+        ).map((value) => (
           <Button
             key={value}
             variant={status === value && !searchInput && !lostSourcesOnly ? "default" : "outline"}
@@ -460,7 +486,9 @@ function MemoryContents(
               setSearchInput(null);
             }}
           >
-            {value}
+            {value === "suggested" && health.data?.assistedLearning?.suggested
+              ? `suggested (${health.data.assistedLearning.suggested})`
+              : value}
           </Button>
         ))}
         <Button
@@ -552,7 +580,9 @@ function MemoryContents(
               <Badge variant="secondary">Superseded by {shortFactId(fact.supersededBy)}</Badge>
             ) : null}
             {fact.supersedes ? (
-              <Badge variant="outline">Supersedes {shortFactId(fact.supersedes)}</Badge>
+              <Badge variant="outline">
+                {`${isPendingReplacement(fact) ? "Would replace" : "Supersedes"} ${shortFactId(fact.supersedes)}`}
+              </Badge>
             ) : null}
             {fact.id === props.focusFact?.id ? (
               <p className="whitespace-pre-wrap font-semibold" ref={revealOnMount}>
@@ -565,6 +595,12 @@ function MemoryContents(
               {fact.kind} · {fact.status} · trust {fact.trust.toFixed(2)} · revision {fact.revision}
             </p>
             <p>{knowledgeOriginLabel(fact.origin)}</p>
+            {isPendingReplacement(fact) && fact.supersedes ? (
+              <p className="text-xs">
+                Confirming replaces fact {shortFactId(fact.supersedes)}; forgetting leaves it as it
+                is.
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               {fact.sources.map((ref, index) =>
                 ref.kind === "user" ? (
