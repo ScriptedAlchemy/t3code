@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View } from "react-native";
+import { ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { KnowledgeSelection } from "@t3tools/contracts";
 
@@ -118,8 +118,14 @@ export function ProjectKnowledgeDraftFooter(props: {
           />
         ) : null}
       </View>
-      {expanded
-        ? props.selections.map((item) => (
+      {expanded ? (
+        <ScrollView
+          nestedScrollEnabled
+          style={{ maxHeight: 140, flexShrink: 1 }}
+          contentContainerStyle={{ gap: 8 }}
+          keyboardShouldPersistTaps="handled"
+        >
+          {props.selections.map((item) => (
             <View
               key={knowledgeSelectionKey(item.selection)}
               className="flex-row flex-wrap items-center gap-2"
@@ -137,12 +143,11 @@ export function ProjectKnowledgeDraftFooter(props: {
               ) : null}
               <Button label="Remove" tone="text" onPress={() => props.onToggle(item.selection)} />
             </View>
-          ))
-        : null}
-      {expanded ? (
-        <AppText className="text-xs text-foreground-muted">
-          The draft keeps references and revision numbers. Current evidence is reloaded when sent.
-        </AppText>
+          ))}
+          <AppText className="text-xs text-foreground-muted">
+            The draft keeps references and revision numbers. Current evidence is reloaded when sent.
+          </AppText>
+        </ScrollView>
       ) : null}
       <Button
         label="Attach to draft"
