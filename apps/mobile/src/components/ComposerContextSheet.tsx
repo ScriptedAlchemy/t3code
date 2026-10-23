@@ -116,7 +116,9 @@ function DeliveredProjectKnowledge(props: {
           {note}
         </Text>
       ))}
-      <ContextField label="As sent" value={snapshot.item.text} code />
+      {snapshot.item.contentRemoved ? null : (
+        <ContextField label="As sent" value={snapshot.item.text} code />
+      )}
     </View>
   );
 }

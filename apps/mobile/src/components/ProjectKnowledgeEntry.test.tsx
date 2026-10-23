@@ -16,6 +16,7 @@ import { projectKnowledgeComposerReference } from "../lib/projectKnowledgeCompos
 const state = vi.hoisted(() => ({
   draft: {} as { text: string; context?: { records: unknown[] } },
   list: null as unknown,
+  listInputs: [] as unknown[],
   search: null as unknown,
   source: null as unknown,
   searchRequest: vi.fn(),
@@ -32,14 +33,16 @@ vi.mock("react-native", () => ({
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Switch: ({
+    accessibilityLabel,
     value,
     onValueChange,
   }: {
+    accessibilityLabel?: string;
     value: boolean;
     onValueChange: (value: boolean) => void;
   }) => (
     <input
-      aria-label="Include archived conversations"
+      aria-label={accessibilityLabel ?? "Include archived conversations"}
       type="checkbox"
       checked={value}
       onChange={(event) => onValueChange(event.target.checked)}
@@ -90,12 +93,19 @@ vi.mock("./ui/Sheet", () => ({
 vi.mock("@effect/atom-react", () => ({ useAtomValue: (value: unknown) => value }));
 vi.mock("../state/server", () => ({
   serverEnvironment: {
-    configValueAtom: () => ({ environment: { capabilities: { projectKnowledge: true } } }),
+    configValueAtom: () => ({
+      environment: { capabilities: { projectKnowledge: true, projectKnowledgeHistory: true } },
+    }),
   },
 }));
 vi.mock("../state/projectKnowledge", () => ({
   projectKnowledge: {
-    list: () => state.list,
+    list: (request: { input: unknown }) => {
+      state.listInputs.push(request.input);
+      return state.list;
+    },
+    readFact: () => null,
+    status: () => null,
     search: (request: unknown) => {
       return state.searchRequest(request);
     },
@@ -149,6 +159,7 @@ const fact: ProjectFact = {
 function setup() {
   state.draft = { text: "" };
   state.list = { facts: [fact], nextCursor: null };
+  state.listInputs = [];
   state.source = null;
   state.search = {
     messages: { matches: [], nextCursor: null },
@@ -388,4 +399,82 @@ it("pages both result streams without restarting the other stream", async () => 
     includeArchived: false,
     requestId: expect.any(String),
   });
+});
+
+it.each([
+  ["Helpful", true],
+  ["Unhelpful", false],
+] as const)("sends %s feedback against the fact's revision", async (label, helpful) => {
+  using screen = setup();
+  state.list = { facts: [{ ...fact, revision: 3 }], nextCursor: null };
+  await screen.click("Project memory");
+  await screen.click(label);
+  expect(state.mutate).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: {
+      action: "feedback",
+      commandId: expect.any(String),
+      projectId: scope.projectId,
+      factId: fact.id,
+      expectedRevision: 3,
+      helpful,
+    },
+  });
+});
+
+it("marks a superseded fact read-only and lists superseded facts on request", async () => {
+  using screen = setup();
+  state.list = {
+    facts: [{ ...fact, supersededBy: ProjectFactId.make("replacement") }],
+    nextCursor: null,
+  };
+  await screen.click("Project memory");
+  const labels = [...screen.container.querySelectorAll("button")].map((item) => item.textContent);
+  expect(screen.container.textContent).toContain("Superseded");
+  expect(labels).not.toContain("Edit");
+  expect(labels).not.toContain("Confirm");
+  expect(labels).not.toContain("Supersede");
+  expect(state.listInputs.at(-1)).not.toHaveProperty("includeSuperseded");
+  await act(async () =>
+    (
+      screen.container.querySelector('[aria-label="Show superseded facts"]') as HTMLInputElement
+    ).click(),
+  );
+  expect(state.listInputs.at(-1)).toMatchObject({ includeSuperseded: true });
+});
+
+it("supersedes a fact with a new replacement and shows the returned conflict hints", async () => {
+  using screen = setup();
+  const conflicting = ProjectFactId.make("conflicting");
+  state.mutate.mockResolvedValue({
+    _tag: "Success",
+    value: {
+      ...fact,
+      id: ProjectFactId.make("replacement"),
+      hints: [
+        {
+          kind: "possible_conflict",
+          factId: conflicting,
+          revision: 2,
+          excerpt: "Cache keys omit tenant IDs.",
+          similarity: 0.7,
+        },
+      ],
+    },
+  });
+  await screen.click("Project memory");
+  await screen.click("Supersede");
+  await screen.click("Save");
+  const input = state.mutate.mock.lastCall![0].input;
+  expect(input).toMatchObject({
+    action: "supersede",
+    factId: fact.id,
+    expectedRevision: 1,
+    content: fact.content,
+    sources: [{ kind: "user" }],
+  });
+  expect(input.replacementFactId).not.toBe(fact.id);
+  expect(screen.container.textContent).toContain(
+    "Possible conflict with: “Cache keys omit tenant IDs.”",
+  );
 });
