@@ -33,6 +33,8 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { AssistedLearningRunner } from "../project/knowledge/assistedLearningSchedule.ts";
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
 const oldSessionId = ProviderSessionId.make("provider-session:effect-worker-restart:old");
@@ -40,6 +42,52 @@ const providerThreadId = ProviderThreadId.make("provider-thread:effect-worker-re
 const providerTurnId = ProviderTurnId.make("provider-turn:effect-worker-restart");
 const attemptId = RunAttemptId.make("run-attempt:effect-worker-restart");
 const runId = RunId.make("run:effect-worker-restart");
+
+it.effect("starts a follow-up turn while assisted learning is held", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const outboxLayer = EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory));
+    const executorLayer = layerExecutorFor({ events }).pipe(
+      Layer.provide(
+        Layer.succeed(AssistedLearningRunner, {
+          extractRun: () =>
+            Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        }),
+      ),
+    );
+    const dependencies = Layer.merge(outboxLayer, executorLayer);
+    const layer = EffectWorker.layer.pipe(Layer.provideMerge(dependencies));
+    yield* Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      yield* outbox.enqueue([
+        {
+          id: "effect:held-learning",
+          commandId: CommandId.make("command:held-learning"),
+          threadId,
+          request: { type: "project-knowledge.extract", runId, runOutcome: "completed" },
+        },
+      ]);
+      yield* worker.runMaintenanceOnce.pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* outbox.enqueue([
+        {
+          id: "effect:follow-up",
+          commandId: CommandId.make("command:follow-up"),
+          threadId,
+          request: { type: "provider-turn.start", runId: RunId.make("run:follow-up") },
+        },
+      ]);
+      assert.isTrue(yield* worker.runTurnOnce);
+      assert.deepEqual(yield* Ref.get(events), ["start"]);
+      assert.isFalse(yield* Deferred.isDone(release));
+      yield* Deferred.succeed(release, undefined);
+      yield* outbox.awaitSettled("effect:held-learning");
+    }).pipe(Effect.provide(layer));
+  }),
+);
 
 function restartEffect(
   now: DateTime.Utc,
