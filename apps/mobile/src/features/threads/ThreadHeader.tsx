@@ -79,6 +79,23 @@ export function ThreadHeader(
   return (
     <>
       <AppBar
+        menus={
+          props.onOpenConversationSummaries
+            ? [
+                {
+                  title: "Thread actions",
+                  icon: "ellipsis",
+                  items: [
+                    {
+                      id: "conversation-summaries",
+                      title: "Conversation summaries",
+                      onPress: props.onOpenConversationSummaries,
+                    },
+                  ],
+                },
+              ]
+            : undefined
+        }
         title={props.title}
         subtitle={props.subtitle}
         sidebar={native.sidebar}

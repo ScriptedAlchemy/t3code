@@ -28,14 +28,15 @@ labelled as model-written and names the messages it was written from, so the age
 exact originals.
 
 Turn on **Summarize older messages** in **Settings → General**, for one project or every project,
-or from **Conversation summaries** in a thread's details. It is off by default because each summary
-costs one call to your text generation model. After a turn completes, T3 Code summarizes settled
-stretches of up to 24 older messages, a few per turn, so a long thread catches up over several turns.
+or from **Conversation summaries** in a thread's details on web and desktop. It is off by default
+because each summary costs one call to your text generation model. After a turn completes, T3 Code
+summarizes settled stretches of up to 24 older messages, a few per turn, so a long thread catches up
+over several turns.
 The most recent messages are never summarized.
 
-**Conversation summaries** in a thread's details lists the thread's summaries and lets you open the
-messages behind each one. It also shows what the last pass did, including why it wrote nothing or
-failed and how many older messages are still waiting. If a summarized message is edited or removed,
+**Conversation summaries** in a thread's details (or thread actions on mobile) lists the thread's
+summaries and lets you open the messages behind each one. It also shows what the last pass did,
+including why it wrote nothing or failed and how many older messages are still waiting. If a summarized message is edited or removed,
 or the thread is deleted or archived, that summary is marked outdated, its text is hidden, and agents
 no longer receive it; the changed stretch is summarized again from the current messages. Summaries
 do not replace a provider's own compaction.
