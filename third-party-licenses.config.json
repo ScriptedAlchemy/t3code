@@ -354,6 +354,13 @@
       }
     },
     {
+      "repositoryUrl": "https://github.com/colbymchenry/codegraph",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2026 Colby Mchenry"]
+      }
+    },
+    {
       "repositoryUrl": "https://github.com/xa11y/xa11y",
       "generatedNotice": {
         "licenseId": "MIT",
