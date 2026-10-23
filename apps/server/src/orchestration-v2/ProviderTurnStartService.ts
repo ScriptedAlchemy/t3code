@@ -748,12 +748,38 @@ export const layer: Layer.Layer<
             }),
           );
         }
-        const uncertainDelivery = projection.contextHandoffs.some(
-          (handoff) =>
-            handoff.toProviderThreadId === providerThread.id &&
-            handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
-            handoff.delivery?.status === "pending",
+        const knowledgeReceipts = message.context?.records.some(
+          (record) => record.kind === "project-knowledge",
+        )
+          ? (yield* knowledge.readDeliveries({
+              projectId: projection.thread.projectId,
+              threadId: projection.thread.id,
+              messageId: message.id,
+            })).deliveries
+          : [];
+        const uncertainKnowledge = knowledgeReceipts.filter(
+          (receipt) =>
+            receipt.providerThreadId === providerThread.id &&
+            receipt.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
+            (receipt.status === "prepared" || receipt.status === "uncertain"),
         );
+        // A crash after dispatch leaves prepared indistinguishable from an accepted prompt.
+        // Like pending handoff injection, recover onto a fresh native conversation.
+        for (const receipt of uncertainKnowledge) {
+          yield* knowledge.recordDelivery({
+            ...receipt,
+            status: "uncertain",
+            updatedAt: DateTime.formatIso(yield* DateTime.now),
+          });
+        }
+        const uncertainDelivery =
+          uncertainKnowledge.length > 0 ||
+          projection.contextHandoffs.some(
+            (handoff) =>
+              handoff.toProviderThreadId === providerThread.id &&
+              handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
+              handoff.delivery?.status === "pending",
+          );
         const resumed = yield* Effect.result(
           uncertainDelivery
             ? Effect.fail(
@@ -1036,7 +1062,23 @@ export const layer: Layer.Layer<
         records: message.context?.records ?? [],
       }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge));
       if (composer.byteLength > 0 && !(yield* isCurrentAttemptInStatus("running"))) return;
-      const userText = composer.text;
+      const receipts =
+        composer.items.length === 0 && composer.omissions.length === 0
+          ? []
+          : (yield* knowledge.readDeliveries({
+              projectId: projection.thread.projectId,
+              threadId: projection.thread.id,
+              messageId: message.id,
+            })).deliveries;
+      const alreadySent = receipts.some(
+        (receipt) =>
+          receipt.status === "sent" &&
+          receipt.providerInstanceId === run.providerInstanceId &&
+          receipt.providerThreadId === runningProviderThread.id &&
+          receipt.nativeThreadId != null &&
+          receipt.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId,
+      );
+      const userText = alreadySent ? composer.baseText : composer.text;
       // Keyed by attempt so a retried start updates the same record, while a replacement
       // attempt (account failover) keeps its own account of what its provider received.
       const recordKnowledgeDelivery = Effect.fn("ProviderTurnStartService.recordKnowledgeDelivery")(
@@ -1051,6 +1093,8 @@ export const layer: Layer.Layer<
             messageId: message.id,
             projectId: projection.thread.projectId,
             providerInstanceId: run.providerInstanceId,
+            providerThreadId: runningProviderThread.id,
+            nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? null,
             status,
             items: composer.items,
             omissions: composer.omissions,
@@ -1333,6 +1377,13 @@ export const layer: Layer.Layer<
             );
           }
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
+          if (
+            alreadySent &&
+            receipts.some(
+              (receipt) => receipt.attemptId === attempt.id && receipt.status === "sent",
+            )
+          )
+            return;
           yield* recordKnowledgeDelivery("prepared").pipe(Effect.tapError(() => delivery.unsent));
           const start = compact ? session.compactThread! : session.startTurn;
           const context = [delivery.context, restartNote]

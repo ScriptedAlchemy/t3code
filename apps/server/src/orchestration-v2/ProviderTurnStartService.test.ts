@@ -707,6 +707,13 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProjectKnowledge.ProjectKnowledge)({
           ...(input.resolveKnowledge ? { resolveForTurn: input.resolveKnowledge } : {}),
           ...(input.readSentDeliveries ? { readSentDeliveries: input.readSentDeliveries } : {}),
+          readDeliveries: () =>
+            Effect.succeed({
+              deliveries: knowledgeDeliveries.map((delivery) => ({
+                ...delivery,
+                items: delivery.items.map((item) => ({ ...item, current: "current" as const })),
+              })),
+            }),
           recordDelivery: (delivery) =>
             Effect.sync(() => {
               knowledgeDeliveries.push(delivery);
@@ -1285,9 +1292,9 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
   );
 }
 
-effectIt.effect(
-  "does not start a provider after selected knowledge resolves for a superseded attempt",
-  () =>
+effectIt.effect.each(["superseded", "stopped", "account failover"] as const)(
+  "does not start a provider after selected knowledge resolves for a %s attempt",
+  (state) =>
     Effect.gen(function* () {
       const entered = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
@@ -1328,7 +1335,9 @@ effectIt.effect(
         ...current,
         runs: current.runs.map((run) => ({
           ...run,
-          activeAttemptId: RunAttemptId.make("replacement"),
+          ...(state === "stopped"
+            ? { status: "interrupted" as const }
+            : { activeAttemptId: RunAttemptId.make("replacement") }),
         })),
       });
       yield* Deferred.succeed(release, undefined);
@@ -1422,6 +1431,13 @@ effectIt.effect.each([false, true])(
           ]),
         );
         expect(result._tag).toBe("Success");
+        expect(harness.knowledgeDeliveries.at(-1)?.providerThreadId).toBe(
+          harness.projection().providerThreads[0]?.id,
+        );
+        expect(harness.knowledgeDeliveries.at(-1)?.nativeThreadId).toBe(
+          harness.projection().providerThreads[0]?.nativeThreadRef?.nativeId,
+        );
+        yield* harness.start;
         expect(harness.nativeStart).toHaveBeenCalledOnce();
         expect(harness.nativeStart.mock.calls[0]?.[0].message.text).toContain(
           "Preserve my question.",

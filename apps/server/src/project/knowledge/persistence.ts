@@ -89,6 +89,7 @@ export type HistoryRecord = Omit<
 
 const DeliveryRow = Schema.Struct({
   ...ProjectKnowledgeDelivery.fields,
+  providerThreadId: Schema.NullOr(ProjectKnowledgeDelivery.fields.providerThreadId),
   items: Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryItem)),
   omissions: Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryOmission)),
 });
@@ -426,20 +427,23 @@ export const makeStore = Effect.gen(function* () {
         const items = withoutForgotten(delivery.items, new Set(forgotten.map((row) => row.id)));
         yield* sql`INSERT INTO project_knowledge_deliveries (
           attempt_id, run_id, thread_id, message_id, project_id, provider_instance_id, status,
-          items_json, omissions_json, created_at, updated_at
+          items_json, omissions_json, created_at, updated_at, provider_thread_id, native_thread_id
         ) VALUES (
           ${delivery.attemptId}, ${delivery.runId}, ${delivery.threadId}, ${delivery.messageId},
           ${delivery.projectId}, ${delivery.providerInstanceId}, ${delivery.status},
           ${encodeDeliveryItems(items)}, ${encodeDeliveryOmissions(delivery.omissions)},
-          ${delivery.createdAt}, ${delivery.updatedAt}
+          ${delivery.createdAt}, ${delivery.updatedAt}, ${delivery.providerThreadId ?? null},
+          ${delivery.nativeThreadId ?? null}
         ) ON CONFLICT (attempt_id) DO UPDATE SET
-          status = excluded.status, updated_at = excluded.updated_at
+          status = excluded.status, updated_at = excluded.updated_at,
+          provider_thread_id = excluded.provider_thread_id, native_thread_id = excluded.native_thread_id
           ${
             delivery.status === "prepared"
               ? sql`, items_json = excluded.items_json, omissions_json = excluded.omissions_json`
               : sql``
           }
-        WHERE project_knowledge_deliveries.status != 'sent'`;
+        WHERE project_knowledge_deliveries.status != 'sent'
+          OR project_knowledge_deliveries.native_thread_id IS NOT excluded.native_thread_id`;
       }),
     );
   });
@@ -475,12 +479,16 @@ export const makeStore = Effect.gen(function* () {
     const rows = yield* sql`
       SELECT attempt_id AS "attemptId", run_id AS "runId", thread_id AS "threadId",
         message_id AS "messageId", project_id AS "projectId",
-        provider_instance_id AS "providerInstanceId", status, items_json AS items,
+        provider_instance_id AS "providerInstanceId", provider_thread_id AS "providerThreadId",
+        native_thread_id AS "nativeThreadId", status, items_json AS items,
         omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
       FROM project_knowledge_deliveries
       WHERE project_id = ${projectId} AND thread_id = ${threadId} AND message_id = ${messageId}
       ORDER BY created_at ASC, attempt_id ASC LIMIT 20`;
-    return yield* decodeDeliveries(rows);
+    return (yield* decodeDeliveries(rows)).map(({ providerThreadId, ...row }) => ({
+      ...row,
+      ...(providerThreadId == null ? {} : { providerThreadId }),
+    }));
   });
   const sentDeliveries = Effect.fn("ProjectKnowledgeStore.sentDeliveries")(function* (
     projectId: ProjectId,
@@ -491,13 +499,17 @@ export const makeStore = Effect.gen(function* () {
     const rows = yield* sql`
       SELECT attempt_id AS "attemptId", run_id AS "runId", thread_id AS "threadId",
         message_id AS "messageId", project_id AS "projectId",
-        provider_instance_id AS "providerInstanceId", status, items_json AS items,
+        provider_instance_id AS "providerInstanceId", provider_thread_id AS "providerThreadId",
+        native_thread_id AS "nativeThreadId", status, items_json AS items,
         omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
       FROM project_knowledge_deliveries
       WHERE project_id = ${projectId} AND ${sql.in("thread_id", threadIds)}
         AND ${sql.in("run_id", runIds)} AND status = 'sent'
       ORDER BY created_at ASC, attempt_id ASC`;
-    return yield* decodeDeliveries(rows);
+    return (yield* decodeDeliveries(rows)).map(({ providerThreadId, ...row }) => ({
+      ...row,
+      ...(providerThreadId == null ? {} : { providerThreadId }),
+    }));
   });
   const assistedRunRecorded = Effect.fn("ProjectKnowledgeStore.assistedRunRecorded")(function* (
     runId: RunId,
