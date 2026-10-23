@@ -102,6 +102,22 @@ const encodeDeliveryOmissions = Schema.encodeSync(
   Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryOmission)),
 );
 
+/** Blanks the excerpt of every item that selects a forgotten fact; returns the input if none do. */
+const withoutForgotten = (
+  items: ReadonlyArray<ProjectKnowledgeDeliveryItem>,
+  forgotten: ReadonlySet<string>,
+) => {
+  const selectsForgotten = (item: ProjectKnowledgeDeliveryItem) =>
+    !item.contentRemoved &&
+    item.context.selections.some(
+      (selection) => selection.kind === "fact" && forgotten.has(selection.factId),
+    );
+  if (!items.some(selectsForgotten)) return items;
+  return items.map((item) =>
+    selectsForgotten(item) ? { ...item, text: "", contentRemoved: true } : item,
+  );
+};
+
 export const makeStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const columns = sql`
@@ -378,29 +394,25 @@ export const makeStore = Effect.gen(function* () {
     WHERE project_knowledge_deliveries.status != 'sent'`;
   });
   // Forget must not leave a recoverable copy: as-sent excerpts of the fact go with it, while the
-  // record skeleton (ids, revisions, digests, status) stays to explain what was sent.
+  // record skeleton (ids, revisions, digests, status) stays to explain what was sent. Matching
+  // reads decoded selections, since an id with JSON-escaped characters is not a substring of
+  // the stored JSON.
   const scrubDeliveries = Effect.fn("ProjectKnowledgeStore.scrubDeliveries")(function* (
     projectId: ProjectId,
     factId: ProjectFactId,
   ) {
     const rows = yield* sql<{ readonly attemptId: string; readonly items: string }>`
-      SELECT attempt_id AS "attemptId", items_json AS items FROM project_knowledge_deliveries
-      WHERE project_id = ${projectId} AND instr(items_json, ${factId}) > 0`;
+      SELECT attempt_id AS "attemptId", items_json AS items FROM project_knowledge_deliveries d
+      WHERE project_id = ${projectId} AND EXISTS (
+        SELECT 1 FROM json_each(d.items_json) item,
+          json_each(item.value, '$.context.selections') selection
+        WHERE json_extract(selection.value, '$.kind') = 'fact'
+          AND json_extract(selection.value, '$.factId') = ${factId}
+      )`;
     for (const row of rows) {
       const items = yield* decodeDeliveryItems(row.items);
-      let changed = false;
-      const scrubbed = items.map((item) => {
-        if (
-          item.contentRemoved ||
-          !item.context.selections.some(
-            (selection) => selection.kind === "fact" && selection.factId === factId,
-          )
-        )
-          return item;
-        changed = true;
-        return { ...item, text: "", contentRemoved: true };
-      });
-      if (changed)
+      const scrubbed = withoutForgotten(items, new Set([factId]));
+      if (scrubbed !== items)
         yield* sql`UPDATE project_knowledge_deliveries SET items_json = ${encodeDeliveryItems(scrubbed)}
           WHERE attempt_id = ${row.attemptId}`;
     }

@@ -888,6 +888,91 @@ it.effect(
     }).pipe(Effect.provide(layerTest)),
 );
 
+const composeDelivery = Effect.fn("test.composeDelivery")(function* (
+  projectId: ProjectId,
+  key: string,
+  factId = key,
+) {
+  const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+  const fact = yield* knowledge.mutate(createFact(projectId, factId), { kind: "user" });
+  const record = {
+    version: 1 as const,
+    kind: "project-knowledge" as const,
+    contextId: ComposerContextId.make(`${key}-context`),
+    label: key,
+    knowledge: {
+      environmentId,
+      projectId,
+      selections: [{ kind: "fact" as const, factId: fact.id, revision: fact.revision }],
+      maxBytes: 48000,
+    },
+  };
+  const composer = yield* resolveKnowledgeComposer({
+    projectId,
+    text: `Use this. ${formatComposerContextReference(record)}`,
+    records: [record],
+  });
+  const threadId = ThreadId.make(`${key}-thread`);
+  const messageId = MessageId.make(`${key}-message`);
+  const delivery = (attemptId: string, status: "prepared" | "sent", minute: number) => ({
+    attemptId: RunAttemptId.make(attemptId),
+    runId: RunId.make(`${key}-run`),
+    threadId,
+    messageId,
+    projectId,
+    providerInstanceId,
+    status,
+    items: composer.items,
+    omissions: composer.omissions,
+    createdAt: DateTime.formatIso(at(minute)),
+    updatedAt: DateTime.formatIso(at(minute)),
+  });
+  const forget = knowledge.mutate(
+    {
+      action: "forget",
+      commandId: CommandId.make(`forget:${key}`),
+      projectId,
+      factId: fact.id,
+      expectedRevision: fact.revision,
+    },
+    { kind: "user" },
+  );
+  const excerpts = knowledge
+    .readDeliveries({ projectId, threadId, messageId })
+    .pipe(
+      Effect.map((read) =>
+        read.deliveries.map((entry) => [
+          entry.attemptId,
+          entry.status,
+          entry.items[0]?.text,
+          entry.items[0]?.contentRemoved,
+        ]),
+      ),
+    );
+  return { delivery, forget, excerpts };
+});
+
+it.effect("scrubs as-sent excerpts of a fact whose id needs JSON escaping", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("escaped-delivery-project");
+    yield* createProject(projectId);
+    const { delivery, forget, excerpts } = yield* composeDelivery(
+      projectId,
+      "escaped",
+      String.raw`say "hi" \o/`,
+    );
+    yield* knowledge.recordDelivery(delivery("escaped-attempt", "sent", 1));
+    yield* forget;
+    assert.deepEqual(yield* excerpts, [["escaped-attempt", "sent", "", true]]);
+    const sql = yield* SqlClient.SqlClient;
+    assert.deepEqual(
+      yield* sql`SELECT attempt_id FROM project_knowledge_deliveries WHERE items_json LIKE '%tenant IDs%'`,
+      [],
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("reports when a delivered fact's cited message changes or disappears", () =>
   Effect.gen(function* () {
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
