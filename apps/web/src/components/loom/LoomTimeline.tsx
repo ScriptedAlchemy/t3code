@@ -110,9 +110,7 @@ export function LoomTimeline(props: LoomTimelineProps) {
     } else if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
       event.preventDefault();
       const delta = event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX;
-      props.onViewChange(
-        panLoomView(props.view, props.bounds, scale.ms(delta) - props.view.fromMs),
-      );
+      props.onViewChange(panLoomView(props.view, props.bounds, delta * scale.msPerPx));
     }
   });
   // Wheel zoom needs preventDefault, which React's passive wheel listener cannot do.
@@ -132,10 +130,8 @@ export function LoomTimeline(props: LoomTimelineProps) {
   const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
     const start = drag.current;
     if (start === null || timelineWidth === 0) return;
-    const spanPerPx = (start.view.toMs - start.view.fromMs) / timelineWidth;
-    props.onViewChange(
-      panLoomView(start.view, props.bounds, (start.x - event.clientX) * spanPerPx),
-    );
+    const { msPerPx } = loomScale(start.view, timelineWidth);
+    props.onViewChange(panLoomView(start.view, props.bounds, (start.x - event.clientX) * msPerPx));
   };
   const endDrag = () => {
     drag.current = null;

@@ -55,7 +55,7 @@ import {
 } from "../WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { LoomEventPanel, type LoomActions } from "./LoomEventPanel";
-import { formatLoomTime, type LoomView } from "./loomScale";
+import { fitLoomView, formatLoomTime, type LoomView } from "./loomScale";
 import {
   decodeLoomSelection,
   encodeLoomSelection,
@@ -337,7 +337,7 @@ function LoomLoaded(props: {
               onChange={(event) => setNavigatorSearch(event.currentTarget.value)}
             />
           </div>
-          <Button size="xs" variant="ghost" onClick={() => setView(bounds)}>
+          <Button size="xs" variant="ghost" onClick={() => setView(fitLoomView(data, bounds))}>
             <ScanIcon aria-hidden />
             Fit
           </Button>

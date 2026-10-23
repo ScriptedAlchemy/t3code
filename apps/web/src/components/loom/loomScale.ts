@@ -1,3 +1,5 @@
+import type { LoomWindow } from "@t3tools/contracts";
+
 export interface LoomView {
   readonly fromMs: number;
   readonly toMs: number;
@@ -23,12 +25,45 @@ const TICK_STEPS = [
   14 * DAY,
 ];
 
+// Glyphs extend a few pixels around their time, so an event at either end of the view would be
+// half clipped by the SVG without this inset.
+const LOOM_EDGE_INSET = 8;
+
 export function loomScale(view: LoomView, width: number) {
   const span = Math.max(view.toMs - view.fromMs, 1);
+  const inner = Math.max(width - 2 * LOOM_EDGE_INSET, 1);
   return {
-    x: (ms: number) => ((ms - view.fromMs) / span) * width,
-    ms: (x: number) => view.fromMs + (x / width) * span,
+    x: (ms: number) => LOOM_EDGE_INSET + ((ms - view.fromMs) / span) * inner,
+    ms: (x: number) => view.fromMs + ((x - LOOM_EDGE_INSET) / inner) * span,
+    msPerPx: span / inner,
   };
+}
+
+/** Frames the window's activity with a margin, or the whole window when nothing happened. */
+export function fitLoomView(window: LoomWindow, bounds: LoomView): LoomView {
+  const times = [
+    ...window.runs.flatMap((run) => [
+      run.requestedAt,
+      run.startedAt,
+      run.completedAt ?? window.asOf,
+    ]),
+    ...window.markers.flatMap((marker) => [
+      marker.at,
+      "completedAt" in marker ? marker.completedAt : null,
+    ]),
+    ...window.edges.map((edge) => edge.at),
+  ]
+    .flatMap((iso) => (iso === null ? [] : [Date.parse(iso)]))
+    .filter((ms) => ms >= bounds.fromMs && ms <= bounds.toMs);
+  if (times.length === 0) return bounds;
+  const first = Math.min(...times);
+  const last = Math.max(...times);
+  const span = Math.min(
+    Math.max((last - first) * 1.1, LOOM_MIN_VIEW_MS),
+    bounds.toMs - bounds.fromMs,
+  );
+  const center = (first + last) / 2;
+  return clampLoomView({ fromMs: center - span / 2, toMs: center + span / 2 }, bounds);
 }
 
 /** Evenly stepped ticks aligned to local time, at most one per `minGapPx`. */
