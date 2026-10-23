@@ -767,6 +767,206 @@ it.effect(
     }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("traverses native rankings once despite unequal retrieval reinforcement", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const sql = yield* SqlClient.SqlClient;
+    const projectId = ProjectId.make("unequal-reinforcement");
+    yield* createProject(projectId);
+    for (const id of ["a", "b", "c", "d"])
+      yield* knowledge.mutate(createFact(projectId, id), { kind: "user" });
+    yield* sql`UPDATE project_knowledge_facts SET retrieval_count = 100, trust = 0.46 WHERE id = 'a'`;
+    const query = { projectId, query: "tenant cache", limit: 2 };
+    const firstInput = { ...query, requestId: CommandId.make("unequal-first") };
+    const first = yield* knowledge.search(firstInput);
+    if (first.facts.state !== "available") return assert.fail("Native ranking must be available");
+    assert.deepEqual(
+      first.facts.matches.map(({ fact }) => fact.id),
+      ["a", "b"],
+    );
+    assert.equal(first.facts.matches[0]!.fact.retrievalCount, 101);
+    assert.equal(first.facts.matches[1]!.fact.retrievalCount, 1);
+    const seen = first.facts.matches.map(({ fact }) => fact.id);
+    let cursor = first.facts.nextCursor;
+    for (let page = 1; cursor !== null && page < 5; page++) {
+      const input = { ...query, requestId: CommandId.make(`unequal-${page}`), factCursor: cursor };
+      const next = yield* knowledge.search(input);
+      if (next.facts.state !== "available") return assert.fail("Native ranking must be available");
+      assert.deepEqual(
+        next.facts.matches.filter(({ fact }) => seen.includes(fact.id)),
+        [],
+      );
+      seen.push(...next.facts.matches.map(({ fact }) => fact.id));
+      const replay = yield* knowledge.search(input);
+      assert.deepEqual(replay, next);
+      cursor = next.facts.nextCursor;
+    }
+    assert.isNull(cursor);
+    assert.deepEqual(seen, ["a", "b", "c", "d"]);
+    const replay = yield* knowledge.search(firstInput);
+    assert.deepEqual(replay, first);
+    const counts = yield* sql<{ id: string; count: number }>`
+      SELECT id, retrieval_count AS count FROM project_knowledge_facts ORDER BY id`;
+    assert.deepEqual(counts, [
+      { id: "a", count: 101 },
+      { id: "b", count: 1 },
+      { id: "c", count: 1 },
+      { id: "d", count: 1 },
+    ]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("pages conversations without reranking or reinforcing the current fact page", () =>
+  Effect.gen(function* () {
+    let scoreCalls = 0;
+    const scoring = Layer.effect(
+      HolographicMemory.HolographicMemory,
+      Effect.gen(function* () {
+        const native = yield* HolographicMemory.HolographicMemory;
+        return HolographicMemory.HolographicMemory.of({
+          scoreCandidates: (input) => {
+            scoreCalls += 1;
+            return native.scoreCandidates(input);
+          },
+        });
+      }),
+    ).pipe(Layer.provide(HolographicMemory.layer));
+    yield* Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const projectId = ProjectId.make("independent-paging");
+      const other = ProjectId.make("other-paging");
+      yield* createProject(projectId);
+      yield* createProject(other);
+      for (const id of ["a", "b", "c"]) {
+        const threadId = ThreadId.make(`conversation-${id}`);
+        yield* projections.apply(thread(threadId, projectId));
+        yield* projections.apply(message(threadId, `message-${id}`, "user", "tenant cache"));
+        yield* knowledge.mutate(createFact(projectId, id), { kind: "user" });
+      }
+      const input = {
+        projectId,
+        query: "tenant cache",
+        limit: 1,
+        requestId: CommandId.make("independent-first"),
+      };
+      const first = yield* knowledge.search(input);
+      if (first.facts.state !== "available" || first.messages.nextCursor == null)
+        return assert.fail("Both searches must have another page");
+      const nextInput = { ...input, cursor: first.messages.nextCursor };
+      const messages = yield* knowledge.search(nextInput);
+      assert.deepEqual(messages.facts, first.facts);
+      assert.notEqual(messages.messages.matches[0]?.threadId, first.messages.matches[0]?.threadId);
+      const facts = yield* knowledge.search({
+        ...nextInput,
+        requestId: CommandId.make("independent-facts"),
+        factCursor: first.facts.nextCursor!,
+      });
+      assert.deepEqual(facts.messages, messages.messages);
+      assert.deepEqual(
+        facts.facts.state === "available" && facts.facts.matches.map(({ fact }) => fact.id),
+        [ProjectFactId.make("b")],
+      );
+      assert.equal(scoreCalls, 1);
+      for (const change of [
+        { query: "different" },
+        { projectId: other },
+        { includeArchived: true },
+        { minTrust: 0.4 },
+        { entities: ["tenant"] },
+      ]) {
+        const reused = yield* knowledge.search({ ...input, ...change }).pipe(Effect.result);
+        assert.equal(Result.isFailure(reused) && reused.failure.reason, "command_reused");
+        const mismatch = yield* knowledge
+          .search({
+            ...input,
+            ...change,
+            requestId: CommandId.make(`mismatch-${JSON.stringify(change)}`),
+            factCursor: first.facts.nextCursor!,
+          })
+          .pipe(Effect.result);
+        assert.equal(Result.isFailure(mismatch) && mismatch.failure.reason, "invalid_cursor");
+      }
+    }).pipe(Effect.provide(knowledgeTestLayer(scoring)));
+  }),
+);
+
+it.effect.each(["edit", "forget", "source"] as const)(
+  "omits a %s change from continuation and replay",
+  (action) =>
+    Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const projectId = ProjectId.make(`page-${action}`);
+      const threadId = ThreadId.make(`source-${action}`);
+      yield* createProject(projectId);
+      yield* projections.apply(thread(threadId, projectId));
+      yield* projections.apply(message(threadId, "source-message", "user", "tenant cache"));
+      const source = yield* knowledge.readSource({
+        projectId,
+        threadId,
+        messageId: MessageId.make("source-message"),
+      });
+      if (source.state !== "available") return assert.fail("Source must be available");
+      for (const id of ["a", "b", "c"])
+        yield* knowledge.mutate(
+          { ...createFact(projectId, id), sources: [source.source] },
+          { kind: "user" },
+        );
+      const input = {
+        projectId,
+        query: "tenant cache",
+        limit: 1,
+        requestId: CommandId.make(`before-${action}`),
+      };
+      const first = yield* knowledge.search(input);
+      if (first.facts.state !== "available" || !first.facts.nextCursor)
+        return assert.fail("Facts must have another page");
+      if (action === "source") {
+        yield* projections.apply(
+          message(threadId, "source-message", "user", "Changed source", { minute: 2 }),
+        );
+      } else {
+        for (const id of ["a", "b"])
+          yield* knowledge.mutate(
+            action === "forget"
+              ? {
+                  action,
+                  commandId: CommandId.make(`forget-${id}`),
+                  projectId,
+                  factId: ProjectFactId.make(id),
+                  expectedRevision: 1,
+                }
+              : {
+                  ...createFact(projectId, id),
+                  action,
+                  commandId: CommandId.make(`edit-${id}`),
+                  expectedRevision: 1,
+                  content: "Revised decision",
+                },
+            { kind: "user" },
+          );
+      }
+      const page = yield* knowledge.search({
+        ...input,
+        requestId: CommandId.make(`after-${action}`),
+        factCursor: first.facts.nextCursor,
+      });
+      assert.deepEqual(
+        page.facts.state === "available" && page.facts.matches.map(({ fact }) => fact.id),
+        action === "source" ? [] : [ProjectFactId.make("c")],
+      );
+      assert.isNull(page.facts.state === "available" && page.facts.nextCursor);
+      const replay = yield* knowledge.search(input);
+      assert.deepEqual(replay.facts.state === "available" && replay.facts.matches, []);
+      const sql = yield* SqlClient.SqlClient;
+      const untouched = yield* sql<{
+        count: number;
+      }>`SELECT retrieval_count AS count FROM project_knowledge_facts WHERE id = 'b'`;
+      assert.equal(untouched[0]?.count, 0);
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect.each(["edit", "forget", "cancel"] as const)(
   "does not publish stale knowledge or false retrieval telemetry after %s during scoring",
   (action) =>

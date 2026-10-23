@@ -80,8 +80,6 @@ export class HolographicMemory extends Context.Service<
   }
 >()("t3/project/knowledge/HolographicMemory") {}
 
-// Cancellation stops between encodings. Native admission stays held until work
-// finishes, so interrupted requests cannot grow the worker queue.
 const MAX_CANDIDATES = 1_000;
 const MAX_TEXT_BYTES = 16_384;
 const MAX_BATCH_BYTES = 131_072;

@@ -33,7 +33,7 @@ import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
-import { makeStore } from "./persistence.ts";
+import { makeStore, type SearchReceipt } from "./persistence.ts";
 import * as HolographicMemory from "./HolographicMemory.ts";
 import { projectMemorySearchTokens } from "./holographicScoring.ts";
 
@@ -442,65 +442,131 @@ const make = Effect.gen(function* () {
           minTrust,
         }),
       ).pipe(Effect.mapError(storageError(input.projectId)));
-      if (input.factCursor !== undefined && input.factCursor.queryDigest !== queryDigest) {
+      const { cursor: _messageCursor, ...factInput } = input;
+      const requestDigest = yield* digest(encodeSearch(factInput)).pipe(
+        Effect.mapError(storageError(input.projectId)),
+      );
+      const prior = yield* store
+        .receipt(input.requestId)
+        .pipe(Effect.mapError(storageError(input.projectId)));
+      if (
+        prior !== null &&
+        (prior.projectId !== input.projectId ||
+          prior.factId !== null ||
+          prior.digest !== requestDigest ||
+          prior.search === null)
+      ) {
+        return yield* new ProjectKnowledgeError({
+          reason: "command_reused",
+          projectId: input.projectId,
+        });
+      }
+      const rootRequestId =
+        prior?.search?.rootRequestId ?? input.factCursor?.requestId ?? input.requestId;
+      const rootReceipt =
+        rootRequestId === input.requestId
+          ? prior
+          : yield* store
+              .receipt(rootRequestId)
+              .pipe(Effect.mapError(storageError(input.projectId)));
+      if (
+        (input.factCursor !== undefined || prior !== null) &&
+        (rootReceipt === null ||
+          rootReceipt.projectId !== input.projectId ||
+          rootReceipt.search?.ranking == null ||
+          rootReceipt.search.queryDigest !== queryDigest ||
+          (input.factCursor?.offset ?? 0) > rootReceipt.search.ranking.matches.length)
+      ) {
         return yield* new ProjectKnowledgeError({
           reason: "invalid_cursor",
           projectId: input.projectId,
         });
       }
-      const requestDigest = yield* digest(encodeSearch(input)).pipe(
-        Effect.mapError(storageError(input.projectId)),
-      );
-      const candidates = yield* store
-        .candidates(input.projectId, projectMemorySearchTokens(input.query), entities, minTrust)
-        .pipe(Effect.mapError(storageError(input.projectId)));
-      const eligible = candidates.facts.filter(
-        (fact): fact is typeof ActiveProjectFact.Type =>
-          fact.status !== "forgotten" &&
-          fact.content !== null &&
-          (entities.length === 0 ||
-            (input.entityMatch === "all"
-              ? entities.every((entity) =>
-                  fact.entities.some((value) => value.toLowerCase() === entity),
-                )
-              : entities.some((entity) =>
-                  fact.entities.some((value) => value.toLowerCase() === entity),
-                ))),
-      );
-      const now = DateTime.toEpochMillis(yield* DateTime.now);
-      const scored = yield* holographic
-        .scoreCandidates({
-          query: input.query,
-          now,
-          candidates: eligible.map((fact) => ({
-            id: fact.id,
-            content: fact.content,
-            entities: fact.entities,
-            tags: fact.tags,
-            trust: fact.trust,
-            updatedAt: Date.parse(fact.updatedAt),
-            retrievalCount: fact.retrievalCount,
-            ...(candidates.ranks.has(fact.id) ? { ftsRank: candidates.ranks.get(fact.id)! } : {}),
-          })),
-        })
-        .pipe(
-          Effect.map((scores) => ({ state: "available" as const, scores })),
-          Effect.catchTags({
-            HolographicMemoryError: (cause) =>
-              cause.reason === "unavailable"
-                ? Effect.succeed({ state: "unavailable" as const })
-                : Effect.fail(
-                    new ProjectKnowledgeError({
-                      reason: "scoring",
-                      projectId: input.projectId,
-                      cause,
-                    }),
-                  ),
-          }),
+      let ranking = rootReceipt?.search?.ranking ?? null;
+      if (ranking === null) {
+        const candidates = yield* store
+          .candidates(input.projectId, projectMemorySearchTokens(input.query), entities, minTrust)
+          .pipe(Effect.mapError(storageError(input.projectId)));
+        const eligible = candidates.facts.filter(
+          (fact): fact is typeof ActiveProjectFact.Type =>
+            fact.status !== "forgotten" &&
+            fact.content !== null &&
+            (entities.length === 0 ||
+              (input.entityMatch === "all"
+                ? entities.every((entity) =>
+                    fact.entities.some((value) => value.toLowerCase() === entity),
+                  )
+                : entities.some((entity) =>
+                    fact.entities.some((value) => value.toLowerCase() === entity),
+                  ))),
         );
-      if (scored.state === "unavailable")
-        return { messages, facts: { state: "unavailable", reason: "kernel_unavailable" } };
-      const snapshots = new Map(eligible.map((fact) => [fact.id, fact]));
+        const now = DateTime.toEpochMillis(yield* DateTime.now);
+        const scored = yield* holographic
+          .scoreCandidates({
+            query: input.query,
+            now,
+            candidates: eligible.map((fact) => ({
+              id: fact.id,
+              content: fact.content,
+              entities: fact.entities,
+              tags: fact.tags,
+              trust: fact.trust,
+              updatedAt: Date.parse(fact.updatedAt),
+              retrievalCount: fact.retrievalCount,
+              ...(candidates.ranks.has(fact.id) ? { ftsRank: candidates.ranks.get(fact.id)! } : {}),
+            })),
+          })
+          .pipe(
+            Effect.map((scores) => ({ state: "available" as const, scores })),
+            Effect.catchTags({
+              HolographicMemoryError: (cause) =>
+                cause.reason === "unavailable"
+                  ? Effect.succeed({ state: "unavailable" as const })
+                  : Effect.fail(
+                      new ProjectKnowledgeError({
+                        reason: "scoring",
+                        projectId: input.projectId,
+                        cause,
+                      }),
+                    ),
+            }),
+          );
+        if (scored.state === "unavailable")
+          return { messages, facts: { state: "unavailable", reason: "kernel_unavailable" } };
+        const snapshots = new Map(eligible.map((fact) => [fact.id, fact]));
+        const matches = scored.scores.flatMap((score) => {
+          const fact = snapshots.get(ProjectFactId.make(score.id));
+          if (!fact) return [];
+          return [
+            {
+              factId: fact.id,
+              revision: fact.revision,
+              updatedAt: fact.updatedAt,
+              scoreMillionths: score.scoreMillionths,
+              score: {
+                holographic: score.holographic,
+                lexical: score.fts,
+                tokenOverlap: score.tokenOverlap,
+                temporalDecay: score.decay,
+                reinforcement: score.reinforcement,
+                trust: fact.trust,
+                combined: score.score,
+              },
+            },
+          ];
+        });
+        matches.sort(
+          (left, right) =>
+            right.scoreMillionths - left.scoreMillionths ||
+            (left.updatedAt < right.updatedAt ? 1 : left.updatedAt > right.updatedAt ? -1 : 0) ||
+            (left.factId < right.factId ? -1 : left.factId > right.factId ? 1 : 0),
+        );
+        ranking = {
+          matches: matches.map(({ factId, revision, score }) => ({ factId, revision, score })),
+          coverage: candidates.partial ? "partial" : "complete",
+        };
+      }
+      const initialRanking = ranking;
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
@@ -517,74 +583,51 @@ const make = Effect.gen(function* () {
                 projectId: input.projectId,
               });
             }
+            const searchReceipt = receipt?.search ?? null;
+            const ranked = searchReceipt?.ranking ?? initialRanking;
+            const positions =
+              searchReceipt?.positions ??
+              ranked.matches.map((_, position) => position).slice(input.factCursor?.offset ?? 0);
             const current = new Map(
               (yield* store.findMany(
                 input.projectId,
-                scored.scores.map((score) => ProjectFactId.make(score.id)),
+                positions.map((position) => ranked.matches[position]!.factId),
               )).map((fact) => [fact.id, fact]),
             );
             const matches = [];
-            for (const score of scored.scores) {
-              const fact = current.get(ProjectFactId.make(score.id));
-              const snapshot = snapshots.get(ProjectFactId.make(score.id));
+            for (const position of positions) {
+              const match = ranked.matches[position]!;
+              const fact = current.get(match.factId);
               if (
                 !fact ||
-                !snapshot ||
-                fact.revision !== snapshot.revision ||
+                fact.revision !== match.revision ||
                 fact.status === "forgotten" ||
                 fact.content === null ||
                 !(yield* sourcesAvailable(fact, input.includeArchived ?? false))
               )
                 continue;
-              matches.push({
-                fact,
-                score: {
-                  holographic: score.holographic,
-                  lexical: score.fts,
-                  tokenOverlap: score.tokenOverlap,
-                  temporalDecay: score.decay,
-                  reinforcement: score.reinforcement,
-                  trust: fact.trust,
-                  combined: score.score,
-                },
-                scoreMillionths: score.scoreMillionths,
-              });
+              matches.push({ fact, score: match.score, position });
             }
-            matches.sort(
-              (left, right) =>
-                right.scoreMillionths - left.scoreMillionths ||
-                (left.fact.updatedAt < right.fact.updatedAt
-                  ? 1
-                  : left.fact.updatedAt > right.fact.updatedAt
-                    ? -1
-                    : 0) ||
-                (left.fact.id < right.fact.id ? -1 : left.fact.id > right.fact.id ? 1 : 0),
-            );
-            const cursor = input.factCursor;
-            const cursorScore =
-              cursor === undefined
-                ? 0
-                : (matches.find((match) => match.fact.id === cursor.factId)?.scoreMillionths ??
-                  cursor.scoreMillionths);
-            const remaining =
-              cursor === undefined
-                ? matches
-                : matches.filter(
-                    (match) =>
-                      match.scoreMillionths < cursorScore ||
-                      (match.scoreMillionths === cursorScore &&
-                        (match.fact.updatedAt < cursor.updatedAt ||
-                          (match.fact.updatedAt === cursor.updatedAt &&
-                            match.fact.id > cursor.factId))),
-                  );
-            const selected = remaining.slice(0, input.limit ?? 20);
+            const selected = matches.slice(0, input.limit ?? 20);
             const last = selected.at(-1);
+            const nextOffset =
+              searchReceipt === null
+                ? matches.length > selected.length && last !== undefined
+                  ? last.position + 1
+                  : null
+                : searchReceipt.nextOffset;
             if (receipt === null) {
               yield* store.recordRetrieval(
                 input.projectId,
                 selected.map((match) => match.fact.id),
               );
-              yield* store.record(input.requestId, input.projectId, null, requestDigest);
+              yield* store.record(input.requestId, input.projectId, null, requestDigest, {
+                rootRequestId,
+                queryDigest,
+                ranking: input.factCursor === undefined ? ranked : null,
+                positions: selected.map((match) => match.position),
+                nextOffset,
+              } satisfies SearchReceipt);
             }
             return {
               messages,
@@ -595,16 +638,9 @@ const make = Effect.gen(function* () {
                     receipt === null ? { ...fact, retrievalCount: fact.retrievalCount + 1 } : fact,
                   score,
                 })),
-                coverage: candidates.partial ? ("partial" as const) : ("complete" as const),
+                coverage: ranked.coverage,
                 nextCursor:
-                  remaining.length > selected.length && last !== undefined
-                    ? {
-                        queryDigest,
-                        factId: last.fact.id,
-                        scoreMillionths: last.scoreMillionths,
-                        updatedAt: last.fact.updatedAt,
-                      }
-                    : null,
+                  nextOffset === null ? null : { requestId: rootRequestId, offset: nextOffset },
               },
             };
           }),

@@ -55,7 +55,8 @@ export default Effect.gen(function* () {
       command_id TEXT PRIMARY KEY NOT NULL,
       project_id TEXT NOT NULL,
       fact_id TEXT,
-      request_digest TEXT NOT NULL
+      request_digest TEXT NOT NULL,
+      search_json TEXT
     ) WITHOUT ROWID
   `;
 });

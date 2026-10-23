@@ -1,5 +1,5 @@
 import { randomUUID } from "../../lib/utils";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   CommandId,
@@ -68,7 +68,7 @@ export function ProjectMemoryPanel(props: Scope) {
           </DialogDescription>
           {open ? (
             <MemoryContents
-              key={`${props.environmentId}:${props.projectId}:${props.threadId}`}
+              key={`${props.environmentId}:${props.projectId}:${props.threadId}:${props.draftId ?? ""}`}
               {...props}
             />
           ) : null}
@@ -101,6 +101,12 @@ function MemoryContents(props: Scope) {
   const [kind, setKind] = useState<"decision" | "constraint" | "convention" | "note">("note");
   const [sources, setSources] = useState<ReadonlyArray<KnowledgeFactSource>>([{ kind: "user" }]);
   const selectionVersion = useRef(0);
+  useEffect(
+    () => () => {
+      selectionVersion.current += 1;
+    },
+    [],
+  );
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -136,10 +142,22 @@ function MemoryContents(props: Scope) {
         : [...current, selection].slice(0, 20),
     );
   };
+  const restartSearch = () =>
+    setSearchInput((current) =>
+      current === null
+        ? null
+        : {
+            projectId: current.projectId,
+            query: current.query,
+            includeArchived: current.includeArchived ?? false,
+            requestId: CommandId.make(randomUUID()),
+          },
+    );
   const apply = async (input: ProjectKnowledgeMutation) => {
     setBusy(true);
     setError(null);
     setPreview(null);
+    selectionVersion.current += 1;
     const result = await mutate({ environmentId: props.environmentId, input });
     setBusy(false);
     if (result._tag === "Failure") setError(String(squashAtomCommandFailure(result)));
@@ -152,7 +170,7 @@ function MemoryContents(props: Scope) {
       );
     }
     list.refresh();
-    search.refresh();
+    restartSearch();
   };
   const revise = (fact: ProjectFact, action: "confirm" | "forget" | "feedback", helpful = true) => {
     const fields = {
@@ -253,7 +271,7 @@ function MemoryContents(props: Scope) {
           size="sm"
           onClick={() => {
             list.refresh();
-            search.refresh();
+            restartSearch();
           }}
         >
           Refresh
@@ -419,6 +437,7 @@ function MemoryContents(props: Scope) {
       {searchInput && search.data?.facts.state === "available" && search.data.facts.nextCursor ? (
         <Button
           variant="outline"
+          disabled={search.isPending}
           onClick={() => {
             if (search.data?.facts.state === "available" && search.data.facts.nextCursor)
               setSearchInput({
@@ -428,7 +447,19 @@ function MemoryContents(props: Scope) {
               });
           }}
         >
-          Next matches
+          Next fact matches
+        </Button>
+      ) : null}
+      {searchInput && search.data?.messages.nextCursor ? (
+        <Button
+          variant="outline"
+          disabled={search.isPending}
+          onClick={() => {
+            if (search.data?.messages.nextCursor)
+              setSearchInput({ ...searchInput, cursor: search.data.messages.nextCursor });
+          }}
+        >
+          Next conversations
         </Button>
       ) : null}
       {source ? (

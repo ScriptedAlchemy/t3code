@@ -185,10 +185,8 @@ export const ProjectKnowledgePreparedContext: Schema.Codec<
   typeof ProjectKnowledgePreparedContextSchema.Encoded
 > = ProjectKnowledgePreparedContextSchema;
 export const KnowledgeSearchCursor = Schema.Struct({
-  queryDigest: KnowledgeDigest,
-  factId: ProjectFactId,
-  scoreMillionths: NonNegativeInt,
-  updatedAt: IsoDateTime,
+  requestId: CommandId,
+  offset: NonNegativeInt.check(Schema.isLessThanOrEqualTo(1000)),
 });
 export const ProjectKnowledgeSearchInput = Schema.Struct({
   ...OrchestrationSearchThreadsInput.fields,

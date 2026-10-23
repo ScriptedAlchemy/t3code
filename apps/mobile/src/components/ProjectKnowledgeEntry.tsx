@@ -1,5 +1,5 @@
 import { uuidv4 } from "../lib/uuid";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ScrollView, Switch, View } from "react-native";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -70,7 +70,13 @@ export function ProjectKnowledgeEntry(props: Scope) {
         tone="text"
         accessibilityHint="Search and attach evidence from this project"
       />
-      {open ? <ProjectKnowledgeSheet {...props} onClose={() => setOpen(false)} /> : null}
+      {open ? (
+        <ProjectKnowledgeSheet
+          key={`${props.environmentId}:${props.projectId}:${props.draftKey}`}
+          {...props}
+          onClose={() => setOpen(false)}
+        />
+      ) : null}
     </>
   );
 }
@@ -104,6 +110,13 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
   const [kind, setKind] = useState<"decision" | "constraint" | "convention" | "note">("note");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const selectionVersion = useRef(0);
+  useEffect(
+    () => () => {
+      selectionVersion.current += 1;
+    },
+    [],
+  );
   const canMutate = useAtomValue(projectKnowledge.mutate.permissionAtom(props.environmentId));
   const list = useEnvironmentQuery(
     projectKnowledge.list({
@@ -128,6 +141,7 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
   const prepare = useAtomCommand(projectKnowledge.prepareContext, { reportFailure: false });
 
   const toggleSelection = (selection: KnowledgeSelection) => {
+    selectionVersion.current += 1;
     setSelections((current) =>
       current.some((item) => selectionKey(item) === selectionKey(selection))
         ? current.filter((item) => selectionKey(item) !== selectionKey(selection))
@@ -135,7 +149,19 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
     );
   };
 
+  const restartSearch = () =>
+    setSearchInput((current) =>
+      current === null
+        ? null
+        : {
+            projectId: current.projectId,
+            query: current.query,
+            includeArchived: current.includeArchived ?? false,
+            requestId: CommandId.make(uuidv4()),
+          },
+    );
   const apply = async (input: ProjectKnowledgeMutation) => {
+    selectionVersion.current += 1;
     setBusy(true);
     setError(null);
     const result = await mutate({ environmentId: props.environmentId, input });
@@ -147,7 +173,7 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
     setEditor(null);
     setContent("");
     list.refresh();
-    search.refresh();
+    restartSearch();
   };
 
   const revise = (fact: ProjectFact, action: "confirm" | "forget") =>
@@ -173,7 +199,7 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
         projectId: props.projectId,
         factId: editor.fact.id,
         expectedRevision: editor.fact.revision,
-        sources: editor.fact.sources,
+        sources: editor.fact.sources.length ? editor.fact.sources : [{ kind: "user" }],
         ...fields,
       });
     } else {
@@ -190,6 +216,7 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
 
   const attach = async () => {
     if (props.disabled || selections.length === 0) return;
+    const version = ++selectionVersion.current;
     setBusy(true);
     setError(null);
     const result = await prepare({
@@ -203,6 +230,7 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
       },
     });
     setBusy(false);
+    if (selectionVersion.current !== version) return;
     if (result._tag === "Failure") {
       setError(String(squashAtomCommandFailure(result)));
       return;
@@ -255,12 +283,14 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
             <Button
               label="Remove mismatched reference"
               tone="secondary"
-              onPress={() =>
+              onPress={() => {
+                selectionVersion.current += 1;
+                setSelections([]);
                 setComposerDraftText(
                   props.draftKey,
                   removeProjectKnowledgeReference(draft.text, attached),
-                )
-              }
+                );
+              }}
             />
           </View>
         ) : attachedInScope ? (
@@ -269,12 +299,14 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
             <Button
               label="Remove from draft"
               tone="secondary"
-              onPress={() =>
+              onPress={() => {
+                selectionVersion.current += 1;
+                setSelections([]);
                 setComposerDraftText(
                   props.draftKey,
                   removeProjectKnowledgeReference(draft.text, attachedInScope),
-                )
-              }
+                );
+              }}
             />
           </View>
         ) : null}
@@ -284,6 +316,7 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
           <Switch
             value={includeArchived}
             onValueChange={(value) => {
+              selectionVersion.current += 1;
               setIncludeArchived(value);
               setSearchInput(null);
             }}
@@ -307,7 +340,7 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
             tone="text"
             onPress={() => {
               list.refresh();
-              search.refresh();
+              restartSearch();
             }}
           />
         </View>
@@ -567,6 +600,32 @@ function ProjectKnowledgeSheet(props: Scope & { readonly onClose: () => void }) 
               ) : null,
             )
           : null}
+        {searchInput && search.data?.facts.state === "available" && search.data.facts.nextCursor ? (
+          <Button
+            label="Next fact matches"
+            tone="secondary"
+            disabled={search.isPending}
+            onPress={() => {
+              if (search.data?.facts.state === "available" && search.data.facts.nextCursor)
+                setSearchInput({
+                  ...searchInput,
+                  requestId: CommandId.make(uuidv4()),
+                  factCursor: search.data.facts.nextCursor,
+                });
+            }}
+          />
+        ) : null}
+        {searchInput && search.data?.messages.nextCursor ? (
+          <Button
+            label="Next conversations"
+            tone="secondary"
+            disabled={search.isPending}
+            onPress={() => {
+              if (search.data?.messages.nextCursor)
+                setSearchInput({ ...searchInput, cursor: search.data.messages.nextCursor });
+            }}
+          />
+        ) : null}
         {source ? (
           <View className="gap-2 rounded-2xl bg-subtle p-3">
             <AppText className="font-t3-semibold">Exact source</AppText>

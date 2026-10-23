@@ -1,5 +1,10 @@
 import {
   ActiveProjectFact,
+  CommandId,
+  KnowledgeDigest,
+  KnowledgeScore,
+  NonNegativeInt,
+  PositiveInt,
   KnowledgeFactSource,
   KnowledgeOrigin,
   ProjectFact,
@@ -9,6 +14,29 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+
+const SearchRanking = Schema.Struct({
+  matches: Schema.Array(
+    Schema.Struct({ factId: ProjectFactId, revision: PositiveInt, score: KnowledgeScore }),
+  ).check(Schema.isMaxLength(1000)),
+  coverage: Schema.Literals(["complete", "partial"]),
+});
+const SearchReceipt = Schema.Struct({
+  rootRequestId: CommandId,
+  queryDigest: KnowledgeDigest,
+  ranking: Schema.NullOr(SearchRanking),
+  positions: Schema.Array(NonNegativeInt).check(Schema.isMaxLength(50)),
+  nextOffset: Schema.NullOr(NonNegativeInt),
+});
+export type SearchReceipt = typeof SearchReceipt.Type;
+const ReceiptRow = Schema.Struct({
+  projectId: ProjectId,
+  factId: Schema.NullOr(ProjectFactId),
+  digest: KnowledgeDigest,
+  search: Schema.NullOr(Schema.fromJsonString(SearchReceipt)),
+});
+const decodeReceipts = Schema.decodeUnknownEffect(Schema.Array(ReceiptRow));
+const encodeSearchReceipt = Schema.encodeSync(Schema.fromJsonString(SearchReceipt));
 
 const FactRow = Schema.Struct({
   ...ActiveProjectFact.fields,
@@ -82,19 +110,20 @@ export const makeStore = Effect.gen(function* () {
     return changed.length === 1;
   });
   const receipt = Effect.fn("ProjectKnowledgeStore.receipt")(function* (commandId: string) {
-    const rows = yield* sql<{ projectId: string; factId: string | null; digest: string }>`
-      SELECT project_id AS "projectId", fact_id AS "factId", request_digest AS digest
+    const rows = yield* sql`
+      SELECT project_id AS "projectId", fact_id AS "factId", request_digest AS digest, search_json AS search
       FROM project_knowledge_commands WHERE command_id = ${commandId}`;
-    return rows[0] ?? null;
+    return (yield* decodeReceipts(rows))[0] ?? null;
   });
   const record = Effect.fn("ProjectKnowledgeStore.record")(function* (
     commandId: string,
     projectId: ProjectId,
     factId: ProjectFactId | null,
     digest: string,
+    search: SearchReceipt | null = null,
   ) {
-    yield* sql`INSERT INTO project_knowledge_commands (command_id, project_id, fact_id, request_digest)
-      VALUES (${commandId}, ${projectId}, ${factId}, ${digest})`;
+    yield* sql`INSERT INTO project_knowledge_commands (command_id, project_id, fact_id, request_digest, search_json)
+      VALUES (${commandId}, ${projectId}, ${factId}, ${digest}, ${search === null ? null : encodeSearchReceipt(search)})`;
   });
   const findMany = Effect.fn("ProjectKnowledgeStore.findMany")(function* (
     projectId: ProjectId,

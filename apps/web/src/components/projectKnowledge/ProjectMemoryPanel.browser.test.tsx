@@ -1,15 +1,17 @@
 import "../../index.css";
 import { RegistryContext } from "@effect/atom-react";
 import {
+  CommandId,
   EnvironmentId,
   ProjectId,
   ThreadId,
   ProjectFactId,
   MessageId,
   type ProjectFact,
+  type ProjectKnowledgeSearchInput,
 } from "@t3tools/contracts";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
-import { beforeEach, expect, it, vi } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
 
@@ -18,6 +20,7 @@ const state = vi.hoisted(() => ({
   permission: null as unknown,
   list: null as unknown,
   search: null as unknown,
+  searchRequest: vi.fn(),
   source: null as unknown,
   prepare: vi.fn(),
   mutate: vi.fn(),
@@ -33,7 +36,7 @@ vi.mock(
     ({
       projectKnowledge: {
         list: () => state.list,
-        search: () => state.search,
+        search: (input: unknown) => state.searchRequest(input),
         readSource: (input: unknown) => {
           state.readSource(input);
           return state.source;
@@ -84,10 +87,8 @@ const fact: ProjectFact = {
   updatedAt: "2026-10-22T00:00:00.000Z",
   forgottenAt: null,
 };
-let registry: ReturnType<typeof AtomRegistry.make>;
-
-beforeEach(() => {
-  registry = AtomRegistry.make();
+function setup() {
+  const registry = AtomRegistry.make();
   state.config = Atom.make({ environment: { capabilities: { projectKnowledge: true } } });
   state.permission = Atom.make(true);
   state.list = Atom.make(AsyncResult.success({ facts: [fact], nextCursor: null }));
@@ -132,10 +133,12 @@ beforeEach(() => {
   }));
   state.mutate.mockReset().mockResolvedValue({ _tag: "Success", value: { ...fact, revision: 2 } });
   state.readSource.mockReset();
+  state.searchRequest.mockReset().mockImplementation(() => state.search);
   useComposerDraftStore.getState().clearComposerContent(target);
-});
+  return registry;
+}
 
-async function mount() {
+async function mount(registry: ReturnType<typeof AtomRegistry.make>) {
   return render(
     <RegistryContext.Provider value={registry}>
       <ProjectMemoryPanel {...scope} />
@@ -144,7 +147,8 @@ async function mount() {
 }
 
 it("opens exact evidence and attaches only references, then removes the attachment", async () => {
-  await using screen = await mount();
+  const registry = setup();
+  await using screen = await mount(registry);
   await screen.getByRole("button", { name: "Project memory", exact: true }).click();
   await page.getByRole("button", { name: "Message evidence" }).click();
   await expect.element(page.getByText("Exact canonical evidence.")).toBeVisible();
@@ -175,7 +179,8 @@ it("opens exact evidence and attaches only references, then removes the attachme
 });
 
 it("shows real score components and sends the viewed revision for feedback", async () => {
-  await using screen = await mount();
+  const registry = setup();
+  await using screen = await mount(registry);
   await screen.getByRole("button", { name: "Project memory", exact: true }).click();
   await page.getByRole("textbox", { name: "Search project knowledge" }).fill("tenant cache");
   await page.getByRole("button", { name: "Search", exact: true }).click();
@@ -196,15 +201,17 @@ it("shows real score components and sends the viewed revision for feedback", asy
 });
 
 it("hides unsupported memory", async () => {
+  const registry = setup();
   state.config = Atom.make({ environment: { capabilities: {} } });
-  await using screen = await mount();
+  await using screen = await mount(registry);
   await expect
     .element(screen.getByRole("button", { name: "Project memory", exact: true }))
     .not.toBeInTheDocument();
 });
 it("disables writes for a read-only connection", async () => {
+  const registry = setup();
   state.permission = Atom.make(false);
-  await using screen = await mount();
+  await using screen = await mount(registry);
   await screen.getByRole("button", { name: "Project memory", exact: true }).click();
   await expect.element(page.getByRole("button", { name: "Forget", exact: true })).toBeDisabled();
   await expect.element(page.getByRole("button", { name: "Confirm", exact: true })).toBeDisabled();
@@ -212,8 +219,9 @@ it("disables writes for a read-only connection", async () => {
 });
 
 it("shows a stale source without exposing an old excerpt", async () => {
+  const registry = setup();
   state.source = Atom.make(AsyncResult.success({ state: "unavailable", reason: "changed" }));
-  await using screen = await mount();
+  await using screen = await mount(registry);
   await screen.getByRole("button", { name: "Project memory", exact: true }).click();
   await page.getByRole("button", { name: "Message evidence" }).click();
   await expect.element(page.getByText("Source unavailable. changed")).toBeVisible();
@@ -224,6 +232,7 @@ it("shows a stale source without exposing an old excerpt", async () => {
 });
 
 it("does not reattach a selection removed while its preview is pending", async () => {
+  const registry = setup();
   let complete!: (value: unknown) => void;
   state.prepare.mockImplementation(
     () =>
@@ -231,7 +240,7 @@ it("does not reattach a selection removed while its preview is pending", async (
         complete = resolve;
       }),
   );
-  await using screen = await mount();
+  await using screen = await mount(registry);
   await screen.getByRole("button", { name: "Project memory", exact: true }).click();
   await page.getByRole("button", { name: "Select", exact: true }).click();
   await page.getByRole("button", { name: "Preview and attach" }).click();
@@ -250,4 +259,116 @@ it("does not reattach a selection removed while its preview is pending", async (
     useComposerDraftStore.getState().getComposerDraft(target)?.knowledgeContexts ?? [],
   ).toEqual([]);
   await expect.element(page.getByText("Old selection preview.")).not.toBeInTheDocument();
+});
+
+it("does not attach after the panel closes and a new panel removes the selection", async () => {
+  const registry = setup();
+  let complete!: (value: unknown) => void;
+  state.prepare.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  await using screen = await mount(registry);
+  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  await page.getByRole("button", { name: "Select", exact: true }).click();
+  await page.getByRole("button", { name: "Preview and attach" }).click();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  await page.getByRole("button", { name: "Remove attachment" }).click();
+  await act(async () =>
+    complete({
+      _tag: "Success",
+      value: {
+        context: state.prepare.mock.calls[0]![0].input,
+        text: "Closed panel preview.",
+        byteLength: 21,
+      },
+    }),
+  );
+  expect(
+    useComposerDraftStore.getState().getComposerDraft(target)?.knowledgeContexts ?? [],
+  ).toEqual([]);
+  await expect.element(page.getByText("Closed panel preview.")).not.toBeInTheDocument();
+});
+
+it("pages facts and conversations independently and resets both for a new query", async () => {
+  const registry = setup();
+  const factCursor = { requestId: CommandId.make("ranking"), offset: 1 };
+  const messageCursor = {
+    query: "tenant cache",
+    projectId: scope.projectId,
+    includeArchived: false,
+    rank: 1 as const,
+    updatedAt: fact.updatedAt,
+    threadId: scope.threadId,
+  };
+  const makeResult = (factPage: number, messagePage: number) =>
+    Atom.make(
+      AsyncResult.success({
+        facts: {
+          state: "available",
+          coverage: "complete",
+          nextCursor: factPage === 0 ? factCursor : null,
+          matches: [
+            {
+              fact: {
+                ...fact,
+                id: ProjectFactId.make(`fact-${factPage}`),
+                content: `Fact page ${factPage}`,
+              },
+            },
+          ],
+        },
+        messages: {
+          nextCursor: messagePage === 0 ? messageCursor : null,
+          matches: [{ ...source, snippet: `Conversation page ${messagePage}` }],
+        },
+      }),
+    );
+  const first = makeResult(0, 0);
+  const messages = makeResult(0, 1);
+  const both = makeResult(1, 1);
+  state.searchRequest.mockImplementation(({ input }: { input: ProjectKnowledgeSearchInput }) =>
+    input.factCursor ? both : input.cursor ? messages : first,
+  );
+  await using screen = await mount(registry);
+  await screen.getByRole("button", { name: "Project memory", exact: true }).click();
+  await page.getByRole("textbox", { name: "Search project knowledge" }).fill("tenant cache");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect.element(page.getByText("Fact page 0", { exact: true })).toBeVisible();
+  const firstInput = state.searchRequest.mock.lastCall![0].input;
+  await page.getByRole("button", { name: "Next conversations" }).click();
+  await expect.element(page.getByText("Conversation page 1", { exact: true })).toBeVisible();
+  await expect.element(page.getByText("Fact page 0", { exact: true })).toBeVisible();
+  expect(state.searchRequest.mock.lastCall![0].input).toEqual({
+    ...firstInput,
+    cursor: messageCursor,
+  });
+  await page.getByRole("button", { name: "Next fact matches" }).click();
+  await expect.element(page.getByText("Fact page 1", { exact: true })).toBeVisible();
+  await expect.element(page.getByText("Conversation page 1", { exact: true })).toBeVisible();
+  const factInput = state.searchRequest.mock.lastCall![0].input;
+  expect(factInput).toEqual({
+    ...firstInput,
+    requestId: expect.any(String),
+    cursor: messageCursor,
+    factCursor,
+  });
+  expect(factInput.requestId).not.toBe(firstInput.requestId);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect.element(page.getByText("Fact page 0", { exact: true })).toBeVisible();
+  await expect.element(page.getByText("Conversation page 0", { exact: true })).toBeVisible();
+  expect(state.searchRequest.mock.lastCall![0].input.requestId).not.toBe(factInput.requestId);
+  await page.getByRole("textbox", { name: "Search project knowledge" }).fill("new query");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect.element(page.getByText("Conversation page 0", { exact: true })).toBeVisible();
+  await expect.element(page.getByText("Fact page 0", { exact: true })).toBeVisible();
+  expect(state.searchRequest.mock.lastCall![0].input).toEqual({
+    projectId: scope.projectId,
+    query: "new query",
+    includeArchived: false,
+    requestId: expect.any(String),
+  });
 });

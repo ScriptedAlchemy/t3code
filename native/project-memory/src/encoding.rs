@@ -9,9 +9,6 @@ use std::sync::LazyLock;
 
 use sha2::{Digest, Sha256};
 
-/// The role atoms are compile-time constants, but deriving each one costs 512
-/// SHA-256 blocks plus normalization. Both are computed once and reused across
-/// every fact encoding.
 static ROLE_CONTENT: LazyLock<Vec<f64>> =
     LazyLock::new(|| HolographicEncoder::new().encode_atom(HolographicEncoder::ROLE_CONTENT));
 static ROLE_ENTITY: LazyLock<Vec<f64>> =
@@ -27,10 +24,6 @@ pub enum HolographicEncodingError {
 pub struct HolographicEncoder;
 
 /// A dimension-checked query vector with its norm computed once.
-///
-/// Search scoring compares one query against every candidate fact; preparing
-/// the query once leaves only the fact-side norm and the dot product per
-/// candidate.
 pub struct HolographicQueryVector {
     coefficients: Vec<f64>,
     norm: f64,
