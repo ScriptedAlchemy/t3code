@@ -40,6 +40,10 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 export const RPC_REQUIRED_SCOPES = {
   ...CLIENT_GUARDED_RPC_SCOPES,
   [WS_METHODS.projectKnowledgeSearch]: AuthOrchestrationReadScope,
+  // Summaries and their expanded sources are thread content.
+  [WS_METHODS.conversationSummariesList]: AuthOrchestrationReadScope,
+  [WS_METHODS.conversationSummariesDescribe]: AuthOrchestrationReadScope,
+  [WS_METHODS.conversationSummariesExpand]: AuthOrchestrationReadScope,
   [WS_METHODS.projectKnowledgeList]: AuthOrchestrationReadScope,
   [WS_METHODS.projectKnowledgeReadSource]: AuthOrchestrationReadScope,
   [WS_METHODS.projectKnowledgePrepareContext]: AuthOrchestrationReadScope,

@@ -29,6 +29,7 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 import { AssistedLearningRunner } from "../project/knowledge/assistedLearningSchedule.ts";
+import { ConversationSummaryRuntime } from "../project/conversationSummaries/conversationSummarySchedule.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
@@ -96,6 +97,7 @@ export const layerExecutor: Layer.Layer<
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
     const assistedLearning = yield* AssistedLearningRunner;
+    const conversationSummaries = yield* ConversationSummaryRuntime;
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
@@ -529,6 +531,19 @@ export const layerExecutor: Layer.Layer<
                 runId: effect.request.runId,
                 runOutcome: effect.request.runOutcome,
               })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
+          case "conversation-summary.generate":
+            return conversationSummaries
+              .summarizeThread({ threadId: effect.threadId, runId: effect.request.runId })
               .pipe(
                 Effect.mapError(
                   (cause) =>

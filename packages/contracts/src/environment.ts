@@ -78,6 +78,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Assisted proposals from settled runs, the origin list filter and status.assistedLearning. */
   projectKnowledgeAssistedLearning: Schema.optionalKey(Schema.Boolean),
   projectCode: Schema.optionalKey(Schema.Boolean),
+  /** conversationSummaries.* reads and the enableConversationSummaries project setting. */
+  conversationSummaries: Schema.optionalKey(Schema.Boolean),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
   attachmentUploads: Schema.optionalKey(Schema.Boolean),

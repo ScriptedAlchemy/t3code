@@ -15,6 +15,9 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  */
 const RPC_AGGREGATES = {
   [WS_METHODS.projectKnowledgeSearch]: "projectKnowledge",
+  [WS_METHODS.conversationSummariesList]: "conversationSummaries",
+  [WS_METHODS.conversationSummariesDescribe]: "conversationSummaries",
+  [WS_METHODS.conversationSummariesExpand]: "conversationSummaries",
   [WS_METHODS.projectKnowledgeList]: "projectKnowledge",
   [WS_METHODS.projectKnowledgeMutate]: "projectKnowledge",
   [WS_METHODS.projectKnowledgeReadSource]: "projectKnowledge",

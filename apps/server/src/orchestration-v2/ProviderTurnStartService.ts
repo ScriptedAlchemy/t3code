@@ -5,6 +5,7 @@ import {
   resolveKnowledgeComposer,
 } from "../project/knowledge/composer.ts";
 import * as ProjectKnowledge from "../project/knowledge/ProjectKnowledge.ts";
+import { ConversationSummaryRuntime } from "../project/conversationSummaries/conversationSummarySchedule.ts";
 import {
   CommandId,
   ProjectKnowledgeError,
@@ -134,6 +135,7 @@ export const layer: Layer.Layer<
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const conversationSummaries = yield* ConversationSummaryRuntime;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -1105,8 +1107,13 @@ export const layer: Layer.Layer<
       const deliveredItemIds = new Set(
         settledHandoffs.flatMap((handoff) => handoff.delivery?.itemIds ?? []),
       );
+      // Represented in the native thread by a delivered summary rather than verbatim text.
+      const summarizedItemIds = new Set(
+        settledHandoffs.flatMap((handoff) => handoff.delivery?.summarizedItemIds ?? []),
+      );
       const coveredItemIds = new Set([
         ...deliveredItemIds,
+        ...summarizedItemIds,
         ...settledHandoffs.flatMap((handoff) => handoff.delivery?.omittedItemIds ?? []),
       ]);
       const deliveredAttemptIds = new Set(
@@ -1265,7 +1272,13 @@ export const layer: Layer.Layer<
                     : 0,
               });
             }),
-            alreadyDeliveredItemIds: deliveredItemIds,
+            alreadyDeliveredItemIds: new Set([...deliveredItemIds, ...summarizedItemIds]),
+            summaries: (itemIds) =>
+              conversationSummaries.forHandoff({
+                projectId: projection.thread.projectId,
+                handoffs: [...effectiveHandoffs, ...retryHandoff],
+                itemIds,
+              }),
             evidence: (messages) =>
               deliveredKnowledgeForHistory({
                 projectId: projection.thread.projectId,

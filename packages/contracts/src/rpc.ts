@@ -1,4 +1,13 @@
 import {
+  ConversationSummaryDescribeInput,
+  ConversationSummaryError,
+  ConversationSummaryExpandInput,
+  ConversationSummaryExpansion,
+  ConversationSummaryList,
+  ConversationSummaryListInput,
+  ConversationSummaryRead,
+} from "./conversationSummaries.ts";
+import {
   ProjectKnowledgeError,
   ProjectKnowledgeMutation,
   ProjectKnowledgeListInput,
@@ -422,6 +431,9 @@ export const WS_METHODS = {
   projectKnowledgeReadDeliveries: "projectKnowledge.readDeliveries",
   projectKnowledgeReadFact: "projectKnowledge.readFact",
   projectKnowledgeStatus: "projectKnowledge.status",
+  conversationSummariesList: "conversationSummaries.list",
+  conversationSummariesDescribe: "conversationSummaries.describe",
+  conversationSummariesExpand: "conversationSummaries.expand",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -2004,6 +2016,24 @@ export const WsProjectKnowledgeRpcGroup = RpcGroup.make(
   WsProjectKnowledgeStatusRpc,
 ).middleware(RpcScopeAuthorization);
 
+export const WsConversationSummariesRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.conversationSummariesList, {
+    payload: ConversationSummaryListInput,
+    success: ConversationSummaryList,
+    error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.conversationSummariesDescribe, {
+    payload: ConversationSummaryDescribeInput,
+    success: ConversationSummaryRead,
+    error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.conversationSummariesExpand, {
+    payload: ConversationSummaryExpandInput,
+    success: ConversationSummaryExpansion,
+    error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
+  }),
+).middleware(RpcScopeAuthorization);
+
 export const WsProjectCodeRpcGroup = RpcGroup.make(
   WsProjectCodeQueryRpc,
   WsProjectCodeFileHistoryRpc,
@@ -2213,4 +2243,5 @@ export const WsRpcGroup = RpcGroup.make(
 )
   .middleware(RpcScopeAuthorization)
   .merge(WsProjectKnowledgeRpcGroup)
+  .merge(WsConversationSummariesRpcGroup)
   .merge(WsProjectCodeRpcGroup);

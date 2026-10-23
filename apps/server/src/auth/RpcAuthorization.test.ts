@@ -60,6 +60,16 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("treats conversation summaries and their expanded sources as thread reads", () => {
+    for (const method of [
+      WS_METHODS.conversationSummariesList,
+      WS_METHODS.conversationSummariesDescribe,
+      WS_METHODS.conversationSummariesExpand,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+  });
+
   it("requires filesystem read permission for project code queries", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeQuery)).toBe(AuthFilesystemReadScope);
   });

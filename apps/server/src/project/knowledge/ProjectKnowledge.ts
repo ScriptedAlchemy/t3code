@@ -74,6 +74,15 @@ export class ProjectKnowledge extends Context.Service<
     readonly readSource: (
       input: ProjectKnowledgeReadSourceInput,
     ) => Effect.Effect<ProjectKnowledgeSource, ProjectKnowledgeError>;
+    /** readSource for several messages of one thread in one projection read, in input order. */
+    readonly readSources: (input: {
+      readonly projectId: ProjectId;
+      readonly threadId: ProjectKnowledgeReadSourceInput["threadId"];
+      readonly sources: ReadonlyArray<
+        Pick<ProjectKnowledgeReadSourceInput, "messageId" | "digest">
+      >;
+      readonly includeArchived?: boolean;
+    }) => Effect.Effect<ReadonlyArray<ProjectKnowledgeSource>, ProjectKnowledgeError>;
     readonly search: (
       input: ProjectKnowledgeSearchInput,
     ) => Effect.Effect<ProjectKnowledgeSearchResult, ProjectKnowledgeError>;
@@ -188,46 +197,64 @@ const make = Effect.gen(function* () {
     if (Option.isNone(project) || project.value.deletedAt !== null)
       return yield* new ProjectKnowledgeError({ reason: "missing_project", projectId });
   });
-  const readSource: ProjectKnowledge["Service"]["readSource"] = Effect.fn(
-    "ProjectKnowledge.readSource",
+  const readSources: ProjectKnowledge["Service"]["readSources"] = Effect.fn(
+    "ProjectKnowledge.readSources",
   )(function* (input) {
     yield* requireProject(input.projectId);
+    if (input.sources.length === 0) return [];
     const projection = yield* projections
-      .getThreadRecords(input.threadId, ["messages"], { messageIds: [input.messageId] })
+      .getThreadRecords(input.threadId, ["messages"], {
+        messageIds: input.sources.map((source) => source.messageId),
+      })
       .pipe(
         Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
         Effect.mapError(storageError(input.projectId)),
       );
-    const message = projection?.messages.find((item) => item.id === input.messageId);
-    const reason = sourceUnavailableReason(
-      input.projectId,
-      input.includeArchived ?? false,
-      projection?.thread ?? null,
-      message,
+    const messages = new Map(projection?.messages.map((message) => [message.id, message]));
+    return yield* Effect.forEach(
+      input.sources,
+      // Per source inside the batch, which already has its span.
+      Effect.fnUntraced(function* (source): Effect.fn.Return<
+        ProjectKnowledgeSource,
+        ProjectKnowledgeError
+      > {
+        const message = messages.get(source.messageId);
+        const reason = sourceUnavailableReason(
+          input.projectId,
+          input.includeArchived ?? false,
+          projection?.thread ?? null,
+          message,
+        );
+        if (reason !== null) return { state: "unavailable", reason };
+        if (!projection || !message || (message.role !== "user" && message.role !== "assistant"))
+          return { state: "unavailable", reason: "missing" };
+        const contentDigest = yield* digest(message.text).pipe(
+          Effect.mapError(storageError(input.projectId)),
+        );
+        if (source.digest !== undefined && source.digest !== contentDigest)
+          return { state: "unavailable", reason: "changed" };
+        return {
+          state: "available",
+          source: {
+            kind: "message",
+            threadId: input.threadId,
+            messageId: source.messageId,
+            digest: contentDigest,
+          },
+          text: message.text,
+          title: projection.thread.title,
+          role: message.role,
+          createdAt: DateTime.formatIso(message.createdAt),
+          archived: projection.thread.archivedAt !== null,
+        };
+      }),
     );
-    if (reason !== null) return { state: "unavailable", reason };
-    if (!projection || !message || (message.role !== "user" && message.role !== "assistant"))
-      return { state: "unavailable", reason: "missing" };
-    const archived = projection.thread.archivedAt !== null;
-    const contentDigest = yield* digest(message.text).pipe(
-      Effect.mapError(storageError(input.projectId)),
-    );
-    if (input.digest !== undefined && input.digest !== contentDigest)
-      return { state: "unavailable", reason: "changed" };
-    return {
-      state: "available",
-      source: {
-        kind: "message",
-        threadId: input.threadId,
-        messageId: input.messageId,
-        digest: contentDigest,
-      },
-      text: message.text,
-      title: projection.thread.title,
-      role: message.role,
-      createdAt: DateTime.formatIso(message.createdAt),
-      archived,
-    };
+  });
+  const readSource: ProjectKnowledge["Service"]["readSource"] = Effect.fn(
+    "ProjectKnowledge.readSource",
+  )(function* (input) {
+    const [source] = yield* readSources({ ...input, sources: [input] });
+    return source ?? { state: "unavailable", reason: "missing" };
   });
   const sourcesAvailable = Effect.fn("ProjectKnowledge.sourcesAvailable")(function* (
     fact: Pick<ProjectFact, "projectId" | "sources">,
@@ -1216,6 +1243,7 @@ const make = Effect.gen(function* () {
     readFact,
     status,
     readSource,
+    readSources,
     search,
     prepareContext,
     resolveForTurn,

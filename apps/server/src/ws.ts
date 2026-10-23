@@ -1,4 +1,5 @@
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
+import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import * as FileHistory from "./project/knowledge/FileHistory.ts";
 import {
@@ -105,6 +106,7 @@ import {
   WS_METHODS,
   WsRpcGroup,
   WsProjectKnowledgeRpcGroup,
+  WsConversationSummariesRpcGroup,
   WsProjectCodeRpcGroup,
 } from "@t3tools/contracts";
 import {
@@ -568,6 +570,21 @@ const ServerCoreWsRpcGroup = ServerWsRpcGroup.omit(
   WS_METHODS.projectKnowledgeMutate,
   WS_METHODS.projectKnowledgeReadFact,
   WS_METHODS.projectKnowledgeStatus,
+  WS_METHODS.conversationSummariesList,
+  WS_METHODS.conversationSummariesDescribe,
+  WS_METHODS.conversationSummariesExpand,
+);
+const layerConversationSummariesRpc = WsConversationSummariesRpcGroup.middleware(
+  RpcInstrumentation,
+).toLayer(
+  Effect.gen(function* () {
+    const summaries = yield* ConversationSummaries.ConversationSummaries;
+    return {
+      [WS_METHODS.conversationSummariesList]: (input) => summaries.list(input),
+      [WS_METHODS.conversationSummariesDescribe]: (input) => summaries.describe(input),
+      [WS_METHODS.conversationSummariesExpand]: (input) => summaries.expand(input),
+    };
+  }),
 );
 const layerKnowledgeRpc = WsProjectKnowledgeRpcGroup.middleware(RpcInstrumentation).toLayer(
   Effect.gen(function* () {
@@ -3229,7 +3246,11 @@ export const layerWsRpc = (
       });
       return handlers;
     }),
-  ).pipe(Layer.merge(layerKnowledgeRpc), Layer.merge(layerProjectCodeRpc));
+  ).pipe(
+    Layer.merge(layerKnowledgeRpc),
+    Layer.merge(layerConversationSummariesRpc),
+    Layer.merge(layerProjectCodeRpc),
+  );
 
 // RpcServer's default sends a socket-level Defect frame instead, and the client
 // ends every pending request on the socket with it.

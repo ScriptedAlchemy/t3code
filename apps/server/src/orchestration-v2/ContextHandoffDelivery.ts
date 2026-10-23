@@ -2,8 +2,10 @@ import type {
   OrchestrationV2ContextHandoff,
   OrchestrationV2HistoricalMessage,
   OrchestrationV2ProviderThread,
+  TurnItemId,
 } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import type { HandoffSummary } from "../project/conversationSummaries/conversationSummarySchedule.ts";
 import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -12,6 +14,9 @@ import {
   renderHistory,
   selectHistory,
 } from "@t3tools/provider-core/server/handoffBudget";
+
+// Matches the tail summaries never cover, so the latest exchange always arrives verbatim.
+const FRESH_TAIL_ITEMS = 6;
 
 /**
  * Persist before/after injection: an ambiguous pending delivery requires a fresh native thread.
@@ -42,6 +47,13 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     readonly evidence?: (
       messages: ReadonlyArray<OrchestrationV2HistoricalMessage>,
     ) => Effect.Effect<ReadonlyMap<string, string>, EvidenceError>;
+    /**
+     * Current conversation summaries whose sources are all among `itemIds`, oldest first. One
+     * may replace the history items it covers when the budget would otherwise omit them.
+     */
+    readonly summaries?: (
+      itemIds: ReadonlySet<string>,
+    ) => Effect.Effect<ReadonlyArray<HandoffSummary>>;
   }) {
     const nativeThreadId = input.providerThread.nativeThreadRef?.nativeId ?? undefined;
     const pending = input.handoffs.filter(
@@ -92,17 +104,82 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       oldContext && historyCost([], `${coverage}\n${oldContext}`) + 512 <= budget
         ? `${coverage}\n${oldContext}`
         : coverage;
-    const selected = selectHistory({
+    const priorOmittedCount = pending.reduce(
+      (sum, handoff) => sum + (handoff.history?.omittedItems ?? 0),
+      0,
+    );
+    let selected = selectHistory({
       messages,
       coverage: fullCoverage,
-      omittedItems: pending.reduce((sum, handoff) => sum + (handoff.history?.omittedItems ?? 0), 0),
+      omittedItems: priorOmittedCount,
       budget,
     });
+    const summarized = new Set<TurnItemId>();
+    const chosen: Array<HandoffSummary> = [];
+    const priorOmitted = new Set<string>(
+      pending.flatMap((handoff) => handoff.history?.omittedItemIds ?? []),
+    );
+    if (
+      input.summaries !== undefined &&
+      (priorOmitted.size > 0 || selected.omittedItemIds.length > 0)
+    ) {
+      // The newest messages stay verbatim; summaries only stand in for older history.
+      const tail = new Set<string>(
+        messages.slice(-FRESH_TAIL_ITEMS).map((message) => message.itemId),
+      );
+      const eligible = new Set(
+        [...priorOmitted, ...messages.map((message) => message.itemId)].filter(
+          (id) => !tail.has(id) && !input.alreadyDeliveredItemIds.has(id),
+        ),
+      );
+      for (const candidate of yield* input.summaries(eligible)) {
+        const omittedNow = new Set([...priorOmitted, ...selected.omittedItemIds]);
+        if (
+          !candidate.coveredItemIds.some((id) => omittedNow.has(id)) ||
+          candidate.coveredItemIds.some((id) => summarized.has(id) || !eligible.has(id))
+        )
+          continue;
+        const proposed = new Set([...summarized, ...candidate.coveredItemIds]);
+        const summaryBlock = [...chosen, candidate].map((summary) => summary.text).join("\n\n");
+        const reduced = selectHistory({
+          messages: messages.filter((message) => !proposed.has(message.itemId)),
+          coverage: `${fullCoverage}\n${proposed.size} older items are represented by the generated conversation summaries below instead of verbatim.\n${summaryBlock}`,
+          omittedItems:
+            priorOmittedCount - [...proposed].filter((id) => priorOmitted.has(id)).length,
+          budget,
+        });
+        const keptTail = selected.messages.filter((message) => tail.has(message.itemId));
+        if (
+          historyCost(reduced.messages, reduced.context) > budget ||
+          keptTail.some(
+            (message) => !reduced.messages.some((kept) => kept.itemId === message.itemId),
+          )
+        )
+          continue;
+        chosen.push(candidate);
+        for (const id of candidate.coveredItemIds) summarized.add(id);
+        selected = reduced;
+      }
+    }
     if (historyCost(selected.messages, selected.context) > budget) {
       if (input.deferInline) return { context: "", delivered: Effect.void, unsent: Effect.void };
       return yield* new ContextHandoffBudgetError();
     }
     const omittedItemIds = new Set(selected.omittedItemIds);
+    const summaryDelivery = (handoff: OrchestrationV2ContextHandoff) => {
+      const own = new Set<string>([
+        ...(handoff.history?.omittedItemIds ?? []),
+        ...(handoff.history?.messages ?? []).map((message) => message.itemId),
+      ]);
+      const summarizedItemIds = [...summarized].filter((id) => own.has(id));
+      if (summarizedItemIds.length === 0) return {};
+      return {
+        summaryIds: chosen
+          .filter((summary) => summary.coveredItemIds.some((id) => own.has(id)))
+          .map((summary) => summary.id),
+        summarizedItemIds,
+      };
+    };
     const persist = (status: "pending" | "injected" | "inline") =>
       Effect.forEach(
         pending,
@@ -116,11 +193,14 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
                     nativeThreadId,
                     status,
                     omittedItemIds: [
-                      ...(handoff.history?.omittedItemIds ?? []),
+                      ...(handoff.history?.omittedItemIds ?? []).filter(
+                        (id) => !summarized.has(id),
+                      ),
                       ...(handoff.history?.messages ?? [])
                         .filter((message) => omittedItemIds.has(message.itemId))
                         .map((message) => message.itemId),
                     ],
+                    ...summaryDelivery(handoff),
                     itemIds: selected.messages
                       .filter((message) =>
                         handoff.history?.messages.some(

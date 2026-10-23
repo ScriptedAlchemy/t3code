@@ -71,3 +71,5 @@ export * from "./secretRequest.ts";
 export * from "./clientRpcPermissions.ts";
 
 export * from "./projectKnowledge.ts";
+
+export * from "./conversationSummaries.ts";

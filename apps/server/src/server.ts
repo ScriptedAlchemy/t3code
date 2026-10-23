@@ -1,6 +1,7 @@
 import * as HolographicMemory from "./project/knowledge/HolographicMemory.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as AssistedLearning from "./project/knowledge/AssistedLearning.ts";
+import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import * as FileHistory from "./project/knowledge/FileHistory.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -517,6 +518,7 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
       Layer.provide(Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer)),
     ),
   ),
+  Layer.provide(ConversationSummaries.layerRuntime),
 );
 
 const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
@@ -615,6 +617,11 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
+  Layer.provideMerge(
+    ConversationSummaries.layer.pipe(
+      Layer.provide(Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer)),
+    ),
+  ),
   Layer.provideMerge(
     ProjectKnowledge.layer.pipe(
       Layer.provide(ProjectionStoreV2.layer),

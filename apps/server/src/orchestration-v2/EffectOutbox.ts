@@ -122,6 +122,10 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     runId: RunId,
     runOutcome: Schema.Literals(["completed", "failed", "interrupted"]),
   }),
+  Schema.Struct({
+    type: Schema.Literal("conversation-summary.generate"),
+    runId: RunId,
+  }),
 ]);
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
@@ -137,6 +141,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "thread-title.generate",
   "delegated-tasks.stop",
   "project-knowledge.extract",
+  "conversation-summary.generate",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 /**
@@ -146,6 +151,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
 const SIDE_LANE_EFFECT_TYPES = [
   "thread-title.generate",
   "project-knowledge.extract",
+  "conversation-summary.generate",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const PROCESS_BOUND_EFFECT_TYPES = [

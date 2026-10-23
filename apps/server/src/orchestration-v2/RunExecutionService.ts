@@ -1,5 +1,6 @@
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { assistedLearningEffects } from "../project/knowledge/assistedLearningSchedule.ts";
+import { conversationSummaryEffects } from "../project/conversationSummaries/conversationSummarySchedule.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   isOrchestrationV2WorkActive,
@@ -742,6 +743,17 @@ export const layer: Layer.Layer<
                 runId: input.run.id,
                 status: input.terminal.status,
               });
+        // Only a completed run leaves a settled exchange; the pass covers older messages of the
+        // whole thread, so stopped runs are picked up by the next completed one.
+        const conversationSummaries =
+          settings === null || input.terminal.status !== "completed"
+            ? []
+            : conversationSummaryEffects({
+                settings,
+                projectId: input.projectId,
+                threadId: input.run.threadId,
+                runId: input.run.id,
+              });
         const finalization = {
           effects: [
             ...(input.terminal.status === "completed" ||
@@ -761,6 +773,7 @@ export const layer: Layer.Layer<
                 ]
               : []),
             ...assistedLearning,
+            ...conversationSummaries,
           ],
           events: [
             ...cascadedSubagentEvents,
