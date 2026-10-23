@@ -165,7 +165,7 @@ it("nests and collapses lanes, filters them, notes limits, and opens a checkpoin
   const registry = setup();
   await using screen = await render(
     <RegistryContext.Provider value={registry}>
-      <LoomHarness />
+      <LoomHarness initialSearch={{ from, to, mode: "lanes" }} />
     </RegistryContext.Provider>,
     { router: "/loom/loom-browser/project" },
   );
@@ -277,7 +277,7 @@ it("draws queue time only when the run's start is recorded or it has not started
         runs: [unstarted("completed", 2), unstarted("queued", 3)],
       }),
     );
-  await using _screen = await renderLoom(registry);
+  await using _screen = await renderLoom(registry, { from, to, mode: "lanes" });
 
   const queueLine = (name: RegExp) =>
     page.getByRole("button", { name }).first().element().querySelector("line[stroke-dasharray]");
@@ -290,4 +290,53 @@ it("draws queue time only when the run's start is recorded or it has not started
       .querySelector('line[data-timing="unknown"]'),
   ).not.toBeNull();
   expect(queueLine(/^Run 3, queued/)).not.toBeNull();
+});
+
+it("opens a workstream from the navigator in Agent mode and comes back to the overview", async () => {
+  const registry = setup();
+  // Spawned after the root's run, so the fitted view frames the spawn apart from the checkpoint.
+  const spawnedLater = {
+    ...fullWindow,
+    lanes: fullWindow.lanes.map((entry) =>
+      entry.threadId === childId ? { ...entry, createdAt: "2026-10-21T12:00:00.000Z" } : entry,
+    ),
+  };
+  state.respond = () => Atom.make(AsyncResult.success(spawnedLater));
+  await using _screen = await renderLoom(registry);
+
+  await expect
+    .element(page.getByRole("button", { name: "Workstream" }))
+    .toHaveAttribute("aria-pressed", "true");
+  const navigator = page.getByRole("complementary", { name: "Loom navigator" });
+  await expect
+    .element(navigator.getByRole("textbox", { name: "Search workstreams" }))
+    .toBeVisible();
+  await userEvent.click(navigator.getByRole("button", { name: /^Fix login/ }));
+
+  await expect
+    .element(page.getByRole("button", { name: "Agent" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect.element(page.getByTestId("loom-weave")).toHaveAttribute("data-mode", "agent");
+  await expect
+    .element(navigator.getByRole("button", { name: /^Fix login/ }))
+    .toHaveAttribute("aria-current", "true");
+  await expect
+    .element(page.getByRole("button", { name: /^Spawn, .*Explore auth module$/ }))
+    .toBeVisible();
+
+  await userEvent.click(page.getByRole("button", { name: /^Checkpoint, .*2 files/ }));
+  const events = page.getByRole("complementary", { name: "Loom events" });
+  await expect.element(events.getByText("Fix login", { exact: true })).toBeVisible();
+  await expect.element(events.getByRole("button", { name: "Open diff" })).toBeVisible();
+  await userEvent.click(events.getByRole("button", { name: "Back to navigator" }));
+  await expect
+    .element(navigator.getByRole("textbox", { name: "Search workstreams" }))
+    .toBeVisible();
+
+  await userEvent.click(page.getByRole("button", { name: "Overview" }));
+  await expect.element(page.getByTestId("loom-weave")).toHaveAttribute("data-mode", "workstream");
+
+  await userEvent.click(page.getByRole("button", { name: "Lanes" }));
+  await expect.element(page.getByRole("button", { name: "Explore auth module" })).toBeVisible();
+  expect(page.getByTestId("loom-lane").elements()).toHaveLength(3);
 });

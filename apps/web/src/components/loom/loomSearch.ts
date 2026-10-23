@@ -1,6 +1,9 @@
 import type { LoomFilters, LoomRunStatusFilter } from "@t3tools/contracts";
 
-/** URL state of a Loom view: the read window, filters, selection and collapsed lanes. */
+export const LOOM_MODES = ["workstream", "agent", "lanes"] as const;
+export type LoomMode = (typeof LOOM_MODES)[number];
+
+/** URL state of a Loom view: the read window, filters, selection, mode and collapsed lanes. */
 export interface LoomSearch {
   readonly from?: string;
   readonly to?: string;
@@ -11,6 +14,10 @@ export interface LoomSearch {
   readonly branch?: ReadonlyArray<string>;
   readonly sel?: string;
   readonly collapsed?: ReadonlyArray<string>;
+  /** The semantic zoom; the workstream overview when absent. */
+  readonly mode?: LoomMode;
+  /** The root thread on the spine and in Agent mode; the most recently active when absent. */
+  readonly root?: string;
 }
 
 /** A URL update; an undefined value removes that key. */
@@ -55,6 +62,8 @@ export function validateLoomSearch(raw: Record<string, unknown>): LoomSearch {
     branch: strings(raw.branch, MAX_VALUES),
     sel: typeof raw.sel === "string" && raw.sel ? raw.sel.slice(0, 600) : undefined,
     collapsed: strings(raw.collapsed, MAX_COLLAPSED),
+    mode: LOOM_MODES.find((mode) => mode === raw.mode),
+    root: typeof raw.root === "string" && raw.root ? raw.root.slice(0, 300) : undefined,
   };
   return Object.fromEntries(
     Object.entries(fields).filter(([, value]) => value !== undefined),

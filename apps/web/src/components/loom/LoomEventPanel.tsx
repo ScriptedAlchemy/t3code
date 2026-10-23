@@ -1,7 +1,7 @@
 import { loomEdgeLabel, loomMarkerLabel } from "@t3tools/client-runtime/projectLoom";
 import type { LoomWindow, RunId, ThreadId } from "@t3tools/contracts";
 import { XIcon } from "lucide-react";
-import { useState, type MouseEvent } from "react";
+import { useState, type MouseEvent, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
@@ -80,18 +80,30 @@ function loomEvents(data: LoomWindow, actions: LoomActions): ReadonlyArray<LoomE
   return [...runs, ...markers, ...edges].toSorted((left, right) => right.at.localeCompare(left.at));
 }
 
+const ASIDE_CLASS =
+  "flex max-h-[40%] shrink-0 flex-col border-t border-border/70 bg-card/30 lg:max-h-none lg:w-80 lg:border-t-0 lg:border-s";
+
 /**
  * The accessible reading of the timeline: what is selected and every event in time order,
- * narrowed to the selected lane. Each entry opens its thread, diff or pull request.
+ * narrowed to the selected lane. Each entry opens its thread, diff or pull request. With nothing
+ * selected the panel shows `navigator` instead.
  */
 export function LoomEventPanel(props: {
   readonly data: LoomWindow;
   readonly selection: LoomSelection | null;
   readonly actions: LoomActions;
+  readonly navigator: ReactNode;
   readonly onSelect: (selection: LoomSelection | null) => void;
 }) {
   const [limit, setLimit] = useState(PAGE);
   const { data, selection } = props;
+  if (selection === null) {
+    return (
+      <aside aria-label="Loom navigator" className={ASIDE_CLASS}>
+        {props.navigator}
+      </aside>
+    );
+  }
   const events = loomEvents(data, props.actions);
   const laneId = loomSelectionThread(data, selection) as ThreadId | null;
   const lane =
@@ -106,14 +118,11 @@ export function LoomEventPanel(props: {
         ) ?? null);
 
   return (
-    <aside
-      aria-label="Loom events"
-      className="flex max-h-[40%] shrink-0 flex-col border-t border-border/70 bg-card/30 lg:max-h-none lg:w-80 lg:border-t-0 lg:border-s"
-    >
+    <aside aria-label="Loom events" className={ASIDE_CLASS}>
       <div className="flex shrink-0 items-start gap-2 border-b border-border/70 px-3 py-2">
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">
-            {lane?.title ?? (laneId === null ? "All lanes" : "Lane outside this window")}
+            {lane?.title ?? (laneId === null ? "Selection" : "Lane outside this window")}
           </p>
           {lane === null ? null : (
             <p className="truncate text-xs text-muted-foreground">
@@ -139,16 +148,14 @@ export function LoomEventPanel(props: {
             )}
           </div>
         </div>
-        {selection === null ? null : (
-          <Button
-            size="icon-xs"
-            variant="ghost"
-            aria-label="Clear selection"
-            onClick={() => props.onSelect(null)}
-          >
-            <XIcon aria-hidden />
-          </Button>
-        )}
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          aria-label="Back to navigator"
+          onClick={() => props.onSelect(null)}
+        >
+          <XIcon aria-hidden />
+        </Button>
       </div>
       {shown.length === 0 ? (
         <p className="px-3 py-4 text-xs text-muted-foreground">No events in this window.</p>
