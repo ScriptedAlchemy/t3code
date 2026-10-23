@@ -404,7 +404,6 @@ function preferDeclarations(tests: ReadonlyArray<CodeGraphNode>): CodeGraphNode[
 
 export async function inspectCodeInWorker(
   input: CodeIntelligenceWorkerInput,
-  signal: AbortSignal,
   onProgress: (progress: Pick<IndexProgress, "phase" | "current" | "total">) => void,
 ): Promise<ProjectCodeQueryResult> {
   const { CodeGraph, detectLanguage, getSupportedLanguages } = sdk();
@@ -468,7 +467,7 @@ export async function inspectCodeInWorker(
       else if (!NodeFS.existsSync(NodePath.resolve(input.checkoutPath, file.path)))
         reconcilePaths.add(file.path);
     }
-    const synced = await graph.sync({ signal, onProgress, paths: [...reconcilePaths] });
+    const synced = await graph.sync({ onProgress, paths: [...reconcilePaths] });
     const priorMeta = readIndexMeta(input.checkoutPath);
     const commit = headCommit(input.checkoutPath);
     const indexChanged =

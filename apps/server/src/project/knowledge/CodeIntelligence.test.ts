@@ -585,134 +585,6 @@ it.effect(
     ),
 );
 
-it.effect("recovers after SDK indexing cancellation", () =>
-  withFixture((fixture) =>
-    Effect.gen(function* () {
-      const files = Array.from({ length: 250 }, (_, index) => `src/generated-${index}.py`);
-      yield* Effect.promise(async () => {
-        await Promise.all(
-          files.map((file, index) => {
-            const absolutePath = NodePath.join(fixture.root, file);
-            return NodeFSP.mkdir(NodePath.dirname(absolutePath), { recursive: true }).then(() =>
-              NodeFSP.writeFile(absolutePath, `def generated_${index}():\n    return ${index}\n`),
-            );
-          }),
-        );
-      });
-
-      const project = {
-        projectId,
-        workspaceRoot: fixture.root,
-        deletedAt: null,
-      } as unknown as ProjectStore.ProjectRow;
-      const dependencies = Layer.mergeAll(
-        Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeedSome(project) }),
-        Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThread: () => Effect.die("unused") }),
-        Layer.mock(WorkspacePaths.WorkspacePaths)({
-          normalizeWorkspaceRoot: () => Effect.succeed(fixture.root),
-          resolveRelativePathWithinRoot: ({ relativePath }) =>
-            Effect.succeed({ absolutePath: relativePath, relativePath }),
-        }),
-        Layer.mock(WorkspaceEntries.WorkspaceEntries)({
-          refresh: () => Effect.void,
-          list: () =>
-            Effect.succeed({
-              entries: ["src/main.py", ...files].map((path) => ({ path, kind: "file" as const })),
-              truncated: false,
-            }),
-        }),
-      );
-      const provided = Layer.provide(CodeIntelligence.layer, dependencies);
-      const query = Effect.gen(function* () {
-        const intelligence = yield* CodeIntelligence.CodeIntelligence;
-        return yield* intelligence.query({ projectId, query: { operation: "status" } });
-      }).pipe(Effect.provide(provided));
-
-      const waitForIndexDirectory = Effect.acquireUseRelease(
-        Effect.sync(() => {
-          let resolveCreated!: () => void;
-          const created = new Promise<void>((resolve) => {
-            resolveCreated = resolve;
-          });
-          const watcher = NodeFS.watch(fixture.root, (_event, filename) => {
-            if (filename?.toString() === ".codegraph-t3") resolveCreated();
-          });
-          return { watcher, created };
-        }),
-        ({ created }) => Effect.promise(() => created),
-        ({ watcher }) => Effect.sync(() => watcher.close()),
-      );
-      const interruptedQuery = yield* query.pipe(Effect.forkScoped);
-      yield* waitForIndexDirectory;
-      yield* Fiber.interrupt(interruptedQuery);
-
-      const worker = new NodeWorkerThreads.Worker(
-        new URL("./codeIntelligenceWorkerThread.ts", import.meta.url),
-        {
-          execArgv: ["--experimental-strip-types"],
-          env: { ...process.env, CODEGRAPH_DIR: ".codegraph-cancel-test" },
-        },
-      );
-      const indexingCancellation = new Promise<void>((resolve, reject) => {
-        let cancellationSent = false;
-        let cancellationReceived = false;
-        let workerExited = false;
-        const complete = () => {
-          if (cancellationSent && cancellationReceived && workerExited) resolve();
-        };
-        worker.on(
-          "message",
-          (message: {
-            readonly error?: string;
-            readonly result?: unknown;
-            readonly progress?: { readonly phase: string; readonly current: number };
-          }) => {
-            if (
-              !cancellationSent &&
-              message.progress?.phase === "parsing" &&
-              message.progress.current > 0
-            ) {
-              cancellationSent = true;
-              worker.postMessage({ type: "cancel" });
-            } else if (
-              cancellationSent &&
-              (message.error !== undefined || message.result !== undefined)
-            ) {
-              cancellationReceived = true;
-              complete();
-            }
-          },
-        );
-        worker.once("error", reject);
-        worker.once("exit", (code) => {
-          if (!cancellationSent)
-            reject(new Error("SDK parsing progress was not observed before worker exit."));
-          else if (code !== 0) reject(new Error(`SDK cancellation exited with code ${code}.`));
-          else {
-            workerExited = true;
-            complete();
-          }
-        });
-      });
-      worker.postMessage({
-        type: "query",
-        input: {
-          checkoutPath: fixture.root,
-          files: ["src/main.py", ...files],
-          filesListed: files.length + 1,
-          listingTruncated: false,
-          query: { operation: "status" },
-        },
-      });
-      yield* Effect.promise(() => indexingCancellation);
-      const recovered = yield* query;
-      assert.equal(recovered.coverage.state, "complete");
-      assert.ok((recovered.stats?.files ?? 0) >= files.length);
-      assert.equal(recovered.coverage.relationSemantics, "static-candidates");
-    }),
-  ),
-);
-
 it.effect("runs a graph query while the checkout lease is held", () =>
   withFixture((fixture) =>
     Effect.gen(function* () {
@@ -971,6 +843,41 @@ function indexLockHolder(root: string) {
     ({ watcher }) => Effect.sync(() => watcher.close()),
   );
 }
+
+function isProcessAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+it.effect(
+  "stops indexing when the query is interrupted and never serves the cut index as ready",
+  () =>
+    withFixture((fixture) =>
+      Effect.gen(function* () {
+        const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 400));
+        const listed = ["src/defs.ts", ...files];
+        const run = checkoutService(fixture.root, () => listed);
+        const holder = yield* indexLockHolder(fixture.root).pipe(Effect.forkScoped);
+        const indexing = yield* run({ operation: "status" }).pipe(Effect.forkScoped);
+        const pid = yield* Fiber.join(holder);
+        yield* Fiber.interrupt(indexing);
+        const afterInterrupt = yield* run({ operation: "freshness" });
+        assert.isBelow(afterInterrupt.coverage.filesIndexed, listed.length);
+        assert.notEqual(afterInterrupt.index?.state, "ready");
+        assert.isFalse(
+          isProcessAlive(pid),
+          "the indexing process is gone once interruption returns",
+        );
+        const recovered = yield* run({ operation: "status" });
+        assert.equal(recovered.coverage.filesIndexed, listed.length);
+        assert.equal(recovered.coverage.state, "complete");
+      }),
+    ),
+);
 
 it.effect("fails the query, not the server, when the analysis process aborts", () =>
   withFixture((fixture) =>

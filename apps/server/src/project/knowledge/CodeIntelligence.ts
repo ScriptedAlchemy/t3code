@@ -286,14 +286,10 @@ function queryInAnalysisProcess(
     child.send({ type: "query", input }, (error) => {
       if (error !== null) fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }), true);
     });
+    // The SDK's sync ignores abort signals, so only killing the process stops the indexing,
+    // and the index lease is released only after it has exited.
     return Effect.promise(async () => {
-      if (!closed) {
-        try {
-          child.send({ type: "cancel" });
-        } catch {
-          child.kill("SIGKILL");
-        }
-      }
+      if (!closed) child.kill("SIGKILL");
       await closedPromise;
     });
   });
