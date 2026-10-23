@@ -14,6 +14,24 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("decodes the additive project knowledge delivery capability without requiring it on older servers", () => {
+    const oldServer = {
+      ...descriptor,
+      capabilities: { ...descriptor.capabilities, projectKnowledge: true },
+    };
+    expect(decodeDescriptor(oldServer).capabilities).not.toHaveProperty(
+      "projectKnowledgeDeliveries",
+    );
+    for (const supported of [false, true]) {
+      expect(
+        decodeDescriptor({
+          ...oldServer,
+          capabilities: { ...oldServer.capabilities, projectKnowledgeDeliveries: supported },
+        }).capabilities,
+      ).toMatchObject({ projectKnowledge: true, projectKnowledgeDeliveries: supported });
+    }
+  });
+
   it("decodes old, recognized and future manual installation descriptors", () => {
     expect(decodeDescriptor(descriptor).capabilities.serverInstallation).toBeUndefined();
     for (const installation of [{ kind: "npx" }, { kind: "npm-global", prefix: "/opt/node" }]) {

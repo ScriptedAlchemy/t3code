@@ -19,6 +19,8 @@ import {
   KNOWLEDGE_DELIVERY_OMISSION_LABEL,
 } from "@t3tools/client-runtime/projectKnowledge";
 import { projectKnowledge } from "../state/projectKnowledge";
+import { useAtomValue } from "@effect/atom-react";
+import { serverEnvironment } from "../state/server";
 import { useEnvironmentQuery } from "../state/query";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { videoMimeType } from "@t3tools/shared/video";
@@ -89,15 +91,25 @@ function DeliveredProjectKnowledge(props: {
   readonly record: ProjectKnowledgeContextRecord;
   readonly sent: { readonly threadId: ThreadId; readonly messageId: MessageId };
 }) {
+  const config = useAtomValue(
+    serverEnvironment.configValueAtom(props.record.knowledge.environmentId),
+  );
+  const supportsDeliveries = config?.environment?.capabilities.projectKnowledgeDeliveries === true;
   const query = useEnvironmentQuery(
-    projectKnowledge.readDeliveries({
-      environmentId: props.record.knowledge.environmentId,
-      input: { projectId: props.record.knowledge.projectId, ...props.sent },
-    }),
+    supportsDeliveries
+      ? projectKnowledge.readDeliveries({
+          environmentId: props.record.knowledge.environmentId,
+          input: { projectId: props.record.knowledge.projectId, ...props.sent },
+        })
+      : null,
   );
   const snapshot = query.data
     ? deliveredKnowledgeSnapshot(query.data, props.record.contextId)
     : null;
+  if (!supportsDeliveries)
+    return (
+      <Text className="text-sm text-foreground-muted">This server can't show what was sent</Text>
+    );
   if (query.error) return <Text className="text-sm text-foreground-muted">{query.error}</Text>;
   if (query.data === null)
     return <Text className="text-sm text-foreground-muted">Reading delivery record…</Text>;

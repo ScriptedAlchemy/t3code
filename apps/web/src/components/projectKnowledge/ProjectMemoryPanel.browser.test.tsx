@@ -9,11 +9,16 @@ import {
   ThreadId,
   ProjectFactId,
   MessageId,
+  ProviderInstanceId,
+  RunAttemptId,
   type ProjectFact,
   type ProjectFactHistoryEntry,
   type ProjectKnowledgeStatus,
   type ProjectKnowledgeSearchInput,
+  type ProjectKnowledgeFactDetail,
+  type ProjectKnowledgeDeliveries,
 } from "@t3tools/contracts";
+import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -34,6 +39,8 @@ const state = vi.hoisted(() => ({
   mutate: vi.fn(),
   readSource: vi.fn(),
   updateSettings: vi.fn(),
+  deliveries: null as unknown,
+  readDeliveries: vi.fn(),
 }));
 vi.mock(
   import("../../state/server"),
@@ -51,6 +58,10 @@ vi.mock(
   () =>
     ({
       projectKnowledge: {
+        readDeliveries: (input: unknown) => {
+          state.readDeliveries(input);
+          return state.deliveries;
+        },
         list: (input: unknown) => {
           state.listRequest(input);
           return state.list;
@@ -84,6 +95,7 @@ vi.mock(
 );
 
 import { ConfirmDialogHost } from "../ConfirmDialogHost";
+import { ProjectKnowledgeContextChip } from "./ProjectKnowledgeContextChip";
 import {
   DraftId,
   useComposerDraftStore,
@@ -204,6 +216,8 @@ async function setup(viewport: "desktop" | "narrow" = "desktop") {
   state.readSource.mockReset();
   state.updateSettings.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
   state.searchRequest.mockReset().mockImplementation(() => state.search);
+  state.readDeliveries.mockReset();
+  state.deliveries = Atom.make(AsyncResult.success({ deliveries: [] }));
   useComposerDraftStore.getState().clearComposerContent(target);
   return registry;
 }
@@ -225,6 +239,102 @@ const factList = () => page.getByRole("list", { name: "Project facts" });
 const factRow = (content: string) => factList().getByRole("button", { name: new RegExp(content) });
 const inspector = () => page.getByRole("region", { name: "Inspector" });
 const draftFooter = () => page.getByRole("region", { name: "Draft selection" });
+
+const factDetail = (fact: ProjectFact): ProjectKnowledgeFactDetail => ({
+  fact,
+  sourceUnavailable: null,
+  history: [],
+  historyTruncated: false,
+  supersedes: null,
+  supersededBy: null,
+  hints: [],
+});
+
+it("refreshes the inspected fact and uses its latest revision for the next mutation", async () => {
+  const registry = await setup();
+  let currentFact = fact;
+  state.detail = Atom.make(() => AsyncResult.success(factDetail(currentFact)));
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await factRow(fact.content!).click();
+  await expect.element(inspector().getByText(fact.content!)).toBeVisible();
+  currentFact = { ...fact, content: "Updated on another client.", revision: 2 };
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect.element(inspector().getByText(currentFact.content!)).toBeVisible();
+  await inspector().getByRole("button", { name: "Confirm", exact: true }).click();
+  expect(state.mutate).toHaveBeenCalledWith({
+    environmentId: scope.environmentId,
+    input: expect.objectContaining({ action: "confirm", expectedRevision: 2 }),
+  });
+});
+
+it("refreshes confirmed fact detail even after it leaves the proposed results", async () => {
+  const registry = await setup();
+  let currentFact = fact;
+  state.detail = Atom.make(() => AsyncResult.success(factDetail(currentFact)));
+  state.list = Atom.make(() =>
+    AsyncResult.success({
+      facts: currentFact.status === "proposed" ? [currentFact] : [],
+      nextCursor: null,
+    }),
+  );
+  state.mutate.mockImplementation(async () => {
+    currentFact = { ...fact, status: "confirmed", revision: 2 };
+    return { _tag: "Success", value: currentFact };
+  });
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await page.getByRole("button", { name: "Proposed", exact: true }).click();
+  await factRow(fact.content!).click();
+  await inspector().getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect.element(inspector().getByRole("heading", { name: /Confirmed/ })).toBeVisible();
+  await expect
+    .element(inspector().getByRole("button", { name: "Confirm", exact: true }))
+    .not.toBeInTheDocument();
+  await inspector().getByRole("button", { name: "Helpful", exact: true }).click();
+  expect(state.mutate).toHaveBeenLastCalledWith({
+    environmentId: scope.environmentId,
+    input: expect.objectContaining({ action: "feedback", expectedRevision: 2 }),
+  });
+});
+
+it("shows the forgotten state without live actions after forgetting the inspected fact", async () => {
+  const registry = await setup();
+  let currentFact = fact;
+  state.detail = Atom.make(() => AsyncResult.success(factDetail(currentFact)));
+  state.list = Atom.make(() =>
+    AsyncResult.success({
+      facts: currentFact.status === "forgotten" ? [] : [currentFact],
+      nextCursor: null,
+    }),
+  );
+  state.mutate.mockImplementation(async () => {
+    currentFact = {
+      ...fact,
+      status: "forgotten",
+      content: null,
+      revision: 2,
+      entities: [],
+      tags: [],
+      sources: [],
+      forgottenAt: fact.updatedAt,
+    };
+    return { _tag: "Success", value: currentFact };
+  });
+  await using screen = await mount(registry);
+  await openMemory(screen);
+  await factRow(fact.content!).click();
+  await inspector().getByRole("button", { name: "Forget", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Confirm" }).click();
+  await expect.element(inspector().getByText("Forgotten fact")).toBeVisible();
+  await expect.element(inspector().getByRole("heading", { name: /Forgotten/ })).toBeVisible();
+  await expect
+    .element(inspector().getByRole("button", { name: "Forget", exact: true }))
+    .not.toBeInTheDocument();
+  await expect
+    .element(inspector().getByRole("button", { name: "Edit", exact: true }))
+    .not.toBeInTheDocument();
+});
 
 it("attaches project memory to the queued-edit composer without changing the thread draft", async () => {
   const registry = await setup();
@@ -248,6 +358,88 @@ it("attaches project memory to the queued-edit composer without changing the thr
 async function openMemory(screen: { getByRole: Screen["getByRole"] }) {
   await screen.getByRole("button", { name: "Project memory", exact: true }).click();
 }
+
+const sentKnowledge = projectKnowledgeContextRecord({
+  environmentId: EnvironmentId.make("knowledge-origin"),
+  projectId: scope.projectId,
+  selections: [{ kind: "fact", factId: fact.id, revision: 1 }],
+  maxBytes: 48_000,
+});
+const sent = { threadId: scope.threadId, messageId: MessageId.make("sent-message") };
+const deliveryRecord: ProjectKnowledgeDeliveries = {
+  deliveries: [
+    {
+      attemptId: RunAttemptId.make("attempt"),
+      runId: RunId.make("run"),
+      ...sent,
+      projectId: scope.projectId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "sent",
+      items: [
+        {
+          contextId: sentKnowledge.contextId,
+          label: sentKnowledge.label,
+          context: sentKnowledge.knowledge,
+          text: "The recorded copy, not today's evidence.",
+          current: "changed",
+        },
+      ],
+      omissions: [],
+      createdAt: fact.createdAt,
+      updatedAt: fact.updatedAt,
+    },
+  ],
+};
+
+it.each([undefined, false])(
+  "does not query sent knowledge from a server whose delivery capability is %s",
+  async (supported) => {
+    const registry = await setup();
+    state.config = Atom.make({
+      environment: {
+        capabilities: { projectKnowledge: true, projectKnowledgeDeliveries: supported },
+      },
+    });
+    state.deliveries = Atom.make(AsyncResult.success(deliveryRecord));
+    await using screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <ProjectKnowledgeContextChip record={sentKnowledge} sent={sent} />
+      </RegistryContext.Provider>,
+    );
+    await screen.getByRole("button", { name: "Inspect selected project knowledge" }).click();
+    await expect.element(page.getByText("This server can't show what was sent")).toBeVisible();
+    await expect
+      .element(page.getByText("The recorded copy, not today's evidence."))
+      .not.toBeInTheDocument();
+    await expect.element(page.getByText("Escaped provider preview.")).not.toBeInTheDocument();
+    expect(state.readDeliveries).not.toHaveBeenCalled();
+    expect(state.prepare).not.toHaveBeenCalled();
+  },
+);
+
+it("reads only the sent knowledge record when its environment supports deliveries", async () => {
+  const registry = await setup();
+  state.config = Atom.make({
+    environment: { capabilities: { projectKnowledge: true, projectKnowledgeDeliveries: true } },
+  });
+  state.deliveries = Atom.make(AsyncResult.success(deliveryRecord));
+  await using screen = await render(
+    <RegistryContext.Provider value={registry}>
+      <ProjectKnowledgeContextChip record={sentKnowledge} sent={sent} />
+    </RegistryContext.Provider>,
+  );
+  expect(state.readDeliveries).not.toHaveBeenCalled();
+  await screen.getByRole("button", { name: "Inspect selected project knowledge" }).click();
+  await expect.element(page.getByText("The recorded copy, not today's evidence.")).toBeVisible();
+  await expect
+    .element(page.getByText("This knowledge has changed since it was sent."))
+    .toBeVisible();
+  expect(state.readDeliveries).toHaveBeenCalledWith({
+    environmentId: sentKnowledge.knowledge.environmentId,
+    input: { projectId: scope.projectId, ...sent },
+  });
+  expect(state.prepare).not.toHaveBeenCalled();
+});
 
 it("opens exact evidence and attaches only references, then removes the attachment", async () => {
   const registry = await setup();

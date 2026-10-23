@@ -7,13 +7,21 @@ import {
   MessageId,
   ProjectId,
   ProjectFactId,
+  ProviderInstanceId,
+  RunAttemptId,
+  RunId,
   ThreadId,
   type ProjectFact,
+  type ProjectKnowledgeContextRecord,
+  type ProjectKnowledgeDeliveries,
   type ProjectKnowledgeSearchInput,
 } from "@t3tools/contracts";
 import { projectKnowledgeComposerReference } from "../lib/projectKnowledgeComposer";
 
 const state = vi.hoisted(() => ({
+  deliveryCapabilities: {} as Record<string, boolean | undefined>,
+  deliveries: null as unknown,
+  readDeliveries: vi.fn(),
   focused: true,
   draft: {} as { text: string; context?: { records: unknown[] } },
   list: null as unknown,
@@ -37,6 +45,7 @@ vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 vi.mock("react-native", () => ({
+  Platform: { OS: "android" },
   BackHandler: { addEventListener: () => ({ remove: () => {} }) },
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
@@ -115,13 +124,23 @@ vi.mock("./ui/Dialog", () => ({ confirm: (request: unknown) => state.confirm(req
 vi.mock("@effect/atom-react", () => ({ useAtomValue: (value: unknown) => value }));
 vi.mock("../state/server", () => ({
   serverEnvironment: {
-    configValueAtom: () => ({
-      environment: { capabilities: { projectKnowledge: true, projectKnowledgeHistory: true } },
+    configValueAtom: (environmentId: string) => ({
+      environment: {
+        capabilities: {
+          projectKnowledge: true,
+          projectKnowledgeHistory: true,
+          projectKnowledgeDeliveries: state.deliveryCapabilities[environmentId],
+        },
+      },
     }),
   },
 }));
 vi.mock("../state/projectKnowledge", () => ({
   projectKnowledge: {
+    readDeliveries: (request: unknown) => {
+      state.readDeliveries(request);
+      return state.deliveries;
+    },
     list: (request: { input: unknown }) => {
       state.listInputs.push(request.input);
       return state.list;
@@ -153,6 +172,26 @@ vi.mock("../state/use-composer-drafts", () => ({
   insertComposerDraftContext: (...args: unknown[]) => state.insert(...args),
   setComposerDraftText: (...args: unknown[]) => state.setText(...args),
 }));
+vi.mock("../native/useOpenPullRequest", () => ({ useOpenPullRequest: () => () => {} }));
+vi.mock("../features/files/SourceFileSurface", () => ({ SourceFileSurface: () => null }));
+vi.mock("../features/review/ReviewCommentCard", () => ({
+  ReviewCommentCard: () => null,
+  useReviewCommentColors: () => ({}),
+}));
+vi.mock("../features/review/reviewDiffRendering", () => ({ REVIEW_MONO_FONT_FAMILY: "monospace" }));
+vi.mock("../lib/composerImages", () => ({
+  composerAttachmentInlineUri: () => undefined,
+  isFileBackedComposerAttachment: () => false,
+}));
+vi.mock("../lib/contextImageGallery", () => ({ contextImageGallery: () => [] }));
+vi.mock("./FilePreviewModal", () => ({ FilePreviewModal: () => null }));
+vi.mock("./VideoPreviewModal", () => ({ VideoPreviewModal: () => null }));
+vi.mock("./ComposerContextAttachment", () => ({ ComposerContextAttachment: () => null }));
+vi.mock("../features/settings/appearance/AppearancePreferencesProvider", () => ({
+  useAppearancePreferences: () => ({ themeId: "default", themeAppearance: "dark" }),
+}));
+vi.mock("../features/terminal/terminalTheme", () => ({ getMobileTerminalTheme: () => ({}) }));
+import { ComposerContextSheet } from "./ComposerContextSheet";
 import { ProjectKnowledgeEntry, requestRememberMessage } from "./ProjectKnowledgeEntry";
 
 const scope = {
@@ -178,7 +217,41 @@ const fact: ProjectFact = {
   updatedAt: "2026-10-22T00:00:00.000Z",
   forgottenAt: null,
 };
+const sentKnowledge = projectKnowledgeComposerReference({
+  environmentId: EnvironmentId.make("knowledge-origin"),
+  projectId: scope.projectId,
+  selections: [{ kind: "fact", factId: fact.id, revision: 1 }],
+  maxBytes: 48_000,
+}).record;
+const deliveryRecord: ProjectKnowledgeDeliveries = {
+  deliveries: [
+    {
+      attemptId: RunAttemptId.make("attempt"),
+      runId: RunId.make("run"),
+      threadId: ThreadId.make("sent-thread"),
+      messageId: MessageId.make("sent-message"),
+      projectId: scope.projectId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "sent",
+      items: [
+        {
+          contextId: sentKnowledge.contextId,
+          label: sentKnowledge.label,
+          context: sentKnowledge.knowledge,
+          text: "The recorded copy, not today's evidence.",
+          current: "changed",
+        },
+      ],
+      omissions: [],
+      createdAt: fact.createdAt,
+      updatedAt: fact.updatedAt,
+    },
+  ],
+};
 function setup(entries = [scope]) {
+  state.deliveryCapabilities = {};
+  state.deliveries = null;
+  state.readDeliveries.mockReset();
   state.focused = true;
   state.draft = { text: "" };
   state.list = { facts: [fact], nextCursor: null };
@@ -205,6 +278,21 @@ function setup(entries = [scope]) {
   act(() => root.render(renderEntries()));
   return {
     container,
+    showSentKnowledge: (record: ProjectKnowledgeContextRecord) =>
+      act(() =>
+        root.render(
+          <ComposerContextSheet
+            label={record.label}
+            record={record}
+            environmentId={scope.environmentId}
+            sent={{
+              threadId: ThreadId.make("sent-thread"),
+              messageId: MessageId.make("sent-message"),
+            }}
+            onClose={() => {}}
+          />,
+        ),
+      ),
     rerender: () => act(() => root.render(renderEntries())),
     click: async (label: string) => {
       const button = [...container.querySelectorAll("button")].find(
@@ -220,6 +308,42 @@ function setup(entries = [scope]) {
     },
   };
 }
+
+it.each([undefined, false])(
+  "does not query sent knowledge from a server whose delivery capability is %s",
+  (supported) => {
+    using screen = setup();
+    state.deliveryCapabilities = {
+      [scope.environmentId]: true,
+      [sentKnowledge.knowledge.environmentId]: supported,
+    };
+    state.deliveries = deliveryRecord;
+    screen.showSentKnowledge(sentKnowledge);
+    expect(screen.container.textContent).toContain("This server can't show what was sent");
+    expect(screen.container.textContent).not.toContain("As sent");
+    expect(screen.container.textContent).not.toContain("The recorded copy");
+    expect(state.readDeliveries).not.toHaveBeenCalled();
+    expect(state.prepare).not.toHaveBeenCalled();
+  },
+);
+
+it("reads only the sent knowledge record when its environment supports deliveries", () => {
+  using screen = setup();
+  state.deliveryCapabilities = { [sentKnowledge.knowledge.environmentId]: true };
+  state.deliveries = deliveryRecord;
+  screen.showSentKnowledge(sentKnowledge);
+  expect(screen.container.textContent).toContain("The recorded copy, not today's evidence.");
+  expect(screen.container.textContent).toContain("This knowledge has changed since it was sent.");
+  expect(state.readDeliveries).toHaveBeenCalledWith({
+    environmentId: sentKnowledge.knowledge.environmentId,
+    input: {
+      projectId: scope.projectId,
+      threadId: ThreadId.make("sent-thread"),
+      messageId: MessageId.make("sent-message"),
+    },
+  });
+  expect(state.prepare).not.toHaveBeenCalled();
+});
 
 it.each(["selection", "archive", "close", "unmount", "removal"] as const)(
   "ignores a pending attachment after %s",

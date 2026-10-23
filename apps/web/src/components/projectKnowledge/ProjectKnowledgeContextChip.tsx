@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAtomValue } from "@effect/atom-react";
 import type { MessageId, ProjectKnowledgeContextRecord, ThreadId } from "@t3tools/contracts";
 import {
   deliveredKnowledgeNotes,
@@ -17,6 +18,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { projectKnowledge } from "../../state/projectKnowledge";
+import { serverEnvironment } from "../../state/server";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 
@@ -96,11 +98,15 @@ function DeliveredKnowledge({
   record: ProjectKnowledgeContextRecord;
   sent: { readonly threadId: ThreadId; readonly messageId: MessageId };
 }) {
+  const config = useAtomValue(serverEnvironment.configValueAtom(record.knowledge.environmentId));
+  const supportsDeliveries = config?.environment?.capabilities.projectKnowledgeDeliveries === true;
   const query = useEnvironmentQuery(
-    projectKnowledge.readDeliveries({
-      environmentId: record.knowledge.environmentId,
-      input: { projectId: record.knowledge.projectId, ...sent },
-    }),
+    supportsDeliveries
+      ? projectKnowledge.readDeliveries({
+          environmentId: record.knowledge.environmentId,
+          input: { projectId: record.knowledge.projectId, ...sent },
+        })
+      : null,
   );
   const snapshot = query.data ? deliveredKnowledgeSnapshot(query.data, record.contextId) : null;
   return (
@@ -112,7 +118,9 @@ function DeliveredKnowledge({
         </DialogDescription>
       </DialogHeader>
       <DialogPanel>
-        {query.error ? (
+        {!supportsDeliveries ? (
+          <p>This server can't show what was sent</p>
+        ) : query.error ? (
           <p role="alert">{query.error}</p>
         ) : query.data === null ? (
           <p>Reading delivery record…</p>
