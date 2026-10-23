@@ -94,9 +94,13 @@
       "ignoreDependencies": ["@astrojs/check"],
     },
     "apps/mobile": {
+      // Metro config generates licenses and WebView bundles; audit it statically instead.
+      "metro": false,
       // Expo loads plugins and the fingerprint config by string; Metro embeds the browser entry in the native WebView.
       "entry": [
         "index.ts!",
+        "metro.config.js",
+        "src/**/*.{ios,android,windows,web,native,default}.{js,jsx,json,ts,tsx}!",
         "fingerprint.config.js",
         "plugins/*.cjs",
         "scripts/generate-device-stream.mts",
