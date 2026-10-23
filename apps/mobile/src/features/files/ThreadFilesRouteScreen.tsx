@@ -47,6 +47,7 @@ import { FilePreviewLoading, FilePreviewNotice } from "./FilePreviewFeedback";
 import { FileMarkdownPreview } from "./FileMarkdownPreview";
 import { ThreadInspectorContentStack } from "../threads/thread-inspector-content-stack";
 import { FileTreeBrowser } from "./FileTreeBrowser";
+import { FileCodeRelationships } from "./FileCodeRelationships";
 import { useFileTreeEntries } from "./useFileTreeEntries";
 import { preloadWorkspaceFileContents } from "./preload-workspace-file";
 import { SourceFileSurface } from "./SourceFileSurface";
@@ -992,6 +993,22 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
           onRefresh={() => fileQuery.refresh()}
         />
       </ScreenContent>
+      {threadId !== null && selectedThread !== null ? (
+        <FileCodeRelationships
+          environmentId={environmentId}
+          projectId={selectedThread.projectId}
+          threadId={threadId}
+          relativePath={relativePath}
+          onOpenLocation={(path, line) =>
+            navigation.navigate("ThreadFile", {
+              environmentId: String(environmentId),
+              threadId: String(threadId),
+              path: fileRoutePathSegments(path),
+              line: String(line),
+            })
+          }
+        />
+      ) : null}
       <FilePreviewModal
         source={fullScreenPreview}
         onRequestClose={() => setFullScreenPreview(null)}

@@ -23,6 +23,7 @@ import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { ThreadCodeIndexRow } from "./ThreadCodeIndexRow";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -153,6 +154,14 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   onAddScript={props.onAddProjectScript}
                   onUpdateScript={props.onUpdateProjectScript}
                   onDeleteScript={props.onDeleteProjectScript}
+                />
+              ) : null}
+
+              {density === "full" && props.isServerThread && !props.draftId ? (
+                <ThreadCodeIndexRow
+                  environmentId={props.environmentId}
+                  projectId={props.projectId}
+                  threadId={props.threadId}
                 />
               ) : null}
             </div>

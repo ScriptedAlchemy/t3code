@@ -1,0 +1,40 @@
+# Code navigation
+
+Open a file from a thread's file browser and expand **Code relationships** below the preview to
+see how it connects to the rest of the project. Nothing is analyzed until you expand it, so the
+first expansion on a checkout can take a while as T3 Code indexes it. Results come from the
+thread's own checkout, its worktree when it has one.
+
+- **Symbols** lists the file's declarations. Select one to see its callers, callees, references,
+  impact (files that depend on it), and **Tests**: test files that reach it within a few calls.
+- **Decisions** shows project knowledge whose entities name this file's path or one of its
+  symbols. A symbol name is not unique, so a fact about another function with the same name in a
+  different file shows up too; those rows say **matched by name**.
+- **Prior work** lists threads whose turn checkpoints included this file. Choose one to open it.
+  A checkpoint records every change in that thread's workspace, including changes by people or
+  other threads sharing it, so a row means the file was present at a checkpoint, not that the
+  thread wrote the change.
+
+Relationships are found by reading source, not by compiling it. They can miss calls made through
+values or dynamic dispatch and can mistake one same-named symbol for another. Each row is marked
+**compiler indexed**, **static candidate**, or **heuristic**, and an empty list does not prove
+that nothing calls the code or that it is untested.
+
+The badge next to **Code relationships**, and **Code index** in a thread's details, shows whether
+the index matches the checkout: **Ready**, **Partial** (some files are not indexed), **Stale**
+(files changed since indexing; **Stale @abc1234** when the checkout has moved past the commit it
+was indexed at), **Indexing**, or **Unavailable** (not indexed yet). Checking the badge never
+starts indexing; the next code query brings a stale index up to date.
+
+On mobile, the file screen has a compact **Code relationships** section with symbols, callers,
+and impact.
+
+Agents can use the same reads through T3 Code's MCP tools, including the file's prior work.
+
+## Review a pull request's impact
+
+In a pull request's **Code** tab, expand **Potentially affected**, then expand a changed file to
+see the callers and likely tests of the declarations its changes touch, up to 20 per file. This
+needs a thread with the pull request's head branch checked out, such as one started with
+**Work on PR**; without one, the panel says there is nothing to analyze. If that checkout is
+behind the pull request's latest push, the panel says so.

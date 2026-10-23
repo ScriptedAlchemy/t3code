@@ -4,6 +4,7 @@ import "vite-plus/test/config";
 const reactTests = [
   "src/components/ProjectKnowledgeEntry.test.tsx",
   "src/components/ui/Dialog.android.test.tsx",
+  "src/features/files/FileCodeRelationships.test.tsx",
   "src/features/settings/SettingsServerControlsRouteScreen.test.tsx",
   "src/features/settings/components/BranchNamingSettings.test.tsx",
   "src/native/NativeHeaderToolbar.test.tsx",
