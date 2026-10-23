@@ -126,6 +126,8 @@ export function knowledgeOriginLabel(origin: KnowledgeOrigin): string {
       return origin.runOutcome === "completed"
         ? "Suggested from a finished run"
         : `Suggested from a run that ${origin.runOutcome === "failed" ? "failed" : "was interrupted"}`;
+    case "unknown":
+      return "Origin not recognized by this version";
   }
 }
 

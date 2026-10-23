@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
   CommandId,
   EnvironmentId,
@@ -33,7 +34,7 @@ export const KnowledgeFactSource = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("user") }),
 ]);
 export type KnowledgeFactSource = typeof KnowledgeFactSource.Type;
-export const KnowledgeOrigin = Schema.Union([
+const knownKnowledgeOrigins = [
   Schema.Struct({ kind: Schema.Literal("user") }),
   Schema.Struct({
     kind: Schema.Literal("agent-thread"),
@@ -53,7 +54,32 @@ export const KnowledgeOrigin = Schema.Union([
     // Candidates from a failed or interrupted run are marked so a reviewer weighs them accordingly.
     runOutcome: Schema.Literals(["completed", "failed", "interrupted"]),
   }),
-]);
+] as const;
+const knownKnowledgeOriginKinds: ReadonlySet<string> = new Set(
+  knownKnowledgeOrigins.map((member) => member.fields.kind.literal),
+);
+// Older clients read facts written by newer servers. An origin kind they do not know decodes to
+// this variant instead of failing the whole list, and encodes back to its original kind.
+const UnknownKnowledgeOrigin = Schema.Struct({
+  kind: Schema.String.check(
+    Schema.makeFilter(
+      (kind: string) =>
+        !knownKnowledgeOriginKinds.has(kind) || "A known origin must decode in full.",
+    ),
+  ),
+}).pipe(
+  Schema.decodeTo(
+    Schema.Struct({ kind: Schema.Literal("unknown"), originKind: Schema.String }),
+    SchemaTransformation.transform({
+      decode: ({ kind }: { readonly kind: string }) => ({
+        kind: "unknown" as const,
+        originKind: kind,
+      }),
+      encode: ({ originKind }) => ({ kind: originKind }),
+    }),
+  ),
+);
+export const KnowledgeOrigin = Schema.Union([...knownKnowledgeOrigins, UnknownKnowledgeOrigin]);
 export type KnowledgeOrigin = typeof KnowledgeOrigin.Type;
 export const KnowledgeSelection = Schema.Union([
   KnowledgeMessageRef,

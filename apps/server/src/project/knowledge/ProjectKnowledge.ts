@@ -707,7 +707,9 @@ const make = Effect.gen(function* () {
                 ? `Agent observation in thread ${fact.origin.threadId}`
                 : fact.origin.kind === "assisted"
                   ? `Extracted from run ${fact.origin.runId} in thread ${fact.origin.threadId} (${fact.origin.runOutcome})`
-                  : `Agent observation from ${fact.origin.label}`;
+                  : fact.origin.kind === "agent-client"
+                    ? `Agent observation from ${fact.origin.label}`
+                    : `Origin ${fact.origin.originKind}`;
           parts.push(
             `[Fact ${fact.id} revision:${fact.revision} status:${fact.status} trust:${fact.trust}; ${origin}${citations ? `; ${citations}` : ""}]\n${fact.content}`,
           );
