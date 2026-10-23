@@ -106,7 +106,10 @@ export default mergeConfig(
               ...(packExecutableTargets ? { targets: packExecutableTargets } : {}),
               // Node's SEA docs: `import()` does not work when useCodeCache is
               // true, and the server reaches several modules that way.
-              seaConfig: { useCodeCache: false },
+              // `--liftoff-only` guards code analysis against tree-sitter's
+              // fatal WASM Zone OOM; V8 reads it only at process start, and the
+              // executable takes no Node flags on its command line.
+              seaConfig: { useCodeCache: false, execArgv: ["--liftoff-only"] },
             },
           }
         : {}),

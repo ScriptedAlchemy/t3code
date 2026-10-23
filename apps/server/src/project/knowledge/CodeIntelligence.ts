@@ -1,6 +1,7 @@
-// @effect-diagnostics nodeBuiltinImport:off - this boundary owns worker paths and isolated SDK loading.
+// @effect-diagnostics nodeBuiltinImport:off - this boundary owns the analysis process and its IPC.
+import * as NodeChildProcess from "node:child_process";
 import * as NodePath from "node:path";
-import * as NodeWorkerThreads from "node:worker_threads";
+import * as NodeURL from "node:url";
 
 import {
   ProjectCodeQueryResult,
@@ -8,6 +9,7 @@ import {
   type ProjectCodeQueryInput as ProjectCodeQueryInputType,
   type ProjectCodeQueryResult as ProjectCodeQueryResultType,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -20,7 +22,6 @@ import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
 import { isWorkspaceLeaseHeld, withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 
-const WORKER_MEMORY_LIMIT_MB = 768;
 const MAX_LISTED_FILES = 10_000;
 const INDEX_DIRECTORY = ".codegraph-t3";
 
@@ -180,27 +181,47 @@ function normalizeQueryPaths(
   return Effect.succeed(query);
 }
 
-function queryWithWorker(input: {
-  readonly checkoutPath: string;
-  readonly files: ReadonlyArray<string>;
-  readonly filesListed: number;
-  readonly listingTruncated: boolean;
-  readonly query: ProjectCodeQueryType;
-}): Effect.Effect<ProjectCodeQueryResultType, CodeIntelligenceWorkerError> {
+interface AnalysisLaunch {
+  readonly executablePath: string;
+  readonly isExecutable: boolean;
+}
+
+/**
+ * Analysis runs in a child process: tree-sitter's WASM grammars can abort V8 with a fatal Zone
+ * OOM on Node 22+, which takes down the whole process, threads included. `--liftoff-only`
+ * avoids that compiler tier, and V8 only reads it at process start (worker `execArgv` rejects
+ * it). A single executable cannot take Node flags on its command line; its build bakes the
+ * flag in instead.
+ */
+function analysisCommand(launch: AnalysisLaunch): ReadonlyArray<string> {
+  if (launch.isExecutable) return ["__code-intelligence"];
   const fromSource = import.meta.url.endsWith(".ts");
-  const workerUrl = new URL(
-    fromSource
-      ? "./codeIntelligenceWorkerThread.ts"
-      : "./project/knowledge/codeIntelligenceWorkerThread.mjs",
-    import.meta.url,
-  );
+  return [
+    ...(fromSource ? ["--experimental-strip-types"] : []),
+    "--liftoff-only",
+    NodeURL.fileURLToPath(new URL(fromSource ? "../../bin.ts" : "./bin.mjs", import.meta.url)),
+    "__code-intelligence",
+  ];
+}
+
+function queryInAnalysisProcess(
+  launch: AnalysisLaunch,
+  input: {
+    readonly checkoutPath: string;
+    readonly files: ReadonlyArray<string>;
+    readonly filesListed: number;
+    readonly listingTruncated: boolean;
+    readonly query: ProjectCodeQueryType;
+  },
+): Effect.Effect<ProjectCodeQueryResultType, CodeIntelligenceWorkerError> {
   return Effect.callback((resume) => {
-    let worker: NodeWorkerThreads.Worker;
+    let child: NodeChildProcess.ChildProcess;
     try {
-      worker = new NodeWorkerThreads.Worker(workerUrl, {
-        ...(fromSource ? { execArgv: ["--experimental-strip-types"] } : {}),
-        env: { ...process.env, CODEGRAPH_DIR: INDEX_DIRECTORY },
-        resourceLimits: { maxOldGenerationSizeMb: WORKER_MEMORY_LIMIT_MB },
+      child = NodeChildProcess.spawn(launch.executablePath, analysisCommand(launch), {
+        // ELECTRON_RUN_AS_NODE keeps the desktop's Electron binary a plain Node runtime.
+        env: { ...process.env, CODEGRAPH_DIR: INDEX_DIRECTORY, ELECTRON_RUN_AS_NODE: "1" },
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+        windowsHide: true,
       });
     } catch {
       resume(Effect.fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" })));
@@ -210,21 +231,16 @@ function queryWithWorker(input: {
       | { readonly _tag: "result"; readonly value: ProjectCodeQueryResultType }
       | { readonly _tag: "error"; readonly error: CodeIntelligenceWorkerError }
       | undefined;
-    let exited = false;
-    let resolveExit: (() => void) | undefined;
-    const exit = new Promise<void>((resolve) => {
-      resolveExit = resolve;
+    let closed = false;
+    let resolveClosed: (() => void) | undefined;
+    const closedPromise = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
     });
-    const terminate = () => {
-      void worker.terminate().catch(() => {
-        fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }));
-      });
-    };
-    const fail = (error: CodeIntelligenceWorkerError, shouldTerminate = false) => {
+    const fail = (error: CodeIntelligenceWorkerError, shouldKill = false) => {
       terminal ??= { _tag: "error", error };
-      if (shouldTerminate) terminate();
+      if (shouldKill) child.kill("SIGKILL");
     };
-    worker.on("message", (raw: unknown) => {
+    child.on("message", (raw: unknown) => {
       if (terminal !== undefined) return;
       let decoded: typeof WorkerReply.Type;
       try {
@@ -246,12 +262,13 @@ function queryWithWorker(input: {
         );
       } else terminal = { _tag: "result", value: decoded.result };
     });
-    worker.once("error", () => {
+    child.once("error", () => {
       fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }));
     });
-    worker.once("exit", (code) => {
-      exited = true;
-      resolveExit?.();
+    // `close` follows the IPC channel closing, so every reply has been read by then.
+    child.once("close", (code) => {
+      closed = true;
+      resolveClosed?.();
       if (terminal === undefined || code !== 0) {
         resume(
           Effect.fail(
@@ -266,20 +283,18 @@ function queryWithWorker(input: {
         resume(Effect.succeed(terminal.value));
       }
     });
-    try {
-      worker.postMessage({ type: "query", input });
-    } catch {
-      fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }), true);
-    }
+    child.send({ type: "query", input }, (error) => {
+      if (error !== null) fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }), true);
+    });
     return Effect.promise(async () => {
-      if (!exited) {
+      if (!closed) {
         try {
-          worker.postMessage({ type: "cancel" });
+          child.send({ type: "cancel" });
         } catch {
-          await worker.terminate();
+          child.kill("SIGKILL");
         }
       }
-      await exit;
+      await closedPromise;
     });
   });
 }
@@ -329,6 +344,10 @@ const make = Effect.gen(function* () {
   const threads = yield* ProjectionStore.ProjectionStoreV2;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+  const launch: AnalysisLaunch = {
+    executablePath: yield* HostProcess.ExecutablePath,
+    isExecutable: yield* HostProcess.IsExecutable,
+  };
 
   const query: CodeIntelligence["Service"]["query"] = Effect.fn("CodeIntelligence.query")(
     function* (input) {
@@ -369,7 +388,7 @@ const make = Effect.gen(function* () {
         .map((entry) => entry.path);
       return yield* withWorkspaceLease(
         indexPath,
-        queryWithWorker({
+        queryInAnalysisProcess(launch, {
           checkoutPath,
           files: listedFiles.slice(0, MAX_LISTED_FILES),
           filesListed: listedFiles.length,

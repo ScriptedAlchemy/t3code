@@ -896,3 +896,100 @@ it.effect("reports index freshness against the checkout and walks usages to reac
     }),
   ),
 );
+
+function checkoutService(root: string, listed: () => ReadonlyArray<string>) {
+  const project = {
+    projectId,
+    workspaceRoot: root,
+    deletedAt: null,
+  } as unknown as ProjectStore.ProjectRow;
+  const provided = Layer.provide(
+    CodeIntelligence.layer,
+    Layer.mergeAll(
+      Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeedSome(project) }),
+      Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThread: () => Effect.die("unused") }),
+      Layer.mock(WorkspacePaths.WorkspacePaths)({
+        normalizeWorkspaceRoot: () => Effect.succeed(root),
+        resolveRelativePathWithinRoot: ({ relativePath }) =>
+          Effect.succeed({ absolutePath: relativePath, relativePath }),
+      }),
+      Layer.mock(WorkspaceEntries.WorkspaceEntries)({
+        refresh: () => Effect.void,
+        list: () =>
+          Effect.sync(() => ({
+            entries: listed().map((path) => ({ path, kind: "file" as const })),
+            truncated: false,
+          })),
+      }),
+    ),
+  );
+  return (query: Parameters<CodeIntelligence.CodeIntelligence["Service"]["query"]>[0]["query"]) =>
+    Effect.flatMap(CodeIntelligence.CodeIntelligence, (intelligence) =>
+      intelligence.query({ projectId, query }),
+    ).pipe(Effect.provide(provided));
+}
+
+async function writeGeneratedSources(root: string, count: number) {
+  await NodeFSP.mkdir(NodePath.join(root, "src/generated"), { recursive: true });
+  const files = Array.from({ length: count }, (_, index) => `src/generated/g${index}.py`);
+  await Promise.all(
+    files.map((file, index) =>
+      NodeFSP.writeFile(
+        NodePath.join(root, file),
+        `def generated_${index}():\n    return ${index}\n`,
+      ),
+    ),
+  );
+  return files;
+}
+
+/** Resolves with the pid the SDK writes into its index lock once a sync holds it. */
+function indexLockHolder(root: string) {
+  const directory = NodePath.join(root, ".codegraph-t3");
+  return Effect.acquireUseRelease(
+    Effect.promise(async () => {
+      await NodeFSP.mkdir(directory, { recursive: true });
+      let resolveHolder!: (pid: number) => void;
+      const holder = new Promise<number>((resolve) => {
+        resolveHolder = resolve;
+      });
+      const inspect = () => {
+        try {
+          const pid = Number(
+            NodeFS.readFileSync(NodePath.join(directory, "codegraph.lock"), "utf8"),
+          );
+          if (Number.isSafeInteger(pid) && pid > 0) resolveHolder(pid);
+        } catch {
+          // Not written yet; the next directory event reads it again.
+        }
+      };
+      const watcher = NodeFS.watch(directory, inspect);
+      inspect();
+      return { watcher, holder };
+    }),
+    ({ holder }) => Effect.promise(() => holder),
+    ({ watcher }) => Effect.sync(() => watcher.close()),
+  );
+}
+
+it.effect("fails the query, not the server, when the analysis process aborts", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 400));
+      const run = checkoutService(fixture.root, () => files);
+      const holder = yield* indexLockHolder(fixture.root).pipe(Effect.forkScoped);
+      const indexing = yield* run({ operation: "status" }).pipe(Effect.result, Effect.forkScoped);
+      const pid = yield* Fiber.join(holder);
+      assert.notEqual(pid, process.pid, "analysis runs outside the server process");
+      process.kill(pid, "SIGABRT");
+      const result = yield* Fiber.join(indexing);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.deepInclude(result.failure, {
+          _tag: "CodeIntelligenceInspectionFailed",
+          reason: "worker-failed",
+        });
+      }
+    }),
+  ),
+);
