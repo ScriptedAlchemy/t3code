@@ -1,9 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - this boundary owns worker paths and isolated SDK loading.
 import * as NodePath from "node:path";
-import { Worker } from "node:worker_threads";
+import * as NodeWorkerThreads from "node:worker_threads";
 
 import {
-  ProjectCodeQueryInput,
   ProjectCodeQueryResult,
   type ProjectCodeQuery as ProjectCodeQueryType,
   type ProjectCodeQueryInput as ProjectCodeQueryInputType,
@@ -108,6 +107,7 @@ const WorkerReply = Schema.Union([
   }),
   Schema.Struct({ error: Schema.String }),
 ]);
+const decodeWorkerReply = Schema.decodeUnknownSync(WorkerReply);
 
 function normalizeQueryPaths(
   query: ProjectCodeQueryType,
@@ -180,9 +180,9 @@ function queryWithWorker(input: {
     import.meta.url,
   );
   return Effect.callback((resume) => {
-    let worker: Worker;
+    let worker: NodeWorkerThreads.Worker;
     try {
-      worker = new Worker(workerUrl, {
+      worker = new NodeWorkerThreads.Worker(workerUrl, {
         ...(fromSource ? { execArgv: ["--experimental-strip-types"] } : {}),
         env: { ...process.env, CODEGRAPH_DIR: INDEX_DIRECTORY },
         resourceLimits: { maxOldGenerationSizeMb: WORKER_MEMORY_LIMIT_MB },
@@ -213,7 +213,7 @@ function queryWithWorker(input: {
       if (terminal !== undefined) return;
       let decoded: typeof WorkerReply.Type;
       try {
-        decoded = Schema.decodeUnknownSync(WorkerReply)(raw);
+        decoded = decodeWorkerReply(raw);
       } catch {
         fail(new CodeIntelligenceWorkerError({ reason: "invalid-result" }), true);
         return;

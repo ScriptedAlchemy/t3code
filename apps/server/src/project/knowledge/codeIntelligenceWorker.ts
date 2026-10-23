@@ -3,7 +3,6 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type {
   CodeGraph as CodeGraphInstance,

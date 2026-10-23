@@ -17,18 +17,17 @@ export function createProjectCodeAtoms<R, E>(
     query: createEnvironmentQueryAtomFamily(runtime, {
       label: "project-code:query",
       staleTimeMs: 0,
-      execute: (input: ProjectCodeQueryInput) =>
-        Effect.gen(function* () {
-          const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
-          const config = yield* getInitialServerConfig();
-          if (config.environment.capabilities.projectCode !== true) {
-            return yield* new EnvironmentRpcUnavailableError({
-              environmentId: supervisor.target.environmentId,
-              message: "This server does not support project code queries.",
-            });
-          }
-          return yield* requestGuarded(WS_METHODS.projectCodeQuery, input);
-        }),
+      execute: Effect.fn("ProjectCode.query")(function* (input: ProjectCodeQueryInput) {
+        const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+        const config = yield* getInitialServerConfig();
+        if (config.environment.capabilities.projectCode !== true) {
+          return yield* new EnvironmentRpcUnavailableError({
+            environmentId: supervisor.target.environmentId,
+            message: "This server does not support project code queries.",
+          });
+        }
+        return yield* requestGuarded(WS_METHODS.projectCodeQuery, input);
+      }),
     }),
   };
 }

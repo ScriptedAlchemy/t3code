@@ -1,21 +1,15 @@
 // @effect-diagnostics nodeBuiltinImport:off - fixtures use isolated temporary checkouts and verify source bytes against SHA-256 digests.
 import * as NodeCrypto from "node:crypto";
-import { watch as NodeFSWatch } from "node:fs";
-import * as NodeFS from "node:fs/promises";
+import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeUrl from "node:url";
-import { Worker } from "node:worker_threads";
+import * as NodeURL from "node:url";
+import * as NodeWorkerThreads from "node:worker_threads";
 
 import * as NodeCryptoEffect from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
-import {
-  EnvironmentId,
-  OrchestrationV2AppThread,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { EnvironmentId, OrchestrationV2AppThread, ProjectId, ThreadId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -37,7 +31,7 @@ import * as CodeIntelligence from "./CodeIntelligence.ts";
 const projectId = ProjectId.make("project:code-intelligence");
 const threadId = ThreadId.make("thread:code-intelligence");
 const worktreeThreadId = ThreadId.make("thread:code-intelligence-worktree");
-const codeGraphRequirePath = NodeUrl.fileURLToPath(
+const codeGraphRequirePath = NodeURL.fileURLToPath(
   new URL("../../../package.json", import.meta.url),
 );
 
@@ -46,12 +40,12 @@ class FixtureSetupFailed extends Schema.TaggedError<FixtureSetupFailed>()("Fixtu
 }) {}
 
 async function makeFixture() {
-  const root = await NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-code-intelligence-"));
-  const worktree = await NodeFS.mkdtemp(
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-code-intelligence-"));
+  const worktree = await NodeFSP.mkdtemp(
     NodePath.join(NodeOS.tmpdir(), "t3-code-intelligence-worktree-"),
   );
-  await NodeFS.mkdir(NodePath.join(root, "src"), { recursive: true });
-  await NodeFS.mkdir(NodePath.join(worktree, "src"), { recursive: true });
+  await NodeFSP.mkdir(NodePath.join(root, "src"), { recursive: true });
+  await NodeFSP.mkdir(NodePath.join(worktree, "src"), { recursive: true });
   const typescriptDefinition = 'const prefix = "🧪é"; export function greet() { return prefix; }\n';
   const typescriptCaller = [
     'import { greet as sayHello } from "./defs";',
@@ -72,11 +66,11 @@ async function makeFixture() {
     '    marker = "🧪é"; return greet()',
   ].join("\n");
   const worktreeSource = "export function workOnly() { return 2; }\n";
-  await NodeFS.writeFile(NodePath.join(root, "src/defs.ts"), typescriptDefinition);
-  await NodeFS.writeFile(NodePath.join(root, "src/use.ts"), typescriptCaller);
-  await NodeFS.writeFile(NodePath.join(root, "src/main.go"), goSource);
-  await NodeFS.writeFile(NodePath.join(root, "src/main.py"), pythonSource);
-  await NodeFS.writeFile(NodePath.join(worktree, "src/work.ts"), worktreeSource);
+  await NodeFSP.writeFile(NodePath.join(root, "src/defs.ts"), typescriptDefinition);
+  await NodeFSP.writeFile(NodePath.join(root, "src/use.ts"), typescriptCaller);
+  await NodeFSP.writeFile(NodePath.join(root, "src/main.go"), goSource);
+  await NodeFSP.writeFile(NodePath.join(root, "src/main.py"), pythonSource);
+  await NodeFSP.writeFile(NodePath.join(worktree, "src/work.ts"), worktreeSource);
   return { root, worktree, typescriptDefinition, typescriptCaller, goSource, pythonSource };
 }
 
@@ -91,8 +85,8 @@ function withFixture<A, E, R>(
     use,
     ({ root, worktree }) =>
       Effect.promise(async () => {
-        await NodeFS.rm(root, { recursive: true, force: true });
-        await NodeFS.rm(worktree, { recursive: true, force: true });
+        await NodeFSP.rm(root, { recursive: true, force: true });
+        await NodeFSP.rm(worktree, { recursive: true, force: true });
       }),
   );
 }
@@ -104,8 +98,8 @@ it.effect(
       ({ root, worktree, typescriptDefinition, typescriptCaller, goSource, pythonSource }) =>
         Effect.gen(function* () {
           yield* Effect.promise(async () => {
-            await NodeFS.symlink(worktree, NodePath.join(root, "linked-worktree"));
-            await NodeFS.symlink(
+            await NodeFSP.symlink(worktree, NodePath.join(root, "linked-worktree"));
+            await NodeFSP.symlink(
               NodePath.join(worktree, "src/work.ts"),
               NodePath.join(root, "src/linked-work.ts"),
             );
@@ -167,7 +161,7 @@ it.effect(
             }).pipe(Effect.provide(provided));
 
           yield* Effect.promise(async () => {
-            const seed = new Worker(
+            const seed = new NodeWorkerThreads.Worker(
               `const { parentPort, workerData } = require("node:worker_threads");
                const { createRequire } = require("node:module");
                const sdk = createRequire(workerData.requirePath)("@colbymchenry/codegraph");
@@ -205,7 +199,7 @@ it.effect(
           const persistedLinkedSymbols = yield* Effect.promise(
             () =>
               new Promise<number>((resolve, reject) => {
-                const inspect = new Worker(
+                const inspect = new NodeWorkerThreads.Worker(
                   `const { parentPort, workerData } = require("node:worker_threads");
                    const { createRequire } = require("node:module");
                    const sdk = createRequire(workerData.requirePath)("@colbymchenry/codegraph");
@@ -232,7 +226,7 @@ it.effect(
           );
           assert.equal(persistedLinkedSymbols, 0);
           yield* Effect.promise(() =>
-            NodeFS.rm(NodePath.join(root, ".codegraph-t3"), { recursive: true, force: true }),
+            NodeFSP.rm(NodePath.join(root, ".codegraph-t3"), { recursive: true, force: true }),
           );
 
           const [concurrentStatus, concurrentSearch] = yield* Effect.all(
@@ -411,16 +405,16 @@ it.effect(
           const status = yield* runQuery({ operation: "status" });
           assert.equal(status.stats?.files, 4);
           const graphDirectoryExists = yield* Effect.promise(() =>
-            NodeFS.stat(NodePath.join(root, ".codegraph-t3")).then(() => true),
+            NodeFSP.stat(NodePath.join(root, ".codegraph-t3")).then(() => true),
           );
           const standardIndexExists = yield* Effect.promise(() =>
-            NodeFS.stat(NodePath.join(root, ".codegraph")).then(
+            NodeFSP.stat(NodePath.join(root, ".codegraph")).then(
               () => true,
               () => false,
             ),
           );
           const rootGitignoreExists = yield* Effect.promise(() =>
-            NodeFS.stat(NodePath.join(root, ".gitignore")).then(
+            NodeFSP.stat(NodePath.join(root, ".gitignore")).then(
               () => true,
               () => false,
             ),
@@ -430,7 +424,7 @@ it.effect(
           assert.equal(rootGitignoreExists, false);
 
           yield* Effect.promise(() =>
-            NodeFS.writeFile(
+            NodeFSP.writeFile(
               NodePath.join(root, "src/main.go"),
               'package example\nfunc renamed() string { return "changed" }\n',
             ),
@@ -447,7 +441,7 @@ it.effect(
             filePath: "src/main.go",
           });
           assert.equal(stale.nodes.length, 0);
-          yield* Effect.promise(() => NodeFS.rm(NodePath.join(root, "src/main.py")));
+          yield* Effect.promise(() => NodeFSP.rm(NodePath.join(root, "src/main.py")));
           const afterDelete = yield* runQuery({ operation: "status" });
           assert.equal(afterDelete.stats?.files, 3);
 
@@ -473,7 +467,7 @@ it.effect(
           assert.ok(callerQuery.edges.length <= 100);
 
           yield* Effect.promise(() =>
-            NodeFS.writeFile(
+            NodeFSP.writeFile(
               NodePath.join(root, "src/defs.ts"),
               Buffer.concat([Buffer.from(typescriptDefinition), Buffer.from([0xff])]),
             ),
@@ -490,18 +484,21 @@ it.effect(
           assert.equal(invalidUtf8.coverage.state, "stale");
 
           yield* Effect.promise(async () => {
-            await NodeFS.rm(NodePath.join(root, ".codegraph-t3"), { recursive: true, force: true });
-            await NodeFS.rm(NodePath.join(worktree, ".codegraph-t3"), {
+            await NodeFSP.rm(NodePath.join(root, ".codegraph-t3"), {
               recursive: true,
               force: true,
             });
-            await NodeFS.symlink(worktree, NodePath.join(root, ".codegraph-t3"));
+            await NodeFSP.rm(NodePath.join(worktree, ".codegraph-t3"), {
+              recursive: true,
+              force: true,
+            });
+            await NodeFSP.symlink(worktree, NodePath.join(root, ".codegraph-t3"));
           });
           const indexPathError = yield* Effect.flip(runQuery({ operation: "status" }));
           assert.equal(indexPathError._tag, "CodeIntelligencePathOutsideCheckout");
           assert.equal(
             yield* Effect.promise(() =>
-              NodeFS.stat(NodePath.join(worktree, ".codegraph-t3")).then(
+              NodeFSP.stat(NodePath.join(worktree, ".codegraph-t3")).then(
                 () => true,
                 () => false,
               ),
@@ -520,8 +517,8 @@ it.effect("recovers after SDK indexing cancellation", () =>
         await Promise.all(
           files.map((file, index) => {
             const absolutePath = NodePath.join(fixture.root, file);
-            return NodeFS.mkdir(NodePath.dirname(absolutePath), { recursive: true }).then(() =>
-              NodeFS.writeFile(absolutePath, `def generated_${index}():\n    return ${index}\n`),
+            return NodeFSP.mkdir(NodePath.dirname(absolutePath), { recursive: true }).then(() =>
+              NodeFSP.writeFile(absolutePath, `def generated_${index}():\n    return ${index}\n`),
             );
           }),
         );
@@ -561,7 +558,7 @@ it.effect("recovers after SDK indexing cancellation", () =>
           const created = new Promise<void>((resolve) => {
             resolveCreated = resolve;
           });
-          const watcher = NodeFSWatch(fixture.root, (_event, filename) => {
+          const watcher = NodeFS.watch(fixture.root, (_event, filename) => {
             if (filename?.toString() === ".codegraph-t3") resolveCreated();
           });
           return { watcher, created };
@@ -573,10 +570,13 @@ it.effect("recovers after SDK indexing cancellation", () =>
       yield* waitForIndexDirectory;
       yield* Fiber.interrupt(interruptedQuery);
 
-      const worker = new Worker(new URL("./codeIntelligenceWorkerThread.ts", import.meta.url), {
-        execArgv: ["--experimental-strip-types"],
-        env: { ...process.env, CODEGRAPH_DIR: ".codegraph-cancel-test" },
-      });
+      const worker = new NodeWorkerThreads.Worker(
+        new URL("./codeIntelligenceWorkerThread.ts", import.meta.url),
+        {
+          execArgv: ["--experimental-strip-types"],
+          env: { ...process.env, CODEGRAPH_DIR: ".codegraph-cancel-test" },
+        },
+      );
       const indexingCancellation = new Promise<void>((resolve, reject) => {
         let cancellationSent = false;
         let cancellationReceived = false;

@@ -1,4 +1,4 @@
-import { parentPort } from "node:worker_threads";
+import * as NodeWorkerThreads from "node:worker_threads";
 
 import { inspectCodeInWorker, type CodeIntelligenceWorkerInput } from "./codeIntelligenceWorker.ts";
 
@@ -6,7 +6,7 @@ type WorkerCommand =
   | { readonly type: "query"; readonly input: CodeIntelligenceWorkerInput }
   | { readonly type: "cancel" };
 
-const port = parentPort;
+const port = NodeWorkerThreads.parentPort;
 if (port !== null) {
   const controller = new AbortController();
   let started = false;
