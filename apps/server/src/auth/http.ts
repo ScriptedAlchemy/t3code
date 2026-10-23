@@ -30,10 +30,14 @@ import * as Layer from "effect/Layer";
 import * as Cookies from "effect/http/Cookies";
 import * as HttpEffect from "effect/http/HttpEffect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as Crypto from "effect/Crypto";
 
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 import * as SessionStore from "./SessionStore.ts";
+import * as ServerSecretStore from "./ServerSecretStore.ts";
 import { traceAuthenticatedRelayRequest, traceRelayRequest } from "../cloud/traceRelayRequest.ts";
 import { deriveAuthClientMetadata } from "./utils.ts";
 import { verifyRequestDpopProof } from "./dpop.ts";
@@ -259,76 +263,19 @@ export const layerAuthenticatedAuth = Layer.effect(
   }),
 );
 
-export const layer = HttpApiBuilder.group(
+export const layer: Layer.Layer<
+  HttpApiGroup.Service<"environment", "auth">,
+  never,
+  | EnvironmentAuth.EnvironmentAuth
+  | EnvironmentAuthenticatedAuth
+  | SessionStore.SessionStore
+  | HttpRouter.Request.From<"Requires", Crypto.Crypto | ServerSecretStore.ServerSecretStore>
+> = HttpApiBuilder.group(
   EnvironmentHttpApi,
   "auth",
   Effect.fnUntraced(function* (handlers) {
     const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
     const sessions = yield* SessionStore.SessionStore;
-    const tokenHandler = HttpApiBuilder.handler(
-      EnvironmentHttpApi,
-      "auth",
-      "token",
-      Effect.fn("environment.auth.token")(
-        function* (args) {
-          yield* annotateEnvironmentRequest(args.endpoint.name);
-          const request = yield* HttpServerRequest.HttpServerRequest;
-          const requestedScopes =
-            args.payload.scope === undefined
-              ? undefined
-              : (parseOAuthScope(args.payload.scope)?.filter(Schema.is(AuthGrantScope)) ?? null);
-          if (requestedScopes === null || requestedScopes?.length === 0) {
-            return yield* failEnvironmentInvalidRequest("invalid_scope");
-          }
-          const proofKeyThumbprint = args.headers.dpop
-            ? yield* verifyRequestDpopProof({ request }).pipe(
-                Effect.catchIf(EnvironmentAuth.isServerAuthCredentialError, (error) =>
-                  appendDpopChallengeHeader.pipe(
-                    Effect.andThen(
-                      failEnvironmentAuthInvalid(
-                        "invalid_credential",
-                        EnvironmentAuth.serverAuthDpopFailureReason(error),
-                      ),
-                    ),
-                  ),
-                ),
-                Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-                  failEnvironmentInternal("access_token_issuance_failed", error),
-                ),
-              )
-            : undefined;
-          yield* appendCredentialResponseHeaders;
-          return yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
-            args.payload.subject_token,
-            requestedScopes,
-            deriveAuthClientMetadata({
-              request,
-              presented: {
-                ...(args.payload.client_label ? { label: args.payload.client_label } : {}),
-                ...(args.payload.client_device_type
-                  ? { deviceType: args.payload.client_device_type }
-                  : {}),
-                ...(args.payload.client_os ? { os: args.payload.client_os } : {}),
-              },
-            }),
-            proofKeyThumbprint ? { proofKeyThumbprint } : undefined,
-          );
-        },
-        traceRelayRequest,
-        Effect.catchIf(EnvironmentAuth.isServerAuthCredentialError, (error) =>
-          failEnvironmentAuthInvalid(
-            EnvironmentAuth.serverAuthCredentialReason(error),
-            EnvironmentAuth.serverAuthDpopFailureReason(error),
-          ),
-        ),
-        Effect.catchIf(EnvironmentAuth.isServerAuthInvalidRequestError, (error) =>
-          failEnvironmentInvalidRequest(EnvironmentAuth.serverAuthInvalidRequestReason(error)),
-        ),
-        Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-          failEnvironmentInternal("access_token_issuance_failed", error),
-        ),
-      ),
-    );
 
     return handlers
       .handle(
@@ -414,7 +361,68 @@ export const layer = HttpApiBuilder.group(
           ),
         ),
       )
-      .handle("token", tokenHandler)
+      .handle(
+        "token",
+        Effect.fn("environment.auth.token")(
+          function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const requestedScopes =
+              args.payload.scope === undefined
+                ? undefined
+                : (parseOAuthScope(args.payload.scope)?.filter(Schema.is(AuthGrantScope)) ?? null);
+            if (requestedScopes === null || requestedScopes?.length === 0) {
+              return yield* failEnvironmentInvalidRequest("invalid_scope");
+            }
+            const proofKeyThumbprint = args.headers.dpop
+              ? yield* verifyRequestDpopProof({ request }).pipe(
+                  Effect.catchIf(EnvironmentAuth.isServerAuthCredentialError, (error) =>
+                    appendDpopChallengeHeader.pipe(
+                      Effect.andThen(
+                        failEnvironmentAuthInvalid(
+                          "invalid_credential",
+                          EnvironmentAuth.serverAuthDpopFailureReason(error),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
+                    failEnvironmentInternal("access_token_issuance_failed", error),
+                  ),
+                )
+              : undefined;
+            yield* appendCredentialResponseHeaders;
+            return yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
+              args.payload.subject_token,
+              requestedScopes,
+              deriveAuthClientMetadata({
+                request,
+                presented: {
+                  ...(args.payload.client_label ? { label: args.payload.client_label } : {}),
+                  ...(args.payload.client_device_type
+                    ? { deviceType: args.payload.client_device_type }
+                    : {}),
+                  ...(args.payload.client_os ? { os: args.payload.client_os } : {}),
+                },
+              }),
+              proofKeyThumbprint ? { proofKeyThumbprint } : undefined,
+            );
+          },
+          traceRelayRequest,
+          Effect.catchIf(EnvironmentAuth.isServerAuthCredentialError, (error) =>
+            failEnvironmentAuthInvalid(
+              EnvironmentAuth.serverAuthCredentialReason(error),
+              EnvironmentAuth.serverAuthDpopFailureReason(error),
+            ),
+          ),
+          Effect.catchIf(EnvironmentAuth.isServerAuthInvalidRequestError, (error) =>
+            failEnvironmentInvalidRequest(EnvironmentAuth.serverAuthInvalidRequestReason(error)),
+          ),
+          Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
+            failEnvironmentInternal("access_token_issuance_failed", error),
+          ),
+        ),
+      )
       .handle(
         "webSocketTicket",
         Effect.fn("environment.auth.webSocketTicket")(
