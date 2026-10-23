@@ -17,6 +17,7 @@ import {
   type LoomView,
 } from "./loomScale";
 import type { LoomSelection } from "./loomSearch";
+import { ACTIVE_RUN, loomMarkerKey } from "./loomWeave";
 
 const LOOM_ROW_HEIGHT = 28;
 // Lane labels take up to this much, and never more than 40% of a narrow timeline.
@@ -24,9 +25,6 @@ const MAX_LABEL_WIDTH = 248;
 const AXIS_HEIGHT = 24;
 const OVERSCAN_ROWS = 6;
 const MARK_SIZE = 4;
-
-export const loomMarkerKey = (marker: Pick<LoomMarker, "kind" | "id">) =>
-  `${marker.kind}:${marker.id}`;
 
 const RUN_STATUS_CLASS: Record<LoomRun["status"], string> = {
   preparing: "fill-primary/60",
@@ -40,14 +38,6 @@ const RUN_STATUS_CLASS: Record<LoomRun["status"], string> = {
   rolled_back: "fill-muted-foreground/30",
   failed: "fill-destructive/70",
 };
-
-const ACTIVE_RUN = new Set<LoomRun["status"]>([
-  "preparing",
-  "queued",
-  "starting",
-  "running",
-  "waiting",
-]);
 
 const PRE_EXECUTION_RUN = new Set<LoomRun["status"]>(["preparing", "queued", "starting"]);
 

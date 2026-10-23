@@ -7,7 +7,7 @@ import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { formatLoomTime } from "./loomScale";
 import type { LoomSelection } from "./loomSearch";
-import { loomMarkerKey } from "./LoomTimeline";
+import { loomMarkerKey, loomSelectionThread } from "./loomWeave";
 
 export interface LoomActions {
   readonly openThread: (threadId: ThreadId) => void;
@@ -80,22 +80,6 @@ function loomEvents(data: LoomWindow, actions: LoomActions): ReadonlyArray<LoomE
   return [...runs, ...markers, ...edges].toSorted((left, right) => right.at.localeCompare(left.at));
 }
 
-function selectionThread(data: LoomWindow, selection: LoomSelection | null): ThreadId | null {
-  if (selection === null) return null;
-  switch (selection.kind) {
-    case "lane":
-      return selection.id as ThreadId;
-    case "run":
-      return data.runs.find((run) => run.id === selection.id)?.threadId ?? null;
-    case "marker":
-      return (
-        data.markers.find((marker) => loomMarkerKey(marker) === selection.id)?.threadId ?? null
-      );
-    case "edge":
-      return data.edges.find((edge) => edge.id === selection.id)?.targetThreadId ?? null;
-  }
-}
-
 /**
  * The accessible reading of the timeline: what is selected and every event in time order,
  * narrowed to the selected lane. Each entry opens its thread, diff or pull request.
@@ -109,7 +93,7 @@ export function LoomEventPanel(props: {
   const [limit, setLimit] = useState(PAGE);
   const { data, selection } = props;
   const events = loomEvents(data, props.actions);
-  const laneId = selectionThread(data, selection);
+  const laneId = loomSelectionThread(data, selection) as ThreadId | null;
   const lane =
     laneId === null ? null : (data.lanes.find((entry) => entry.threadId === laneId) ?? null);
   const laneTitles = new Map(data.lanes.map((entry) => [entry.threadId as string, entry.title]));
