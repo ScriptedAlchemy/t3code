@@ -1099,7 +1099,12 @@ it.effect("reports when a delivered fact's cited message changes or disappears",
         (read) => read.deliveries[0]?.items[0]?.current,
       );
       assert.equal(yield* current, "current");
-      return { sourceThreadId, sourceMessageId, current };
+      const retained = knowledge.readSentDeliveries({
+        projectId,
+        threadIds: [threadId],
+        runIds: [RunId.make(`${key}-run`)],
+      });
+      return { sourceThreadId, sourceMessageId, current, retained };
     });
     const edited = yield* deliveredFact("edited");
     const deleted = yield* deliveredFact("deleted");
@@ -1120,6 +1125,30 @@ it.effect("reports when a delivered fact's cited message changes or disappears",
 
     assert.equal(yield* edited.current, "changed");
     assert.equal(yield* deleted.current, "unavailable");
+    for (const entry of [edited, deleted]) {
+      const rows = yield* entry.retained;
+      assert.notInclude(rows[0]?.items[0]?.text, "Cache keys include tenant IDs.");
+      assert.include(rows[0]?.items[0]?.text, "Source unavailable");
+      const row = rows[0]!;
+      const replay = yield* deliveredKnowledgeForHistory({
+        projectId,
+        messages: [
+          {
+            itemId: TurnItemId.make("removed-source-replay"),
+            role: "user",
+            kind: "user_message",
+            text: "Use this.",
+            threadId: row.threadId,
+            runId: row.runId,
+            providerThreadId: null,
+            status: "completed",
+          },
+        ],
+        userItemId: () => "removed-source-replay",
+      });
+      assert.notInclude(replay.get("removed-source-replay"), "Cache keys include tenant IDs.");
+      assert.include(replay.get("removed-source-replay"), "Source unavailable");
+    }
   }).pipe(Effect.provide(layerTest)),
 );
 

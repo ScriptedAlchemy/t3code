@@ -1091,14 +1091,66 @@ const make = Effect.gen(function* () {
   const recordDelivery: ProjectKnowledge["Service"]["recordDelivery"] = Effect.fn(
     "ProjectKnowledge.recordDelivery",
   )(function* (delivery) {
-    yield* store.recordDelivery(delivery).pipe(Effect.mapError(storageError(delivery.projectId)));
+    const checked = yield* revalidateDelivery(delivery).pipe(
+      Effect.mapError(storageError(delivery.projectId)),
+    );
+    yield* store.recordDelivery(checked).pipe(Effect.mapError(storageError(delivery.projectId)));
+  });
+  // A fact edit is not a source edit: check the citations of the revision actually sent.
+  // Scrubbing is monotone, so restoring a thread cannot restore retained excerpts.
+  const revalidateDelivery = Effect.fn("ProjectKnowledge.revalidateDelivery")(function* (
+    delivery: ProjectKnowledgeDelivery,
+  ) {
+    const items = [];
+    for (const item of delivery.items) {
+      let unavailable = false;
+      for (const selection of item.context.selections) {
+        if (selection.kind === "message") {
+          const source = yield* readSource({
+            projectId: delivery.projectId,
+            ...selection,
+            includeArchived: true,
+          });
+          unavailable ||= source.state !== "available";
+        } else {
+          const fact = yield* store.find(delivery.projectId, selection.factId);
+          const history = yield* store.history(delivery.projectId, selection.factId, HISTORY_LIMIT);
+          const revision =
+            fact?.revision === selection.revision
+              ? fact
+              : history.find((entry) => entry.revision === selection.revision);
+          unavailable ||= revision === undefined || revision === null;
+          if (revision) {
+            const lost = yield* unavailableSources(
+              delivery.projectId,
+              [{ id: selection.factId, sources: revision.sources }],
+              true,
+            );
+            unavailable ||= lost.length > 0;
+          }
+        }
+      }
+      items.push(
+        unavailable && !item.contentRemoved
+          ? { ...item, text: "[Source unavailable: removed or changed.]" }
+          : item,
+      );
+    }
+    const checked = { ...delivery, items };
+    yield* store
+      .replaceDeliveryItems(checked, delivery)
+      .pipe(Effect.mapError(storageError(delivery.projectId)));
+    return checked;
   });
   const readSentDeliveries: ProjectKnowledge["Service"]["readSentDeliveries"] = Effect.fn(
     "ProjectKnowledge.readSentDeliveries",
   )(function* (input) {
-    return yield* store
+    const rows = yield* store
       .sentDeliveries(input.projectId, input.threadIds, input.runIds)
       .pipe(Effect.mapError(storageError(input.projectId)));
+    return yield* Effect.forEach(rows, revalidateDelivery).pipe(
+      Effect.mapError(storageError(input.projectId)),
+    );
   });
   const readDeliveries: ProjectKnowledge["Service"]["readDeliveries"] = Effect.fn(
     "ProjectKnowledge.readDeliveries",
@@ -1153,7 +1205,10 @@ const make = Effect.gen(function* () {
             : ("current" as const);
     });
     const deliveries = [];
-    for (const row of rows) {
+    for (const original of rows) {
+      const row = yield* revalidateDelivery(original).pipe(
+        Effect.mapError(storageError(input.projectId)),
+      );
       const items = [];
       for (const item of row.items)
         items.push({ ...item, current: yield* selectionState(item.context) });

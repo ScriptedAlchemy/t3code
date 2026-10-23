@@ -467,6 +467,15 @@ export const makeStore = Effect.gen(function* () {
           WHERE attempt_id = ${row.attemptId}`;
     }
   });
+  const replaceDeliveryItems = Effect.fn("ProjectKnowledgeStore.replaceDeliveryItems")(function* (
+    delivery: ProjectKnowledgeDelivery,
+    original: ProjectKnowledgeDelivery,
+  ) {
+    yield* sql`UPDATE project_knowledge_deliveries
+      SET items_json = ${encodeDeliveryItems(delivery.items)}
+      WHERE attempt_id = ${delivery.attemptId} AND project_id = ${delivery.projectId}
+        AND items_json = ${encodeDeliveryItems(original.items)}`;
+  });
   const deliveries = Effect.fn("ProjectKnowledgeStore.deliveries")(function* (
     projectId: ProjectId,
     threadId: ThreadId,
@@ -553,6 +562,7 @@ export const makeStore = Effect.gen(function* () {
     recordRetrieval,
     recordDelivery,
     scrubDeliveries,
+    replaceDeliveryItems,
     deliveries,
     sentDeliveries,
   };
