@@ -1,3 +1,4 @@
+import * as HolographicMemory from "./project/knowledge/HolographicMemory.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
@@ -606,7 +607,12 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
-  Layer.provideMerge(ProjectKnowledge.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+  Layer.provideMerge(
+    ProjectKnowledge.layer.pipe(
+      Layer.provide(ProjectionStoreV2.layer),
+      Layer.provide(HolographicMemory.layer),
+    ),
+  ),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(layerServerSettings),
   Layer.provideMerge(layerGit),

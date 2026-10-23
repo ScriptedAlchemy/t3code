@@ -1,7 +1,10 @@
-import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { resolveKnowledgeComposer } from "../project/knowledge/composer.ts";
+import * as ProjectKnowledge from "../project/knowledge/ProjectKnowledge.ts";
 import {
   CommandId,
+  ProjectKnowledgeError,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ExecutionNode,
@@ -108,6 +111,7 @@ export const layer: Layer.Layer<
   | ServerSettings.ServerSettingsService
   | GitWorkflowService.GitWorkflowService
   | ProjectService.ProjectService
+  | ProjectKnowledge.ProjectKnowledge
   | ProviderAuthService.ProviderAuthService
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
@@ -125,6 +129,7 @@ export const layer: Layer.Layer<
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -1019,10 +1024,13 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
-      const userText = projectComposerContextForProvider({
+      const composer = yield* resolveKnowledgeComposer({
+        projectId: projection.thread.projectId,
         text: message.text,
         records: message.context?.records ?? [],
-      });
+      }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge));
+      if (composer.byteLength > 0 && !(yield* isCurrentAttemptInStatus("running"))) return;
+      const userText = composer.text;
       // Delivered once: this run's provider turn marks the work as told. A
       // restart continuation is prompted by its own text or resumes natively.
       const noteContinuation = isRestartNoteContinuation(
@@ -1159,6 +1167,28 @@ export const layer: Layer.Layer<
                 !coveredItemIds.has(item.id) &&
                 historicalMessage(item) !== null,
             );
+      if (composer.byteLength > 0) {
+        const allowance = handoffBudget({
+          tokenCap,
+          modelContextWindow,
+          userText:
+            restartNote === "" ? composer.baseText : `${restartNote}\n\n${composer.baseText}`,
+          attachments: message.attachments,
+          providerThread: budgetProviderThread,
+          nativeContextEstimate:
+            budgetProviderThread.contextUsage?.usedTokens === undefined
+              ? yield* nativeContextEstimate
+              : 0,
+        });
+        if (composer.byteLength > allowance) {
+          return yield* new ProjectKnowledgeError({
+            reason: "context_budget",
+            projectId: projection.thread.projectId,
+            byteLength: composer.byteLength,
+          });
+        }
+        if (!(yield* isCurrentAttemptInStatus("running"))) return;
+      }
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const retryHandoff =
@@ -1229,6 +1259,16 @@ export const layer: Layer.Layer<
               });
             }),
           });
+          if (composer.byteLength > 0) {
+            yield* resolveKnowledgeComposer({
+              projectId: projection.thread.projectId,
+              text: message.text,
+              records: message.context?.records ?? [],
+            }).pipe(
+              Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge),
+              Effect.tapError(() => delivery.unsent),
+            );
+          }
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
           const start = compact ? session.compactThread! : session.startTurn;
           const context = [delivery.context, restartNote]
@@ -1283,7 +1323,8 @@ export const layer: Layer.Layer<
         effectiveHandoffs.length === 0 &&
         missedItems.length === 0 &&
         restartNote === "" &&
-        !noteContinuation
+        !noteContinuation &&
+        composer.byteLength === 0
           ? session
           : makeDeliverySession(session, startWithHandoffs);
       return runExecution.startRootRun({

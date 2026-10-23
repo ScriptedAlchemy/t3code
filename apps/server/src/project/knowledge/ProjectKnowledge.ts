@@ -1,4 +1,6 @@
 import {
+  ActiveProjectFact,
+  KnowledgeOrigin,
   ProjectKnowledgeError,
   type ProjectFact,
   type ProjectId,
@@ -6,12 +8,18 @@ import {
   type ProjectKnowledgeListInput,
   type ProjectKnowledgeListResult,
   ProjectKnowledgeMutation,
+  ProjectKnowledgeSearchInput,
+  ProjectFactId,
   type ProjectKnowledgePreparedContext,
   type ProjectKnowledgeReadSourceInput,
-  type ProjectKnowledgeSearchInput,
   type ProjectKnowledgeSearchResult,
   type ProjectKnowledgeSource,
 } from "@t3tools/contracts";
+import {
+  formatComposerContextReference,
+  projectComposerContextForProvider,
+  projectKnowledgeContextRecord,
+} from "@t3tools/shared/composerContextReferences";
 import * as Crypto from "effect/Crypto";
 import * as Hex from "effect/encoding/Hex";
 import * as Schema from "effect/Schema";
@@ -26,6 +34,8 @@ import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import { makeStore } from "./persistence.ts";
+import * as HolographicMemory from "./HolographicMemory.ts";
+import { projectMemorySearchTokens } from "./holographicScoring.ts";
 
 export class ProjectKnowledge extends Context.Service<
   ProjectKnowledge,
@@ -35,7 +45,7 @@ export class ProjectKnowledge extends Context.Service<
     ) => Effect.Effect<ProjectKnowledgeListResult, ProjectKnowledgeError>;
     readonly mutate: (
       input: ProjectKnowledgeMutation,
-      actor: "user" | "agent",
+      actor: KnowledgeOrigin,
     ) => Effect.Effect<ProjectFact, ProjectKnowledgeError>;
     readonly readSource: (
       input: ProjectKnowledgeReadSourceInput,
@@ -52,9 +62,21 @@ export class ProjectKnowledge extends Context.Service<
   }
 >()("t3/project/knowledge/ProjectKnowledge") {}
 
+const encodeText = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const encodeMutation = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ actor: KnowledgeOrigin, input: ProjectKnowledgeMutation })),
+);
+const encodeSearch = Schema.encodeSync(Schema.fromJsonString(ProjectKnowledgeSearchInput));
+const encodeQuery = Schema.encodeSync(
   Schema.fromJsonString(
-    Schema.Struct({ actor: Schema.Literals(["user", "agent"]), input: ProjectKnowledgeMutation }),
+    Schema.Struct({
+      projectId: ProjectKnowledgeSearchInput.fields.projectId,
+      query: Schema.String,
+      entities: Schema.Array(Schema.String),
+      entityMatch: Schema.String,
+      includeArchived: Schema.Boolean,
+      minTrust: Schema.Number,
+    }),
   ),
 );
 const isKnowledgeError = Schema.is(ProjectKnowledgeError);
@@ -70,6 +92,7 @@ const make = Effect.gen(function* () {
     crypto.digest("SHA-256", new TextEncoder().encode(text)).pipe(Effect.map(Hex.encode)),
   );
   const store = yield* makeStore;
+  const holographic = yield* HolographicMemory.HolographicMemory;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const threads = yield* ThreadSearch.ThreadSearch;
@@ -79,7 +102,7 @@ const make = Effect.gen(function* () {
     projectId: ProjectId,
   ) {
     const project = yield* projects.get(projectId).pipe(Effect.mapError(storageError(projectId)));
-    if (Option.isNone(project))
+    if (Option.isNone(project) || project.value.deletedAt !== null)
       return yield* new ProjectKnowledgeError({ reason: "missing_project", projectId });
   });
   const readSource: ProjectKnowledge["Service"]["readSource"] = Effect.fn(
@@ -131,7 +154,7 @@ const make = Effect.gen(function* () {
       const result = yield* readSource({ projectId: fact.projectId, ...source, includeArchived });
       if (result.state !== "available") return false;
     }
-    return fact.sources.length > 0;
+    return true;
   });
   const list: ProjectKnowledge["Service"]["list"] = Effect.fn("ProjectKnowledge.list")(
     function* (input) {
@@ -176,7 +199,7 @@ const make = Effect.gen(function* () {
                 });
               return existing;
             }
-            if (input.action === "confirm" && actor !== "user") {
+            if (input.action === "confirm" && actor.kind !== "user") {
               return yield* new ProjectKnowledgeError({
                 reason: "user_confirmation_required",
                 projectId,
@@ -184,14 +207,25 @@ const make = Effect.gen(function* () {
               });
             }
             if (input.action === "create" || input.action === "edit") {
-              if (actor === "agent" && input.sources.some((source) => source.kind === "user")) {
+              if (
+                Buffer.byteLength(input.content) +
+                  input.entities.reduce((size, entity) => size + Buffer.byteLength(entity), 0) >
+                  16384 ||
+                input.tags.some((tag) => Buffer.byteLength(tag) > 256)
+              ) {
+                return yield* new ProjectKnowledgeError({ reason: "fact_size", projectId, factId });
+              }
+              if (actor.kind !== "user" && input.sources.some((source) => source.kind === "user")) {
                 return yield* new ProjectKnowledgeError({
                   reason: "invalid_source",
                   projectId,
                   factId,
                 });
               }
-              if (!(yield* sourcesAvailable(input, true))) {
+              if (
+                (actor.kind === "user" && input.sources.length === 0) ||
+                !(yield* sourcesAvailable(input, true))
+              ) {
                 return yield* new ProjectKnowledgeError({
                   reason: "invalid_source",
                   projectId,
@@ -217,7 +251,8 @@ const make = Effect.gen(function* () {
                 tags: input.tags,
                 kind: input.kind,
                 sources: input.sources,
-                status: actor === "user" ? "confirmed" : "proposed",
+                origin: actor,
+                status: actor.kind === "user" ? "confirmed" : "proposed",
                 revision: 1,
                 trust: 0.5,
                 retrievalCount: 0,
@@ -252,7 +287,8 @@ const make = Effect.gen(function* () {
                     tags: input.tags,
                     kind: input.kind,
                     sources: input.sources,
-                    status: actor === "agent" ? "proposed" : existing.status,
+                    origin: actor,
+                    status: actor.kind !== "user" ? "proposed" : existing.status,
                   };
                   break;
                 case "confirm":
@@ -324,7 +360,7 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(storageError(input.projectId)));
         if (
           fact === null ||
-          fact.status !== "confirmed" ||
+          fact.status === "forgotten" ||
           fact.revision !== selection.revision ||
           fact.content === null ||
           !(yield* sourcesAvailable(fact, input.includeArchived ?? false))
@@ -342,7 +378,15 @@ const make = Effect.gen(function* () {
               : `Message ${source.threadId}/${source.messageId} sha256:${source.digest}`,
           )
           .join("; ");
-        parts.push(`[Fact ${fact.id} revision:${fact.revision}; ${citations}]\n${fact.content}`);
+        const origin =
+          fact.origin.kind === "user"
+            ? "User assertion"
+            : fact.origin.kind === "agent-thread"
+              ? `Agent observation in thread ${fact.origin.threadId}`
+              : `Agent observation from ${fact.origin.label}`;
+        parts.push(
+          `[Fact ${fact.id} revision:${fact.revision} status:${fact.status} trust:${fact.trust}; ${origin}${citations ? `; ${citations}` : ""}]\n${fact.content}`,
+        );
       }
     }
     const text = `Selected project knowledge (quoted source material):\n\n${parts.join("\n\n")}`;
@@ -358,7 +402,21 @@ const make = Effect.gen(function* () {
   const prepareContext: ProjectKnowledge["Service"]["prepareContext"] = Effect.fn(
     "ProjectKnowledge.prepareContext",
   )(function* (input) {
-    return yield* resolveForTurn(input);
+    const resolved = yield* resolveForTurn(input);
+    const record = projectKnowledgeContextRecord(input);
+    const text = projectComposerContextForProvider({
+      text: formatComposerContextReference(record),
+      records: [record],
+      resolvedKnowledge: new Map([[record.contextId, resolved.text]]),
+    });
+    const byteLength = Buffer.byteLength(encodeText(text)) - Buffer.byteLength(encodeText(""));
+    if (byteLength > input.maxBytes)
+      return yield* new ProjectKnowledgeError({
+        reason: "context_budget",
+        projectId: input.projectId,
+        byteLength,
+      });
+    return { context: input, text, byteLength };
   });
   const search: ProjectKnowledge["Service"]["search"] = Effect.fn("ProjectKnowledge.search")(
     function* (input) {
@@ -366,7 +424,188 @@ const make = Effect.gen(function* () {
       const messages = yield* threads
         .search(input)
         .pipe(Effect.mapError(storageError(input.projectId)));
-      return { messages, facts: { state: "unavailable", reason: "kernel_unavailable" } };
+      const entities = [
+        ...new Set((input.entities ?? []).map((entity) => entity.toLowerCase())),
+      ].sort();
+      const minTrust = input.minTrust ?? 0.3;
+      const queryDigest = yield* digest(
+        encodeQuery({
+          projectId: input.projectId,
+          query: input.query,
+          entities,
+          entityMatch: input.entityMatch ?? "any",
+          includeArchived: input.includeArchived ?? false,
+          minTrust,
+        }),
+      ).pipe(Effect.mapError(storageError(input.projectId)));
+      if (input.factCursor !== undefined && input.factCursor.queryDigest !== queryDigest) {
+        return yield* new ProjectKnowledgeError({
+          reason: "invalid_cursor",
+          projectId: input.projectId,
+        });
+      }
+      const requestDigest = yield* digest(encodeSearch(input)).pipe(
+        Effect.mapError(storageError(input.projectId)),
+      );
+      const candidates = yield* store
+        .candidates(input.projectId, projectMemorySearchTokens(input.query), entities, minTrust)
+        .pipe(Effect.mapError(storageError(input.projectId)));
+      const eligible = candidates.facts.filter(
+        (fact): fact is typeof ActiveProjectFact.Type =>
+          fact.status !== "forgotten" &&
+          fact.content !== null &&
+          (entities.length === 0 ||
+            (input.entityMatch === "all"
+              ? entities.every((entity) =>
+                  fact.entities.some((value) => value.toLowerCase() === entity),
+                )
+              : entities.some((entity) =>
+                  fact.entities.some((value) => value.toLowerCase() === entity),
+                ))),
+      );
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      const scored = yield* holographic
+        .scoreCandidates({
+          query: input.query,
+          now,
+          candidates: eligible.map((fact) => ({
+            id: fact.id,
+            content: fact.content,
+            entities: fact.entities,
+            tags: fact.tags,
+            trust: fact.trust,
+            updatedAt: Date.parse(fact.updatedAt),
+            retrievalCount: fact.retrievalCount,
+            ...(candidates.ranks.has(fact.id) ? { ftsRank: candidates.ranks.get(fact.id)! } : {}),
+          })),
+        })
+        .pipe(
+          Effect.map((scores) => ({ state: "available" as const, scores })),
+          Effect.catchTags({
+            HolographicMemoryError: (cause) =>
+              cause.reason === "unavailable"
+                ? Effect.succeed({ state: "unavailable" as const })
+                : Effect.fail(
+                    new ProjectKnowledgeError({
+                      reason: "scoring",
+                      projectId: input.projectId,
+                      cause,
+                    }),
+                  ),
+          }),
+        );
+      if (scored.state === "unavailable")
+        return { messages, facts: { state: "unavailable", reason: "kernel_unavailable" } };
+      const snapshots = new Map(eligible.map((fact) => [fact.id, fact]));
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* requireProject(input.projectId);
+            const receipt = yield* store.receipt(input.requestId);
+            if (
+              receipt !== null &&
+              (receipt.projectId !== input.projectId ||
+                receipt.factId !== null ||
+                receipt.digest !== requestDigest)
+            ) {
+              return yield* new ProjectKnowledgeError({
+                reason: "command_reused",
+                projectId: input.projectId,
+              });
+            }
+            const current = new Map(
+              (yield* store.findMany(
+                input.projectId,
+                scored.scores.map((score) => ProjectFactId.make(score.id)),
+              )).map((fact) => [fact.id, fact]),
+            );
+            const matches = [];
+            for (const score of scored.scores) {
+              const fact = current.get(ProjectFactId.make(score.id));
+              const snapshot = snapshots.get(ProjectFactId.make(score.id));
+              if (
+                !fact ||
+                !snapshot ||
+                fact.revision !== snapshot.revision ||
+                fact.status === "forgotten" ||
+                fact.content === null ||
+                !(yield* sourcesAvailable(fact, input.includeArchived ?? false))
+              )
+                continue;
+              matches.push({
+                fact,
+                score: {
+                  holographic: score.holographic,
+                  lexical: score.fts,
+                  tokenOverlap: score.tokenOverlap,
+                  temporalDecay: score.decay,
+                  reinforcement: score.reinforcement,
+                  trust: fact.trust,
+                  combined: score.score,
+                },
+                scoreMillionths: score.scoreMillionths,
+              });
+            }
+            matches.sort(
+              (left, right) =>
+                right.scoreMillionths - left.scoreMillionths ||
+                (left.fact.updatedAt < right.fact.updatedAt
+                  ? 1
+                  : left.fact.updatedAt > right.fact.updatedAt
+                    ? -1
+                    : 0) ||
+                (left.fact.id < right.fact.id ? -1 : left.fact.id > right.fact.id ? 1 : 0),
+            );
+            const cursor = input.factCursor;
+            const cursorScore =
+              cursor === undefined
+                ? 0
+                : (matches.find((match) => match.fact.id === cursor.factId)?.scoreMillionths ??
+                  cursor.scoreMillionths);
+            const remaining =
+              cursor === undefined
+                ? matches
+                : matches.filter(
+                    (match) =>
+                      match.scoreMillionths < cursorScore ||
+                      (match.scoreMillionths === cursorScore &&
+                        (match.fact.updatedAt < cursor.updatedAt ||
+                          (match.fact.updatedAt === cursor.updatedAt &&
+                            match.fact.id > cursor.factId))),
+                  );
+            const selected = remaining.slice(0, input.limit ?? 20);
+            const last = selected.at(-1);
+            if (receipt === null) {
+              yield* store.recordRetrieval(
+                input.projectId,
+                selected.map((match) => match.fact.id),
+              );
+              yield* store.record(input.requestId, input.projectId, null, requestDigest);
+            }
+            return {
+              messages,
+              facts: {
+                state: "available" as const,
+                matches: selected.map(({ fact, score }) => ({
+                  fact:
+                    receipt === null ? { ...fact, retrievalCount: fact.retrievalCount + 1 } : fact,
+                  score,
+                })),
+                coverage: candidates.partial ? ("partial" as const) : ("complete" as const),
+                nextCursor:
+                  remaining.length > selected.length && last !== undefined
+                    ? {
+                        queryDigest,
+                        factId: last.fact.id,
+                        scoreMillionths: last.scoreMillionths,
+                        updatedAt: last.fact.updatedAt,
+                      }
+                    : null,
+              },
+            };
+          }),
+        )
+        .pipe(Effect.mapError(storageError(input.projectId)));
     },
   );
   return ProjectKnowledge.of({ list, mutate, readSource, search, prepareContext, resolveForTurn });

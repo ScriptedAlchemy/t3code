@@ -1,6 +1,8 @@
 import {
   COMPOSER_CONTEXT_LABEL_MAX_CHARS,
-  type ComposerContextId,
+  ComposerContextId,
+  type ProjectKnowledgeContext,
+  type ProjectKnowledgeContextRecord,
   type ComposerContextKind,
   type ComposerContextRecord,
   type ElementContextDetails,
@@ -368,5 +370,17 @@ export function remapComposerContextAttachments(
         ? { ...record, attachmentId: ids.get(record.attachmentId) ?? record.attachmentId }
         : record,
     ),
+  };
+}
+
+export function projectKnowledgeContextRecord(
+  knowledge: ProjectKnowledgeContext,
+): ProjectKnowledgeContextRecord {
+  return {
+    version: 1,
+    kind: "project-knowledge",
+    contextId: ComposerContextId.make("project-knowledge"),
+    label: `Project knowledge (${knowledge.selections.length})`,
+    knowledge,
   };
 }

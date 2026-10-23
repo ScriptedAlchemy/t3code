@@ -65,7 +65,7 @@ export const KnowledgeToolkit = Toolkit.make(
   Tool.make("t3_knowledge_mutate", {
     ...shared,
     description:
-      "Propose or edit sourced project knowledge, forget a fact, or give trust feedback. Creates and edits remain proposed until a user confirms in the app. Agents cannot confirm or claim direct user assertions. Reuse commandId when retrying. Updates require the current revision. Forgotten facts cannot be restored.",
+      "Propose or edit sourced project knowledge, forget a fact, or give trust feedback. Agent observations may use an empty sources array; their origin is recorded from this authenticated caller. Proposed facts can be recalled immediately. Confirmation in the app is optional and remains a separate trust action. Agents cannot confirm or claim direct user assertions. Reuse commandId when retrying. Updates require the current revision. Forgotten facts cannot be restored.",
     parameters: ProjectKnowledgeMutation,
     success: ProjectFact,
   }).annotate(Tool.Destructive, true),

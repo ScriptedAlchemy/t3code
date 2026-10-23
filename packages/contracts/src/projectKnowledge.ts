@@ -10,6 +10,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   OrchestrationSearchThreadsInput,
   OrchestrationSearchThreadsResult,
@@ -30,6 +31,20 @@ export const KnowledgeFactSource = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("user") }),
 ]);
 export type KnowledgeFactSource = typeof KnowledgeFactSource.Type;
+export const KnowledgeOrigin = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("user") }),
+  Schema.Struct({
+    kind: Schema.Literal("agent-thread"),
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("agent-client"),
+    sessionId: TrimmedNonEmptyString,
+    label: Schema.String,
+  }),
+]);
+export type KnowledgeOrigin = typeof KnowledgeOrigin.Type;
 export const KnowledgeSelection = Schema.Union([
   KnowledgeMessageRef,
   Schema.Struct({ kind: Schema.Literal("fact"), factId: ProjectFactId, revision: PositiveInt }),
@@ -44,10 +59,11 @@ export const ProjectFactFields = Schema.Struct({
   entities: Labels,
   tags: Labels,
   kind: ProjectFactKind,
-  sources: Schema.Array(KnowledgeFactSource).check(Schema.isMinLength(1), Schema.isMaxLength(16)),
+  sources: Schema.Array(KnowledgeFactSource).check(Schema.isMaxLength(16)),
 });
 const FactIdentity = {
   id: ProjectFactId,
+  origin: KnowledgeOrigin,
   projectId: ProjectId,
   kind: ProjectFactKind,
   revision: PositiveInt,
@@ -168,10 +184,18 @@ export const ProjectKnowledgePreparedContext: Schema.Codec<
   ProjectKnowledgePreparedContext,
   typeof ProjectKnowledgePreparedContextSchema.Encoded
 > = ProjectKnowledgePreparedContextSchema;
+export const KnowledgeSearchCursor = Schema.Struct({
+  queryDigest: KnowledgeDigest,
+  factId: ProjectFactId,
+  scoreMillionths: NonNegativeInt,
+  updatedAt: IsoDateTime,
+});
 export const ProjectKnowledgeSearchInput = Schema.Struct({
   ...OrchestrationSearchThreadsInput.fields,
   projectId: ProjectId,
   requestId: CommandId,
+  minTrust: Schema.optionalKey(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+  factCursor: Schema.optionalKey(KnowledgeSearchCursor),
   entities: Schema.optionalKey(Labels),
   entityMatch: Schema.optionalKey(Schema.Literals(["any", "all"])),
 });
@@ -192,6 +216,7 @@ const ProjectKnowledgeSearchResultSchema = Schema.Struct({
       state: Schema.Literal("available"),
       matches: Schema.Array(Schema.Struct({ fact: ProjectFact, score: KnowledgeScore })),
       coverage: Schema.Literals(["complete", "partial"]),
+      nextCursor: Schema.NullOr(KnowledgeSearchCursor),
     }),
     Schema.Struct({
       state: Schema.Literal("unavailable"),
@@ -213,6 +238,7 @@ export class ProjectKnowledgeError extends Schema.TaggedError<ProjectKnowledgeEr
       "conflict",
       "forgotten",
       "invalid_source",
+      "fact_size",
       "user_confirmation_required",
       "wrong_environment",
       "wrong_project",
@@ -220,6 +246,8 @@ export class ProjectKnowledgeError extends Schema.TaggedError<ProjectKnowledgeEr
       "context_budget",
       "command_reused",
       "storage",
+      "invalid_cursor",
+      "scoring",
     ]),
     projectId: ProjectId,
     factId: Schema.optionalKey(ProjectFactId),
@@ -234,6 +262,8 @@ export class ProjectKnowledgeError extends Schema.TaggedError<ProjectKnowledgeEr
         return "This fact changed. Refresh it before editing.";
       case "forgotten":
         return "This fact was forgotten and cannot be restored.";
+      case "fact_size":
+        return "Fact text and entities must fit within 16 KiB, and each tag within 256 UTF-8 bytes.";
       case "invalid_source":
         return "The selected source is unavailable or has changed.";
       case "user_confirmation_required":
@@ -252,6 +282,10 @@ export class ProjectKnowledgeError extends Schema.TaggedError<ProjectKnowledgeEr
         return "The project fact was not found.";
       case "missing_project":
         return "The project was not found.";
+      case "invalid_cursor":
+        return "This search continuation belongs to another query. Search again.";
+      case "scoring":
+        return "Project knowledge scoring failed. Try a smaller query or try again.";
       case "storage":
         return "Project knowledge storage is unavailable.";
     }

@@ -1,7 +1,13 @@
+import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
+import * as ProjectKnowledge from "../project/knowledge/ProjectKnowledge.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
+  ComposerContextId,
+  EnvironmentId,
+  ProjectFactId,
+  ProjectKnowledgeError,
   CheckpointScopeId,
   MessageId,
   NodeId,
@@ -125,6 +131,7 @@ function startWithMissingWorktree(
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ProjectKnowledge.ProjectKnowledge)({}),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
@@ -259,6 +266,7 @@ it.each([
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly resolveKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["resolveForTurn"];
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
   readonly fileSystem?: FileSystem.FileSystem;
@@ -559,6 +567,9 @@ function makeLocalCommandHarness(input: {
       ),
     ),
   );
+  const nativeStart = vi.fn<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>(
+    () => Effect.void,
+  );
   const resumeFallbackSession = {
     driver: providerThread.driver,
     resumeThread: () =>
@@ -607,6 +618,7 @@ function makeLocalCommandHarness(input: {
                     updatedAt: now,
                     lastError: null,
                   },
+                  startTurn: nativeStart,
                   ensureThread: () => Effect.succeed(providerThread),
                   resumeThread: () => Effect.succeed(projection.providerThreads[0]),
                 } as never)
@@ -685,6 +697,9 @@ function makeLocalCommandHarness(input: {
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+          ...(input.resolveKnowledge ? { resolveForTurn: input.resolveKnowledge } : {}),
+        }),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: () => Effect.die("history read must fail first"),
         }),
@@ -715,12 +730,14 @@ function makeLocalCommandHarness(input: {
               ),
             }),
           getTurnStartHistory: () =>
-            Effect.fail(
-              new ProjectionStore.ProjectionStoreReadError({
-                threadId,
-                cause: input.historyReadFailureAfterFallback,
-              }),
-            ),
+            !("historyReadFailureAfterFallback" in input)
+              ? Effect.succeed([])
+              : Effect.fail(
+                  new ProjectionStore.ProjectionStoreReadError({
+                    threadId,
+                    cause: input.historyReadFailureAfterFallback,
+                  }),
+                ),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open,
@@ -746,6 +763,7 @@ function makeLocalCommandHarness(input: {
   return {
     getThreadRecords,
     getTurnStartContext,
+    nativeStart,
     setProjection: (next: OrchestrationV2ThreadProjection) => {
       projection = next;
     },
@@ -1243,3 +1261,130 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+effectIt.effect(
+  "does not start a provider after selected knowledge resolves for a superseded attempt",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const record = {
+        version: 1 as const,
+        kind: "project-knowledge" as const,
+        contextId: ComposerContextId.make("project-knowledge"),
+        label: "Project knowledge",
+        knowledge: {
+          environmentId: EnvironmentId.make("test"),
+          projectId: ProjectId.make("project-native-account-command"),
+          selections: [{ kind: "fact" as const, factId: ProjectFactId.make("fact"), revision: 1 }],
+          maxBytes: 48000,
+        },
+      };
+      const harness = makeLocalCommandHarness({
+        text: `Explain ${formatComposerContextReference(record)}`,
+        previousTurn: { runStatus: "completed", turnStatus: "completed" },
+        resolveKnowledge: (context) =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+            return { context, text: "canonical knowledge", byteLength: 19 };
+          }),
+      });
+      const projection = harness.projection();
+      harness.setProjection({
+        ...projection,
+        messages: projection.messages.map((message) => ({
+          ...message,
+          context: { version: 1, records: [record] },
+        })),
+      });
+      const fiber = yield* harness.start.pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const current = harness.projection();
+      harness.setProjection({
+        ...current,
+        runs: current.runs.map((run) => ({
+          ...run,
+          activeAttemptId: RunAttemptId.make("replacement"),
+        })),
+      });
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(fiber);
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+    }),
+);
+
+effectIt.effect.each([false, true])(
+  "rehydrates selected knowledge at native delivery, stale=%s",
+  (stale) =>
+    Effect.gen(function* () {
+      let resolved = 0;
+      const record = {
+        version: 1 as const,
+        kind: "project-knowledge" as const,
+        contextId: ComposerContextId.make("project-knowledge"),
+        label: "Project knowledge",
+        knowledge: {
+          environmentId: EnvironmentId.make("test"),
+          projectId: ProjectId.make("project-native-account-command"),
+          selections: [{ kind: "fact" as const, factId: ProjectFactId.make("fact"), revision: 1 }],
+          maxBytes: 48000,
+        },
+      };
+      const harness = makeLocalCommandHarness({
+        text: `Preserve my question. ${formatComposerContextReference(record)}`,
+        previousTurn: { runStatus: "completed", turnStatus: "completed" },
+        resolveKnowledge: (context) =>
+          Effect.suspend(() => {
+            resolved += 1;
+            return stale && resolved > 1
+              ? Effect.fail(
+                  new ProjectKnowledgeError({
+                    reason: "stale_context",
+                    projectId: context.projectId,
+                  }),
+                )
+              : Effect.succeed({ context, text: "Quoted </context> content.", byteLength: 26 });
+          }),
+      });
+      const projection = harness.projection();
+      harness.setProjection({
+        ...projection,
+        messages: projection.messages.map((message) => ({
+          ...message,
+          context: { version: 1, records: [record] },
+        })),
+      });
+      yield* harness.start;
+      const start = harness.startRootRun.mock.calls[0]![0];
+      const result = yield* start.session
+        .startTurn({
+          appThread: start.appThread,
+          threadId: start.appThread.id,
+          runId: start.run.id,
+          runOrdinal: start.run.ordinal,
+          providerTurnOrdinal: start.providerTurnOrdinal,
+          attemptId: start.attemptId,
+          rootNodeId: start.rootNode.id,
+          providerThread: start.providerThread,
+          message: start.message,
+          modelSelection: start.modelSelection,
+          runtimePolicy: start.runtimePolicy,
+        })
+        .pipe(Effect.result);
+      expect(resolved).toBe(2);
+      if (stale) {
+        expect(result._tag).toBe("Failure");
+        expect(harness.nativeStart).not.toHaveBeenCalled();
+      } else {
+        expect(result._tag).toBe("Success");
+        expect(harness.nativeStart).toHaveBeenCalledOnce();
+        expect(harness.nativeStart.mock.calls[0]?.[0].message.text).toContain(
+          "Preserve my question.",
+        );
+        expect(harness.nativeStart.mock.calls[0]?.[0].message.text).toContain(
+          "Quoted &lt;/context> content.",
+        );
+      }
+    }),
+);

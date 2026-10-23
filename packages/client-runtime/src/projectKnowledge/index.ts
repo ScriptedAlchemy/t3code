@@ -1,9 +1,5 @@
-import {
-  ComposerContextId,
-  WS_METHODS,
-  type ProjectKnowledgeContext,
-  type ProjectKnowledgeContextRecord,
-} from "@t3tools/contracts";
+import { WS_METHODS } from "@t3tools/contracts";
+export { projectKnowledgeContextRecord } from "@t3tools/shared/composerContextReferences";
 import type { Atom } from "effect/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
@@ -38,17 +34,5 @@ export function createProjectKnowledgeAtoms<R, E>(
       label: "project-knowledge:mutate",
       tag: WS_METHODS.projectKnowledgeMutate,
     }),
-  };
-}
-
-export function projectKnowledgeContextRecord(
-  knowledge: ProjectKnowledgeContext,
-): ProjectKnowledgeContextRecord {
-  return {
-    version: 1,
-    kind: "project-knowledge",
-    contextId: ComposerContextId.make("project-knowledge"),
-    label: `Project knowledge (${knowledge.selections.length})`,
-    knowledge,
   };
 }

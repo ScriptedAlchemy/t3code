@@ -19,6 +19,7 @@ export default Effect.gen(function* () {
       updated_at TEXT NOT NULL,
       forgotten_at TEXT,
       sources_json TEXT NOT NULL,
+      origin_json TEXT NOT NULL,
       CHECK (status != 'forgotten' OR
         (content IS NULL AND entities_json = '[]' AND tags_json = '[]' AND sources_json = '[]'))
     )

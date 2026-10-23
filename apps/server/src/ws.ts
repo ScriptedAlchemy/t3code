@@ -1904,7 +1904,8 @@ export const layerWsRpc = (
         [WS_METHODS.projectKnowledgeReadSource]: (input) => projectKnowledge.readSource(input),
         [WS_METHODS.projectKnowledgePrepareContext]: (input) =>
           projectKnowledge.prepareContext(input),
-        [WS_METHODS.projectKnowledgeMutate]: (input) => projectKnowledge.mutate(input, "user"),
+        [WS_METHODS.projectKnowledgeMutate]: (input) =>
+          projectKnowledge.mutate(input, { kind: "user" }),
         [ORCHESTRATION_V2_WS_METHODS.searchThreads]: (input) =>
           threadSearch.search(input).pipe(
             Effect.mapError(

@@ -33,8 +33,31 @@ export const layer = McpToolAccess.toLayer(KnowledgeToolkit, {
     ),
   ),
   t3_knowledge_mutate: McpToolAccess.writesEnvironment((input) =>
-    Effect.flatMap(ProjectKnowledge.ProjectKnowledge, (service) =>
-      service.mutate(input, "agent"),
-    ).pipe(Effect.mapError(failure)),
+    Effect.gen(function* () {
+      const { scope } = yield* readCaller();
+      const service = yield* ProjectKnowledge.ProjectKnowledge;
+      if (scope.thread !== undefined) {
+        return yield* service
+          .mutate(input, {
+            kind: "agent-thread",
+            threadId: scope.thread.threadId,
+            providerInstanceId: scope.thread.providerInstanceId,
+          })
+          .pipe(Effect.mapError(failure));
+      }
+      if (scope.client !== undefined) {
+        return yield* service
+          .mutate(input, {
+            kind: "agent-client",
+            sessionId: scope.client.sessionId,
+            label: scope.client.label,
+          })
+          .pipe(Effect.mapError(failure));
+      }
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "Knowledge observations require an authenticated agent caller.",
+      });
+    }),
   ),
 });

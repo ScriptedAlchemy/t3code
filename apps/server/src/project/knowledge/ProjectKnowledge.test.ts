@@ -1,10 +1,15 @@
+import * as HolographicMemory from "./HolographicMemory.ts";
+import { resolveKnowledgeComposer } from "./composer.ts";
+import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
 import { assert, it } from "@effect/vitest";
 import {
+  ComposerContextId,
   CommandId,
   EnvironmentId,
   EventId,
   MessageId,
   ProjectFactId,
+  ProjectKnowledgeSearchResult,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -13,6 +18,9 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -33,16 +41,22 @@ import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as ProjectKnowledge from "./ProjectKnowledge.ts";
 
 const environmentId = EnvironmentId.make("knowledge-test-environment");
-const layerTest = ProjectKnowledge.layer.pipe(
-  Layer.provideMerge(Layer.mergeAll(ProjectStore.layer, ProjectionStore.layer, ThreadSearch.layer)),
-  Layer.provideMerge(SqlitePersistence.layerMemory),
-  Layer.provide(
-    Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
-      getEnvironmentId: Effect.succeed(environmentId),
-    }),
-  ),
-  Layer.provide(NodeServices.layer),
-);
+const knowledgeTestLayer = (scoring: typeof HolographicMemory.layer = HolographicMemory.layer) =>
+  ProjectKnowledge.layer.pipe(
+    Layer.provide(scoring),
+    Layer.provideMerge(
+      Layer.mergeAll(ProjectStore.layer, ProjectionStore.layer, ThreadSearch.layer),
+    ),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
+    Layer.provide(
+      Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+        getEnvironmentId: Effect.succeed(environmentId),
+      }),
+    ),
+    Layer.provide(NodeServices.layer),
+  );
+
+const layerTest = knowledgeTestLayer();
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const at = (minute: number) => DateTime.makeUnsafe(Date.UTC(2026, 8, 27, 0, minute));
@@ -155,9 +169,16 @@ it.effect("persists edits with CAS, erases forgotten content and cannot resurrec
     const projectId = ProjectId.make("facts");
     yield* createProject(projectId);
     const command = createFact(projectId);
-    const saved = yield* knowledge.mutate(command, "user");
+    const saved = yield* knowledge.mutate(command, { kind: "user" });
     assert.equal(saved.revision, 1);
     assert.equal(saved.status, "confirmed");
+    const oversized = yield* knowledge
+      .mutate(
+        { ...createFact(projectId, "oversized"), content: "測".repeat(6000) },
+        { kind: "user" },
+      )
+      .pipe(Effect.result);
+    assert.equal(Result.isFailure(oversized) && oversized.failure.reason, "fact_size");
     assert.deepEqual((yield* knowledge.list({ projectId })).facts, [saved]);
     const edits = yield* Effect.all(
       ["region", "account"].map((entity) =>
@@ -175,7 +196,7 @@ it.effect("persists edits with CAS, erases forgotten content and cannot resurrec
               kind: "decision",
               sources: [{ kind: "user" }],
             },
-            "user",
+            { kind: "user" },
           )
           .pipe(Effect.result),
       ),
@@ -193,7 +214,7 @@ it.effect("persists edits with CAS, erases forgotten content and cannot resurrec
         factId: current.id,
         expectedRevision: 2,
       },
-      "user",
+      { kind: "user" },
     );
     assert.equal(forgotten.status, "forgotten");
     assert.equal(forgotten.content, null);
@@ -201,9 +222,9 @@ it.effect("persists edits with CAS, erases forgotten content and cannot resurrec
     assert.deepEqual(forgotten.entities, []);
     assert.deepEqual(forgotten.tags, []);
     assert.deepEqual((yield* knowledge.list({ projectId })).facts, []);
-    assert.deepEqual(yield* knowledge.mutate(command, "user"), forgotten);
+    assert.deepEqual(yield* knowledge.mutate(command, { kind: "user" }), forgotten);
     const recreate = yield* knowledge
-      .mutate({ ...command, commandId: CommandId.make("recreate") }, "user")
+      .mutate({ ...command, commandId: CommandId.make("recreate") }, { kind: "user" })
       .pipe(Effect.result);
     assert.equal(Result.isFailure(recreate) && recreate.failure.reason, "forgotten");
     const fts =
@@ -221,89 +242,96 @@ it.effect("persists edits with CAS, erases forgotten content and cannot resurrec
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("requires user confirmation and rehydrates exact sources before context delivery", () =>
-  Effect.gen(function* () {
-    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
-    const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const projectId = ProjectId.make("sourced");
-    const threadId = ThreadId.make("source-thread");
-    const messageId = MessageId.make("source-message");
-    yield* createProject(projectId);
-    yield* projections.apply(thread(threadId, projectId));
-    yield* projections.apply(
-      message(threadId, messageId, "user", "Use tenant IDs in every cache key."),
-    );
-    const recalled = yield* knowledge.search({
-      projectId,
-      query: "tenant IDs",
-      requestId: CommandId.make("recall-source"),
-    });
-    assert.equal(recalled.messages.matches[0]?.messageId, messageId);
-    const source = yield* knowledge.readSource({
-      projectId,
-      threadId,
-      messageId,
-      ...(recalled.messages.matches[0]?.digest === undefined
-        ? {}
-        : { digest: recalled.messages.matches[0].digest }),
-    });
-    assert.equal(source.state, "available");
-    if (source.state !== "available") return;
-    const proposed = yield* knowledge.mutate(
-      { ...createFact(projectId), sources: [source.source] },
-      "agent",
-    );
-    assert.equal(proposed.status, "proposed");
-    assert.deepEqual((yield* knowledge.list({ projectId })).facts, []);
-    const context = {
-      environmentId,
-      projectId,
-      selections: [{ kind: "fact" as const, factId: proposed.id, revision: 1 }],
-      maxBytes: 4096,
-    };
-    const unconfirmed = yield* knowledge.prepareContext(context).pipe(Effect.result);
-    assert.equal(Result.isFailure(unconfirmed) && unconfirmed.failure.reason, "stale_context");
-    const confirm = {
-      action: "confirm" as const,
-      commandId: CommandId.make("confirm"),
-      projectId,
-      factId: proposed.id,
-      expectedRevision: 1,
-    };
-    const forbidden = yield* knowledge.mutate(confirm, "agent").pipe(Effect.result);
-    assert.equal(
-      Result.isFailure(forbidden) && forbidden.failure.reason,
-      "user_confirmation_required",
-    );
-    const confirmed = yield* knowledge.mutate(confirm, "user");
-    const preview = yield* knowledge.prepareContext({
-      ...context,
-      selections: [{ kind: "fact", factId: confirmed.id, revision: confirmed.revision }],
-    });
-    assert.include(preview.text, "Cache keys include tenant IDs.");
-    assert.include(preview.text, `Message ${threadId}/${messageId}`);
-    assert.equal(preview.byteLength, Buffer.byteLength(preview.text));
-    assert.deepEqual(yield* knowledge.resolveForTurn(preview.context), preview);
-    yield* projections.apply(
-      message(threadId, messageId, "user", "Use tenant IDs and regions.", { minute: 4 }),
-    );
-    const staleSource = yield* knowledge.readSource({ projectId, ...source.source });
-    assert.deepEqual(staleSource, { state: "unavailable", reason: "changed" });
-    const stale = yield* knowledge.resolveForTurn(preview.context).pipe(Effect.result);
-    assert.equal(Result.isFailure(stale) && stale.failure.reason, "stale_context");
-    const records = yield* projections.getThreadRecords(threadId, []);
-    yield* projections.apply({
-      id: EventId.make("delete-source"),
-      threadId,
-      type: "thread.deleted",
-      occurredAt: at(5),
-      payload: { ...records.thread, deletedAt: at(5) },
-    });
-    assert.deepEqual(yield* knowledge.readSource({ projectId, threadId, messageId }), {
-      state: "unavailable",
-      reason: "deleted",
-    });
-  }).pipe(Effect.provide(layerTest)),
+it.effect(
+  "recalls agent proposals before optional human confirmation and rehydrates exact sources",
+  () =>
+    Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const projectId = ProjectId.make("sourced");
+      const threadId = ThreadId.make("source-thread");
+      const messageId = MessageId.make("source-message");
+      yield* createProject(projectId);
+      yield* projections.apply(thread(threadId, projectId));
+      yield* projections.apply(
+        message(threadId, messageId, "user", "Use tenant IDs in every cache key."),
+      );
+      const recalled = yield* knowledge.search({
+        projectId,
+        query: "tenant IDs",
+        requestId: CommandId.make("recall-source"),
+      });
+      assert.equal(recalled.messages.matches[0]?.messageId, messageId);
+      const source = yield* knowledge.readSource({
+        projectId,
+        threadId,
+        messageId,
+        ...(recalled.messages.matches[0]?.digest === undefined
+          ? {}
+          : { digest: recalled.messages.matches[0].digest }),
+      });
+      assert.equal(source.state, "available");
+      if (source.state !== "available") return;
+      const proposed = yield* knowledge.mutate(
+        { ...createFact(projectId), sources: [source.source] },
+        { kind: "agent-client", sessionId: "test-agent", label: "Test agent" },
+      );
+      assert.equal(proposed.status, "proposed");
+      assert.deepEqual((yield* knowledge.list({ projectId })).facts, []);
+      const context = {
+        environmentId,
+        projectId,
+        selections: [{ kind: "fact" as const, factId: proposed.id, revision: 1 }],
+        maxBytes: 4096,
+      };
+      const unconfirmed = yield* knowledge.prepareContext(context);
+      assert.include(unconfirmed.text, "status:proposed");
+      const confirm = {
+        action: "confirm" as const,
+        commandId: CommandId.make("confirm"),
+        projectId,
+        factId: proposed.id,
+        expectedRevision: 1,
+      };
+      const forbidden = yield* knowledge
+        .mutate(confirm, { kind: "agent-client", sessionId: "test-agent", label: "Test agent" })
+        .pipe(Effect.result);
+      assert.equal(
+        Result.isFailure(forbidden) && forbidden.failure.reason,
+        "user_confirmation_required",
+      );
+      const confirmed = yield* knowledge.mutate(confirm, { kind: "user" });
+      const preview = yield* knowledge.prepareContext({
+        ...context,
+        selections: [{ kind: "fact", factId: confirmed.id, revision: confirmed.revision }],
+      });
+      assert.include(preview.text, "Cache keys include tenant IDs.");
+      assert.include(preview.text, `Message ${threadId}/${messageId}`);
+      assert.isAtLeast(preview.byteLength, Buffer.byteLength(preview.text));
+      assert.include(
+        (yield* knowledge.resolveForTurn(preview.context)).text,
+        "Cache keys include tenant IDs.",
+      );
+      yield* projections.apply(
+        message(threadId, messageId, "user", "Use tenant IDs and regions.", { minute: 4 }),
+      );
+      const staleSource = yield* knowledge.readSource({ projectId, ...source.source });
+      assert.deepEqual(staleSource, { state: "unavailable", reason: "changed" });
+      const stale = yield* knowledge.resolveForTurn(preview.context).pipe(Effect.result);
+      assert.equal(Result.isFailure(stale) && stale.failure.reason, "stale_context");
+      const records = yield* projections.getThreadRecords(threadId, []);
+      yield* projections.apply({
+        id: EventId.make("delete-source"),
+        threadId,
+        type: "thread.deleted",
+        occurredAt: at(5),
+        payload: { ...records.thread, deletedAt: at(5) },
+      });
+      assert.deepEqual(yield* knowledge.readSource({ projectId, threadId, messageId }), {
+        state: "unavailable",
+        reason: "deleted",
+      });
+    }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect(
@@ -356,7 +384,7 @@ it.effect(
         Result.isFailure(wrongEnvironment) && wrongEnvironment.failure.reason,
         "wrong_environment",
       );
-      const fact = yield* knowledge.mutate(createFact(projectId), "user");
+      const fact = yield* knowledge.mutate(createFact(projectId), { kind: "user" });
       assert.deepEqual((yield* knowledge.list({ projectId: other })).facts, []);
       const feedback = {
         action: "feedback" as const,
@@ -366,15 +394,19 @@ it.effect(
         expectedRevision: 1,
         helpful: true,
       };
-      const boosted = yield* knowledge.mutate(feedback, "user");
+      const boosted = yield* knowledge.mutate(feedback, { kind: "user" });
       assert.equal(boosted.trust, 0.55);
-      assert.deepEqual(yield* knowledge.mutate(feedback, "user"), boosted);
+      assert.deepEqual(yield* knowledge.mutate(feedback, { kind: "user" }), boosted);
       const reuse = yield* knowledge
-        .mutate({ ...feedback, helpful: false }, "user")
+        .mutate({ ...feedback, helpful: false }, { kind: "user" })
         .pipe(Effect.result);
       assert.equal(Result.isFailure(reuse) && reuse.failure.reason, "command_reused");
       const agentAssertion = yield* knowledge
-        .mutate(createFact(projectId, "agent-assertion"), "agent")
+        .mutate(createFact(projectId, "agent-assertion"), {
+          kind: "agent-client",
+          sessionId: "test-agent",
+          label: "Test agent",
+        })
         .pipe(Effect.result);
       assert.equal(
         Result.isFailure(agentAssertion) && agentAssertion.failure.reason,
@@ -449,6 +481,84 @@ it.effect("MCP rejects unauthorized mutations and cannot confirm its own proposa
         message: "A user must confirm proposed knowledge.",
       },
     );
+    const observation = { ...createFact(projectId, "agent-observation"), sources: [] };
+    const created = yield* invoke(observation, "full-access");
+    assert.deepInclude(created, {
+      status: "proposed",
+      origin: { kind: "agent-client", sessionId: "test-client", label: "Test client" },
+      sources: [],
+    });
+    const recalled = yield* knowledge.search({
+      projectId,
+      query: "tenant cache",
+      requestId: CommandId.make("agent-observation-recall"),
+    });
+    assert.isTrue(
+      recalled.facts.state === "available" &&
+        recalled.facts.matches.some(
+          (match) => match.fact.id === observation.factId && match.fact.status === "proposed",
+        ),
+    );
+    const edited = yield* invoke(
+      {
+        ...observation,
+        action: "edit",
+        commandId: CommandId.make("edit-observation"),
+        expectedRevision: 1,
+        content: "Tenant cache observations are scoped.",
+      },
+      "full-access",
+    );
+    assert.deepInclude(edited, {
+      revision: 2,
+      origin: { kind: "agent-client", sessionId: "test-client", label: "Test client" },
+    });
+    assert.deepInclude(
+      yield* invoke(
+        {
+          action: "feedback",
+          commandId: CommandId.make("feedback-observation"),
+          projectId,
+          factId: observation.factId,
+          expectedRevision: 2,
+          helpful: true,
+        },
+        "full-access",
+      ),
+      { revision: 3, trust: 0.55 },
+    );
+    assert.deepInclude(
+      yield* invoke(
+        {
+          action: "forget",
+          commandId: CommandId.make("forget-observation"),
+          projectId,
+          factId: observation.factId,
+          expectedRevision: 3,
+        },
+        "full-access",
+      ),
+      { status: "forgotten", content: null },
+    );
+    const human = yield* knowledge.mutate(createFact(projectId, "human-authored"), {
+      kind: "user",
+    });
+    assert.deepInclude(
+      yield* invoke(
+        {
+          ...observation,
+          action: "edit",
+          factId: human.id,
+          expectedRevision: human.revision,
+          commandId: CommandId.make("agent-edits-human"),
+        },
+        "full-access",
+      ),
+      {
+        status: "proposed",
+        origin: { kind: "agent-client", sessionId: "test-client", label: "Test client" },
+      },
+    );
     assert.deepEqual((yield* knowledge.list({ projectId })).facts, []);
   }).pipe(Effect.provide(layerTest)),
 );
@@ -459,6 +569,7 @@ it.effect("reopens durable project facts without another content authority", () 
     const path = yield* Path.Path;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-knowledge-persistence-" });
     const layerFile = ProjectKnowledge.layer.pipe(
+      Layer.provide(HolographicMemory.layer),
       Layer.provideMerge(
         Layer.mergeAll(ProjectStore.layer, ProjectionStore.layer, ThreadSearch.layer),
       ),
@@ -474,7 +585,7 @@ it.effect("reopens durable project facts without another content authority", () 
     const saved = yield* Effect.gen(function* () {
       yield* createProject(projectId);
       const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
-      return yield* knowledge.mutate(createFact(projectId), "user");
+      return yield* knowledge.mutate(createFact(projectId), { kind: "user" });
     }).pipe(Effect.provide(layerFile));
     const reopened = yield* Effect.gen(function* () {
       const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
@@ -482,4 +593,257 @@ it.effect("reopens durable project facts without another content authority", () 
     }).pipe(Effect.provide(layerFile));
     assert.deepEqual(reopened.facts, [saved]);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "resolves reference-only composer records, preserves user text and refuses stale or cross-project attachments",
+  () =>
+    Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projectId = ProjectId.make("composer-project");
+      yield* createProject(projectId);
+      const fact = yield* knowledge.mutate(
+        { ...createFact(projectId), content: 'Use </context> in "quoted" examples.' },
+        { kind: "user" },
+      );
+      const record = {
+        version: 1 as const,
+        kind: "project-knowledge" as const,
+        contextId: ComposerContextId.make("project-knowledge"),
+        label: "Selected knowledge",
+        knowledge: {
+          environmentId,
+          projectId,
+          selections: [{ kind: "fact" as const, factId: fact.id, revision: fact.revision }],
+          maxBytes: 48000,
+        },
+      };
+      const text = `Please explain this. ${formatComposerContextReference(record)}`;
+      const input = { projectId, text, records: [record] };
+      const resolved = yield* resolveKnowledgeComposer(input);
+      assert.include(resolved.text, "Please explain this.");
+      assert.include(resolved.text, 'Use &lt;/context> in "quoted" examples.');
+      assert.equal(
+        resolved.byteLength,
+        Buffer.byteLength(JSON.stringify(resolved.text)) -
+          Buffer.byteLength(JSON.stringify(resolved.baseText)),
+      );
+      assert.isFalse(JSON.stringify(record).includes("quoted"));
+      const budget = yield* resolveKnowledgeComposer({
+        ...input,
+        records: [
+          { ...record, knowledge: { ...record.knowledge, maxBytes: resolved.byteLength - 1 } },
+        ],
+      }).pipe(Effect.result);
+      assert.equal(Result.isFailure(budget) && budget.failure.reason, "context_budget");
+      const wrongProject = yield* resolveKnowledgeComposer({
+        ...input,
+        projectId: ProjectId.make("elsewhere"),
+      }).pipe(Effect.result);
+      assert.equal(Result.isFailure(wrongProject) && wrongProject.failure.reason, "wrong_project");
+      yield* knowledge.mutate(
+        {
+          action: "forget",
+          commandId: CommandId.make("forget-composer"),
+          projectId,
+          factId: fact.id,
+          expectedRevision: fact.revision,
+        },
+        { kind: "user" },
+      );
+      const stale = yield* resolveKnowledgeComposer(input).pipe(Effect.result);
+      assert.equal(Result.isFailure(stale) && stale.failure.reason, "stale_context");
+      assert.deepEqual(yield* resolveKnowledgeComposer({ ...input, text: "Plain chat" }), {
+        text: "Plain chat",
+        baseText: "Plain chat",
+        byteLength: 0,
+      });
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "MCP ranks canonical project facts through the native addon and records retrieval once",
+  () =>
+    Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projectId = ProjectId.make("native-mcp");
+      const other = ProjectId.make("other-native-project");
+      yield* createProject(projectId);
+      yield* createProject(other);
+      for (const id of ["b", "a", "c"])
+        yield* knowledge.mutate(createFact(projectId, id), { kind: "user" });
+      yield* knowledge.mutate(
+        {
+          ...createFact(projectId, "irrelevant"),
+          content: "Use a small font.",
+          entities: [],
+          tags: [],
+        },
+        { kind: "user" },
+      );
+      yield* knowledge.mutate(createFact(other, "foreign"), { kind: "user" });
+      const dependencies = Layer.mergeAll(
+        Layer.succeed(ProjectKnowledge.ProjectKnowledge, knowledge),
+        Layer.mock(ThreadManagement.ThreadManagementService)({}),
+        Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          environmentId,
+          requestNamespace: "native-mcp",
+          thread: undefined,
+          client: { sessionId: "agent", label: "Agent", access: "read-only" },
+          issuedAt: 0,
+          capabilities: new Set(["orchestration" as const]),
+        }),
+      );
+      const toolkit = yield* KnowledgeToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(KnowledgeHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const query = {
+        projectId,
+        query: "tenant cache",
+        requestId: CommandId.make("native-search"),
+        limit: 1,
+      };
+      const results = yield* toolkit
+        .handle("t3_knowledge_search", query)
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      const result = yield* Schema.decodeUnknownEffect(ProjectKnowledgeSearchResult)(
+        results.at(-1)?.result,
+      );
+      if (result.facts.state !== "available")
+        return assert.fail("Real native ranking must be available");
+      assert.equal(result.facts.coverage, "complete");
+      assert.equal(result.facts.matches[0]?.fact.id, "a");
+      assert.isAbove(result.facts.matches[0]!.score.lexical, 0);
+      assert.isAbove(result.facts.matches[0]!.score.holographic, 0);
+      assert.equal(result.facts.matches[0]!.fact.retrievalCount, 1);
+      const replay = yield* knowledge.search(query);
+      assert.equal(
+        replay.facts.state === "available" && replay.facts.matches[0]?.fact.retrievalCount,
+        1,
+      );
+      assert.isNotNull(result.facts.nextCursor);
+      const page = yield* knowledge.search({
+        ...query,
+        requestId: CommandId.make("native-page"),
+        factCursor: result.facts.nextCursor!,
+        limit: 10,
+      });
+      assert.deepEqual(
+        page.facts.state === "available" && page.facts.matches.map((match) => match.fact.id),
+        [ProjectFactId.make("b"), ProjectFactId.make("c")],
+      );
+      const wrongCursor = yield* knowledge
+        .search({
+          ...query,
+          requestId: CommandId.make("wrong-cursor"),
+          query: "different",
+          factCursor: result.facts.nextCursor!,
+        })
+        .pipe(Effect.result);
+      assert.equal(Result.isFailure(wrongCursor) && wrongCursor.failure.reason, "invalid_cursor");
+      const reused = yield* knowledge.search({ ...query, query: "different" }).pipe(Effect.result);
+      assert.equal(Result.isFailure(reused) && reused.failure.reason, "command_reused");
+      const entity = yield* knowledge.search({
+        ...query,
+        requestId: CommandId.make("entities"),
+        entities: ["TENANT", "cache"],
+        entityMatch: "all",
+      });
+      assert.equal(entity.facts.state === "available" && entity.facts.matches.length, 1);
+      yield* (yield* SqlClient.SqlClient)`UPDATE project_knowledge_facts SET trust = 0.2 WHERE id = 'a'`;
+      const trust = yield* knowledge.search({
+        ...query,
+        requestId: CommandId.make("trust"),
+        limit: 10,
+      });
+      assert.deepEqual(
+        trust.facts.state === "available" && trust.facts.matches.map((match) => match.fact.id),
+        [ProjectFactId.make("b"), ProjectFactId.make("c")],
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each(["edit", "forget", "cancel"] as const)(
+  "does not publish stale knowledge or false retrieval telemetry after %s during scoring",
+  (action) =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const scoring = Layer.effect(
+        HolographicMemory.HolographicMemory,
+        Effect.gen(function* () {
+          const native = yield* HolographicMemory.HolographicMemory;
+          return HolographicMemory.HolographicMemory.of({
+            scoreCandidates: (input) =>
+              native.scoreCandidates(input).pipe(
+                Effect.tap(() => Deferred.succeed(entered, undefined)),
+                Effect.tap(() => Deferred.await(release)),
+              ),
+          });
+        }),
+      ).pipe(Layer.provide(HolographicMemory.layer));
+      yield* Effect.gen(function* () {
+        const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+        const sql = yield* SqlClient.SqlClient;
+        const projectId = ProjectId.make(`scoring-${action}`);
+        yield* createProject(projectId);
+        const fact = yield* knowledge.mutate(createFact(projectId), { kind: "user" });
+        const requestId = CommandId.make(`search-${action}`);
+        const fiber = yield* knowledge
+          .search({ projectId, query: "tenant cache", requestId })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        if (action === "cancel") {
+          yield* Fiber.interrupt(fiber);
+        } else {
+          yield* knowledge.mutate(
+            action === "forget"
+              ? {
+                  action,
+                  commandId: CommandId.make(action),
+                  projectId,
+                  factId: fact.id,
+                  expectedRevision: 1,
+                }
+              : {
+                  ...createFact(projectId),
+                  action,
+                  commandId: CommandId.make(action),
+                  expectedRevision: 1,
+                  content: "Region keys replaced tenant keys.",
+                },
+            { kind: "user" },
+          );
+          yield* Deferred.succeed(release, undefined);
+          const result = yield* Fiber.join(fiber);
+          assert.deepEqual(result.facts.state === "available" && result.facts.matches, []);
+        }
+        const rows = yield* sql<{
+          retrieval_count: number;
+        }>`SELECT retrieval_count FROM project_knowledge_facts WHERE id = ${fact.id}`;
+        assert.equal(rows[0]?.retrieval_count, 0);
+        if (action === "cancel")
+          assert.deepEqual(
+            yield* sql`SELECT command_id FROM project_knowledge_commands WHERE command_id = ${requestId}`,
+            [],
+          );
+      }).pipe(Effect.provide(knowledgeTestLayer(scoring)));
+    }),
+);
+
+it.effect("does not expose facts for a deleted project", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("deleted-project");
+    yield* createProject(projectId);
+    yield* knowledge.mutate(createFact(projectId), { kind: "user" });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE projection_projects SET deleted_at = '2026-10-22T00:00:00.000Z' WHERE project_id = ${projectId}`;
+    const result = yield* knowledge.list({ projectId }).pipe(Effect.result);
+    assert.equal(Result.isFailure(result) && result.failure.reason, "missing_project");
+  }).pipe(Effect.provide(layerTest)),
 );
