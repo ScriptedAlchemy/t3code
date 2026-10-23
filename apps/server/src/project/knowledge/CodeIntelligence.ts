@@ -343,7 +343,15 @@ const make = Effect.gen(function* () {
       yield* workspaceEntries.refresh(checkoutPath);
       const workspaceListing = yield* workspaceEntries.list({ cwd: checkoutPath });
       const listedFiles = workspaceListing.entries
-        .filter((entry) => entry.kind === "file" && entry.ignored !== true)
+        // The index writes its own directory into the checkout; counting it would report the
+        // graph's files as unsupported source.
+        .filter(
+          (entry) =>
+            entry.kind === "file" &&
+            entry.ignored !== true &&
+            entry.path !== INDEX_DIRECTORY &&
+            !entry.path.startsWith(`${INDEX_DIRECTORY}/`),
+        )
         .map((entry) => entry.path);
       return yield* withWorkspaceLease(
         indexPath,

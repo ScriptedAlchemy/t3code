@@ -48,6 +48,7 @@ async function makeFixture() {
   );
   await NodeFSP.mkdir(NodePath.join(root, "src"), { recursive: true });
   await NodeFSP.mkdir(NodePath.join(worktree, "src"), { recursive: true });
+  await NodeFSP.mkdir(NodePath.join(root, ".codegraph-t3-copy"), { recursive: true });
   const typescriptDefinition = 'const prefix = "🧪é"; export function greet() { return prefix; }\n';
   const typescriptCaller = [
     'import { greet as sayHello } from "./defs";',
@@ -72,6 +73,7 @@ async function makeFixture() {
   await NodeFSP.writeFile(NodePath.join(root, "src/use.ts"), typescriptCaller);
   await NodeFSP.writeFile(NodePath.join(root, "src/main.go"), goSource);
   await NodeFSP.writeFile(NodePath.join(root, "src/main.py"), pythonSource);
+  await NodeFSP.writeFile(NodePath.join(root, ".codegraph-t3-copy/user.txt"), "User data.\n");
   await NodeFSP.writeFile(NodePath.join(worktree, "src/work.ts"), worktreeSource);
   return { root, worktree, typescriptDefinition, typescriptCaller, goSource, pythonSource };
 }
@@ -121,6 +123,7 @@ it.effect(
             projectId,
             worktreePath: worktree,
           } as unknown as OrchestrationV2AppThread;
+          let includeGeneratedInventoryFiles = false;
           const dependencies = Layer.mergeAll(
             Layer.mock(ProjectStore.ProjectStoreV2)({
               get: () => Effect.succeedSome(project),
@@ -139,12 +142,24 @@ it.effect(
             Layer.mock(WorkspaceEntries.WorkspaceEntries)({
               refresh: () => Effect.void,
               list: ({ cwd }) =>
-                Effect.succeed({
-                  entries: (cwd === worktree
-                    ? ["src/work.ts"]
-                    : ["src/defs.ts", "src/use.ts", "src/main.go", "src/main.py"]
-                  ).map((path) => ({ path, kind: "file" as const })),
-                  truncated: false,
+                Effect.promise(async () => {
+                  const entries =
+                    cwd === worktree
+                      ? ["src/work.ts"]
+                      : ["src/defs.ts", "src/use.ts", "src/main.go", "src/main.py"];
+                  if (
+                    cwd === root &&
+                    includeGeneratedInventoryFiles &&
+                    (await NodeFSP.stat(NodePath.join(root, ".codegraph-t3/.gitignore"))
+                      .then(() => true)
+                      .catch(() => false))
+                  ) {
+                    entries.push(".codegraph-t3/.gitignore", ".codegraph-t3-copy/user.txt");
+                  }
+                  return {
+                    entries: entries.map((path) => ({ path, kind: "file" as const })),
+                    truncated: false,
+                  };
                 }),
             }),
           );
@@ -236,6 +251,8 @@ it.effect(
             { concurrency: 2 },
           );
           assert.equal(concurrentStatus.coverage.state, "complete");
+          assert.equal(concurrentStatus.coverage.filesListed, 4);
+          assert.equal(concurrentStatus.coverage.filesUnsupported, 0);
           assert.ok(concurrentSearch.matches.some((match) => match.symbol.name === "greet"));
 
           const toolLayer = McpHttpServer.layerProjectCodeToolkit.pipe(
@@ -419,8 +436,14 @@ it.effect(
           });
           assert.ok(dependenciesResult.files.some((file) => file.path === "src/defs.ts"));
 
+          includeGeneratedInventoryFiles = true;
           const status = yield* runQuery({ operation: "status" });
           assert.equal(status.stats?.files, 4);
+          assert.equal(status.coverage.filesListed, 5);
+          assert.equal(status.coverage.filesUnsupported, 1);
+          const repeatedStatus = yield* runQuery({ operation: "status" });
+          assert.equal(repeatedStatus.coverage.filesListed, 5);
+          assert.equal(repeatedStatus.coverage.filesUnsupported, 1);
           const graphDirectoryExists = yield* Effect.promise(() =>
             NodeFSP.stat(NodePath.join(root, ".codegraph-t3")).then(() => true),
           );
