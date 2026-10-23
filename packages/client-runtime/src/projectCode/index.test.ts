@@ -150,6 +150,14 @@ describe("project code atoms", () => {
       "Stale @abcdef0",
     );
     expect(projectCodeIndexBadge({ ...index, state: "unindexed" }).label).toBe("Unavailable");
+    expect(projectCodeIndexBadge({ ...index, state: "unindexed", refresh: "building" }).label).toBe(
+      "Indexing",
+    );
+    // A failed refresh leaves the older generation answering, and the badge says so.
+    expect(projectCodeIndexBadge({ ...index, refresh: "failed" })).toMatchObject({
+      label: "Stale",
+      detail: expect.stringContaining("refresh failed"),
+    });
     // A server from before index tracking cannot claim the index is ready.
     expect(projectCodeIndexBadge(undefined).label).toBe("Unavailable");
   });

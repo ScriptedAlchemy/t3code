@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as CodeIntelligence from "../project/knowledge/CodeIntelligence.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
@@ -49,6 +50,7 @@ it.effect.each([
       Layer.mergeAll(
         projections,
         Layer.mock(WorkspaceEntries.WorkspaceEntries)({ refresh: () => Effect.void }),
+        Layer.mock(CodeIntelligence.CodeIntelligence)({ refreshIfIndexed: () => Effect.void }),
         Layer.mock(PullRequestService.PullRequestService)({ refreshAfterTurn: () => Effect.void }),
         Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
           refreshLocalStatus: () =>
