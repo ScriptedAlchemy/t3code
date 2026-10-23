@@ -19,6 +19,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.projectKnowledgeMutate]: "projectKnowledge",
   [WS_METHODS.projectKnowledgeReadSource]: "projectKnowledge",
   [WS_METHODS.projectKnowledgePrepareContext]: "projectKnowledge",
+  [WS_METHODS.projectCodeQuery]: "projectCode",
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: "orchestration",

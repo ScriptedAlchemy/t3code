@@ -35,6 +35,7 @@ if (!TELEMETRY_CHANNELS.includes(telemetryChannel)) {
 // executable needs a host Node that supports `--build-sea` (25.7+), so this is
 // a separate mode rather than a second entry in the default build.
 const packExecutable = process.env.T3CODE_PACK_EXE === "1";
+const packCodeIntelligenceWorker = process.env.T3CODE_PACK_CODE_INTELLIGENCE_WORKER === "1";
 const SEA_TARGETS = {
   "darwin-arm64": { platform: "darwin", arch: "arm64" },
   "darwin-x64": { platform: "darwin", arch: "x64" },
@@ -81,19 +82,23 @@ export default mergeConfig(
       },
     },
     pack: {
-      // The history worker is a hidden subcommand. The graph worker remains a
-      // sibling script because the server starts it in a worker thread.
-      entry: packExecutable
-        ? ["src/bin.ts", "src/project/knowledge/codeIntelligenceWorkerThread.ts"]
-        : [
-            "src/bin.ts",
-            "src/claude-history-worker.ts",
-            "src/project/knowledge/codeIntelligenceWorkerThread.ts",
-          ],
-      outDir: packExecutable ? "dist-exe" : "dist",
-      sourcemap: !packExecutable,
+      entry: packCodeIntelligenceWorker
+        ? ["src/project/knowledge/codeIntelligenceWorkerThread.ts"]
+        : packExecutable
+          ? ["src/bin.ts"]
+          : [
+              "src/bin.ts",
+              "src/claude-history-worker.ts",
+              "src/project/knowledge/codeIntelligenceWorkerThread.ts",
+            ],
+      outDir: packCodeIntelligenceWorker
+        ? "dist-exe-code-intelligence-worker"
+        : packExecutable
+          ? "dist-exe"
+          : "dist",
+      sourcemap: !packExecutable && !packCodeIntelligenceWorker,
       clean: true,
-      ...(packExecutable
+      ...(!packCodeIntelligenceWorker && packExecutable
         ? {
             exe: {
               fileName: "t3",

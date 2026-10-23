@@ -1,5 +1,6 @@
 import {
   AuthAccessWriteScope,
+  AuthFilesystemReadScope,
   type AuthMcpApprovalDecision,
   type AuthMcpAuthorizationRequest,
   type AuthMcpAuthorizationServerMetadata,
@@ -55,7 +56,11 @@ const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const CODE_CHALLENGE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const CODE_VERIFIER_PATTERN = /^[A-Za-z0-9\-._~]{43,128}$/;
 
-const MCP_OAUTH_SCOPES = [AuthOrchestrationReadScope, AuthOrchestrationOperateScope];
+const MCP_OAUTH_SCOPES = [
+  AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
+  AuthFilesystemReadScope,
+];
 
 export interface McpOAuthUrls {
   readonly issuer: string;
@@ -554,6 +559,7 @@ export const layerMcpClientAuthenticator = Layer.effect(
                   "orchestration",
                   "worktree",
                   "pull-requests",
+                  ...(client.filesystemRead ? (["project-code"] as const) : []),
                 ]),
                 issuedAt,
               })),

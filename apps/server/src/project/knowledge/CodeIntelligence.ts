@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - this boundary owns worker paths and isolated SDK loading.
+import * as NodePath from "node:path";
 import { Worker } from "node:worker_threads";
 
 import {
@@ -64,6 +65,18 @@ export class CodeIntelligenceInspectionFailed extends Schema.TaggedError<CodeInt
     return `Code analysis failed for '${this.path}'.`;
   }
 }
+
+class CodeIntelligenceWorkerError extends Schema.TaggedError<CodeIntelligenceWorkerError>()(
+  "CodeIntelligenceWorkerError",
+  {
+    reason: Schema.Literals([
+      "worker-failed",
+      "invalid-result",
+      "path-outside-checkout",
+      "index-outside-checkout",
+    ]),
+  },
+) {}
 
 export class CodeIntelligence extends Context.Service<
   CodeIntelligence,
@@ -152,16 +165,13 @@ function normalizeQueryPaths(
   return Effect.succeed(query);
 }
 
-function queryWithWorker(
-  input: {
-    readonly checkoutPath: string;
-    readonly files: ReadonlyArray<string>;
-    readonly filesListed: number;
-    readonly listingTruncated: boolean;
-    readonly query: ProjectCodeQueryType;
-  },
-  signal: AbortSignal,
-): Promise<ProjectCodeQueryResultType> {
+function queryWithWorker(input: {
+  readonly checkoutPath: string;
+  readonly files: ReadonlyArray<string>;
+  readonly filesListed: number;
+  readonly listingTruncated: boolean;
+  readonly query: ProjectCodeQueryType;
+}): Effect.Effect<ProjectCodeQueryResultType, CodeIntelligenceWorkerError> {
   const fromSource = import.meta.url.endsWith(".ts");
   const workerUrl = new URL(
     fromSource
@@ -169,53 +179,87 @@ function queryWithWorker(
       : "./project/knowledge/codeIntelligenceWorkerThread.mjs",
     import.meta.url,
   );
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(workerUrl, {
-      ...(fromSource ? { execArgv: ["--experimental-strip-types"] } : {}),
-      env: { ...process.env, CODEGRAPH_DIR: INDEX_DIRECTORY },
-      resourceLimits: { maxOldGenerationSizeMb: WORKER_MEMORY_LIMIT_MB },
+  return Effect.callback((resume) => {
+    let worker: Worker;
+    try {
+      worker = new Worker(workerUrl, {
+        ...(fromSource ? { execArgv: ["--experimental-strip-types"] } : {}),
+        env: { ...process.env, CODEGRAPH_DIR: INDEX_DIRECTORY },
+        resourceLimits: { maxOldGenerationSizeMb: WORKER_MEMORY_LIMIT_MB },
+      });
+    } catch {
+      resume(Effect.fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" })));
+      return;
+    }
+    let terminal:
+      | { readonly _tag: "result"; readonly value: ProjectCodeQueryResultType }
+      | { readonly _tag: "error"; readonly error: CodeIntelligenceWorkerError }
+      | undefined;
+    let exited = false;
+    let resolveExit: (() => void) | undefined;
+    const exit = new Promise<void>((resolve) => {
+      resolveExit = resolve;
     });
-    let settled = false;
-    let abortReason: unknown;
-    const finish = (action: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      void worker.terminate().catch(() => undefined);
-      action();
+    const fail = (error: CodeIntelligenceWorkerError) => {
+      terminal ??= { _tag: "error", error };
     };
-    const onAbort = () => {
-      if (settled) return;
-      abortReason = signal.reason;
-      try {
-        worker.postMessage({ type: "cancel" });
-      } catch {
-        finish(() => reject(abortReason));
-      }
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
     worker.on("message", (raw: unknown) => {
-      if (settled) return;
+      if (terminal !== undefined) return;
       let decoded: typeof WorkerReply.Type;
       try {
         decoded = Schema.decodeUnknownSync(WorkerReply)(raw);
       } catch {
-        finish(() => reject(new Error("invalid-result")));
+        fail(new CodeIntelligenceWorkerError({ reason: "invalid-result" }));
         return;
       }
       if ("progress" in decoded) return;
       if ("error" in decoded) {
-        finish(() => reject(abortReason ?? new Error(decoded.error)));
-        return;
-      }
-      finish(() => (abortReason === undefined ? resolve(decoded.result) : reject(abortReason)));
+        fail(
+          new CodeIntelligenceWorkerError({
+            reason:
+              decoded.error === "path-outside-checkout" ||
+              decoded.error === "index-outside-checkout"
+                ? decoded.error
+                : "worker-failed",
+          }),
+        );
+      } else terminal = { _tag: "result", value: decoded.result };
     });
-    worker.once("error", (cause) => finish(() => reject(cause)));
+    worker.once("error", () => {
+      fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }));
+    });
     worker.once("exit", (code) => {
-      if (code !== 0 || !settled) finish(() => reject(new Error("worker-failed")));
+      exited = true;
+      resolveExit?.();
+      if (terminal === undefined || code !== 0) {
+        resume(
+          Effect.fail(
+            terminal?._tag === "error"
+              ? terminal.error
+              : new CodeIntelligenceWorkerError({ reason: "worker-failed" }),
+          ),
+        );
+      } else if (terminal._tag === "error") {
+        resume(Effect.fail(terminal.error));
+      } else {
+        resume(Effect.succeed(terminal.value));
+      }
     });
-    worker.postMessage({ type: "query", input });
-    if (signal.aborted) onAbort();
+    try {
+      worker.postMessage({ type: "query", input });
+    } catch {
+      fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }));
+    }
+    return Effect.promise(async () => {
+      if (!exited) {
+        try {
+          worker.postMessage({ type: "cancel" });
+        } catch {
+          // The worker may have exited between the state check and the send.
+        }
+      }
+      await exit;
+    });
   });
 }
 
@@ -250,21 +294,15 @@ const make = Effect.gen(function* () {
         .filter((entry) => entry.kind === "file" && entry.ignored !== true)
         .map((entry) => entry.path);
       return yield* withWorkspaceLease(
-        checkoutPath,
-        Effect.tryPromise({
-          try: (signal) =>
-            queryWithWorker(
-              {
-                checkoutPath,
-                files: listedFiles.slice(0, MAX_LISTED_FILES),
-                filesListed: listedFiles.length,
-                listingTruncated:
-                  workspaceListing.truncated || listedFiles.length > MAX_LISTED_FILES,
-                query: normalizedQuery,
-              },
-              signal,
-            ),
-          catch: (cause) => {
+        NodePath.join(checkoutPath, INDEX_DIRECTORY),
+        queryWithWorker({
+          checkoutPath,
+          files: listedFiles.slice(0, MAX_LISTED_FILES),
+          filesListed: listedFiles.length,
+          listingTruncated: workspaceListing.truncated || listedFiles.length > MAX_LISTED_FILES,
+          query: normalizedQuery,
+        }).pipe(
+          Effect.mapError((cause) => {
             const queryPath =
               normalizedQuery.operation === "dependencies"
                 ? normalizedQuery.filePath
@@ -276,14 +314,10 @@ const make = Effect.gen(function* () {
                   : normalizedQuery.operation === "symbols"
                     ? normalizedQuery.filePath
                     : undefined;
-            if (
-              cause instanceof Error &&
-              cause.message === "path-outside-checkout" &&
-              queryPath !== undefined
-            ) {
+            if (cause.reason === "path-outside-checkout" && queryPath !== undefined) {
               return new CodeIntelligencePathOutsideCheckout({ path: queryPath });
             }
-            if (cause instanceof Error && cause.message === "index-outside-checkout") {
+            if (cause.reason === "index-outside-checkout") {
               return new CodeIntelligencePathOutsideCheckout({ path: INDEX_DIRECTORY });
             }
             return new CodeIntelligenceInspectionFailed({
@@ -296,13 +330,10 @@ const make = Effect.gen(function* () {
                   : normalizedQuery.operation === "search"
                     ? normalizedQuery.text
                     : checkoutPath),
-              reason:
-                cause instanceof Error && cause.message === "invalid-result"
-                  ? "invalid-result"
-                  : "worker-failed",
+              reason: cause.reason === "invalid-result" ? "invalid-result" : "worker-failed",
             });
-          },
-        }),
+          }),
+        ),
       );
     },
   );

@@ -1,5 +1,7 @@
 import { KnowledgeToolkit } from "./toolkits/knowledge/tools.ts";
 import * as KnowledgeHandlers from "./toolkits/knowledge/handlers.ts";
+import { ProjectCodeToolkit } from "./toolkits/projectCode/tools.ts";
+import * as ProjectCodeHandlers from "./toolkits/projectCode/handlers.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -1033,6 +1035,10 @@ const layerEnvironmentToolkit = toolkitRegistration(
 ).pipe(Layer.provide(ThreadCommandExecutor.layer));
 
 const layerKnowledgeRegistration = toolkitRegistration(KnowledgeToolkit, KnowledgeHandlers.layer);
+export const layerProjectCodeToolkit = toolkitRegistration(
+  ProjectCodeToolkit,
+  ProjectCodeHandlers.layer,
+);
 
 const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHandlers.layer);
 
@@ -1076,6 +1082,7 @@ export const layer = Layer.mergeAll(
   layerAttachmentToolkit,
   layerProjectRegistration,
   layerKnowledgeRegistration,
+  layerProjectCodeToolkit,
   layerEnvironmentToolkit,
   layerPreviewControlsRegistration,
   layerWorktreeToolkitRegistration,

@@ -1,20 +1,36 @@
 // @effect-diagnostics nodeBuiltinImport:off - fixtures use isolated temporary checkouts and verify source bytes against SHA-256 digests.
 import * as NodeCrypto from "node:crypto";
+import { watch as NodeFSWatch } from "node:fs";
 import * as NodeFS from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { Worker } from "node:worker_threads";
 
+import * as NodeCryptoEffect from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
-import { OrchestrationV2AppThread, ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  OrchestrationV2AppThread,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { McpSchema, McpServer } from "effect/ai";
 
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
+import * as McpToolAccessTestkit from "../../mcp/McpToolAccess.testkit.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
+import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 import * as CodeIntelligence from "./CodeIntelligence.ts";
 
 const projectId = ProjectId.make("project:code-intelligence");
@@ -221,6 +237,66 @@ it.effect(
           );
           assert.equal(concurrentStatus.coverage.state, "complete");
           assert.ok(concurrentSearch.matches.some((match) => match.symbol.name === "greet"));
+
+          const toolLayer = McpHttpServer.layerProjectCodeToolkit.pipe(
+            Layer.provide(provided),
+            Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
+            Layer.provideMerge(McpServer.McpServer.layer),
+            Layer.provide(NodeCryptoEffect.layer),
+            Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+          );
+          const toolResult = yield* Effect.gen(function* () {
+            const server = yield* McpServer.McpServer;
+            return yield* server
+              .callTool({
+                name: "t3_project_code_query",
+                arguments: {
+                  projectId,
+                  query: { operation: "symbols", name: "greet" },
+                },
+              })
+              .pipe(
+                Effect.provideService(McpInvocationContext.McpInvocationContext, {
+                  environmentId: EnvironmentId.make("code-intelligence-test"),
+                  requestNamespace: "client:code-intelligence-test",
+                  thread: undefined,
+                  client: {
+                    sessionId: "code-intelligence-test",
+                    label: "Code intelligence test",
+                    access: "read-only",
+                  },
+                  issuedAt: 0,
+                  capabilities: new Set<McpInvocationContext.McpCapability>([
+                    "orchestration",
+                    "project-code",
+                  ]),
+                }),
+                Effect.provideService(
+                  McpSchema.McpServerClient,
+                  McpSchema.McpServerClient.of({
+                    clientId: 1,
+                    protocolVersion: "2025-06-18",
+                    clientCapabilities: {},
+                    clientInfo: { name: "code-intelligence-test", version: "1" },
+                    initializePayload: {
+                      protocolVersion: "2025-06-18",
+                      capabilities: {},
+                      clientInfo: { name: "code-intelligence-test", version: "1" },
+                    },
+                    getClient: Effect.die("unused"),
+                  }),
+                ),
+              );
+          }).pipe(Effect.provide(toolLayer));
+          assert.equal(toolResult.isError, false);
+          assert.ok(
+            (
+              toolResult.structuredContent as {
+                readonly nodes: ReadonlyArray<{ readonly name: string }>;
+              }
+            ).nodes.some(({ name }) => name === "greet"),
+          );
+
           const linkedSymbols = yield* runQuery({ operation: "symbols", name: "workOnly" });
           assert.equal(linkedSymbols.nodes.length, 0);
           const outsidePathError = yield* Effect.flip(
@@ -470,9 +546,25 @@ it.effect("recovers after SDK indexing cancellation", () =>
         }),
       );
       const provided = Layer.provide(CodeIntelligence.layer, dependencies);
+      const query = Effect.gen(function* () {
+        const intelligence = yield* CodeIntelligence.CodeIntelligence;
+        return yield* intelligence.query({ projectId, query: { operation: "status" } });
+      }).pipe(Effect.provide(provided));
+
+      const indexDirectoryCreated = new Promise<void>((resolve) => {
+        const watcher = NodeFSWatch(fixture.root, (_event, filename) => {
+          if (filename?.toString() !== ".codegraph-t3") return;
+          watcher.close();
+          resolve();
+        });
+      });
+      const interruptedQuery = yield* query.pipe(Effect.forkScoped);
+      yield* Effect.promise(() => indexDirectoryCreated);
+      yield* Fiber.interrupt(interruptedQuery);
+
       const worker = new Worker(new URL("./codeIntelligenceWorkerThread.ts", import.meta.url), {
         execArgv: ["--experimental-strip-types"],
-        env: { ...process.env, CODEGRAPH_DIR: ".codegraph-t3" },
+        env: { ...process.env, CODEGRAPH_DIR: ".codegraph-cancel-test" },
       });
       const indexingCancellation = new Promise<void>((resolve, reject) => {
         let cancellationSent = false;
@@ -526,14 +618,45 @@ it.effect("recovers after SDK indexing cancellation", () =>
         },
       });
       yield* Effect.promise(() => indexingCancellation);
-      const query = Effect.gen(function* () {
-        const intelligence = yield* CodeIntelligence.CodeIntelligence;
-        return yield* intelligence.query({ projectId, query: { operation: "status" } });
-      }).pipe(Effect.provide(provided));
       const recovered = yield* query;
       assert.equal(recovered.coverage.state, "complete");
       assert.ok((recovered.stats?.files ?? 0) >= files.length);
       assert.equal(recovered.coverage.relationSemantics, "static-candidates");
+    }),
+  ),
+);
+
+it.effect("isolates graph-index leases from checkout leases and serializes each index key", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const indexKey = NodePath.join(fixture.root, ".codegraph-t3");
+      const indexStarted = yield* Deferred.make<void>();
+      const releaseIndex = yield* Deferred.make<void>();
+      const indexLease = yield* withWorkspaceLease(
+        indexKey,
+        Deferred.succeed(indexStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseIndex)),
+        ),
+      ).pipe(Effect.forkScoped);
+      yield* Deferred.await(indexStarted);
+
+      const checkoutLeaseEntered = yield* Deferred.make<void>();
+      yield* withWorkspaceLease(fixture.root, Deferred.succeed(checkoutLeaseEntered, undefined));
+      assert.equal(yield* Deferred.isDone(checkoutLeaseEntered), true);
+
+      const secondAttempted = yield* Deferred.make<void>();
+      const secondIndexLeaseEntered = yield* Deferred.make<void>();
+      const secondIndexLease = yield* Effect.gen(function* () {
+        yield* Deferred.succeed(secondAttempted, undefined);
+        yield* withWorkspaceLease(indexKey, Deferred.succeed(secondIndexLeaseEntered, undefined));
+      }).pipe(Effect.forkScoped);
+      yield* Deferred.await(secondAttempted);
+      assert.equal(yield* Deferred.isDone(secondIndexLeaseEntered), false);
+
+      yield* Deferred.succeed(releaseIndex, undefined);
+      yield* Deferred.await(secondIndexLeaseEntered);
+      yield* Fiber.await(indexLease);
+      yield* Fiber.await(secondIndexLease);
     }),
   ),
 );

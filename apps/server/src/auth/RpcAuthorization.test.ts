@@ -10,10 +10,12 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSourceControlWriteScope,
+  ProjectId,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
   WS_METHODS,
   WsRpcGroup,
+  WsProjectCodeRpcGroup,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -41,6 +43,10 @@ describe("RPC authorization scopes", () => {
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
+  });
+
+  it("requires filesystem read permission for project code queries", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeQuery)).toBe(AuthFilesystemReadScope);
   });
 
   it("separates passive terminal observation from operations that can change a shell", () => {
@@ -72,6 +78,35 @@ describe("RPC authorization scopes", () => {
     }
   });
 });
+
+it.effect("denies project code queries before the handler without filesystem read permission", () =>
+  Effect.gen(function* () {
+    const group = WsProjectCodeRpcGroup;
+    let handled = false;
+    const client = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          group.toLayerHandler(WS_METHODS.projectCodeQuery, () =>
+            Effect.sync(() => {
+              handled = true;
+            }).pipe(Effect.andThen(Effect.never)),
+          ),
+          RpcAuthorization.layer([AuthOrchestrationReadScope]),
+        ),
+      ),
+    );
+    expect(
+      yield* client[WS_METHODS.projectCodeQuery]({
+        projectId: ProjectId.make("project-1"),
+        query: { operation: "status" },
+      }).pipe(Effect.flip),
+    ).toMatchObject({
+      _tag: "EnvironmentAuthorizationError",
+      requiredPermission: AuthFilesystemReadScope,
+    });
+    expect(handled).toBe(false);
+  }).pipe(Effect.scoped),
+);
 
 it("requires operate permission for host retry while preserving read-only listing", () => {
   expect(requiredScopeForDeviceList({})).toBe(AuthOrchestrationReadScope);

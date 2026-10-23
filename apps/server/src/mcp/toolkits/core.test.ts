@@ -10,6 +10,7 @@ import {
   OrchestratorMcpThreadReadResult,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProjectId,
   RunId,
   RuntimeRequestId,
   ThreadId,
@@ -41,6 +42,7 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import * as PreviewBrowser from "../../preview/PreviewBrowser.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import * as CodeIntelligence from "../../project/knowledge/CodeIntelligence.ts";
 import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
@@ -71,6 +73,10 @@ const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadR
 const layerThreadToolkit = McpHttpServer.layerThreadToolkit.pipe(
   Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
   Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+);
+const layerProjectCodeToolkit = McpHttpServer.layerProjectCodeToolkit.pipe(
+  Layer.provide(Layer.mock(CodeIntelligence.CodeIntelligence)({})),
+  Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
 );
 
 const threadId = ThreadId.make("mcp-core-thread");
@@ -124,6 +130,43 @@ it.effect("checks capability through the production registration", () =>
       ),
     ),
   ),
+);
+
+it.effect(
+  "registers the read-only project code query and denies credentials without filesystem access",
+  () =>
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const tool = server.tools.find(({ tool }) => tool.name === "t3_project_code_query")?.tool;
+      expect(tool?.annotations?.readOnlyHint).toBe(true);
+      expect(tool?.annotations?.destructiveHint).toBe(false);
+      expect(tool?.description).toContain("before broad repository-reading loops");
+
+      const denied = yield* server
+        .callTool({
+          name: "t3_project_code_query",
+          arguments: {
+            projectId: ProjectId.make("mcp-code-project"),
+            query: { operation: "status" },
+          },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, {
+            ...scope,
+            capabilities: new Set<never>(),
+          }),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(declaredFailure(denied)).toMatchObject({ code: "capability_denied" });
+    }).pipe(
+      Effect.provide(
+        layerProjectCodeToolkit.pipe(
+          Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+        ),
+      ),
+    ),
 );
 
 it.effect("an answered question reports already answered instead of not found", () => {

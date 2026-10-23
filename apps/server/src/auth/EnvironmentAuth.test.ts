@@ -4,6 +4,7 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -69,6 +70,28 @@ const requestMetadata = {
 };
 
 it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
+  it.effect("keeps pre-filesystem MCP tokens without project-code access", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const sessions = yield* SessionStore.SessionStore;
+      const legacy = yield* sessions.issue({
+        subject: "mcp-client",
+        method: "bearer-access-token",
+        scopes: ["orchestration:read"],
+        client: { label: "Legacy agent", deviceType: "bot" },
+      });
+      const client = yield* serverAuth.authenticateMcpClient(
+        HttpServerRequest.fromWeb(
+          new Request("http://localhost/mcp", {
+            headers: { authorization: `Bearer ${legacy.token}` },
+          }),
+        ),
+      );
+
+      expect(client).toMatchObject({ access: "read-only", filesystemRead: false });
+    }).pipe(Effect.provide(layerEnvironmentAuth())),
+  );
+
   it.effect("uses the reusable dev cookie without overriding a normal scoped cookie", () =>
     Effect.gen(function* () {
       const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;

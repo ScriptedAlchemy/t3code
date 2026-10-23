@@ -1,5 +1,11 @@
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
-import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
+import {
+  OrchestrationDispatchCommandError,
+  ProjectCodeError,
+  ProjectId as ProjectIdSchema,
+  ThreadId as ThreadIdSchema,
+} from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 
@@ -97,6 +103,7 @@ import {
   WS_METHODS,
   WsRpcGroup,
   WsProjectKnowledgeRpcGroup,
+  WsProjectCodeRpcGroup,
 } from "@t3tools/contracts";
 import {
   HttpRouter,
@@ -549,6 +556,7 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
 const ServerCoreWsRpcGroup = ServerWsRpcGroup.omit(
+  WS_METHODS.projectCodeQuery,
   WS_METHODS.projectKnowledgeSearch,
   WS_METHODS.projectKnowledgeList,
   WS_METHODS.projectKnowledgeReadSource,
@@ -569,7 +577,58 @@ const layerKnowledgeRpc = WsProjectKnowledgeRpcGroup.middleware(RpcInstrumentati
     };
   }),
 );
-
+const layerProjectCodeRpc = WsProjectCodeRpcGroup.middleware(RpcInstrumentation).toLayer(
+  Effect.gen(function* () {
+    const codeIntelligence = yield* CodeIntelligence.CodeIntelligence;
+    return {
+      [WS_METHODS.projectCodeQuery]: (input) =>
+        codeIntelligence.query(input).pipe(
+          Effect.mapError((error): ProjectCodeError => {
+            switch (error._tag) {
+              case "CodeIntelligenceProjectNotFound":
+                return {
+                  _tag: "project-not-found",
+                  projectId: ProjectIdSchema.make(error.projectId),
+                } as const;
+              case "CodeIntelligenceThreadMismatch":
+                return {
+                  _tag: "thread-project-mismatch",
+                  projectId: ProjectIdSchema.make(error.projectId),
+                  threadId: ThreadIdSchema.make(error.threadId),
+                } as const;
+              case "CodeIntelligencePathOutsideCheckout":
+                return { _tag: "path-outside-checkout", path: error.path } as const;
+              case "WorkspacePathOutsideRootError":
+                return { _tag: "path-outside-checkout", path: error.relativePath } as const;
+              case "CodeIntelligenceInspectionFailed":
+                return {
+                  _tag: "analysis-failed",
+                  path: error.path,
+                  reason: error.reason,
+                } as const;
+              case "ProjectStoreV2Error":
+                return { _tag: "authority-failed", authority: "project-store" } as const;
+              case "ProjectionStoreSetupError":
+              case "ProjectionStoreApplyEventError":
+              case "ProjectionStoreThreadNotFoundError":
+              case "ProjectionStoreReadError":
+                return { _tag: "authority-failed", authority: "thread-store" } as const;
+              case "WorkspaceRootNotExistsError":
+              case "WorkspaceRootCreateFailedError":
+              case "WorkspaceRootStatFailedError":
+              case "WorkspaceRootNotDirectoryError":
+                return { _tag: "authority-failed", authority: "workspace-paths" } as const;
+              case "WorkspaceEntriesReadDirectoryError":
+              case "WorkspaceSearchIndexCreateFailed":
+              case "WorkspaceSearchIndexScanTimedOut":
+              case "WorkspaceSearchIndexSearchFailed":
+                return { _tag: "authority-failed", authority: "workspace-entries" } as const;
+            }
+          }),
+        ),
+    };
+  }),
+);
 // Replaying each intervening event costs a shell refetch; past this gap a
 // single O(active-threads) snapshot is cheaper and bounded.
 const SHELL_RESUME_MAX_GAP = 1_000;
@@ -3149,7 +3208,7 @@ export const layerWsRpc = (
       });
       return handlers;
     }),
-  ).pipe(Layer.merge(layerKnowledgeRpc));
+  ).pipe(Layer.merge(layerKnowledgeRpc), Layer.merge(layerProjectCodeRpc));
 
 // RpcServer's default sends a socket-level Defect frame instead, and the client
 // ends every pending request on the socket with it.

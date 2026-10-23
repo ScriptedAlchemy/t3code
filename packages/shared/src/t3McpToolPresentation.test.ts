@@ -3,6 +3,13 @@ import { describe, expect, it } from "vite-plus/test";
 import { T3_MCP_TOOL_NAMES, resolveT3McpToolPresentation } from "./t3McpToolPresentation.ts";
 
 describe("resolveT3McpToolPresentation", () => {
+  it("presents the code graph query as a project read", () => {
+    expect(resolveT3McpToolPresentation("mcp__t3-code__t3_project_code_query")).toMatchObject({
+      displayName: "Query the project code graph",
+      logo: "t3-code",
+    });
+  });
+
   it("recognizes every T3 tool across provider prefixes and completion suffixes", () => {
     for (const tool of T3_MCP_TOOL_NAMES) {
       const presentation = resolveT3McpToolPresentation(tool);

@@ -11,6 +11,7 @@ import {
   ProjectKnowledgeContext,
   ProjectKnowledgePreparedContext,
 } from "./projectKnowledge.ts";
+import { ProjectCodeError, ProjectCodeQueryInput, ProjectCodeQueryResult } from "./projectCode.ts";
 import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
@@ -398,6 +399,7 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  projectCodeQuery: "projectCode.query",
   projectKnowledgeSearch: "projectKnowledge.search",
   projectKnowledgeList: "projectKnowledge.list",
   projectKnowledgeMutate: "projectKnowledge.mutate",
@@ -1927,6 +1929,11 @@ const WsProjectKnowledgeSearchRpc = Rpc.make(WS_METHODS.projectKnowledgeSearch, 
   success: ProjectKnowledgeSearchResult,
   error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
 });
+const WsProjectCodeQueryRpc = Rpc.make(WS_METHODS.projectCodeQuery, {
+  payload: ProjectCodeQueryInput,
+  success: ProjectCodeQueryResult,
+  error: Schema.Union([ProjectCodeError, EnvironmentAuthorizationError]),
+});
 const WsProjectKnowledgeListRpc = Rpc.make(WS_METHODS.projectKnowledgeList, {
   payload: ProjectKnowledgeListInput,
   success: ProjectKnowledgeListResult,
@@ -1955,6 +1962,9 @@ export const WsProjectKnowledgeRpcGroup = RpcGroup.make(
   WsProjectKnowledgeReadSourceRpc,
   WsProjectKnowledgePrepareContextRpc,
 ).middleware(RpcScopeAuthorization);
+
+export const WsProjectCodeRpcGroup =
+  RpcGroup.make(WsProjectCodeQueryRpc).middleware(RpcScopeAuthorization);
 
 export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
@@ -2159,4 +2169,5 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeCommandOutputRpc,
 )
   .middleware(RpcScopeAuthorization)
-  .merge(WsProjectKnowledgeRpcGroup);
+  .merge(WsProjectKnowledgeRpcGroup)
+  .merge(WsProjectCodeRpcGroup);
