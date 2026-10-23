@@ -200,8 +200,14 @@ function queryWithWorker(input: {
     const exit = new Promise<void>((resolve) => {
       resolveExit = resolve;
     });
-    const fail = (error: CodeIntelligenceWorkerError) => {
+    const terminate = () => {
+      void worker.terminate().catch(() => {
+        fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }));
+      });
+    };
+    const fail = (error: CodeIntelligenceWorkerError, shouldTerminate = false) => {
       terminal ??= { _tag: "error", error };
+      if (shouldTerminate) terminate();
     };
     worker.on("message", (raw: unknown) => {
       if (terminal !== undefined) return;
@@ -209,7 +215,7 @@ function queryWithWorker(input: {
       try {
         decoded = Schema.decodeUnknownSync(WorkerReply)(raw);
       } catch {
-        fail(new CodeIntelligenceWorkerError({ reason: "invalid-result" }));
+        fail(new CodeIntelligenceWorkerError({ reason: "invalid-result" }), true);
         return;
       }
       if ("progress" in decoded) return;
@@ -248,14 +254,14 @@ function queryWithWorker(input: {
     try {
       worker.postMessage({ type: "query", input });
     } catch {
-      fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }));
+      fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }), true);
     }
     return Effect.promise(async () => {
       if (!exited) {
         try {
           worker.postMessage({ type: "cancel" });
         } catch {
-          // The worker may have exited between the state check and the send.
+          await worker.terminate();
         }
       }
       await exit;

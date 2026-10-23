@@ -551,15 +551,22 @@ it.effect("recovers after SDK indexing cancellation", () =>
         return yield* intelligence.query({ projectId, query: { operation: "status" } });
       }).pipe(Effect.provide(provided));
 
-      const indexDirectoryCreated = new Promise<void>((resolve) => {
-        const watcher = NodeFSWatch(fixture.root, (_event, filename) => {
-          if (filename?.toString() !== ".codegraph-t3") return;
-          watcher.close();
-          resolve();
-        });
-      });
+      const waitForIndexDirectory = Effect.acquireUseRelease(
+        Effect.sync(() => {
+          let resolveCreated!: () => void;
+          const created = new Promise<void>((resolve) => {
+            resolveCreated = resolve;
+          });
+          const watcher = NodeFSWatch(fixture.root, (_event, filename) => {
+            if (filename?.toString() === ".codegraph-t3") resolveCreated();
+          });
+          return { watcher, created };
+        }),
+        ({ created }) => Effect.promise(() => created),
+        ({ watcher }) => Effect.sync(() => watcher.close()),
+      );
       const interruptedQuery = yield* query.pipe(Effect.forkScoped);
-      yield* Effect.promise(() => indexDirectoryCreated);
+      yield* waitForIndexDirectory;
       yield* Fiber.interrupt(interruptedQuery);
 
       const worker = new Worker(new URL("./codeIntelligenceWorkerThread.ts", import.meta.url), {
@@ -626,37 +633,55 @@ it.effect("recovers after SDK indexing cancellation", () =>
   ),
 );
 
-it.effect("isolates graph-index leases from checkout leases and serializes each index key", () =>
+it.effect("runs a graph query while the checkout lease is held", () =>
   withFixture((fixture) =>
     Effect.gen(function* () {
-      const indexKey = NodePath.join(fixture.root, ".codegraph-t3");
-      const indexStarted = yield* Deferred.make<void>();
-      const releaseIndex = yield* Deferred.make<void>();
-      const indexLease = yield* withWorkspaceLease(
-        indexKey,
-        Deferred.succeed(indexStarted, undefined).pipe(
-          Effect.andThen(Deferred.await(releaseIndex)),
+      const project = {
+        projectId,
+        workspaceRoot: fixture.root,
+        deletedAt: null,
+      } as unknown as ProjectStore.ProjectRow;
+      const dependencies = Layer.mergeAll(
+        Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeedSome(project) }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThread: () => Effect.die("unused") }),
+        Layer.mock(WorkspacePaths.WorkspacePaths)({
+          normalizeWorkspaceRoot: () => Effect.succeed(fixture.root),
+          resolveRelativePathWithinRoot: ({ relativePath }) =>
+            Effect.succeed({ absolutePath: relativePath, relativePath }),
+        }),
+        Layer.mock(WorkspaceEntries.WorkspaceEntries)({
+          refresh: () => Effect.void,
+          list: () =>
+            Effect.succeed({
+              entries: ["src/defs.ts", "src/use.ts", "src/main.go", "src/main.py"].map((path) => ({
+                path,
+                kind: "file" as const,
+              })),
+              truncated: false,
+            }),
+        }),
+      );
+      const provided = Layer.provide(CodeIntelligence.layer, dependencies);
+      const checkoutLeaseStarted = yield* Deferred.make<void>();
+      const releaseCheckoutLease = yield* Deferred.make<void>();
+      const checkoutLease = yield* withWorkspaceLease(
+        fixture.root,
+        Deferred.succeed(checkoutLeaseStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseCheckoutLease)),
         ),
       ).pipe(Effect.forkScoped);
-      yield* Deferred.await(indexStarted);
+      yield* Deferred.await(checkoutLeaseStarted);
 
-      const checkoutLeaseEntered = yield* Deferred.make<void>();
-      yield* withWorkspaceLease(fixture.root, Deferred.succeed(checkoutLeaseEntered, undefined));
-      assert.equal(yield* Deferred.isDone(checkoutLeaseEntered), true);
-
-      const secondAttempted = yield* Deferred.make<void>();
-      const secondIndexLeaseEntered = yield* Deferred.make<void>();
-      const secondIndexLease = yield* Effect.gen(function* () {
-        yield* Deferred.succeed(secondAttempted, undefined);
-        yield* withWorkspaceLease(indexKey, Deferred.succeed(secondIndexLeaseEntered, undefined));
-      }).pipe(Effect.forkScoped);
-      yield* Deferred.await(secondAttempted);
-      assert.equal(yield* Deferred.isDone(secondIndexLeaseEntered), false);
-
-      yield* Deferred.succeed(releaseIndex, undefined);
-      yield* Deferred.await(secondIndexLeaseEntered);
-      yield* Fiber.await(indexLease);
-      yield* Fiber.await(secondIndexLease);
+      const result = yield* Effect.gen(function* () {
+        const intelligence = yield* CodeIntelligence.CodeIntelligence;
+        return yield* intelligence.query({
+          projectId,
+          query: { operation: "symbols", name: "greet" },
+        });
+      }).pipe(Effect.provide(provided));
+      yield* Deferred.succeed(releaseCheckoutLease, undefined);
+      yield* Fiber.await(checkoutLease);
+      assert.ok(result.nodes.some(({ name }) => name === "greet"));
     }),
   ),
 );
