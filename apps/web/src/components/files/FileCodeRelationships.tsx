@@ -14,11 +14,13 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
+import { NetworkIcon } from "lucide-react";
 import { useState } from "react";
 
 import { CollapsibleSectionHeader } from "~/components/ui/collapsible-section-header";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { Button } from "~/components/ui/button";
 import { randomUUID } from "~/lib/utils";
 import { useRightPanelStore } from "~/rightPanelStore";
@@ -29,6 +31,7 @@ import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
+import { useOpenCodeExplorer } from "../codeExplorer/openCodeExplorer";
 import { CodeIndexBadge } from "./CodeIndexBadge";
 import {
   CoverageNote,
@@ -272,6 +275,7 @@ function SymbolsTab(props: {
   readonly relativePath: string;
 }) {
   const [selected, setSelected] = useState<ProjectCodeSymbol | null>(null);
+  const openExplorer = useOpenCodeExplorer();
   const outline = useEnvironmentQuery(
     outlineQuery(
       props.environmentId,
@@ -305,19 +309,44 @@ function SymbolsTab(props: {
       ) : (
         <div role="list" aria-label="Symbols in this file" className="flex flex-col">
           {data.nodes.map((node) => (
-            <div role="listitem" key={node.id}>
-              <LocationRow
-                label={node.name}
-                location={`${node.kind} · line ${node.startLine}`}
-                detail={node.isExported ? "exported" : null}
-                pressed={selected?.id === node.id}
-                onOpen={() => {
-                  setSelected(selected?.id === node.id ? null : node);
-                  useRightPanelStore
-                    .getState()
-                    .openFile(props.threadRef, props.relativePath, node.startLine);
-                }}
-              />
+            <div role="listitem" key={node.id} className="flex min-w-0 items-center gap-1">
+              <div className="min-w-0 flex-1">
+                <LocationRow
+                  label={node.name}
+                  location={`${node.kind} · line ${node.startLine}`}
+                  detail={node.isExported ? "exported" : null}
+                  pressed={selected?.id === node.id}
+                  onOpen={() => {
+                    setSelected(selected?.id === node.id ? null : node);
+                    useRightPanelStore
+                      .getState()
+                      .openFile(props.threadRef, props.relativePath, node.startLine);
+                  }}
+                />
+              </div>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="ghost-muted"
+                      size="icon-xs"
+                      aria-label={`Open ${node.name} in explorer`}
+                      onClick={() =>
+                        openExplorer({
+                          environmentId: props.environmentId,
+                          projectId: props.projectId,
+                          threadRef: props.threadRef,
+                          serverThreadId: props.threadRef.threadId,
+                          symbol: node,
+                        })
+                      }
+                    />
+                  }
+                >
+                  <NetworkIcon />
+                </TooltipTrigger>
+                <TooltipPopup>Open in explorer</TooltipPopup>
+              </Tooltip>
             </div>
           ))}
         </div>

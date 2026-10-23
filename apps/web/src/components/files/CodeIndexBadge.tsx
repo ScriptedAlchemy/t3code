@@ -14,14 +14,15 @@ const VARIANT = { ok: "success", warn: "warning", muted: "secondary" } as const;
 export function CodeIndexBadge(props: {
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
-  readonly threadId: ThreadId;
+  /** A draft has no server thread; the project's own checkout is read instead. */
+  readonly threadId?: ThreadId | undefined;
 }) {
   const freshness = useEnvironmentQuery(
     projectCode.freshness({
       environmentId: props.environmentId,
       input: {
         projectId: props.projectId,
-        threadId: props.threadId,
+        ...(props.threadId ? { threadId: props.threadId } : {}),
         query: { operation: "freshness" },
       },
     }),

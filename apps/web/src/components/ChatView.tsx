@@ -280,6 +280,7 @@ import {
   useOpenProjectMemory,
   useProjectMemoryAvailable,
 } from "./projectKnowledge/ProjectMemoryPanel";
+import { CodeExplorerDialogHost } from "./codeExplorer/CodeExplorerDialogHost";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
   resolveEffectiveEnvMode,
@@ -3822,6 +3823,11 @@ export default function ChatView(props: ChatViewProps) {
               projectId={activeThread.projectId}
               threadId={activeThread.id}
               {...(draftId ? { draftId } : {})}
+            />
+
+            <CodeExplorerDialogHost
+              environmentId={activeThread.environmentId}
+              projectId={activeThread.projectId}
             />
 
             <PullRequestThreadDialogHost

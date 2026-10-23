@@ -31,6 +31,22 @@ and impact.
 
 Agents can use the same reads through T3 Code's MCP tools, including the file's prior work.
 
+## Explore calls around a symbol
+
+Choose **Open in explorer** next to a symbol under **Symbols**, or search a project from the
+command palette and pick **Explore** under **Code explorer**. The explorer puts the symbol in the
+middle, its callers on the left and its callees on the right. Switch to **2 hops** to see callers
+of callers and callees of callees; the explorer draws at most 60 symbols and says when it left
+some out. Solid, dashed, and dotted lines mark compiler-indexed, static-candidate, and heuristic
+calls, and the list below the graph shows the same symbols as text. Choose a symbol to center on
+it, or its open button to jump to it in the file preview; a caller opens at its call site.
+
+**Call path** answers whether the symbol reaches another one, or is reached by it, through calls
+anywhere in the project. It searches up to 6 calls deep, so "no call path" means none was found
+within that bound, not that none exists.
+
+The explorer is available in the web and desktop apps.
+
 ## Review a pull request's impact
 
 In a pull request's **Code** tab, expand **Potentially affected**, then expand a changed file to

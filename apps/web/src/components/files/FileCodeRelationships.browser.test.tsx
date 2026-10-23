@@ -214,7 +214,7 @@ it("queries only on demand, labels stale static evidence, and opens results at t
     },
   });
 
-  await screen.getByRole("button", { name: /greet/ }).click();
+  await screen.getByRole("button", { name: /^greet/ }).click();
   expect(activeSurface()).toMatchObject({ relativePath: "src/defs.ts", revealLine: 4 });
 
   // A caller opens at the call site, not the caller's declaration.
@@ -359,7 +359,7 @@ it("offers only the views this connection and server can answer", async () => {
   state.canReadThreads = false;
   await using screen = await renderSection(registry);
   await screen.getByRole("button", { name: "Code relationships" }).click();
-  await expect.element(screen.getByRole("button", { name: /greet/ })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: /^greet/ })).toBeVisible();
   expect(screen.getByRole("button", { name: "Prior work", exact: true }).elements()).toHaveLength(
     0,
   );
@@ -403,7 +403,7 @@ it("shows a static index badge and tests reaching the selected symbol", async ()
   const header = screen.getByRole("button", { name: /Code relationships/ });
   await header.click();
   await expect.element(screen.getByText("Stale @abcdef0")).toBeVisible();
-  await screen.getByRole("button", { name: /greet/ }).click();
+  await screen.getByRole("button", { name: /^greet/ }).click();
   await screen.getByRole("button", { name: "Tests", exact: true }).click();
   const row = screen.getByRole("button", { name: /src\/defs\.test\.ts:3/ });
   await expect.element(row).toBeVisible();
