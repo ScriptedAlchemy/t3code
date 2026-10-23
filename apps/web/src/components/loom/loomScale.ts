@@ -6,7 +6,7 @@ export interface LoomView {
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
-export const LOOM_MIN_VIEW_MS = 5 * MINUTE;
+const LOOM_MIN_VIEW_MS = 5 * MINUTE;
 
 const TICK_STEPS = [
   MINUTE,

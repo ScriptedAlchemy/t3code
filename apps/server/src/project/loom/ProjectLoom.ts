@@ -51,7 +51,7 @@ const epochMillis = (value: string) =>
 const isoAt = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /** Defaults to the seven days ending now and never spans more than LOOM_MAX_WINDOW_MS. */
-export function resolveLoomWindow(
+function resolveLoomWindow(
   input: Pick<LoomWindowInput, "from" | "to">,
   nowMs: number,
 ): ResolvedWindow | null {

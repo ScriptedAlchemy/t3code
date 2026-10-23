@@ -18,7 +18,7 @@ import {
 } from "./loomScale";
 import type { LoomSelection } from "./loomSearch";
 
-export const LOOM_ROW_HEIGHT = 28;
+const LOOM_ROW_HEIGHT = 28;
 // Lane labels take up to this much, and never more than 40% of a narrow timeline.
 const MAX_LABEL_WIDTH = 248;
 const AXIS_HEIGHT = 24;
