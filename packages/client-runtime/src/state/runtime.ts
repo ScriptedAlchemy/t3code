@@ -818,11 +818,16 @@ export function createEnvironmentGuardedRpcQueryAtomFamily<
     >;
     readonly staleTimeMs?: number;
     readonly idleTtlMs?: number;
+    readonly refreshTrigger?: (target: {
+      readonly environmentId: EnvironmentIdType;
+      readonly input: EnvironmentRpcInput<TTag>;
+    }) => Atom.Atom<unknown> | undefined;
   },
 ) {
   const permissions = createCommandPermissions(runtime, options.tag);
   const query = createEnvironmentQueryAtomFamily(runtime, {
     label: options.label,
+    ...(options.refreshTrigger === undefined ? {} : { refreshTrigger: options.refreshTrigger }),
     ...(options.staleTimeMs === undefined ? {} : { staleTimeMs: options.staleTimeMs }),
     ...(options.idleTtlMs === undefined ? {} : { idleTtlMs: options.idleTtlMs }),
     execute: Effect.fn("EnvironmentRpc.guardedQuery")(function* (input: EnvironmentRpcInput<TTag>) {

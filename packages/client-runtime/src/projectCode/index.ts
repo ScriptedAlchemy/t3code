@@ -1,10 +1,13 @@
 import {
   WS_METHODS,
+  type EnvironmentId,
   type ProjectCodeIndexInfo,
+  type ProjectCodeIndexTarget,
   type ProjectCodeQueryInput,
   type ProjectFileHistoryInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import type { Atom } from "effect/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
@@ -12,8 +15,12 @@ import {
   EnvironmentRpcUnavailableError,
   getInitialServerConfig,
   requestGuarded,
+  subscribe,
 } from "../rpc/client.ts";
-import { createEnvironmentGuardedRpcQueryAtomFamily } from "../state/runtime.ts";
+import {
+  createEnvironmentGuardedRpcQueryAtomFamily,
+  createEnvironmentSubscriptionAtomFamily,
+} from "../state/runtime.ts";
 
 const requireProjectCode = Effect.fn("ProjectCode.requireCapability")(function* () {
   const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
@@ -29,11 +36,40 @@ const requireProjectCode = Effect.fn("ProjectCode.requireCapability")(function* 
 export function createProjectCodeAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
+  const indexEvents = createEnvironmentSubscriptionAtomFamily(runtime, {
+    label: "project-code:index-events",
+    idleTtlMs: 0,
+    subscribe: (input: ProjectCodeIndexTarget) =>
+      Stream.unwrap(
+        getInitialServerConfig().pipe(
+          Effect.map((config) =>
+            config.environment.capabilities.projectCodeIndexEvents === true
+              ? subscribe(WS_METHODS.projectCodeSubscribeIndex, input)
+              : Stream.never,
+          ),
+        ),
+      ),
+  });
+  const refreshTrigger = ({
+    environmentId,
+    input,
+  }: {
+    readonly environmentId: EnvironmentId;
+    readonly input: ProjectCodeQueryInput;
+  }) =>
+    indexEvents({
+      environmentId,
+      input: {
+        projectId: input.projectId,
+        ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+      },
+    });
   return {
     query: createEnvironmentGuardedRpcQueryAtomFamily(runtime, {
       label: "project-code:query",
       tag: WS_METHODS.projectCodeQuery,
       staleTimeMs: 0,
+      refreshTrigger,
       execute: Effect.fn("ProjectCode.query")(function* (input: ProjectCodeQueryInput) {
         yield* requireProjectCode();
         return yield* requestGuarded(WS_METHODS.projectCodeQuery, input);
@@ -45,6 +81,7 @@ export function createProjectCodeAtoms<R, E>(
       label: "project-code:freshness",
       tag: WS_METHODS.projectCodeQuery,
       staleTimeMs: 30_000,
+      refreshTrigger,
       execute: Effect.fn("ProjectCode.freshness")(function* (input: ProjectCodeQueryInput) {
         yield* requireProjectCode();
         return yield* requestGuarded(WS_METHODS.projectCodeQuery, input);

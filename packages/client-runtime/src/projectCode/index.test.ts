@@ -3,12 +3,18 @@ import {
   AuthFilesystemReadScope,
   EnvironmentId,
   ProjectId,
+  ThreadId,
+  type ProjectCodeIndexTarget,
+  type ProjectCodeIndexEvent,
   WS_METHODS,
   type AuthSessionState,
   type ProjectCodeQueryInput,
   type ServerConfig,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
+import * as PubSub from "effect/PubSub";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -56,13 +62,29 @@ const session = (scopes: ReadonlyArray<typeof AuthFilesystemReadScope>): AuthSes
   permissions: [...scopes],
 });
 
-const setup = Effect.fn("TestProjectCode.setup")(function* () {
+const setup = Effect.fn("TestProjectCode.setup")(function* (indexEvents = true) {
+  const subscriptions: ProjectCodeIndexTarget[] = [];
+  const events = yield* PubSub.unbounded<{
+    target: ProjectCodeIndexTarget;
+    event: ProjectCodeIndexEvent;
+  }>();
+  const subscribed = yield* Deferred.make<void>();
   const requests: ProjectCodeQueryInput[] = [];
   const rpcSession = {
     initialConfig: Effect.succeed({
-      environment: { capabilities: { projectCode: true } },
+      environment: { capabilities: { projectCode: true, projectCodeIndexEvents: indexEvents } },
     } as unknown as ServerConfig),
     client: {
+      [WS_METHODS.projectCodeSubscribeIndex]: (request: ProjectCodeIndexTarget) =>
+        Stream.fromPubSub(events).pipe(
+          Stream.filter((change) => change.target.threadId === request.threadId),
+          Stream.map((change) => change.event),
+          Stream.onStart(
+            Effect.sync(() => subscriptions.push(request)).pipe(
+              Effect.andThen(Deferred.succeed(subscribed, undefined)),
+            ),
+          ),
+        ),
       [WS_METHODS.projectCodeQuery]: (request: ProjectCodeQueryInput) =>
         Effect.sync(() => {
           requests.push(request);
@@ -103,10 +125,99 @@ const setup = Effect.fn("TestProjectCode.setup")(function* () {
   );
   const registry = AtomRegistry.make();
   yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
-  return { atoms: createProjectCodeAtoms(runtime), registry, requests };
+  return {
+    atoms: createProjectCodeAtoms(runtime),
+    registry,
+    requests,
+    subscriptions,
+    events,
+    subscribed,
+  };
 });
 
 describe("project code atoms", () => {
+  it.effect.each(["published", "failed"] as const)(
+    "%s refreshes only the mounted checkout freshness and queries",
+    (outcome) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { atoms, registry, requests, subscriptions, events, subscribed } = yield* setup();
+          registry.set(
+            sessions(target.environmentId),
+            AsyncResult.success(session([AuthFilesystemReadScope])),
+          );
+          const checkout = { projectId: input.projectId, threadId: ThreadId.make("mounted") };
+          const query = atoms.query({
+            environmentId: target.environmentId,
+            input: { ...input, ...checkout },
+          });
+          const freshness = atoms.freshness({
+            environmentId: target.environmentId,
+            input: { ...checkout, query: { operation: "freshness" } },
+          });
+          const otherCheckout = { ...checkout, threadId: ThreadId.make("other") };
+          const otherQuery = atoms.query({
+            environmentId: target.environmentId,
+            input: { ...input, ...otherCheckout },
+          });
+          const refreshed = yield* Deferred.make<void>();
+          const observe = () => {
+            if (requests.filter((request) => request.threadId === checkout.threadId).length >= 4)
+              Deferred.doneUnsafe(refreshed, Exit.void);
+          };
+          const stopQuery = registry.subscribe(query, observe);
+          const stopFreshness = registry.subscribe(freshness, observe);
+          const stopOther = registry.subscribe(otherQuery, () => {});
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              stopQuery();
+              stopFreshness();
+              stopOther();
+            }),
+          );
+          yield* AtomRegistry.getResult(registry, query, { suspendOnWaiting: true });
+          yield* AtomRegistry.getResult(registry, freshness, { suspendOnWaiting: true });
+          yield* AtomRegistry.getResult(registry, otherQuery, { suspendOnWaiting: true });
+          expect(subscriptions).toContainEqual(checkout);
+          yield* Deferred.await(subscribed);
+          yield* PubSub.publish(events, {
+            target: checkout,
+            event: { outcome, generation: outcome === "published" ? 1 : null },
+          });
+          yield* Deferred.await(refreshed);
+          expect(
+            requests.filter((request) => request.threadId === otherCheckout.threadId),
+          ).toHaveLength(1);
+          expect(
+            requests.filter(
+              (request) =>
+                request.threadId === checkout.threadId && request.query.operation === "symbols",
+            ),
+          ).toHaveLength(2);
+          expect(
+            requests.filter((request) => request.query.operation === "freshness"),
+          ).toHaveLength(2);
+        }),
+      ),
+  );
+  it.effect("subscribes a mounted code target only when index events are advertised", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        for (const enabled of [true, false]) {
+          const { atoms, registry, subscriptions } = yield* setup(enabled);
+          registry.set(
+            sessions(target.environmentId),
+            AsyncResult.success(session([AuthFilesystemReadScope])),
+          );
+          const query = atoms.query({ environmentId: target.environmentId, input });
+          const stop = registry.subscribe(query, () => {});
+          yield* Effect.addFinalizer(() => Effect.sync(stop));
+          yield* AtomRegistry.getResult(registry, query, { suspendOnWaiting: true });
+          expect(subscriptions).toEqual(enabled ? [{ projectId: input.projectId }] : []);
+        }
+      }),
+    ),
+  );
   it.effect("queries with the filesystem read grant and refuses without it", () =>
     Effect.scoped(
       Effect.gen(function* () {
