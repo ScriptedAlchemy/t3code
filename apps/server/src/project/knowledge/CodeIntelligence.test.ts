@@ -801,6 +801,34 @@ function checkoutService(root: string, listed: () => ReadonlyArray<string>) {
     ).pipe(Effect.provide(provided));
 }
 
+function indexedSymbolCount(root: string, name: string) {
+  return Effect.promise(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        const inspect = new NodeWorkerThreads.Worker(
+          `const { parentPort, workerData } = require("node:worker_threads");
+           const { createRequire } = require("node:module");
+           const sdk = createRequire(workerData.requirePath)("@colbymchenry/codegraph");
+           (async () => {
+             const graph = await sdk.CodeGraph.open(workerData.root, { sync: false, readOnly: true });
+             try { parentPort.postMessage(graph.getNodesByName(workerData.name).length); }
+             finally { graph.close(); }
+           })().catch((error) => parentPort.postMessage({ error: String(error) }));`,
+          {
+            eval: true,
+            workerData: { requirePath: codeGraphRequirePath, root, name },
+            env: { ...process.env, CODEGRAPH_DIR: ".codegraph-t3" },
+          },
+        );
+        inspect.once("error", reject);
+        inspect.on("message", (message: number | { readonly error: string }) => {
+          if (typeof message === "number") resolve(message);
+          else reject(new Error(message.error));
+        });
+      }),
+  );
+}
+
 it.effect("refuses a symlinked index child instead of writing through it", () =>
   withFixture((fixture) =>
     Effect.gen(function* () {
@@ -821,6 +849,24 @@ it.effect("refuses a symlinked index child instead of writing through it", () =>
         }
         yield* Effect.promise(() => NodeFSP.rm(link));
       }
+    }),
+  ),
+);
+
+it.effect("never widens an empty canonical allowlist into a full checkout scan", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        NodeFSP.symlink(
+          NodePath.join(fixture.worktree, "src/work.ts"),
+          NodePath.join(fixture.root, "src/linked-work.ts"),
+        ),
+      );
+      const run = checkoutService(fixture.root, () => ["src/linked-work.ts"]);
+      const status = yield* run({ operation: "status" });
+      assert.equal(status.coverage.filesIndexed, 0);
+      assert.equal(yield* indexedSymbolCount(fixture.root, "workOnly"), 0);
+      assert.equal(yield* indexedSymbolCount(fixture.root, "greet"), 0);
     }),
   ),
 );

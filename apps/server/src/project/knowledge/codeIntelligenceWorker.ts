@@ -486,7 +486,13 @@ export async function inspectCodeInWorker(
       else if (!NodeFS.existsSync(NodePath.resolve(input.checkoutPath, file.path)))
         reconcilePaths.add(file.path);
     }
-    const synced = await graph.sync({ onProgress, paths: [...reconcilePaths] });
+    // `sync` reads an empty `paths` as "reconcile the whole checkout", a walk that follows
+    // links out of it. It and the no-index `init`/`open`/`recreate` are the SDK's only calls
+    // here, so this allowlist bounds everything the index reads.
+    const synced =
+      reconcilePaths.size === 0
+        ? { filesAdded: 0, filesModified: 0, filesRemoved: 0 }
+        : await graph.sync({ onProgress, paths: [...reconcilePaths] });
     const priorMeta = readIndexMeta(input.checkoutPath);
     const commit = headCommit(input.checkoutPath);
     const indexChanged =
