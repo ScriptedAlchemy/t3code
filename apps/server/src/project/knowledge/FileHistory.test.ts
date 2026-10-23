@@ -201,4 +201,28 @@ it.layer(layerTest)("FileHistory", (it) => {
         assert.equal(missing._tag, "FileHistoryProjectNotFound");
       }),
   );
+
+  it.effect("indexes every file of a checkpoint larger than one indexing page", () =>
+    Effect.gen(function* () {
+      const history = yield* FileHistory.FileHistory;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const project = ProjectId.make("large");
+      const large = ThreadId.make("large-thread");
+      yield* createProject(project);
+      yield* projections.apply(thread(large, project));
+      yield* projections.apply(
+        checkpoint(
+          large,
+          1,
+          Array.from({ length: 4_500 }, (_, index) => ({ path: `vendor/f${index}.ts` })),
+        ),
+      );
+      const tail = yield* history.read({ projectId: project, path: "vendor/f4499.ts" });
+      assert.deepEqual(
+        tail.entries.map((entry) => entry.threadId),
+        [large],
+      );
+      assert.deepEqual(tail.index, { state: "complete", pendingCheckpoints: 0 });
+    }),
+  );
 });

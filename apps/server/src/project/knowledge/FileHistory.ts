@@ -18,8 +18,22 @@ import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 // instead of holding the database for one long write.
 const CATCH_UP_BATCH = 500;
 const CATCH_UP_BATCHES_PER_READ = 20;
-// A checkpoint that rewrote a vendored tree or lockfile churn is not worth 50k index rows.
-const MAX_FILES_PER_CHECKPOINT = 2_000;
+// A checkpoint that rewrote a vendored tree indexes across several batches, so no single write
+// holds the database for tens of thousands of rows.
+const FILES_PER_PAGE = 2_000;
+
+const encodeCheckpointIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
+const encodePages = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Array(
+      Schema.Struct({
+        id: Schema.String,
+        start: Schema.Number,
+        next: Schema.NullOr(Schema.Number),
+      }),
+    ),
+  ),
+);
 
 export class FileHistoryProjectNotFound extends Schema.TaggedError<FileHistoryProjectNotFound>()(
   "FileHistoryProjectNotFound",
@@ -75,40 +89,68 @@ const make = Effect.gen(function* () {
       JOIN orchestration_v2_projection_threads t ON t.thread_id = c.thread_id
       LEFT JOIN project_code_checkpoint_marks m ON m.checkpoint_id = c.checkpoint_id
       WHERE t.project_id = ${projectId}
-        AND (m.checkpoint_id IS NULL OR m.captured_at != c.captured_at OR m.status != c.status)
+        AND (m.checkpoint_id IS NULL OR m.captured_at != c.captured_at OR m.status != c.status
+          OR m.next_file_index IS NOT NULL)
       LIMIT ${limit}`;
 
-  const indexBatch = (ids: ReadonlyArray<string>) => {
-    const idsJson = JSON.stringify(ids);
-    return sql.withTransaction(
+  const indexBatch = (ids: ReadonlyArray<string>) =>
+    sql.withTransaction(
       Effect.gen(function* () {
+        const idsJson = encodeCheckpointIds(ids);
+        // A checkpoint recaptured since its last page starts over from its first file.
+        const starts = yield* sql<{
+          readonly id: string;
+          readonly start: number;
+          readonly total: number;
+        }>`
+          SELECT c.checkpoint_id AS id,
+            CASE WHEN m.captured_at = c.captured_at AND m.status = c.status
+              THEN coalesce(m.next_file_index, 0) ELSE 0 END AS start,
+            CASE WHEN json_type(c.payload_json, '$.files') = 'array'
+              THEN json_array_length(c.payload_json, '$.files') ELSE 0 END AS total
+          FROM orchestration_v2_projection_checkpoints c
+          LEFT JOIN project_code_checkpoint_marks m ON m.checkpoint_id = c.checkpoint_id
+          WHERE c.checkpoint_id IN (SELECT value FROM json_each(${idsJson}))`;
+        const pagesJson = encodePages(
+          starts.map(({ id, start, total }) => ({
+            id,
+            start,
+            next: start + FILES_PER_PAGE < total ? start + FILES_PER_PAGE : null,
+          })),
+        );
         yield* sql`DELETE FROM project_code_checkpoint_files
-          WHERE checkpoint_id IN (SELECT value FROM json_each(${idsJson}))`;
+          WHERE checkpoint_id IN (
+            SELECT json_extract(value, '$.id') FROM json_each(${pagesJson})
+            WHERE json_extract(value, '$.start') = 0)`;
         yield* sql`INSERT OR REPLACE INTO project_code_checkpoint_files
             (path, checkpoint_id, thread_id, kind, additions, deletions)
           SELECT json_extract(f.value, '$.path'), c.checkpoint_id, c.thread_id,
             coalesce(json_extract(f.value, '$.kind'), 'modified'),
             coalesce(json_extract(f.value, '$.additions'), 0),
             coalesce(json_extract(f.value, '$.deletions'), 0)
-          FROM orchestration_v2_projection_checkpoints c, json_each(c.payload_json, '$.files') f
-          WHERE c.checkpoint_id IN (SELECT value FROM json_each(${idsJson}))
-            AND json_type(c.payload_json, '$.files') = 'array'
+          FROM json_each(${pagesJson}) p
+          JOIN orchestration_v2_projection_checkpoints c
+            ON c.checkpoint_id = json_extract(p.value, '$.id'),
+            json_each(c.payload_json, '$.files') f
+          WHERE json_type(c.payload_json, '$.files') = 'array'
             AND f.type = 'object'
-            AND f.key < ${MAX_FILES_PER_CHECKPOINT}
+            AND f.key >= json_extract(p.value, '$.start')
+            AND f.key < json_extract(p.value, '$.start') + ${FILES_PER_PAGE}
             AND json_type(f.value, '$.path') = 'text'`;
-        yield* sql`INSERT OR REPLACE INTO project_code_checkpoint_marks (checkpoint_id, captured_at, status)
-          SELECT checkpoint_id, captured_at, status FROM orchestration_v2_projection_checkpoints
-          WHERE checkpoint_id IN (SELECT value FROM json_each(${idsJson}))`;
+        yield* sql`INSERT OR REPLACE INTO project_code_checkpoint_marks
+            (checkpoint_id, captured_at, status, next_file_index)
+          SELECT c.checkpoint_id, c.captured_at, c.status, json_extract(p.value, '$.next')
+          FROM json_each(${pagesJson}) p
+          JOIN orchestration_v2_projection_checkpoints c
+            ON c.checkpoint_id = json_extract(p.value, '$.id')`;
       }),
     );
-  };
 
   const catchUp = Effect.fn("FileHistory.catchUp")(function* (projectId: ProjectId) {
     for (let batch = 0; batch < CATCH_UP_BATCHES_PER_READ; batch += 1) {
       const pending = yield* pendingCheckpoints(projectId, CATCH_UP_BATCH);
       if (pending.length === 0) return 0;
       yield* indexBatch(pending.map((row) => row.id));
-      if (pending.length < CATCH_UP_BATCH) return 0;
     }
     return (yield* pendingCheckpoints(projectId, 10_000)).length;
   });
