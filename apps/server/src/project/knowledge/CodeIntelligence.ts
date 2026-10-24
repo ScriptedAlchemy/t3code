@@ -262,6 +262,7 @@ function analysisEnvironment(): NodeJS.ProcessEnv {
 function runInAnalysisProcess(
   launch: AnalysisLaunch,
   command: CodeIntelligenceCommand,
+  beforeCommand?: (analysisPid: number) => Effect.Effect<void>,
 ): Effect.Effect<WorkerTerminal, CodeIntelligenceWorkerError> {
   return Effect.callback((resume) => {
     let child: NodeChildProcess.ChildProcess;
@@ -331,12 +332,26 @@ function runInAnalysisProcess(
         resume(Effect.succeed(terminal.value));
       }
     });
-    child.send(command, (error) => {
-      if (error !== null) fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }), true);
-    });
+    const send = () =>
+      child.send(command, (error) => {
+        if (error !== null)
+          fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }), true);
+      });
+    const holding =
+      beforeCommand === undefined || child.pid === undefined
+        ? undefined
+        : Effect.runFork(beforeCommand(child.pid));
+    if (holding === undefined) send();
+    else {
+      holding.addObserver((exit) => {
+        if (exit._tag === "Success" && !closed) send();
+      });
+      child.once("close", () => holding.interruptUnsafe());
+    }
     // The SDK's sync ignores abort signals, so only killing the process stops the indexing,
     // and the index lease is released only after it has exited.
     return Effect.promise(async () => {
+      holding?.interruptUnsafe();
       if (!closed) child.kill("SIGKILL");
       await closedPromise;
     });
@@ -371,7 +386,12 @@ const removeGeneration = (checkoutPath: string, generation: number) =>
     }).catch(() => undefined),
   );
 
-const make = Effect.gen(function* () {
+export interface CodeIntelligenceOptions {
+  /** Runs once a build's analysis process has started, before it receives the build. */
+  readonly beforeBuildCommand?: (analysisPid: number) => Effect.Effect<void>;
+}
+
+const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntelligenceOptions) {
   const projects = yield* ProjectStore.ProjectStoreV2;
   const threads = yield* ProjectionStore.ProjectionStoreV2;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
@@ -467,15 +487,19 @@ const make = Effect.gen(function* () {
     );
     const generation = Math.max(plan.published ?? 0, ...plan.existing) + 1;
     const listing = yield* listCheckout(checkoutPath);
-    const reply = yield* runInAnalysisProcess(launch, {
-      type: "build",
-      input: {
-        ...listing,
-        from: plan.published === null ? null : generationDirectory(plan.published),
-        to: generationDirectory(generation),
-        generation,
+    const reply = yield* runInAnalysisProcess(
+      launch,
+      {
+        type: "build",
+        input: {
+          ...listing,
+          from: plan.published === null ? null : generationDirectory(plan.published),
+          to: generationDirectory(generation),
+          generation,
+        },
       },
-    }).pipe(Effect.onError(() => removeGeneration(checkoutPath, generation)));
+      options.beforeBuildCommand,
+    ).pipe(Effect.onError(() => removeGeneration(checkoutPath, generation)));
     if (!("built" in reply)) {
       yield* removeGeneration(checkoutPath, generation);
       return yield* new CodeIntelligenceWorkerError({ reason: "invalid-result" });
@@ -721,4 +745,8 @@ const make = Effect.gen(function* () {
   return CodeIntelligence.of({ query, refresh, refreshIfIndexed, subscribeIndex });
 });
 
-export const layer = Layer.effect(CodeIntelligence, make);
+export const layer = Layer.effect(CodeIntelligence, make({}));
+
+/** The service with test seams; production uses `layer`. */
+export const layerWith = (options: CodeIntelligenceOptions) =>
+  Layer.effect(CodeIntelligence, make(options));
