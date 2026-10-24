@@ -22,6 +22,7 @@ import { Headers } from "effect/http";
 import { RpcGroup, RpcMessage, RpcServer } from "effect/rpc";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as CrossEnvironmentBridge from "./mcp/CrossEnvironmentBridge.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as AcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/server/AcpRegistryRuntimeCoordinator";
@@ -470,6 +471,7 @@ it.effect(
             {},
             yield* PreviewAutomationBroker.PreviewAutomationBroker,
             yield* ServerBrowser.ServerBrowser,
+            yield* CrossEnvironmentBridge.CrossEnvironmentBridge,
           ).pipe(Layer.provide(configRpcServices)),
         ),
       );
@@ -531,6 +533,7 @@ it.effect(
         Layer.mergeAll(
           Layer.fresh(layerConfigSources),
           Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
+          Layer.mock(CrossEnvironmentBridge.CrossEnvironmentBridge)({}),
           Layer.mock(ServerBrowser.ServerBrowser)({}),
         ),
       ),

@@ -19,6 +19,7 @@ import {
   type EnvironmentIdentificationMode,
   type UnifiedSettings,
 } from "@t3tools/contracts/settings";
+import { replaceLoadBalancingWeights } from "@t3tools/client-runtime/cross-environment/weights";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
   isAtomCommandInterrupted,
@@ -69,6 +70,7 @@ const clientSettingsListeners = new Set<() => void>();
 const clientSettingsHydrationListeners = new Set<() => void>();
 type ClientSettingsHydrationStatus = "pending" | "ready" | "failed" | "retrying";
 let clientSettingsSnapshot = DEFAULT_CLIENT_SETTINGS;
+replaceLoadBalancingWeights(clientSettingsSnapshot.loadBalancingWeights);
 let clientSettingsHydrationStatus: ClientSettingsHydrationStatus = "pending";
 let clientSettingsHydrationPromise: Promise<void> | null = null;
 let clientSettingsHydrationGeneration = 0;
@@ -93,6 +95,7 @@ function getClientSettingsSnapshot(): ClientSettings {
 
 function replaceClientSettingsSnapshot(settings: ClientSettings): void {
   clientSettingsSnapshot = settings;
+  replaceLoadBalancingWeights(settings.loadBalancingWeights);
   emitClientSettingsChange();
 }
 
@@ -747,6 +750,7 @@ export function updateClientSettings(patch: ClientSettingsPatch): Promise<void> 
 export function __resetClientSettingsPersistenceForTests(): void {
   clientSettingsHydrationGeneration += 1;
   clientSettingsSnapshot = DEFAULT_CLIENT_SETTINGS;
+  replaceLoadBalancingWeights(clientSettingsSnapshot.loadBalancingWeights);
   clientSettingsHydrationStatus = "pending";
   clientSettingsHydrationPromise = null;
   clientSettingsPersistenceQueue = Promise.resolve();
@@ -758,6 +762,7 @@ export function __resetClientSettingsPersistenceForTests(): void {
 export function __setClientSettingsForTests(settings: ClientSettings): void {
   clientSettingsHydrationGeneration += 1;
   clientSettingsSnapshot = settings;
+  replaceLoadBalancingWeights(settings.loadBalancingWeights);
   clientSettingsHydrationStatus = "ready";
   clientSettingsHydrationPromise = null;
 }

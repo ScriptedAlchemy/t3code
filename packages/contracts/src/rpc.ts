@@ -26,6 +26,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { CrossEnvironmentAsk, CrossEnvironmentFulfillment } from "./crossEnvironment.ts";
 import {
   CodexAuthCallbackInput,
   CodexAuthCallbackState,
@@ -588,6 +589,8 @@ export const WS_METHODS = {
   subscribeAuthAccess: "subscribeAuthAccess",
   subscribeBackgroundPolicy: "subscribeBackgroundPolicy",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
+  crossEnvironmentBridgeSubscribe: "crossEnvironment.bridge.subscribe",
+  crossEnvironmentBridgeFulfill: "crossEnvironment.bridge.fulfill",
 } as const;
 
 const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -1899,6 +1902,19 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
+const WsCrossEnvironmentBridgeSubscribeRpc = Rpc.make(WS_METHODS.crossEnvironmentBridgeSubscribe, {
+  payload: Schema.Struct({}),
+  success: CrossEnvironmentAsk,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+const WsCrossEnvironmentBridgeFulfillRpc = Rpc.make(WS_METHODS.crossEnvironmentBridgeFulfill, {
+  payload: CrossEnvironmentFulfillment,
+  success: Schema.Void,
+  error: EnvironmentAuthorizationError,
+});
+
 export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthorization>()(
   "t3/contracts/RpcScopeAuthorization",
   { error: EnvironmentAuthorizationError },
@@ -2089,6 +2105,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeAuthAccessRpc,
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
+  WsCrossEnvironmentBridgeSubscribeRpc,
+  WsCrossEnvironmentBridgeFulfillRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2StopWorkflowRpc,

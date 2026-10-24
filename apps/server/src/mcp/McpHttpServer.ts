@@ -38,6 +38,7 @@ import {
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import * as CrossEnvironmentMcpService from "./CrossEnvironmentMcpService.ts";
 import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
 import * as PreviewControlsHandlers from "./toolkits/previewControls/handlers.ts";
 import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
@@ -1028,7 +1029,7 @@ const layerPreviewControlsRegistration = toolkitRegistration(
 const layerEnvironmentToolkit = toolkitRegistration(
   EnvironmentToolkit,
   EnvironmentHandlers.layer,
-).pipe(Layer.provide(ThreadCommandExecutor.layer));
+).pipe(Layer.provide(ThreadCommandExecutor.layer), Layer.provide(CrossEnvironmentMcpService.layer));
 
 const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHandlers.layer);
 

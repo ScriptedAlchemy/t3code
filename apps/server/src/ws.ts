@@ -178,6 +178,7 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { terminalOutputStream, withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
+import * as CrossEnvironmentBridge from "./mcp/CrossEnvironmentBridge.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
@@ -1188,6 +1189,7 @@ export const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
+  crossEnvironmentBridge: CrossEnvironmentBridge.CrossEnvironmentBridge["Service"],
 ) =>
   ServerWsRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -3122,6 +3124,8 @@ export const layerWsRpc = (
               Stream.concat(Stream.make(latest), changes),
             ),
           ),
+        [WS_METHODS.crossEnvironmentBridgeSubscribe]: () => crossEnvironmentBridge.subscribe(),
+        [WS_METHODS.crossEnvironmentBridgeFulfill]: (body) => crossEnvironmentBridge.fulfill(body),
       });
       return handlers;
     }),
@@ -3138,6 +3142,7 @@ export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
+    const crossEnvironmentBridge = yield* CrossEnvironmentBridge.CrossEnvironmentBridge;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -3213,6 +3218,7 @@ export const layer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
               serverBrowser,
+              crossEnvironmentBridge,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees

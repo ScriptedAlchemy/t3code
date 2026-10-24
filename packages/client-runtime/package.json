@@ -450,6 +450,10 @@
     "./model-traits": {
       "types": "./src/modelTraits.ts",
       "default": "./src/modelTraits.ts"
+    },
+    "./cross-environment/weights": {
+      "types": "./src/crossEnvironment/weights.ts",
+      "default": "./src/crossEnvironment/weights.ts"
     }
   },
   "scripts": {

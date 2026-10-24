@@ -6,6 +6,7 @@ import {
   type RepositoryIdentity,
   type RepositoryMatchView,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
@@ -127,7 +128,7 @@ describe("resolveLaunchTarget", () => {
   it("keeps a null identity out of ActiveProject and reports a target with no key", () => {
     const shell = { id: projectId("source-proj"), repositoryIdentity: null };
     const parsed = parseSourceProject(shell);
-    if (!(parsed instanceof SourceIdentityUnresolved)) {
+    if (!Schema.is(SourceIdentityUnresolved)(parsed)) {
       expect.fail("null identity became an ActiveProject");
     }
     expect(parsed.projectId).toBe(shell.id);
@@ -248,7 +249,7 @@ describe("resolveLaunchTarget", () => {
     const cloudProject = active("cloud-proj", "github.com/org/repo");
     const callerProject = active("laptop-proj", "github.com/org/repo");
     const elsewhere = active("elsewhere", "github.com/elsewhere/repo");
-    const weights = { cloud: 10, laptop: 100 };
+    const weights: Readonly<Record<string, number>> = { cloud: 10, laptop: 100 };
     const connected = [
       peer("laptop", [callerProject], repositoryMatchView(source, [callerProject]), {
         resources: { ...resources, cpuCount: 32 },

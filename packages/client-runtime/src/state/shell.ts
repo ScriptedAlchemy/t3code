@@ -19,6 +19,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom } from "effect/reactivity";
 
+import * as EnvironmentProjectCatalog from "../crossEnvironment/catalog.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import { connectionProjectionPhase } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
@@ -406,6 +407,18 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     }),
     Effect.forkScoped,
   );
+
+  // Shell tests build this state without the catalog. Publish only when one is installed.
+  const catalog = yield* Effect.serviceOption(EnvironmentProjectCatalog.EnvironmentProjectCatalog);
+  if (Option.isSome(catalog)) {
+    const publish = (snapshot: Option.Option<OrchestrationV2ShellSnapshot>) =>
+      catalog.value.replace(environmentId, Option.isSome(snapshot) ? snapshot.value.projects : []);
+    yield* publish((yield* SubscriptionRef.get(state)).snapshot);
+    yield* SubscriptionRef.changes(state).pipe(
+      Stream.runForEach((next) => publish(next.snapshot)),
+      Effect.forkScoped,
+    );
+  }
 
   return state;
 });

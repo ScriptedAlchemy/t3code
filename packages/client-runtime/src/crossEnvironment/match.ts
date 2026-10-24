@@ -1,9 +1,11 @@
 import {
   AmbiguousRepositoryMatch,
+  classifyIdentifiedRepositories,
   EnvironmentNotConnected,
   NoEligibleEnvironment,
   ProjectMissingOnTarget,
   repositoryGroupingKeyOf,
+  repositoryMatchViewFromProjects,
   SourceIdentityUnresolved,
   TargetIsSourceEnvironment,
   UnknownEnvironment,
@@ -16,12 +18,14 @@ import {
   type RepositoryMatchView,
   type ScopedProjectRef,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 import { chooseLoadBalancedEnvironment } from "../load-balancing.ts";
 
 // A list row can say `matched` without holding this symbol, so only a fresh
 // comparison in this module can build a launch target.
 const matchedPeerProjectBrand = Symbol("MatchedPeerProject");
+const isSourceIdentityUnresolved = Schema.is(SourceIdentityUnresolved);
 
 export type MatchedPeerProject = ScopedProjectRef & {
   readonly [matchedPeerProjectBrand]: true;
@@ -35,7 +39,7 @@ export interface ActiveProject {
 
 export interface ProjectIdentityShell {
   readonly id: ProjectId;
-  readonly repositoryIdentity: RepositoryIdentity | null;
+  readonly repositoryIdentity?: RepositoryIdentity | null;
 }
 
 export interface NotConnectedPeer {
@@ -60,25 +64,8 @@ export type LaunchResolution =
   | AmbiguousRepositoryMatch
   | NoEligibleEnvironment;
 
-function classifyPeerProjects(
-  source: ActiveProject,
-  projects: readonly ActiveProject[],
-):
-  | { readonly tag: "matched"; readonly projectId: ProjectId; readonly groupingKey: string }
-  | { readonly tag: "missing"; readonly groupingKey: string }
-  | { readonly tag: "ambiguous"; readonly projectIds: readonly ProjectId[] } {
-  const groupingKey = repositoryGroupingKeyOf(source.identity);
-  const hits = projects.filter(
-    (project) => repositoryGroupingKeyOf(project.identity) === groupingKey,
-  );
-  const first = hits[0];
-  if (first === undefined) {
-    return { tag: "missing", groupingKey };
-  }
-  if (hits.length > 1) {
-    return { tag: "ambiguous", projectIds: hits.map((project) => project.id) };
-  }
-  return { tag: "matched", projectId: first.id, groupingKey };
+function classifyPeerProjects(source: ActiveProject, projects: readonly ActiveProject[]) {
+  return classifyIdentifiedRepositories(source.identity, projects);
 }
 
 function sealMatchedPeerProject(
@@ -153,7 +140,7 @@ function resolutionFromMatch(
 export function parseSourceProject(
   project: ProjectIdentityShell,
 ): ActiveProject | SourceIdentityUnresolved {
-  if (project.repositoryIdentity === null) {
+  if (project.repositoryIdentity == null) {
     return new SourceIdentityUnresolved({ projectId: project.id });
   }
   return { id: project.id, identity: project.repositoryIdentity };
@@ -165,7 +152,7 @@ export function activeProjectsFromShells(
   const active: ActiveProject[] = [];
   for (const project of projects) {
     const parsed = parseSourceProject(project);
-    if (parsed instanceof SourceIdentityUnresolved) {
+    if (isSourceIdentityUnresolved(parsed)) {
       continue;
     }
     active.push(parsed);
@@ -177,22 +164,10 @@ export function repositoryMatchView(
   source: ActiveProject | SourceIdentityUnresolved,
   projects: readonly ActiveProject[],
 ): RepositoryMatchView {
-  if (source instanceof SourceIdentityUnresolved) {
-    return { tag: "unresolved" };
+  if (isSourceIdentityUnresolved(source)) {
+    return repositoryMatchViewFromProjects(null, []);
   }
-  const classified = classifyPeerProjects(source, projects);
-  switch (classified.tag) {
-    case "matched":
-      return { tag: "matched", projectId: classified.projectId };
-    case "missing":
-      return { tag: "missing" };
-    case "ambiguous":
-      return { tag: "ambiguous", projectIds: classified.projectIds };
-    default: {
-      const unexpected: never = classified;
-      return unexpected;
-    }
-  }
+  return repositoryMatchViewFromProjects(source.identity, projects);
 }
 
 function ambiguousAmong(

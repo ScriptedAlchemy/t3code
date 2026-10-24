@@ -37,6 +37,7 @@ import {
   createRuntimeCommand,
   scheduleAtomCommandEffect,
 } from "./runtime.ts";
+import { runCrossEnvironmentBridgeClient } from "../crossEnvironment/bridgeClient.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
@@ -450,6 +451,8 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
       ),
       Effect.forkScoped,
     );
+
+    yield* runCrossEnvironmentBridgeClient().pipe(Effect.forkScoped);
 
     return state;
   },

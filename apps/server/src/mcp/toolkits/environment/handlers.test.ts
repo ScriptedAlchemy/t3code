@@ -17,6 +17,7 @@ import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Settings from "../../../serverSettings.ts";
+import * as CrossEnvironmentMcpService from "../../CrossEnvironmentMcpService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
@@ -57,6 +58,10 @@ it.effect("refuses a preferences update when the caller's turn ends while it wai
           serverVersion: "0.0.0",
           capabilities: { repositoryIdentity: false },
         }),
+      }),
+      Layer.mock(CrossEnvironmentMcpService.CrossEnvironmentMcpService)({
+        list: () => Effect.die("unused"),
+        launch: () => Effect.die("unused"),
       }),
       Layer.mock(Settings.ServerSettingsService)({
         getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
