@@ -3,6 +3,7 @@ import {
   CheckpointScopeId,
   CommandId,
   MessageId,
+  ProjectId,
   NodeId,
   ProviderSessionId,
   RunAttemptId,
@@ -118,6 +119,12 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     reason: Schema.optional(Schema.String),
   }),
   Schema.Struct({
+    type: Schema.Literal("project-knowledge.scrub-deliveries"),
+    projectId: ProjectId,
+    removalId: Schema.String,
+    afterId: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
     type: Schema.Literal("project-knowledge.extract"),
     runId: RunId,
     runOutcome: Schema.Literals(["completed", "failed", "interrupted"]),
@@ -141,6 +148,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "thread-title.generate",
   "delegated-tasks.stop",
   "project-knowledge.extract",
+  "project-knowledge.scrub-deliveries",
   "conversation-summary.generate",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
@@ -151,6 +159,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
 const SIDE_LANE_EFFECT_TYPES = [
   "thread-title.generate",
   "project-knowledge.extract",
+  "project-knowledge.scrub-deliveries",
   "conversation-summary.generate",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
@@ -158,6 +167,7 @@ const SIDE_LANE_EFFECT_TYPES = [
 // never the worker occupied by heavy model maintenance.
 const MAINTENANCE_EFFECT_TYPES = [
   "project-knowledge.extract",
+  "project-knowledge.scrub-deliveries",
   "conversation-summary.generate",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
@@ -422,7 +432,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 created_at,
                 updated_at
               )
-              VALUES (
+              SELECT
                 ${effect.id},
                 ${effect.commandId},
                 ${effect.threadId},
@@ -433,7 +443,14 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 ${DateTime.formatIso(effect.availableAt ?? now)},
                 ${nowIso},
                 ${nowIso}
-              )
+              WHERE ${effect.request.type !== "project-knowledge.scrub-deliveries" || effect.request.afterId !== undefined ? sql`1 = 1` : sql`1 = 0`}
+                OR NOT EXISTS (
+                  SELECT 1 FROM orchestration_v2_effect_outbox AS pending
+                  WHERE pending.thread_id = ${effect.threadId}
+                    AND pending.effect_type = 'project-knowledge.scrub-deliveries'
+                    AND pending.status = 'pending'
+                    AND json_extract(pending.payload_json, '$.afterId') IS NULL
+                )
               ON CONFLICT(effect_id) DO NOTHING
             `,
             { concurrency: 1, discard: true },

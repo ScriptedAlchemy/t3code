@@ -16,7 +16,10 @@ reconstructs provider-native session state, tool state, approvals, or omitted te
 Project-knowledge and conversation-summary references must revalidate their cited messages before
 expansion or replay into a new provider history. Deleted threads/projects, rolled-back runs, and
 digest mismatches make evidence unavailable; durable facts remain, but retained delivery excerpts
-and derived summary statements are scrubbed. Archive is reversible visibility, not removal.
+are scrubbed by bounded, model-free maintenance after removal commits, even if nobody reads the
+receipt. Read-time revalidation remains the safety net; references and digests survive, not the
+removed excerpts. Derived summary statements are excluded on revalidation. Archive is reversible
+visibility, not removal.
 Projection rebuilds replay deletion, correction, and run-state events in order, so the final
 projection applies the same exclusion without a second removal registry. Do not interpret this
 as recalling copies already sent to a provider.

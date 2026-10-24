@@ -50,6 +50,7 @@ import { makeStore, type HistoryRecord, type SearchReceipt } from "./persistence
 import * as HolographicMemory from "./HolographicMemory.ts";
 import { projectMemorySearchTokens } from "./holographicScoring.ts";
 import { conflictHints } from "./knowledgeConflicts.ts";
+import { DeliveryScrubRunner } from "./deliveryScrubSchedule.ts";
 
 export class ProjectKnowledge extends Context.Service<
   ProjectKnowledge,
@@ -99,6 +100,10 @@ export class ProjectKnowledge extends Context.Service<
     readonly readDeliveries: (
       input: ProjectKnowledgeReadDeliveriesInput,
     ) => Effect.Effect<ProjectKnowledgeDeliveries, ProjectKnowledgeError>;
+    readonly scrubDeliveryPage: (input: {
+      readonly projectId: ProjectId;
+      readonly afterId?: string | undefined;
+    }) => Effect.Effect<string | null, ProjectKnowledgeError>;
     /**
      * Creates an assisted proposal through the normal create path. An exact duplicate of an
      * active fact creates nothing; a near duplicate or possible conflict is created as a pending
@@ -1177,16 +1182,35 @@ const make = Effect.gen(function* () {
           reason: "source_unavailable",
         });
       items.push(
-        unavailable && !item.contentRemoved
+        unavailable &&
+          !item.contentRemoved &&
+          item.text !== "[Source unavailable: removed or changed.]"
           ? { ...item, text: "[Source unavailable: removed or changed.]" }
           : item,
       );
     }
     const checked = { ...delivery, items, omissions };
-    yield* store
-      .replaceDeliveryItems(checked, delivery)
-      .pipe(Effect.mapError(storageError(delivery.projectId)));
+    if (
+      omissions.length !== delivery.omissions.length ||
+      items.some((item, index) => item !== delivery.items[index])
+    )
+      yield* store
+        .replaceDeliveryItems(checked, delivery)
+        .pipe(Effect.mapError(storageError(delivery.projectId)));
     return checked;
+  });
+  const scrubDeliveryPage: ProjectKnowledge["Service"]["scrubDeliveryPage"] = Effect.fn(
+    "ProjectKnowledge.scrubDeliveryPage",
+  )(function* (input) {
+    // Each continuation releases the maintenance worker instead of walking a whole project.
+    const limit = 50;
+    const rows = yield* store
+      .deliveryPage(input.projectId, input.afterId, limit)
+      .pipe(Effect.mapError(storageError(input.projectId)));
+    yield* Effect.forEach(rows, revalidateDelivery, { discard: true }).pipe(
+      Effect.mapError(storageError(input.projectId)),
+    );
+    return rows.length === limit ? rows[rows.length - 1]!.attemptId : null;
   });
   const readSentDeliveries: ProjectKnowledge["Service"]["readSentDeliveries"] = Effect.fn(
     "ProjectKnowledge.readSentDeliveries",
@@ -1428,9 +1452,14 @@ const make = Effect.gen(function* () {
     recordDelivery,
     readDeliveries,
     readSentDeliveries,
+    scrubDeliveryPage,
     proposeAssisted,
     hasAssistedRun,
     recordAssistedRun,
   });
 });
 export const layer = Layer.effect(ProjectKnowledge, make);
+export const layerDeliveryScrubber = Layer.effect(
+  DeliveryScrubRunner,
+  Effect.map(ProjectKnowledge, (knowledge) => ({ scrubPage: knowledge.scrubDeliveryPage })),
+);
