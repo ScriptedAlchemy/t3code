@@ -14,10 +14,6 @@ import { OrchestrationV2RunStatus } from "./orchestrationV2.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
 import { HostResourcesSnapshot } from "./resourceTelemetry.ts";
 
-/**
- * Presentation phases other than `connected`. Kept in sync with
- * `EnvironmentConnectionPhase` by a check in the client matcher.
- */
 export const DisconnectedEnvironmentPhase = Schema.Literals([
   "available",
   "offline",

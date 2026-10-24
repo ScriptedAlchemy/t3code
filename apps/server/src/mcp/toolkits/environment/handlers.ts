@@ -75,9 +75,8 @@ export const layer = McpToolAccess.toLayer(
         Effect.gen(function* () {
           const scope = yield* McpInvocationContext.McpInvocationContext;
           const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
-          const update = Effect.gen(function* () {
-            // The turn may have ended, or the thread's modes changed, while this waited for the lock.
-            yield* check;
+      const update = Effect.gen(function* () {
+        yield* check;
             const { settings } = yield* access;
             return preferences(
               yield* settings.updateSettings(patch).pipe(Effect.mapError(unavailable)),

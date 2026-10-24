@@ -109,8 +109,6 @@ export const runCrossEnvironmentBridgeClient = Effect.fn("CrossEnvironmentBridge
     if (Option.isNone(registry) || Option.isNone(catalog) || Option.isNone(placement)) {
       return;
     }
-    // Server-config tests omit this runtime. Providing the instances found above
-    // keeps their requirements off that state.
     yield* subscribe(WS_METHODS.crossEnvironmentBridgeSubscribe, {}).pipe(
       Stream.runForEach((ask) => answer(ask)),
       Effect.catchCause((cause) =>

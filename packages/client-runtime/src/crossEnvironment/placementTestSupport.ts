@@ -157,7 +157,6 @@ export const makePlacementRegistry = Effect.fn("TestCrossEnvironment.makeRegistr
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
       );
     },
-    // Placement calls entries, state, and run. The rest of the registry is unused here.
   } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"];
   return { launches, registry };
 });

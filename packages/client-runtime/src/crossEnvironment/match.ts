@@ -22,8 +22,6 @@ import * as Schema from "effect/Schema";
 
 import { chooseLoadBalancedEnvironment } from "../load-balancing.ts";
 
-// A list row can say `matched` without holding this symbol, so only a fresh
-// comparison in this module can build a launch target.
 const matchedPeerProjectBrand = Symbol("MatchedPeerProject");
 const isSourceIdentityUnresolved = Schema.is(SourceIdentityUnresolved);
 
@@ -238,7 +236,6 @@ export function resolveLaunchTarget(input: {
       if (chosen === undefined) {
         return new NoEligibleEnvironment();
       }
-      // The tag only decided who was scored. The brand comes from this match.
       return resolutionFromMatch(input.source, chosen.environmentId, chosen.projects);
     }
     default: {

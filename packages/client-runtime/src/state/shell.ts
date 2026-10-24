@@ -408,7 +408,6 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     Effect.forkScoped,
   );
 
-  // Shell tests build this state without the catalog. Publish only when one is installed.
   const catalog = yield* Effect.serviceOption(EnvironmentProjectCatalog.EnvironmentProjectCatalog);
   if (Option.isSome(catalog)) {
     const publish = (snapshot: Option.Option<OrchestrationV2ShellSnapshot>) =>
