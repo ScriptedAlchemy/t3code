@@ -20,6 +20,8 @@ import { parseSourceProject } from "./match.ts";
 import * as CrossEnvironmentPlacement from "./placement.ts";
 import { hostResources, makePlacementRegistry, projectShell } from "./placementTestSupport.ts";
 
+const isSourceIdentityUnresolved = Schema.is(SourceIdentityUnresolved);
+
 const callerId = EnvironmentId.make("environment:caller");
 const destId = EnvironmentId.make("environment:dest");
 const sourceProjectId = ProjectId.make("project-source");
@@ -42,7 +44,7 @@ const activeSource = () => {
     id: sourceShell.id,
     repositoryIdentity: sourceShell.repositoryIdentity ?? null,
   });
-  if (Schema.is(SourceIdentityUnresolved)(source)) {
+  if (isSourceIdentityUnresolved(source)) {
     throw new Error("source project has no repository identity");
   }
   return source;

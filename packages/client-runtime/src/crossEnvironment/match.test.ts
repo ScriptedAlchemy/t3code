@@ -24,6 +24,8 @@ import {
 } from "./match.ts";
 import * as MatchModule from "./match.ts";
 
+const isSourceIdentityUnresolved = Schema.is(SourceIdentityUnresolved);
+
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
     ? true
@@ -128,7 +130,7 @@ describe("resolveLaunchTarget", () => {
   it("keeps a null identity out of ActiveProject and reports a target with no key", () => {
     const shell = { id: projectId("source-proj"), repositoryIdentity: null };
     const parsed = parseSourceProject(shell);
-    if (!Schema.is(SourceIdentityUnresolved)(parsed)) {
+    if (!isSourceIdentityUnresolved(parsed)) {
       expect.fail("null identity became an ActiveProject");
     }
     expect(parsed.projectId).toBe(shell.id);

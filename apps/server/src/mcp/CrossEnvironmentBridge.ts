@@ -130,25 +130,24 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const wait = (ask: CrossEnvironmentAsk) =>
-    Effect.gen(function* () {
-      const deferred = yield* Deferred.make<LaunchWaitResult, CrossEnvironmentFailure>();
-      const offered = yield* withLock(
-        Effect.gen(function* () {
-          const current = yield* Ref.get(state);
-          if (current.subscriber === null) {
-            return false;
-          }
-          current.pending.set(ask.requestId, { ask, deferred });
-          yield* Queue.offer(current.subscriber.queue, ask);
-          return true;
-        }),
-      );
-      if (!offered) {
-        return yield* new PeerCatalogUnavailable();
-      }
-      return yield* Deferred.await(deferred);
-    });
+  const wait = Effect.fn("CrossEnvironmentBridge.wait")(function* (ask: CrossEnvironmentAsk) {
+    const deferred = yield* Deferred.make<LaunchWaitResult, CrossEnvironmentFailure>();
+    const offered = yield* withLock(
+      Effect.gen(function* () {
+        const current = yield* Ref.get(state);
+        if (current.subscriber === null) {
+          return false;
+        }
+        current.pending.set(ask.requestId, { ask, deferred });
+        yield* Queue.offer(current.subscriber.queue, ask);
+        return true;
+      }),
+    );
+    if (!offered) {
+      return yield* new PeerCatalogUnavailable();
+    }
+    return yield* Deferred.await(deferred);
+  });
 
   const askList = Effect.fn("CrossEnvironmentBridge.askList")(function* (input: {
     readonly callerEnvironmentId: EnvironmentId;

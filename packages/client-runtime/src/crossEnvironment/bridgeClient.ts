@@ -1,5 +1,4 @@
 import {
-  CrossEnvironmentLaunchRejected,
   SourceIdentityUnresolved,
   WS_METHODS,
   type CrossEnvironmentAsk,
@@ -19,6 +18,8 @@ import { requestGuarded, subscribe } from "../rpc/client.ts";
 import * as EnvironmentProjectCatalog from "./catalog.ts";
 import { parseSourceProject, type ActiveProject } from "./match.ts";
 import * as CrossEnvironmentPlacement from "./placement.ts";
+
+const isSourceIdentityUnresolved = Schema.is(SourceIdentityUnresolved);
 
 const lookupSource = (
   shells: readonly OrchestrationProjectShell[],
@@ -44,7 +45,7 @@ const respond = Effect.fn("CrossEnvironmentBridgeClient.respond")(function* (
       return { requestId: ask.requestId, op: "list" as const, result };
     }
     case "launch": {
-      if (Schema.is(SourceIdentityUnresolved)(source)) {
+      if (isSourceIdentityUnresolved(source)) {
         return yield* source;
       }
       if (source === null) {

@@ -42,6 +42,8 @@ import {
 import * as EnvironmentProjectCatalog from "./catalog.ts";
 import { readLoadBalancingWeights } from "./weights.ts";
 
+const isSourceIdentityUnresolved = Schema.is(SourceIdentityUnresolved);
+
 export class CrossEnvironmentPlacement extends Context.Service<
   CrossEnvironmentPlacement,
   {
@@ -180,7 +182,7 @@ const make = Effect.gen(function* () {
     readonly runtimeMode: RuntimeMode;
     readonly interactionMode: ProviderInteractionMode;
   }) {
-    if (Schema.is(SourceIdentityUnresolved)(input.source)) {
+    if (isSourceIdentityUnresolved(input.source)) {
       return yield* input.source;
     }
     const observed = yield* observe({ source: input.source });
