@@ -5,6 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeReadline from "node:readline";
 import * as NodeURL from "node:url";
 import * as NodeWorkerThreads from "node:worker_threads";
 
@@ -1286,6 +1287,8 @@ it.effect("removes the index an older version kept in the control directory", ()
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
       assert.deepEqual((yield* Effect.promise(() => NodeFSP.readdir(control))).toSorted(), [
         ".gitignore",
+        "build.lock",
+        "building.lock",
         "published",
       ]);
     }),
@@ -1460,6 +1463,171 @@ it.effect("deletes a retired generation only after its last reader finishes", ()
       const answer = yield* Fiber.join(reader);
       assert.deepInclude(answer.index, { generation: 1, state: "stale" });
       assert.deepEqual(yield* generations(), [".codegraph-t3-g3"]);
+    }),
+  ),
+);
+
+const indexLocksModule = new URL("./codeIndexLocks.ts", import.meta.url).href;
+
+/**
+ * Another server process on the same checkout. It takes the index locks the way a server does,
+ * one stdin command at a time: `lock` the build, `pin` the published generation, or `release`.
+ */
+function otherServerProcess(root: string) {
+  return Effect.acquireRelease(
+    Effect.promise(async () => {
+      const child = NodeChildProcess.spawn(
+        process.execPath,
+        [
+          "--experimental-strip-types",
+          "--no-warnings",
+          "--input-type=module",
+          "-e",
+          `const locks = await import(process.argv[1]);
+           const checkout = process.argv[2];
+           const held = [];
+           const commands = {
+             lock: () => {
+               const release = locks.tryLockBuild(checkout);
+               if (release === null) return "busy";
+               held.push(release);
+               return "locked";
+             },
+             pin: () => {
+               const pin = locks.pinPublishedGeneration(checkout);
+               held.push(pin.release);
+               return "pinned " + pin.generation;
+             },
+             release: () => {
+               for (const release of held.splice(0)) release();
+               return "released";
+             },
+           };
+           const lines = (await import("node:readline")).createInterface({ input: process.stdin });
+           lines.on("line", (command) => process.stdout.write(commands[command]() + "\\n"));
+           process.stdout.write("ready\\n");`,
+          indexLocksModule,
+          root,
+        ],
+        { stdio: ["pipe", "pipe", "pipe"] },
+      );
+      let stderr = "";
+      child.stderr.on("data", (chunk) => (stderr += chunk));
+      const replies: Array<{ resolve: (line: string) => void; reject: (error: Error) => void }> =
+        [];
+      NodeReadline.createInterface({ input: child.stdout }).on("line", (line) =>
+        replies.shift()?.resolve(line),
+      );
+      const exited = new Promise<void>((resolve) =>
+        child.once("exit", () => {
+          for (const reply of replies.splice(0)) reply.reject(new Error(stderr));
+          resolve();
+        }),
+      );
+      const nextReply = () =>
+        new Promise<string>((resolve, reject) => replies.push({ resolve, reject }));
+      assert.equal(await nextReply(), "ready");
+      return {
+        child,
+        exited,
+        send: (command: string) => {
+          const reply = nextReply();
+          child.stdin.write(`${command}\n`);
+          return reply;
+        },
+      };
+    }),
+    ({ child, exited }) =>
+      Effect.promise(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        return exited;
+      }),
+  ).pipe(
+    Effect.map(({ child, exited, send }) => ({
+      send: (command: "lock" | "pin" | "release") => Effect.promise(() => send(command)),
+      crash: Effect.promise(() => {
+        child.kill("SIGKILL");
+        return exited;
+      }),
+    })),
+  );
+}
+
+function editDefinition(root: string, body: string) {
+  return Effect.promise(() =>
+    NodeFSP.writeFile(
+      NodePath.join(root, "src/defs.ts"),
+      `export function greet() { return "${body}"; }\n`,
+    ),
+  );
+}
+
+it.effect("refuses to build while another server process builds the checkout", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const other = yield* otherServerProcess(fixture.root);
+      const { run, refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"]);
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      yield* editDefinition(fixture.root, "second");
+
+      assert.equal(yield* other.send("lock"), "locked");
+      // The other process never finishes, so a refresh that waited for it would hang here.
+      assert.deepEqual(yield* refresh(), { _tag: "BuildingElsewhere" });
+      assert.deepInclude((yield* run({ operation: "freshness" })).index, {
+        state: "stale",
+        generation: 1,
+        refresh: "building",
+      });
+      assert.deepEqual(yield* Effect.promise(() => generationDirectories(fixture.root)), [
+        ".codegraph-t3-g1",
+      ]);
+
+      assert.equal(yield* other.send("release"), "released");
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
+      assert.notProperty((yield* run({ operation: "freshness" })).index, "refresh");
+    }),
+  ),
+);
+
+it.effect("keeps a generation another server process reads until that reader releases it", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const other = yield* otherServerProcess(fixture.root);
+      const { refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"]);
+      const generations = () => Effect.promise(() => generationDirectories(fixture.root));
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      assert.equal(yield* other.send("pin"), "pinned 1");
+
+      yield* editDefinition(fixture.root, "second");
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
+      assert.deepEqual(yield* generations(), [".codegraph-t3-g1", ".codegraph-t3-g2"]);
+      yield* editDefinition(fixture.root, "third");
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 3 });
+      assert.deepEqual(yield* generations(), [".codegraph-t3-g1", ".codegraph-t3-g3"]);
+
+      // The reader's own release removes the generation it was the last to read.
+      assert.equal(yield* other.send("release"), "released");
+      assert.deepEqual(yield* generations(), [".codegraph-t3-g3"]);
+    }),
+  ),
+);
+
+it.effect("recovers the build lock and reader of a server process that crashed", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const other = yield* otherServerProcess(fixture.root);
+      const { refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"]);
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      assert.equal(yield* other.send("pin"), "pinned 1");
+      assert.equal(yield* other.send("lock"), "locked");
+      yield* editDefinition(fixture.root, "second");
+      assert.deepEqual(yield* refresh(), { _tag: "BuildingElsewhere" });
+
+      yield* other.crash;
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
+      assert.deepEqual(yield* Effect.promise(() => generationDirectories(fixture.root)), [
+        ".codegraph-t3-g2",
+      ]);
     }),
   ),
 );
