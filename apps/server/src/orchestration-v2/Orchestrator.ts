@@ -150,6 +150,7 @@ import {
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
+import { assistedLearningEffects } from "../project/knowledge/assistedLearningSchedule.ts";
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -9318,6 +9319,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     >;
     readonly projection: Pick<
       OrchestrationV2ThreadProjection,
+      | "thread"
       | "runs"
       | "attempts"
       | "nodes"
@@ -9473,6 +9475,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         completedAt: input.now,
       },
     });
+    const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+    yield* Ref.update(input.effects, (effects) => [
+      ...effects,
+      ...assistedLearningEffects({
+        settings,
+        projectId: input.projection.thread.projectId,
+        threadId: input.command.threadId,
+        runId: run.id,
+        status: "interrupted",
+      }),
+    ]);
     const scopeId = rootNode.checkpointScopeId;
     if (scopeId !== null) {
       yield* Ref.update(input.effects, (effects) => [

@@ -621,6 +621,65 @@ describe("handoff delivery", () => {
     }),
   );
 
+  it.effect("renders as-sent evidence with its message once, within budget, and not on retry", () =>
+    Effect.gen(function* () {
+      let durable = handoff;
+      const evidenceRequests: Array<ReadonlyArray<string>> = [];
+      const injected: Array<ProviderAdapter.ProviderAdapterV2HistoricalContext> = [];
+      const input = {
+        providerThread,
+        budget: 2_500,
+        alreadyDeliveredItemIds: new Set<string>(),
+        evidence: (candidates: ReadonlyArray<OrchestrationV2HistoricalMessage>) =>
+          Effect.sync(() => {
+            evidenceRequests.push(candidates.map((candidate) => candidate.itemId));
+            return new Map([["item:one", "AS-SENT EXCERPT"]]);
+          }),
+        inject: (value: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
+          Effect.sync(() => {
+            injected.push(value);
+            return true;
+          }),
+        persist: (value: OrchestrationV2ContextHandoff) =>
+          Effect.sync(() => {
+            durable = value;
+          }),
+      };
+      yield* deliverContextHandoffs({ ...input, handoffs: [durable, durable] });
+      const serialized = yield* encodeJson(
+        historyResponseItems(injected[0]!.messages, injected[0]!.context),
+      );
+      assert.equal(serialized.split("AS-SENT EXCERPT").length - 1, 1);
+      assert.equal(
+        injected[0]!.messages.find((item) => item.itemId === "item:one")?.text,
+        `${messages[0]!.text}\n\nAS-SENT EXCERPT`,
+      );
+      assert.isAtMost(historyCost(injected[0]!.messages, injected[0]!.context), 2_500);
+      assert.equal(durable.history?.messages[0]?.text, messages[0]!.text);
+      yield* deliverContextHandoffs({ ...input, handoffs: [durable] });
+      assert.lengthOf(injected, 1);
+      assert.deepEqual(evidenceRequests, [["item:one", "item:two"]]);
+
+      // A native conversation that already holds the message never asks for its evidence.
+      const { inject: _inject, ...inline } = input;
+      const fresh = yield* deliverContextHandoffs({
+        ...inline,
+        handoffs: [handoff],
+        alreadyDeliveredItemIds: new Set(["item:one"]),
+      });
+      assert.notInclude(fresh.context, "AS-SENT EXCERPT");
+      assert.deepEqual(evidenceRequests.at(-1), ["item:two"]);
+
+      const oversized = yield* deliverContextHandoffs({
+        ...inline,
+        handoffs: [handoff],
+        evidence: () => Effect.succeed(new Map([["item:one", "x".repeat(5_000)]])),
+      });
+      assert.notInclude(oversized.context, messages[0]!.text);
+      assert.include(oversized.context, "Partial work");
+    }),
+  );
+
   it.effect("fails before delivery when even the coverage marker cannot fit", () =>
     Effect.gen(function* () {
       let calls = 0;

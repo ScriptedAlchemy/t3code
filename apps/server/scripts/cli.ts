@@ -11,6 +11,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../../scripts/lib/brand-assets.ts";
 import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-executable-imports.ts";
+import { stageProjectMemory } from "../../../scripts/lib/project-memory-build.ts";
 import rootPackageJson from "../../../package.json" with { type: "json" };
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import {
@@ -86,6 +87,11 @@ const buildCmd = Command.make(
         }),
       );
 
+      yield* stageProjectMemory({
+        repoRoot,
+        outputDir: path.join(serverDir, "dist/project-memory"),
+      });
+
       const webDist = path.join(repoRoot, "apps/web/dist");
       const clientTarget = path.join(serverDir, "dist/client");
 
@@ -136,6 +142,23 @@ const buildExeCmd = Command.make(
         }),
       );
 
+      const workerOutput = path.join(serverDir, "dist-exe-code-intelligence-worker");
+      yield* Effect.addFinalizer(() =>
+        fs.remove(workerOutput, { recursive: true, force: true }).pipe(Effect.ignore),
+      );
+      yield* runCommand(
+        ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+          cwd: serverDir,
+          env: {
+            ...process.env,
+            T3CODE_PACK_CODE_INTELLIGENCE_WORKER: "1",
+          },
+          stdout: config.verbose ? "inherit" : "ignore",
+          stderr: "inherit",
+          shell: spawnCommand.shell,
+        }),
+      );
+
       // The executable can only `import` built-ins. A file-backed import
       // passes the bundler and `node dist/bin.mjs`, then throws inside the
       // binary, so read the emitted module graph rather than trusting config.
@@ -144,8 +167,24 @@ const buildExeCmd = Command.make(
       if (specifiers.length > 0) {
         return yield* new ServerCliExecutableImportError({ bundlePath, specifiers });
       }
+      const workerBundlePath = path.join(workerOutput, "codeIntelligenceWorkerThread.mjs");
+      const workerSpecifiers = findEsmImportsOfExternalPackages(
+        yield* fs.readFileString(workerBundlePath),
+      );
+      if (workerSpecifiers.length > 0) {
+        return yield* new ServerCliExecutableImportError({
+          bundlePath: workerBundlePath,
+          specifiers: workerSpecifiers,
+        });
+      }
+      const workerTarget = path.join(
+        serverDir,
+        "dist-exe/project/knowledge/codeIntelligenceWorkerThread.mjs",
+      );
+      yield* fs.makeDirectory(path.dirname(workerTarget), { recursive: true });
+      yield* fs.copyFile(workerBundlePath, workerTarget);
       yield* Effect.log(
-        "[cli] Built dist-exe/t3 (expects client/, resource-monitor/, and the runtime-external node_modules beside it; scripts/build-cli-archive.ts assembles that tree)",
+        "[cli] Built dist-exe/t3 and its code-intelligence worker (expects client/, resource-monitor/, and the runtime-external node_modules beside it; scripts/build-cli-archive.ts assembles that tree)",
       );
     }),
 ).pipe(

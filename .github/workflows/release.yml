@@ -366,6 +366,11 @@ jobs:
       - name: Install Chromium for server browser integration tests
         run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
 
+      - name: Setup Rust for server addons
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
       - name: Test
         run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
 
@@ -556,6 +561,11 @@ jobs:
       # plus the web client and apps/desktop/dist-electron the Electron main.
       # The release channel is already stable, nightly, or preview. Builds in
       # other repositories report "dev" telemetry.
+      - name: Setup Rust for server addons
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
       - name: Build JS bundle
         env:
           T3CODE_TELEMETRY_CHANNEL: ${{ github.repository == 'pingdotgg/t3code' && needs.preflight.outputs.release_channel || 'dev' }}

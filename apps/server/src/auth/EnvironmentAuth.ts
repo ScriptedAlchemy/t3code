@@ -1,6 +1,7 @@
 import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
+  AuthFilesystemReadScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSettingsWriteScope,
@@ -81,20 +82,22 @@ export const mcpClientScopes = (
   access: AuthMcpClientAccess,
 ): ReadonlyArray<AuthEnvironmentScope> =>
   access === "read-only"
-    ? [AuthOrchestrationReadScope]
+    ? [AuthOrchestrationReadScope, AuthFilesystemReadScope]
     : access === "full-access"
       ? [
           AuthOrchestrationReadScope,
+          AuthFilesystemReadScope,
           AuthOrchestrationOperateScope,
           AuthSettingsWriteScope,
           AuthSourceControlWriteScope,
         ]
-      : [AuthOrchestrationReadScope, AuthOrchestrationOperateScope];
+      : [AuthOrchestrationReadScope, AuthOrchestrationOperateScope, AuthFilesystemReadScope];
 
 export interface McpClientSession {
   readonly sessionId: AuthSessionId;
   readonly label: string;
   readonly access: AuthMcpClientAccess;
+  readonly filesystemRead: boolean;
 }
 
 export interface AuthenticatedSession {
@@ -1274,6 +1277,7 @@ export const make = Effect.gen(function* () {
               access: session.scopes.includes(AuthOrchestrationOperateScope)
                 ? (session.runtimeModeCeiling ?? "approval-required")
                 : "read-only",
+              filesystemRead: session.scopes.includes(AuthFilesystemReadScope),
             } satisfies McpClientSession)
           : Effect.fail(
               new ServerAuthInvalidCredentialError({

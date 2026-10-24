@@ -1,3 +1,10 @@
+import * as HolographicMemory from "./project/knowledge/HolographicMemory.ts";
+import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
+import * as AssistedLearning from "./project/knowledge/AssistedLearning.ts";
+import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
+import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
+import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
+import * as FileHistory from "./project/knowledge/FileHistory.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
@@ -507,6 +514,13 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
       Layer.provide(RuntimeLayer.layerProjectService),
     ),
   ),
+  Layer.provide(
+    AssistedLearning.layerRunner.pipe(
+      Layer.provide(Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer)),
+    ),
+  ),
+  Layer.provide(ConversationSummaries.layerRuntime),
+  Layer.provide(ProjectKnowledge.layerDeliveryScrubber),
 );
 
 const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
@@ -605,6 +619,18 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
+  Layer.provideMerge(
+    ConversationSummaries.layer.pipe(
+      Layer.provide(Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer)),
+    ),
+  ),
+  Layer.provideMerge(ProjectLoom.layer),
+  Layer.provideMerge(
+    ProjectKnowledge.layer.pipe(
+      Layer.provide(ProjectionStoreV2.layer),
+      Layer.provide(HolographicMemory.layer),
+    ),
+  ),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(layerServerSettings),
   Layer.provideMerge(layerGit),
@@ -667,7 +693,12 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
+const layerCodeIntelligence = Layer.mergeAll(CodeIntelligence.layer, FileHistory.layer).pipe(
+  Layer.provideMerge(Layer.mergeAll(ProjectStore.layer, ProjectionStoreV2.layer, layerWorkspace)),
+);
+
 const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
+  Layer.provideMerge(layerCodeIntelligence),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),

@@ -57,6 +57,13 @@ describe("summarizeT3ToolCalls", () => {
     });
   });
 
+  it("summarizes project code graph queries", () => {
+    expect(summarizeT3ToolCalls("project-code-query", [completed({}, { nodes: [] })])).toEqual({
+      label: "Queried project code 1 time",
+      failedCount: 0,
+    });
+  });
+
   it("does not confuse a child's failure or wait timeout with failure of the orchestration call", () => {
     const failedChild = { taskId: "task-1", status: "failed", summary: "command not found" };
     expect(

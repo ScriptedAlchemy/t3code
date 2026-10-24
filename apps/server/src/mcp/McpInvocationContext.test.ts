@@ -40,6 +40,12 @@ it.effect("reports other missing capabilities with the neutral error", () => {
       Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
     );
     expect(scope).toBe(invocation);
+
+    const projectCodeError = yield* McpInvocationContext.requireMcpCapability("project-code").pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+      Effect.flip,
+    );
+    expect(projectCodeError).toMatchObject({ capability: "project-code" });
   });
 });
 

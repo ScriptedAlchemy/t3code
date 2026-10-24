@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off - Node's typed junction API avoids Windows symlink privileges while keeping the probe isolated.
 
+import { stageProjectMemory } from "./lib/project-memory-build.ts";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeCrypto from "node:crypto";
 import * as NodeModule from "node:module";
@@ -3172,6 +3173,11 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   const serverStageDir = path.join(input.stageRoot, "server");
   yield* fs.makeDirectory(path.join(serverStageDir, "apps/server"), { recursive: true });
   yield* fs.copy(input.serverDistDir, path.join(serverStageDir, "apps/server/dist"));
+  yield* stageProjectMemory({
+    repoRoot: input.repoRoot,
+    outputDir: path.join(serverStageDir, "apps/server/dist/project-memory"),
+    targets: resolveResourceMonitorRustTargets("win", input.arch),
+  });
 
   const sidecarDependencies = {
     ...input.runtimeExternalDependencies,
@@ -3810,6 +3816,11 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   }
   if (options.platform !== "win") {
     yield* fs.copy(distDirs.serverDist, path.join(stageAppDir, "apps/server/dist"));
+    yield* stageProjectMemory({
+      repoRoot,
+      outputDir: path.join(stageAppDir, "apps/server/dist/project-memory"),
+      targets: resolveResourceMonitorRustTargets(options.platform, options.arch),
+    });
   }
   yield* stageResourceMonitor({
     repoRoot,

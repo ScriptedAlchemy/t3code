@@ -1,3 +1,4 @@
+import * as ProjectKnowledge from "../project/knowledge/ProjectKnowledge.ts";
 import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
@@ -273,7 +274,7 @@ const moveProject = (projectId: ProjectId, workspaceRoot: string, updatedAt: str
   );
 
 const layerTest = Layer.mergeAll(
-  RuntimeLayer.layer,
+  RuntimeLayer.layer.pipe(Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({}))),
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,
@@ -293,6 +294,7 @@ const layerTest = Layer.mergeAll(
 );
 
 const layerLegacyImportTest = RuntimeLayer.layer.pipe(
+  Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
   Layer.provideMerge(SqlitePersistence.layerMemory),
@@ -330,7 +332,10 @@ const layerResourceCleanupTest = ResourceCleanupService.layer.pipe(
 );
 
 const layerProjectDeletionTest = Layer.mergeAll(
-  RuntimeLayer.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
+  RuntimeLayer.layer.pipe(
+    Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
+    Layer.provide(RuntimeLayer.layerProjectService),
+  ),
   RuntimeLayer.layerProjectService,
   RuntimeLayer.layerEventSink,
   ThreadCommandExecutor.layer,
@@ -597,7 +602,10 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
 });
 
 const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
-  RuntimeLayer.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
+  RuntimeLayer.layer.pipe(
+    Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
+    Layer.provide(RuntimeLayer.layerProjectService),
+  ),
   RuntimeLayer.layerProjectService,
   RuntimeLayer.layerEventSink,
   RuntimeLayer.layerEventInfrastructure,
@@ -6467,7 +6475,7 @@ const queueResumeDisabledInstanceProjectId = ProjectId.make(
 );
 
 const layerQueueResumeDisabledInstanceTest = Layer.mergeAll(
-  RuntimeLayer.layer,
+  RuntimeLayer.layer.pipe(Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({}))),
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,

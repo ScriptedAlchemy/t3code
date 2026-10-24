@@ -1,3 +1,4 @@
+import { ProjectMemoryPanel } from "../projectKnowledge/ProjectMemoryPanel";
 import type {
   EditorId,
   EnvironmentId,
@@ -22,6 +23,8 @@ import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { ThreadCodeIndexRow } from "./ThreadCodeIndexRow";
+import { ThreadConversationSummariesRow } from "./ThreadConversationSummariesRow";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -154,6 +157,22 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   onDeleteScript={props.onDeleteProjectScript}
                 />
               ) : null}
+
+              {density === "full" && props.isServerThread && !props.draftId ? (
+                <ThreadCodeIndexRow
+                  environmentId={props.environmentId}
+                  projectId={props.projectId}
+                  threadId={props.threadId}
+                />
+              ) : null}
+
+              {density === "full" && props.isServerThread && !props.draftId ? (
+                <ThreadConversationSummariesRow
+                  environmentId={props.environmentId}
+                  projectId={props.projectId}
+                  threadId={props.threadId}
+                />
+              ) : null}
             </div>
           </ThreadDetailsSection>
 
@@ -182,6 +201,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             </ThreadDetailsSection>
           ) : null}
 
+          <ProjectMemoryPanel environmentId={props.environmentId} projectId={props.projectId} />
           {density === "full" && !props.draftId ? (
             <ThreadAutomationsPanel environmentId={props.environmentId} threadId={props.threadId} />
           ) : null}

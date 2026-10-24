@@ -3,6 +3,7 @@ import {
   CheckpointScopeId,
   CommandId,
   MessageId,
+  ProjectId,
   NodeId,
   ProviderSessionId,
   RunAttemptId,
@@ -117,6 +118,21 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("delegated-tasks.stop"),
     reason: Schema.optional(Schema.String),
   }),
+  Schema.Struct({
+    type: Schema.Literal("project-knowledge.scrub-deliveries"),
+    projectId: ProjectId,
+    removalId: Schema.String,
+    afterId: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("project-knowledge.extract"),
+    runId: RunId,
+    runOutcome: Schema.Literals(["completed", "failed", "interrupted"]),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("conversation-summary.generate"),
+    runId: RunId,
+  }),
 ]);
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
@@ -131,6 +147,28 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "attachment.cleanup",
   "thread-title.generate",
   "delegated-tasks.stop",
+  "project-knowledge.extract",
+  "project-knowledge.scrub-deliveries",
+  "conversation-summary.generate",
+] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+
+/**
+ * Model calls that run beside the thread's serial lane, each on its own per-thread lane, so a
+ * slow generation never holds back the thread's next turn.
+ */
+const SIDE_LANE_EFFECT_TYPES = [
+  "thread-title.generate",
+  "project-knowledge.extract",
+  "project-knowledge.scrub-deliveries",
+  "conversation-summary.generate",
+] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+
+// Short, user-visible titles retain their side-lane ordering but share turn capacity,
+// never the worker occupied by heavy model maintenance.
+const MAINTENANCE_EFFECT_TYPES = [
+  "project-knowledge.extract",
+  "project-knowledge.scrub-deliveries",
+  "conversation-summary.generate",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const PROCESS_BOUND_EFFECT_TYPES = [
@@ -229,6 +267,7 @@ export interface EffectOutboxV2Shape {
     readonly workerId: string;
     readonly leaseDurationMs: number;
     readonly excludeRestartContinuations?: boolean;
+    readonly lane?: "turn" | "maintenance";
   }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly nextClaimableAt: Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
   readonly succeed: (input: {
@@ -348,13 +387,13 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             )
             AND (
               (
-                candidate.effect_type = 'thread-title.generate'
-                AND active.effect_type = 'thread-title.generate'
+                candidate.effect_type IN ${sql.in(SIDE_LANE_EFFECT_TYPES)}
+                AND active.effect_type = candidate.effect_type
               )
               OR
               (
-                candidate.effect_type != 'thread-title.generate'
-                AND active.effect_type != 'thread-title.generate'
+                candidate.effect_type NOT IN ${sql.in(SIDE_LANE_EFFECT_TYPES)}
+                AND active.effect_type NOT IN ${sql.in(SIDE_LANE_EFFECT_TYPES)}
               )
             )
         )
@@ -393,7 +432,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 created_at,
                 updated_at
               )
-              VALUES (
+              SELECT
                 ${effect.id},
                 ${effect.commandId},
                 ${effect.threadId},
@@ -404,7 +443,14 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 ${DateTime.formatIso(effect.availableAt ?? now)},
                 ${nowIso},
                 ${nowIso}
-              )
+              WHERE ${effect.request.type !== "project-knowledge.scrub-deliveries" || effect.request.afterId !== undefined ? sql`1 = 1` : sql`1 = 0`}
+                OR NOT EXISTS (
+                  SELECT 1 FROM orchestration_v2_effect_outbox AS pending
+                  WHERE pending.thread_id = ${effect.threadId}
+                    AND pending.effect_type = 'project-knowledge.scrub-deliveries'
+                    AND pending.status = 'pending'
+                    AND json_extract(pending.payload_json, '$.afterId') IS NULL
+                )
               ON CONFLICT(effect_id) DO NOTHING
             `,
             { concurrency: 1, discard: true },
@@ -530,7 +576,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       ),
       // The worker polls for the next effect even when there is no work to claim.
       claimNext: Effect.fnUntraced(
-        function* ({ workerId, leaseDurationMs, excludeRestartContinuations = false }) {
+        function* ({ workerId, leaseDurationMs, excludeRestartContinuations = false, lane }) {
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
           const leaseExpiresAt = DateTime.formatIso(
@@ -552,6 +598,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               SELECT candidate.effect_id
               FROM orchestration_v2_effect_outbox AS candidate
               WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations)}
+                AND ${lane === undefined ? sql`1 = 1` : lane === "maintenance" ? sql`candidate.effect_type IN ${sql.in(MAINTENANCE_EFFECT_TYPES)}` : sql`candidate.effect_type NOT IN ${sql.in(MAINTENANCE_EFFECT_TYPES)}`}
                 AND ${excludeRestartContinuations ? sql`candidate.effect_type != 'provider-runtime.continue'` : sql`1 = 1`}
               ORDER BY candidate.available_at ASC, candidate.created_at ASC, candidate.effect_id ASC
               LIMIT 1

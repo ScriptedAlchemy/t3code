@@ -1,6 +1,8 @@
 import {
   COMPOSER_CONTEXT_LABEL_MAX_CHARS,
-  type ComposerContextId,
+  ComposerContextId,
+  type ProjectKnowledgeContext,
+  type ProjectKnowledgeContextRecord,
   type ComposerContextKind,
   type ComposerContextRecord,
   type ElementContextDetails,
@@ -264,6 +266,8 @@ function formatComposerContextProviderPayload(record: KnownComposerContextRecord
       return `path: ${record.path}`;
     case "skill":
       return `name: ${record.name}`;
+    case "project-knowledge":
+      return "Selected project knowledge is unavailable. Refresh or remove this attachment.";
     case "thread":
       return [
         `title: ${record.title}`,
@@ -278,19 +282,23 @@ function formatEnvelopeEntry(
   kind: ComposerContextKind,
   contextId: ComposerContextId,
   record: ComposerContextRecord | undefined,
+  knowledgeText?: string,
 ): string {
   const open = `<${CONTEXT_ENTRY_TAG} kind="${escapeAttribute(kind)}" id="${escapeAttribute(contextId)}"`;
   if (!record) return `${open} unavailable="true"/>`;
   const body =
-    "payload" in record
-      ? JSON.stringify(record.payload)
-      : formatComposerContextProviderPayload(record);
+    record.kind === "project-knowledge" && knowledgeText !== undefined
+      ? knowledgeText
+      : "payload" in record
+        ? JSON.stringify(record.payload)
+        : formatComposerContextProviderPayload(record);
   return `${open}>\n${escapeComposerContextPayloadText(body)}\n</${CONTEXT_ENTRY_TAG}>`;
 }
 
 export function projectComposerContextForProvider(input: {
   text: string;
   records: ReadonlyArray<ComposerContextRecord>;
+  resolvedKnowledge?: ReadonlyMap<ComposerContextId, string>;
 }): string {
   const occurrences = collectComposerContextReferences(input.text);
   if (occurrences.length === 0) return input.text;
@@ -315,6 +323,7 @@ export function projectComposerContextForProvider(input: {
       record?.kind ?? occurrence.kind,
       occurrence.contextId,
       record,
+      input.resolvedKnowledge?.get(occurrence.contextId),
     );
     entries.push(entry);
   }
@@ -361,5 +370,17 @@ export function remapComposerContextAttachments(
         ? { ...record, attachmentId: ids.get(record.attachmentId) ?? record.attachmentId }
         : record,
     ),
+  };
+}
+
+export function projectKnowledgeContextRecord(
+  knowledge: ProjectKnowledgeContext,
+): ProjectKnowledgeContextRecord {
+  return {
+    version: 1,
+    kind: "project-knowledge",
+    contextId: ComposerContextId.make("project-knowledge"),
+    label: `Project knowledge (${knowledge.selections.length})`,
+    knowledge,
   };
 }

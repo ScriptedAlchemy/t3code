@@ -11,7 +11,7 @@ import {
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
 import {
   AuthOrchestrationOperateScope,
@@ -329,6 +329,17 @@ function ThreadRouteContent(
     };
   })();
   const navigation = useNavigation();
+  const summaryEnvironmentId = selectedThread?.environmentId;
+  const summaryProjectId = selectedThread?.projectId;
+  const summaryThreadId = selectedThread?.id;
+  const openConversationSummaries = useCallback(() => {
+    if (!summaryEnvironmentId || !summaryProjectId || !summaryThreadId) return;
+    navigation.navigate("ThreadConversationSummaries", {
+      environmentId: summaryEnvironmentId,
+      projectId: summaryProjectId,
+      threadId: summaryThreadId,
+    });
+  }, [navigation, summaryEnvironmentId, summaryProjectId, summaryThreadId]);
   const openPullRequest = useOpenPullRequest();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack, "merge thread back");
   const mergeBackTargetThreadId = resolveMergeBackTargetThreadId(selectedThreadDetail);
@@ -901,6 +912,11 @@ function ThreadRouteContent(
         <ThreadScreenBinding
           header={
             <ThreadHeader
+              onOpenConversationSummaries={
+                serverConfig?.environment.capabilities.conversationSummaries === true
+                  ? openConversationSummaries
+                  : undefined
+              }
               title={selectedThread.title}
               subtitle={headerSubtitle}
               headerColor={headerColor}

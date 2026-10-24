@@ -94,6 +94,45 @@ export type ReviewGuideGenerationResult = Omit<
   "headSha" | "generatedAt" | "modelSelection"
 >;
 
+export interface KnowledgeCandidatesGenerationInput {
+  cwd: string;
+  runOutcome: "completed" | "failed" | "interrupted";
+  /** Finalized messages of one run, oldest first; `ref` is what citations name. */
+  messages: ReadonlyArray<{
+    readonly ref: string;
+    readonly role: "user" | "assistant";
+    readonly text: string;
+  }>;
+  modelSelection: ModelSelection;
+}
+
+export interface KnowledgeCandidatesGenerationResult {
+  candidates: ReadonlyArray<{
+    readonly kind: "decision" | "constraint" | "convention";
+    readonly content: string;
+    readonly entities: ReadonlyArray<string>;
+    readonly citations: ReadonlyArray<string>;
+  }>;
+}
+
+export interface ConversationSummaryGenerationInput {
+  cwd: string;
+  /** Consecutive finalized messages, oldest first; `ref` is what citations name. */
+  messages: ReadonlyArray<{
+    readonly ref: string;
+    readonly role: "user" | "assistant";
+    readonly text: string;
+  }>;
+  modelSelection: ModelSelection;
+}
+
+export interface ConversationSummaryGenerationResult {
+  statements: ReadonlyArray<{
+    readonly text: string;
+    readonly citations: ReadonlyArray<string>;
+  }>;
+}
+
 export interface ProviderTextGeneration {
   readonly generateCommitMessage: (
     input: CommitMessageGenerationInput,
@@ -114,4 +153,12 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  readonly generateKnowledgeCandidates: (
+    input: KnowledgeCandidatesGenerationInput,
+  ) => Effect.Effect<KnowledgeCandidatesGenerationResult, TextGenerationError>;
+
+  readonly generateConversationSummary: (
+    input: ConversationSummaryGenerationInput,
+  ) => Effect.Effect<ConversationSummaryGenerationResult, TextGenerationError>;
 }

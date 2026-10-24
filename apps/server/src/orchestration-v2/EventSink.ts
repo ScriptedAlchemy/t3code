@@ -28,6 +28,8 @@ import type { UnsequencedProjectEvent } from "../persistence/OrchestrationEventS
 import { projectDomainEventForWire } from "./WireProjection.ts";
 import { makeRunOutcomeRecorder, type RunOutcome } from "./RunMetrics.ts";
 
+import { deliveryScrubEffect } from "../project/knowledge/deliveryScrubSchedule.ts";
+
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventStore from "./EventStore.ts";
@@ -258,6 +260,7 @@ const layerBase: Layer.Layer<
       runOutcomes
         .record(outcomes)
         .pipe(
+          Effect.andThen(effectOutbox.notifyAvailable()),
           Effect.andThen(eventStore.publishCommitted(events)),
           Effect.andThen(publishLiveEvents(events)),
         );
@@ -363,9 +366,32 @@ const layerBase: Layer.Layer<
     const applyStoredEvents =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(function* (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) {
-        yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
-          concurrency: 1,
-        });
+        const removals = new Map<ProjectId, string>();
+        for (const stored of storedEvents) {
+          const event = stored.event;
+          let removed = event.type === "thread.deleted";
+          if (event.type === "message.updated") {
+            const existing = yield* sql<{ text: string }>`
+              SELECT json_extract(payload_json, '$.text') AS text
+              FROM orchestration_v2_projection_messages WHERE message_id = ${event.payload.id}
+            `;
+            removed = existing.length > 0 && existing[0]!.text !== event.payload.text;
+          } else if (event.type === "run.updated" && event.payload.status === "rolled_back") {
+            const existing = yield* sql<{ status: string }>`
+              SELECT status FROM orchestration_v2_projection_runs WHERE run_id = ${event.payload.id}
+            `;
+            removed = existing[0]?.status !== "rolled_back";
+          }
+          yield* projectionStore.apply(event);
+          if (!removed) continue;
+          const thread = yield* projectionStore.getThread(event.threadId);
+          removals.set(thread.projectId, String(stored.sequence));
+        }
+        yield* effectOutbox.enqueue(
+          [...removals].map(([projectId, removalId]) =>
+            deliveryScrubEffect({ projectId, removalId }),
+          ),
+        );
         const sequence = storedEvents.at(-1)?.sequence;
         if (sequence !== undefined) {
           const now = DateTime.formatIso(yield* DateTime.now);
@@ -759,12 +785,24 @@ const layerBase: Layer.Layer<
             }
             const event = yield* eventStore.appendProjectEvent(input.event);
             yield* projectStore.apply(event);
+            if (event.type === "project.deleted") {
+              yield* effectOutbox.enqueue([
+                deliveryScrubEffect({
+                  projectId: input.projectId,
+                  removalId: String(event.sequence),
+                }),
+              ]);
+            }
             const receipt = { ...reserved, resultSequence: event.sequence };
             yield* commandReceipts.upsert(receipt);
             return { receipt, event };
           }),
           (result) =>
-            result.event === undefined ? Effect.void : eventStore.publishCommitted([result.event]),
+            result.event === undefined
+              ? Effect.void
+              : effectOutbox
+                  .notifyAvailable()
+                  .pipe(Effect.andThen(eventStore.publishCommitted([result.event]))),
         );
         return { receipt: result.receipt, committed: result.event !== undefined };
       },

@@ -103,6 +103,7 @@ import {
 } from "./pullRequestDiff.logic";
 import { PullRequestDiffStat, PullRequestMetaLine } from "./pullRequestPresentation";
 import { PullRequestDiffUnavailableState } from "./PullRequestDiffUnavailableState";
+import { PullRequestImpactPanel } from "./PullRequestImpactPanel";
 import { usePullRequestFilesViewed } from "./usePullRequestFilesViewed";
 import {
   nextPendingReviewCommentId,
@@ -1419,6 +1420,12 @@ function PullRequestCodeTab({
           </Collapsible>
         </div>
       ) : null}
+      <PullRequestImpactPanel
+        environmentId={environmentId}
+        reference={reference}
+        detail={detail}
+        fileDiffs={items.map((item) => item.fileDiff)}
+      />
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div
           className="relative min-h-0 min-w-0 flex-1"

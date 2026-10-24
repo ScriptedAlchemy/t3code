@@ -202,6 +202,9 @@ PR creation from Git actions continue to use the project's environment.
 For Azure DevOps, use the host website to change comments. Bitbucket does not support reopening a
 declined pull request.
 
+To see the callers and likely tests of what a pull request changes, expand **Potentially
+affected** in the **Code** tab. See [Code navigation](code-navigation.md#review-a-pull-requests-impact).
+
 ### Review guides
 
 Review guides are in beta. Turn on **Review guides** in Settings → Source Control to add the

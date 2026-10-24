@@ -43,6 +43,7 @@ import {
   SnapShotAttachmentDetails,
 } from "./SnapShotAttachmentDetails";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { RememberMessageButton } from "../projectKnowledge/RememberMessageButton";
 import { promptLinkFor } from "../promptLinks/copyPromptLink";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { shouldCollapseUserMessage } from "./MessagesTimeline.logic";
@@ -398,6 +399,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         <UserMessageContextReferenceChip
           reference={reference}
           record={record}
+          messageId={row.message.id}
+          sourceThreadId={row.projectedItem?.sourceThreadId}
           annotationImage={annotationImage}
           attachment={attachment}
           onExpandImage={(image) => {
@@ -621,6 +624,13 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                   variant="ghost"
                 />
               )}
+              {resolvedContext.text && !row.message.streaming ? (
+                <RememberMessageButton
+                  threadRef={ctx.threadRef}
+                  sourceThreadId={row.projectedItem?.sourceThreadId}
+                  messageId={row.message.id}
+                />
+              ) : null}
             </div>
           </div>
         </div>

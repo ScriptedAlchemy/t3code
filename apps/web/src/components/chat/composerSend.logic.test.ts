@@ -1,4 +1,5 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProjectFactId, ThreadId } from "@t3tools/contracts";
+import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { describe, expect, it } from "vite-plus/test";
 import { formatInlineContextReference } from "../../lib/composerContextReferences";
@@ -8,12 +9,39 @@ import {
   loadBalancingSendWarning,
   multipleModelSendBlock,
   referencedThreadContexts,
+  knowledgeContextSendBlock,
 } from "./composerSend.logic";
 
 const local = EnvironmentId.make("local");
 const remote = EnvironmentId.make("remote");
 const localThread = threadContextRecord(scopeThreadRef(local, ThreadId.make("a")), "Local");
 const remoteThread = threadContextRecord(scopeThreadRef(remote, ThreadId.make("b")), "Remote");
+
+describe("knowledgeContextSendBlock", () => {
+  const projectId = ProjectId.make("project");
+  const record = projectKnowledgeContextRecord({
+    environmentId: local,
+    projectId,
+    selections: [{ kind: "fact", factId: ProjectFactId.make("fact"), revision: 1 }],
+    maxBytes: 48000,
+  });
+  it.each([
+    { environmentId: remote, projectId },
+    { environmentId: local, projectId: ProjectId.make("other-project") },
+  ])("blocks sending knowledge from a different scope (%o)", (scope) => {
+    expect(knowledgeContextSendBlock({ ...scope, knowledgeContexts: [record] })).toMatch(
+      /another machine or project.*Remove it.*attach/s,
+    );
+  });
+  it("allows matching knowledge and drafts without memory", () => {
+    expect(
+      knowledgeContextSendBlock({ environmentId: local, projectId, knowledgeContexts: [record] }),
+    ).toBeNull();
+    expect(
+      knowledgeContextSendBlock({ environmentId: remote, projectId, knowledgeContexts: [] }),
+    ).toBeNull();
+  });
+});
 
 describe("referencedThreadContexts", () => {
   it("keeps only the attached threads the prompt still links", () => {

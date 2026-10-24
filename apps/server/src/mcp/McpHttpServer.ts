@@ -1,3 +1,11 @@
+import { ConversationSummariesToolkit } from "./toolkits/conversationSummaries/tools.ts";
+import * as ConversationSummariesHandlers from "./toolkits/conversationSummaries/handlers.ts";
+import { ProjectLoomToolkit } from "./toolkits/projectLoom/tools.ts";
+import * as ProjectLoomHandlers from "./toolkits/projectLoom/handlers.ts";
+import { KnowledgeToolkit } from "./toolkits/knowledge/tools.ts";
+import * as KnowledgeHandlers from "./toolkits/knowledge/handlers.ts";
+import { ProjectCodeToolkit } from "./toolkits/projectCode/tools.ts";
+import * as ProjectCodeHandlers from "./toolkits/projectCode/handlers.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -1030,6 +1038,20 @@ const layerEnvironmentToolkit = toolkitRegistration(
   EnvironmentHandlers.layer,
 ).pipe(Layer.provide(ThreadCommandExecutor.layer));
 
+const layerKnowledgeRegistration = toolkitRegistration(KnowledgeToolkit, KnowledgeHandlers.layer);
+const layerConversationSummariesRegistration = toolkitRegistration(
+  ConversationSummariesToolkit,
+  ConversationSummariesHandlers.layer,
+);
+const layerProjectLoomRegistration = toolkitRegistration(
+  ProjectLoomToolkit,
+  ProjectLoomHandlers.layer,
+);
+export const layerProjectCodeToolkit = toolkitRegistration(
+  ProjectCodeToolkit,
+  ProjectCodeHandlers.layer,
+);
+
 const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHandlers.layer);
 
 export const layerAttachmentToolkit = toolkitRegistration(
@@ -1071,6 +1093,10 @@ export const layer = Layer.mergeAll(
   layerThreadToolkit,
   layerAttachmentToolkit,
   layerProjectRegistration,
+  layerKnowledgeRegistration,
+  layerConversationSummariesRegistration,
+  layerProjectLoomRegistration,
+  layerProjectCodeToolkit,
   layerEnvironmentToolkit,
   layerPreviewControlsRegistration,
   layerWorktreeToolkitRegistration,

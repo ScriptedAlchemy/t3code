@@ -89,6 +89,7 @@ import {
   loadBalancingSendWarning,
   multipleModelSendBlock,
   referencedThreadContexts,
+  knowledgeContextSendBlock,
 } from "./composerSend.logic";
 import { usePlanFollowUpSend } from "./useProposedPlanSend";
 import { useMultipleModelSend } from "./useMultipleModelSend";
@@ -549,6 +550,21 @@ export function useComposerSend(input: ComposerSendInput) {
       );
       return;
     }
+    const knowledgeBlock = knowledgeContextSendBlock({
+      environmentId,
+      projectId: activeThread.projectId,
+      knowledgeContexts: sendCtx.knowledgeContexts ?? [],
+    });
+    if (knowledgeBlock) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Project memory cannot be sent",
+          description: knowledgeBlock,
+        }),
+      );
+      return;
+    }
     if (queuedRunEdit.isEditing) {
       // Edit mode repurposes the composer: sending saves the queued message
       // in place instead of dispatching a new turn.
@@ -561,6 +577,7 @@ export function useComposerSend(input: ComposerSendInput) {
           reviewComments: composerReviewComments,
           previewAnnotations: composerPreviewAnnotations,
           threadContexts: composerThreadContexts,
+          knowledgeContexts: sendCtx.knowledgeContexts,
         },
         setThreadError,
       );
@@ -673,12 +690,16 @@ export function useComposerSend(input: ComposerSendInput) {
           reviewComments: composerReviewComments,
           previewAnnotations: composerPreviewAnnotations,
           threadContexts: composerThreadContexts,
+          knowledgeContexts: sendCtx.knowledgeContexts,
         }),
         interactionMode: followUp.interactionMode,
       });
       if (!followUpSent) {
         promptRef.current = followUpPromptSnapshot;
         composerTerminalContextsRef.current = [...followUpTerminalContexts];
+        useComposerDraftStore
+          .getState()
+          .setKnowledgeContext(composerDraftTarget, sendCtx.knowledgeContexts?.[0] ?? null);
         restorePlanFollowUpComposer({
           snapshot: {
             prompt: followUpPromptSnapshot,
@@ -759,6 +780,7 @@ export function useComposerSend(input: ComposerSendInput) {
       previewAnnotations: composerPreviewAnnotations,
       reviewComments: composerReviewComments,
       threadContexts: composerThreadContexts,
+      knowledgeContexts: sendCtx.knowledgeContexts,
     });
     const {
       files: composerFilesSnapshot,
@@ -801,6 +823,7 @@ export function useComposerSend(input: ComposerSendInput) {
         reviewComments: composerReviewCommentsSnapshot,
         previewAnnotations: composerPreviewAnnotationsSnapshot,
         threadContexts: composerThreadContextsSnapshot,
+        knowledgeContexts: sendCtx.knowledgeContexts,
         attachments: composerAttachmentsSnapshot.map((attachment, index) => ({
           attachment,
           attachmentId: attachmentIds[index] ?? attachment.id,

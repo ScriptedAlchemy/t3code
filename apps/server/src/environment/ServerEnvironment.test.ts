@@ -225,6 +225,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       expect(second.capabilities.threadPullRequestLinking).toBe(true);
       expect(second.capabilities.serverResolvedCommandContext).toBe(true);
       expect(second.capabilities.projectProviderInstanceOverrides).toBe(true);
+      expect(second.capabilities).toMatchObject({ projectKnowledgeDeliveries: true });
       expect(second.capabilities.agentActivityPublishing).toBe(false);
     }),
   );

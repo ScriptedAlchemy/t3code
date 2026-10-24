@@ -59,7 +59,12 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "branchNamePrefix",
     "branchNameInstructions",
   ],
-  "agent-behavior": ["responseStreamingMode", "enableAgentBrowserAccess"],
+  "agent-behavior": [
+    "responseStreamingMode",
+    "enableAgentBrowserAccess",
+    "enableAssistedLearning",
+    "enableConversationSummaries",
+  ],
   maintenance: ["continueThreadsAfterServerUpdate"],
 };
 
@@ -148,6 +153,17 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     selectedTargets,
     projectSelected ? (selectedProject?.members.map((member) => member.project) ?? []) : null,
   );
+  const unsupportedAssistedLearning = targets.filter(
+    (target) =>
+      target.environment.serverConfig.environment.capabilities.projectKnowledgeAssistedLearning !==
+      true,
+  );
+  const assistedLearningUnavailableReason =
+    unsupportedAssistedLearning.length === 0
+      ? null
+      : unsupportedAssistedLearning.length < targets.length
+        ? `Assisted learning is supported on only some selected environments. Update T3 Code on ${unsupportedAssistedLearning.map((target) => target.environment.label).join(", ")}, or select a supported environment.`
+        : `Assisted learning is not supported on ${unsupportedAssistedLearning.map((target) => target.environment.label).join(", ")}. Update T3 Code on ${unsupportedAssistedLearning.length === 1 ? "that environment" : "those environments"}.`;
   const [pendingWrites, setPendingWrites] = useState(0);
   const writeInFlight = useRef(false);
   // A closing view can still save its drafts while a write is pending, after
@@ -173,6 +189,8 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     displayTargets.some((entry) => entry.settings[key] !== reference.settings[key]);
   const writeSettings = useSettingsWriter();
   const write = (patch: ServerSettingsPatch) => {
+    if (patch.enableAssistedLearning !== undefined && assistedLearningUnavailableReason !== null)
+      return;
     if (writeInFlight.current) {
       const queued = queuedPatch.current;
       queuedPatch.current = {
@@ -427,6 +445,32 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       value={uniform("enableAgentBrowserAccess")}
                       disabled={disabledFor("enableAgentBrowserAccess")}
                       onValueChange={(value) => write({ enableAgentBrowserAccess: value })}
+                    />
+                  </SettingsSection>
+                  <SettingsSection title="Project memory">
+                    <SettingsSwitchRow
+                      icon="brain"
+                      label="Suggest facts from finished runs"
+                      subtitle={
+                        assistedLearningUnavailableReason ??
+                        "After each run, your text generation model proposes up to three cited facts for review. Each run costs one model call."
+                      }
+                      value={uniform("enableAssistedLearning")}
+                      disabled={
+                        disabledFor("enableAssistedLearning") ||
+                        assistedLearningUnavailableReason !== null
+                      }
+                      onValueChange={(value) => write({ enableAssistedLearning: value })}
+                    />
+                  </SettingsSection>
+                  <SettingsSection title="Conversation summaries">
+                    <SettingsSwitchRow
+                      icon="doc.text"
+                      label="Summarize older messages"
+                      subtitle="After turns complete, your text generation model summarizes older messages so provider switches and forks keep their gist. Each summary costs one model call."
+                      value={uniform("enableConversationSummaries")}
+                      disabled={disabledFor("enableConversationSummaries")}
+                      onValueChange={(value) => write({ enableConversationSummaries: value })}
                     />
                   </SettingsSection>
                 </>

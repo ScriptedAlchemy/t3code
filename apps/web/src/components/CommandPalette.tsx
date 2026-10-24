@@ -48,6 +48,8 @@ import {
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
+  BrainIcon,
+  ChartGanttIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -66,6 +68,10 @@ import {
   TextSearchIcon,
 } from "lucide-react";
 import { requestThreadFindOpen } from "./chat/threadFindActionBus";
+import {
+  useOpenProjectMemory,
+  useProjectMemoryAvailable,
+} from "./projectKnowledge/ProjectMemoryPanel";
 import {
   useDeferredValue,
   useEffect,
@@ -159,6 +165,7 @@ import {
   buildCommandPaletteRows,
   enumerateCommandPaletteItems,
   findHighlightedCommandPaletteItem,
+  type ChildSearchMode,
   type CommandPaletteActionItem,
   type CommandPaletteOpenIntent,
   type CommandPaletteProject,
@@ -184,6 +191,7 @@ import {
   type SearchOverlayMode,
 } from "./CommandPalette.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
+import { resolveLoomTargets } from "./Sidebar.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
 import {
   selectCommandPaletteClientSettings,
@@ -218,6 +226,7 @@ import { Checkbox } from "./ui/checkbox";
 import { ProjectFilePicker } from "./files/ProjectFilePicker";
 import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
+import { ProjectSearchPalette } from "./CommandPaletteProjectSearch";
 import { toggleThemeEditorForTheme } from "./settings/themeEditorStore";
 import { searchSettings, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
 import { primaryServerKeybindingsAtom } from "../state/server";
@@ -248,7 +257,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const openAddProject = () => dispatch({ _tag: "OpenAddProject" });
   const openNewThreadIn = () => dispatch({ _tag: "OpenNewThreadIn" });
   const clearOpenIntent = () => dispatch({ _tag: "ClearOpenIntent" });
-  const openChildSearch = (mode: "files" | "content", context: CommandPaletteReturnContext) =>
+  const openChildSearch = (mode: ChildSearchMode, context: CommandPaletteReturnContext) =>
     dispatch({ _tag: "OpenChildSearch", mode, context });
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const { theme, themeHalves, resolvedTheme, appearanceMode, setAppearanceMode } = useTheme();
@@ -410,10 +419,7 @@ function CommandPaletteDialog(props: {
   readonly mode: SearchOverlayMode;
   readonly openIntent: CommandPaletteOpenIntent | null;
   readonly setOpen: (open: boolean) => void;
-  readonly openChildSearch: (
-    mode: "files" | "content",
-    context: CommandPaletteReturnContext,
-  ) => void;
+  readonly openChildSearch: (mode: ChildSearchMode, context: CommandPaletteReturnContext) => void;
   readonly initialContext: CommandPaletteReturnContext | undefined;
   readonly clearOpenIntent: () => void;
 }) {
@@ -426,7 +432,9 @@ function CommandPaletteDialog(props: {
           ? "File picker"
           : props.mode === "content"
             ? "Search project contents"
-            : "Command palette"
+            : props.mode === "project"
+              ? "Project search"
+              : "Command palette"
       }
       className={cn("overflow-hidden", props.mode === "content" && "h-105")}
       data-command-palette="true"
@@ -446,6 +454,8 @@ function CommandPaletteDialog(props: {
         <ProjectFilePicker setOpen={props.setOpen} />
       ) : props.mode === "content" ? (
         <ProjectContentSearchDialog onOpenChange={props.setOpen} />
+      ) : props.mode === "project" ? (
+        <ProjectSearchPalette setOpen={props.setOpen} />
       ) : (
         <OpenCommandPaletteDialog
           openIntent={props.openIntent}
@@ -462,10 +472,7 @@ function CommandPaletteDialog(props: {
 function OpenCommandPaletteDialog(props: {
   readonly openIntent: CommandPaletteOpenIntent | null;
   readonly setOpen: (open: boolean) => void;
-  readonly openChildSearch: (
-    mode: "files" | "content",
-    context: CommandPaletteReturnContext,
-  ) => void;
+  readonly openChildSearch: (mode: ChildSearchMode, context: CommandPaletteReturnContext) => void;
   readonly initialContext: CommandPaletteReturnContext | undefined;
   readonly clearOpenIntent: () => void;
 }) {
@@ -536,7 +543,8 @@ function OpenCommandPaletteDialog(props: {
         ? scopeThreadRef(activeThread.environmentId, activeThread.id)
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
-  const activeThreadServerConfig = useServerConfigs().get(
+  const serverConfigs = useServerConfigs();
+  const activeThreadServerConfig = serverConfigs.get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
   const activeThreadReferenceCopyTarget =
@@ -731,6 +739,8 @@ function OpenCommandPaletteDialog(props: {
   const currentProjectEnvironmentId =
     activeThread?.environmentId ?? activeDraftThread?.environmentId ?? null;
   const currentProjectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? null;
+  const projectMemoryAvailable = useProjectMemoryAvailable(currentProjectEnvironmentId);
+  const openProjectMemory = useOpenProjectMemory();
   const scratchTargetEnvironmentId = scratchEnvironmentId(
     currentProjectEnvironmentId ?? primaryEnvironmentId,
   );
@@ -1250,6 +1260,21 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
+  if (projectMemoryAvailable && currentProjectEnvironmentId && currentProjectId) {
+    const scope = { environmentId: currentProjectEnvironmentId, projectId: currentProjectId };
+    actionItems.push({
+      kind: "action",
+      value: "action:open-project-memory",
+      title: "Open project memory",
+      searchTerms: ["project", "memory", "knowledge", "facts", "remember"],
+      icon: <BrainIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "projectMemory.open",
+      run: async () => {
+        openProjectMemory(scope);
+      },
+    });
+  }
+
   const promptLinkTarget = paletteRouteTarget
     ? paletteRouteTarget.kind === "server"
       ? paletteRouteTarget.threadRef
@@ -1390,6 +1415,19 @@ function OpenCommandPaletteDialog(props: {
     shortcutCommand: "filePicker.toggle",
     run: async () => {
       openChildSearch("files", { query, linkedThreadSearch });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:project-search",
+    searchTerms: ["project search", "facts", "memory", "conversations", "symbols", "code search"],
+    title: "Search facts, conversations, and symbols",
+    icon: <BrainIcon className={ITEM_ICON_CLASS} />,
+    keepOpen: true,
+    shortcutCommand: "projectFind.toggle",
+    run: async () => {
+      openChildSearch("project", { query, linkedThreadSearch });
     },
   });
 
@@ -1586,6 +1624,31 @@ function OpenCommandPaletteDialog(props: {
         });
       },
     });
+    const loomTargets = resolveLoomTargets({
+      members: contextualProjectGroup.memberProjects,
+      activeProjectRef: contextualProjectRef,
+      supportsLoom: (environmentId) =>
+        serverConfigs.get(environmentId)?.environment.capabilities.projectLoom === true,
+    });
+    for (const member of loomTargets) {
+      actionItems.push({
+        kind: "action",
+        value: `action:open-loom:${member.environmentId}:${member.id}`,
+        searchTerms: ["loom", "timeline", "activity", "agents", "history", "project"],
+        title: "Open Loom",
+        description:
+          loomTargets.length > 1 && member.environmentLabel !== null
+            ? `${contextualProjectGroup.displayName} on ${member.environmentLabel}`
+            : contextualProjectGroup.displayName,
+        icon: <ChartGanttIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate({
+            to: "/loom/$environmentId/$projectId",
+            params: { environmentId: member.environmentId, projectId: member.id },
+          });
+        },
+      });
+    }
   }
 
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });

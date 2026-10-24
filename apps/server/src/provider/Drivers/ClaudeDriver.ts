@@ -384,6 +384,16 @@ export const ClaudeDriver: ProviderDriver<
             protect("generateThreadTitle", nativeGeneration.generateThreadTitle(input)),
           generateReviewGuide: (input) =>
             protect("generateReviewGuide", nativeGeneration.generateReviewGuide(input)),
+          generateKnowledgeCandidates: (input) =>
+            protect(
+              "generateKnowledgeCandidates",
+              nativeGeneration.generateKnowledgeCandidates(input),
+            ),
+          generateConversationSummary: (input) =>
+            protect(
+              "generateConversationSummary",
+              nativeGeneration.generateConversationSummary(input),
+            ),
         }
       : nativeGeneration;
 

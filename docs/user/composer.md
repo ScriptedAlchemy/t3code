@@ -113,6 +113,62 @@ returns to the remembered selection.
 
 Leaving reasoning level or service tier unset uses the provider's own configuration.
 
+## Project memory
+
+Open **Project memory** from the thread details, the command palette, or
+`mod+shift+u` on web or desktop, or from the composer on mobile. Search
+conversations and saved facts in the current project, inspect their sources, and
+select evidence for your next message. Selecting a fact shows its evidence;
+only its checkbox adds it to your draft. Archived conversations are excluded unless
+you include them. A fact whose cited message was edited, deleted, or archived is
+flagged in the list.
+
+To search the current project's facts, conversations, and code symbols at once,
+choose **Search facts, conversations, and symbols** in the command palette or
+press `mod+alt+f`. Each kind of result is listed separately; if one is
+unavailable on the server, the others still appear.
+
+To save a fact from the conversation, choose **Remember for this project** on a
+message on web or desktop. Project memory opens that message; choose **Save as
+fact** to start a fact prefilled from it and citing it.
+
+Agents can save observations for later recall. These remain marked as proposed
+until you confirm them. Confirmation is optional; proposed observations can still
+be recalled. You can edit or forget a fact, and its origin shows who recorded the
+current assertion. Forgetting removes the fact's content everywhere T3 kept it,
+including its earlier revisions and the copy recorded as sent with past messages.
+
+When knowledge changes, **Supersede** the old fact instead of forgetting it. The
+replacement is linked to the old fact, which keeps its content but no longer comes
+up in recall unless you show superseded facts. After you save, T3 points out
+existing facts that look like duplicates or possible contradictions so you can
+compare them; it never merges or replaces them on its own.
+
+To have T3 suggest facts for you, turn on **Suggest facts from finished runs** under
+**Memory health** in Project memory, or in **Settings → General** for one project or
+every project.
+It is off by default because each finished run in that project costs one call to
+your text generation model. After a run finishes, fails, or is stopped, T3 reads
+that run's messages and proposes up to three decisions, constraints, or
+conventions, each citing the messages it came from. Suggestions appear under
+**Suggested**, are never confirmed for you, and agents do not recall them until
+you confirm them. Suggestions from a run that failed or was stopped say so. A
+suggestion that resembles an existing fact is offered as its replacement:
+confirming it supersedes the existing fact, and forgetting it leaves that fact as
+it is. A forgotten suggestion is not proposed again for the same run. Project
+memory shows what the last run did, including why it was skipped or failed.
+
+A fact's details show its history: when it was created, edited, confirmed,
+superseded, and rated helpful or unhelpful, with the trust change from each
+rating. **Memory health** counts facts by status. When facts lose their cited
+source, the **Lost source** filter lists them; on mobile, select the lost-source
+count in the memory summary.
+
+Preview and attach your selection before sending. The attachment keeps references
+to the selected evidence. T3 checks those references again when the agent's turn
+starts. If a fact or source changed, was forgotten, or became unavailable, select
+the evidence again. Removing the attachment leaves the saved facts intact.
+
 ## Quote an assistant response
 
 On web and desktop, select text within one assistant response and choose

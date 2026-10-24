@@ -157,6 +157,7 @@ import {
   type MediaVideoPreviewSource,
 } from "../../lib/videoPreviewSource";
 import { CopyTextButton } from "./CopyTextButton";
+import { useRememberMessage } from "../../components/useRememberMessage";
 import { getReviewSectionIdForCheckpoint } from "../review/reviewModel";
 import { setReviewSelectedSectionId } from "../review/reviewState";
 import { Menu } from "../../components/ui/Menu";
@@ -328,6 +329,7 @@ export interface ThreadFeedProps {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly threadTitle: string;
+  readonly composerDraftKey: string;
   readonly workspaceRoot?: string | null;
   readonly feed: ReadonlyArray<ThreadFeedEntry>;
   readonly pendingHandoff?: HandoffEndpoints | null;
@@ -365,13 +367,21 @@ async function waitForThreadShell(
   });
 }
 
-const USER_MESSAGE_COPY_MENU_ACTIONS = [
-  { id: "copy-prompt-link", title: "Copy prompt link", image: "link" },
-];
+const COPY_PROMPT_LINK_ACTION = {
+  id: "copy-prompt-link",
+  title: "Copy prompt link",
+  image: "link",
+};
+const REMEMBER_MESSAGE_ACTION = {
+  id: "remember-message",
+  title: "Remember for this project",
+  image: "brain",
+};
 
 function UserMessageCopyButton(props: {
   readonly text: string;
   readonly onCopy: (() => Promise<void>) | undefined;
+  readonly onRemember?: (() => void) | undefined;
   readonly tintColor: ColorValue;
 }) {
   const button = (
@@ -385,12 +395,17 @@ function UserMessageCopyButton(props: {
     />
   );
   const linkText = replaceComposerContextReferences(props.text, (reference) => reference.label);
-  if (linkText.length > PROMPT_LINK_MAX_PROMPT_LENGTH) return button;
+  const actions = [
+    ...(linkText.length <= PROMPT_LINK_MAX_PROMPT_LENGTH ? [COPY_PROMPT_LINK_ACTION] : []),
+    ...(props.onRemember ? [REMEMBER_MESSAGE_ACTION] : []),
+  ];
+  if (actions.length === 0) return button;
   return (
     <Menu
-      actions={USER_MESSAGE_COPY_MENU_ACTIONS}
+      actions={actions}
       onPressAction={({ nativeEvent }) => {
-        if (nativeEvent.event === "copy-prompt-link") void copyPromptLink(linkText);
+        if (nativeEvent.event === COPY_PROMPT_LINK_ACTION.id) void copyPromptLink(linkText);
+        if (nativeEvent.event === REMEMBER_MESSAGE_ACTION.id) props.onRemember?.();
       }}
       shouldOpenOnLongPress
     >
@@ -1204,6 +1219,7 @@ function renderFeedEntry(
     readonly contentWidth: number;
     readonly threadTitle: string;
     readonly workflowOpening: WorkflowOpening | null;
+    readonly onRememberMessage: ReturnType<typeof useRememberMessage>;
   },
 ) {
   const entry = info.item;
@@ -1533,6 +1549,7 @@ function renderFeedEntry(
                   >
                     <UserMessageContent
                       text={renderedText}
+                      sent={{ threadId: message.sourceThreadId, messageId: message.id }}
                       environmentId={props.environmentId}
                       context={message.context}
                       markdownStyles={styles}
@@ -1611,6 +1628,15 @@ function renderFeedEntry(
                           })
                       : undefined
                   }
+                  onRemember={
+                    props.onRememberMessage && !entry.pendingMessage
+                      ? () =>
+                          props.onRememberMessage?.({
+                            threadId: message.sourceThreadId,
+                            messageId: message.id,
+                          })
+                      : undefined
+                  }
                   tintColor={iconSubtleColor}
                 />
               ) : null}
@@ -1679,13 +1705,35 @@ function renderFeedEntry(
         ) : null}
         {showAssistantMeta ? (
           <View className="mt-1 flex-row items-center gap-1">
-            <CopyTextButton
-              accessibilityLabel="Copy message"
-              text={renderedText}
-              tintColor={iconSubtleColor}
-              buttonSize={28}
-              iconSize={13}
-            />
+            {props.onRememberMessage ? (
+              <Menu
+                actions={[REMEMBER_MESSAGE_ACTION]}
+                onPressAction={({ nativeEvent }) => {
+                  if (nativeEvent.event === REMEMBER_MESSAGE_ACTION.id)
+                    props.onRememberMessage?.({
+                      threadId: message.sourceThreadId,
+                      messageId: message.id,
+                    });
+                }}
+                shouldOpenOnLongPress
+              >
+                <CopyTextButton
+                  accessibilityLabel="Copy message"
+                  text={renderedText}
+                  tintColor={iconSubtleColor}
+                  buttonSize={28}
+                  iconSize={13}
+                />
+              </Menu>
+            ) : (
+              <CopyTextButton
+                accessibilityLabel="Copy message"
+                text={renderedText}
+                tintColor={iconSubtleColor}
+                buttonSize={28}
+                iconSize={13}
+              />
+            )}
             {message.projectedItem ? (
               <AssistantForkButton
                 environmentId={props.environmentId}
@@ -1755,6 +1803,7 @@ function TurnDiffStat(props: {
 
 type UserMessageContentProps = {
   readonly text: string;
+  readonly sent?: { readonly threadId: ThreadId; readonly messageId: MessageId };
   readonly environmentId: EnvironmentId;
   readonly context?: OrchestrationMessageContext;
   readonly markdownStyles: MarkdownStyleSet;
@@ -1862,6 +1911,7 @@ function UserMessageContent(props: UserMessageContentProps) {
           environmentId={props.environmentId}
           records={props.context?.records}
           record={props.context?.records.find((record) => record.contextId === selected.contextId)}
+          {...(props.sent ? { sent: props.sent } : {})}
           onClose={() => setSelected(null)}
         />
       ) : null}
@@ -1988,6 +2038,11 @@ function useThreadFeedPresentation(
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const { listRef, onEndFollowEnabledChange, onHeaderMaterialVisibilityChange } = props;
   const workflowOpening = useWorkflowOpening(props.environmentId, props.threadId);
+  const onRememberMessage = useRememberMessage(
+    props.environmentId,
+    props.threadId,
+    props.composerDraftKey,
+  );
   const deviceType = useDeviceType();
   const duoColumns = useNativeWorkspaceColumnsSupported() && isDuoDevice(deviceType);
   const openPullRequest = useOpenPullRequest();
@@ -2937,6 +2992,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             skills: props.skills,
             workspaceRoot: props.workspaceRoot,
             workflowOpening,
+            onRememberMessage,
           })}
           {props.worktreeSetup && info.index === setupAnchorIndex ? (
             <WorktreeSetupCard key={props.threadId} {...props.worktreeSetup} />

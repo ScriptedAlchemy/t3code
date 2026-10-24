@@ -61,6 +61,7 @@ import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
 import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
 import { ThreadPullRequestsSheet } from "./features/threads/ThreadPullRequestsSheet";
+import { ConversationSummariesRouteScreen } from "./features/conversation-summaries/ConversationSummariesRouteScreen";
 import { ThreadAgentsSheet } from "./features/threads/ThreadAgentsSheet";
 import { ThreadBackgroundWorkSheet } from "./features/threads/ThreadBackgroundWorkSheet";
 import { ThreadQueueSheet } from "./features/threads/ThreadQueueControl";
@@ -73,6 +74,7 @@ import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
 import { AddProjectNewRoute } from "./features/projects/AddProjectNewRoute";
 import { AddProjectRepositoryRoute } from "./features/projects/AddProjectRepositoryRoute";
 import { AddProjectSourceRoute } from "./features/projects/AddProjectSourceRoute";
+import { ProjectLoomRouteScreen } from "./features/loom/ProjectLoomRouteScreen";
 import {
   NewTaskBranchPickerRouteScreen,
   NewTaskEnvironmentPickerRouteScreen,
@@ -645,6 +647,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
         ...getCompactBrandHeaderOptions(),
       },
     }),
+    ProjectLoom: createNativeStackScreen({
+      screen: ProjectLoomRouteScreen,
+      linking: "projects/:environmentId/:projectId/loom",
+      options: DETAIL_HEADER_OPTIONS,
+    }),
     PullRequest: createNativeStackScreen({
       screen: PullRequestRouteScreen,
       linking: {
@@ -878,6 +885,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
         sheetAllowedDetents: formSheetDetents(0.5, 0.9),
         sheetGrabberVisible: true,
       },
+    }),
+    ThreadConversationSummaries: createNativeStackScreen({
+      screen: ConversationSummariesRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/conversation-summaries`,
+      options: { ...DETAIL_HEADER_OPTIONS, title: "Conversation summaries" },
     }),
     ThreadAgents: createNativeStackScreen({
       screen: ThreadAgentsSheet,

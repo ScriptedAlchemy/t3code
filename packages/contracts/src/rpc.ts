@@ -1,4 +1,43 @@
 import {
+  ConversationSummaryDescribeInput,
+  ConversationSummaryError,
+  ConversationSummaryExpandInput,
+  ConversationSummaryExpansion,
+  ConversationSummaryList,
+  ConversationSummaryListInput,
+  ConversationSummaryRead,
+} from "./conversationSummaries.ts";
+import { LoomWindow, LoomWindowInput, ProjectLoomError } from "./projectLoom.ts";
+import {
+  ProjectKnowledgeError,
+  ProjectKnowledgeMutation,
+  ProjectKnowledgeListInput,
+  ProjectKnowledgeListResult,
+  ProjectKnowledgeReadSourceInput,
+  ProjectKnowledgeSource,
+  ProjectKnowledgeSearchInput,
+  ProjectKnowledgeSearchResult,
+  ProjectKnowledgeContext,
+  ProjectKnowledgePreparedContext,
+  ProjectKnowledgeReadDeliveriesInput,
+  ProjectKnowledgeDeliveries,
+  ProjectKnowledgeFactDetail,
+  ProjectKnowledgeMutationResult,
+  ProjectKnowledgeReadFactInput,
+  ProjectKnowledgeStatus,
+  ProjectKnowledgeStatusInput,
+} from "./projectKnowledge.ts";
+import {
+  ProjectCodeError,
+  ProjectCodeIndexEvent,
+  ProjectCodeIndexTarget,
+  ProjectCodeQueryInput,
+  ProjectCodeQueryResult,
+  ProjectFileHistoryError,
+  ProjectFileHistoryInput,
+  ProjectFileHistoryResult,
+} from "./projectCode.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -385,6 +424,21 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  projectCodeQuery: "projectCode.query",
+  projectCodeFileHistory: "projectCode.fileHistory",
+  projectCodeSubscribeIndex: "projectCode.subscribeIndex",
+  projectKnowledgeSearch: "projectKnowledge.search",
+  projectKnowledgeList: "projectKnowledge.list",
+  projectKnowledgeMutate: "projectKnowledge.mutate",
+  projectKnowledgeReadSource: "projectKnowledge.readSource",
+  projectKnowledgePrepareContext: "projectKnowledge.prepareContext",
+  projectKnowledgeReadDeliveries: "projectKnowledge.readDeliveries",
+  projectKnowledgeReadFact: "projectKnowledge.readFact",
+  projectKnowledgeStatus: "projectKnowledge.status",
+  conversationSummariesList: "conversationSummaries.list",
+  conversationSummariesDescribe: "conversationSummaries.describe",
+  conversationSummariesExpand: "conversationSummaries.expand",
+  projectReadLoomWindow: "project.readLoomWindow",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -1904,6 +1958,108 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
+const WsProjectKnowledgeSearchRpc = Rpc.make(WS_METHODS.projectKnowledgeSearch, {
+  payload: ProjectKnowledgeSearchInput,
+  success: ProjectKnowledgeSearchResult,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectCodeQueryRpc = Rpc.make(WS_METHODS.projectCodeQuery, {
+  payload: ProjectCodeQueryInput,
+  success: ProjectCodeQueryResult,
+  error: Schema.Union([ProjectCodeError, EnvironmentAuthorizationError]),
+});
+// Publications and failed builds of the target's checkout index, for clients to refetch on.
+const WsProjectCodeSubscribeIndexRpc = Rpc.make(WS_METHODS.projectCodeSubscribeIndex, {
+  payload: ProjectCodeIndexTarget,
+  success: ProjectCodeIndexEvent,
+  error: Schema.Union([ProjectCodeError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+const WsProjectCodeFileHistoryRpc = Rpc.make(WS_METHODS.projectCodeFileHistory, {
+  payload: ProjectFileHistoryInput,
+  success: ProjectFileHistoryResult,
+  error: Schema.Union([ProjectFileHistoryError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeListRpc = Rpc.make(WS_METHODS.projectKnowledgeList, {
+  payload: ProjectKnowledgeListInput,
+  success: ProjectKnowledgeListResult,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeMutateRpc = Rpc.make(WS_METHODS.projectKnowledgeMutate, {
+  payload: ProjectKnowledgeMutation,
+  success: ProjectKnowledgeMutationResult,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeReadSourceRpc = Rpc.make(WS_METHODS.projectKnowledgeReadSource, {
+  payload: ProjectKnowledgeReadSourceInput,
+  success: ProjectKnowledgeSource,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgePrepareContextRpc = Rpc.make(WS_METHODS.projectKnowledgePrepareContext, {
+  payload: ProjectKnowledgeContext,
+  success: ProjectKnowledgePreparedContext,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeReadDeliveriesRpc = Rpc.make(WS_METHODS.projectKnowledgeReadDeliveries, {
+  payload: ProjectKnowledgeReadDeliveriesInput,
+  success: ProjectKnowledgeDeliveries,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+
+const WsProjectKnowledgeReadFactRpc = Rpc.make(WS_METHODS.projectKnowledgeReadFact, {
+  payload: ProjectKnowledgeReadFactInput,
+  success: ProjectKnowledgeFactDetail,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeStatusRpc = Rpc.make(WS_METHODS.projectKnowledgeStatus, {
+  payload: ProjectKnowledgeStatusInput,
+  success: ProjectKnowledgeStatus,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+
+export const WsProjectKnowledgeRpcGroup = RpcGroup.make(
+  WsProjectKnowledgeSearchRpc,
+  WsProjectKnowledgeListRpc,
+  WsProjectKnowledgeMutateRpc,
+  WsProjectKnowledgeReadSourceRpc,
+  WsProjectKnowledgePrepareContextRpc,
+  WsProjectKnowledgeReadDeliveriesRpc,
+  WsProjectKnowledgeReadFactRpc,
+  WsProjectKnowledgeStatusRpc,
+).middleware(RpcScopeAuthorization);
+
+export const WsProjectLoomRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.projectReadLoomWindow, {
+    payload: LoomWindowInput,
+    success: LoomWindow,
+    error: Schema.Union([ProjectLoomError, EnvironmentAuthorizationError]),
+  }),
+).middleware(RpcScopeAuthorization);
+
+export const WsConversationSummariesRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.conversationSummariesList, {
+    payload: ConversationSummaryListInput,
+    success: ConversationSummaryList,
+    error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.conversationSummariesDescribe, {
+    payload: ConversationSummaryDescribeInput,
+    success: ConversationSummaryRead,
+    error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.conversationSummariesExpand, {
+    payload: ConversationSummaryExpandInput,
+    success: ConversationSummaryExpansion,
+    error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
+  }),
+).middleware(RpcScopeAuthorization);
+
+export const WsProjectCodeRpcGroup = RpcGroup.make(
+  WsProjectCodeQueryRpc,
+  WsProjectCodeFileHistoryRpc,
+  WsProjectCodeSubscribeIndexRpc,
+).middleware(RpcScopeAuthorization);
+
 export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
@@ -2105,4 +2261,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,
   WsOrchestrationV2SubscribeCommandOutputRpc,
-).middleware(RpcScopeAuthorization);
+)
+  .middleware(RpcScopeAuthorization)
+  .merge(WsProjectKnowledgeRpcGroup)
+  .merge(WsConversationSummariesRpcGroup)
+  .merge(WsProjectLoomRpcGroup)
+  .merge(WsProjectCodeRpcGroup);

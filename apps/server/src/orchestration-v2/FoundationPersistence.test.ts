@@ -1336,8 +1336,9 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       );
       yield* Effect.gen(function* () {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        assert.isTrue(yield* worker.runOnce);
-        assert.isFalse(yield* worker.runOnce);
+        // This suite shares its database; source corrections also queue independent maintenance.
+        assert.isAtLeast(yield* worker.drain(), 1);
+        assert.isFalse(yield* worker.runTurnOnce);
       }).pipe(Effect.provide(layerWorker));
 
       assert.equal(yield* Ref.get(executionCount), 1);
@@ -1746,7 +1747,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       yield* Effect.gen(function* () {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const workerFiber = yield* worker.runOnce.pipe(Effect.forkChild);
+        const workerFiber = yield* worker.runTurnOnce.pipe(Effect.forkChild);
         yield* Deferred.await(started);
         const cancelledEffectIds = yield* outbox.cancelUnsettled({
           threadId,
@@ -1814,7 +1815,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       assert.isTrue(
         yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-          Effect.flatMap((worker) => worker.runOnce),
+          Effect.flatMap((worker) => worker.runTurnOnce),
           Effect.provide(layerWorker),
         ),
       );
@@ -1840,8 +1841,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       const claims = yield* Effect.all(
         [
-          outbox.claimNext({ workerId: "worker-a", leaseDurationMs: 30_000 }),
-          outbox.claimNext({ workerId: "worker-b", leaseDurationMs: 30_000 }),
+          outbox.claimNext({ workerId: "worker-a", leaseDurationMs: 30_000, lane: "turn" }),
+          outbox.claimNext({ workerId: "worker-b", leaseDurationMs: 30_000, lane: "turn" }),
         ],
         { concurrency: "unbounded" },
       );
@@ -1988,6 +1989,80 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         yield* outbox.succeed({
           effectId: nextTitle.value.id,
           workerId: "title-lane-worker",
+        });
+      }
+    }),
+  );
+
+  it.effect("runs knowledge extraction on its own lane beside title and critical work", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const commandId = CommandId.make("command:foundation-extract-effect-lane");
+      const threadId = ThreadId.make("thread:foundation-extract-effect-lane");
+      const claim = (workerId: string) =>
+        outbox
+          .claimNext({ workerId, leaseDurationMs: 30_000 })
+          .pipe(Effect.map(Option.map((effect) => effect.id)));
+      yield* outbox.enqueue([
+        {
+          id: "effect:foundation-extract-effect-lane:a-extract",
+          commandId,
+          threadId,
+          request: {
+            type: "project-knowledge.extract",
+            runId: RunId.make("run:foundation-extract-effect-lane:a"),
+            runOutcome: "completed",
+          },
+        },
+        {
+          id: "effect:foundation-extract-effect-lane:b-title",
+          commandId,
+          threadId,
+          request: { type: "thread-title.generate", kind: { type: "regenerate" } },
+        },
+        {
+          id: "effect:foundation-extract-effect-lane:c-critical",
+          commandId,
+          threadId,
+          request: { type: "terminal.cleanup" },
+        },
+        {
+          id: "effect:foundation-extract-effect-lane:d-extract",
+          commandId,
+          threadId,
+          request: {
+            type: "project-knowledge.extract",
+            runId: RunId.make("run:foundation-extract-effect-lane:d"),
+            runOutcome: "failed",
+          },
+        },
+      ]);
+      assert.deepEqual(
+        [yield* claim("w1"), yield* claim("w2"), yield* claim("w3"), yield* claim("w4")],
+        [
+          Option.some("effect:foundation-extract-effect-lane:a-extract"),
+          Option.some("effect:foundation-extract-effect-lane:b-title"),
+          Option.some("effect:foundation-extract-effect-lane:c-critical"),
+          Option.none(),
+        ],
+      );
+      yield* outbox.succeed({
+        effectId: "effect:foundation-extract-effect-lane:a-extract",
+        workerId: "w1",
+      });
+      assert.deepEqual(
+        yield* claim("w1"),
+        Option.some("effect:foundation-extract-effect-lane:d-extract"),
+      );
+      // The suite shares one database; leave nothing running for later tests.
+      for (const [suffix, workerId] of [
+        ["b-title", "w2"],
+        ["c-critical", "w3"],
+        ["d-extract", "w1"],
+      ] as const) {
+        yield* outbox.succeed({
+          effectId: `effect:foundation-extract-effect-lane:${suffix}`,
+          workerId,
         });
       }
     }),
@@ -2323,15 +2398,9 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         yield* Deferred.succeed(releaseB1, undefined);
         yield* Deferred.await(startedA2);
         yield* Deferred.succeed(releaseA2, undefined);
-        let settled = false;
-        while (!settled) {
-          settled = (yield* outbox.listByCommandId(commandId)).every(
-            (effect) => effect.status === "succeeded",
-          );
-          if (!settled) yield* Effect.yieldNow;
-        }
+        yield* Effect.all([effectA1, effectA2, effectB1].map((id) => outbox.awaitSettled(id)));
       }).pipe(Effect.provide(layerWorker), Effect.scoped);
-    }),
+    }).pipe(Effect.provide(layerIsolatedOutbox)),
   );
 
   it.effect("does not reclaim a running effect after its process-local lease expires", () =>
@@ -2386,7 +2455,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       yield* Effect.gen(function* () {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const firstFiber = yield* worker.runOnce.pipe(Effect.forkChild);
+        const firstFiber = yield* worker.runTurnOnce.pipe(Effect.forkChild);
         yield* Deferred.await(firstStarted);
         yield* sql`
           UPDATE orchestration_v2_effect_outbox
@@ -2394,12 +2463,12 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           WHERE effect_id = ${firstEffectId}
         `;
 
-        assert.isFalse(yield* worker.runOnce);
+        assert.isFalse(yield* worker.runTurnOnce);
         assert.deepEqual(yield* Ref.get(executions), [firstEffectId]);
 
         yield* Deferred.succeed(releaseFirst, undefined);
         assert.isTrue(yield* Fiber.join(firstFiber));
-        assert.isTrue(yield* worker.runOnce);
+        assert.isTrue(yield* worker.runTurnOnce);
         assert.deepEqual(yield* Ref.get(executions), [firstEffectId, secondEffectId]);
       }).pipe(Effect.provide(layerWorker));
     }),
@@ -2660,6 +2729,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             awaitWork: Effect.void,
             runRecoveryOnce: Effect.succeed(false),
             runOnce: Effect.succeed(false),
+            runTurnOnce: Effect.succeed(false),
+            runMaintenanceOnce: Effect.succeed(false),
             nextClaimableAt: Effect.succeed(Option.none()),
             drain: () => Effect.succeed(0),
           }),
@@ -2877,6 +2948,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             awaitWork: Effect.void,
             runRecoveryOnce: Effect.succeed(false),
             runOnce: Effect.succeed(false),
+            runTurnOnce: Effect.succeed(false),
+            runMaintenanceOnce: Effect.succeed(false),
             nextClaimableAt: Effect.succeed(Option.none()),
             drain: () => Effect.succeed(0),
           }),

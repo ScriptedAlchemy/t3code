@@ -104,6 +104,17 @@ const knownRecords: Record<(typeof COMPOSER_CONTEXT_KINDS)[number], Record<strin
   },
   mention: { ...base, kind: "mention", label: "@src/index.ts", path: "src/index.ts" },
   skill: { ...base, kind: "skill", label: "$pinchtab", name: "pinchtab" },
+  "project-knowledge": {
+    ...base,
+    kind: "project-knowledge",
+    label: "Project knowledge",
+    knowledge: {
+      environmentId: "environment-1",
+      projectId: "project-1",
+      selections: [{ kind: "fact", factId: "fact-1", revision: 1 }],
+      maxBytes: 48000,
+    },
+  },
   thread: {
     ...base,
     kind: "thread",

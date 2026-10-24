@@ -14,6 +14,21 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * even where they differ from the method prefix.
  */
 const RPC_AGGREGATES = {
+  [WS_METHODS.projectKnowledgeSearch]: "projectKnowledge",
+  [WS_METHODS.conversationSummariesList]: "conversationSummaries",
+  [WS_METHODS.conversationSummariesDescribe]: "conversationSummaries",
+  [WS_METHODS.conversationSummariesExpand]: "conversationSummaries",
+  [WS_METHODS.projectReadLoomWindow]: "projectLoom",
+  [WS_METHODS.projectKnowledgeList]: "projectKnowledge",
+  [WS_METHODS.projectKnowledgeMutate]: "projectKnowledge",
+  [WS_METHODS.projectKnowledgeReadSource]: "projectKnowledge",
+  [WS_METHODS.projectKnowledgePrepareContext]: "projectKnowledge",
+  [WS_METHODS.projectKnowledgeReadDeliveries]: "projectKnowledge",
+  [WS_METHODS.projectKnowledgeReadFact]: "projectKnowledge",
+  [WS_METHODS.projectKnowledgeStatus]: "projectKnowledge",
+  [WS_METHODS.projectCodeQuery]: "projectCode",
+  [WS_METHODS.projectCodeFileHistory]: "projectCode",
+  [WS_METHODS.projectCodeSubscribeIndex]: "projectCode",
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: "orchestration",

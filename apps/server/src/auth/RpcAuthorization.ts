@@ -39,6 +39,20 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
 export const RPC_REQUIRED_SCOPES = {
   ...CLIENT_GUARDED_RPC_SCOPES,
+  [WS_METHODS.projectCodeSubscribeIndex]: AuthFilesystemReadScope,
+  [WS_METHODS.projectKnowledgeSearch]: AuthOrchestrationReadScope,
+  // Summaries and their expanded sources are thread content.
+  [WS_METHODS.conversationSummariesList]: AuthOrchestrationReadScope,
+  [WS_METHODS.conversationSummariesDescribe]: AuthOrchestrationReadScope,
+  [WS_METHODS.conversationSummariesExpand]: AuthOrchestrationReadScope,
+  // The Loom shows thread titles, runs and commands across a project.
+  [WS_METHODS.projectReadLoomWindow]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectKnowledgeList]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectKnowledgeReadSource]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectKnowledgePrepareContext]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectKnowledgeReadDeliveries]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectKnowledgeReadFact]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectKnowledgeStatus]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,

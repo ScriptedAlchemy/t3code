@@ -79,6 +79,7 @@ import { BrowserDocumentFrame, isPdfPreviewFile } from "./BrowserDocumentFrame";
 import { DelimitedTablePreview } from "./DelimitedTablePreview";
 import FileBrowserPanel from "./FileBrowserPanel";
 import { FileBreadcrumbs } from "./FileBreadcrumbs";
+import { FileCodeRelationships } from "./FileCodeRelationships";
 import { breadcrumbPathOf, retainedBreadcrumbTrail, trailChildOf } from "./filePath";
 import { FileMarkdownPreview } from "./FileMarkdownPreview";
 import {
@@ -1456,6 +1457,19 @@ export default function FilePreviewPanel({
                 />
               </DiffWorkerPoolProvider>
             )
+          ) : null}
+          {previewPath &&
+          attachment === undefined &&
+          !isHostFile &&
+          !isMedia &&
+          !isPdf &&
+          file.data ? (
+            <FileCodeRelationships
+              key={previewPath}
+              environmentId={environmentId}
+              threadRef={threadRef}
+              relativePath={previewPath}
+            />
           ) : null}
         </div>
         {showExplorer ? (

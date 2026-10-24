@@ -12,7 +12,12 @@ import {
   type ThreadFindStart,
   stepThreadFindIndex,
 } from "./threadFind";
-import { subscribeThreadFindOpen } from "./threadFindActionBus";
+import {
+  type ThreadFindOpenRequest,
+  hasPendingThreadFindOpen,
+  subscribeThreadFindOpen,
+  takePendingThreadFindOpen,
+} from "./threadFindActionBus";
 import { toastManager } from "../ui/toast";
 
 const EMPTY_SKILLS: readonly InlineSkill[] = [];
@@ -93,7 +98,40 @@ export function useThreadFind({
     });
   });
   const close = useStableCallback(() => setState(CLOSED_FIND));
-  useEffect(() => subscribeThreadFindOpen(open), [open]);
+  const openAt = useStableCallback((request: ThreadFindOpenRequest) => {
+    // The server selects the first match at or after `start`, and the first
+    // match overall when the entry is not in this thread.
+    const start = request.entryId ? { entryId: request.entryId, occurrence: 0 } : undefined;
+    setState((previous) => ({
+      ...CLOSED_FIND,
+      threadKey: request.threadKey,
+      query: request.query,
+      start,
+      focusRequestId: previous.focusRequestId + 1,
+      navigationId: previous.navigationId + 1,
+      requestId: previous.navigationId + 1,
+    }));
+  });
+  const takePendingRequest = useStableCallback(() => {
+    if (!enabled || threadKey === null) return false;
+    const request = takePendingThreadFindOpen(threadKey);
+    if (request) openAt(request);
+    return request !== null;
+  });
+  useEffect(
+    () =>
+      subscribeThreadFindOpen(() => {
+        if (takePendingRequest()) return;
+        // A request for another thread waits for that thread's view instead.
+        if (!hasPendingThreadFindOpen()) open();
+      }),
+    [open, takePendingRequest],
+  );
+  useEffect(() => {
+    if (!enabled || threadKey === null) return;
+    const request = takePendingThreadFindOpen(threadKey);
+    if (request) openAt(request);
+  }, [enabled, threadKey, openAt]);
 
   const remote = useServerResults(
     isOpen ? thread : null,

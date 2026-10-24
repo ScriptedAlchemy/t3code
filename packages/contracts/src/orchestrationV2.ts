@@ -1,3 +1,4 @@
+import { ConversationSummaryId } from "./conversationSummaries.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -961,6 +962,9 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
       status: Schema.Literals(["pending", "injected", "inline"]),
       itemIds: Schema.Array(TurnItemId),
       omittedItemIds: Schema.optional(Schema.Array(TurnItemId)),
+      /** Conversation summaries delivered in place of the items in summarizedItemIds. */
+      summaryIds: Schema.optional(Schema.Array(ConversationSummaryId)),
+      summarizedItemIds: Schema.optional(Schema.Array(TurnItemId)),
     }),
   ),
   detailInTurnItem: Schema.optional(Schema.Literal(true)),

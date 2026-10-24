@@ -19,6 +19,7 @@ import {
   type PreviewAnnotationPayload,
   RuntimeMode,
   ThreadContextRecord,
+  ProjectKnowledgeContextRecord,
   type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
@@ -90,6 +91,7 @@ import {
   toKindScopedComposerContextId,
 } from "@t3tools/shared/composerContextReferences";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
+import { toastManager } from "./components/ui/toastManager";
 
 const isElementContextDetails = Schema.is(ElementContextDetails);
 import { ReviewCommentContextSchema, type ReviewCommentContext } from "./reviewCommentContext";
@@ -193,6 +195,27 @@ function clearStaleFileUploadMetadata(
   return changed ? { ...draft, files } : draft;
 }
 
+function clearDraftKnowledgeReferences(draft: ComposerThreadDraftState): ComposerThreadDraftState {
+  if (!draft.knowledgeContexts?.length) return draft;
+  return {
+    ...draft,
+    prompt: draft.knowledgeContexts.reduce(
+      (prompt, record) => removeInlineContextReference(prompt, record.contextId).prompt,
+      draft.prompt,
+    ),
+    knowledgeContexts: [],
+  };
+}
+
+function notifyDraftKnowledgeRemoved() {
+  toastManager.add({
+    type: "info",
+    title: "Project memory removed",
+    description:
+      "This draft moved to another machine or project. Attach memory from the current project before sending.",
+  });
+}
+
 export const PersistedComposerFileAttachment = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -241,6 +264,7 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   previewAnnotations: Schema.optionalKey(Schema.Array(PreviewAnnotationPayloadSchema)),
   reviewComments: Schema.optionalKey(Schema.Array(ReviewCommentContextSchema)),
   threadContexts: Schema.optionalKey(Schema.Array(ThreadContextRecord)),
+  knowledgeContexts: Schema.optionalKey(Schema.Array(ProjectKnowledgeContextRecord)),
   // The record's value schema is NOT wrapped in `Schema.optionalKey`: that
   // helper is only meaningful on property signatures with a known key set, and
   // `Schema.Record(<branded string>, …)` produces an index signature at runtime
@@ -368,6 +392,7 @@ export interface ComposerThreadDraftState {
   previewAnnotations: PreviewAnnotationPayload[];
   reviewComments: ReviewCommentContext[];
   threadContexts: ThreadContextRecord[];
+  knowledgeContexts?: ReadonlyArray<ProjectKnowledgeContextRecord>;
   modelSelectionByProvider: Partial<Record<ProviderInstanceId, ModelSelection>>;
   activeProvider: ProviderInstanceId | null;
   modelSelectionExplicit?: boolean;
@@ -389,6 +414,7 @@ export function composerDraftHasUserContent(
     draft.terminalContexts.length > 0 ||
     draft.previewAnnotations.length > 0 ||
     draft.reviewComments.length > 0 ||
+    (draft.knowledgeContexts?.length ?? 0) > 0 ||
     draft.threadContexts.length > 0
   );
 }
@@ -606,6 +632,10 @@ interface ComposerDraftStoreState {
     threadRef: ComposerThreadTarget,
     records: ReadonlyArray<ThreadContextRecord>,
     options?: ComposerContextAddOptions,
+  ) => void;
+  setKnowledgeContext: (
+    threadRef: ComposerThreadTarget,
+    record: ProjectKnowledgeContextRecord | null,
   ) => void;
   setThreadContexts: (
     threadRef: ComposerThreadTarget,
@@ -873,6 +903,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.terminalContexts.length === 0 &&
     draft.previewAnnotations.length === 0 &&
     draft.reviewComments.length === 0 &&
+    (draft.knowledgeContexts?.length ?? 0) === 0 &&
     draft.threadContexts.length === 0 &&
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
@@ -1780,6 +1811,9 @@ function normalizePersistedDraftsByThreadId(
     const reviewComments = Array.isArray(draftCandidate.reviewComments)
       ? draftCandidate.reviewComments.filter(isReviewCommentContext)
       : [];
+    const knowledgeContexts = Array.isArray(draftCandidate.knowledgeContexts)
+      ? draftCandidate.knowledgeContexts.filter(Schema.is(ProjectKnowledgeContextRecord))
+      : [];
     const threadContexts = Array.isArray(draftCandidate.threadContexts)
       ? draftCandidate.threadContexts.filter(isThreadContextRecord)
       : [];
@@ -1898,6 +1932,7 @@ function normalizePersistedDraftsByThreadId(
       terminalContexts.length === 0 &&
       previewAnnotations.length === 0 &&
       reviewComments.length === 0 &&
+      knowledgeContexts.length === 0 &&
       threadContexts.length === 0 &&
       !hasModelData &&
       !runtimeMode &&
@@ -1925,6 +1960,7 @@ function normalizePersistedDraftsByThreadId(
       ...(previewAnnotations.length > 0 ? { previewAnnotations } : {}),
       ...(reviewComments.length > 0 ? { reviewComments } : {}),
       ...(threadContexts.length > 0 ? { threadContexts } : {}),
+      ...(knowledgeContexts.length > 0 ? { knowledgeContexts } : {}),
       ...(hasModelData
         ? {
             modelSelectionByProvider: compactModelSelectionByProvider(modelSelectionByProvider),
@@ -1948,6 +1984,7 @@ function persistedComposerDraftHasUserContent(draft: PersistedComposerThreadDraf
     (draft.terminalContexts?.length ?? 0) > 0 ||
     (draft.previewAnnotations?.length ?? 0) > 0 ||
     (draft.reviewComments?.length ?? 0) > 0 ||
+    (draft.knowledgeContexts?.length ?? 0) > 0 ||
     (draft.threadContexts?.length ?? 0) > 0
   );
 }
@@ -2026,6 +2063,7 @@ export function partializeComposerDraftStoreState(
       draft.terminalContexts.length === 0 &&
       draft.previewAnnotations.length === 0 &&
       draft.reviewComments.length === 0 &&
+      (draft.knowledgeContexts?.length ?? 0) === 0 &&
       draft.threadContexts.length === 0 &&
       !hasModelData &&
       draft.runtimeMode === null &&
@@ -2077,6 +2115,18 @@ export function partializeComposerDraftStoreState(
       ...(draft.reviewComments.length > 0
         ? {
             reviewComments: draft.reviewComments.map((comment) => ({ ...comment })),
+          }
+        : {}),
+      ...((draft.knowledgeContexts?.length ?? 0) > 0
+        ? {
+            knowledgeContexts:
+              draft.knowledgeContexts?.map((record) => ({
+                ...record,
+                knowledge: {
+                  ...record.knowledge,
+                  selections: record.knowledge.selections.map((selection) => ({ ...selection })),
+                },
+              })) ?? [],
           }
         : {}),
       ...(draft.threadContexts.length > 0
@@ -2341,6 +2391,7 @@ function toHydratedThreadDraft(
       ...(persistedDraft.reviewComments ?? []).map(reviewCommentContextReference),
       ...(persistedDraft.previewAnnotations ?? []).map(previewAnnotationContextReference),
       ...(persistedDraft.threadContexts ?? []).map(threadContextReference),
+      ...(persistedDraft.knowledgeContexts ?? []),
       ...files.map(fileContextReference),
     ]),
     images: hydrateImagesFromPersisted(persistedDraft.attachments),
@@ -2356,6 +2407,7 @@ function toHydratedThreadDraft(
       persistedDraft.previewAnnotations?.map((annotation) => ({ ...annotation })) ?? [],
     reviewComments: persistedDraft.reviewComments?.map((comment) => ({ ...comment })) ?? [],
     threadContexts: persistedDraft.threadContexts?.map((record) => ({ ...record })) ?? [],
+    knowledgeContexts: persistedDraft.knowledgeContexts ?? [],
     modelSelectionByProvider,
     activeProvider,
     ...(persistedDraft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
@@ -2515,6 +2567,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           if (normalizedLogicalProjectKey.length === 0 || draftId.length === 0) {
             return;
           }
+          let removedKnowledge = false;
           set((state) => {
             const existingThread = state.draftThreadsByThreadKey[draftId];
             const previousThreadKeyForLogicalProject =
@@ -2557,11 +2610,14 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             let nextDraftsByThreadKey = state.draftsByThreadKey;
             if (
               existingThread &&
-              existingThread.environmentId !== projectRef.environmentId &&
+              (existingThread.environmentId !== projectRef.environmentId ||
+                existingThread.projectId !== projectRef.projectId) &&
               existingDraft !== undefined
             ) {
+              const withoutKnowledge = clearDraftKnowledgeReferences(existingDraft);
+              removedKnowledge = withoutKnowledge !== existingDraft;
               const nextDraft = clearStaleFileUploadMetadata(
-                existingDraft,
+                withoutKnowledge,
                 projectRef.environmentId,
               );
               if (nextDraft !== existingDraft) {
@@ -2605,6 +2661,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 nextLogicalProjectDraftThreadKeyByLogicalProjectKey,
             };
           });
+          if (removedKnowledge) notifyDraftKnowledgeRemoved();
         },
         setProjectDraftThreadId: (projectRef, draftId, options) => {
           get().setLogicalProjectDraftThreadId(
@@ -2619,6 +2676,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           if (threadKey.length === 0) {
             return;
           }
+          let removedKnowledge = false;
           set((state) => {
             const existing = state.draftThreadsByThreadKey[threadKey];
             if (!existing) {
@@ -2700,13 +2758,26 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             if (isUnchanged) {
               return state;
             }
+            const draft = state.draftsByThreadKey[threadKey];
+            const nextDraft =
+              projectChanged && draft ? clearDraftKnowledgeReferences(draft) : draft;
+            removedKnowledge = nextDraft !== draft;
             return {
+              ...(removedKnowledge
+                ? {
+                    draftsByThreadKey: {
+                      ...state.draftsByThreadKey,
+                      [threadKey]: nextDraft!,
+                    },
+                  }
+                : {}),
               draftThreadsByThreadKey: {
                 ...state.draftThreadsByThreadKey,
                 [threadKey]: nextDraftThread,
               },
             };
           });
+          if (removedKnowledge) notifyDraftKnowledgeRemoved();
         },
         clearProjectDraftThreadId: (projectRef) => {
           set((state) => {
@@ -3838,6 +3909,27 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             };
           });
         },
+        setKnowledgeContext: (threadRef, record) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef);
+          if (!threadKey) return;
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            let prompt = existing.prompt;
+            for (const previous of existing.knowledgeContexts ?? [])
+              prompt = removeInlineContextReference(prompt, previous.contextId).prompt;
+            if (record !== null) prompt = ensureInlineContextReferences(prompt, [record]);
+            return {
+              draftsByThreadKey: {
+                ...state.draftsByThreadKey,
+                [threadKey]: {
+                  ...existing,
+                  prompt,
+                  knowledgeContexts: record === null ? [] : [record],
+                },
+              },
+            };
+          });
+        },
         setThreadContexts: (threadRef, records) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef);
           if (!threadKey) return;
@@ -3959,6 +4051,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               previewAnnotations: [],
               reviewComments: [],
               threadContexts: [],
+              knowledgeContexts: [],
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
@@ -3988,6 +4081,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 ...current.terminalContexts.map(terminalContextReference),
                 ...current.reviewComments.map(reviewCommentContextReference),
                 ...current.threadContexts.map(threadContextReference),
+                ...(current.knowledgeContexts ?? []),
                 ...current.previewAnnotations.map(previewAnnotationContextReference),
               ]),
               images: [],

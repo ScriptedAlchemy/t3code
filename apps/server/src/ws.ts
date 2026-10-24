@@ -1,4 +1,15 @@
-import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
+import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
+import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
+import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
+import * as FileHistory from "./project/knowledge/FileHistory.ts";
+import {
+  OrchestrationDispatchCommandError,
+  ProjectCodeError,
+  type ProjectFileHistoryError,
+  ProjectId as ProjectIdSchema,
+  ThreadId as ThreadIdSchema,
+} from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 
@@ -95,6 +106,10 @@ import {
   type PullRequestRef,
   WS_METHODS,
   WsRpcGroup,
+  WsProjectKnowledgeRpcGroup,
+  WsConversationSummariesRpcGroup,
+  WsProjectLoomRpcGroup,
+  WsProjectCodeRpcGroup,
 } from "@t3tools/contracts";
 import {
   HttpRouter,
@@ -546,6 +561,127 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+const ServerCoreWsRpcGroup = ServerWsRpcGroup.omit(
+  WS_METHODS.projectCodeQuery,
+  WS_METHODS.projectCodeFileHistory,
+  WS_METHODS.projectCodeSubscribeIndex,
+  WS_METHODS.projectKnowledgeSearch,
+  WS_METHODS.projectKnowledgeList,
+  WS_METHODS.projectKnowledgeReadSource,
+  WS_METHODS.projectKnowledgePrepareContext,
+  WS_METHODS.projectKnowledgeReadDeliveries,
+  WS_METHODS.projectKnowledgeMutate,
+  WS_METHODS.projectKnowledgeReadFact,
+  WS_METHODS.projectKnowledgeStatus,
+  WS_METHODS.conversationSummariesList,
+  WS_METHODS.conversationSummariesDescribe,
+  WS_METHODS.conversationSummariesExpand,
+  WS_METHODS.projectReadLoomWindow,
+);
+const layerProjectLoomRpc = WsProjectLoomRpcGroup.middleware(RpcInstrumentation).toLayer(
+  Effect.gen(function* () {
+    const loom = yield* ProjectLoom.ProjectLoom;
+    return { [WS_METHODS.projectReadLoomWindow]: (input) => loom.readWindow(input) };
+  }),
+);
+const layerConversationSummariesRpc = WsConversationSummariesRpcGroup.middleware(
+  RpcInstrumentation,
+).toLayer(
+  Effect.gen(function* () {
+    const summaries = yield* ConversationSummaries.ConversationSummaries;
+    return {
+      [WS_METHODS.conversationSummariesList]: (input) => summaries.list(input),
+      [WS_METHODS.conversationSummariesDescribe]: (input) => summaries.describe(input),
+      [WS_METHODS.conversationSummariesExpand]: (input) => summaries.expand(input),
+    };
+  }),
+);
+const layerKnowledgeRpc = WsProjectKnowledgeRpcGroup.middleware(RpcInstrumentation).toLayer(
+  Effect.gen(function* () {
+    const projectKnowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    return {
+      [WS_METHODS.projectKnowledgeSearch]: (input) => projectKnowledge.search(input),
+      [WS_METHODS.projectKnowledgeList]: (input) => projectKnowledge.list(input),
+      [WS_METHODS.projectKnowledgeReadSource]: (input) => projectKnowledge.readSource(input),
+      [WS_METHODS.projectKnowledgePrepareContext]: (input) =>
+        projectKnowledge.prepareContext(input),
+      [WS_METHODS.projectKnowledgeReadDeliveries]: (input) =>
+        projectKnowledge.readDeliveries(input),
+      [WS_METHODS.projectKnowledgeMutate]: (input) =>
+        projectKnowledge.mutateWithHints(input, { kind: "user" }),
+      [WS_METHODS.projectKnowledgeReadFact]: (input) => projectKnowledge.readFact(input),
+      [WS_METHODS.projectKnowledgeStatus]: (input) => projectKnowledge.status(input),
+    };
+  }),
+);
+function toProjectCodeError(
+  error: Effect.Error<ReturnType<CodeIntelligence.CodeIntelligence["Service"]["query"]>>,
+): ProjectCodeError {
+  switch (error._tag) {
+    case "CodeIntelligenceProjectNotFound":
+      return {
+        _tag: "project-not-found",
+        projectId: ProjectIdSchema.make(error.projectId),
+      } as const;
+    case "CodeIntelligenceThreadMismatch":
+      return {
+        _tag: "thread-project-mismatch",
+        projectId: ProjectIdSchema.make(error.projectId),
+        threadId: ThreadIdSchema.make(error.threadId),
+      } as const;
+    case "CodeIntelligencePathOutsideCheckout":
+      return { _tag: "path-outside-checkout", path: error.path } as const;
+    case "WorkspacePathOutsideRootError":
+      return { _tag: "path-outside-checkout", path: error.relativePath } as const;
+    case "CodeIntelligenceInspectionFailed":
+      return {
+        _tag: "analysis-failed",
+        path: error.path,
+        reason: error.reason,
+      } as const;
+    case "ProjectStoreV2Error":
+      return { _tag: "authority-failed", authority: "project-store" } as const;
+    case "ProjectionStoreSetupError":
+    case "ProjectionStoreApplyEventError":
+    case "ProjectionStoreThreadNotFoundError":
+    case "ProjectionStoreReadError":
+      return { _tag: "authority-failed", authority: "thread-store" } as const;
+    case "WorkspaceRootNotExistsError":
+    case "WorkspaceRootCreateFailedError":
+    case "WorkspaceRootStatFailedError":
+    case "WorkspaceRootNotDirectoryError":
+      return { _tag: "authority-failed", authority: "workspace-paths" } as const;
+    case "WorkspaceEntriesReadDirectoryError":
+    case "WorkspaceSearchIndexCreateFailed":
+    case "WorkspaceSearchIndexScanTimedOut":
+    case "WorkspaceSearchIndexSearchFailed":
+      return { _tag: "authority-failed", authority: "workspace-entries" } as const;
+  }
+}
+const layerProjectCodeRpc = WsProjectCodeRpcGroup.middleware(RpcInstrumentation).toLayer(
+  Effect.gen(function* () {
+    const codeIntelligence = yield* CodeIntelligence.CodeIntelligence;
+    const fileHistory = yield* FileHistory.FileHistory;
+    return {
+      [WS_METHODS.projectCodeFileHistory]: (input) =>
+        fileHistory
+          .read(input)
+          .pipe(
+            Effect.mapError((error): ProjectFileHistoryError =>
+              error._tag === "FileHistoryProjectNotFound"
+                ? { _tag: "project-not-found", projectId: ProjectIdSchema.make(error.projectId) }
+                : { _tag: "history-unavailable" },
+            ),
+          ),
+      [WS_METHODS.projectCodeQuery]: (input) =>
+        codeIntelligence.query(input).pipe(Effect.mapError(toProjectCodeError)),
+      [WS_METHODS.projectCodeSubscribeIndex]: (input) =>
+        Stream.unwrap(codeIntelligence.subscribeIndex(input)).pipe(
+          Stream.mapError(toProjectCodeError),
+        ),
+    };
+  }),
+);
 // Replaying each intervening event costs a shell refetch; past this gap a
 // single O(active-threads) snapshot is cheaper and bounded.
 const SHELL_RESUME_MAX_GAP = 1_000;
@@ -1189,7 +1325,7 @@ export const layerWsRpc = (
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
 ) =>
-  ServerWsRpcGroup.toLayer(
+  ServerCoreWsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const sql = yield* SqlClient.SqlClient;
@@ -1806,7 +1942,7 @@ export const layerWsRpc = (
         return result;
       });
 
-      const handlers = ServerWsRpcGroup.of({
+      const handlers = ServerCoreWsRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,
@@ -3125,6 +3261,11 @@ export const layerWsRpc = (
       });
       return handlers;
     }),
+  ).pipe(
+    Layer.merge(layerKnowledgeRpc),
+    Layer.merge(layerConversationSummariesRpc),
+    Layer.merge(layerProjectLoomRpc),
+    Layer.merge(layerProjectCodeRpc),
   );
 
 // RpcServer's default sends a socket-level Defect frame instead, and the client

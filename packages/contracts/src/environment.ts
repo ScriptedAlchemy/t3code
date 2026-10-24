@@ -72,6 +72,26 @@ export const ServerSelfUpdateCapability = Schema.Literals([
 export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  projectKnowledge: Schema.optionalKey(Schema.Boolean),
+  /** projectKnowledge.readFact, projectKnowledge.status and the supersede mutation. */
+  projectKnowledgeHistory: Schema.optionalKey(Schema.Boolean),
+  /** projectKnowledge.readDeliveries and the recorded copy delivered with sent messages. */
+  projectKnowledgeDeliveries: Schema.optionalKey(Schema.Boolean),
+  /** Assisted proposals from settled runs, the origin list filter and status.assistedLearning. */
+  projectKnowledgeAssistedLearning: Schema.optionalKey(Schema.Boolean),
+  projectCode: Schema.optionalKey(Schema.Boolean),
+  /** Extended queries are absent from servers that only advertise the original code index. */
+  projectCodeFreshness: Schema.optionalKey(Schema.Boolean),
+  projectCodeTests: Schema.optionalKey(Schema.Boolean),
+  projectCodeAffected: Schema.optionalKey(Schema.Boolean),
+  projectCodePath: Schema.optionalKey(Schema.Boolean),
+  projectCodeFileHistory: Schema.optionalKey(Schema.Boolean),
+  /** projectCode.subscribeIndex, and index.refresh on query results. */
+  projectCodeIndexEvents: Schema.optionalKey(Schema.Boolean),
+  /** conversationSummaries.* reads and the enableConversationSummaries project setting. */
+  conversationSummaries: Schema.optionalKey(Schema.Boolean),
+  /** project.readLoomWindow and the project Loom view. */
+  projectLoom: Schema.optionalKey(Schema.Boolean),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
   attachmentUploads: Schema.optionalKey(Schema.Boolean),

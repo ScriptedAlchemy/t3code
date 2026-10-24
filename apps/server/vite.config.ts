@@ -35,6 +35,7 @@ if (!TELEMETRY_CHANNELS.includes(telemetryChannel)) {
 // executable needs a host Node that supports `--build-sea` (25.7+), so this is
 // a separate mode rather than a second entry in the default build.
 const packExecutable = process.env.T3CODE_PACK_EXE === "1";
+const packCodeIntelligenceWorker = process.env.T3CODE_PACK_CODE_INTELLIGENCE_WORKER === "1";
 const SEA_TARGETS = {
   "darwin-arm64": { platform: "darwin", arch: "arm64" },
   "darwin-x64": { platform: "darwin", arch: "x64" },
@@ -81,13 +82,23 @@ export default mergeConfig(
       },
     },
     pack: {
-      // The executable embeds one entry; the history worker becomes a hidden
-      // subcommand there instead of a sibling script.
-      entry: packExecutable ? ["src/bin.ts"] : ["src/bin.ts", "src/claude-history-worker.ts"],
-      outDir: packExecutable ? "dist-exe" : "dist",
-      sourcemap: !packExecutable,
+      entry: packCodeIntelligenceWorker
+        ? ["src/project/knowledge/codeIntelligenceWorkerThread.ts"]
+        : packExecutable
+          ? ["src/bin.ts"]
+          : [
+              "src/bin.ts",
+              "src/claude-history-worker.ts",
+              "src/project/knowledge/codeIntelligenceWorkerThread.ts",
+            ],
+      outDir: packCodeIntelligenceWorker
+        ? "dist-exe-code-intelligence-worker"
+        : packExecutable
+          ? "dist-exe"
+          : "dist",
+      sourcemap: !packExecutable && !packCodeIntelligenceWorker,
       clean: true,
-      ...(packExecutable
+      ...(!packCodeIntelligenceWorker && packExecutable
         ? {
             exe: {
               fileName: "t3",
@@ -95,7 +106,10 @@ export default mergeConfig(
               ...(packExecutableTargets ? { targets: packExecutableTargets } : {}),
               // Node's SEA docs: `import()` does not work when useCodeCache is
               // true, and the server reaches several modules that way.
-              seaConfig: { useCodeCache: false },
+              // `--liftoff-only` guards code analysis against tree-sitter's
+              // fatal WASM Zone OOM; V8 reads it only at process start, and the
+              // executable takes no Node flags on its command line.
+              seaConfig: { useCodeCache: false, execArgv: ["--liftoff-only"] },
             },
           }
         : {}),

@@ -356,6 +356,8 @@ function createTextGeneration(
       Effect.succeed({
         branch: "update-workflow",
       }),
+    generateKnowledgeCandidates: () => Effect.succeed({ candidates: [] }),
+    generateConversationSummary: () => Effect.succeed({ statements: [] }),
     generateThreadTitle: () =>
       Effect.succeed({
         title: "Update workflow",
@@ -410,6 +412,8 @@ function createTextGeneration(
         ),
       ),
     generateReviewGuide: (input) => implementation.generateReviewGuide(input),
+    generateKnowledgeCandidates: (input) => implementation.generateKnowledgeCandidates(input),
+    generateConversationSummary: (input) => implementation.generateConversationSummary(input),
   };
 }
 

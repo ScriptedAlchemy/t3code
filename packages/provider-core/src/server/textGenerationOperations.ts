@@ -9,6 +9,8 @@ import type { ProviderTextGeneration } from "./textGeneration.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildConversationSummaryPrompt,
+  buildKnowledgeCandidatesPrompt,
   buildPrContentPrompt,
   buildReviewGuidePrompt,
   buildThreadTitlePrompt,
@@ -169,11 +171,33 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  const generateKnowledgeCandidates: ProviderTextGeneration["generateKnowledgeCandidates"] =
+    Effect.fn(`${name}.generateKnowledgeCandidates`)(function* (input) {
+      return yield* run({
+        operation: "generateKnowledgeCandidates",
+        cwd: input.cwd,
+        modelSelection: input.modelSelection,
+        ...buildKnowledgeCandidatesPrompt(input),
+      });
+    });
+
+  const generateConversationSummary: ProviderTextGeneration["generateConversationSummary"] =
+    Effect.fn(`${name}.generateConversationSummary`)(function* (input) {
+      return yield* run({
+        operation: "generateConversationSummary",
+        cwd: input.cwd,
+        modelSelection: input.modelSelection,
+        ...buildConversationSummaryPrompt(input),
+      });
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateKnowledgeCandidates,
+    generateConversationSummary,
   } satisfies ProviderTextGeneration;
 }

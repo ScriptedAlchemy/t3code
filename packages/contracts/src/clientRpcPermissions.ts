@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
 import {
   AuthOrchestrationOperateScope,
+  AuthFilesystemReadScope,
   AuthProvidersManageScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -14,6 +15,9 @@ import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
+  [WS_METHODS.projectCodeQuery]: AuthFilesystemReadScope,
+  [WS_METHODS.projectCodeFileHistory]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectKnowledgeMutate]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,
   [WS_METHODS.serverCheckOtlpEndpoint]: AuthSettingsWriteScope,

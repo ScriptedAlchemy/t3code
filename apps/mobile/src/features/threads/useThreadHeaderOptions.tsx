@@ -23,6 +23,7 @@ export function useThreadHeaderOptions(props: {
   readonly usesNativeHeaderGlass: boolean;
   readonly gitControls: Parameters<typeof ThreadGitControls>[0];
   readonly onReturnToThread?: () => void;
+  readonly onOpenConversationSummaries?: () => void;
   readonly draft?: boolean;
 }) {
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
@@ -70,6 +71,44 @@ export function useThreadHeaderOptions(props: {
     ],
     [sidebarHeaderItem, props.onReturnToThread, props.draft, startNewTask, usesDuoHeader],
   );
+  const summariesHeaderItems = useMemo<NativeHeaderItems>(
+    () =>
+      props.onOpenConversationSummaries
+        ? [
+            withNativeGlassHeaderItem({
+              type: "menu" as const,
+              identifier: "thread-conversation-summaries",
+              accessibilityLabel: "Thread actions",
+              icon: { name: "ellipsis", type: "sfSymbol" as const },
+              menu: {
+                items: [
+                  {
+                    type: "action" as const,
+                    label: "Conversation summaries",
+                    onPress: props.onOpenConversationSummaries,
+                  },
+                ],
+              },
+            }),
+          ]
+        : [],
+    [props.onOpenConversationSummaries],
+  );
+  const rightHeaderItems = useMemo<NativeHeaderItems>(
+    () => [
+      ...(usesDuoHeader || layout.usesSplitView
+        ? threadCenterHeaderItems
+        : compactRightHeaderItems),
+      ...summariesHeaderItems,
+    ],
+    [
+      usesDuoHeader,
+      layout.usesSplitView,
+      threadCenterHeaderItems,
+      compactRightHeaderItems,
+      summariesHeaderItems,
+    ],
+  );
   const canGoBack = navigation.canGoBack();
   const compactHomeHeaderItems = useMemo<NativeHeaderItems>(
     () => [
@@ -95,8 +134,7 @@ export function useThreadHeaderOptions(props: {
         ? undefined
         : () => compactHomeHeaderItems,
     // The workspace navigator adds compose to the Duo detail column's bar.
-    unstable_headerRightItems: () =>
-      usesDuoHeader || layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems,
+    unstable_headerRightItems: () => rightHeaderItems,
     unstable_headerToolbarItems: () => [],
     unstable_headerSubtitle: props.usesNativeHeaderGlass ? props.subtitle : undefined,
     contentStyle: undefined,
@@ -110,6 +148,7 @@ export function useThreadHeaderOptions(props: {
     // `commit_push` depending on the default ref), so that state is keyed too.
     optionsVersion: [
       splitLeftHeaderItems,
+      summariesHeaderItems,
       threadCenterHeaderItems,
       compactRightHeaderItems,
       usesDuoHeader,

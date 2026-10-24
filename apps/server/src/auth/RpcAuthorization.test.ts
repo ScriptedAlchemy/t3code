@@ -10,10 +10,12 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSourceControlWriteScope,
+  ProjectId,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
   WS_METHODS,
   WsRpcGroup,
+  WsProjectCodeRpcGroup,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -41,6 +43,50 @@ describe("RPC authorization scopes", () => {
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
+  });
+
+  it("lets read-only clients inspect what project knowledge a turn delivered", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectKnowledgeReadDeliveries)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
+  it("lets read-only clients inspect fact history and memory health but not supersede", () => {
+    for (const method of [WS_METHODS.projectKnowledgeReadFact, WS_METHODS.projectKnowledgeStatus]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectKnowledgeMutate)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
+  it("treats conversation summaries and their expanded sources as thread reads", () => {
+    for (const method of [
+      WS_METHODS.conversationSummariesList,
+      WS_METHODS.conversationSummariesDescribe,
+      WS_METHODS.conversationSummariesExpand,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+  });
+
+  it("treats the project Loom as a thread read", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectReadLoomWindow)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
+  it("requires filesystem read permission for project code queries and index events", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeQuery)).toBe(AuthFilesystemReadScope);
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeSubscribeIndex)).toBe(
+      AuthFilesystemReadScope,
+    );
+  });
+
+  it("requires thread read permission for file history, which joins files to threads", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeFileHistory)).toBe(
+      AuthOrchestrationReadScope,
+    );
   });
 
   it("separates passive terminal observation from operations that can change a shell", () => {
@@ -72,6 +118,92 @@ describe("RPC authorization scopes", () => {
     }
   });
 });
+
+const projectCodeClient = (scopes: Parameters<typeof RpcAuthorization.layer>[0]) =>
+  Effect.gen(function* () {
+    const group = WsProjectCodeRpcGroup;
+    const handled: string[] = [];
+    const client = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          group.toLayerHandler(WS_METHODS.projectCodeQuery, () =>
+            Effect.sync(() => handled.push(WS_METHODS.projectCodeQuery)).pipe(
+              Effect.andThen(Effect.never),
+            ),
+          ),
+          group.toLayerHandler(WS_METHODS.projectCodeFileHistory, (input) =>
+            Effect.sync(() => handled.push(WS_METHODS.projectCodeFileHistory)).pipe(
+              Effect.as({
+                path: input.path,
+                relation: "present-at-checkpoint" as const,
+                entries: [],
+                limitReached: false,
+                index: { state: "complete" as const, pendingCheckpoints: 0 },
+              }),
+            ),
+          ),
+          group.toLayerHandler(WS_METHODS.projectCodeSubscribeIndex, () =>
+            Stream.fromEffect(
+              Effect.sync(() => handled.push(WS_METHODS.projectCodeSubscribeIndex)),
+            ).pipe(Stream.flatMap(() => Stream.never)),
+          ),
+          RpcAuthorization.layer(scopes),
+        ),
+      ),
+    );
+    return { client, handled };
+  });
+
+it.effect("denies project code queries before the handler without filesystem read permission", () =>
+  Effect.gen(function* () {
+    const { client, handled } = yield* projectCodeClient([AuthOrchestrationReadScope]);
+    expect(
+      yield* client[WS_METHODS.projectCodeQuery]({
+        projectId: ProjectId.make("project-1"),
+        query: { operation: "status" },
+      }).pipe(Effect.flip),
+    ).toMatchObject({
+      _tag: "EnvironmentAuthorizationError",
+      requiredPermission: AuthFilesystemReadScope,
+    });
+    expect(handled).toEqual([]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("denies index events before the handler without filesystem read permission", () =>
+  Effect.gen(function* () {
+    const { client, handled } = yield* projectCodeClient([AuthOrchestrationReadScope]);
+    expect(
+      yield* client[WS_METHODS.projectCodeSubscribeIndex]({
+        projectId: ProjectId.make("project-1"),
+      }).pipe(Stream.runDrain, Effect.flip),
+    ).toMatchObject({
+      _tag: "EnvironmentAuthorizationError",
+      requiredPermission: AuthFilesystemReadScope,
+    });
+    expect(handled).toEqual([]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("joins file history to threads only for credentials that can read threads", () =>
+  Effect.gen(function* () {
+    const input = { projectId: ProjectId.make("project-1"), path: "src/a.ts" };
+    const filesOnly = yield* projectCodeClient([AuthFilesystemReadScope]);
+    expect(
+      yield* filesOnly.client[WS_METHODS.projectCodeFileHistory](input).pipe(Effect.flip),
+    ).toMatchObject({
+      _tag: "EnvironmentAuthorizationError",
+      requiredPermission: AuthOrchestrationReadScope,
+    });
+    expect(filesOnly.handled).toEqual([]);
+
+    const threadReader = yield* projectCodeClient([AuthOrchestrationReadScope]);
+    expect((yield* threadReader.client[WS_METHODS.projectCodeFileHistory](input)).relation).toBe(
+      "present-at-checkpoint",
+    );
+    expect(threadReader.handled).toEqual([WS_METHODS.projectCodeFileHistory]);
+  }).pipe(Effect.scoped),
+);
 
 it("requires operate permission for host retry while preserving read-only listing", () => {
   expect(requiredScopeForDeviceList({})).toBe(AuthOrchestrationReadScope);

@@ -3,6 +3,7 @@
  * The archive is the unit every runtime installer downloads, so nothing in it
  * may require Node, npm, or a compiler on the machine that unpacks it.
  */
+import { stageProjectMemory } from "./lib/project-memory-build.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Config from "effect/Config";
@@ -30,6 +31,7 @@ import {
   STAGE_INSTALL_ARGS,
 } from "./build-desktop-artifact.ts";
 import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
+import { smokeCodeIntelligenceProcess } from "./lib/code-intelligence-smoke.ts";
 import { signWithJsign } from "./lib/windows-jsign.ts";
 import { windowsSystemTar } from "./lib/windows-tar.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
@@ -463,6 +465,10 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
     : targetKey === hostKey
       ? path.join(serverDir, "dist-exe", executableName)
       : targetExecutable;
+  const codeIntelligenceWorker = path.join(
+    serverDir,
+    "dist-exe/project/knowledge/codeIntelligenceWorkerThread.mjs",
+  );
   const webClient = path.join(serverDir, "dist/client");
   const resourceMonitorDir = Option.getOrElse(input.resourceMonitorDir, () =>
     path.join(serverDir, "dist/resource-monitor"),
@@ -470,6 +476,10 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
 
   yield* requireInput(
     builtExecutable,
+    `Run \`node apps/server/scripts/cli.ts build-exe --target ${targetKey}\` first.`,
+  );
+  yield* requireInput(
+    codeIntelligenceWorker,
     `Run \`node apps/server/scripts/cli.ts build-exe --target ${targetKey}\` first.`,
   );
   yield* requireInput(path.join(webClient, "index.html"), "Run `vp run --filter t3 build` first.");
@@ -485,8 +495,26 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
 
   yield* Effect.log(`[cli-archive] Staging ${stem}...`);
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
+  const codeIntelligenceWorkerTarget = path.join(
+    contentDir,
+    "project/knowledge/codeIntelligenceWorkerThread.mjs",
+  );
+  yield* fs.makeDirectory(path.dirname(codeIntelligenceWorkerTarget), { recursive: true });
+  yield* fs.copyFile(codeIntelligenceWorker, codeIntelligenceWorkerTarget);
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
+  const rustArch = input.arch === "arm64" ? "aarch64" : "x86_64";
+  const rustSuffix =
+    input.platform === "mac"
+      ? "apple-darwin"
+      : input.platform === "win"
+        ? "pc-windows-msvc"
+        : "unknown-linux-gnu";
+  yield* stageProjectMemory({
+    repoRoot,
+    outputDir: path.join(contentDir, "project-memory"),
+    targets: [`${rustArch}-${rustSuffix}`],
+  });
   yield* stageRuntimeExternals({
     repoRoot,
     stageDir: contentDir,
@@ -503,6 +531,12 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   }
   if (input.platform !== "win") {
     yield* fs.chmod(executablePath, 0o755);
+  }
+  // The staged tree is the shipped one, so this is where an analysis process that cannot
+  // start inside the executable would show up; another target's binary cannot run here.
+  if (targetKey === hostKey) {
+    yield* smokeCodeIntelligenceProcess(executablePath, []);
+    yield* Effect.log("[cli-archive] Code analysis process answered a query.");
   }
 
   yield* fs.makeDirectory(input.outputDir, { recursive: true });

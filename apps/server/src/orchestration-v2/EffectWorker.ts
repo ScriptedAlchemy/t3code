@@ -28,6 +28,12 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
+import {
+  DeliveryScrubRunner,
+  deliveryScrubEffect,
+} from "../project/knowledge/deliveryScrubSchedule.ts";
+import { AssistedLearningRunner } from "../project/knowledge/assistedLearningSchedule.ts";
+import { ConversationSummaryRuntime } from "../project/conversationSummaries/conversationSummarySchedule.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
@@ -94,6 +100,9 @@ export const layerExecutor: Layer.Layer<
       yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
+    const assistedLearning = yield* AssistedLearningRunner;
+    const deliveryScrubber = yield* DeliveryScrubRunner;
+    const conversationSummaries = yield* ConversationSummaryRuntime;
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
@@ -520,6 +529,48 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "project-knowledge.scrub-deliveries":
+            return deliveryScrubber.scrubPage(effect.request).pipe(
+              Effect.asVoid,
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
+          case "project-knowledge.extract":
+            return assistedLearning
+              .extractRun({
+                threadId: effect.threadId,
+                runId: effect.request.runId,
+                runOutcome: effect.request.runOutcome,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
+          case "conversation-summary.generate":
+            return conversationSummaries
+              .summarizeThread({ threadId: effect.threadId, runId: effect.request.runId })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
           case "delegated-tasks.stop":
             return threads
               .stopDelegatedTasks({
@@ -557,6 +608,8 @@ const isOrchestrationEffectWorkerError = Schema.is(OrchestrationEffectWorkerErro
 export interface OrchestrationEffectWorkerV2Shape {
   readonly awaitWork: Effect.Effect<void>;
   readonly runOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
+  readonly runTurnOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
+  readonly runMaintenanceOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly runRecoveryOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly nextClaimableAt: Effect.Effect<
     Option.Option<DateTime.Utc>,
@@ -588,6 +641,7 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const executor = yield* OrchestrationEffectExecutorV2;
+      const deliveryScrubber = yield* DeliveryScrubRunner;
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const leaseDurationMs = Math.max(1, options.leaseDurationMs ?? 30_000);
       const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
@@ -683,9 +737,14 @@ export const layerWithOptions = (
 
       // The worker probes for work repeatedly, including when the outbox is empty.
       const runOnce = Effect.fnUntraced(
-        function* (excludeRestartContinuations = false) {
+        function* (excludeRestartContinuations = false, lane?: "turn" | "maintenance") {
           const claimExit = yield* Effect.exit(
-            outbox.claimNext({ workerId, leaseDurationMs, excludeRestartContinuations }),
+            outbox.claimNext({
+              workerId,
+              leaseDurationMs,
+              excludeRestartContinuations,
+              ...(lane === undefined ? {} : { lane }),
+            }),
           );
           yield* increment(orchestrationEffectClaimsTotal, {
             result: Exit.isFailure(claimExit)
@@ -732,9 +791,34 @@ export const layerWithOptions = (
           }).pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
           if (cancelledBeforeExecution) return true;
 
-          const execution = executor
-            .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
-            .pipe(Effect.as("executed" as const));
+          const execution = (
+            effect.request.type === "project-knowledge.scrub-deliveries"
+              ? Effect.gen(function* () {
+                  const request = effect.request;
+                  if (request.type !== "project-knowledge.scrub-deliveries") return;
+                  const afterId = yield* deliveryScrubber.scrubPage(request);
+                  if (afterId !== null) {
+                    yield* outbox.enqueue([
+                      deliveryScrubEffect({
+                        projectId: request.projectId,
+                        removalId: request.removalId,
+                        afterId,
+                      }),
+                    ]);
+                    yield* outbox.notifyAvailable();
+                  }
+                }).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                )
+              : executor.execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+          ).pipe(Effect.as("executed" as const));
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );
@@ -791,7 +875,7 @@ export const layerWithOptions = (
           }
           return true;
         },
-        (effect, _excludeRestartContinuations?: boolean) =>
+        (effect, _excludeRestartContinuations?: boolean, _lane?: "turn" | "maintenance") =>
           effect.pipe(
             Effect.mapError((cause) =>
               isOrchestrationEffectWorkerError(cause)
@@ -804,6 +888,8 @@ export const layerWithOptions = (
       return OrchestrationEffectWorkerV2.of({
         awaitWork: outbox.awaitAvailable,
         runOnce: runOnce(),
+        runTurnOnce: runOnce(false, "turn"),
+        runMaintenanceOnce: runOnce(false, "maintenance"),
         runRecoveryOnce: runOnce(true),
         nextClaimableAt: outbox.nextClaimableAt.pipe(
           Effect.mapError(
@@ -851,9 +937,11 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
       // Post-commit notifications are the low-latency path. `availableAt` is the
       // durable retry schedule, and the long liveness poll only recovers from a
       // missed in-process notification or work inserted by another process.
-      const runWorker = Effect.gen(function* () {
+      const runWorker = Effect.fn("OrchestrationEffectDaemon.runWorker")(function* (
+        runOnce: OrchestrationEffectWorkerV2Shape["runOnce"],
+      ) {
         while (true) {
-          const outcome = yield* worker.runOnce.pipe(
+          const outcome = yield* runOnce.pipe(
             Effect.map((worked) => (worked ? ("worked" as const) : ("idle" as const))),
             Effect.catchCause((cause) =>
               Effect.logWarning("Orchestration effect worker failed", cause).pipe(
@@ -897,7 +985,11 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
       });
 
       return yield* Effect.all(
-        Array.from({ length: concurrency }, () => runWorker),
+        [
+          ...Array.from({ length: concurrency }, () => runWorker(worker.runTurnOnce)),
+          // Model maintenance must not consume the capacity that admits provider turns.
+          runWorker(worker.runMaintenanceOnce),
+        ],
         {
           concurrency: "unbounded",
           discard: true,
@@ -907,7 +999,3 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
   );
 
 export const runDaemon = runDaemonWithOptions();
-
-const layerDaemon: Layer.Layer<never, never, OrchestrationEffectWorkerV2> = Layer.effectDiscard(
-  runDaemon.pipe(Effect.forkScoped),
-);

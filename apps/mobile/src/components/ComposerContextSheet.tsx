@@ -7,9 +7,21 @@ import type {
   ComposerContextRecord,
   ElementContextSource,
   EnvironmentId,
+  MessageId,
   ProjectId,
+  ProjectKnowledgeContextRecord,
   ScopedThreadRef,
+  ThreadId,
 } from "@t3tools/contracts";
+import {
+  deliveredKnowledgeNotes,
+  deliveredKnowledgeSnapshot,
+  KNOWLEDGE_DELIVERY_OMISSION_LABEL,
+} from "@t3tools/client-runtime/projectKnowledge";
+import { projectKnowledge } from "../state/projectKnowledge";
+import { useAtomValue } from "@effect/atom-react";
+import { serverEnvironment } from "../state/server";
+import { useEnvironmentQuery } from "../state/query";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { videoMimeType } from "@t3tools/shared/video";
 import { Platform, Pressable, ScrollView, View } from "react-native";
@@ -74,6 +86,60 @@ function ContextSource(props: { source: ElementContextSource | null }) {
   );
 }
 
+// Shows the recorded copy a sent message delivered, never a fresh read that may have changed.
+function DeliveredProjectKnowledge(props: {
+  readonly record: ProjectKnowledgeContextRecord;
+  readonly sent: { readonly threadId: ThreadId; readonly messageId: MessageId };
+}) {
+  const config = useAtomValue(
+    serverEnvironment.configValueAtom(props.record.knowledge.environmentId),
+  );
+  const supportsDeliveries = config?.environment?.capabilities.projectKnowledgeDeliveries === true;
+  const query = useEnvironmentQuery(
+    supportsDeliveries
+      ? projectKnowledge.readDeliveries({
+          environmentId: props.record.knowledge.environmentId,
+          input: { projectId: props.record.knowledge.projectId, ...props.sent },
+        })
+      : null,
+  );
+  const snapshot = query.data
+    ? deliveredKnowledgeSnapshot(query.data, props.record.contextId)
+    : null;
+  if (!supportsDeliveries)
+    return (
+      <Text className="text-sm text-foreground-muted">This server can't show what was sent</Text>
+    );
+  if (query.error) return <Text className="text-sm text-foreground-muted">{query.error}</Text>;
+  if (query.data === null)
+    return <Text className="text-sm text-foreground-muted">Reading delivery record…</Text>;
+  if (snapshot === null)
+    return (
+      <Text className="text-sm text-foreground-muted">
+        No delivery was recorded for this reference.
+      </Text>
+    );
+  return (
+    <View className="gap-2">
+      <Text className="text-sm text-foreground-muted">
+        The copy T3 delivered with this message. It does not show whether the agent used it.
+      </Text>
+      {deliveredKnowledgeNotes(snapshot).map((note) => (
+        <Text key={note} className="text-sm text-foreground-muted">
+          {note}
+        </Text>
+      ))}
+      {snapshot.omission ? (
+        <Text className="text-sm text-foreground">
+          Not sent: {KNOWLEDGE_DELIVERY_OMISSION_LABEL[snapshot.omission.reason]}
+        </Text>
+      ) : snapshot.item.contentRemoved ? null : (
+        <ContextField label="As sent" value={snapshot.item.text} code />
+      )}
+    </View>
+  );
+}
+
 export function ComposerContextSheet(props: {
   readonly label: string;
   readonly record: ComposerContextRecord | undefined;
@@ -88,6 +154,7 @@ export function ComposerContextSheet(props: {
   readonly projectId?: ProjectId;
   readonly records?: ReadonlyArray<ComposerContextRecord>;
   readonly attachments?: ReadonlyArray<DraftComposerAttachment>;
+  readonly sent?: { readonly threadId: ThreadId; readonly messageId: MessageId };
 }) {
   const openPullRequest = useOpenPullRequest({
     context:
@@ -312,6 +379,23 @@ export function ComposerContextSheet(props: {
                     fullWidth
                   />
                 ) : null}
+              </View>
+            ) : null}
+            {record.kind === "project-knowledge" ? (
+              <View className="gap-2">
+                <ContextField label="Project" value={record.knowledge.projectId} code />
+                <ContextField label="Environment" value={record.knowledge.environmentId} code />
+                <ContextField
+                  label="Selected evidence"
+                  value={`${record.knowledge.selections.length} reference${record.knowledge.selections.length === 1 ? "" : "s"}`}
+                />
+                {props.sent && "knowledge" in record ? (
+                  <DeliveredProjectKnowledge record={record} sent={props.sent} />
+                ) : (
+                  <Text className="text-sm text-foreground-muted">
+                    The current evidence is loaded when this message is sent.
+                  </Text>
+                )}
               </View>
             ) : null}
             {record.kind === "skill" ? (

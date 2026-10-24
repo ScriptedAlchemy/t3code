@@ -483,6 +483,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["git submodule init recursive top-level none worktree t3.json"],
   },
   {
+    id: "assisted-learning",
+    title: "Suggest facts from finished runs",
+    to: "/settings/general",
+    scope: "project-defaults",
+    searchTerms: ["assisted learning project memory knowledge facts extract suggestions model"],
+  },
+  {
+    id: "conversation-summaries",
+    title: "Summarize older messages",
+    to: "/settings/general",
+    scope: "project-defaults",
+    searchTerms: ["conversation summaries history context handoff fork provider switch model"],
+  },
+  {
     id: "start-from-origin",
     title: "Start from remote",
     to: "/settings/general",

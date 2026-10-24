@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { ProjectKnowledgeContext } from "./projectKnowledge.ts";
 
 import {
   EnvironmentId,
@@ -23,6 +24,7 @@ export const COMPOSER_CONTEXT_KINDS = [
   "mention",
   "skill",
   "thread",
+  "project-knowledge",
 ] as const;
 export type KnownComposerContextKind = (typeof COMPOSER_CONTEXT_KINDS)[number];
 
@@ -213,6 +215,13 @@ export const ThreadContextRecord = Schema.Struct({
 });
 export type ThreadContextRecord = typeof ThreadContextRecord.Type;
 
+export const ProjectKnowledgeContextRecord = Schema.Struct({
+  ...recordBase,
+  kind: Schema.Literal("project-knowledge"),
+  knowledge: ProjectKnowledgeContext,
+});
+export type ProjectKnowledgeContextRecord = typeof ProjectKnowledgeContextRecord.Type;
+
 const isJson = Schema.is(Schema.Json);
 
 /**
@@ -246,6 +255,7 @@ export const KnownComposerContextRecord = Schema.Union([
   MentionContextRecord,
   SkillContextRecord,
   ThreadContextRecord,
+  ProjectKnowledgeContextRecord,
 ]);
 export type KnownComposerContextRecord = typeof KnownComposerContextRecord.Type;
 
@@ -259,7 +269,7 @@ export const COMPOSER_CONTEXT_MAX_RECORDS = 200;
 const COMPOSER_CONTEXT_MAX_SERIALIZED_CHARS = 16_000_000;
 
 /** Structured context riding on a user message. Undecodable records are dropped, not fatal. */
-export const OrchestrationMessageContext = Schema.Struct({
+const OrchestrationMessageContextSchema = Schema.Struct({
   version: Schema.Literal(1),
   records: Schema.Array(Schema.Unknown)
     .check(
@@ -279,4 +289,8 @@ export const OrchestrationMessageContext = Schema.Struct({
       ),
     ),
 });
-export type OrchestrationMessageContext = typeof OrchestrationMessageContext.Type;
+export type OrchestrationMessageContext = typeof OrchestrationMessageContextSchema.Type;
+export const OrchestrationMessageContext: Schema.Codec<
+  OrchestrationMessageContext,
+  typeof OrchestrationMessageContextSchema.Encoded
+> = OrchestrationMessageContextSchema;

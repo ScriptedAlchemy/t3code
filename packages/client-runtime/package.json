@@ -3,6 +3,22 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./projectCode": {
+      "types": "./src/projectCode/index.ts",
+      "default": "./src/projectCode/index.ts"
+    },
+    "./projectLoom": {
+      "types": "./src/projectLoom/index.ts",
+      "default": "./src/projectLoom/index.ts"
+    },
+    "./conversationSummaries": {
+      "types": "./src/conversationSummaries/index.ts",
+      "default": "./src/conversationSummaries/index.ts"
+    },
+    "./projectKnowledge": {
+      "types": "./src/projectKnowledge/index.ts",
+      "default": "./src/projectKnowledge/index.ts"
+    },
     "./workspace-basename-lookup": {
       "types": "./src/workspaceBasenameLookup.ts",
       "default": "./src/workspaceBasenameLookup.ts"

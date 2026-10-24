@@ -1,3 +1,6 @@
+import { useAtomValue } from "@effect/atom-react";
+import { useNavigation } from "@react-navigation/native";
+import { conversationSummariesSupportedAtom } from "../../state/conversationSummaries";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -654,6 +657,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     [prBadgeLabel, showsWoke],
   );
 
+  const navigation = useNavigation();
+  const summariesSupported = useAtomValue(conversationSummariesSupportedAtom(thread.environmentId));
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
   const handleRename = useCallback(() => onRenameThread(thread), [onRenameThread, thread]);
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
@@ -862,6 +867,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
+      if (nativeEvent.event === "conversation-summaries") {
+        navigation.navigate("ThreadConversationSummaries", {
+          environmentId: thread.environmentId,
+          projectId: thread.projectId,
+          threadId: thread.id,
+        });
+      }
       if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
       if (nativeEvent.event === "settle") handleSettle();
       if (nativeEvent.event === "unsettle") handleUnsettle();
@@ -899,6 +911,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       }
     },
     [
+      navigation,
       onNewThreadOnBranch,
       thread,
       handleArchive,
@@ -1384,6 +1397,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                       id: "new-thread-on-branch",
                       title: getThreadListV2NewBranchMenuTitle(thread.branch),
                       image: "square.and.pencil",
+                    },
+                  ]
+                : []),
+              ...(summariesSupported
+                ? [
+                    {
+                      id: "conversation-summaries",
+                      title: "Conversation summaries",
+                      image: "text.alignleft",
                     },
                   ]
                 : []),

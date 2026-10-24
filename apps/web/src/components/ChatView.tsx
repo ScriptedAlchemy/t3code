@@ -275,6 +275,12 @@ import {
 } from "./chat/PanelLayoutControls";
 import type { ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { ThreadDetailsPanel } from "./chat/ThreadDetailsPanel";
+import {
+  ProjectMemoryDialogHost,
+  useOpenProjectMemory,
+  useProjectMemoryAvailable,
+} from "./projectKnowledge/ProjectMemoryPanel";
+import { CodeExplorerDialogHost } from "./codeExplorer/CodeExplorerDialogHost";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
   resolveEffectiveEnvMode,
@@ -2699,6 +2705,8 @@ export default function ChatView(props: ChatViewProps) {
   const threadFindControlsRef = useRef<ThreadFindControls | null>(null);
   const [isThreadFindActive, setIsThreadFindActive] = useState(false);
   const openThreadFind = () => threadFindControlsRef.current?.open();
+  const projectMemoryAvailable = useProjectMemoryAvailable(activeThread?.environmentId ?? null);
+  const openProjectMemory = useOpenProjectMemory();
   const closeThreadFind = () => threadFindControlsRef.current?.close();
 
   useChatShortcuts({
@@ -2723,6 +2731,10 @@ export default function ChatView(props: ChatViewProps) {
       "chat.find": () => {
         if (!isServerThread || serverConfig?.threadFind !== true) return false;
         openThreadFind();
+      },
+      "projectMemory.open": ({ event }) => {
+        if (!activeThread || !projectMemoryAvailable) return false;
+        if (!event.repeat) openProjectMemory(activeThread);
       },
       "composer.cycleHost": ({ event }) => {
         if (!canChangeEnvironment) return false;
@@ -3804,6 +3816,17 @@ export default function ChatView(props: ChatViewProps) {
               onAddProjectScript={saveProjectScriptStable}
               onUpdateProjectScript={updateProjectScriptStable}
               onDeleteProjectScript={deleteProjectScriptStable}
+            />
+
+            <ProjectMemoryDialogHost
+              environmentId={activeThread.environmentId}
+              projectId={activeThread.projectId}
+              composerDraftTarget={composerDraftTarget}
+            />
+
+            <CodeExplorerDialogHost
+              environmentId={activeThread.environmentId}
+              projectId={activeThread.projectId}
             />
 
             <PullRequestThreadDialogHost

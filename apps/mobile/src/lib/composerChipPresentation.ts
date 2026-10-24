@@ -37,6 +37,10 @@ const CONTEXT_CHIP_PRESENTATIONS = {
     accent: "#009c96",
     icon: "messages-square",
   },
+  "project-knowledge": {
+    accent: "#3478c7",
+    icon: "messages-square",
+  },
 } as const satisfies Record<string, ContextChipPresentation>;
 
 export const UNAVAILABLE_CONTEXT_CHIP_PRESENTATION: ContextChipPresentation = {

@@ -1,3 +1,4 @@
+import { ProjectKnowledgeError } from "@t3tools/contracts";
 import type {
   NodeId,
   OrchestrationV2ProviderFailure,
@@ -85,6 +86,10 @@ function curatedCauseMessages(cause: unknown): {
       if (typeof cause !== "object") break;
       const tag = (cause as Record<string, unknown>)._tag;
       switch (tag) {
+        case "ProjectKnowledgeError":
+          if (Schema.is(ProjectKnowledgeError)(cause))
+            return { known: cause.message, category: categoryMessage() };
+          break;
         case "ContextHandoffBudgetError":
           return { known: new ContextHandoffBudgetError().message, category: categoryMessage() };
         case "AcpModelSelectionError":

@@ -35,7 +35,10 @@ interface ScopedSettingsEnvironment {
   readonly serverConfig: {
     readonly settings: ServerSettings;
     readonly environment?: {
-      readonly capabilities: { readonly projectSettingsOverrides?: boolean | undefined };
+      readonly capabilities: {
+        readonly projectSettingsOverrides?: boolean | undefined;
+        readonly projectKnowledgeAssistedLearning?: boolean | undefined;
+      };
     };
   } | null;
 }
@@ -141,6 +144,20 @@ export function scopedSettingsAreMixed(
   );
 }
 
+export function scopedAssistedLearningUnavailableReason(
+  environments: readonly Pick<ScopedSettingsEnvironment, "label" | "serverConfig">[],
+): string | null {
+  const unsupported = environments.filter(
+    (environment) =>
+      environment.serverConfig?.environment?.capabilities.projectKnowledgeAssistedLearning !== true,
+  );
+  if (unsupported.length === 0) return null;
+  const labels = unsupported.map((environment) => environment.label).join(", ");
+  return unsupported.length < environments.length
+    ? `Assisted learning is supported on only some selected environments. Update T3 Code on ${labels}, or select a supported environment.`
+    : `Assisted learning is not supported on ${labels}. Update T3 Code on ${unsupported.length === 1 ? "that environment" : "those environments"}.`;
+}
+
 /**
  * Servers store the idle compaction mode differently by version, so selected
  * environments are compared by the mode each resolves to, and "Never" is offered
@@ -241,6 +258,24 @@ export function planScopedSettingsPatch(
   const unscopableKeys = isProjectScope
     ? serverKeys.filter((key) => !isProjectScopedSettingKey(key))
     : [];
+  if (serverPatch.enableAssistedLearning !== undefined) {
+    const targetIds = new Set(
+      resolveScopedSettingsTargets(scope, connectedEnvironments).map(
+        (target) => target.environmentId,
+      ),
+    );
+    const unavailableReason = scopedAssistedLearningUnavailableReason(
+      connectedEnvironments.filter((environment) => targetIds.has(environment.environmentId)),
+    );
+    if (unavailableReason !== null) {
+      return {
+        clientPatch,
+        hasClientWrite: Object.keys(clientPatch).length > 0,
+        serverWrites: [],
+        unavailableReason,
+      };
+    }
+  }
   const serverWrites: ScopedServerWrite[] =
     serverKeys.length === 0
       ? []

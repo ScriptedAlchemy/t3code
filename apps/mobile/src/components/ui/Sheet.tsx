@@ -17,7 +17,10 @@ export function Sheet(props: SheetProps) {
   const containerStyle = useResolveClassNames("bg-sheet");
   const screenId = useId();
   const [isOpen, setIsOpen] = useState(true);
-  const close = () => setIsOpen(false);
+  const close = () => {
+    if (props.onRequestClose) props.onRequestClose();
+    else setIsOpen(false);
+  };
 
   return (
     <FormSheet
@@ -29,6 +32,8 @@ export function Sheet(props: SheetProps) {
       nativeContainerStyle={containerStyle}
       onDismiss={props.onClose}
       onNativeDismiss={props.onClose}
+      preventNativeDismiss={Boolean(props.onRequestClose)}
+      onNativeDismissPrevented={close}
     >
       <View collapsable={false} className="flex-1 bg-sheet">
         <ScreenStack style={{ flex: 1 }}>

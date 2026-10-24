@@ -15,13 +15,13 @@
   ],
   "type": "module",
   "scripts": {
-    "dev": "node --watch --watch-path=src --watch-path=../../packages --watch-path=package.json src/bin.ts",
+    "dev": "node ../../native/project-memory/build.mjs && node --watch --watch-path=src --watch-path=../../packages --watch-path=package.json src/bin.ts",
     "dev:built": "vp run dev",
     "build:bundle": "vp pack",
     "build:exe": "node scripts/cli.ts build-exe",
     "start": "node dist/bin.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vp test run",
+    "test": "node ../../native/project-memory/build.mjs && vp test run",
     "record:codex-replay": "bun scripts/record-codex-app-server-replay-fixture.ts",
     "record:claude-replay": "bun scripts/record-claude-agent-sdk-replay-fixture.ts",
     "record:cursor-replay": "node --env-file-if-exists=../../.env --experimental-strip-types scripts/record-cursor-agent-sdk-replay-fixture.ts",
@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.276",
+    "@colbymchenry/codegraph": "1.6.2",
     "@cursor/sdk": "1.0.35",
     "@effect/platform-node": "catalog:",
     "@effect/platform-node-shared": "catalog:",

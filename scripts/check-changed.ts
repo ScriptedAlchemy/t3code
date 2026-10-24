@@ -55,12 +55,16 @@ const { affected, outputs } = decide(files, packages, false);
 // `related` reaches most of a package: one leaf server file pulled in 252 of
 // 406 server test files and took 7 minutes. CI runs the rest.
 const TEST = /\.test\.[cm]?[jt]sx?$/;
-const tests = new Set(code.filter((file) => TEST.test(file)));
+const nativeTests = new Set(code.filter((file) => file.startsWith("native/") && TEST.test(file)));
+const tests = new Set(code.filter((file) => !file.startsWith("native/") && TEST.test(file)));
 for (const file of code) {
   const dir = NodePath.dirname(file);
   const prefix = `${NodePath.basename(file).replace(CODE, "")}.`;
   for (const entry of NodeFS.readdirSync(NodePath.join(root, dir))) {
-    if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(NodePath.join(dir, entry));
+    if (entry.startsWith(prefix) && TEST.test(entry)) {
+      const test = NodePath.join(dir, entry);
+      (test.startsWith("native/") ? nativeTests : tests).add(test);
+    }
   }
 }
 
@@ -92,6 +96,11 @@ const steps = [
     name: `typecheck (${affected.length} packages)`,
     args: ["run", "--cache", "--concurrency-limit", "4", ...filters(affected), "typecheck"],
   },
+  // Native binding tests use node:test, not Vitest.
+  ...Array.from(nativeTests, (file) => ({
+    name: `native test (${file})`,
+    args: ["exec", "node", "--test", file],
+  })),
   // From the repo root, the root vite.config.ts hands each file to its package's config.
   tests.size > 0 && {
     name: `test (${tests.size} files)`,
@@ -100,13 +109,38 @@ const steps = [
 ].filter((step) => step !== false);
 
 console.log(`check:changed: ${files.length} files since ${base.slice(0, 12)}`);
-const results = steps.map((step) => {
+const results = [];
+for (const step of steps) {
   console.log(`\n> vp ${step.name}`);
   const started = performance.now();
-  const { status } = NodeChildProcess.spawnSync("vp", step.args, { cwd: root, stdio: "inherit" });
+  let status: number | null = 0;
+  if (
+    step.name.startsWith("test (") &&
+    Array.from(tests).some((file) => file.startsWith("apps/server/"))
+  ) {
+    const cargo = NodeChildProcess.spawnSync("cargo", ["--version"], {
+      cwd: root,
+      stdio: "ignore",
+    });
+    if (cargo.error || cargo.status !== 0) {
+      console.error(
+        "check:changed: server tests require cargo to build project-memory. Install the Rust toolchain and retry.",
+      );
+      status = 1;
+    } else {
+      console.log("> node native/project-memory/build.mjs");
+      status = NodeChildProcess.spawnSync("node", ["native/project-memory/build.mjs"], {
+        cwd: root,
+        stdio: "inherit",
+      }).status;
+    }
+  }
+  if (status === 0) {
+    status = NodeChildProcess.spawnSync("vp", step.args, { cwd: root, stdio: "inherit" }).status;
+  }
   const seconds = ((performance.now() - started) / 1000).toFixed(1);
-  return { name: step.name, ok: status === 0, seconds };
-});
+  results.push({ name: step.name, ok: status === 0, seconds });
+}
 
 console.log("\ncheck:changed summary");
 for (const result of results) {

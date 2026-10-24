@@ -1,18 +1,32 @@
+// @effect-diagnostics nodeBuiltinImport:off - the code index fixture is a temporary checkout.
+import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointScopeId,
+  ProjectId,
   RunId,
   ThreadId,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 
+import * as CodeIntelligence from "../project/knowledge/CodeIntelligence.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
+import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as CheckpointCapture from "./CheckpointCaptureService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProjectStore from "./ProjectStore.ts";
 import * as RunFinalization from "./RunFinalizationService.ts";
 
 it.effect("completes finalization when the post-checkpoint workspace refresh fails", () => {
@@ -99,6 +113,7 @@ it.effect.each(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(WorkspaceEntries.WorkspaceEntries)({ refresh: () => Effect.void }),
+        Layer.mock(CodeIntelligence.CodeIntelligence)({ refreshIfIndexed: () => Effect.void }),
         Layer.mock(PullRequestService.PullRequestService)({
           refreshAfterTurn: () => Effect.void,
         }),
@@ -137,3 +152,123 @@ it.effect.each(
     assert.deepEqual(refreshed, [...scenario.expected]);
   }).pipe(Effect.provide(layer));
 });
+
+it.effect("finalizes a run without waiting for the code index refresh its checkpoint started", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(async () => {
+      const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-finalize-index-"));
+      await NodeFSP.mkdir(NodePath.join(root, "src"));
+      await NodeFSP.writeFile(
+        NodePath.join(root, "src/a.ts"),
+        "export function greet() { return 1; }\n",
+      );
+      return root;
+    }),
+    (root) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const projectId = ProjectId.make("project_index_refresh");
+          const threadId = ThreadId.make("thread_index_refresh");
+          const runId = RunId.make("run_index_refresh");
+          const scopeId = CheckpointScopeId.make("scope_index_refresh");
+          const layer = RunFinalization.layer.pipe(
+            Layer.provideMerge(RunFinalization.layerObserver),
+            Layer.provideMerge(CodeIntelligence.layer),
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({
+                  execute: () => Effect.void,
+                }),
+                Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                  getCheckpointContext: () =>
+                    Effect.succeed({
+                      runs: [],
+                      checkpointScopes: [
+                        { id: scopeId, runId, kind: "root_run" as const, cwd: root },
+                      ],
+                      checkpoints: [],
+                    }),
+                  getThread: () => Effect.die("unused"),
+                }),
+                Layer.mock(ProjectStore.ProjectStoreV2)({
+                  get: () =>
+                    Effect.succeedSome({
+                      projectId,
+                      workspaceRoot: root,
+                      deletedAt: null,
+                    } as unknown as ProjectStore.ProjectRow),
+                }),
+                Layer.mock(WorkspacePaths.WorkspacePaths)({
+                  normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot),
+                }),
+                Layer.mock(WorkspaceEntries.WorkspaceEntries)({
+                  refresh: () => Effect.void,
+                  list: () =>
+                    Effect.succeed({
+                      entries: [{ path: "src/a.ts", kind: "file" as const }],
+                      truncated: false,
+                    }),
+                }),
+                Layer.mock(PullRequestService.PullRequestService)({
+                  refreshAfterTurn: () => Effect.void,
+                }),
+                Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
+                  refreshLocalStatus: () =>
+                    Effect.succeed({
+                      isRepo: false,
+                      hasPrimaryRemote: false,
+                      isDefaultRef: false,
+                      refName: null,
+                      hasWorkingTreeChanges: false,
+                      workingTree: { files: [], insertions: 0, deletions: 0 },
+                    }),
+                }),
+              ),
+            ),
+          );
+          const context = yield* Layer.build(layer);
+          const finalization = yield* RunFinalization.RunFinalizationService.pipe(
+            Effect.provide(context),
+          );
+          const intelligence = yield* CodeIntelligence.CodeIntelligence.pipe(
+            Effect.provide(context),
+          );
+          const finalize = finalization.finalize({ threadId, runId, scopeId });
+          const published = () =>
+            Effect.promise(() =>
+              NodeFSP.readFile(NodePath.join(root, ".codegraph-t3/published"), "utf8"),
+            );
+
+          // A checkout nobody has queried is not indexed behind the user's back.
+          yield* finalize;
+          assert.isFalse(NodeFS.existsSync(NodePath.join(root, ".codegraph-t3")));
+
+          assert.deepEqual(yield* intelligence.refresh({ projectId }), {
+            _tag: "Published",
+            generation: 1,
+          });
+          const events = yield* Stream.toPull(yield* intelligence.subscribeIndex({ projectId }));
+          yield* Effect.promise(() =>
+            NodeFSP.writeFile(NodePath.join(root, "src/a.ts"), "export function renamed() {}\n"),
+          );
+          const buildHeld = yield* Deferred.make<void>();
+          const releaseBuild = yield* Deferred.make<void>();
+          const lease = yield* withWorkspaceLease(
+            NodePath.join(root, ".codegraph-t3"),
+            Deferred.succeed(buildHeld, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseBuild)),
+            ),
+          ).pipe(Effect.forkScoped);
+          yield* Deferred.await(buildHeld);
+
+          yield* finalize;
+          assert.equal(yield* published(), "1", "finalization returned before the build ran");
+          yield* Deferred.succeed(releaseBuild, undefined);
+          yield* Fiber.await(lease);
+          assert.deepEqual(yield* events, [{ outcome: "published", generation: 2 }]);
+          assert.equal(yield* published(), "2");
+        }),
+      ),
+    (root) => Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true })),
+  ),
+);

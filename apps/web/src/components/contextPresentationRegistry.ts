@@ -13,6 +13,10 @@ export interface ContextPresentationDefinition {
 
 const DEFINITIONS = [
   {
+    kind: "project-knowledge",
+    capabilities: { details: "popover", expanded: "modal", defaultDraftView: "compact" },
+  },
+  {
     kind: "image",
     capabilities: { details: "tooltip", expanded: "modal", defaultDraftView: "compact" },
   },

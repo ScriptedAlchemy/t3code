@@ -137,11 +137,17 @@ async function prepareStreamScripts() {
   }
 }
 
-module.exports = Promise.all([generateMobileThirdPartyLicenses(), prepareStreamScripts()]).then(
-  () =>
-    withUniwindConfig(config, {
-      cssEntryFile: "./global.css",
-      extraThemes,
-      polyfills: { rem: 14 },
-    }),
-);
+const getTransformOptions = config.transformer.getTransformOptions;
+let bundleAssets;
+// Metro calls this before traversing bundle dependencies, including generated modules.
+config.transformer.getTransformOptions = async (...args) => {
+  bundleAssets ??= Promise.all([generateMobileThirdPartyLicenses(), prepareStreamScripts()]);
+  await bundleAssets;
+  return getTransformOptions(...args);
+};
+
+module.exports = withUniwindConfig(config, {
+  cssEntryFile: "./global.css",
+  extraThemes,
+  polyfills: { rem: 14 },
+});

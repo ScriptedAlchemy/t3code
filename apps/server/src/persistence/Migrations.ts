@@ -71,6 +71,19 @@ import Migration0065 from "./Migrations/065_CodexUsageNativeTurnIndex.ts";
 import Migration0066 from "./Migrations/066_RepairClientSettlementTimestamps.ts";
 import Migration0067 from "./Migrations/067_WebhookDedupe.ts";
 
+import Migration0068 from "./Migrations/068_ProjectKnowledge.ts";
+import Migration0069 from "./Migrations/069_ProjectKnowledgeDeliveries.ts";
+import Migration0070 from "./Migrations/070_ProjectKnowledgeHistory.ts";
+import Migration0071 from "./Migrations/071_ProjectCodeFileHistory.ts";
+import Migration0072 from "./Migrations/072_ProjectKnowledgeAssistedRuns.ts";
+import Migration0073 from "./Migrations/073_ConversationSummaries.ts";
+import Migration0074 from "./Migrations/074_ProjectKnowledgeSearchReceiptExpiry.ts";
+import Migration0075 from "./Migrations/075_ProjectLoomTimeIndexes.ts";
+import Migration0076 from "./Migrations/076_ProjectCodeFileHistoryPages.ts";
+import Migration0077 from "./Migrations/077_ProjectLoomBoundedReads.ts";
+import Migration0080 from "./Migrations/080_ProjectKnowledgeDeliveryBudget.ts";
+import Migration0079 from "./Migrations/079_ProjectKnowledgeNativeDelivery.ts";
+
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
@@ -140,6 +153,18 @@ const migrationEntries = [
   [65, "CodexUsageNativeTurnIndex", Migration0065],
   [66, "RepairClientSettlementTimestamps", Migration0066],
   [67, "WebhookDedupe", Migration0067],
+  [68, "ProjectKnowledge", Migration0068],
+  [69, "ProjectKnowledgeDeliveries", Migration0069],
+  [70, "ProjectKnowledgeHistory", Migration0070],
+  [71, "ProjectCodeFileHistory", Migration0071],
+  [72, "ProjectKnowledgeAssistedRuns", Migration0072],
+  [73, "ConversationSummaries", Migration0073],
+  [74, "ProjectKnowledgeSearchReceiptExpiry", Migration0074],
+  [75, "ProjectLoomTimeIndexes", Migration0075],
+  [76, "ProjectCodeFileHistoryPages", Migration0076],
+  [77, "ProjectLoomBoundedReads", Migration0077],
+  [79, "ProjectKnowledgeNativeDelivery", Migration0079],
+  [80, "ProjectKnowledgeDeliveryBudget", Migration0080],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
