@@ -21,7 +21,7 @@ export class IndexOutsideCheckout extends Error {
 
 export const generationDirectory = (generation: number) => `${GENERATION_PREFIX}${generation}`;
 
-export function generationOf(name: string): number | null {
+function generationOf(name: string): number | null {
   const match = GENERATION_NAME.exec(name);
   return match === null ? null : Number(match[1]);
 }

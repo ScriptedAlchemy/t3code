@@ -27,7 +27,6 @@ import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
-import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 import {
   INDEX_DIRECTORY,
   IndexOutsideCheckout,
@@ -38,6 +37,12 @@ import {
   readPublishedGeneration,
   removeLegacyIndexFiles,
 } from "./codeIndexLayout.ts";
+import {
+  isBuildRunning,
+  pinPublishedGeneration,
+  removeGenerationUnlessRead,
+  tryLockBuild,
+} from "./codeIndexLocks.ts";
 import type { CodeIntelligenceCommand } from "./codeIntelligenceWorkerThread.ts";
 
 const MAX_LISTED_FILES = 10_000;
@@ -107,6 +112,8 @@ export type CodeIndexRefreshOutcome =
   | { readonly _tag: "Published"; readonly generation: number }
   // The published generation already matches the checkout, or there is none to refresh.
   | { readonly _tag: "Unchanged" }
+  // Another server process is building the checkout; this one started no build.
+  | { readonly _tag: "BuildingElsewhere" }
   | { readonly _tag: "Failed"; readonly reason: CodeIntelligenceWorkerError["reason"] | "listing" };
 
 export class CodeIntelligence extends Context.Service<
@@ -262,6 +269,7 @@ function analysisEnvironment(): NodeJS.ProcessEnv {
 function runInAnalysisProcess(
   launch: AnalysisLaunch,
   command: CodeIntelligenceCommand,
+  beforeCommand?: (analysisPid: number) => Effect.Effect<void>,
 ): Effect.Effect<WorkerTerminal, CodeIntelligenceWorkerError> {
   return Effect.callback((resume) => {
     let child: NodeChildProcess.ChildProcess;
@@ -331,19 +339,33 @@ function runInAnalysisProcess(
         resume(Effect.succeed(terminal.value));
       }
     });
-    child.send(command, (error) => {
-      if (error !== null) fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }), true);
-    });
+    const send = () =>
+      child.send(command, (error) => {
+        if (error !== null)
+          fail(new CodeIntelligenceWorkerError({ reason: "worker-failed" }), true);
+      });
+    const holding =
+      beforeCommand === undefined || child.pid === undefined
+        ? undefined
+        : Effect.runFork(beforeCommand(child.pid));
+    if (holding === undefined) send();
+    else {
+      holding.addObserver((exit) => {
+        if (exit._tag === "Success" && !closed) send();
+      });
+      child.once("close", () => holding.interruptUnsafe());
+    }
     // The SDK's sync ignores abort signals, so only killing the process stops the indexing,
-    // and the index lease is released only after it has exited.
+    // and the build lock is released only after it has exited.
     return Effect.promise(async () => {
+      holding?.interruptUnsafe();
       if (!closed) child.kill("SIGKILL");
       await closedPromise;
     });
   });
 }
 
-/** One checkout's builds and the generations its readers hold open. */
+/** One checkout's builds in this process. */
 interface CheckoutIndex {
   // Covers every request made before it started.
   running: Deferred.Deferred<CodeIndexRefreshOutcome> | null;
@@ -351,10 +373,6 @@ interface CheckoutIndex {
   queued: Deferred.Deferred<CodeIndexRefreshOutcome> | null;
   // Whether the most recent build failed, leaving an older generation answering.
   lastFailed: boolean;
-  // Queries reading each generation; a generation is deleted only once this drops to zero.
-  readonly readers: Map<number, number>;
-  // Superseded generations still being read.
-  readonly retiring: Set<number>;
 }
 
 const REFRESH_LIMITATIONS = {
@@ -371,7 +389,19 @@ const removeGeneration = (checkoutPath: string, generation: number) =>
     }).catch(() => undefined),
   );
 
-const make = Effect.gen(function* () {
+// Best effort: a generation left behind is swept by the next build.
+const removeUnlessRead = (checkoutPath: string, generation: number) =>
+  Effect.try({
+    try: () => removeGenerationUnlessRead(checkoutPath, generation),
+    catch: () => undefined,
+  }).pipe(Effect.ignore);
+
+export interface CodeIntelligenceOptions {
+  /** Runs once a build's analysis process has started, before it receives the build. */
+  readonly beforeBuildCommand?: (analysisPid: number) => Effect.Effect<void>;
+}
+
+const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntelligenceOptions) {
   const projects = yield* ProjectStore.ProjectStoreV2;
   const threads = yield* ProjectionStore.ProjectionStoreV2;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
@@ -385,13 +415,7 @@ const make = Effect.gen(function* () {
   const stateOf = (checkoutPath: string) => {
     const existing = checkouts.get(checkoutPath);
     if (existing !== undefined) return existing;
-    const created: CheckoutIndex = {
-      running: null,
-      queued: null,
-      lastFailed: false,
-      readers: new Map(),
-      retiring: new Set(),
-    };
+    const created: CheckoutIndex = { running: null, queued: null, lastFailed: false };
     checkouts.set(checkoutPath, created);
     return created;
   };
@@ -457,25 +481,26 @@ const make = Effect.gen(function* () {
             cause instanceof IndexOutsideCheckout ? "index-outside-checkout" : "worker-failed",
         }),
     });
-    const state = stateOf(checkoutPath);
-    // Interrupted builds and generations whose deletion failed; nobody reads them.
-    yield* Effect.forEach(
-      plan.existing.filter(
-        (existing) => existing !== plan.published && !state.readers.has(existing),
-      ),
-      (orphan) => removeGeneration(checkoutPath, orphan),
-    );
+    // Interrupted builds, and superseded generations whose last reader is gone. The build lock
+    // keeps every other builder out, so none of these is being written.
+    for (const existing of plan.existing) {
+      if (existing !== plan.published) yield* removeUnlessRead(checkoutPath, existing);
+    }
     const generation = Math.max(plan.published ?? 0, ...plan.existing) + 1;
     const listing = yield* listCheckout(checkoutPath);
-    const reply = yield* runInAnalysisProcess(launch, {
-      type: "build",
-      input: {
-        ...listing,
-        from: plan.published === null ? null : generationDirectory(plan.published),
-        to: generationDirectory(generation),
-        generation,
+    const reply = yield* runInAnalysisProcess(
+      launch,
+      {
+        type: "build",
+        input: {
+          ...listing,
+          from: plan.published === null ? null : generationDirectory(plan.published),
+          to: generationDirectory(generation),
+          generation,
+        },
       },
-    }).pipe(Effect.onError(() => removeGeneration(checkoutPath, generation)));
+      options.beforeBuildCommand,
+    ).pipe(Effect.onError(() => removeGeneration(checkoutPath, generation)));
     if (!("built" in reply)) {
       yield* removeGeneration(checkoutPath, generation);
       return yield* new CodeIntelligenceWorkerError({ reason: "invalid-result" });
@@ -490,18 +515,27 @@ const make = Effect.gen(function* () {
         }),
     }).pipe(Effect.onError(() => removeGeneration(checkoutPath, generation)));
     const previous = plan.published;
-    // New readers pin the new generation from here on, so the old one's count only falls.
-    if (previous !== null && !state.readers.has(previous)) {
-      yield* removeGeneration(checkoutPath, previous);
-    } else if (previous !== null) state.retiring.add(previous);
+    // New readers pin the new generation from here on; a reader of the old one removes it.
+    if (previous !== null) yield* removeUnlessRead(checkoutPath, previous);
     return { _tag: "Published", generation } as const;
   });
 
   const buildOnce = (checkoutPath: string): Effect.Effect<CodeIndexRefreshOutcome> =>
-    // The lease serializes this checkout's builders across every instance in the process.
-    withWorkspaceLease(
-      NodePath.join(checkoutPath, INDEX_DIRECTORY),
-      buildGeneration(checkoutPath),
+    Effect.acquireUseRelease(
+      Effect.try({
+        try: () => tryLockBuild(checkoutPath),
+        catch: (cause) =>
+          new CodeIntelligenceWorkerError({
+            reason:
+              cause instanceof IndexOutsideCheckout ? "index-outside-checkout" : "worker-failed",
+          }),
+      }),
+      // Waiting would tie this server to another's build; that build covers the checkout.
+      (release) =>
+        release === null
+          ? Effect.succeed({ _tag: "BuildingElsewhere" } as const)
+          : buildGeneration(checkoutPath),
+      (release) => Effect.sync(() => release?.()),
     ).pipe(
       Effect.catch((error) =>
         Effect.succeed({
@@ -521,7 +555,7 @@ const make = Effect.gen(function* () {
       let current = state.running;
       while (current !== null) {
         const outcome = yield* buildOnce(checkoutPath);
-        if (outcome._tag !== "Unchanged") {
+        if (outcome._tag === "Published" || outcome._tag === "Failed") {
           state.lastFailed = outcome._tag === "Failed";
           const generation =
             outcome._tag === "Published"
@@ -538,7 +572,7 @@ const make = Effect.gen(function* () {
             generation,
           };
           yield* PubSub.publish(indexChanges, { checkoutPath, event });
-        } else state.lastFailed = false;
+        } else if (outcome._tag === "Unchanged") state.lastFailed = false;
         yield* Deferred.succeed(current, outcome);
         // Promoting and reading the next build in one step keeps a concurrent request from
         // starting a second loop for the same checkout.
@@ -584,36 +618,13 @@ const make = Effect.gen(function* () {
     },
   );
 
-  /** Reads the published generation and counts this query as its reader, in one step. */
-  const pinPublished = (checkoutPath: string) => {
-    const generation = readPublishedGeneration(checkoutPath);
-    if (generation !== null) {
-      const { readers } = stateOf(checkoutPath);
-      readers.set(generation, (readers.get(generation) ?? 0) + 1);
-    }
-    return generation;
-  };
-
-  const unpin = (checkoutPath: string, generation: number | null) =>
-    Effect.suspend(() => {
-      if (generation === null) return Effect.void;
-      const { readers, retiring } = stateOf(checkoutPath);
-      const remaining = (readers.get(generation) ?? 1) - 1;
-      if (remaining > 0) {
-        readers.set(generation, remaining);
-        return Effect.void;
-      }
-      readers.delete(generation);
-      return retiring.delete(generation) ? removeGeneration(checkoutPath, generation) : Effect.void;
-    });
-
   const query: CodeIntelligence["Service"]["query"] = Effect.fn("CodeIntelligence.query")(
     function* (input) {
       const checkoutPath = yield* resolveCheckout(input);
       const normalizedQuery = yield* normalizeQueryPaths(input.query, checkoutPath, workspacePaths);
-      const published = yield* Effect.acquireRelease(
+      const { generation: published } = yield* Effect.acquireRelease(
         Effect.try({
-          try: () => pinPublished(checkoutPath),
+          try: () => pinPublishedGeneration(checkoutPath),
           catch: (cause) =>
             cause instanceof IndexOutsideCheckout
               ? new CodeIntelligencePathOutsideCheckout({ path: INDEX_DIRECTORY })
@@ -624,7 +635,7 @@ const make = Effect.gen(function* () {
                   reason: "worker-failed",
                 }),
         }),
-        (generation) => unpin(checkoutPath, generation),
+        (pin) => Effect.sync(pin.release),
       );
       // A query converges the index on the checkout without waiting for it; freshness only
       // observes.
@@ -675,7 +686,11 @@ const make = Effect.gen(function* () {
       if (!("result" in reply)) return yield* toQueryError("invalid-result");
       const state = checkouts.get(checkoutPath);
       const refreshing: keyof typeof REFRESH_LIMITATIONS | undefined =
-        state?.running != null ? "building" : state?.lastFailed ? "failed" : undefined;
+        state?.running != null || isBuildRunning(checkoutPath)
+          ? "building"
+          : state?.lastFailed
+            ? "failed"
+            : undefined;
       if (refreshing === undefined || reply.result.index === undefined) return reply.result;
       return {
         ...reply.result,
@@ -721,4 +736,8 @@ const make = Effect.gen(function* () {
   return CodeIntelligence.of({ query, refresh, refreshIfIndexed, subscribeIndex });
 });
 
-export const layer = Layer.effect(CodeIntelligence, make);
+export const layer = Layer.effect(CodeIntelligence, make({}));
+
+/** The service with test seams; production uses `layer`. */
+export const layerWith = (options: CodeIntelligenceOptions) =>
+  Layer.effect(CodeIntelligence, make(options));

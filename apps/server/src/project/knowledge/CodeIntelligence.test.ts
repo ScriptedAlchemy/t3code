@@ -5,6 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeReadline from "node:readline";
 import * as NodeURL from "node:url";
 import * as NodeWorkerThreads from "node:worker_threads";
 
@@ -687,11 +688,12 @@ it.effect("reports index freshness against the checkout and walks usages to reac
         git("commit", "-qm", "fixture");
         return git("rev-parse", "HEAD");
       });
-      const { run, refresh } = yield* checkoutService(fixture.root, () => [
-        "src/defs.ts",
-        "src/use.ts",
-        "src/defs.test.ts",
-      ]);
+      const gate = buildGate();
+      const { run, refresh } = yield* checkoutService(
+        fixture.root,
+        () => ["src/defs.ts", "src/use.ts", "src/defs.test.ts"],
+        gate,
+      );
 
       // Freshness never indexes: an unindexed checkout stays unindexed.
       assert.equal((yield* run({ operation: "freshness" })).index?.state, "unindexed");
@@ -755,20 +757,14 @@ it.effect("reports index freshness against the checkout and walks usages to reac
       };
       assert.deepInclude((yield* run({ operation: "freshness" })).index, staleIndex);
 
-      // While a build waits for the index, freshness answers from the published generation.
-      const leaseHeld = yield* Deferred.make<void>();
-      const releaseLease = yield* Deferred.make<void>();
-      const lease = yield* withWorkspaceLease(
-        NodePath.join(fixture.root, ".codegraph-t3"),
-        Deferred.succeed(leaseHeld, undefined).pipe(Effect.andThen(Deferred.await(releaseLease))),
-      ).pipe(Effect.forkScoped);
-      yield* Deferred.await(leaseHeld);
+      // While a build is in flight, freshness answers from the published generation.
+      const held = yield* gate.holdNext;
       const building = yield* refresh().pipe(Effect.forkScoped);
+      yield* Deferred.await(held.entered);
       assert.deepInclude((yield* run({ operation: "freshness" })).index, staleIndex);
       // A query answers from that generation too, and says what it is missing.
       assert.deepInclude((yield* run({ operation: "status" })).index, staleIndex);
-      yield* Deferred.succeed(releaseLease, undefined);
-      yield* Fiber.await(lease);
+      yield* Deferred.succeed(held.release, undefined);
       assert.deepEqual(yield* Fiber.join(building), { _tag: "Published", generation: 2 });
 
       assert.deepInclude((yield* run({ operation: "status" })).index, {
@@ -783,7 +779,12 @@ it.effect("reports index freshness against the checkout and walks usages to reac
 function checkoutService(
   root: string,
   listed: () => ReadonlyArray<string>,
-  beforeListing: () => Effect.Effect<void> = () => Effect.void,
+  {
+    beforeListing = () => Effect.void,
+    ...serviceOptions
+  }: CodeIntelligence.CodeIntelligenceOptions & {
+    readonly beforeListing?: () => Effect.Effect<void>;
+  } = {},
 ) {
   const project = {
     projectId,
@@ -791,7 +792,7 @@ function checkoutService(
     deletedAt: null,
   } as unknown as ProjectStore.ProjectRow;
   const provided = Layer.provide(
-    CodeIntelligence.layer,
+    CodeIntelligence.layerWith(serviceOptions),
     Layer.mergeAll(
       Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeedSome(project) }),
       Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThread: () => Effect.die("unused") }),
@@ -1096,44 +1097,24 @@ async function writeGeneratedSources(root: string, count: number) {
   return files;
 }
 
-/**
- * Resolves with the pid the SDK writes into a generation's lock once a build's sync holds it.
- * The build creates the generation directory first, so the checkout root is watched for it.
- */
-function indexLockHolder(root: string, generation: number) {
-  const directory = NodePath.join(root, `.codegraph-t3-g${generation}`);
-  return Effect.acquireUseRelease(
-    Effect.sync(() => {
-      let resolveHolder!: (pid: number) => void;
-      const holder = new Promise<number>((resolve) => {
-        resolveHolder = resolve;
-      });
-      const inspect = () => {
-        try {
-          const pid = Number(
-            NodeFS.readFileSync(NodePath.join(directory, "codegraph.lock"), "utf8"),
-          );
-          if (Number.isSafeInteger(pid) && pid > 0) resolveHolder(pid);
-        } catch {
-          // Not written yet; the next directory event reads it again.
-        }
-      };
-      const watchers = [NodeFS.watch(root, () => watchGeneration())];
-      const watchGeneration = () => {
-        if (watchers.length > 1) return;
-        try {
-          watchers.push(NodeFS.watch(directory, inspect));
-          inspect();
-        } catch {
-          // The generation directory does not exist yet.
-        }
-      };
-      watchGeneration();
-      return { watchers, holder };
+/** Holds the next build once its analysis process starts, before it receives the build. */
+function buildGate() {
+  let next: (pid: number) => Effect.Effect<void> = () => Effect.void;
+  return {
+    beforeBuildCommand: (pid: number) => next(pid),
+    holdNext: Effect.gen(function* () {
+      const entered = yield* Deferred.make<number>();
+      const release = yield* Deferred.make<void>();
+      next = (pid) =>
+        Effect.sync(() => {
+          next = () => Effect.void;
+        }).pipe(
+          Effect.andThen(Deferred.succeed(entered, pid)),
+          Effect.andThen(Deferred.await(release)),
+        );
+      return { entered, release };
     }),
-    ({ holder }) => Effect.promise(() => holder),
-    ({ watchers }) => Effect.sync(() => watchers.forEach((watcher) => watcher.close())),
-  );
+  };
 }
 
 /** Edits every generated source, so the next build reparses all of them. */
@@ -1160,15 +1141,16 @@ function isProcessAlive(pid: number) {
 it.effect("stops a build when the service shuts down and never publishes the cut index", () =>
   withFixture((fixture) =>
     Effect.gen(function* () {
-      const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 400));
+      const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 4));
       const listed = ["src/defs.ts", ...files];
+      const gate = buildGate();
+      const held = yield* gate.holdNext;
       const serviceScope = yield* Scope.make();
-      const { refresh } = yield* checkoutService(fixture.root, () => listed).pipe(
+      const { refresh } = yield* checkoutService(fixture.root, () => listed, gate).pipe(
         Scope.provide(serviceScope),
       );
-      const holder = yield* indexLockHolder(fixture.root, 1).pipe(Effect.forkScoped);
       yield* refresh().pipe(Effect.forkScoped);
-      const pid = yield* Fiber.join(holder);
+      const pid = yield* Deferred.await(held.entered);
       yield* Scope.close(serviceScope, Exit.void);
       assert.isFalse(isProcessAlive(pid), "the build process is gone once shutdown returns");
 
@@ -1176,7 +1158,6 @@ it.effect("stops a build when the service shuts down and never publishes the cut
       const afterShutdown = yield* restarted.run({ operation: "freshness" });
       assert.equal(afterShutdown.index?.state, "unindexed");
       assert.deepInclude(yield* restarted.refresh(), { _tag: "Published" });
-      // The cut generation is swept, leaving only the published one.
       assert.deepEqual(yield* Effect.promise(() => generationDirectories(fixture.root)), [
         yield* Effect.promise(() => publishedDirectory(fixture.root)),
       ]);
@@ -1190,11 +1171,12 @@ it.effect("stops a build when the service shuts down and never publishes the cut
 it.effect("fails the build, not the server, when the analysis process aborts", () =>
   withFixture((fixture) =>
     Effect.gen(function* () {
-      const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 400));
-      const { refresh } = yield* checkoutService(fixture.root, () => files);
-      const holder = yield* indexLockHolder(fixture.root, 1).pipe(Effect.forkScoped);
+      const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 4));
+      const gate = buildGate();
+      const held = yield* gate.holdNext;
+      const { refresh } = yield* checkoutService(fixture.root, () => files, gate);
       const building = yield* refresh().pipe(Effect.forkScoped);
-      const pid = yield* Fiber.join(holder);
+      const pid = yield* Deferred.await(held.entered);
       assert.notEqual(pid, process.pid, "analysis runs outside the server process");
       process.kill(pid, "SIGABRT");
       assert.deepEqual(yield* Fiber.join(building), { _tag: "Failed", reason: "worker-failed" });
@@ -1232,11 +1214,7 @@ it.effect("keeps the index out of the checkout's git status", () =>
         NodeChildProcess.execFileSync("git", args, { cwd: fixture.root, encoding: "utf8" });
       git("init", "--quiet");
       const gate = listingGate();
-      const { run, refresh } = yield* checkoutService(
-        fixture.root,
-        () => ["src/defs.ts"],
-        gate.beforeListing,
-      );
+      const { run, refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"], gate);
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
       // A reader keeps generation 1 while generation 2 is published, so both are on disk.
       const held = yield* gate.holdNext;
@@ -1309,6 +1287,8 @@ it.effect("removes the index an older version kept in the control directory", ()
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
       assert.deepEqual((yield* Effect.promise(() => NodeFSP.readdir(control))).toSorted(), [
         ".gitignore",
+        "build.lock",
+        "building.lock",
         "published",
       ]);
     }),
@@ -1318,22 +1298,23 @@ it.effect("removes the index an older version kept in the control directory", ()
 it.effect("answers from the published generation while its successor builds", () =>
   withFixture((fixture) =>
     Effect.gen(function* () {
-      const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 400));
-      const { run, refresh } = yield* checkoutService(fixture.root, () => [
-        "src/defs.ts",
-        ...files,
-      ]);
+      const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 4));
+      const gate = buildGate();
+      const { run, refresh } = yield* checkoutService(
+        fixture.root,
+        () => ["src/defs.ts", ...files],
+        gate,
+      );
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
       yield* Effect.promise(() => rewriteGeneratedSources(fixture.root, files));
-      const holder = yield* indexLockHolder(fixture.root, 2).pipe(Effect.forkScoped);
+      const held = yield* gate.holdNext;
       const building = yield* refresh().pipe(Effect.forkScoped);
-      const pid = yield* Fiber.join(holder);
-      // The successor's build process is frozen mid-sync while these answer.
-      process.kill(pid, "SIGSTOP");
+      // The successor's build is held in flight while these answer.
+      yield* Deferred.await(held.entered);
       const [answer, freshness] = yield* Effect.all([
         run({ operation: "symbols", name: "greet" }),
         run({ operation: "freshness" }),
-      ]).pipe(Effect.ensuring(Effect.sync(() => process.kill(pid, "SIGCONT"))));
+      ]).pipe(Effect.ensuring(Deferred.succeed(held.release, undefined)));
       assert.ok(answer.nodes.some((node) => node.name === "greet"));
       assert.deepInclude(answer.index, { state: "stale", generation: 1, refresh: "building" });
       assert.deepInclude(freshness.index, { state: "stale", generation: 1, refresh: "building" });
@@ -1352,17 +1333,19 @@ it.effect("answers from the published generation while its successor builds", ()
 it.effect("keeps the previous generation serving when a build fails, and says so", () =>
   withFixture((fixture) =>
     Effect.gen(function* () {
-      const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 400));
-      const { run, refresh, subscribe } = yield* checkoutService(fixture.root, () => [
-        "src/defs.ts",
-        ...files,
-      ]);
+      const files = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 4));
+      const gate = buildGate();
+      const { run, refresh, subscribe } = yield* checkoutService(
+        fixture.root,
+        () => ["src/defs.ts", ...files],
+        gate,
+      );
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
       const pull = yield* Stream.toPull(yield* subscribe());
       yield* Effect.promise(() => rewriteGeneratedSources(fixture.root, files));
-      const holder = yield* indexLockHolder(fixture.root, 2).pipe(Effect.forkScoped);
+      const held = yield* gate.holdNext;
       const building = yield* refresh().pipe(Effect.forkScoped);
-      process.kill(yield* Fiber.join(holder), "SIGABRT");
+      process.kill(yield* Deferred.await(held.entered), "SIGABRT");
       assert.deepEqual(yield* Fiber.join(building), { _tag: "Failed", reason: "worker-failed" });
 
       const freshness = yield* run({ operation: "freshness" });
@@ -1394,27 +1377,26 @@ it.effect("coalesces refresh requests made while a build is in flight into one f
     Effect.gen(function* () {
       // Every query and every build lists the checkout once.
       let listings = 0;
-      const { run, refresh } = yield* checkoutService(fixture.root, () => {
-        listings += 1;
-        return ["src/defs.ts", "src/use.ts"];
-      });
-      const leaseHeld = yield* Deferred.make<void>();
-      const releaseLease = yield* Deferred.make<void>();
-      const lease = yield* withWorkspaceLease(
-        NodePath.join(fixture.root, ".codegraph-t3"),
-        Deferred.succeed(leaseHeld, undefined).pipe(Effect.andThen(Deferred.await(releaseLease))),
-      ).pipe(Effect.forkScoped);
-      yield* Deferred.await(leaseHeld);
+      const gate = buildGate();
+      const { run, refresh } = yield* checkoutService(
+        fixture.root,
+        () => {
+          listings += 1;
+          return ["src/defs.ts", "src/use.ts"];
+        },
+        gate,
+      );
+      const held = yield* gate.holdNext;
 
-      // Starts the first build, which waits for the lease.
+      // Starts the first build, which is held in flight.
       yield* run({ operation: "symbols", name: "greet" });
+      yield* Deferred.await(held.entered);
       const refreshes = yield* Effect.forEach(Array.from({ length: 5 }), () =>
         refresh().pipe(Effect.forkScoped),
       );
       yield* run({ operation: "search", text: "greet" });
       yield* run({ operation: "status" });
-      yield* Deferred.succeed(releaseLease, undefined);
-      yield* Fiber.await(lease);
+      yield* Deferred.succeed(held.release, undefined);
 
       for (const fiber of refreshes) {
         assert.deepEqual(yield* Fiber.join(fiber), { _tag: "Unchanged" });
@@ -1453,7 +1435,7 @@ it.effect("deletes a retired generation only after its last reader finishes", ()
       const { run, refresh } = yield* checkoutService(
         fixture.root,
         () => ["src/defs.ts", "src/use.ts"],
-        gate.beforeListing,
+        gate,
       );
       const generations = () => Effect.promise(() => generationDirectories(fixture.root));
       const edit = (body: string) =>
@@ -1481,6 +1463,171 @@ it.effect("deletes a retired generation only after its last reader finishes", ()
       const answer = yield* Fiber.join(reader);
       assert.deepInclude(answer.index, { generation: 1, state: "stale" });
       assert.deepEqual(yield* generations(), [".codegraph-t3-g3"]);
+    }),
+  ),
+);
+
+const indexLocksModule = new URL("./codeIndexLocks.ts", import.meta.url).href;
+
+/**
+ * Another server process on the same checkout. It takes the index locks the way a server does,
+ * one stdin command at a time: `lock` the build, `pin` the published generation, or `release`.
+ */
+function otherServerProcess(root: string) {
+  return Effect.acquireRelease(
+    Effect.promise(async () => {
+      const child = NodeChildProcess.spawn(
+        process.execPath,
+        [
+          "--experimental-strip-types",
+          "--no-warnings",
+          "--input-type=module",
+          "-e",
+          `const locks = await import(process.argv[1]);
+           const checkout = process.argv[2];
+           const held = [];
+           const commands = {
+             lock: () => {
+               const release = locks.tryLockBuild(checkout);
+               if (release === null) return "busy";
+               held.push(release);
+               return "locked";
+             },
+             pin: () => {
+               const pin = locks.pinPublishedGeneration(checkout);
+               held.push(pin.release);
+               return "pinned " + pin.generation;
+             },
+             release: () => {
+               for (const release of held.splice(0)) release();
+               return "released";
+             },
+           };
+           const lines = (await import("node:readline")).createInterface({ input: process.stdin });
+           lines.on("line", (command) => process.stdout.write(commands[command]() + "\\n"));
+           process.stdout.write("ready\\n");`,
+          indexLocksModule,
+          root,
+        ],
+        { stdio: ["pipe", "pipe", "pipe"] },
+      );
+      let stderr = "";
+      child.stderr.on("data", (chunk) => (stderr += chunk));
+      const replies: Array<{ resolve: (line: string) => void; reject: (error: Error) => void }> =
+        [];
+      NodeReadline.createInterface({ input: child.stdout }).on("line", (line) =>
+        replies.shift()?.resolve(line),
+      );
+      const exited = new Promise<void>((resolve) =>
+        child.once("exit", () => {
+          for (const reply of replies.splice(0)) reply.reject(new Error(stderr));
+          resolve();
+        }),
+      );
+      const nextReply = () =>
+        new Promise<string>((resolve, reject) => replies.push({ resolve, reject }));
+      assert.equal(await nextReply(), "ready");
+      return {
+        child,
+        exited,
+        send: (command: string) => {
+          const reply = nextReply();
+          child.stdin.write(`${command}\n`);
+          return reply;
+        },
+      };
+    }),
+    ({ child, exited }) =>
+      Effect.promise(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        return exited;
+      }),
+  ).pipe(
+    Effect.map(({ child, exited, send }) => ({
+      send: (command: "lock" | "pin" | "release") => Effect.promise(() => send(command)),
+      crash: Effect.promise(() => {
+        child.kill("SIGKILL");
+        return exited;
+      }),
+    })),
+  );
+}
+
+function editDefinition(root: string, body: string) {
+  return Effect.promise(() =>
+    NodeFSP.writeFile(
+      NodePath.join(root, "src/defs.ts"),
+      `export function greet() { return "${body}"; }\n`,
+    ),
+  );
+}
+
+it.effect("refuses to build while another server process builds the checkout", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const other = yield* otherServerProcess(fixture.root);
+      const { run, refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"]);
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      yield* editDefinition(fixture.root, "second");
+
+      assert.equal(yield* other.send("lock"), "locked");
+      // The other process never finishes, so a refresh that waited for it would hang here.
+      assert.deepEqual(yield* refresh(), { _tag: "BuildingElsewhere" });
+      assert.deepInclude((yield* run({ operation: "freshness" })).index, {
+        state: "stale",
+        generation: 1,
+        refresh: "building",
+      });
+      assert.deepEqual(yield* Effect.promise(() => generationDirectories(fixture.root)), [
+        ".codegraph-t3-g1",
+      ]);
+
+      assert.equal(yield* other.send("release"), "released");
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
+      assert.notProperty((yield* run({ operation: "freshness" })).index, "refresh");
+    }),
+  ),
+);
+
+it.effect("keeps a generation another server process reads until that reader releases it", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const other = yield* otherServerProcess(fixture.root);
+      const { refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"]);
+      const generations = () => Effect.promise(() => generationDirectories(fixture.root));
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      assert.equal(yield* other.send("pin"), "pinned 1");
+
+      yield* editDefinition(fixture.root, "second");
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
+      assert.deepEqual(yield* generations(), [".codegraph-t3-g1", ".codegraph-t3-g2"]);
+      yield* editDefinition(fixture.root, "third");
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 3 });
+      assert.deepEqual(yield* generations(), [".codegraph-t3-g1", ".codegraph-t3-g3"]);
+
+      // The reader's own release removes the generation it was the last to read.
+      assert.equal(yield* other.send("release"), "released");
+      assert.deepEqual(yield* generations(), [".codegraph-t3-g3"]);
+    }),
+  ),
+);
+
+it.effect("recovers the build lock and reader of a server process that crashed", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const other = yield* otherServerProcess(fixture.root);
+      const { refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"]);
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      assert.equal(yield* other.send("pin"), "pinned 1");
+      assert.equal(yield* other.send("lock"), "locked");
+      yield* editDefinition(fixture.root, "second");
+      assert.deepEqual(yield* refresh(), { _tag: "BuildingElsewhere" });
+
+      yield* other.crash;
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
+      assert.deepEqual(yield* Effect.promise(() => generationDirectories(fixture.root)), [
+        ".codegraph-t3-g2",
+      ]);
     }),
   ),
 );
