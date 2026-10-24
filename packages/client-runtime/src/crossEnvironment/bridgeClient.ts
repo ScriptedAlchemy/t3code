@@ -2,7 +2,6 @@ import {
   CrossEnvironmentLaunchRejected,
   SourceIdentityUnresolved,
   WS_METHODS,
-  isCrossEnvironmentFailure,
   type CrossEnvironmentAsk,
   type CrossEnvironmentFulfillment,
   type OrchestrationProjectShell,
@@ -84,7 +83,7 @@ const answer = Effect.fn("CrossEnvironmentBridgeClient.answer")(function* (
     Effect.catch((error) =>
       Effect.succeed({
         requestId: ask.requestId,
-        error: isCrossEnvironmentFailure(error) ? error : new CrossEnvironmentLaunchRejected(),
+        error,
       } satisfies CrossEnvironmentFulfillment),
     ),
   );
@@ -99,8 +98,6 @@ const answer = Effect.fn("CrossEnvironmentBridgeClient.answer")(function* (
 
 export const runCrossEnvironmentBridgeClient = Effect.fn("CrossEnvironmentBridgeClient.run")(
   function* () {
-    // Server-config tests build this state with a partial RPC client. Subscribe
-    // only when the connection runtime is actually present.
     const registry = yield* Effect.serviceOption(EnvironmentRegistry.EnvironmentRegistry);
     const catalog = yield* Effect.serviceOption(
       EnvironmentProjectCatalog.EnvironmentProjectCatalog,
@@ -111,8 +108,8 @@ export const runCrossEnvironmentBridgeClient = Effect.fn("CrossEnvironmentBridge
     if (Option.isNone(registry) || Option.isNone(catalog) || Option.isNone(placement)) {
       return;
     }
-    // The subscription's requirements stay on this branch. Tests that build
-    // server-config state without the connection runtime must not inherit them.
+    // Server-config tests omit this runtime. Providing the instances found above
+    // keeps their requirements off that state.
     yield* subscribe(WS_METHODS.crossEnvironmentBridgeSubscribe, {}).pipe(
       Stream.runForEach((ask) => answer(ask)),
       Effect.catchCause((cause) =>

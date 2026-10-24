@@ -188,8 +188,6 @@ export const CrossEnvironmentFailure = Schema.Union([
 ]);
 export type CrossEnvironmentFailure = typeof CrossEnvironmentFailure.Type;
 
-export const isCrossEnvironmentFailure = Schema.is(CrossEnvironmentFailure);
-
 export const ConnectedEnvironmentsResult = Schema.Struct({
   callerEnvironmentId: EnvironmentId,
   environments: Schema.Array(ConnectedEnvironmentView),

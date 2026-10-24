@@ -76,7 +76,7 @@ const make = Effect.gen(function* () {
         message: "This credential belongs to another environment.",
       });
     }
-    return { scope, descriptor };
+    return descriptor;
   });
 
   const sourceProjectId = Effect.fn("CrossEnvironmentMcpService.sourceProjectId")(function* (
@@ -101,7 +101,7 @@ const make = Effect.gen(function* () {
   const list = Effect.fn("CrossEnvironmentMcpService.list")(function* (
     scope: McpInvocationContext.McpInvocationScope,
   ) {
-    const { descriptor } = yield* callerDescriptor(scope);
+    const descriptor = yield* callerDescriptor(scope);
     if (yield* bridge.hasSubscriber) {
       const projectId = yield* sourceProjectId(scope);
       return yield* bridge.askList(
@@ -135,7 +135,7 @@ const make = Effect.gen(function* () {
     input: CrossEnvironmentLaunchRequest,
     modes: StartedModes,
   ) {
-    const { descriptor } = yield* callerDescriptor(scope);
+    const descriptor = yield* callerDescriptor(scope);
     if (
       input.target.kind === "environment" &&
       input.target.environmentId === descriptor.environmentId
