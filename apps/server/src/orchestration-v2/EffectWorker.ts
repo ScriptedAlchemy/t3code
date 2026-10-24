@@ -28,6 +28,10 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
+import {
+  DeliveryScrubRunner,
+  deliveryScrubEffect,
+} from "../project/knowledge/deliveryScrubSchedule.ts";
 import { AssistedLearningRunner } from "../project/knowledge/assistedLearningSchedule.ts";
 import { ConversationSummaryRuntime } from "../project/conversationSummaries/conversationSummarySchedule.ts";
 
@@ -97,6 +101,7 @@ export const layerExecutor: Layer.Layer<
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
     const assistedLearning = yield* AssistedLearningRunner;
+    const deliveryScrubber = yield* DeliveryScrubRunner;
     const conversationSummaries = yield* ConversationSummaryRuntime;
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
@@ -524,6 +529,18 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "project-knowledge.scrub-deliveries":
+            return deliveryScrubber.scrubPage(effect.request).pipe(
+              Effect.asVoid,
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "project-knowledge.extract":
             return assistedLearning
               .extractRun({
@@ -624,6 +641,7 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const executor = yield* OrchestrationEffectExecutorV2;
+      const deliveryScrubber = yield* DeliveryScrubRunner;
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const leaseDurationMs = Math.max(1, options.leaseDurationMs ?? 30_000);
       const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
@@ -773,9 +791,34 @@ export const layerWithOptions = (
           }).pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
           if (cancelledBeforeExecution) return true;
 
-          const execution = executor
-            .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
-            .pipe(Effect.as("executed" as const));
+          const execution = (
+            effect.request.type === "project-knowledge.scrub-deliveries"
+              ? Effect.gen(function* () {
+                  const request = effect.request;
+                  if (request.type !== "project-knowledge.scrub-deliveries") return;
+                  const afterId = yield* deliveryScrubber.scrubPage(request);
+                  if (afterId !== null) {
+                    yield* outbox.enqueue([
+                      deliveryScrubEffect({
+                        projectId: request.projectId,
+                        removalId: request.removalId,
+                        afterId,
+                      }),
+                    ]);
+                    yield* outbox.notifyAvailable();
+                  }
+                }).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                )
+              : executor.execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+          ).pipe(Effect.as("executed" as const));
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );

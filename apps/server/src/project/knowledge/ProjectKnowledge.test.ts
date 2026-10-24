@@ -44,6 +44,12 @@ import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
+import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
+import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
+import * as TurnItemPositionStore from "../../orchestration-v2/TurnItemPositionStore.ts";
+import { deliveryScrubEffect } from "./deliveryScrubSchedule.ts";
 import * as ProjectionMaintenance from "../../orchestration-v2/ProjectionMaintenance.ts";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
@@ -74,6 +80,25 @@ const knowledgeTestLayer = (scoring: typeof HolographicMemory.layer = Holographi
   );
 
 const layerTest = knowledgeTestLayer();
+const receiptStores = Layer.mergeAll(
+  EffectOutbox.layer,
+  CommandReceiptStore.layer,
+  TurnItemPositionStore.layer,
+  EventStore.layer,
+  ProjectStore.layer,
+  ProjectionStore.layer,
+);
+const receiptExecutor = Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+  execute: () => Effect.die("Unexpected effect"),
+});
+const receiptTestLayer = Layer.mergeAll(
+  EventSink.layerFromStores,
+  EffectWorker.layer.pipe(Layer.provide(receiptExecutor)),
+).pipe(
+  Layer.provideMerge(receiptStores),
+  Layer.provideMerge(ProjectKnowledge.layerDeliveryScrubber),
+  Layer.provideMerge(layerTest),
+);
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const at = (minute: number) => DateTime.makeUnsafe(Date.UTC(2026, 8, 27, 0, minute));
@@ -1051,218 +1076,283 @@ it.effect("a delivery recorded after its fact was forgotten never restores the e
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("reports when a delivered fact's cited message changes or disappears", () =>
-  Effect.gen(function* () {
-    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
-    const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const projectId = ProjectId.make("delivered-citations");
-    const events = yield* EventStore.EventStoreV2;
-    const apply = Effect.fn("test.persistSourceEvent")(function* (
-      event: OrchestrationV2DomainEvent,
-    ) {
-      yield* events.append({
-        events: [
-          { ...event, id: EventId.make(`${event.id}:${DateTime.formatIso(event.occurredAt)}`) },
-        ],
+it.effect.each(["rolled", "edited", "deleted", "project-deleted", "archive"] as const)(
+  "eagerly scrubs unread receipts after %s",
+  (removal) =>
+    Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const projectId = ProjectId.make("delivered-citations");
+      const sink = yield* EventSink.EventSinkV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const apply = Effect.fn("test.persistSourceEvent")(function* (
+        event: OrchestrationV2DomainEvent,
+      ) {
+        yield* sink.write({
+          events: [
+            { ...event, id: EventId.make(`${event.id}:${DateTime.formatIso(event.occurredAt)}`) },
+          ],
+        });
       });
-      yield* projections.apply(event);
-    });
-    yield* createProject(projectId);
-    const deliveredFact = Effect.fn("test.deliveredFact")(function* (key: string) {
-      const sourceThreadId = ThreadId.make(`${key}-source-thread`);
-      const sourceMessageId = MessageId.make(`${key}-source-message`);
-      yield* apply(thread(sourceThreadId, projectId));
-      yield* apply(
-        message(sourceThreadId, sourceMessageId, "user", `${key}: tenant IDs in cache keys`),
-      );
-      const source = yield* knowledge.readSource({
-        projectId,
-        threadId: sourceThreadId,
-        messageId: sourceMessageId,
-      });
-      if (source.state !== "available") return yield* Effect.die("source unavailable");
-      const fact = yield* knowledge.mutate(
-        { ...createFact(projectId, key), sources: [source.source] },
-        { kind: "user" },
-      );
-      const record = {
-        version: 1 as const,
-        kind: "project-knowledge" as const,
-        contextId: ComposerContextId.make(`${key}-context`),
-        label: key,
-        knowledge: {
-          environmentId,
+      yield* createProject(projectId);
+      const deliveredFact = Effect.fn("test.deliveredFact")(function* (key: string) {
+        const sourceThreadId = ThreadId.make(`${key}-source-thread`);
+        const sourceMessageId = MessageId.make(`${key}-source-message`);
+        yield* apply(thread(sourceThreadId, projectId));
+        yield* apply(
+          message(sourceThreadId, sourceMessageId, "user", `${key}: tenant IDs in cache keys`),
+        );
+        const source = yield* knowledge.readSource({
           projectId,
-          selections: [{ kind: "fact" as const, factId: fact.id, revision: fact.revision }],
-          maxBytes: 48000,
-        },
-      };
-      const composer = yield* resolveKnowledgeComposer({
-        projectId,
-        text: `Use this. ${formatComposerContextReference(record)}`,
-        records: [record],
-      });
-      const threadId = ThreadId.make(`${key}-delivery-thread`);
-      const messageId = MessageId.make(`${key}-delivery-message`);
-      yield* knowledge.recordDelivery({
-        attemptId: RunAttemptId.make(`${key}-attempt`),
-        runId: RunId.make(`${key}-run`),
-        threadId,
-        messageId,
-        projectId,
-        providerInstanceId,
-        status: "sent",
-        items: composer.items,
-        omissions: composer.omissions,
-        createdAt: DateTime.formatIso(at(2)),
-        updatedAt: DateTime.formatIso(at(2)),
-      });
-      const current = Effect.map(
-        knowledge.readDeliveries({ projectId, threadId, messageId }),
-        (read) => read.deliveries[0]?.items[0]?.current,
-      );
-      assert.equal(yield* current, "current");
-      const retained = knowledge.readSentDeliveries({
-        projectId,
-        threadIds: [threadId],
-        runIds: [RunId.make(`${key}-run`)],
-      });
-      return { sourceThreadId, sourceMessageId, current, retained, factId: fact.id };
-    });
-    const edited = yield* deliveredFact("edited");
-    const deleted = yield* deliveredFact("deleted");
-    const rolled = yield* deliveredFact("rolled");
-    const runId = RunId.make("rolled-source-run");
-    const rolledMessage = message(
-      rolled.sourceThreadId,
-      rolled.sourceMessageId,
-      "user",
-      "rolled: tenant IDs in cache keys",
-    );
-    if (rolledMessage.type !== "message.updated") return yield* Effect.die("Expected message");
-    yield* apply({
-      ...rolledMessage,
-      id: EventId.make("rolled-message-run"),
-      payload: { ...rolledMessage.payload, runId },
-    });
-    yield* apply({
-      id: EventId.make("rolled-source-event"),
-      type: "run.updated",
-      threadId: rolled.sourceThreadId,
-      runId,
-      occurredAt: at(4),
-      payload: {
-        id: runId,
-        threadId: rolled.sourceThreadId,
-        ordinal: 1,
-        providerInstanceId,
-        modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
-        providerThreadId: null,
-        userMessageId: rolled.sourceMessageId,
-        rootNodeId: NodeId.make("rolled-root"),
-        activeAttemptId: null,
-        status: "rolled_back",
-        requestedAt: at(1),
-        startedAt: at(1),
-        completedAt: at(4),
-        checkpointId: null,
-        contextHandoffId: null,
-      },
-    });
-    assert.equal(yield* rolled.current, "unavailable");
-    const search = yield* ThreadSearch.ThreadSearch;
-    assert.deepEqual((yield* search.search({ projectId, query: "rolled: tenant" })).matches, []);
-
-    yield* apply(
-      message(edited.sourceThreadId, edited.sourceMessageId, "user", "edited later", {
-        minute: 3,
-      }),
-    );
-    const deletedThread = yield* projections.getThreadRecords(deleted.sourceThreadId, []);
-    yield* apply({
-      id: EventId.make("delete-delivered-citation"),
-      threadId: deleted.sourceThreadId,
-      type: "thread.deleted",
-      occurredAt: at(4),
-      payload: { ...deletedThread.thread, deletedAt: at(4) },
-    });
-
-    assert.equal(yield* edited.current, "changed");
-    assert.equal(yield* deleted.current, "unavailable");
-    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
-    yield* maintenance.rebuild;
-    assert.deepEqual(
-      (yield* search.search({ projectId, query: "tenant IDs in cache keys" })).matches,
-      [],
-    );
-    for (const entry of [edited, deleted, rolled]) {
-      const detail = yield* knowledge.readFact({ projectId, factId: entry.factId });
-      assert.isNotNull(detail.sourceUnavailable);
-      const resolved = yield* knowledge
-        .resolveForTurn({
-          environmentId,
-          projectId,
-          selections: [{ kind: "fact", factId: entry.factId, revision: 1 }],
-          maxBytes: 48000,
-        })
-        .pipe(Effect.result);
-      assert.isTrue(Result.isFailure(resolved));
-      const rows = yield* entry.retained;
-      assert.notInclude(rows[0]?.items[0]?.text, "Cache keys include tenant IDs.");
-      assert.include(rows[0]?.items[0]?.text, "Source unavailable");
-      const row = rows[0]!;
-      const replay = yield* deliveredKnowledgeForHistory({
-        projectId,
-        messages: [
-          {
-            itemId: TurnItemId.make("removed-source-replay"),
-            role: "user",
-            kind: "user_message",
-            text: "Use this.",
-            threadId: row.threadId,
-            runId: row.runId,
-            providerThreadId: null,
-            status: "completed",
+          threadId: sourceThreadId,
+          messageId: sourceMessageId,
+        });
+        if (source.state !== "available") return yield* Effect.die("source unavailable");
+        const fact = yield* knowledge.mutate(
+          { ...createFact(projectId, key), sources: [source.source] },
+          { kind: "user" },
+        );
+        const record = {
+          version: 1 as const,
+          kind: "project-knowledge" as const,
+          contextId: ComposerContextId.make(`${key}-context`),
+          label: key,
+          knowledge: {
+            environmentId,
+            projectId,
+            selections: [{ kind: "fact" as const, factId: fact.id, revision: fact.revision }],
+            maxBytes: 48000,
           },
-        ],
-        userItemId: () => "removed-source-replay",
+        };
+        const composer = yield* resolveKnowledgeComposer({
+          projectId,
+          text: `Use this. ${formatComposerContextReference(record)}`,
+          records: [record],
+        });
+        const threadId = ThreadId.make(`${key}-delivery-thread`);
+        const messageId = MessageId.make(`${key}-delivery-message`);
+        yield* knowledge.recordDelivery({
+          attemptId: RunAttemptId.make(`${key}-attempt`),
+          runId: RunId.make(`${key}-run`),
+          threadId,
+          messageId,
+          projectId,
+          providerInstanceId,
+          status: "sent",
+          items: composer.items,
+          omissions: composer.omissions,
+          createdAt: DateTime.formatIso(at(2)),
+          updatedAt: DateTime.formatIso(at(2)),
+        });
+        const current = Effect.map(
+          knowledge.readDeliveries({ projectId, threadId, messageId }),
+          (read) => read.deliveries[0]?.items[0]?.current,
+        );
+        const retained = knowledge.readSentDeliveries({
+          projectId,
+          threadIds: [threadId],
+          runIds: [RunId.make(`${key}-run`)],
+        });
+        return { sourceThreadId, sourceMessageId, current, retained, factId: fact.id };
       });
-      assert.notInclude(replay.get("removed-source-replay"), "Cache keys include tenant IDs.");
-      assert.include(replay.get("removed-source-replay"), "Source unavailable");
-    }
-    const projects = yield* ProjectStore.ProjectStoreV2;
-    const uncited = yield* deliveredFact("project-deleted");
-    yield* projects.apply({
-      sequence: 0,
-      eventId: EventId.make("delete-delivery-project"),
-      aggregateKind: "project",
-      aggregateId: projectId,
-      occurredAt: DateTime.formatIso(at(5)),
-      commandId: null,
-      causationEventId: null,
-      correlationId: null,
-      metadata: {},
-      type: "project.deleted",
-      payload: { projectId, deletedAt: DateTime.formatIso(at(5)) },
-    });
-    assert.deepEqual(
-      yield* knowledge.readSource({
+      const edited = yield* deliveredFact("edited");
+      const deleted = yield* deliveredFact("deleted");
+      const rolled = yield* deliveredFact("rolled");
+      const runId = RunId.make("rolled-source-run");
+      const rolledMessage = message(
+        rolled.sourceThreadId,
+        rolled.sourceMessageId,
+        "user",
+        "rolled: tenant IDs in cache keys",
+      );
+      if (rolledMessage.type !== "message.updated") return yield* Effect.die("Expected message");
+      yield* apply({
+        ...rolledMessage,
+        id: EventId.make("rolled-message-run"),
+        payload: { ...rolledMessage.payload, runId },
+      });
+      yield* apply({
+        id: EventId.make("rolled-source-event"),
+        type: "run.updated",
+        threadId: rolled.sourceThreadId,
+        runId,
+        occurredAt: at(4),
+        payload: {
+          id: runId,
+          threadId: rolled.sourceThreadId,
+          ordinal: 1,
+          providerInstanceId,
+          modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+          providerThreadId: null,
+          userMessageId: rolled.sourceMessageId,
+          rootNodeId: NodeId.make("rolled-root"),
+          activeAttemptId: null,
+          status: "rolled_back",
+          requestedAt: at(1),
+          startedAt: at(1),
+          completedAt: at(4),
+          checkpointId: null,
+          contextHandoffId: null,
+        },
+      });
+      const sql = yield* SqlClient.SqlClient;
+      yield* worker.drain();
+      if (removal === "rolled") {
+        assert.deepEqual(
+          yield* sql`SELECT attempt_id FROM project_knowledge_deliveries WHERE attempt_id = 'rolled-attempt' AND items_json LIKE '%Cache keys include tenant IDs.%'`,
+          [],
+        );
+        return;
+      }
+      const search = yield* ThreadSearch.ThreadSearch;
+      assert.deepEqual((yield* search.search({ projectId, query: "rolled: tenant" })).matches, []);
+
+      yield* apply(
+        message(edited.sourceThreadId, edited.sourceMessageId, "user", "edited later", {
+          minute: 3,
+        }),
+      );
+      const deletedThread = yield* projections.getThreadRecords(deleted.sourceThreadId, []);
+      yield* apply({
+        id: EventId.make("delete-delivered-citation"),
+        threadId: deleted.sourceThreadId,
+        type: "thread.deleted",
+        occurredAt: at(4),
+        payload: { ...deletedThread.thread, deletedAt: at(4) },
+      });
+
+      yield* worker.drain();
+      if (removal === "edited")
+        assert.deepEqual(
+          yield* sql`SELECT attempt_id FROM project_knowledge_deliveries WHERE attempt_id = 'edited-attempt' AND items_json LIKE '%Cache keys include tenant IDs.%'`,
+          [],
+        );
+      if (removal === "deleted")
+        assert.deepEqual(
+          yield* sql`SELECT attempt_id FROM project_knowledge_deliveries WHERE attempt_id = 'deleted-attempt' AND items_json LIKE '%Cache keys include tenant IDs.%'`,
+          [],
+        );
+      if (removal === "edited" || removal === "deleted") return;
+      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      yield* maintenance.rebuild;
+      assert.deepEqual(
+        (yield* search.search({ projectId, query: "tenant IDs in cache keys" })).matches,
+        [],
+      );
+      for (const entry of [edited, deleted, rolled]) {
+        const detail = yield* knowledge.readFact({ projectId, factId: entry.factId });
+        assert.isNotNull(detail.sourceUnavailable);
+        const resolved = yield* knowledge
+          .resolveForTurn({
+            environmentId,
+            projectId,
+            selections: [{ kind: "fact", factId: entry.factId, revision: 1 }],
+            maxBytes: 48000,
+          })
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(resolved));
+        const rows = yield* entry.retained;
+        assert.notInclude(rows[0]?.items[0]?.text, "Cache keys include tenant IDs.");
+        assert.include(rows[0]?.items[0]?.text, "Source unavailable");
+        const row = rows[0]!;
+        const replay = yield* deliveredKnowledgeForHistory({
+          projectId,
+          messages: [
+            {
+              itemId: TurnItemId.make("removed-source-replay"),
+              role: "user",
+              kind: "user_message",
+              text: "Use this.",
+              threadId: row.threadId,
+              runId: row.runId,
+              providerThreadId: null,
+              status: "completed",
+            },
+          ],
+          userItemId: () => "removed-source-replay",
+        });
+        assert.notInclude(replay.get("removed-source-replay"), "Cache keys include tenant IDs.");
+        assert.include(replay.get("removed-source-replay"), "Source unavailable");
+      }
+      const uncited = yield* deliveredFact("project-deleted");
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      if (removal === "archive") {
+        const archived = yield* deliveredFact("archived");
+        const records = yield* projections.getThreadRecords(archived.sourceThreadId, []);
+        yield* apply({
+          id: EventId.make("archive-retained"),
+          threadId: archived.sourceThreadId,
+          type: "thread.archived",
+          occurredAt: at(4),
+          payload: { ...records.thread, archivedAt: at(4) },
+        });
+        yield* worker.drain();
+        assert.include(
+          JSON.stringify(
+            yield* sql`SELECT items_json FROM project_knowledge_deliveries WHERE attempt_id = 'archived-attempt'`,
+          ),
+          "Cache keys include tenant IDs.",
+        );
+        return;
+      }
+      if (removal === "project-deleted") {
+        for (let index = 0; index < 51; index++) yield* deliveredFact(`page-${index}`);
+      }
+      yield* sink.commitProjectCommand({
+        commandId: CommandId.make("delete-delivery-project"),
         projectId,
-        threadId: edited.sourceThreadId,
-        messageId: edited.sourceMessageId,
-      }),
-      { state: "unavailable", reason: "deleted" },
-    );
-    const afterDelete = yield* uncited.retained;
-    assert.notInclude(afterDelete[0]?.items[0]?.text, "Cache keys include tenant IDs.");
-    assert.include(afterDelete[0]?.items[0]?.text, "Source unavailable");
-    assert.equal(afterDelete[0]?.omissions.at(-1)?.reason, "source_unavailable");
-    assert.isTrue(
-      Result.isFailure(
-        yield* knowledge.readFact({ projectId, factId: uncited.factId }).pipe(Effect.result),
-      ),
-    );
-  }).pipe(Effect.provide(layerTest)),
+        commandType: "project.delete",
+        acceptedAt: at(5),
+        event: {
+          eventId: EventId.make("delete-delivery-project"),
+          aggregateKind: "project",
+          aggregateId: projectId,
+          occurredAt: DateTime.formatIso(at(5)),
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.deleted",
+          payload: { projectId, deletedAt: DateTime.formatIso(at(5)) },
+        },
+      });
+      assert.deepEqual(
+        yield* knowledge.readSource({
+          projectId,
+          threadId: edited.sourceThreadId,
+          messageId: edited.sourceMessageId,
+        }),
+        { state: "unavailable", reason: "deleted" },
+      );
+      yield* worker.drain();
+      if (removal === "project-deleted")
+        assert.deepEqual(
+          yield* sql`SELECT attempt_id FROM project_knowledge_deliveries WHERE attempt_id = 'project-deleted-attempt' AND items_json LIKE '%Cache keys include tenant IDs.%'`,
+          [],
+        );
+      if (removal === "project-deleted")
+        assert.deepEqual(
+          yield* sql`SELECT attempt_id FROM project_knowledge_deliveries WHERE project_id = ${projectId} AND items_json LIKE '%Cache keys include tenant IDs.%'`,
+          [],
+        );
+      const afterDelete = yield* uncited.retained;
+      assert.notInclude(afterDelete[0]?.items[0]?.text, "Cache keys include tenant IDs.");
+      assert.include(afterDelete[0]?.items[0]?.text, "Source unavailable");
+      assert.equal(afterDelete[0]?.omissions.at(-1)?.reason, "source_unavailable");
+      assert.isTrue(
+        Result.isFailure(
+          yield* knowledge.readFact({ projectId, factId: uncited.factId }).pipe(Effect.result),
+        ),
+      );
+      const beforeRetry =
+        yield* sql`SELECT items_json, omissions_json FROM project_knowledge_deliveries ORDER BY attempt_id`;
+      yield* outbox.enqueue([deliveryScrubEffect({ projectId, removalId: "retry-test" })]);
+      yield* worker.drain();
+      assert.deepEqual(
+        yield* sql`SELECT items_json, omissions_json FROM project_knowledge_deliveries ORDER BY attempt_id`,
+        beforeRetry,
+      );
+    }).pipe(Effect.provide(receiptTestLayer)),
 );
 
 it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>

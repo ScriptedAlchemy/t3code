@@ -502,6 +502,26 @@ export const makeStore = Effect.gen(function* () {
       ...(providerThreadId == null ? {} : { providerThreadId }),
     }));
   });
+  const deliveryPage = Effect.fn("ProjectKnowledgeStore.deliveryPage")(function* (
+    projectId: ProjectId,
+    afterId: string | undefined,
+    limit: number,
+  ) {
+    const rows = yield* sql`
+      SELECT attempt_id AS "attemptId", run_id AS "runId", thread_id AS "threadId",
+        message_id AS "messageId", project_id AS "projectId",
+        provider_instance_id AS "providerInstanceId", provider_thread_id AS "providerThreadId",
+        native_thread_id AS "nativeThreadId", status, items_json AS items,
+        budget_json AS budget, omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM project_knowledge_deliveries
+      WHERE project_id = ${projectId} AND attempt_id > ${afterId ?? ""}
+      ORDER BY attempt_id ASC LIMIT ${limit}`;
+    return (yield* decodeDeliveries(rows)).map(({ providerThreadId, budget, ...row }) => ({
+      ...row,
+      ...(budget == null ? {} : { budget }),
+      ...(providerThreadId == null ? {} : { providerThreadId }),
+    }));
+  });
   const sentDeliveries = Effect.fn("ProjectKnowledgeStore.sentDeliveries")(function* (
     projectId: ProjectId,
     threadIds: ReadonlyArray<ThreadId>,
@@ -581,5 +601,6 @@ export const makeStore = Effect.gen(function* () {
     replaceDeliveryItems,
     deliveries,
     sentDeliveries,
+    deliveryPage,
   };
 });
