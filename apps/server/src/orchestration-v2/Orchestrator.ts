@@ -120,6 +120,7 @@ import {
   type GuestShareCommand,
 } from "./GuestShareDecider.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import { withCommandMetrics } from "../observability/Metrics.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -10119,7 +10120,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         childThreadIds.add(childThreadId);
         const child = yield* projectionStore
-          .getThreadRecords(childThreadId, ["nodes", "subagents", "turnItems"], {
+          .getThreadRecords(childThreadId, ["nodes", "providerTurns", "subagents", "turnItems"], {
             // Runless items are the subagent's; any run there is the user's own.
             turnItemRunIds: [null],
             turnItemStatuses: ["pending", "running", "waiting"],
@@ -10691,7 +10692,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* Ref.update(events, (current) => [...current, ...ended]);
         if (subagent.childThreadId !== null) {
           const child = yield* projectionStore
-            .getThreadRecords(subagent.childThreadId, ["nodes", "turnItems"], {
+            .getThreadRecords(subagent.childThreadId, ["nodes", "providerTurns", "turnItems"], {
               turnItemRunIds: [null],
               turnItemStatuses: ["pending", "running", "waiting"],
             })
@@ -13155,7 +13156,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       storedEvents: committed.storedEvents,
       ...(committed.committed ? {} : { replayed: true as const }),
     } satisfies OrchestratorV2DispatchResult;
-  });
+  }, withCommandMetrics);
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {

@@ -27,6 +27,8 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { subagentThreadTarget } from "./threadAgentsPresentation";
 
+import { useOpenThreadInspector } from "./thread-inspector-navigation";
+
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
 type AgentsTarget = { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
@@ -47,6 +49,7 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const { layout } = useAdaptiveWorkspaceLayout();
   const target = route.params;
   const navigation = useNavigation();
+  const openInspector = useOpenThreadInspector();
   const insets = useSafeAreaInsets();
   const turn = useThreadTurnSubagents(target);
   const subagents = turn?.subagents ?? [];
@@ -54,6 +57,14 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
 
   const openChildThread = (child: { environmentId: EnvironmentId; threadId: ThreadId }) => {
     void Haptics.selectionAsync();
+    if (
+      openInspector(target, {
+        type: "thread",
+        environmentId: child.environmentId,
+        threadId: child.threadId,
+      })
+    )
+      return;
     // Replace this leaf sheet so the child enters the workspace stack expected by Home's Back button.
     navigation.dispatch(
       StackActions.replace("Thread", {

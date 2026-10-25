@@ -25,6 +25,8 @@ import { SubagentRow } from "./SubagentRow";
 import { subagentThreadTarget } from "./threadAgentsPresentation";
 import { WorkLogBlock } from "./work-log-layout";
 
+import { useOpenThreadInspector } from "./thread-inspector-navigation";
+
 type SubagentItem = Extract<OrchestrationV2TurnItem, { type: "subagent" }>;
 type AgentTiming = Pick<OrchestrationV2Subagent, "status" | "startedAt" | "completedAt">;
 
@@ -74,6 +76,7 @@ export function ThreadSubagentGroup(props: {
 }) {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const navigation = useNavigation();
+  const openInspector = useOpenThreadInspector();
   const members = props.activities.flatMap(({ projectedItem }) =>
     projectedItem.item.type === "subagent" ? [projectedItem.item] : [],
   );
@@ -174,14 +177,25 @@ export function ThreadSubagentGroup(props: {
                 }
                 disabled={target === null}
                 onPress={() => {
+                  if (target === null) return;
+                  if (
+                    openInspector(
+                      { environmentId: props.environmentId, threadId: members[0]!.threadId },
+                      {
+                        type: "thread",
+                        environmentId: target.environmentId,
+                        threadId: target.threadId,
+                      },
+                    )
+                  )
+                    return;
                   // Push preserves Back to the parent; navigate would reuse this Thread route.
-                  if (target !== null)
-                    navigation.dispatch(
-                      StackActions.push("Thread", {
-                        environmentId: String(target.environmentId),
-                        threadId: String(target.threadId),
-                      }),
-                    );
+                  navigation.dispatch(
+                    StackActions.push("Thread", {
+                      environmentId: String(target.environmentId),
+                      threadId: String(target.threadId),
+                    }),
+                  );
                 }}
                 className="rounded-lg px-3 py-3 active:bg-subtle"
               >
