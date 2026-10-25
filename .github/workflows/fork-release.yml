@@ -5,10 +5,10 @@ name: Fork release
 # deploy secrets, so this reuses only its per-platform packaging
 # (release-desktop.yml) on GitHub-hosted runners.
 #
-# Builds are unsigned and carry a -preview.YYYYMMDD.N version, which ships no
-# update feed (see isDesktopPreviewVersion in scripts/build-desktop-artifact.ts).
-# An install never auto-updates, so it cannot jump to an upstream build; install
-# a newer release to update.
+# Builds carry a -fork.YYYYMMDD.N version. Unlike -preview, that ships an update
+# feed, and the build points it at GITHUB_REPOSITORY, so installs update from
+# this fork's latest release, never from upstream. macOS can only install an
+# update when the app is signed; add the Apple secrets release-desktop.yml reads.
 
 on:
   push:
@@ -70,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           base_version="$(node -p "require('./apps/desktop/package.json').version")"
-          version="${base_version}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
+          version="${base_version}-fork.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
           node scripts/update-release-package-versions.ts "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -135,10 +135,11 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
             resource_key: win32-x64
     uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
     with:
       version: ${{ needs.bundle.outputs.version }}
       ref: ${{ github.sha }}
-      release_channel: preview
+      release_channel: stable
       relay_client_tracing: false
       clerk_publishable_key: ${{ needs.bundle.outputs.clerk_publishable_key }}
       clerk_jwt_template: ${{ needs.bundle.outputs.clerk_jwt_template }}
@@ -175,6 +176,15 @@ jobs:
           path: assets
           merge-multiple: true
 
+      # electron-updater reads latest.yml on Windows; the build job suffixed it
+      # with the arch. builder-debug.yml is electron-builder's config dump.
+      - name: Restore updater manifest names
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f assets/builder-debug.yml
+          mv assets/latest-win-x64.yml assets/latest.yml
+
       - name: Publish release
         shell: bash
         env:
@@ -186,14 +196,14 @@ jobs:
           cat > notes.md <<EOF
           Built from ${GITHUB_REPOSITORY}@${short_sha}.
 
-          These builds are unsigned and do not update themselves. To update, install a newer release.
+          Installs check this repository for updates. On macOS, an unsigned build cannot install them: install a newer release instead.
 
           - **macOS (Apple silicon):** open the \`.dmg\` and drag the app to Applications. If macOS says the app is damaged, run \`xattr -dr com.apple.quarantine "/Applications/T3 Code (Beta).app"\`.
           - **Windows:** run the \`.exe\`. If SmartScreen blocks it, choose **More info**, then **Run anyway**.
           - **Linux:** \`chmod +x\` the \`.AppImage\`, then run it.
           - **CLI / headless server:** extract the \`t3\` archive for your platform.
           EOF
-          gh release create "fork-v${VERSION}" assets/* \
+          gh release create "v${VERSION}" assets/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "T3 Code ${VERSION}" \

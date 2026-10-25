@@ -523,6 +523,35 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
+  it.effect("points fork builds' stable update feed at the building repository", () =>
+    Effect.gen(function* () {
+      const fork = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.1.0-fork.20261025.7",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+
+      assert.deepStrictEqual(fork.publish, [
+        {
+          provider: "github",
+          owner: "ScriptedAlchemy",
+          repo: "t3code",
+          releaseType: "release",
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "ScriptedAlchemy/t3code" } }),
+        ),
+      ),
+    ),
+  );
+
   // pnpm writes "set this to true or false" placeholders into allowBuilds when a
   // tarball changes. pnpm ignores them, but the release build decode rejects them.
   it.effect("decodes the repo allowBuilds and every file: tarball it names exists", () =>
