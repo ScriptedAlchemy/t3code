@@ -6,6 +6,7 @@ import {
   type MessageId,
   type OrchestrationMessageContext,
   type PreviewAnnotationPayload,
+  type ProjectKnowledgeContextRecord,
   type RunId,
   type ScopedThreadRef,
   type ThreadContextRecord,
@@ -52,7 +53,6 @@ interface EditingQueuedRun {
   readonly context?: OrchestrationMessageContext | undefined;
 }
 
-/** What the composer holds when the user saves a queued-message edit. */
 export interface QueuedRunEditContent {
   readonly prompt: string;
   readonly images: ReadonlyArray<ComposerImageAttachment>;
@@ -61,15 +61,15 @@ export interface QueuedRunEditContent {
   readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
   readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
   readonly threadContexts: ReadonlyArray<ThreadContextRecord>;
+  readonly knowledgeContexts?: ReadonlyArray<ProjectKnowledgeContextRecord> | undefined;
 }
 
-/** Draft id for editing a queued run of the route thread. */
 function queuedEditDraftTarget(routeThreadRef: ScopedThreadRef, runId: RunId) {
   return DraftId.make(`queued-edit:${scopedThreadKey(routeThreadRef)}:${runId}`);
 }
 
 /** Uploads the edit's new attachments and saves it. Returns the error to show, or null. */
-async function submitQueuedRunEdit(input: {
+export async function submitQueuedRunEdit(input: {
   readonly environmentId: EnvironmentId;
   readonly draftTarget: ComposerThreadTarget;
   readonly editing: EditingQueuedRun;
@@ -107,7 +107,6 @@ async function submitQueuedRunEdit(input: {
       readImage: readFileAsDataUrl,
       uploadFiles,
     });
-    // Kept records for removed attachments would point at nothing.
     const keptRecords = (editing.context?.records ?? []).filter(
       (record) =>
         !("attachmentId" in record) ||
@@ -121,6 +120,7 @@ async function submitQueuedRunEdit(input: {
         reviewComments: content.reviewComments,
         previewAnnotations: content.previewAnnotations,
         threadContexts: content.threadContexts,
+        knowledgeContexts: content.knowledgeContexts ?? [],
         attachments: newAttachments.map((attachment, index) => ({
           attachment,
           attachmentId: uploads[editing.existingAttachments.length + index]?.id ?? attachment.id,
@@ -158,17 +158,11 @@ function useEditQueuedRunCommand() {
   return useAtomCommand(threadEnvironment.editQueuedRun, { reportFailure: false });
 }
 
-/**
- * Queued-message edit mode. While active, the composer is retargeted to a
- * per-run edit draft so the user's in-progress draft on the thread survives
- * untouched; `existingAttachments` tracks which stored attachments the edit
- * keeps (removal is client state until save).
- */
+/** Edits preserve the thread draft; attachment removals stay local until save. */
 export function useQueuedRunEdit(input: {
   readonly environmentId: EnvironmentId;
   readonly routeThreadRef: ScopedThreadRef;
   readonly threadDraftTarget: ComposerThreadTarget;
-  // Null while the route has no thread yet; an edit needs one to target.
   readonly activeThreadId: ThreadId | null;
   readonly serverProjection: ThreadStructure | null;
   readonly promptRef: { current: string };
@@ -187,7 +181,6 @@ export function useQueuedRunEdit(input: {
   const [editing, setEditing] = useState<EditingQueuedRun | null>(null);
   const saveInFlightRef = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
-  // Navigating to another thread ends the edit; its draft stays for later.
   if (editing !== null && activeThreadId !== editing.threadId) {
     setEditing(null);
   }
@@ -254,9 +247,6 @@ export function useQueuedRunEdit(input: {
     );
   });
 
-  // Exit edit mode when the edited run leaves the queue (it started, or was
-  // cancelled from another client). A dirty edit moves into the thread's own
-  // draft when that draft is empty; otherwise it is dropped with a toast.
   useEffect(() => {
     if (editing === null || activeThreadId !== editing.threadId) return;
     if (serverProjection === null) return;
@@ -283,11 +273,6 @@ export function useQueuedRunEdit(input: {
     setEditing(null);
   }, [activeThreadId, editing, routeThreadRef, serverProjection, threadDraftTarget]);
 
-  /**
-   * Saves the composer content into the queued message being edited. Reports
-   * failures through `setThreadError`, which callers own because the error
-   * banner lives with the thread.
-   */
   const saveEdit = async (
     content: QueuedRunEditContent,
     setThreadError: (threadId: ThreadId, error: string | null) => void,

@@ -3,9 +3,8 @@ import { ComposerContextId } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { useNavigation } from "@react-navigation/native";
 import { useEffect, useRef, useState } from "react";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { ComposerEditor as NativeComposerEditor } from "../native/T3ComposerEditor";
@@ -24,7 +23,9 @@ import {
 } from "../state/use-composer-drafts";
 import { importComposerContextClipboard } from "../lib/composerContextClipboard";
 import { mobilePreferencesAtom } from "../state/preferences";
+import { useOpenLinkedThread } from "../features/threads/useOpenLinkedThread";
 import { ComposerContextSheet } from "./ComposerContextSheet";
+import { ProjectKnowledgeEntry } from "./ProjectKnowledgeEntry";
 import { AppText as Text } from "./ui/AppText";
 import {
   composerDocumentAttachment,
@@ -36,6 +37,7 @@ export type ComposerEditorProps = NativeComposerEditorProps & {
   readonly draftKey?: string | null;
   readonly hidden?: boolean;
   readonly environmentId?: EnvironmentId;
+  readonly projectId?: ProjectId;
   readonly onOpenMention?: (path: string) => void;
   readonly onOpenAttachment?: (attachment: ComposerDocumentAttachment) => void;
   readonly chipsInert?: boolean;
@@ -46,6 +48,7 @@ export function ComposerEditor({
   draftKey,
   hidden,
   environmentId,
+  projectId,
   onOpenMention,
   onOpenAttachment,
   chipsInert,
@@ -154,7 +157,7 @@ export function ComposerEditor({
           }),
         })
       : "";
-  const navigation = useNavigation();
+  const openLinkedThread = useOpenLinkedThread();
   const selectedReference = selected
     ? collectComposerContextReferences(selected.source)[0]
     : undefined;
@@ -208,6 +211,14 @@ export function ComposerEditor({
       {importing ? (
         <Text className="py-2 text-xs text-foreground-muted">Copying context…</Text>
       ) : null}
+      {environmentId && projectId && draftKey && !hidden ? (
+        <ProjectKnowledgeEntry
+          environmentId={environmentId}
+          projectId={projectId}
+          draftKey={draftKey}
+          disabled={props.readOnly || props.editable === false}
+        />
+      ) : null}
       {selected && (selectedReference || selectedSkill) ? (
         <ComposerContextSheet
           label={
@@ -236,7 +247,7 @@ export function ComposerEditor({
             : {})}
           onOpenThread={(thread) => {
             setSelected(null);
-            navigation.navigate("Thread", {
+            openLinkedThread({
               environmentId: String(thread.environmentId),
               threadId: String(thread.threadId),
             });

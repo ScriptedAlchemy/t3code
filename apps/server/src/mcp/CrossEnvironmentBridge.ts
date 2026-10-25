@@ -1,8 +1,10 @@
 import {
   CrossEnvironmentLaunchRejected,
+  CrossEnvironmentLaunchUncertain,
   PeerCatalogUnavailable,
   type ConnectedEnvironmentsResult,
   type CrossEnvironmentAsk,
+  type CrossEnvironmentClaim,
   type CrossEnvironmentFailure,
   type CrossEnvironmentFulfillment,
   type CrossEnvironmentLaunchAsk,
@@ -30,15 +32,19 @@ type LaunchAskInput =
 
 interface PendingAsk {
   readonly ask: CrossEnvironmentAsk;
+  readonly connectionId: string;
   readonly deferred: Deferred.Deferred<LaunchWaitResult, CrossEnvironmentFailure>;
+  claimedEnvironmentId: EnvironmentId | null;
 }
 
 interface Subscriber {
+  readonly connectionId: string;
   readonly queue: Queue.Queue<CrossEnvironmentAsk>;
 }
 
 interface BridgeState {
   readonly subscriber: Subscriber | null;
+  readonly subscribers: ReadonlyMap<string, Subscriber>;
   readonly pending: Map<string, PendingAsk>;
 }
 
@@ -46,9 +52,15 @@ export class CrossEnvironmentBridge extends Context.Service<
   CrossEnvironmentBridge,
   {
     readonly hasSubscriber: Effect.Effect<boolean>;
-    readonly listen: () => Effect.Effect<Stream.Stream<CrossEnvironmentAsk>, never, Scope.Scope>;
-    readonly subscribe: () => Stream.Stream<CrossEnvironmentAsk>;
-    readonly fulfill: (body: CrossEnvironmentFulfillment) => Effect.Effect<void>;
+    readonly listen: (
+      connectionId: string,
+    ) => Effect.Effect<Stream.Stream<CrossEnvironmentAsk>, never, Scope.Scope>;
+    readonly subscribe: (connectionId: string) => Stream.Stream<CrossEnvironmentAsk>;
+    readonly claim: (connectionId: string, body: CrossEnvironmentClaim) => Effect.Effect<boolean>;
+    readonly fulfill: (
+      connectionId: string,
+      body: CrossEnvironmentFulfillment,
+    ) => Effect.Effect<void>;
     readonly askList: (input: {
       readonly callerEnvironmentId: EnvironmentId;
       readonly sourceProjectId?: ProjectId;
@@ -62,58 +74,122 @@ export class CrossEnvironmentBridge extends Context.Service<
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const lock = yield* Semaphore.make(1);
-  const state = yield* Ref.make<BridgeState>({ subscriber: null, pending: new Map() });
+  const state = yield* Ref.make<BridgeState>({
+    subscriber: null,
+    subscribers: new Map(),
+    pending: new Map(),
+  });
 
   const withLock = <A, E, R>(effect: Effect.Effect<A, E, R>) => lock.withPermits(1)(effect);
+
+  const unavailableResponse = ({ ask, claimedEnvironmentId }: PendingAsk) =>
+    ask.op === "launch"
+      ? new CrossEnvironmentLaunchUncertain({
+          threadId: ask.threadId,
+          environmentId:
+            claimedEnvironmentId ??
+            (ask.target.kind === "environment" ? ask.target.environmentId : null),
+        })
+      : new PeerCatalogUnavailable();
 
   const failPending = (pending: ReadonlyMap<string, PendingAsk>) =>
     Effect.forEach(
       pending.values(),
-      (entry) => Deferred.complete(entry.deferred, Effect.fail(new PeerCatalogUnavailable())),
+      (entry) => Deferred.fail(entry.deferred, unavailableResponse(entry)),
       { discard: true },
     );
 
-  const listen = Effect.fn("CrossEnvironmentBridge.listen")(function* () {
+  const listen = Effect.fn("CrossEnvironmentBridge.listen")(function* (connectionId: string) {
     const queue = yield* Queue.unbounded<CrossEnvironmentAsk>();
-    const previous = yield* withLock(
-      Effect.gen(function* () {
-        const current = yield* Ref.get(state);
-        yield* Ref.set(state, { subscriber: { queue }, pending: current.pending });
-        for (const entry of current.pending.values()) {
-          yield* Queue.offer(queue, entry.ask);
-        }
-        return current.subscriber;
-      }),
-    );
-    if (previous !== null) {
-      yield* Queue.shutdown(previous.queue);
-    }
-    yield* Effect.addFinalizer(() =>
+    yield* Effect.acquireRelease(
       withLock(
         Effect.gen(function* () {
           const current = yield* Ref.get(state);
-          if (current.subscriber?.queue !== queue) {
-            return;
-          }
-          yield* Ref.set(state, { subscriber: null, pending: current.pending });
+          const subscribers = new Map(current.subscribers);
+          const previousConnection = subscribers.get(connectionId);
+          const subscriber = { connectionId, queue };
+          subscribers.delete(connectionId);
+          subscribers.set(connectionId, subscriber);
+          yield* Ref.set(state, { subscriber, subscribers, pending: new Map() });
+          // The previous client may already have launched on a peer. Replaying
+          // can choose a different peer, outside the destination's deduplication.
           yield* failPending(current.pending);
-          current.pending.clear();
+          if (previousConnection !== undefined) {
+            yield* Queue.shutdown(previousConnection.queue);
+          }
         }),
       ),
+      () =>
+        withLock(
+          Effect.gen(function* () {
+            const current = yield* Ref.get(state);
+            if (current.subscribers.get(connectionId)?.queue === queue) {
+              const subscribers = new Map(current.subscribers);
+              subscribers.delete(connectionId);
+              if (current.subscriber?.queue === queue) {
+                yield* Ref.set(state, {
+                  subscribers,
+                  subscriber: [...subscribers.values()].at(-1) ?? null,
+                  pending: new Map(),
+                });
+                yield* failPending(current.pending);
+              } else {
+                yield* Ref.set(state, { ...current, subscribers });
+              }
+            }
+            yield* Queue.shutdown(queue);
+          }),
+        ),
     );
-    return Stream.fromQueue(queue);
+    return Stream.fromQueue(queue).pipe(
+      Stream.filterEffect((ask) =>
+        withLock(
+          Ref.get(state).pipe(
+            Effect.map(
+              (current) =>
+                current.subscriber?.queue === queue && current.pending.has(ask.requestId),
+            ),
+          ),
+        ),
+      ),
+    );
   });
 
-  const subscribe = () => Stream.unwrap(listen());
+  const subscribe = (connectionId: string) => Stream.unwrap(listen(connectionId));
+
+  const claim = Effect.fn("CrossEnvironmentBridge.claim")(function* (
+    connectionId: string,
+    body: CrossEnvironmentClaim,
+  ) {
+    return yield* withLock(
+      Effect.gen(function* () {
+        const current = yield* Ref.get(state);
+        const pending = current.pending.get(body.requestId);
+        if (
+          pending === undefined ||
+          pending.connectionId !== connectionId ||
+          pending.ask.op !== "launch" ||
+          pending.claimedEnvironmentId !== null ||
+          pending.ask.callerEnvironmentId === body.environmentId ||
+          (pending.ask.target.kind === "environment" &&
+            pending.ask.target.environmentId !== body.environmentId)
+        )
+          return false;
+        pending.claimedEnvironmentId = body.environmentId;
+        return true;
+      }),
+    );
+  });
 
   const fulfill = Effect.fn("CrossEnvironmentBridge.fulfill")(function* (
+    connectionId: string,
     body: CrossEnvironmentFulfillment,
   ) {
     yield* withLock(
       Effect.gen(function* () {
         const current = yield* Ref.get(state);
         const pending = current.pending.get(body.requestId);
-        if (pending === undefined) {
+        if (pending === undefined || pending.connectionId !== connectionId) {
           return;
         }
         const outcome =
@@ -132,21 +208,48 @@ const make = Effect.gen(function* () {
 
   const wait = Effect.fn("CrossEnvironmentBridge.wait")(function* (ask: CrossEnvironmentAsk) {
     const deferred = yield* Deferred.make<LaunchWaitResult, CrossEnvironmentFailure>();
-    const offered = yield* withLock(
-      Effect.gen(function* () {
-        const current = yield* Ref.get(state);
-        if (current.subscriber === null) {
-          return false;
-        }
-        current.pending.set(ask.requestId, { ask, deferred });
-        yield* Queue.offer(current.subscriber.queue, ask);
-        return true;
-      }),
+    return yield* Effect.acquireUseRelease(
+      withLock(
+        Effect.gen(function* () {
+          const current = yield* Ref.get(state);
+          if (ask.op === "launch") {
+            const existing = [...current.pending.values()].find(
+              (entry) => entry.ask.op === "launch" && entry.ask.commandId === ask.commandId,
+            );
+            if (existing !== undefined) return { pending: existing, ownsRequest: false };
+          }
+          if (current.subscriber === null) {
+            return yield* new PeerCatalogUnavailable();
+          }
+          const pending: PendingAsk = {
+            ask,
+            deferred,
+            connectionId: current.subscriber.connectionId,
+            claimedEnvironmentId: null,
+          };
+          current.pending.set(ask.requestId, pending);
+          yield* Queue.offer(current.subscriber.queue, ask);
+          return { pending, ownsRequest: true };
+        }),
+      ),
+      ({ pending }) =>
+        Deferred.await(pending.deferred).pipe(
+          Effect.timeoutOrElse({
+            duration: ask.op === "list" ? "15 seconds" : "1 minute",
+            orElse: () => Effect.fail(unavailableResponse(pending)),
+          }),
+        ),
+      ({ pending, ownsRequest }) =>
+        ownsRequest
+          ? withLock(
+              Effect.gen(function* () {
+                const current = yield* Ref.get(state);
+                current.pending.delete(pending.ask.requestId);
+                yield* Deferred.fail(pending.deferred, unavailableResponse(pending));
+              }),
+            )
+          : Effect.void,
     );
-    if (!offered) {
-      return yield* new PeerCatalogUnavailable();
-    }
-    return yield* Deferred.await(deferred);
   });
 
   const askList = Effect.fn("CrossEnvironmentBridge.askList")(function* (input: {
@@ -189,6 +292,7 @@ const make = Effect.gen(function* () {
     hasSubscriber,
     listen,
     subscribe,
+    claim,
     fulfill,
     askList,
     askLaunch,

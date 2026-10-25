@@ -1,6 +1,8 @@
 import {
   COMPOSER_CONTEXT_LABEL_MAX_CHARS,
-  type ComposerContextId,
+  ComposerContextId,
+  type ProjectKnowledgeContext,
+  type ProjectKnowledgeContextRecord,
   type ComposerContextKind,
   type ComposerContextRecord,
   type ElementContextDetails,
@@ -19,10 +21,7 @@ const CONTEXT_LINK = new RegExp(
   "g",
 );
 
-/**
- * 64 bits of digest, because the slug in front of it is truncated: two long producer
- * ids that agree on their first 48 characters are told apart by this alone.
- */
+// The digest alone distinguishes producer ids sharing the truncated 48-character slug.
 function fnv1a64(value: string): string {
   let forward = 0x811c9dc5;
   let reverse = 0x9dc5811c;
@@ -162,10 +161,7 @@ function formatComposerContextProviderMarker(
   return `[${kindDisplayName(kind)}: ${escapeComposerContextPayloadText(cleanLabel)}; ref=${contextId}]`;
 }
 
-/**
- * A terminal line or PR comment that contains `</t3_context>` or `</context>`
- * must not be able to close the envelope and forge a record.
- */
+// Escape envelope tags so payload text cannot close the envelope and forge records.
 function escapeComposerContextPayloadText(text: string): string {
   return text.replace(
     new RegExp(String.raw`<(?=/?(?:${CONTEXT_ENVELOPE_TAG}|${CONTEXT_ENTRY_TAG})\b)`, "gi"),
@@ -264,6 +260,8 @@ function formatComposerContextProviderPayload(record: KnownComposerContextRecord
       return `path: ${record.path}`;
     case "skill":
       return `name: ${record.name}`;
+    case "project-knowledge":
+      return "Selected project knowledge is unavailable. Refresh or remove this attachment.";
     case "thread":
       return [
         `title: ${record.title}`,
@@ -278,19 +276,23 @@ function formatEnvelopeEntry(
   kind: ComposerContextKind,
   contextId: ComposerContextId,
   record: ComposerContextRecord | undefined,
+  knowledgeText?: string,
 ): string {
   const open = `<${CONTEXT_ENTRY_TAG} kind="${escapeAttribute(kind)}" id="${escapeAttribute(contextId)}"`;
   if (!record) return `${open} unavailable="true"/>`;
   const body =
-    "payload" in record
-      ? JSON.stringify(record.payload)
-      : formatComposerContextProviderPayload(record);
+    record.kind === "project-knowledge" && knowledgeText !== undefined
+      ? knowledgeText
+      : "payload" in record
+        ? JSON.stringify(record.payload)
+        : formatComposerContextProviderPayload(record);
   return `${open}>\n${escapeComposerContextPayloadText(body)}\n</${CONTEXT_ENTRY_TAG}>`;
 }
 
 export function projectComposerContextForProvider(input: {
   text: string;
   records: ReadonlyArray<ComposerContextRecord>;
+  resolvedKnowledge?: ReadonlyMap<ComposerContextId, string>;
 }): string {
   const occurrences = collectComposerContextReferences(input.text);
   if (occurrences.length === 0) return input.text;
@@ -315,6 +317,7 @@ export function projectComposerContextForProvider(input: {
       record?.kind ?? occurrence.kind,
       occurrence.contextId,
       record,
+      input.resolvedKnowledge?.get(occurrence.contextId),
     );
     entries.push(entry);
   }
@@ -361,5 +364,17 @@ export function remapComposerContextAttachments(
         ? { ...record, attachmentId: ids.get(record.attachmentId) ?? record.attachmentId }
         : record,
     ),
+  };
+}
+
+export function projectKnowledgeContextRecord(
+  knowledge: ProjectKnowledgeContext,
+): ProjectKnowledgeContextRecord {
+  return {
+    version: 1,
+    kind: "project-knowledge",
+    contextId: ComposerContextId.make("project-knowledge"),
+    label: `Project knowledge (${knowledge.selections.length})`,
+    knowledge,
   };
 }

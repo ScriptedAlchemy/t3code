@@ -89,7 +89,11 @@ const launchedProjection = (
 });
 
 export const makePlacementRegistry = Effect.fn("TestCrossEnvironment.makeRegistry")(function* (
-  environments: ReadonlyArray<{ readonly id: EnvironmentId; readonly label: string }>,
+  environments: ReadonlyArray<{
+    readonly id: EnvironmentId;
+    readonly label: string;
+    readonly launchError?: Error;
+  }>,
 ) {
   const launches: RecordedLaunch[] = [];
   const supervisors = new Map<
@@ -107,13 +111,14 @@ export const makePlacementRegistry = Effect.fn("TestCrossEnvironment.makeRegistr
     const client = {
       [WS_METHODS.serverGetHostResources]: () => Effect.succeed(hostResources),
       [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input: OrchestrationV2ThreadLaunchInput) =>
-        Effect.sync(() => {
+        Effect.suspend(() => {
           launches.push({ environmentId: environment.id, input });
-          return {
+          if (environment.launchError !== undefined) return Effect.fail(environment.launchError);
+          return Effect.succeed({
             threadId: input.threadId ?? v2Projection.thread.id,
             projection: launchedProjection(input.threadId ?? v2Projection.thread.id),
             resumed: false,
-          };
+          });
         }),
     } as unknown as WsRpcProtocolClient;
     const session: RpcSession = {

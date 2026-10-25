@@ -1,4 +1,41 @@
 import {
+  ConversationSummaryDescribeInput,
+  ConversationSummaryError,
+  ConversationSummaryExpandInput,
+  ConversationSummaryExpansion,
+  ConversationSummaryList,
+  ConversationSummaryListInput,
+  ConversationSummaryRead,
+} from "./conversationSummaries.ts";
+import { LoomWindow, LoomWindowInput, ProjectLoomError } from "./projectLoom.ts";
+import {
+  ProjectKnowledgeError,
+  ProjectKnowledgeMutation,
+  ProjectKnowledgeListInput,
+  ProjectKnowledgeListResult,
+  ProjectKnowledgeReadSourceInput,
+  ProjectKnowledgeSource,
+  ProjectKnowledgeSearchInput,
+  ProjectKnowledgeSearchResult,
+  ProjectKnowledgeContext,
+  ProjectKnowledgePreparedContext,
+  ProjectKnowledgeReadDeliveriesInput,
+  ProjectKnowledgeDeliveries,
+  ProjectKnowledgeFactDetail,
+  ProjectKnowledgeMutationResult,
+  ProjectKnowledgeReadFactInput,
+  ProjectKnowledgeStatus,
+  ProjectKnowledgeStatusInput,
+} from "./projectKnowledge.ts";
+import {
+  ProjectCodeError,
+  ProjectCodeQueryInput,
+  ProjectCodeQueryResult,
+  ProjectFileHistoryError,
+  ProjectFileHistoryInput,
+  ProjectFileHistoryResult,
+} from "./projectCode.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -26,7 +63,11 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { CrossEnvironmentAsk, CrossEnvironmentFulfillment } from "./crossEnvironment.ts";
+import {
+  CrossEnvironmentAsk,
+  CrossEnvironmentClaim,
+  CrossEnvironmentFulfillment,
+} from "./crossEnvironment.ts";
 import {
   CodexAuthCallbackInput,
   CodexAuthCallbackState,
@@ -169,6 +210,11 @@ import {
   ProviderAccountImportResult,
   ProviderAccountTransferError,
 } from "./providerAccountTransfer.ts";
+import {
+  GuestShareCreateError,
+  GuestShareCreateInput,
+  GuestShareCreateResult,
+} from "./guestShare.ts";
 import { PullRequestReviewGuideResult } from "./pullRequestReviewGuide.ts";
 import {
   PullRequestActionInput,
@@ -188,6 +234,8 @@ import {
   PullRequestListResult,
   PullRequestListStatsInput,
   PullRequestListStatsResult,
+  PullRequestFilterOptions,
+  PullRequestFilterOptionsInput,
   PullRequestOperationError,
   PullRequestReactionInput,
   PullRequestRef,
@@ -386,6 +434,20 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  projectCodeQuery: "projectCode.query",
+  projectCodeFileHistory: "projectCode.fileHistory",
+  projectKnowledgeSearch: "projectKnowledge.search",
+  projectKnowledgeList: "projectKnowledge.list",
+  projectKnowledgeMutate: "projectKnowledge.mutate",
+  projectKnowledgeReadSource: "projectKnowledge.readSource",
+  projectKnowledgePrepareContext: "projectKnowledge.prepareContext",
+  projectKnowledgeReadDeliveries: "projectKnowledge.readDeliveries",
+  projectKnowledgeReadFact: "projectKnowledge.readFact",
+  projectKnowledgeStatus: "projectKnowledge.status",
+  conversationSummariesList: "conversationSummaries.list",
+  conversationSummariesDescribe: "conversationSummaries.describe",
+  conversationSummariesExpand: "conversationSummaries.expand",
+  projectReadLoomWindow: "project.readLoomWindow",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -528,6 +590,7 @@ export const WS_METHODS = {
   scheduledTasksRunNow: "scheduledTasks.runNow",
   scheduledTasksRotateWebhookToken: "scheduledTasks.rotateWebhookToken",
   secretsAnswerRequest: "secrets.answerRequest",
+  guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
 
@@ -536,6 +599,7 @@ export const WS_METHODS = {
 
   pullRequestsList: "pullRequests.list",
   pullRequestsListStats: "pullRequests.listStats",
+  pullRequestsFilterOptions: "pullRequests.filterOptions",
   pullRequestsSummary: "pullRequests.summary",
   pullRequestsRouting: "pullRequests.routing",
   pullRequestsRoutingIdentity: "pullRequests.routingIdentity",
@@ -590,6 +654,7 @@ export const WS_METHODS = {
   subscribeBackgroundPolicy: "subscribeBackgroundPolicy",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
   crossEnvironmentBridgeSubscribe: "crossEnvironment.bridge.subscribe",
+  crossEnvironmentBridgeClaim: "crossEnvironment.bridge.claim",
   crossEnvironmentBridgeFulfill: "crossEnvironment.bridge.fulfill",
 } as const;
 
@@ -622,8 +687,7 @@ const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, 
     instanceId: Schema.optional(ProviderInstanceId),
     cwd: Schema.optional(TrimmedNonEmptyString),
     fresh: Schema.optional(Schema.Boolean),
-    /** Explicit user request: bypass T3-owned caches and rediscover models.
-     * Background status refreshes must not open agent sessions. */
+    /** Bypass model caches; explicit rediscovery may open sessions, background refreshes must not. */
     refreshModels: Schema.optional(Schema.Boolean),
   }),
   success: ServerProviderUpdatedPayload,
@@ -980,14 +1044,16 @@ const WsPullRequestsListRpc = Rpc.make(WS_METHODS.pullRequestsList, {
   error: PullRequestRpcError,
 });
 
-/**
- * The line counts for rows already on the page. Its own call because on GitHub the pair costs
- * 40-60% of the listing read that answers everything else on the row, so the rows arrive first
- * and their stats a moment later.
- */
+// GitHub line counts cost 40-60% of the listing read; fetch separately so rows arrive first.
 const WsPullRequestsListStatsRpc = Rpc.make(WS_METHODS.pullRequestsListStats, {
   payload: PullRequestListStatsInput,
   success: PullRequestListStatsResult,
+  error: PullRequestRpcError,
+});
+
+const WsPullRequestsFilterOptionsRpc = Rpc.make(WS_METHODS.pullRequestsFilterOptions, {
+  payload: PullRequestFilterOptionsInput,
+  success: PullRequestFilterOptions,
   error: PullRequestRpcError,
 });
 
@@ -1154,11 +1220,7 @@ const WsPullRequestsSubscribeRefreshesRpc = Rpc.make(WS_METHODS.pullRequestsSubs
   stream: true,
 });
 
-/**
- * Read on its own rather than as part of the detail: the people who may be asked are only wanted
- * once somebody opens the menu, and reading them with every change request would spend a request
- * per host on a list nobody looked at.
- */
+// Fetch reviewer candidates only when the menu opens to avoid unused host requests.
 const WsPullRequestsReviewerCandidatesRpc = Rpc.make(WS_METHODS.pullRequestsReviewerCandidates, {
   payload: PullRequestRef,
   success: PullRequestReviewerCandidateList,
@@ -1195,8 +1257,7 @@ const WsSourceControlCloneRepositoryRpc = Rpc.make(WS_METHODS.sourceControlClone
   error: Schema.Union([SourceControlRepositoryError, EnvironmentAuthorizationError]),
 });
 
-// Clone-backed project creation. `start` returns once the project exists and
-// the clone is running; progress arrives on the subscription.
+// Returns when the project exists and cloning starts; progress uses the subscription.
 const WsProjectCloneStartRpc = Rpc.make(WS_METHODS.projectCloneStart, {
   payload: ProjectCloneStartInput,
   success: ProjectCloneStartResult,
@@ -1430,9 +1491,7 @@ const WsVcsListRefsRpc = Rpc.make(WS_METHODS.vcsListRefs, {
 });
 
 const WsVcsCreateWorktreeRpc = Rpc.make(WS_METHODS.vcsCreateWorktree, {
-  // Clients cannot choose the folder: new worktrees go in the server's managed
-  // worktrees folder. `path` stays a required null because older servers
-  // require the key.
+  // Worktrees use the managed folder; required null path preserves compatibility with older servers.
   payload: Schema.Struct({ ...VcsCreateWorktreeInput.fields, path: Schema.Null }),
   success: VcsCreateWorktreeResult,
   error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
@@ -1700,6 +1759,21 @@ const WsOrchestrationV2GetArchivedShellSnapshotRpc = Rpc.make(
   },
 );
 
+const WsOrchestrationV2GetThreadFamilyRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getThreadFamily, {
+  payload: OrchestrationV2RpcSchemas.getThreadFamily.input,
+  success: OrchestrationV2RpcSchemas.getThreadFamily.output,
+  error: Schema.Union([OrchestrationV2GetShellSnapshotError, EnvironmentAuthorizationError]),
+});
+
+const WsOrchestrationV2GetWorktreeThreadIdsRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getWorktreeThreadIds,
+  {
+    payload: OrchestrationV2RpcSchemas.getWorktreeThreadIds.input,
+    success: OrchestrationV2RpcSchemas.getWorktreeThreadIds.output,
+    error: Schema.Union([OrchestrationV2GetShellSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsOrchestrationV2GetThreadProjectionRpc = Rpc.make(
   ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
   {
@@ -1786,18 +1860,10 @@ const WsSubscribeTerminalMetadataRpc = Rpc.make(WS_METHODS.subscribeTerminalMeta
 
 export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerConfig, {
   payload: Schema.Struct({
-    /**
-     * Already-shipped clients decode the stream against the old event union and
-     * would die on an unknown member, so the server emits the theme stream only
-     * to subscribers that ask for it.
-     */
+    /** Opt-in protects older clients that reject unknown theme event types. */
     environmentThemes: Schema.optional(Schema.Boolean),
     usageLimitSources: Schema.optional(Schema.Boolean),
-    /**
-     * Whether this client answers `/usage-limits` itself. The server injects
-     * that command into provider catalogs only for such clients; an older
-     * client would send it to the provider as an ordinary prompt.
-     */
+    /** Advertise client handling before the server offers /usage-limits, or older clients send it as a prompt. */
     usageLimitsCommand: Schema.optional(Schema.Boolean),
   }),
   success: ServerConfigStreamEvent,
@@ -1858,6 +1924,12 @@ const WsScheduledTasksRotateWebhookTokenRpc = Rpc.make(
   },
 );
 
+const WsGuestShareCreateRpc = Rpc.make(WS_METHODS.guestShareCreate, {
+  payload: GuestShareCreateInput,
+  success: GuestShareCreateResult,
+  error: Schema.Union([GuestShareCreateError, EnvironmentAuthorizationError]),
+});
+
 const WsSecretsAnswerRequestRpc = Rpc.make(WS_METHODS.secretsAnswerRequest, {
   payload: SecretRequestAnswerInput,
   error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
@@ -1915,12 +1987,113 @@ const WsCrossEnvironmentBridgeFulfillRpc = Rpc.make(WS_METHODS.crossEnvironmentB
   error: EnvironmentAuthorizationError,
 });
 
+const WsCrossEnvironmentBridgeClaimRpc = Rpc.make(WS_METHODS.crossEnvironmentBridgeClaim, {
+  payload: CrossEnvironmentClaim,
+  success: Schema.Boolean,
+  error: EnvironmentAuthorizationError,
+});
+
 export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthorization>()(
   "t3/contracts/RpcScopeAuthorization",
   { error: EnvironmentAuthorizationError },
 ) {}
 
+const WsProjectKnowledgeSearchRpc = Rpc.make(WS_METHODS.projectKnowledgeSearch, {
+  payload: ProjectKnowledgeSearchInput,
+  success: ProjectKnowledgeSearchResult,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectCodeQueryRpc = Rpc.make(WS_METHODS.projectCodeQuery, {
+  payload: ProjectCodeQueryInput,
+  success: ProjectCodeQueryResult,
+  error: Schema.Union([ProjectCodeError, EnvironmentAuthorizationError]),
+});
+const WsProjectCodeFileHistoryRpc = Rpc.make(WS_METHODS.projectCodeFileHistory, {
+  payload: ProjectFileHistoryInput,
+  success: ProjectFileHistoryResult,
+  error: Schema.Union([ProjectFileHistoryError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeListRpc = Rpc.make(WS_METHODS.projectKnowledgeList, {
+  payload: ProjectKnowledgeListInput,
+  success: ProjectKnowledgeListResult,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeMutateRpc = Rpc.make(WS_METHODS.projectKnowledgeMutate, {
+  payload: ProjectKnowledgeMutation,
+  success: ProjectKnowledgeMutationResult,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeReadSourceRpc = Rpc.make(WS_METHODS.projectKnowledgeReadSource, {
+  payload: ProjectKnowledgeReadSourceInput,
+  success: ProjectKnowledgeSource,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgePrepareContextRpc = Rpc.make(WS_METHODS.projectKnowledgePrepareContext, {
+  payload: ProjectKnowledgeContext,
+  success: ProjectKnowledgePreparedContext,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeReadDeliveriesRpc = Rpc.make(WS_METHODS.projectKnowledgeReadDeliveries, {
+  payload: ProjectKnowledgeReadDeliveriesInput,
+  success: ProjectKnowledgeDeliveries,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+
+const WsProjectKnowledgeReadFactRpc = Rpc.make(WS_METHODS.projectKnowledgeReadFact, {
+  payload: ProjectKnowledgeReadFactInput,
+  success: ProjectKnowledgeFactDetail,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+const WsProjectKnowledgeStatusRpc = Rpc.make(WS_METHODS.projectKnowledgeStatus, {
+  payload: ProjectKnowledgeStatusInput,
+  success: ProjectKnowledgeStatus,
+  error: Schema.Union([ProjectKnowledgeError, EnvironmentAuthorizationError]),
+});
+
+export const WsProjectKnowledgeRpcGroup = RpcGroup.make(
+  WsProjectKnowledgeSearchRpc,
+  WsProjectKnowledgeListRpc,
+  WsProjectKnowledgeMutateRpc,
+  WsProjectKnowledgeReadSourceRpc,
+  WsProjectKnowledgePrepareContextRpc,
+  WsProjectKnowledgeReadDeliveriesRpc,
+  WsProjectKnowledgeReadFactRpc,
+  WsProjectKnowledgeStatusRpc,
+).middleware(RpcScopeAuthorization);
+
+export const WsProjectLoomRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.projectReadLoomWindow, {
+    payload: LoomWindowInput,
+    success: LoomWindow,
+    error: Schema.Union([ProjectLoomError, EnvironmentAuthorizationError]),
+  }),
+).middleware(RpcScopeAuthorization);
+
+export const WsConversationSummariesRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.conversationSummariesList, {
+    payload: ConversationSummaryListInput,
+    success: ConversationSummaryList,
+    error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.conversationSummariesDescribe, {
+    payload: ConversationSummaryDescribeInput,
+    success: ConversationSummaryRead,
+    error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.conversationSummariesExpand, {
+    payload: ConversationSummaryExpandInput,
+    success: ConversationSummaryExpansion,
+    error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
+  }),
+).middleware(RpcScopeAuthorization);
+
+export const WsProjectCodeRpcGroup = RpcGroup.make(
+  WsProjectCodeQueryRpc,
+  WsProjectCodeFileHistoryRpc,
+).middleware(RpcScopeAuthorization);
+
 export const WsRpcGroup = RpcGroup.make(
+  WsGuestShareCreateRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -1991,6 +2164,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsCloudInstallRelayClientRpc,
   WsPullRequestsListRpc,
   WsPullRequestsListStatsRpc,
+  WsPullRequestsFilterOptionsRpc,
   WsPullRequestsSummaryRpc,
   WsPullRequestsRoutingRpc,
   WsPullRequestsRoutingIdentityRpc,
@@ -2106,6 +2280,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
   WsCrossEnvironmentBridgeSubscribeRpc,
+  WsCrossEnvironmentBridgeClaimRpc,
   WsCrossEnvironmentBridgeFulfillRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
@@ -2117,10 +2292,17 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SearchThreadRpc,
   WsOrchestrationV2SearchThreadStreamRpc,
   WsOrchestrationV2GetArchivedShellSnapshotRpc,
+  WsOrchestrationV2GetThreadFamilyRpc,
+  WsOrchestrationV2GetWorktreeThreadIdsRpc,
   WsOrchestrationV2GetThreadProjectionRpc,
   WsOrchestrationV2LaunchThreadRpc,
   WsOrchestrationV2SubscribeArchivedShellRpc,
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,
   WsOrchestrationV2SubscribeCommandOutputRpc,
-).middleware(RpcScopeAuthorization);
+)
+  .middleware(RpcScopeAuthorization)
+  .merge(WsProjectKnowledgeRpcGroup)
+  .merge(WsConversationSummariesRpcGroup)
+  .merge(WsProjectLoomRpcGroup)
+  .merge(WsProjectCodeRpcGroup);

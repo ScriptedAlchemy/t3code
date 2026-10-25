@@ -11,6 +11,7 @@ import {
   type OrchestrationProjectShell,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -73,6 +74,7 @@ const makeCallerSupervisor = Effect.fn("TestCrossEnvironmentBridge.makeCallerSup
   function* (input: {
     readonly asks: Queue.Queue<CrossEnvironmentAsk>;
     readonly fulfillments: Queue.Queue<CrossEnvironmentFulfillment>;
+    readonly canClaim?: boolean;
   }) {
     const target = new PrimaryConnectionTarget({
       environmentId: callerId,
@@ -82,6 +84,7 @@ const makeCallerSupervisor = Effect.fn("TestCrossEnvironmentBridge.makeCallerSup
     });
     const client = {
       [WS_METHODS.crossEnvironmentBridgeSubscribe]: () => Stream.fromQueue(input.asks),
+      [WS_METHODS.crossEnvironmentBridgeClaim]: () => Effect.succeed(input.canClaim ?? true),
       [WS_METHODS.crossEnvironmentBridgeFulfill]: (body: CrossEnvironmentFulfillment) =>
         Queue.offer(input.fulfillments, body).pipe(Effect.asVoid),
     } as unknown as WsRpcProtocolClient;
@@ -116,7 +119,7 @@ const makeCallerSupervisor = Effect.fn("TestCrossEnvironmentBridge.makeCallerSup
   },
 );
 
-const fulfill = (destShells: readonly OrchestrationProjectShell[]) =>
+const fulfill = (destShells: readonly OrchestrationProjectShell[], canClaim = true) =>
   Effect.gen(function* () {
     const harness = yield* makePlacementRegistry([
       { id: callerId, label: "Caller" },
@@ -124,7 +127,7 @@ const fulfill = (destShells: readonly OrchestrationProjectShell[]) =>
     ]);
     const asks = yield* Queue.unbounded<CrossEnvironmentAsk>();
     const fulfillments = yield* Queue.unbounded<CrossEnvironmentFulfillment>();
-    const caller = yield* makeCallerSupervisor({ asks, fulfillments });
+    const caller = yield* makeCallerSupervisor({ asks, fulfillments, canClaim });
     const fulfillment = yield* Effect.gen(function* () {
       const catalog = yield* EnvironmentProjectCatalog.EnvironmentProjectCatalog;
       yield* catalog.replace(callerId, [sourceShell]);
@@ -148,6 +151,64 @@ const fulfill = (destShells: readonly OrchestrationProjectShell[]) =>
   });
 
 describe("cross-environment bridge client", () => {
+  it.effect("drops a buffered launch when its source request expired before dispatch", () =>
+    Effect.gen(function* () {
+      const { fulfillment, launches } = yield* fulfill([matchedDest], false);
+      expect(fulfillment).toMatchObject({
+        requestId: launchAsk.requestId,
+        error: {
+          _tag: "CrossEnvironmentLaunchUncertain",
+          environmentId: destId,
+          threadId: launchAsk.threadId,
+        },
+      });
+      expect(launches).toEqual([]);
+    }),
+  );
+
+  it.effect("answers catalog requests while another launch is waiting on its destination", () =>
+    Effect.gen(function* () {
+      const harness = yield* makePlacementRegistry([{ id: callerId, label: "Caller" }]);
+      const asks = yield* Queue.unbounded<CrossEnvironmentAsk>();
+      const fulfillments = yield* Queue.unbounded<CrossEnvironmentFulfillment>();
+      const launchStarted = yield* Deferred.make<void>();
+      const caller = yield* makeCallerSupervisor({ asks, fulfillments });
+      const fulfillment = yield* Effect.gen(function* () {
+        const catalog = yield* EnvironmentProjectCatalog.EnvironmentProjectCatalog;
+        yield* catalog.replace(callerId, [sourceShell]);
+        yield* runCrossEnvironmentBridgeClient().pipe(Effect.forkScoped);
+        yield* Queue.offer(asks, launchAsk);
+        yield* Deferred.await(launchStarted);
+        yield* Queue.offer(asks, {
+          requestId: "catalog-during-launch",
+          op: "list",
+          callerEnvironmentId: callerId,
+          sourceProjectId,
+        });
+        return yield* Queue.take(fulfillments);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            EnvironmentProjectCatalog.layer,
+            Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, harness.registry),
+            Layer.succeed(EnvironmentSupervisor.EnvironmentSupervisor, caller),
+            Layer.succeed(RpcPermissionGuard, { authorize: () => Effect.void }),
+            Layer.succeed(CrossEnvironmentPlacement.CrossEnvironmentPlacement, {
+              list: () => Effect.succeed({ callerEnvironmentId: callerId, environments: [] }),
+              launch: () =>
+                Deferred.succeed(launchStarted, undefined).pipe(Effect.andThen(Effect.never)),
+            }),
+          ),
+        ),
+      );
+      expect(fulfillment).toEqual({
+        requestId: "catalog-during-launch",
+        op: "list",
+        result: { callerEnvironmentId: callerId, environments: [] },
+      });
+    }),
+  );
+
   it.effect("fulfills a launch with the destination thread and root workspace", () =>
     Effect.gen(function* () {
       const { fulfillment, launches } = yield* fulfill([matchedDest]);

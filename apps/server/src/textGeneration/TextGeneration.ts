@@ -11,6 +11,10 @@ import * as SourceControlProviderRegistry from "../sourceControl/SourceControlPr
 import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
 
 export type {
+  ConversationSummaryGenerationInput,
+  ConversationSummaryGenerationResult,
+  KnowledgeCandidatesGenerationInput,
+  KnowledgeCandidatesGenerationResult,
   BranchNameGenerationInput,
   BranchNameGenerationResult,
   CommitMessageGenerationInput,
@@ -32,7 +36,9 @@ type TextGenerationOp =
   | "generatePrContent"
   | "generateBranchName"
   | "generateThreadTitle"
-  | "generateReviewGuide";
+  | "generateReviewGuide"
+  | "generateKnowledgeCandidates"
+  | "generateConversationSummary";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -52,7 +58,7 @@ const resolveInstance = (
     ),
   );
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const sourceControl = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
@@ -73,6 +79,18 @@ export const make = Effect.gen(function* () {
       resolveInstance(registry, "generateReviewGuide", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateReviewGuide(input)),
       ),
+    generateKnowledgeCandidates: (input) =>
+      resolveInstance(
+        registry,
+        "generateKnowledgeCandidates",
+        input.modelSelection.instanceId,
+      ).pipe(Effect.flatMap((textGeneration) => textGeneration.generateKnowledgeCandidates(input))),
+    generateConversationSummary: (input) =>
+      resolveInstance(
+        registry,
+        "generateConversationSummary",
+        input.modelSelection.instanceId,
+      ).pipe(Effect.flatMap((textGeneration) => textGeneration.generateConversationSummary(input))),
     generateThreadTitle: (input) =>
       resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) =>

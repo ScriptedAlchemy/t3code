@@ -281,7 +281,7 @@ it.live("signs in with a pairing code and issues a token only /mcp accepts", () 
         access_token: string;
         scope: string;
       };
-      expect(token.scope).toBe("orchestration:read orchestration:operate");
+      expect(token.scope).toBe("orchestration:read orchestration:operate filesystem:read");
 
       expect((yield* exchange(verifier)).status).toBe(400);
 
@@ -449,7 +449,9 @@ it.live(
         });
         expect(operatorFull.status).toBe(400);
 
-        const readOnlyCode = yield* auth.issuePairingCredential({ scopes: ["orchestration:read"] });
+        const readOnlyCode = yield* auth.issuePairingCredential({
+          scopes: ["orchestration:read", "filesystem:read"],
+        });
         const readOnlyApproval = yield* decide(handler, params, {
           _tag: "pairing-code",
           access: "read-only",
@@ -469,13 +471,13 @@ it.live(
             }),
           ),
         ).pipe(Effect.flatMap(json<{ access_token: string; scope: string }>));
-        expect(readOnlyToken.scope).toBe("orchestration:read");
+        expect(readOnlyToken.scope).toBe("orchestration:read filesystem:read");
         const readOnlyClient = yield* auth.authenticateMcpClient(
           HttpServerRequest.fromWeb(
             at("/mcp", { headers: { authorization: `Bearer ${readOnlyToken.access_token}` } }),
           ),
         );
-        expect(readOnlyClient.access).toBe("read-only");
+        expect(readOnlyClient).toMatchObject({ access: "read-only", filesystemRead: true });
       }),
     ),
 );
@@ -531,7 +533,11 @@ it.live("one-click approves only access the browser session holds the scopes for
       expect(forged.status).toBe(400);
       expect(forged.message).toContain("Enter a pairing code instead");
 
-      const reader = yield* browserCookie(["access:write", "orchestration:read"]);
+      const reader = yield* browserCookie([
+        "access:write",
+        "orchestration:read",
+        "filesystem:read",
+      ]);
       const readerDetails = yield* details(reader);
       expect(readerDetails.csrfToken).toEqual(expect.any(String));
       expect(readerDetails.oneClickAccess).toEqual(["read-only"]);

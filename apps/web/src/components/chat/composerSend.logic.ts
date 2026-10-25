@@ -1,5 +1,24 @@
-import type { EnvironmentId, ThreadContextRecord } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProjectId,
+  ProjectKnowledgeContextRecord,
+  ThreadContextRecord,
+} from "@t3tools/contracts";
 import { collectInlineContextIds } from "../../lib/composerContextReferences";
+
+export function knowledgeContextSendBlock(input: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly knowledgeContexts: ReadonlyArray<ProjectKnowledgeContextRecord>;
+}): string | null {
+  return input.knowledgeContexts.some(
+    (record) =>
+      record.knowledge.environmentId !== input.environmentId ||
+      record.knowledge.projectId !== input.projectId,
+  )
+    ? "Attached project memory belongs to another machine or project. Remove it, then attach memory from the current project before sending."
+    : null;
+}
 
 /** Attached threads the prompt still links to; replacing linked text leaves stale records. */
 export function referencedThreadContexts(draft: {

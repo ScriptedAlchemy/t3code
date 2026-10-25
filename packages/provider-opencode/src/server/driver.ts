@@ -75,11 +75,7 @@ function isOpenCodeNativeCommandPath(commandPath: string): boolean {
   );
 }
 
-/**
- * OpenCode 1.x ships as `opencode-ai` and 2.x as `@opencode/cli`. An install is
- * only ever updated within its own package: T3 never moves a 1.x install onto
- * 2.x or back, since 2.x converts the shared database in place.
- */
+/** Update only within the installed package generation; 2.x converts the shared database in place. */
 export const openCodeUpdateFor = (generation: ProbedOpenCode["generation"]) =>
   makePackageManagedProviderMaintenanceResolver({
     provider: DRIVER_KIND,
@@ -104,11 +100,7 @@ function byOpenCodeRuntime<A, E, R, PE>(
   );
 }
 
-/**
- * Capability and selection reads are hot, so they use the last successful probe (1.x before one
- * lands) and never wait on a slow server. Opening a session waits for a probe, so each server is
- * spoken to in its own protocol.
- */
+// Hot reads use the last successful probe; session opens await it to select the correct protocol.
 function selectOpenCodeRuntimeAdapter(input: {
   readonly probe: OpenCodeRuntimeProbe;
   readonly v1: ProviderAdapter.ProviderAdapterV2["Service"];
@@ -158,6 +150,16 @@ function selectOpenCodeRuntimeTextGeneration(
       byOpenCodeRuntime(probe.get, {
         v1: v1.generateReviewGuide(input),
         v2: v2.generateReviewGuide(input),
+      }),
+    generateKnowledgeCandidates: (input) =>
+      byOpenCodeRuntime(probe.get, {
+        v1: v1.generateKnowledgeCandidates(input),
+        v2: v2.generateKnowledgeCandidates(input),
+      }),
+    generateConversationSummary: (input) =>
+      byOpenCodeRuntime(probe.get, {
+        v1: v1.generateConversationSummary(input),
+        v2: v2.generateConversationSummary(input),
       }),
   };
 }
@@ -350,6 +352,9 @@ export const OpenCodeDriver: ProviderDriver<
           host.paths.cwd,
           runtimeProbe.refresh,
           loadOpenCode2Models,
+        ).pipe(
+          Effect.annotateLogs({ providerInstanceId: instanceId }),
+          Effect.annotateSpans({ providerInstanceId: instanceId }),
         ),
         usageLimits: readOpenCodeGoUsageLimits({
           enabled: effectiveConfig.enabled,
@@ -440,7 +445,13 @@ export const OpenCodeDriver: ProviderDriver<
       streamSettings: snapshotSettings.streamSettings,
       haveSettingsChanged: haveProviderSnapshotSettingsChanged,
       checkProviderOnSettingsChange: () => false,
-      refreshOnInterval: false,
+      // A failed or still-loading catalog must recover without a manual
+      // refresh. Healthy instances need no recurring server starts.
+      refreshOnInterval: (snapshot) =>
+        snapshot.enabled &&
+        snapshot.installed &&
+        snapshot.status !== "ready" &&
+        snapshot.auth.status === "unknown",
       initialSnapshot: (settings) =>
         makePendingOpenCodeProvider(settings.provider).pipe(Effect.map(stampIdentity)),
       checkProvider,

@@ -13,6 +13,7 @@ const { Children, mocks } = vi.hoisted(() => ({
     alert: vi.fn(),
     targets: [] as ReturnType<typeof environment>[],
     projectSelected: false,
+    projectEnvironmentIds: null as string[] | null,
   },
 }));
 
@@ -84,22 +85,27 @@ vi.mock("./components/SettingsSwitchRow", () => ({
   SettingsSwitchRow: ({
     label,
     value,
+    subtitle,
     disabled,
     onValueChange,
   }: {
     label: string;
     value: boolean | null;
+    subtitle?: string;
     disabled?: boolean;
     onValueChange: (value: boolean) => void;
   }) => (
-    <button
-      role="switch"
-      aria-checked={value ?? "mixed"}
-      disabled={disabled}
-      onClick={() => onValueChange(!value)}
-    >
-      {label}
-    </button>
+    <>
+      <p>{subtitle}</p>
+      <button
+        role="switch"
+        aria-checked={value ?? "mixed"}
+        disabled={disabled}
+        onClick={() => onValueChange(!value)}
+      >
+        {label}
+      </button>
+    </>
   ),
 }));
 vi.mock("./components/SettingsRow", () => ({ SettingsRow: () => null }));
@@ -116,18 +122,27 @@ vi.mock("./settings-environment-filter", () => ({
       {
         key: "project",
         label: "Project",
-        members: mocks.targets.map((target) => ({
-          project: { environmentId: target.environmentId, id: "project" },
-        })),
+        members: mocks.targets
+          .filter(
+            (target) =>
+              mocks.projectEnvironmentIds === null ||
+              mocks.projectEnvironmentIds.includes(target.environmentId),
+          )
+          .map((target) => ({
+            project: { environmentId: target.environmentId, id: "project" },
+          })),
       },
     ],
     selectedProjectKey: mocks.projectSelected ? "project" : null,
   }),
 }));
 
-import { SettingsEnvironmentSourceControlRouteScreen } from "./SettingsServerControlsRouteScreen";
+import {
+  SettingsEnvironmentAgentBehaviorRouteScreen,
+  SettingsEnvironmentSourceControlRouteScreen,
+} from "./SettingsServerControlsRouteScreen";
 
-function environment(environmentId: string, label: string) {
+function environment(environmentId: string, label: string, assistedLearning?: boolean) {
   return {
     environmentId,
     label,
@@ -139,7 +154,12 @@ function environment(environmentId: string, label: string) {
         sidebarAutoSettleOnMerge: false,
       },
       environment: {
-        capabilities: { projectSettingsOverrides: true, threadAutoSettlement: true },
+        capabilities: {
+          projectSettingsOverrides: true,
+          threadAutoSettlement: true,
+          projectKnowledge: true,
+          projectKnowledgeAssistedLearning: assistedLearning,
+        },
       },
     },
   };
@@ -154,6 +174,7 @@ beforeEach(() => {
   root = createRoot(container);
   mocks.targets = [environment("local", "Local")];
   mocks.projectSelected = false;
+  mocks.projectEnvironmentIds = null;
   mocks.alert.mockReset();
   mocks.updateSettings.mockReset();
   mocks.updateSettings.mockResolvedValue(AsyncResult.success(undefined));
@@ -164,13 +185,65 @@ afterEach(() => {
 });
 
 describe("SettingsServerControlsRouteScreen", () => {
+  it.each([undefined, false])(
+    "blocks assisted learning when the targeted server capability is %s",
+    (capability) => {
+      mocks.targets = [environment("old", "Old server", capability)];
+      act(() => root.render(<SettingsEnvironmentAgentBehaviorRouteScreen />));
+      const toggle = Array.from(
+        container.querySelectorAll<HTMLButtonElement>('[role="switch"]'),
+      ).find((button) => button.textContent === "Suggest facts from finished runs")!;
+
+      act(() => toggle.click());
+
+      expect(toggle.disabled).toBe(true);
+      expect(mocks.updateSettings).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Assisted learning is not supported on Old server.");
+    },
+  );
+
+  it("blocks assisted learning and explains mixed environment support for a grouped project", () => {
+    mocks.targets = [environment("new", "New server", true), environment("old", "Old server")];
+    mocks.projectSelected = true;
+    act(() => root.render(<SettingsEnvironmentAgentBehaviorRouteScreen />));
+    const toggle = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="switch"]'),
+    ).find((button) => button.textContent === "Suggest facts from finished runs")!;
+
+    act(() => toggle.click());
+
+    expect(toggle.disabled).toBe(true);
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(
+      "Assisted learning is supported on only some selected environments.",
+    );
+    expect(container.textContent).toContain("Old server");
+  });
+
+  it("enables assisted learning for a supported project without targeting unrelated older environments", async () => {
+    mocks.targets = [environment("new", "New server", true), environment("old", "Old server")];
+    mocks.projectSelected = true;
+    mocks.projectEnvironmentIds = ["new"];
+    act(() => root.render(<SettingsEnvironmentAgentBehaviorRouteScreen />));
+    const toggle = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="switch"]'),
+    ).find((button) => button.textContent === "Suggest facts from finished runs")!;
+
+    await act(async () => toggle.click());
+
+    expect(toggle.disabled).toBe(false);
+    expect(mocks.updateSettings).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "new",
+      input: { patch: { projectSettingsOverrides: { project: { enableAssistedLearning: true } } } },
+    });
+  });
+
   it("sends a draft saved during a pending write once that write settles", async () => {
     const pending = Promise.withResolvers<AsyncResult.Success<void>>();
     mocks.updateSettings.mockReturnValueOnce(pending.promise);
     act(() => root.render(<SettingsEnvironmentSourceControlRouteScreen />));
 
     act(() => mocks.branchNaming.onChange({ branchNamingMode: "custom" }));
-    // The branch naming view closes with a draft while the mode write is pending.
     act(() => mocks.branchNaming.onChange({ branchNameInstructions: "Use issue IDs." }));
     expect(mocks.updateSettings).toHaveBeenCalledOnce();
 

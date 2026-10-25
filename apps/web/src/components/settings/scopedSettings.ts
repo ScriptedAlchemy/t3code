@@ -35,7 +35,10 @@ interface ScopedSettingsEnvironment {
   readonly serverConfig: {
     readonly settings: ServerSettings;
     readonly environment?: {
-      readonly capabilities: { readonly projectSettingsOverrides?: boolean | undefined };
+      readonly capabilities: {
+        readonly projectSettingsOverrides?: boolean | undefined;
+        readonly projectKnowledgeAssistedLearning?: boolean | undefined;
+      };
     };
   } | null;
 }
@@ -141,6 +144,20 @@ export function scopedSettingsAreMixed(
   );
 }
 
+export function scopedAssistedLearningUnavailableReason(
+  environments: readonly Pick<ScopedSettingsEnvironment, "label" | "serverConfig">[],
+): string | null {
+  const unsupported = environments.filter(
+    (environment) =>
+      environment.serverConfig?.environment?.capabilities.projectKnowledgeAssistedLearning !== true,
+  );
+  if (unsupported.length === 0) return null;
+  const labels = unsupported.map((environment) => environment.label).join(", ");
+  return unsupported.length < environments.length
+    ? `Assisted learning is supported on only some selected environments. Update T3 Code on ${labels}, or select a supported environment.`
+    : `Assisted learning is not supported on ${labels}. Update T3 Code on ${unsupported.length === 1 ? "that environment" : "those environments"}.`;
+}
+
 /**
  * Servers store the idle compaction mode differently by version, so selected
  * environments are compared by the mode each resolves to, and "Never" is offered
@@ -241,6 +258,24 @@ export function planScopedSettingsPatch(
   const unscopableKeys = isProjectScope
     ? serverKeys.filter((key) => !isProjectScopedSettingKey(key))
     : [];
+  if (serverPatch.enableAssistedLearning !== undefined) {
+    const targetIds = new Set(
+      resolveScopedSettingsTargets(scope, connectedEnvironments).map(
+        (target) => target.environmentId,
+      ),
+    );
+    const unavailableReason = scopedAssistedLearningUnavailableReason(
+      connectedEnvironments.filter((environment) => targetIds.has(environment.environmentId)),
+    );
+    if (unavailableReason !== null) {
+      return {
+        clientPatch,
+        hasClientWrite: Object.keys(clientPatch).length > 0,
+        serverWrites: [],
+        unavailableReason,
+      };
+    }
+  }
   const serverWrites: ScopedServerWrite[] =
     serverKeys.length === 0
       ? []
@@ -248,9 +283,8 @@ export function planScopedSettingsPatch(
         ? unscopableKeys.length > 0
           ? []
           : projectOverrideWrites(scope, environments, (current, settings, projectId) => {
-              // Object-valued keys arrive as partial patches (the writing style
-              // rows send one field); an override entry stores the whole value,
-              // so complete the patch from the target's effective value.
+              // Override entries store whole objects; complete partial patches from each target's effective
+              // value.
               const effective = resolveProjectSettings(settings, projectId).settings;
               const next: Record<string, unknown> = { ...current };
               for (const [key, value] of Object.entries<unknown>(serverPatch)) {
@@ -264,8 +298,7 @@ export function planScopedSettingsPatch(
                   };
                   continue;
                 }
-                // A picker's "Inherit" sends null; for keys whose override
-                // cannot store null that means remove the override.
+                // Inherit sends null; remove overrides whose keys cannot store null.
                 if (
                   value === null &&
                   !isNullableProjectSettingsOverride(key as ProjectScopedServerSettingKey)
@@ -437,10 +470,7 @@ function writeWasDropped(value: unknown, before: unknown, saved: unknown): boole
   return !unchanged && Equal.equals(saved, before);
 }
 
-/**
- * An older server drops keys it does not know, top-level or nested, and still
- * succeeds. Left unreported, the row stays mixed forever.
- */
+/** Older servers silently drop unknown keys; report them so rows cannot stay mixed forever. */
 function droppedSettingKeys(write: ScopedServerWrite, saved: ServerSettings | undefined) {
   if (saved === undefined) return [];
   return Object.entries(write.patch).flatMap(([key, value]) =>

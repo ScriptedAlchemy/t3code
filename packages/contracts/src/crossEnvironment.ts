@@ -146,7 +146,7 @@ export class PeerCatalogUnavailable extends Schema.TaggedError<PeerCatalogUnavai
   {},
 ) {
   override get message(): string {
-    return "No client is connected to report peer environments.";
+    return "No connected client could report peer environments.";
   }
 }
 
@@ -170,6 +170,18 @@ export class CrossEnvironmentLaunchRejected extends Schema.TaggedError<CrossEnvi
   }
 }
 
+export class CrossEnvironmentLaunchUncertain extends Schema.TaggedError<CrossEnvironmentLaunchUncertain>()(
+  "CrossEnvironmentLaunchUncertain",
+  {
+    threadId: ThreadId,
+    environmentId: Schema.NullOr(EnvironmentId),
+  },
+) {
+  override get message(): string {
+    return `The launch of thread ${this.threadId} was not confirmed. It may already have started; locate it on the destination before retrying and pin any retry to that environment.`;
+  }
+}
+
 export const CrossEnvironmentFailure = Schema.Union([
   UnknownEnvironment,
   EnvironmentNotConnected,
@@ -181,6 +193,7 @@ export const CrossEnvironmentFailure = Schema.Union([
   PeerCatalogUnavailable,
   TargetModelUnavailable,
   CrossEnvironmentLaunchRejected,
+  CrossEnvironmentLaunchUncertain,
 ]);
 export type CrossEnvironmentFailure = typeof CrossEnvironmentFailure.Type;
 
@@ -266,6 +279,12 @@ export const CrossEnvironmentAsk = Schema.Union([
   CrossEnvironmentLaunchAsk,
 ]);
 export type CrossEnvironmentAsk = typeof CrossEnvironmentAsk.Type;
+
+export const CrossEnvironmentClaim = Schema.Struct({
+  requestId: Schema.String,
+  environmentId: EnvironmentId,
+});
+export type CrossEnvironmentClaim = typeof CrossEnvironmentClaim.Type;
 
 export const CrossEnvironmentFulfillment = Schema.Union([
   Schema.Struct({

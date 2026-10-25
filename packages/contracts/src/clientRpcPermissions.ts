@@ -1,7 +1,9 @@
 import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
 import {
+  AuthAccessWriteScope,
   AuthOrchestrationOperateScope,
+  AuthFilesystemReadScope,
   AuthProvidersManageScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -14,6 +16,9 @@ import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
+  [WS_METHODS.projectCodeQuery]: AuthFilesystemReadScope,
+  [WS_METHODS.projectCodeFileHistory]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectKnowledgeMutate]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,
   [WS_METHODS.serverCheckOtlpEndpoint]: AuthSettingsWriteScope,
@@ -57,8 +62,11 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.scheduledTasksRunNow]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksRotateWebhookToken]: AuthOrchestrationOperateScope,
   [WS_METHODS.crossEnvironmentBridgeSubscribe]: AuthOrchestrationOperateScope,
+  [WS_METHODS.crossEnvironmentBridgeClaim]: AuthOrchestrationOperateScope,
   [WS_METHODS.crossEnvironmentBridgeFulfill]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
+  // A guest link hands thread access to someone outside, like a pairing link.
+  [WS_METHODS.guestShareCreate]: AuthAccessWriteScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 

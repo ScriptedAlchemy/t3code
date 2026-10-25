@@ -1,3 +1,5 @@
+import { ProjectKnowledgeContextChip } from "./projectKnowledge/ProjectKnowledgeContextChip";
+import type { ProjectKnowledgeContextRecord } from "@t3tools/contracts";
 import ChatMarkdown from "./ChatMarkdown";
 import { ReadOnlySourcePreview } from "./files/AttachmentFilePreview";
 import type { PreviewAnnotationPayload, ThreadContextRecord } from "@t3tools/contracts";
@@ -58,7 +60,8 @@ export type ComposerDraftContextRecord =
     }
   | { kind: "image"; record: ComposerImageAttachment; upload?: AttachmentUploadState | undefined }
   | { kind: "file"; record: ComposerFileAttachment; upload?: AttachmentUploadState | undefined }
-  | { kind: "thread"; record: ThreadContextRecord };
+  | { kind: "thread"; record: ThreadContextRecord }
+  | { kind: "project-knowledge"; record: ProjectKnowledgeContextRecord };
 
 export interface ComposerContextActions {
   environmentId: EnvironmentId | null;
@@ -97,6 +100,7 @@ export function composerContextRecordsFromDraft(input: {
   reviewComments?: ReadonlyArray<ReviewCommentContext>;
   previewAnnotations?: ReadonlyArray<PreviewAnnotationPayload>;
   threadContexts?: ReadonlyArray<ThreadContextRecord>;
+  knowledgeContexts?: ReadonlyArray<ProjectKnowledgeContextRecord>;
   images?: ReadonlyArray<ComposerImageAttachment>;
   files?: ReadonlyArray<ComposerFileAttachment>;
   uploadsByImageId?: Readonly<Record<string, AttachmentUploadState>>;
@@ -130,6 +134,8 @@ export function composerContextRecordsFromDraft(input: {
       screenshot: imagesById.get(record.id),
     });
   }
+  for (const record of input.knowledgeContexts ?? [])
+    records.set(record.contextId, { kind: "project-knowledge", record });
   for (const record of input.threadContexts ?? []) {
     records.set(record.contextId, { kind: "thread", record });
   }
@@ -353,6 +359,16 @@ const composerContextPresentationRegistry = createContextPresentationRegistry<
 >({
   requiredKinds: ["image", "file", "terminal", "review-comment", "preview-annotation", "thread"],
   handlers: [
+    {
+      kind: "project-knowledge",
+      canRender: (entry) => entry.kind === "project-knowledge",
+      render: (entry, context) =>
+        entry.kind === "project-knowledge" ? (
+          <ProjectKnowledgeContextChip record={entry.record} />
+        ) : (
+          <UnresolvedContextChip label={context.label} />
+        ),
+    },
     {
       kind: "terminal",
       canRender: (entry) => entry.kind === "terminal",

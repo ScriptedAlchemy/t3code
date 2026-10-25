@@ -30,7 +30,8 @@ const accessConfig: Record<
 > = {
   "read-only": {
     label: "Read only",
-    description: "Read projects and threads. Cannot start, message or change anything.",
+    description:
+      "Read source files and code structure in projects, plus project and thread information. Cannot start, message or change anything.",
     icon: EyeIcon,
   },
   ...runtimeModeConfig,
@@ -80,9 +81,7 @@ function readAuthorizationRequest(): AuthMcpAuthorizationRequest {
   return Object.fromEntries(new URL(window.location.href).searchParams);
 }
 
-/**
- * A session may only grant access whose scopes it holds itself.
- */
+/** Sessions can grant only scopes they hold. */
 function oneClickApproves(details: AuthMcpApprovalDetails, access: AuthMcpClientAccess) {
   return details.csrfToken !== undefined && (details.oneClickAccess ?? []).includes(access);
 }

@@ -804,9 +804,6 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       `;
 
       const summary = yield* maintenance.compactEventStore;
-      // Superseded state spans several discovery pages. Both turn-item updates
-      // stay, and so do the first message and node events (replay order). The
-      // rename stays too: visits are read state and only supersede each other.
       assert.isAtLeast(summary.deletedEventCount, 504);
       assert.isAtLeast(summary.deletedReceiptCount, 1);
 
@@ -1988,6 +1985,80 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         yield* outbox.succeed({
           effectId: nextTitle.value.id,
           workerId: "title-lane-worker",
+        });
+      }
+    }),
+  );
+
+  it.effect("runs knowledge extraction on its own lane beside title and critical work", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const commandId = CommandId.make("command:foundation-extract-effect-lane");
+      const threadId = ThreadId.make("thread:foundation-extract-effect-lane");
+      const claim = (workerId: string) =>
+        outbox
+          .claimNext({ workerId, leaseDurationMs: 30_000 })
+          .pipe(Effect.map(Option.map((effect) => effect.id)));
+      yield* outbox.enqueue([
+        {
+          id: "effect:foundation-extract-effect-lane:a-extract",
+          commandId,
+          threadId,
+          request: {
+            type: "project-knowledge.extract",
+            runId: RunId.make("run:foundation-extract-effect-lane:a"),
+            runOutcome: "completed",
+          },
+        },
+        {
+          id: "effect:foundation-extract-effect-lane:b-title",
+          commandId,
+          threadId,
+          request: { type: "thread-title.generate", kind: { type: "regenerate" } },
+        },
+        {
+          id: "effect:foundation-extract-effect-lane:c-critical",
+          commandId,
+          threadId,
+          request: { type: "terminal.cleanup" },
+        },
+        {
+          id: "effect:foundation-extract-effect-lane:d-extract",
+          commandId,
+          threadId,
+          request: {
+            type: "project-knowledge.extract",
+            runId: RunId.make("run:foundation-extract-effect-lane:d"),
+            runOutcome: "failed",
+          },
+        },
+      ]);
+      assert.deepEqual(
+        [yield* claim("w1"), yield* claim("w2"), yield* claim("w3"), yield* claim("w4")],
+        [
+          Option.some("effect:foundation-extract-effect-lane:a-extract"),
+          Option.some("effect:foundation-extract-effect-lane:b-title"),
+          Option.some("effect:foundation-extract-effect-lane:c-critical"),
+          Option.none(),
+        ],
+      );
+      yield* outbox.succeed({
+        effectId: "effect:foundation-extract-effect-lane:a-extract",
+        workerId: "w1",
+      });
+      assert.deepEqual(
+        yield* claim("w1"),
+        Option.some("effect:foundation-extract-effect-lane:d-extract"),
+      );
+      // The suite shares one database; leave nothing running for later tests.
+      for (const [suffix, workerId] of [
+        ["b-title", "w2"],
+        ["c-critical", "w3"],
+        ["d-extract", "w1"],
+      ] as const) {
+        yield* outbox.succeed({
+          effectId: `effect:foundation-extract-effect-lane:${suffix}`,
+          workerId,
         });
       }
     }),
@@ -3217,4 +3288,84 @@ it.effect.each(["events", "receipts"] as const)(
         assert.deepEqual(retained, [{ id: "pending" }]);
       }).pipe(Effect.provide(maintenanceLayer));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("routes projection node lookups to the reader connection", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "projection-reader-" });
+    const database = SqlitePersistence.layerFromPath(path.join(directory, "statev2.sqlite"));
+    const projectionLayer = ProjectionStore.layer.pipe(Layer.provideMerge(database));
+    yield* Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const nodeId = NodeId.make("node:reader-routing");
+      const node = {
+        id: nodeId,
+        threadId: ThreadId.make("thread:reader-routing"),
+        runId: null,
+        parentNodeId: null,
+        rootNodeId: nodeId,
+        kind: "subagent" as const,
+        status: "running" as const,
+        countsForRun: false,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: now,
+        completedAt: null,
+      };
+      const spans: Array<Tracer.Span> = [];
+      const observe: Statement.Transformer = (statement, _sql, _fiber, span) => {
+        const [query] = statement.compile();
+        if (/orchestration_v2_projection_nodes WHERE node_id/.test(query)) {
+          spans.push(span);
+        }
+        return Effect.succeed(statement);
+      };
+      yield* Effect.gen(function* () {
+        assert.isFalse(yield* projections.isNodeStored(node));
+      }).pipe(
+        Effect.provideService(Statement.CurrentTransformer, observe),
+        Effect.provideService(Statement.SpanPropagationEnabled, true),
+      );
+      assert.equal(spans.length, 1);
+      assert.isTrue(
+        spans.every((span) => span.attributes.get("db.connection") === "reader"),
+        JSON.stringify(spans.map((span) => span.attributes.get("db.connection"))),
+      );
+    }).pipe(Effect.provide(projectionLayer));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("loads a shell snapshot while the writer connection is occupied", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "shell-reader-" });
+    const database = SqlitePersistence.layerFromPath(path.join(directory, "statev2.sqlite"));
+    const projectionLayer = ProjectionStore.layer.pipe(Layer.provideMerge(database));
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const writer = yield* sql
+        .withTransaction(
+          sql`SELECT 1`.pipe(
+            Effect.andThen(Deferred.succeed(held, undefined)),
+            Effect.andThen(Deferred.await(release)),
+          ),
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(held);
+      const snapshot = yield* projections.getShellSnapshot();
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(writer);
+      assert.deepEqual(snapshot.threads, []);
+    }).pipe(Effect.provide(projectionLayer));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

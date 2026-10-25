@@ -47,8 +47,9 @@ can approve without a code.
 
 Then choose what the agent may do:
 
-- **Read only** is the default. The agent can read projects and threads and see
-  the available providers and models. It cannot change anything.
+- **Read only** is the default. The agent can read projects, threads, and project
+  code, recall saved facts, and see the available providers and models. It cannot
+  change source files or saved facts.
 - **Supervised** through **Full access** also let it start, message and stop
   threads in every project. A thread it starts or steers cannot run with more
   permissions than the mode you chose.
@@ -91,6 +92,25 @@ Add the environment as a custom MCP app in ChatGPT's apps settings:
 Any agent that supports remote MCP servers over HTTP with OAuth can connect. Give
 it the MCP URL and choose OAuth, and the agent finds the sign-in settings itself.
 Agents without OAuth support cannot connect.
+
+## Project memory and code navigation
+
+Connected agents can search a project's conversations and recall saved facts.
+With permission to make changes, they can record observations for later work.
+An observation keeps the agent's identity
+and remains marked as proposed until you confirm it. Use **Project memory** in
+T3 Code to inspect, edit, or forget these facts.
+
+Agents can also query symbols, callers, references, dependencies, and likely
+change impact in a registered project's codebase. Selecting a thread uses that
+thread's worktree. The environment reads the files on its own machine, so the
+same tools work when you connect remotely.
+
+Code navigation requires filesystem read access. An existing agent sign-in
+without that permission must be authorized again to use it. Graph results report
+language coverage and unresolved relationships. Static relationships are leads
+to inspect in source, and do not prove every possible runtime call. The first
+query builds a local index; later queries update it for source changes.
 
 ## Scripts on the host
 

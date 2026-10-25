@@ -3,6 +3,7 @@ import {
   WS_METHODS,
   type CrossEnvironmentAsk,
   type CrossEnvironmentFulfillment,
+  type EnvironmentId,
   type OrchestrationProjectShell,
   type ProjectId,
 } from "@t3tools/contracts";
@@ -13,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as EnvironmentRegistry from "../connection/registry.ts";
+import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { requestGuarded, subscribe } from "../rpc/client.ts";
 import * as EnvironmentProjectCatalog from "./catalog.ts";
@@ -51,6 +53,22 @@ const respond = Effect.fn("CrossEnvironmentBridgeClient.respond")(function* (
       if (source === null) {
         return yield* new SourceIdentityUnresolved({ projectId: ask.sourceProjectId });
       }
+      const caller = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+      const claim = Effect.fn("CrossEnvironmentBridgeClient.claim")(
+        (environmentId: EnvironmentId) =>
+          requestGuarded(WS_METHODS.crossEnvironmentBridgeClaim, {
+            requestId: ask.requestId,
+            environmentId,
+          }).pipe(
+            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, caller),
+            Effect.timeout("5 seconds"),
+            Effect.catch((error) =>
+              Effect.logWarning("Could not claim a cross-environment launch.", {
+                ...safeErrorLogAttributes(error),
+              }).pipe(Effect.as(false)),
+            ),
+          ),
+      );
       const result = yield* placement.launch({
         callerEnvironmentId: ask.callerEnvironmentId,
         source,
@@ -62,6 +80,7 @@ const respond = Effect.fn("CrossEnvironmentBridgeClient.respond")(function* (
         ...(ask.message === undefined ? {} : { message: ask.message }),
         runtimeMode: ask.runtimeMode,
         interactionMode: ask.interactionMode,
+        claim,
       });
       return { requestId: ask.requestId, op: "launch" as const, result };
     }
@@ -110,7 +129,8 @@ export const runCrossEnvironmentBridgeClient = Effect.fn("CrossEnvironmentBridge
       return;
     }
     yield* subscribe(WS_METHODS.crossEnvironmentBridgeSubscribe, {}).pipe(
-      Stream.runForEach((ask) => answer(ask)),
+      Stream.mapEffect((ask) => answer(ask), { concurrency: 8, unordered: true }),
+      Stream.runDrain,
       Effect.catchCause((cause) =>
         Effect.logWarning("The cross-environment bridge subscription ended.", { cause }),
       ),

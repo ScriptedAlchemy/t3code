@@ -29,7 +29,7 @@
     "check:changed": "node scripts/check-changed.ts",
     "lint": "vp lint --report-unused-disable-directives",
     "knip": "knip --preprocessor ./scripts/knip-schemas.ts",
-    "knip:check": "knip --include files,dependencies --no-config-hints && knip --workspace apps/server --workspace apps/desktop --workspace apps/web --workspace packages/client-runtime --workspace packages/contracts --workspace packages/effect-acp --workspace packages/effect-codex-app-server --workspace packages/shared --workspace packages/ssh --workspace packages/tailscale --workspace packages/provider-core --workspace packages/provider-acp --workspace packages/provider-acp-registry --workspace packages/provider-testing --workspace packages/provider-pi --workspace packages/provider-muse --workspace packages/provider-opencode --workspace packages/provider-cursor --workspace packages/provider-grok --workspace packages/source-control-core --workspace packages/source-control-azure-devops --workspace packages/source-control-bitbucket --workspace packages/source-control-forgejo --workspace packages/source-control-gitcafe --workspace packages/source-control-github --workspace packages/source-control-gitlab --workspace packages/source-control-testing --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
+    "knip:check": "knip --include files,dependencies --no-config-hints && knip --workspace apps/server --workspace apps/desktop --workspace apps/web --workspace packages/client-runtime --workspace packages/contracts --workspace packages/effect-acp --workspace packages/effect-codex-app-server --workspace packages/shared --workspace packages/ssh --workspace packages/tailscale --workspace packages/provider-core --workspace packages/provider-acp --workspace packages/provider-acp-registry --workspace packages/provider-testing --workspace packages/provider-pi --workspace packages/provider-muse --workspace packages/provider-opencode --workspace packages/provider-cursor --workspace packages/provider-grok --workspace packages/source-control-core --workspace packages/source-control-definitions --workspace packages/source-control-azure-devops --workspace packages/source-control-bitbucket --workspace packages/source-control-forgejo --workspace packages/source-control-gitcafe --workspace packages/source-control-github --workspace packages/source-control-gitlab --workspace packages/source-control-testing --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
     "knip:production": "knip --production --preprocessor ./scripts/knip-schemas.ts",
     "lint:mobile": "node scripts/mobile-native-static-check.ts",
     "test": "vp run -r test",
@@ -49,7 +49,9 @@
     "dist:desktop:win:x64": "node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64",
     "release:smoke": "node scripts/release-smoke.ts",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules apps/*/dist apps/*/dist-electron packages/*/dist .vite-plus apps/*/.vite-plus packages/*/.vite-plus",
-    "sync:repos": "node scripts/sync-reference-repos.ts"
+    "sync:repos": "node scripts/sync-reference-repos.ts",
+    "build:project-memory": "node native/project-memory/build.mjs",
+    "test:project-memory": "cargo test --locked --manifest-path native/project-memory/Cargo.toml && node native/project-memory/build.mjs && node --test native/project-memory/kernel.test.mjs"
   },
   "devDependencies": {
     "@coderabbitai/config": "1.1.0",

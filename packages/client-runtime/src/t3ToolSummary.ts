@@ -176,6 +176,9 @@ export function summarizeT3ToolCalls(
     case "task-status":
       label = phrase("Checked", "check", `task status ${times}`);
       break;
+    case "background-wait":
+      label = phrase("Updated", "update", `background waits ${times}`);
+      break;
     case "task-cancel":
       label = phrase(
         "Requested cancellation of",
@@ -326,6 +329,9 @@ export function summarizeT3ToolCalls(
         "clone",
         quantity(countEntities(entityIds("cwd")), "repository", "repositories"),
       );
+      break;
+    case "project-code-query":
+      label = phrase("Queried", "query", `project code ${times}`);
       break;
     case "environment-read":
       label = phrase("Checked", "check", `environment preferences ${times}`);

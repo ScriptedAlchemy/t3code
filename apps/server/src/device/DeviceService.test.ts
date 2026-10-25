@@ -1019,7 +1019,6 @@ it.effect("reconciles SSH host settings without publishing no-op changes", () =>
         HttpClient.HttpClient,
         HttpClient.make(() => Effect.die("Unexpected HTTP request")),
       ),
-      // `ssh -G` resolves the target to a non-local address.
       Effect.provideService(
         ChildProcessSpawner.ChildProcessSpawner,
         ChildProcessSpawner.make(() =>

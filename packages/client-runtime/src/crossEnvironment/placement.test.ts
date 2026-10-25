@@ -69,6 +69,46 @@ const placed = <A, E>(
   );
 
 describe("CrossEnvironmentPlacement", () => {
+  it.effect("reports the destination and thread when a launch acknowledgement is lost", () =>
+    Effect.gen(function* () {
+      const harness = yield* makePlacementRegistry([
+        { id: callerId, label: "Caller" },
+        { id: destId, label: "Dest", launchError: new Error("socket closed after dispatch") },
+      ]);
+      const threadId = ThreadId.make("thread-unconfirmed");
+      const error = yield* placed(
+        harness.registry,
+        Effect.gen(function* () {
+          const catalog = yield* EnvironmentProjectCatalog.EnvironmentProjectCatalog;
+          yield* catalog.replace(callerId, [sourceShell]);
+          yield* catalog.replace(destId, [destShell]);
+          const placement = yield* CrossEnvironmentPlacement.CrossEnvironmentPlacement;
+          return yield* placement
+            .launch({
+              callerEnvironmentId: callerId,
+              source: activeSource(),
+              claim: () => Effect.succeed(true),
+              commandId: CommandId.make("command-unconfirmed"),
+              threadId,
+              target: { kind: "environment", environmentId: destId },
+              kind: "run",
+              title: "Ship it",
+              message: "do the thing",
+              runtimeMode: "full-access",
+              interactionMode: "default",
+            })
+            .pipe(Effect.flip);
+        }),
+      );
+      expect(harness.launches).toHaveLength(1);
+      expect(error).toMatchObject({
+        _tag: "CrossEnvironmentLaunchUncertain",
+        environmentId: destId,
+        threadId,
+      });
+    }),
+  );
+
   it.effect("lists the host resources sampled from each connected environment", () =>
     Effect.gen(function* () {
       const harness = yield* makePlacementRegistry([
@@ -130,6 +170,7 @@ describe("CrossEnvironmentPlacement", () => {
             return yield* placement.launch({
               callerEnvironmentId: callerId,
               source: activeSource(),
+              claim: () => Effect.succeed(true),
               commandId,
               threadId,
               target: { kind: "environment", environmentId: destId },
@@ -191,6 +232,7 @@ describe("CrossEnvironmentPlacement", () => {
             .launch({
               callerEnvironmentId: callerId,
               source: activeSource(),
+              claim: () => Effect.succeed(true),
               commandId: CommandId.make("command-missing"),
               threadId: ThreadId.make("thread-missing"),
               target: { kind: "environment", environmentId: destId },
@@ -233,6 +275,7 @@ describe("CrossEnvironmentPlacement", () => {
             .launch({
               callerEnvironmentId: callerId,
               source: activeSource(),
+              claim: () => Effect.succeed(true),
               commandId: CommandId.make("command-model"),
               threadId: ThreadId.make("thread-model"),
               target: { kind: "environment", environmentId: destId },

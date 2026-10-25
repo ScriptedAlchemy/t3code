@@ -32,6 +32,7 @@ function environment(
     loaded?: boolean;
     settings?: Partial<ServerSettings>;
     projectOverrides?: boolean;
+    assistedLearning?: boolean | undefined;
   } = {},
 ) {
   return {
@@ -46,7 +47,11 @@ function environment(
         : {
             settings: { ...DEFAULT_SERVER_SETTINGS, ...options.settings },
             environment: {
-              capabilities: { projectSettingsOverrides: options.projectOverrides !== false },
+              capabilities: {
+                projectSettingsOverrides: options.projectOverrides !== false,
+                projectKnowledge: true,
+                projectKnowledgeAssistedLearning: options.assistedLearning,
+              },
             },
           },
   };
@@ -144,6 +149,52 @@ describe("scoped settings targets", () => {
 });
 
 describe("scoped settings writes", () => {
+  it.each([undefined, false])(
+    "blocks assisted learning when the targeted server capability is %s",
+    (assistedLearning) => {
+      const older = environment("Older", { assistedLearning });
+      const scope = resolveSettingsScope({ machine: older.environmentId }, [], [older]);
+
+      expect(
+        planScopedSettingsPatch(scope, [older], { enableAssistedLearning: true }),
+      ).toMatchObject({
+        serverWrites: [],
+        unavailableReason:
+          "Assisted learning is not supported on Older. Update T3 Code on that environment.",
+      });
+    },
+  );
+
+  it("blocks an assisted-learning write across environments with mixed support", () => {
+    const supported = environment("Laptop", { assistedLearning: true });
+    const older = environment("Server");
+
+    expect(
+      planScopedSettingsPatch(all, [supported, older], { enableAssistedLearning: true }),
+    ).toMatchObject({
+      serverWrites: [],
+      unavailableReason:
+        "Assisted learning is supported on only some selected environments. Update T3 Code on Server, or select a supported environment.",
+    });
+  });
+
+  it("checks assisted-learning support only on the targeted project checkout", () => {
+    const supported = environment("Server", { assistedLearning: true });
+    const older = environment("Laptop");
+
+    expect(
+      planScopedSettingsPatch(checkout, [older, supported], { enableAssistedLearning: true }),
+    ).toMatchObject({
+      serverWrites: [
+        {
+          environmentId: supported.environmentId,
+          patch: { projectSettingsOverrides: { [projectId]: { enableAssistedLearning: true } } },
+        },
+      ],
+      unavailableReason: null,
+    });
+  });
+
   it("edits the effective machine policy without changing other machines' rules", () => {
     const custom = environment("Laptop", {
       settings: {

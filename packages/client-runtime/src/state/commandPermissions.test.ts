@@ -60,6 +60,23 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
+  it.effect("requires the destination orchestration grant to mutate project knowledge", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const mutate = createCommandPermissions(runtime, WS_METHODS.projectKnowledgeMutate);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(mutate.permissionAtom(env))).toBe(true);
+        expect(registry.get(mutate.permissionAtom(other))).toBe(false);
+        yield* mutate.authorize(registry, env);
+        expect((yield* mutate.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+      }),
+    ),
+  );
+
   it.effect("requires the destination preview grant to close a browser tab", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -321,6 +338,11 @@ it.effect("rejects protected unary and streamed RPCs outside a guarded command",
             writes++;
             return { id: ScheduledTaskId.make("task") };
           }),
+        [WS_METHODS.crossEnvironmentBridgeClaim]: () =>
+          Effect.sync(() => {
+            writes++;
+            return true;
+          }),
         [WS_METHODS.gitRunStackedAction]: () =>
           Stream.fromEffect(
             Effect.sync(() => {
@@ -337,6 +359,11 @@ it.effect("rejects protected unary and streamed RPCs outside a guarded command",
       id: ScheduledTaskId.make("task"),
     }).pipe(Effect.provideService(EnvironmentSupervisor, supervisor), Effect.flip);
     expect(unary._tag).toBe("EnvironmentAuthorizationError");
+    const claim = yield* requestGuarded(WS_METHODS.crossEnvironmentBridgeClaim, {
+      requestId: "cross-environment-request",
+      environmentId: other,
+    }).pipe(Effect.provideService(EnvironmentSupervisor, supervisor), Effect.flip);
+    expect(claim._tag).toBe("EnvironmentAuthorizationError");
     const streamed = yield* runStreamGuarded(WS_METHODS.gitRunStackedAction, {
       actionId: "test-action",
       cwd: "/repo",

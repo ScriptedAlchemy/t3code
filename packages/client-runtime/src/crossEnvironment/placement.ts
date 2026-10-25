@@ -1,5 +1,5 @@
 import {
-  CrossEnvironmentLaunchRejected,
+  CrossEnvironmentLaunchUncertain,
   ORCHESTRATION_V2_WS_METHODS,
   SourceIdentityUnresolved,
   TargetModelUnavailable,
@@ -62,6 +62,7 @@ export class CrossEnvironmentPlacement extends Context.Service<
       readonly message?: string;
       readonly runtimeMode: RuntimeMode;
       readonly interactionMode: ProviderInteractionMode;
+      readonly claim: (environmentId: EnvironmentId) => Effect.Effect<boolean>;
     }) => Effect.Effect<CrossEnvironmentLaunchResult, CrossEnvironmentFailure>;
   }
 >()("@t3tools/client-runtime/crossEnvironment/placement/CrossEnvironmentPlacement") {}
@@ -181,6 +182,7 @@ const make = Effect.gen(function* () {
     readonly message?: string;
     readonly runtimeMode: RuntimeMode;
     readonly interactionMode: ProviderInteractionMode;
+    readonly claim: (environmentId: EnvironmentId) => Effect.Effect<boolean>;
   }) {
     if (isSourceIdentityUnresolved(input.source)) {
       return yield* input.source;
@@ -239,15 +241,28 @@ const make = Effect.gen(function* () {
       runtimeMode: input.runtimeMode,
       interactionMode: input.interactionMode,
     });
+    if (!(yield* input.claim(resolved.environmentId))) {
+      return yield* new CrossEnvironmentLaunchUncertain({
+        threadId: input.threadId,
+        environmentId: resolved.environmentId,
+      });
+    }
     const launched = yield* registry
       .run(resolved.environmentId, request(ORCHESTRATION_V2_WS_METHODS.launchThread, payload))
       .pipe(
+        Effect.timeout("45 seconds"),
         Effect.tapError((error) =>
-          Effect.logWarning("The destination environment rejected the launch.", {
+          Effect.logWarning("The destination environment did not confirm the launch.", {
             ...safeErrorLogAttributes(error),
           }),
         ),
-        Effect.mapError(() => new CrossEnvironmentLaunchRejected()),
+        Effect.mapError(
+          () =>
+            new CrossEnvironmentLaunchUncertain({
+              threadId: input.threadId,
+              environmentId: resolved.environmentId,
+            }),
+        ),
       );
     const run = launched.projection.runs.at(-1) ?? null;
     return {

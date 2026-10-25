@@ -174,7 +174,7 @@ it.effect("returns this server and its host resources when no client is subscrib
 it.effect("returns the peer resources a subscribed client reports", () =>
   Effect.gen(function* () {
     const bridge = yield* CrossEnvironmentBridge.CrossEnvironmentBridge;
-    const stream = yield* bridge.listen();
+    const stream = yield* bridge.listen("client-1");
     const reported = {
       callerEnvironmentId: environmentId,
       environments: [
@@ -190,7 +190,7 @@ it.effect("returns the peer resources a subscribed client reports", () =>
     };
     yield* Stream.runForEach(stream, (ask) =>
       ask.op === "list"
-        ? bridge.fulfill({ requestId: ask.requestId, op: "list", result: reported })
+        ? bridge.fulfill("client-1", { requestId: ask.requestId, op: "list", result: reported })
         : Effect.void,
     ).pipe(Effect.forkScoped);
     const result = yield* toolResult("t3_connected_environments", {});
@@ -268,12 +268,12 @@ it.effect.each(["run", "thread"] as const)(
   (kind) =>
     Effect.gen(function* () {
       const bridge = yield* CrossEnvironmentBridge.CrossEnvironmentBridge;
-      const stream = yield* bridge.listen();
+      const stream = yield* bridge.listen("client-1");
       const asks: CrossEnvironmentLaunchAsk[] = [];
       yield* Stream.runForEach(stream, (ask) => {
         if (ask.op !== "launch") return Effect.void;
         asks.push(ask);
-        return bridge.fulfill({
+        return bridge.fulfill("client-1", {
           requestId: ask.requestId,
           op: "launch",
           result: {
