@@ -216,9 +216,12 @@ interface MessagesTimelineProps {
   onOpenThread: (threadId: OrchestrationV2TurnItem["threadId"]) => void;
   renderHtmlRender?: TimelineRowSharedState["renderHtmlRender"];
   turnItemSource?: TimelineRowSharedState["turnItemSource"];
+  /** The thread this one is a subagent of; `open` is absent when it cannot be opened from here. */
   parentThreadLink?: {
-    readonly threadId: ThreadId;
     readonly title: string;
+    /** Where it runs, when that is another environment. */
+    readonly environmentLabel?: string;
+    readonly open?: () => void;
   } | null;
   workflowOpening?: WorkflowOpening | null;
   onForkFromRun?: (input: {
@@ -991,10 +994,15 @@ const ConversationTimeline = memo(function ConversationTimeline({
         <div className="chat-content-lane pt-1 sm:pt-2">
           <TimelineSystemDivider
             label="Subagent of"
-            detail={parentThreadLink.title}
+            detail={
+              parentThreadLink.environmentLabel === undefined
+                ? parentThreadLink.title
+                : `${parentThreadLink.title} on ${parentThreadLink.environmentLabel}`
+            }
             icon={BotIcon}
-            actionLabel="Open parent thread"
-            onAction={() => onOpenThread(parentThreadLink.threadId)}
+            {...(parentThreadLink.open === undefined
+              ? {}
+              : { actionLabel: "Open parent thread", onAction: parentThreadLink.open })}
           />
         </div>
       </div>

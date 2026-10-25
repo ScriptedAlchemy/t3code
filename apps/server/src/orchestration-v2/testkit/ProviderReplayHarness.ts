@@ -479,7 +479,9 @@ export function layerWithRegistry<Error>(
   const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(ProjectKnowledge.ProjectKnowledge)({}),
+        Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+          readSentDeliveries: () => Effect.succeed([]),
+        }),
         layerContextHandoffServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,

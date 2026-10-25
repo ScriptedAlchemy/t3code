@@ -121,6 +121,7 @@ import {
 import {
   readThreadShell,
   useAllEnvironmentProjectSnapshotsReady,
+  useDelegatedUnderParent,
   useProjects,
   useServerConfigs,
   useQuietThreadShells,
@@ -177,7 +178,7 @@ import {
   type SidebarListItem,
   type SidebarSection,
   resolveLoomTargets,
-  resolveSidebarRowThreadId,
+  resolveSidebarRowThreadRef,
 } from "./Sidebar.logic";
 import {
   createSidebarCollisionDetection,
@@ -300,6 +301,8 @@ type SidebarOptimisticDrop = {
 interface SidebarThreadPartitionInput {
   readonly threads: readonly EnvironmentThreadShell[];
   readonly scopedProjectKeys: ReadonlySet<string> | null;
+  /** Tasks linked environments run for a listed thread; they show under it. */
+  readonly delegatedUnderParent: ReadonlySet<string>;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
   readonly optimisticDrop: SidebarOptimisticDrop | null;
   readonly workingShelfEnabled: boolean;
@@ -362,19 +365,11 @@ function useSidebarThreads(input: {
   const { projectScopeKey, scopedProjectKeys, serverConfigs, optimisticDrop, routeThreadRef } =
     input;
   const threads = useQuietThreadShells();
+  const delegatedUnderParent = useDelegatedUnderParent();
   const routeRowThreadKey =
     routeThreadRef === null
       ? null
-      : scopedThreadKey(
-          scopeThreadRef(
-            routeThreadRef.environmentId,
-            resolveSidebarRowThreadId(
-              routeThreadRef.threadId,
-              routeThreadRef.environmentId,
-              threads,
-            ),
-          ),
-        );
+      : scopedThreadKey(resolveSidebarRowThreadRef(routeThreadRef, threads, delegatedUnderParent));
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const nowMinute = useNowMinute();
   // Minute-quantized clocks would delay second-precise snooze wakes by up to a minute.
@@ -412,6 +407,7 @@ function useSidebarThreads(input: {
   const partition = partitionSidebarThreads({
     threads,
     scopedProjectKeys,
+    delegatedUnderParent,
     serverConfigs,
     optimisticDrop,
     workingShelfEnabled,
@@ -461,6 +457,7 @@ function useSidebarThreads(input: {
   }
   return {
     routeRowThreadKey,
+    delegatedUnderParent,
     ...partition,
     threads,
     workingShelfEnabled,
@@ -504,9 +501,16 @@ function useSidebarThreads(input: {
 }
 
 function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
-  const { threads, scopedProjectKeys, serverConfigs, optimisticDrop, workingShelfEnabled } = input;
+  const {
+    threads,
+    scopedProjectKeys,
+    delegatedUnderParent,
+    serverConfigs,
+    optimisticDrop,
+    workingShelfEnabled,
+  } = input;
   const preciseNow = new Date().toISOString();
-  const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys);
+  const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
   inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -1090,6 +1094,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     pinnedKeysById,
     activeKeysById,
     routeRowThreadKey,
+    delegatedUnderParent,
   } = useSidebarThreads({
     projectScopeKey,
     scopedProjectKeys,
@@ -1116,8 +1121,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (
       pendingKey !== null &&
       scopedProjectKeys !== null &&
-      filterSidebarV2VisibleThreads([thread], scopedProjectKeys).length === 0 &&
-      filterSidebarV2VisibleThreads([thread], null).length === 1
+      filterSidebarV2VisibleThreads([thread], scopedProjectKeys, delegatedUnderParent).length ===
+        0 &&
+      filterSidebarV2VisibleThreads([thread], null, delegatedUnderParent).length === 1
     ) {
       // The row renders under the widened scope; scroll on that pass.
       setProjectScopeKey(null);

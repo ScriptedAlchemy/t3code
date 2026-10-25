@@ -104,6 +104,9 @@ export function useComposerContextImport(input: {
     (store) => store.addPreviewAnnotation,
   );
   const addComposerDraftThreadContexts = useComposerDraftStore((store) => store.addThreadContexts);
+  const addComposerDraftEnvironmentContexts = useComposerDraftStore(
+    (store) => store.addEnvironmentContexts,
+  );
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, { reportFailure: false });
   const loadThreadTranscript = useAtomCommand(orchestrationEnvironment.threadTranscript, {
     reportFailure: false,
@@ -299,7 +302,9 @@ export function useComposerContextImport(input: {
                     ? existing.record.id
                     : undefined,
                 })
-              : existing?.kind === "thread" || existing?.kind === "project-knowledge"
+              : existing?.kind === "thread" ||
+                  existing?.kind === "project-knowledge" ||
+                  existing?.kind === "environment"
                 ? existing.record
                 : existing
                   ? (uploadedContextRecordFromDraft(existing) ?? undefined)
@@ -368,6 +373,16 @@ export function useComposerContextImport(input: {
           // The agent can only read threads on its own server; a pasted foreign one is dropped.
           if (record.environmentId !== environmentId) break;
           addComposerDraftThreadContexts(threadDraftTarget, [record], {
+            appendReference: false,
+          });
+          rewritten.set(record.contextId, record.contextId);
+          break;
+        }
+        case "environment": {
+          // A machine means the same machine from any thread, so a pasted one is kept,
+          // but not in an answer to an agent's question, which carries no machines.
+          if (questionAttachmentTarget !== null) break;
+          addComposerDraftEnvironmentContexts(composerDraftTarget, [record], {
             appendReference: false,
           });
           rewritten.set(record.contextId, record.contextId);

@@ -13,9 +13,14 @@ export function materializeReplayTranscriptRuntimeInstructions(
         ? "Grok"
         : runtime.driver === "acpRegistry"
           ? "acpRegistry"
-          : undefined;
+          : runtime.driver === "muse"
+            ? "Muse Code"
+            : undefined;
   if (harness === undefined) return transcript;
   const instructions = buildRuntimeInstructions({ harness, model: runtime.model });
+  const pullRequestInstructions = instructions.match(
+    /<pull_request_linking>[\s\S]*?<\/pull_request_linking>/u,
+  )?.[0];
 
   return {
     ...transcript,
@@ -23,6 +28,47 @@ export function materializeReplayTranscriptRuntimeInstructions(
       if (entry.type !== "expect_outbound") return entry;
       const frame = entry.frame;
       if (typeof frame !== "object" || frame === null) return entry;
+      if (
+        runtime.driver === "muse" &&
+        pullRequestInstructions !== undefined &&
+        "method" in frame &&
+        frame.method === "turn/start" &&
+        "params" in frame &&
+        typeof frame.params === "object" &&
+        frame.params !== null &&
+        "input" in frame.params &&
+        Array.isArray(frame.params.input)
+      ) {
+        const input: ReadonlyArray<unknown> = frame.params.input;
+        const firstPart = input[0];
+        if (
+          typeof firstPart !== "object" ||
+          firstPart === null ||
+          !("type" in firstPart) ||
+          firstPart.type !== "text" ||
+          !("text" in firstPart) ||
+          typeof firstPart.text !== "string"
+        ) {
+          return entry;
+        }
+        // Keep each turn's recorded model, effort, and user input as protocol assertions.
+        const text = firstPart.text.replace(
+          /^(<runtime_info>[\s\S]*?<\/runtime_info>\n\n)<pull_request_linking>[\s\S]*?<\/pull_request_linking>/u,
+          (_match, header: string) => `${header}${pullRequestInstructions}`,
+        );
+        return text === firstPart.text
+          ? entry
+          : {
+              ...entry,
+              frame: {
+                ...frame,
+                params: {
+                  ...frame.params,
+                  input: [{ ...firstPart, text }, ...input.slice(1)],
+                },
+              },
+            };
+      }
       if (
         runtime.driver === "cursor" &&
         "type" in frame &&
@@ -35,6 +81,7 @@ export function materializeReplayTranscriptRuntimeInstructions(
           : { ...entry, frame: { ...frame, message: `${frame.message}\n\n${instructions}` } };
       }
       if (
+        runtime.driver !== "muse" &&
         "method" in frame &&
         frame.method === "session/prompt" &&
         "params" in frame &&

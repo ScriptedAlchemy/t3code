@@ -266,6 +266,42 @@ Claude Code, Codex, ChatGPT and other agents T3 Code did not start can drive
 threads on an environment through its MCP server. See
 [outside agents](./outside-agents.md) for setup.
 
+## Link another environment
+
+Link two machines, such as your laptop and a VPS, and agents on one can work on
+the other: launch, message, wait on and stop its threads, answer their
+questions, and manage its queues, projects and scheduled tasks. On the machine
+you will work from, open **Settings → Connections → Linked environments**,
+choose **Link**, and pick the other machine or enter its address. The list
+holds the machines this app knows and those on your T3 Connect account. If this
+app is connected to that machine with a session that manages access there, it
+makes the pairing code itself; otherwise paste one from that machine's
+**Settings → Connections**. From a terminal, use
+`t3 environment link <address> --pairing-code <code> --access <mode>`.
+
+You can also ask an agent to link a machine by name, such as "delegate this to
+my vps". It shows a card in the thread where you pick the machine the same way
+and the access, then approve.
+
+- The access you pick is the most agents from this machine may do there. An
+  agent also never gets more there than its own mode here.
+- Threads a link starts are marked **From** and this machine's name there.
+- A full-access link works there like that machine's own agents. Below full
+  access, the link's agents can change only threads it started, not that
+  machine's own threads, projects or settings, and they skip its project setup
+  scripts.
+- The link shows up in that machine's **Settings → Connections** like any
+  outside agent. Revoke it there to end it. **Forget** on this machine only
+  removes it here.
+- Links last 30 days. Link again with a new pairing code to renew one.
+
+An agent can also hand a task to a linked machine with `delegate_task`: it runs
+there as an ordinary thread, in the project with the same repository (or the
+one `target.projectId` names), and this thread wakes with its result when it
+ends, as for any delegated task. It keeps following the task across restarts.
+If the other machine revokes the link, or the link is removed here, the task
+fails with that reason.
+
 ## Manage or revoke access
 
 On the host, **Settings → Connections** lets authorized administrators create

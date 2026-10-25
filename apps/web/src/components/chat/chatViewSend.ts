@@ -271,6 +271,7 @@ export function restoreComposerDraft(
   store.setThreadContexts(draftTarget, snapshot.threadContexts);
   if (snapshot.knowledgeContexts)
     store.setKnowledgeContext(draftTarget, snapshot.knowledgeContexts[0] ?? null);
+  store.setEnvironmentContexts(draftTarget, snapshot.environmentContexts);
   return images;
 }
 

@@ -83,9 +83,7 @@ import Migration0076 from "./Migrations/076_ProjectCodeFileHistoryPages.ts";
 import Migration0077 from "./Migrations/077_ProjectLoomBoundedReads.ts";
 import Migration0078 from "./Migrations/078_ShellStopRequestIndex.ts";
 import Migration0079 from "./Migrations/079_ThreadMessageSearch.ts";
-import Migration0080 from "./Migrations/080_ProjectKnowledgeNativeDelivery.ts";
-import Migration0081 from "./Migrations/081_ProjectKnowledgeDeliveryBudget.ts";
-import Migration0082 from "./Migrations/082_ProjectLoomWindowItems.ts";
+import Migration0080 from "./Migrations/080_ProjectIntelligenceAndCrossEnvironment.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -168,9 +166,7 @@ const migrationEntries = [
   [77, "ProjectLoomBoundedReads", Migration0077],
   [78, "ShellStopRequestIndex", Migration0078],
   [79, "ThreadMessageSearch", Migration0079],
-  [80, "ProjectKnowledgeNativeDelivery", Migration0080],
-  [81, "ProjectKnowledgeDeliveryBudget", Migration0081],
-  [82, "ProjectLoomWindowItems", Migration0082],
+  [80, "ProjectIntelligenceAndCrossEnvironment", Migration0080],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -232,8 +228,8 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
   const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
   const knowledgePreviewMigrations =
-    toMigrationInclusive === undefined || toMigrationInclusive >= 81
-      ? yield* reconcileProjectKnowledgePreviewMigration()
+    toMigrationInclusive === undefined || toMigrationInclusive >= 80
+      ? yield* reconcileProjectKnowledgePreviewMigration(migrationManifest)
       : [];
   if (includesV2) {
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
