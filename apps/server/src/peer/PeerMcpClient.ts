@@ -68,7 +68,7 @@ const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(
 const decodeResponseId = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ id: Schema.Number })),
 );
-const encodeRequest = Schema.encodeEffect(Schema.UnknownFromJsonString);
+const encodeRequest = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeFailure = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Struct({ code: OrchestratorMcpFailure.fields.code, message: Schema.String }),
