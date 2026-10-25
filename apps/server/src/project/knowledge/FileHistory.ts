@@ -14,13 +14,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 
-// Each read indexes at most this many checkpoints, so a large backlog spreads across reads
-// instead of holding the database for one long write.
+// Bounds checkpoint metadata work even when every checkpoint has an empty file list.
 const CATCH_UP_BATCH = 500;
 const CATCH_UP_BATCHES_PER_READ = 20;
-// A checkpoint that rewrote a vendored tree indexes across several batches, so no single write
-// holds the database for tens of thousands of rows.
-const FILES_PER_PAGE = 2_000;
+// Shared across every checkpoint in a transaction: several large checkpoints must not multiply
+// the amount of work holding the database's write lock.
+const FILES_PER_BATCH = 2_000;
 
 const encodeCheckpointIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 const encodePages = Schema.encodeSync(
@@ -29,6 +28,7 @@ const encodePages = Schema.encodeSync(
       Schema.Struct({
         id: Schema.String,
         start: Schema.Number,
+        end: Schema.Number,
         next: Schema.NullOr(Schema.Number),
       }),
     ),
@@ -111,13 +111,15 @@ const make = Effect.gen(function* () {
           FROM orchestration_v2_projection_checkpoints c
           LEFT JOIN project_code_checkpoint_marks m ON m.checkpoint_id = c.checkpoint_id
           WHERE c.checkpoint_id IN (SELECT value FROM json_each(${idsJson}))`;
-        const pagesJson = encodePages(
-          starts.map(({ id, start, total }) => ({
-            id,
-            start,
-            next: start + FILES_PER_PAGE < total ? start + FILES_PER_PAGE : null,
-          })),
-        );
+        const pages = [];
+        let remaining = FILES_PER_BATCH;
+        for (const { id, start, total } of starts) {
+          if (remaining === 0) break;
+          const end = start + Math.min(remaining, Math.max(0, total - start));
+          pages.push({ id, start, end, next: end < total ? end : null });
+          remaining -= end - start;
+        }
+        const pagesJson = encodePages(pages);
         yield* sql`DELETE FROM project_code_checkpoint_files
           WHERE checkpoint_id IN (
             SELECT json_extract(value, '$.id') FROM json_each(${pagesJson})
@@ -135,7 +137,7 @@ const make = Effect.gen(function* () {
           WHERE json_type(c.payload_json, '$.files') = 'array'
             AND f.type = 'object'
             AND f.key >= json_extract(p.value, '$.start')
-            AND f.key < json_extract(p.value, '$.start') + ${FILES_PER_PAGE}
+            AND f.key < json_extract(p.value, '$.end')
             AND json_type(f.value, '$.path') = 'text'`;
         yield* sql`INSERT OR REPLACE INTO project_code_checkpoint_marks
             (checkpoint_id, captured_at, status, next_file_index)

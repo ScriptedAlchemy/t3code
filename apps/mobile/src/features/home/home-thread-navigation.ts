@@ -8,6 +8,7 @@ import {
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useRef } from "react";
 import { Platform } from "react-native";
+import { useAdaptiveWorkspaceLayout } from "../layout/adaptive-workspace-context";
 import { useAndroidWorkspaceSelection } from "../workspace/useAndroidWorkspaceSelection";
 
 type ThreadSelection = Pick<EnvironmentThreadShell, "environmentId" | "id">;
@@ -53,14 +54,14 @@ export function useHomeThreadRouteSelection() {
   const navigation =
     useNavigation<NativeStackNavigationProp<ReactNavigation.RootParamList, "Home">>();
   const dismissingRouteKey = useRef<string | null>(null);
+  const { layout, setPrimarySidebarVisible } = useAdaptiveWorkspaceLayout();
   const selectAndroidWorkspace = useAndroidWorkspaceSelection();
 
   useEffect(() => {
     const clear = () => {
       dismissingRouteKey.current = null;
     };
-    // This listener belongs to Home, so swipe-back is its opening transition.
-    // Thread's closing event is targeted at the outgoing Thread route.
+    // For Home, swipe-back is opening; Thread's closing event targets the outgoing route.
     const removeTransitionStart = navigation.addListener("transitionStart", ({ data }) => {
       const state = navigation.getState();
       const currentRoute = state.routes[state.index];
@@ -85,6 +86,7 @@ export function useHomeThreadRouteSelection() {
         });
         return;
       }
+      if (layout.primarySidebarOverlaysContent) setPrimarySidebarVisible(false);
       navigation.dispatch((state) =>
         createHomeThreadRouteAction({
           state,
@@ -93,7 +95,12 @@ export function useHomeThreadRouteSelection() {
         }),
       );
     },
-    [navigation, selectAndroidWorkspace],
+    [
+      layout.primarySidebarOverlaysContent,
+      navigation,
+      selectAndroidWorkspace,
+      setPrimarySidebarVisible,
+    ],
   );
 }
 

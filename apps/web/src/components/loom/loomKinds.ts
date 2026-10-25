@@ -57,11 +57,10 @@ const style = (
   significant,
 });
 
-// Tailwind only emits classes it can read, so each colour utility is spelled out here:
-// stroke-foreground fill-foreground text-foreground stroke-muted-foreground fill-muted-foreground
-// text-muted-foreground stroke-info fill-info text-info stroke-success fill-success text-success
-// stroke-primary fill-primary text-primary stroke-destructive fill-destructive text-destructive
-// stroke-warning fill-warning text-warning
+// Tailwind scans these explicit utilities for the dynamic colour classes below.
+// stroke-foreground fill-foreground text-foreground stroke-muted-foreground fill-muted-foreground text-muted-foreground
+// stroke-info fill-info text-info stroke-success fill-success text-success stroke-primary fill-primary text-primary
+// stroke-destructive fill-destructive text-destructive stroke-warning fill-warning text-warning
 export const WEAVE_KINDS: Record<WeaveEventKind, WeaveKindStyle> = {
   agent: style("Agent", 0, BotIcon, "muted-foreground", false),
   user: style("User", 1, UserIcon, "foreground", false),

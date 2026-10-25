@@ -166,8 +166,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
         : `Assisted learning is not supported on ${unsupportedAssistedLearning.map((target) => target.environment.label).join(", ")}. Update T3 Code on ${unsupportedAssistedLearning.length === 1 ? "that environment" : "those environments"}.`;
   const [pendingWrites, setPendingWrites] = useState(0);
   const writeInFlight = useRef(false);
-  // A closing view can still save its drafts while a write is pending, after
-  // the controls disabled. Those patches run once the current write settles.
+  // Closing views can save after controls disable; queue those patches behind the pending write.
   const queuedPatch = useRef<{ key: string; patch: ServerSettingsPatch } | null>(null);
   const targetsKey = targets
     .map((target) => `${target.environment.environmentId}:${target.projectId}`)
@@ -386,7 +385,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     <SettingsSwitchRow
                       icon={PullRequestGlyph.merged}
                       label="Remove agent credits when merging"
-                      subtitle="Remove recognized agent credits from GitHub merge and squash messages, keeping human co-authors. Includes auto-merge. Excludes merge queues, stack merges, and existing commits."
+                      subtitle="Remove recognized agent credits from merge and squash messages on hosts that support it, keeping human co-authors. Includes auto-merge. Excludes merge queues, stack merges, and existing commits."
                       value={uniform("removeAgentCreditsOnMerge")}
                       disabled={disabledFor("removeAgentCreditsOnMerge")}
                       onValueChange={(value) => write({ removeAgentCreditsOnMerge: value })}
@@ -495,12 +494,8 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                           label={target.label}
                           value="Server and provider updates"
                           onPress={() =>
-                            navigation.navigate("SettingsSheet", {
-                              screen: "SettingsContent",
-                              params: {
-                                screen: "SettingsEnvironmentDetail",
-                                params: { environmentId: target.environmentId },
-                              },
+                            navigation.navigate("SettingsEnvironmentDetail", {
+                              environmentId: target.environmentId,
                             })
                           }
                         />

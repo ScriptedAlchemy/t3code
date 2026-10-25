@@ -1030,6 +1030,133 @@ const composeDelivery = Effect.fn("test.composeDelivery")(function* (
   return { delivery, forget, excerpts };
 });
 
+it.effect.each(["confirm", "feedback"] as const)(
+  "scrubs a delivered %s revision using the citations that supplied its content",
+  (action) =>
+    Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const projectId = ProjectId.make("historical-delivery-sources");
+      const sourceThreadId = ThreadId.make("historical-source-thread");
+      const sourceMessageId = MessageId.make("historical-source-message");
+      yield* createProject(projectId);
+      yield* projections.apply(thread(sourceThreadId, projectId));
+      yield* projections.apply(
+        message(sourceThreadId, sourceMessageId, "user", "Cache keys include tenant IDs."),
+      );
+      const source = yield* knowledge.readSource({
+        projectId,
+        threadId: sourceThreadId,
+        messageId: sourceMessageId,
+      });
+      if (source.state !== "available") return yield* Effect.die("Expected an available source");
+      const created = yield* knowledge.mutate(
+        { ...createFact(projectId), sources: [source.source] },
+        { kind: "agent-client", sessionId: "historical-source-agent", label: "Agent" },
+      );
+      const fact = yield* knowledge.mutate(
+        {
+          commandId: CommandId.make(`delivered-${action}`),
+          projectId,
+          factId: created.id,
+          expectedRevision: created.revision,
+          ...(action === "feedback" ? { action, helpful: true } : { action }),
+        },
+        { kind: "user" },
+      );
+      const context = {
+        environmentId,
+        projectId,
+        selections: [{ kind: "fact" as const, factId: fact.id, revision: fact.revision }],
+        maxBytes: 48000,
+      };
+      const prepared = yield* knowledge.resolveForTurn(context);
+      const threadId = ThreadId.make("historical-delivery-thread");
+      const runId = RunId.make("historical-delivery-run");
+      yield* knowledge.recordDelivery({
+        attemptId: RunAttemptId.make("historical-delivery-attempt"),
+        runId,
+        threadId,
+        messageId: MessageId.make("historical-delivery-message"),
+        projectId,
+        providerInstanceId,
+        status: "sent",
+        items: [
+          {
+            contextId: ComposerContextId.make("historical-context"),
+            label: "Fact",
+            context,
+            text: prepared.text,
+          },
+        ],
+        omissions: [],
+        createdAt: DateTime.formatIso(at(1)),
+        updatedAt: DateTime.formatIso(at(1)),
+      });
+      // A new citation cannot replace the provenance of the revision already delivered.
+      yield* knowledge.mutate(
+        {
+          ...createFact(projectId),
+          action: "edit",
+          commandId: CommandId.make("replace-delivered-fact-source"),
+          expectedRevision: fact.revision,
+          content: "Cache keys include region IDs.",
+        },
+        { kind: "user" },
+      );
+      const read = knowledge.readSentDeliveries({
+        projectId,
+        threadIds: [threadId],
+        runIds: [runId],
+      });
+      assert.equal((yield* read)[0]?.items[0]?.text, prepared.text);
+      yield* projections.apply(
+        message(sourceThreadId, sourceMessageId, "user", "The earlier claim was incorrect."),
+      );
+      const [delivery] = yield* read;
+      assert.equal(delivery?.items[0]?.text, "[Source unavailable: removed or changed.]");
+      assert.deepEqual(delivery?.omissions, [
+        {
+          contextId: ComposerContextId.make("historical-context"),
+          label: "Fact",
+          reason: "source_unavailable",
+        },
+      ]);
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepEqual(
+        yield* sql`SELECT attempt_id FROM project_knowledge_deliveries WHERE items_json LIKE '%tenant IDs%'`,
+        [],
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("preserves valid delivery evidence beyond the recent fact history window", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("long-delivery-history");
+    yield* createProject(projectId);
+    const { delivery, excerpts } = yield* composeDelivery(projectId, "long-history");
+    const sent = delivery("long-history-attempt", "sent", 1);
+    yield* knowledge.recordDelivery(sent);
+    for (let revision = 1; revision <= 51; revision++) {
+      yield* knowledge.mutate(
+        {
+          action: "feedback",
+          commandId: CommandId.make(`long-history-feedback-${revision}`),
+          projectId,
+          factId: ProjectFactId.make("long-history"),
+          expectedRevision: revision,
+          helpful: true,
+        },
+        { kind: "user" },
+      );
+    }
+    assert.deepEqual(yield* excerpts, [
+      ["long-history-attempt", "sent", sent.items[0]!.text, undefined],
+    ]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("scrubs as-sent excerpts of a fact whose id needs JSON escaping", () =>
   Effect.gen(function* () {
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;

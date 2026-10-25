@@ -526,6 +526,54 @@ const providerThread: OrchestrationV2ProviderThread = {
   updatedAt: at,
 };
 
+it.effect(
+  "stops offering existing summaries after the project opts out and resumes on opt-in",
+  () => {
+    const model = citing();
+    return Effect.gen(function* () {
+      yield* seed;
+      yield* summarize;
+      const summary = yield* onlySummary;
+      const service = yield* ConversationSummaries.ConversationSummaries;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const handoffs = yield* ContextHandoffService.ContextHandoffServiceV2;
+      const handoff = yield* handoffs.prepareProviderHandoff({
+        threadId,
+        targetRunId: RunId.make("opt-out-target-run"),
+        transferId: null,
+        fromProviderThreadIds: [],
+        toProviderThreadId: providerThread.id,
+        fromProviderInstanceId: instanceId,
+        toProviderInstanceId: instanceId,
+        coveredRunOrdinals: { from: 1, to: 1 },
+        strategy: "full_thread_summary",
+        items: Array.from({ length: MESSAGE_COUNT }, (_, index) => item(index)),
+        createdAt: at,
+      });
+      const read = service.forHandoff({
+        projectId,
+        handoffs: [handoff],
+        itemIds: new Set(Array.from({ length: MESSAGE_COUNT }, (_, index) => itemId(index))),
+      });
+      assert.deepEqual(
+        (yield* read).map((offered) => offered.id),
+        [summary.id],
+      );
+      yield* settings.updateSettings({
+        projectSettingsOverrides: { [projectId]: { enableConversationSummaries: false } },
+      });
+      assert.deepEqual(yield* read, []);
+      assert.equal((yield* list).summaries[0]?.state, "available");
+      yield* settings.updateSettings(optedIn);
+      assert.deepEqual(
+        (yield* read).map((offered) => offered.id),
+        [summary.id],
+      );
+      assert.equal(model.calls.length, 1);
+    }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+  },
+);
+
 it.effect("hands off a labelled summary plus the intact tail within budget, once", () => {
   const model = citing();
   return Effect.gen(function* () {

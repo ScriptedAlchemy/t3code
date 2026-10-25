@@ -6,9 +6,16 @@ import { useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
-import { formatLoomTick, formatLoomTime, loomScale, loomTicks, type LoomView } from "./loomScale";
+import {
+  ACTIVE_RUN,
+  formatLoomTick,
+  formatLoomTime,
+  loomScale,
+  loomTicks,
+  type LoomView,
+} from "./loomScale";
 import type { LoomSelection } from "./loomSearch";
-import { ACTIVE_RUN, loomMarkerKey } from "./loomWeave";
+import { loomMarkerKey } from "./loomWeave";
 import { useLoomViewGestures } from "./useLoomViewGestures";
 
 const LOOM_ROW_HEIGHT = 28;

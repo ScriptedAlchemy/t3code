@@ -329,6 +329,19 @@ export const makeStore = Effect.gen(function* () {
       .map((row) => ({ ...row, helpful: row.helpful === null ? null : row.helpful !== 0 }))
       .toReversed();
   });
+  const sourcesAtRevision = Effect.fn("ProjectKnowledgeStore.sourcesAtRevision")(function* (
+    projectId: ProjectId,
+    factId: ProjectFactId,
+    revision: number,
+  ) {
+    // Confirmation and feedback change a revision without replacing its content or citations.
+    const rows = yield* sql<{ readonly sources: string }>`
+      SELECT sources_json AS sources FROM project_knowledge_fact_history
+      WHERE project_id = ${projectId} AND fact_id = ${factId} AND revision <= ${revision}
+        AND event IN ('baseline', 'created', 'edited')
+      ORDER BY sequence DESC LIMIT 1`;
+    return rows[0] === undefined ? null : yield* decodeSources(rows[0].sources);
+  });
   const statusCounts = Effect.fn("ProjectKnowledgeStore.statusCounts")(function* (
     projectId: ProjectId,
     recallThreshold: number,
@@ -593,6 +606,7 @@ export const makeStore = Effect.gen(function* () {
     recordHistory,
     eraseHistory,
     history,
+    sourcesAtRevision,
     statusCounts,
     citedFacts,
     recordRetrieval,

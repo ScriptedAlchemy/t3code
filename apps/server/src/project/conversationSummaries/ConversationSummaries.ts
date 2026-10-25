@@ -574,6 +574,11 @@ const make = Effect.gen(function* () {
     "ConversationSummaries.forHandoff",
   )(
     function* ({ projectId, handoffs, itemIds }) {
+      if (
+        !resolveProjectSettings(yield* serverSettings.getSettings, projectId).settings
+          .enableConversationSummaries
+      )
+        return [];
       const threadIds = new Set<ThreadId>();
       for (const handoff of handoffs) {
         threadIds.add(handoff.threadId);

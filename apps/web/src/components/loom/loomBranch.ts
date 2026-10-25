@@ -48,12 +48,8 @@ export function branchView(workstream: Workstream, bounds: LoomView, tailMs: num
 }
 
 /**
- * The root takes the centre lane. Children take lanes in spawn order, nearest free lane first,
- * alternating above and below, and a child's own children go beyond it on its side, so a subtree
- * reads as one wedge. Like a Gantt chart, a lane is reused once its strand has ended: it stays
- * taken for LANE_GAP px after the strand ends, and for at least LANE_LABEL px after it starts so
- * a short strand keeps room for its title. Pixels convert to time at `msPerPx`, the fitted zoom,
- * so lanes stay put while the view zooms.
+ * Reserve label/gap space at the fitted scale so lanes stay put while zooming. Reuse ended lanes;
+ * keep descendants on their parent's side so each subtree stays together.
  */
 export function branchLayout(
   workstream: Workstream,

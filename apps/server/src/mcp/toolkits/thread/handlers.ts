@@ -104,13 +104,14 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   t3_thread_search: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const { caller } = yield* readCaller();
-      const { projectId: requested, ...query } = input;
-      const projectId = requested ?? caller?.projectId;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
+      const { projectId: requestedProjectId, ...query } = input;
+      const projectId = requestedProjectId ?? caller?.projectId;
       return yield* threadSearch
         .search({
           ...query,
           ...(projectId === undefined ? {} : { projectId }),
+          includeArchived: input.includeArchived ?? false,
         })
         .pipe(Effect.mapError(unavailable));
     }),

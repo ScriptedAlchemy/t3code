@@ -1153,16 +1153,21 @@ const make = Effect.gen(function* () {
           unavailable ||= source.state !== "available";
         } else {
           const fact = yield* store.find(delivery.projectId, selection.factId);
-          const history = yield* store.history(delivery.projectId, selection.factId, HISTORY_LIMIT);
-          const revision =
-            fact?.revision === selection.revision
-              ? fact
-              : history.find((entry) => entry.revision === selection.revision);
-          unavailable ||= revision === undefined || revision === null;
-          if (revision) {
+          const sources =
+            fact === null || fact.status === "forgotten" || fact.revision < selection.revision
+              ? null
+              : fact.revision === selection.revision
+                ? fact.sources
+                : yield* store.sourcesAtRevision(
+                    delivery.projectId,
+                    selection.factId,
+                    selection.revision,
+                  );
+          unavailable ||= sources === null;
+          if (sources !== null) {
             const lost = yield* unavailableSources(
               delivery.projectId,
-              [{ id: selection.factId, sources: revision.sources }],
+              [{ id: selection.factId, sources }],
               true,
             );
             unavailable ||= lost.length > 0;

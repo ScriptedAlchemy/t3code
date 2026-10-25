@@ -1372,6 +1372,48 @@ it.effect("keeps the previous generation serving when a build fails, and says so
   ),
 );
 
+it.effect("notifies a persistent build failure once until a successful refresh", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const gate = buildGate();
+      const { run, refresh, subscribe } = yield* checkoutService(
+        fixture.root,
+        () => ["src/defs.ts"],
+        gate,
+      );
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      const events = yield* subscribe();
+      const failRefresh = Effect.gen(function* () {
+        const held = yield* gate.holdNext;
+        const building = yield* refresh().pipe(Effect.forkScoped);
+        process.kill(yield* Deferred.await(held.entered), "SIGKILL");
+        assert.deepEqual(yield* Fiber.join(building), { _tag: "Failed", reason: "worker-failed" });
+      });
+
+      yield* failRefresh;
+      yield* failRefresh;
+      assert.equal((yield* run({ operation: "freshness" })).index?.refresh, "failed");
+      assert.deepEqual(yield* refresh(), { _tag: "Unchanged" });
+      assert.notProperty((yield* run({ operation: "freshness" })).index, "refresh");
+      yield* failRefresh;
+      yield* editDefinition(fixture.root, "recovered");
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
+
+      assert.deepEqual(
+        yield* events.pipe(
+          Stream.takeUntil((event) => event.outcome === "published"),
+          Stream.runCollect,
+        ),
+        [
+          { outcome: "failed", generation: 1 },
+          { outcome: "failed", generation: 1 },
+          { outcome: "published", generation: 2 },
+        ],
+      );
+    }),
+  ),
+);
+
 it.effect("coalesces refresh requests made while a build is in flight into one follow-up", () =>
   withFixture((fixture) =>
     Effect.gen(function* () {

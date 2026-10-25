@@ -397,8 +397,8 @@ const make = Effect.gen(function* () {
     LIMIT ${LOOM_LIMITS.markers + 1}
   `;
 
-  // Candidates are picked from the run and type index alone; only they have payloads parsed.
-  const readCommands = (runIds: ReadonlyArray<string>) => sql<{
+  // The expression index picks commands inside the window before any payloads are read.
+  const readCommands = (runIds: ReadonlyArray<string>, window: ResolvedWindow) => sql<{
     readonly turn_item_id: string;
     readonly thread_id: string;
     readonly run_id: string | null;
@@ -414,16 +414,19 @@ const make = Effect.gen(function* () {
       json_extract(item.payload_json, '$.exitCode') AS exit_code,
       substr(json_extract(item.payload_json, '$.input'), 1, ${COMMAND_SCAN_CHARS}) AS input
     FROM (
-      SELECT rowid AS id, updated_at
+      SELECT rowid AS id,
+        COALESCE(json_extract(payload_json, '$.startedAt'), json_extract(payload_json, '$.completedAt')) AS at
       FROM orchestration_v2_projection_turn_items
-        INDEXED BY orchestration_v2_projection_turn_items_run_command_updated_idx
+        INDEXED BY orchestration_v2_projection_turn_items_run_command_at_idx
       WHERE run_id IN (SELECT value FROM json_each(${ids(runIds)}))
         AND type = 'command_execution'
-      ORDER BY updated_at DESC, rowid DESC
+        AND COALESCE(json_extract(payload_json, '$.startedAt'), json_extract(payload_json, '$.completedAt')) >= ${window.from}
+        AND COALESCE(json_extract(payload_json, '$.startedAt'), json_extract(payload_json, '$.completedAt')) <= ${window.to}
+      ORDER BY at DESC, rowid DESC
       LIMIT ${COMMAND_CANDIDATE_LIMIT + 1}
     ) candidate
     JOIN orchestration_v2_projection_turn_items item ON item.rowid = candidate.id
-    ORDER BY candidate.updated_at DESC, candidate.id DESC
+    ORDER BY candidate.at DESC, candidate.id DESC
   `;
 
   const readActivity = (runIds: ReadonlyArray<string>, window: ResolvedWindow) => sql<{
@@ -434,7 +437,7 @@ const make = Effect.gen(function* () {
   }>`
     SELECT run_id, thread_id, type, updated_at
     FROM orchestration_v2_projection_turn_items
-      INDEXED BY orchestration_v2_projection_turn_items_run_ordinal_idx
+      INDEXED BY orchestration_v2_projection_turn_items_run_updated_idx
     WHERE run_id IN (SELECT value FROM json_each(${ids(runIds)}))
       AND type IN (SELECT value FROM json_each(${ids(Object.keys(ACTIVITY_KINDS))}))
       AND updated_at >= ${window.from} AND updated_at <= ${window.to}
@@ -530,7 +533,7 @@ const make = Effect.gen(function* () {
             yield* Effect.all([
               readCheckpoints(laneIds, window),
               readPullRequests(laneIds, window),
-              readCommands(runIds),
+              readCommands(runIds, window),
               readActivity(runIds, window),
               readNativeTasks(laneIds, window),
               countUntimedTasks(laneIds, window),

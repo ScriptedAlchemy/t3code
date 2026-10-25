@@ -2,6 +2,7 @@ import * as Migrator from "effect/sql/Migrator";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
+import { reconcileProjectKnowledgePreviewMigration } from "./reconcileProjectKnowledgePreviewMigration.ts";
 
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
 import Migration0002 from "./Migrations/002_OrchestrationCommandReceipts.ts";
@@ -70,7 +71,6 @@ import Migration0064 from "./Migrations/064_CanonicalizeThreadPullRequestLinks.t
 import Migration0065 from "./Migrations/065_CodexUsageNativeTurnIndex.ts";
 import Migration0066 from "./Migrations/066_RepairClientSettlementTimestamps.ts";
 import Migration0067 from "./Migrations/067_WebhookDedupe.ts";
-
 import Migration0068 from "./Migrations/068_ProjectKnowledge.ts";
 import Migration0069 from "./Migrations/069_ProjectKnowledgeDeliveries.ts";
 import Migration0070 from "./Migrations/070_ProjectKnowledgeHistory.ts";
@@ -81,8 +81,11 @@ import Migration0074 from "./Migrations/074_ProjectKnowledgeSearchReceiptExpiry.
 import Migration0075 from "./Migrations/075_ProjectLoomTimeIndexes.ts";
 import Migration0076 from "./Migrations/076_ProjectCodeFileHistoryPages.ts";
 import Migration0077 from "./Migrations/077_ProjectLoomBoundedReads.ts";
-import Migration0080 from "./Migrations/080_ProjectKnowledgeDeliveryBudget.ts";
-import Migration0079 from "./Migrations/079_ProjectKnowledgeNativeDelivery.ts";
+import Migration0078 from "./Migrations/078_ShellStopRequestIndex.ts";
+import Migration0079 from "./Migrations/079_ThreadMessageSearch.ts";
+import Migration0080 from "./Migrations/080_ProjectKnowledgeNativeDelivery.ts";
+import Migration0081 from "./Migrations/081_ProjectKnowledgeDeliveryBudget.ts";
+import Migration0082 from "./Migrations/082_ProjectLoomWindowItems.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -163,8 +166,11 @@ const migrationEntries = [
   [75, "ProjectLoomTimeIndexes", Migration0075],
   [76, "ProjectCodeFileHistoryPages", Migration0076],
   [77, "ProjectLoomBoundedReads", Migration0077],
-  [79, "ProjectKnowledgeNativeDelivery", Migration0079],
-  [80, "ProjectKnowledgeDeliveryBudget", Migration0080],
+  [78, "ShellStopRequestIndex", Migration0078],
+  [79, "ThreadMessageSearch", Migration0079],
+  [80, "ProjectKnowledgeNativeDelivery", Migration0080],
+  [81, "ProjectKnowledgeDeliveryBudget", Migration0081],
+  [82, "ProjectLoomWindowItems", Migration0082],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -180,12 +186,7 @@ const makeMigrationLoader = (throughId?: number) =>
 
 const FIRST_V2_MIGRATION_ID = 55;
 
-/**
- * Fail before migrating when the migrator would skip one of V2's own
- * migrations. It skips every id up to the highest recorded one, whatever name
- * was recorded, so a database that took a V2 id for another migration would
- * start without V2's schema and fail on first use.
- */
+// Migrators skip ids up to the highest recorded; reject collisions that would skip V2 schema.
 const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function* (
   throughId?: number,
 ) {
@@ -230,11 +231,16 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
   const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
+  const knowledgePreviewMigrations =
+    toMigrationInclusive === undefined || toMigrationInclusive >= 81
+      ? yield* reconcileProjectKnowledgePreviewMigration()
+      : [];
   if (includesV2) {
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
   }
   const executedMigrations = [
     ...previewMigrations,
+    ...knowledgePreviewMigrations,
     ...(yield* run({ loader: makeMigrationLoader(toMigrationInclusive) })),
   ];
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);

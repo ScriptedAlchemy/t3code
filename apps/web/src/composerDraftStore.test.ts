@@ -3,6 +3,7 @@ import { createEnvironmentThreadShellAtoms } from "@t3tools/client-runtime/state
 import {
   applyShellStreamEvent,
   createEnvironmentSnapshotAtom,
+  EMPTY_SHELL_STATE,
   type EnvironmentShellState,
   type EnvironmentShellStatus,
 } from "@t3tools/client-runtime/state/shell";
@@ -524,6 +525,42 @@ describe("composerDraftStore file attachments", () => {
     expect(draft?.files.map((file) => file.id)).toEqual(["file-accepted"]);
   });
 
+  it("reattaches a DNG with an older generic-MIME marker at attachment capacity", () => {
+    const store = useComposerDraftStore.getState();
+    const file = new File(["raw"], "photo.DNG", { type: "image/x-adobe-dng" });
+    const marker: ComposerFileAttachment = {
+      type: "file",
+      id: "dng-marker",
+      name: file.name,
+      mimeType: "application/octet-stream",
+      sizeBytes: file.size,
+      file: null,
+    };
+    store.addFiles(threadRef, [marker]);
+    store.addImages(
+      threadRef,
+      Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1 }, (_, index) =>
+        makeImage({
+          id: `image-${index}`,
+          name: `image-${index}.png`,
+          previewUrl: `blob:image-${index}`,
+        }),
+      ),
+    );
+
+    const repicked: ComposerFileAttachment = {
+      ...marker,
+      id: "dng-repicked",
+      mimeType: file.type,
+      file,
+    };
+    store.addFiles(threadRef, [repicked]);
+
+    const files = store.getComposerDraft(threadRef)?.files;
+    expect(files).toEqual([repicked]);
+    expect(files?.some(composerFileNeedsReattach)).toBe(false);
+  });
+
   it("replaces a needs-reattach marker when the same file is picked again", () => {
     const store = useComposerDraftStore.getState();
     const marker: ComposerFileAttachment = { ...makeFile("file-marker"), file: null };
@@ -679,6 +716,20 @@ describe("composerDraftStore context persistence", () => {
     expect(
       useComposerDraftStore.getState().getComposerDraft(threadRef)?.knowledgeContexts ?? [],
     ).toEqual([]);
+  });
+
+  it("registers pasted knowledge without appending a second reference to the draft", () => {
+    const record = projectKnowledgeContextRecord({
+      environmentId: TEST_ENVIRONMENT_ID,
+      projectId: ProjectId.make("knowledge-project"),
+      selections: [{ kind: "fact", factId: ProjectFactId.make("remembered-fact"), revision: 3 }],
+      maxBytes: 48000,
+    });
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadRef, "Explain the decision.");
+    store.setKnowledgeContext(threadRef, record, { appendReference: false });
+    expect(store.getComposerDraft(threadRef)?.prompt).toBe("Explain the decision.");
+    expect(store.getComposerDraft(threadRef)?.knowledgeContexts).toEqual([record]);
   });
 
   it("preserves snapshots and inline positions through repeated persistence and hydration", () => {
@@ -1290,9 +1341,9 @@ function modelReconciliationHarness(
     ],
   };
   const shellStateAtom = Atom.make<EnvironmentShellState>({
+    ...EMPTY_SHELL_STATE,
     snapshot: Option.some(initialSnapshot),
     status: initialStatus,
-    error: Option.none(),
   });
   const shellResultAtom = Atom.map(shellStateAtom, AsyncResult.success);
   const snapshotAtom = createEnvironmentSnapshotAtom(() => shellResultAtom)(environmentId);

@@ -1,4 +1,12 @@
-import type { LoomWindow } from "@t3tools/contracts";
+import type { LoomRun, LoomWindow } from "@t3tools/contracts";
+
+export const ACTIVE_RUN = new Set<LoomRun["status"]>([
+  "preparing",
+  "queued",
+  "starting",
+  "running",
+  "waiting",
+]);
 
 export interface LoomView {
   readonly fromMs: number;
@@ -50,7 +58,7 @@ export function loomActivitySpan(window: LoomWindow, bounds: LoomView): LoomSpan
     ...window.runs.flatMap((run) => [
       run.requestedAt,
       run.startedAt,
-      run.completedAt ?? window.asOf,
+      run.completedAt ?? (ACTIVE_RUN.has(run.status) ? window.asOf : null),
     ]),
     ...window.markers.flatMap((marker) => [
       marker.at,

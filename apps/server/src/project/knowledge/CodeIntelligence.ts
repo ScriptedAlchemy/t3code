@@ -237,11 +237,8 @@ interface AnalysisLaunch {
 }
 
 /**
- * Analysis runs in a child process: tree-sitter's WASM grammars can abort V8 with a fatal Zone
- * OOM on Node 22+, which takes down the whole process, threads included. `--liftoff-only`
- * avoids that compiler tier, and V8 only reads it at process start (worker `execArgv` rejects
- * it). A single executable cannot take Node flags on its command line; its build bakes the
- * flag in instead.
+ * Isolate fatal tree-sitter WASM aborts in a child. V8 accepts liftoff-only only at process startup;
+ * executable builds bake it in because they cannot receive Node flags.
  */
 function analysisCommand(launch: AnalysisLaunch): ReadonlyArray<string> {
   if (launch.isExecutable) return ["__code-intelligence"];
@@ -555,7 +552,9 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
       let current = state.running;
       while (current !== null) {
         const outcome = yield* buildOnce(checkoutPath);
-        if (outcome._tag === "Published" || outcome._tag === "Failed") {
+        // Subscribers query again on failure; repeating that event would keep starting builds
+        // for a persistent failure even when nobody explicitly asks to retry.
+        if (outcome._tag === "Published" || (outcome._tag === "Failed" && !state.lastFailed)) {
           state.lastFailed = outcome._tag === "Failed";
           const generation =
             outcome._tag === "Published"

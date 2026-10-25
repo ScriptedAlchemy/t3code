@@ -6,16 +6,8 @@ import {
 import type { LoomEdge, LoomLane, LoomMarker, LoomRun, LoomWindow } from "@t3tools/contracts";
 
 import type { WeaveEventKind } from "./loomKinds";
-import { loomActivitySpan } from "./loomScale";
+import { ACTIVE_RUN, loomActivitySpan } from "./loomScale";
 import type { LoomSelection } from "./loomSearch";
-
-export const ACTIVE_RUN = new Set<LoomRun["status"]>([
-  "preparing",
-  "queued",
-  "starting",
-  "running",
-  "waiting",
-]);
 
 export const loomMarkerKey = (marker: Pick<LoomMarker, "kind" | "id">) =>
   `${marker.kind}:${marker.id}`;
@@ -238,6 +230,9 @@ export function buildWeave(window: LoomWindow): Weave {
   const asOfMs = Date.parse(window.asOf);
   const activity = groupLoomActivity(window);
   const rows = buildLoomRows(window, new Set());
+  const parents = new Map(
+    [...window.ancestors, ...window.lanes].map((lane) => [lane.threadId, lane.parentThreadId]),
+  );
   const edgeBetween = (
     source: string,
     target: string,
@@ -258,7 +253,7 @@ export function buildWeave(window: LoomWindow): Weave {
     }
     const laneActivity = activity.get(row.threadId);
     const parent =
-      row.depth === 0 ? null : row.parentMissing ? null : (row.lane?.parentThreadId ?? null);
+      row.depth === 0 || row.parentMissing ? null : (parents.get(row.threadId) ?? null);
     const spawnEdge = parent === null ? undefined : edgeBetween(parent, row.threadId, SPAWN_EDGES);
     const rejoinEdge =
       parent === null ? undefined : edgeBetween(row.threadId, parent, REJOIN_EDGES);

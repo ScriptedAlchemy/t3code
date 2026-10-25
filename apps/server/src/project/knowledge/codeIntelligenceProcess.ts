@@ -4,11 +4,8 @@ import * as NodeWorkerThreads from "node:worker_threads";
 const WORKER_MEMORY_LIMIT_MB = 768;
 
 /**
- * Runs in the analysis child process the server spawns as `t3 __code-intelligence`. The
- * child exists so a fatal tree-sitter WASM abort kills it rather than the server; its V8
- * flags (`--liftoff-only`) are process-wide, so the worker it hosts inherits them. A single
- * executable can only load a sibling script through a worker, which is why the analysis
- * stays in one rather than running on this thread.
+ * The child isolates fatal WASM aborts and passes its process-wide liftoff-only flag to the worker.
+ * Executables can load sibling scripts only through workers.
  */
 export function hostCodeIntelligenceWorker(): void {
   const send = process.send?.bind(process);

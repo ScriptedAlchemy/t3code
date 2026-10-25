@@ -57,8 +57,11 @@ describe("V2 preview upgrade", () => {
         [75, "ProjectLoomTimeIndexes"],
         [76, "ProjectCodeFileHistoryPages"],
         [77, "ProjectLoomBoundedReads"],
-        [79, "ProjectKnowledgeNativeDelivery"],
-        [80, "ProjectKnowledgeDeliveryBudget"],
+        [78, "ShellStopRequestIndex"],
+        [79, "ThreadMessageSearch"],
+        [80, "ProjectKnowledgeNativeDelivery"],
+        [81, "ProjectKnowledgeDeliveryBudget"],
+        [82, "ProjectLoomWindowItems"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -159,8 +162,11 @@ describe("V2 preview upgrade", () => {
         [75, "ProjectLoomTimeIndexes"],
         [76, "ProjectCodeFileHistoryPages"],
         [77, "ProjectLoomBoundedReads"],
-        [79, "ProjectKnowledgeNativeDelivery"],
-        [80, "ProjectKnowledgeDeliveryBudget"],
+        [78, "ShellStopRequestIndex"],
+        [79, "ThreadMessageSearch"],
+        [80, "ProjectKnowledgeNativeDelivery"],
+        [81, "ProjectKnowledgeDeliveryBudget"],
+        [82, "ProjectLoomWindowItems"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

@@ -12,7 +12,12 @@ import {
 export const OrchestrationThreadSearchSource = Schema.Literals(["user", "assistant"]);
 export type OrchestrationThreadSearchSource = typeof OrchestrationThreadSearchSource.Type;
 
-const SearchQuery = TrimmedString.check(Schema.isMinLength(2), Schema.isMaxLength(200));
+export const THREAD_SEARCH_QUERY_MAX_LENGTH = 200;
+
+const SearchQuery = TrimmedString.check(
+  Schema.isMinLength(2),
+  Schema.isMaxLength(THREAD_SEARCH_QUERY_MAX_LENGTH),
+);
 
 export const ThreadSearchCursor = Schema.Struct({
   query: SearchQuery,
@@ -41,6 +46,15 @@ export const OrchestrationThreadSearchMatch = Schema.Struct({
   archived: Schema.optionalKey(Schema.Boolean),
   snippet: Schema.String.check(Schema.isMaxLength(240)),
   messageCreatedAt: Schema.NullOr(IsoDateTime),
+  /**
+   * How well the message matches: 1 for whole words, 0.8 when a word only
+   * starts one, 0.3 when one only appears inside words, 0.25 more when the
+   * words are written together as typed, else 0.1 more when they are near.
+   * Older servers omit it.
+   */
+  quality: Schema.optionalKey(Schema.Finite),
+  /** How many of the thread's newest messages match. Older servers omit it. */
+  hits: Schema.optionalKey(Schema.Int),
 });
 export type OrchestrationThreadSearchMatch = typeof OrchestrationThreadSearchMatch.Type;
 

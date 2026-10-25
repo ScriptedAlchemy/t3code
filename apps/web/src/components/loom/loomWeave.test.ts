@@ -335,6 +335,31 @@ describe("buildWeave", () => {
     );
   });
 
+  it("preserves nested ancestry when only the descendant is on this page", () => {
+    const paged = buildWeave(
+      window({
+        lanes: [lane("grandchild", "child")],
+        ancestors: [lane("root", null), lane("child", "root")],
+        runs: [run("grandchild-run", { threadId: "grandchild" })],
+      }),
+    );
+    const workstream = paged.workstreams[0]!;
+    expect(
+      workstream.strands.map(({ threadId, parentThreadId, depth }) => [
+        threadId,
+        parentThreadId,
+        depth,
+      ]),
+    ).toEqual([
+      ["root", null, 0],
+      ["child", "root", 1],
+      ["grandchild", "child", 2],
+    ]);
+    const colors = strandColors(paged, workstream);
+    expect(colors.get("child")).not.toBe(colors.get("root"));
+    expect(colors.get("grandchild")).toBe(colors.get("child"));
+  });
+
   it("puts the requested workstream on the spine, or the most recent one", () => {
     expect(spineWorkstream(weave, "old-root")?.rootId).toBe("old-root");
     expect(spineWorkstream(weave, "missing")?.rootId).toBe("root");

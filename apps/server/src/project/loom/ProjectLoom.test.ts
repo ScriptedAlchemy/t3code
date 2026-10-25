@@ -242,7 +242,9 @@ const command = (spec: {
   readonly id: string;
   readonly input: string;
   readonly hours: number;
+  readonly startedHours?: number | null;
   readonly exitCode?: number;
+  readonly output?: string;
 }) =>
   apply({
     type: "turn-item.updated",
@@ -261,12 +263,12 @@ const command = (spec: {
       ordinal: 0,
       status: "completed",
       title: null,
-      startedAt: at(spec.hours),
+      startedAt: spec.startedHours === null ? null : at(spec.startedHours ?? spec.hours),
       completedAt: at(spec.hours + 0.1),
       updatedAt: at(spec.hours + 0.1),
       type: "command_execution",
       input: spec.input,
-      output: "x".repeat(10_000),
+      output: spec.output ?? "x".repeat(10_000),
       ...(spec.exitCode === undefined ? {} : { exitCode: spec.exitCode }),
     },
   });
@@ -761,6 +763,57 @@ describe("ProjectLoom.readWindow", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("does not spend the command scan budget on commands after a historical window", () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      yield* thread({ id: "long-run", createdHours: 0 });
+      yield* run({ thread: "long-run", ordinal: 1, requestedHours: 1, completedHours: 200 });
+      yield* command({
+        thread: "long-run",
+        ordinal: 1,
+        id: "early-test",
+        input: "vp test run",
+        hours: 2,
+      });
+      yield* command({
+        thread: "long-run",
+        ordinal: 1,
+        id: "completion-only-test",
+        input: "vp test run",
+        hours: 3,
+        startedHours: null,
+      });
+      // A command started inside the window stays visible when it finishes after the window.
+      yield* command({
+        thread: "long-run",
+        ordinal: 1,
+        id: "boundary-test",
+        input: "vp test run",
+        hours: 168 - 0.05,
+      });
+      yield* repeat(4_001, (index) =>
+        command({
+          thread: "long-run",
+          ordinal: 1,
+          id: `later-${index}`,
+          input: "echo later",
+          hours: 169 + index / HOUR,
+          output: "",
+        }),
+      );
+
+      const result = yield* read(window);
+      assert.deepEqual(
+        result.markers
+          .filter((marker) => marker.kind === "test_command")
+          .map((marker) => marker.id),
+        ["boundary-test", "completion-only-test", "early-test"],
+      );
+      assert.equal(result.coverage.commandsScanned, 3);
+      assert.isFalse(result.coverage.commandsTruncated);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("never returns another project's threads or edges into them", () =>
     Effect.gen(function* () {
       yield* seedProjects;
@@ -972,20 +1025,21 @@ describe("ProjectLoom.readWindow", () => {
       return yield* recordReads(read(window));
     });
 
-    it.effect("reads activity through the run index without selecting payloads", () =>
+    it.effect("bounds activity reads by run and time without selecting payloads", () =>
       Effect.gen(function* () {
         const { statements } = yield* seedBusyLane;
         const activityReads = statements.filter(([query]) =>
-          query.includes("turn_items_run_ordinal_idx"),
+          query.includes("SELECT run_id, thread_id, type, updated_at"),
         );
         assert.lengthOf(activityReads, 1);
         assert.isFalse(activityReads[0]![0].includes("payload_json"));
         const plans = yield* queryPlans(activityReads);
         assert.isTrue(
-          plans.some((detail) =>
-            detail.includes(
-              "SEARCH orchestration_v2_projection_turn_items USING INDEX orchestration_v2_projection_turn_items_run_ordinal_idx (run_id=?)",
-            ),
+          plans.some(
+            (detail) =>
+              detail.includes(
+                "COVERING INDEX orchestration_v2_projection_turn_items_run_updated_idx",
+              ) && detail.includes("(run_id=? AND updated_at>? AND updated_at<?)"),
           ),
         );
       }).pipe(Effect.provide(layer)),
@@ -1016,14 +1070,14 @@ describe("ProjectLoom.readWindow", () => {
       }).pipe(Effect.provide(layer)),
     );
 
-    it.effect("orders command candidates from a covering index, never sorting payloads", () =>
+    it.effect("bounds command candidates by their recorded time before reading payloads", () =>
       Effect.gen(function* () {
         const plans = yield* queryPlans((yield* seedBusyLane).statements);
         assert.isTrue(
-          plans.some((detail) =>
-            detail.includes(
-              "COVERING INDEX orchestration_v2_projection_turn_items_run_command_updated_idx",
-            ),
+          plans.some(
+            (detail) =>
+              detail.includes("INDEX orchestration_v2_projection_turn_items_run_command_at_idx") &&
+              detail.includes("(run_id=? AND <expr>>? AND <expr><?)"),
           ),
         );
       }).pipe(Effect.provide(layer)),

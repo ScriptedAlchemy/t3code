@@ -225,4 +225,31 @@ it.layer(layerTest)("FileHistory", (it) => {
       assert.deepEqual(tail.index, { state: "complete", pendingCheckpoints: 0 });
     }),
   );
+
+  it.effect(
+    "shares each indexing batch's file budget across checkpoints and resumes later reads",
+    () =>
+      Effect.gen(function* () {
+        const history = yield* FileHistory.FileHistory;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const project = ProjectId.make("backlog");
+        const working = ThreadId.make("backlog-thread");
+        yield* createProject(project);
+        yield* projections.apply(thread(working, project));
+        const files = Array.from({ length: 20_001 }, (_, index) => ({
+          path: `vendor/f${index}.ts`,
+        }));
+        yield* projections.apply(checkpoint(working, 1, files));
+        yield* projections.apply(checkpoint(working, 2, files));
+
+        const first = yield* history.read({ projectId: project, path: "vendor/f20000.ts" });
+        assert.deepEqual(first.index, { state: "catching-up", pendingCheckpoints: 1 });
+        assert.equal(first.entries[0]?.checkpoints, 1);
+
+        const resumed = yield* history.read({ projectId: project, path: "vendor/f20000.ts" });
+        assert.deepEqual(resumed.index, { state: "complete", pendingCheckpoints: 0 });
+        assert.equal(resumed.entries[0]?.checkpoints, 2);
+        assert.equal(resumed.entries[0]?.threadId, working);
+      }),
+  );
 });
