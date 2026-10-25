@@ -1,4 +1,10 @@
-import { MessageId, ThreadId, OrchestratorMcpFailure, ProjectId } from "@t3tools/contracts";
+import {
+  CommandId,
+  MessageId,
+  ThreadId,
+  OrchestratorMcpFailure,
+  ProjectId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -11,7 +17,8 @@ import * as Repositories from "../../../sourceControl/SourceControlRepositorySer
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import { resolveRuntimeMode } from "../../OrchestratorMcpService.ts";
+import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
@@ -54,11 +61,20 @@ const access = Effect.gen(function* () {
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_thread_launch: McpToolAccess.startsThreads(
     (input) => input,
-    (input, { runtimeMode, interactionMode }) =>
+    (input, { runtimeMode, interactionMode, linkOrigin }) =>
       Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
         const context = yield* readCaller();
         const { caller } = context;
-        const commandId = yield* newCommandId();
+        // A retry with the same key replays the first launch: the ids derive
+        // from the caller and the key, and the launch service replays a
+        // command it already accepted.
+        const commandId =
+          input.clientRequestId === undefined
+            ? yield* newCommandId()
+            : CommandId.make(
+                `mcp:launch:${encodeURIComponent(scope.requestNamespace)}:${encodeURIComponent(input.clientRequestId)}`,
+              );
         const threadId = ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
         const attachments = input.attachments ?? [];
@@ -94,7 +110,17 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           Effect.mapError(unavailable),
           Effect.map(Option.getOrUndefined),
         );
-        if (input.workspaceStrategy?.type === "existing_worktree") {
+        // A retry of an accepted launch replays it: it keeps the model it started
+        // with and skips the checks only a new launch needs, which the project
+        // may no longer pass, such as a base branch deleted since.
+        const launched =
+          input.clientRequestId === undefined
+            ? null
+            : yield* context.threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
+        const launchedModel =
+          launched === null || launched.deletedAt !== null ? undefined : launched.modelSelection;
+        const replaying = launchedModel !== undefined;
+        if (!replaying && input.workspaceStrategy?.type === "existing_worktree") {
           const project = yield* readProject;
           if (project === undefined)
             return yield* new OrchestratorMcpFailure({
@@ -105,7 +131,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         }
         // Reject unresolved base refs before accepting a launch; worktree provisioning happens later.
         const strategy = input.workspaceStrategy;
-        if (strategy?.type === "worktree")
+        if (!replaying && strategy?.type === "worktree")
           yield* ThreadLaunch.ThreadLaunchService.pipe(
             Effect.flatMap((launches) =>
               launches.checkWorktreeBase({ projectId, workspaceStrategy: strategy }),
@@ -126,7 +152,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         // project's effective defaults, as the composer does. Its mode stays
         // within the ceiling it was approved with.
         const projectDefaults =
-          caller === undefined
+          caller === undefined && !replaying
             ? yield* ServerSettings.ServerSettingsService.pipe(
                 Effect.flatMap((settings) => settings.getSettings),
                 Effect.mapError(unavailable),
@@ -140,6 +166,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             : undefined;
         const modelSelection =
           input.modelSelection ??
+          launchedModel ??
           caller?.modelSelection ??
           projectDefaults?.defaultModelSelection ??
           undefined;
@@ -176,6 +203,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               }),
           createdBy: "agent",
           creationSource: "mcp",
+          ...(linkOrigin === undefined ? {} : { linkOrigin }),
+          // Kept only alongside linkOrigin: thread.create drops it otherwise.
+          ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
         }).pipe(
           Effect.mapError((error) => {
             if (error._tag === "AttachmentClaimError") {
@@ -203,15 +233,16 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           status: run?.status ?? null,
         };
       }),
+    // The launched thread carries the caller's link, if it has one.
+    "stamped",
   ),
   t3_project_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const projects = yield* access;
-      const snapshot = yield* projects.snapshot.pipe(Effect.mapError(unavailable));
-      const rows = snapshot.projects.filter((project) => project.deletedAt === null);
-      const start = input.cursor ?? 0,
-        end = start + (input.limit ?? 20);
-      return { projects: rows.slice(start, end), nextCursor: end < rows.length ? end : null };
+      // Identities are resolved: linked environments find this side's project by repository.
+      return yield* projects
+        .listPage({ cursor: input.cursor ?? 0, limit: input.limit ?? 20 })
+        .pipe(Effect.mapError(unavailable));
     }),
   ),
   t3_project_read: McpToolAccess.reads((input) =>
@@ -226,48 +257,54 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
       return result.value;
     }),
   ),
-  t3_project_create: McpToolAccess.writesEnvironment(({ workspaceRoot, ...input }) =>
-    Effect.gen(function* () {
-      const projects = yield* Project.ProjectService;
-      if (workspaceRoot === undefined) {
-        // Only updates record model defaults; reject defaults that creation would silently drop.
-        if (
-          input.scripts !== undefined ||
-          input.createWorkspaceRootIfMissing !== undefined ||
-          input.defaultModelSelection !== undefined
-        )
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message:
-              "A project started from its title takes only a title; set scripts or defaultModelSelection afterwards with t3_project_update.",
-          });
-        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
-        const created = yield* folders
-          .createNamedProject({ name: input.title })
-          .pipe(
+  t3_project_create: McpToolAccess.writesEnvironment(
+    ({ workspaceRoot, ...input }) =>
+      Effect.gen(function* () {
+        const projects = yield* Project.ProjectService;
+        if (workspaceRoot === undefined) {
+          // Project creation records no model default (only an update does), so
+          // reject what this mode would otherwise drop silently.
+          if (
+            input.scripts !== undefined ||
+            input.createWorkspaceRootIfMissing !== undefined ||
+            input.defaultModelSelection !== undefined
+          )
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message:
+                "A project started from its title takes only a title; set scripts or defaultModelSelection afterwards with t3_project_update.",
+            });
+          const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+          const created = yield* folders.createNamedProject({ name: input.title }).pipe(
             Effect.mapError(
               (error) =>
-                new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+                new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: error.message,
+                }),
             ),
           );
-        const project = yield* projects
-          .getById(created.projectId)
-          .pipe(
-            Effect.mapError(unavailable),
-            Effect.flatMap(
-              Option.match({ onNone: () => Effect.fail(unavailable()), onSome: Effect.succeed }),
-            ),
-          );
-        return {
-          ...project,
-          ...(created.commitError === undefined ? {} : { commitError: created.commitError }),
-        };
-      }
-      const commandId = yield* newCommandId();
-      return yield* projects
-        .create({ ...input, workspaceRoot, commandId, projectId: ProjectId.make(commandId) })
-        .pipe(Effect.mapError(projectFailure));
-    }),
+          const project = yield* projects
+            .getById(created.projectId)
+            .pipe(
+              Effect.mapError(unavailable),
+              Effect.flatMap(
+                Option.match({ onNone: () => Effect.fail(unavailable()), onSome: Effect.succeed }),
+              ),
+            );
+          return {
+            ...project,
+            ...(created.commitError === undefined ? {} : { commitError: created.commitError }),
+          };
+        }
+        const commandId = yield* newCommandId();
+        return yield* projects
+          .create({ ...input, workspaceRoot, commandId, projectId: ProjectId.make(commandId) })
+          .pipe(Effect.mapError(projectFailure));
+      }),
+    // Linked work may bring the repository it works in; an existing
+    // registered workspace is still refused.
+    { linkedCallers: "allowed" },
   ),
   t3_project_update: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
@@ -285,18 +322,21 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         .pipe(Effect.mapError(projectFailure));
     }),
   ),
-  t3_project_clone: McpToolAccess.writesEnvironment((input) =>
-    Effect.gen(function* () {
-      const repositories = yield* Repositories.SourceControlRepositoryService;
-      return yield* repositories.cloneRepository(input).pipe(
-        Effect.mapError(
-          (error) =>
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: error.detail,
-            }),
-        ),
-      );
-    }),
+  t3_project_clone: McpToolAccess.writesEnvironment(
+    (input) =>
+      Effect.gen(function* () {
+        const repositories = yield* Repositories.SourceControlRepositoryService;
+        return yield* repositories.cloneRepository(input).pipe(
+          Effect.mapError(
+            (error) =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: error.detail,
+              }),
+          ),
+        );
+      }),
+    // An existing destination is never adopted.
+    { linkedCallers: "allowed" },
   ),
 });

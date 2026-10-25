@@ -74,6 +74,7 @@ describe("queued message file edits", () => {
         previewAnnotations: [],
         threadContexts: [],
         knowledgeContexts: [record],
+        environmentContexts: [],
       },
       editQueuedRun,
     });
