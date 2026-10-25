@@ -234,7 +234,7 @@ export class EffectOutboxError extends Schema.TaggedError<EffectOutboxError>()(
 const isEffectOutboxError = Schema.is(EffectOutboxError);
 
 export interface EffectOutboxV2Shape {
-  readonly awaitAvailable: Effect.Effect<void>;
+  readonly awaitAvailable: (lane: "turn" | "maintenance") => Effect.Effect<void>;
   readonly notifyAvailable: (count?: number) => Effect.Effect<void>;
   /** Persist rows only. Notify workers after the surrounding transaction commits. */
   readonly enqueue: (
@@ -334,7 +334,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
   EffectOutboxV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const available = yield* Queue.dropping<void>(64);
+    const available = {
+      turn: yield* Queue.dropping<void>(64),
+      maintenance: yield* Queue.dropping<void>(64),
+    };
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
     const settledSignals = new Map<string, Deferred.Deferred<void>>();
     const signalSettled = (effectIds: ReadonlyArray<string>) =>
@@ -348,11 +351,20 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         },
         { discard: true },
       );
-    const notifyAvailable = (count = 1) =>
-      Queue.offerAll(
-        available,
-        Array.from({ length: Math.min(64, Math.max(0, Math.floor(count))) }, () => undefined),
-      ).pipe(Effect.asVoid);
+    const notifyAvailable = (count = 1) => {
+      const notifications = Array.from(
+        { length: Math.min(64, Math.max(0, Math.floor(count))) },
+        () => undefined,
+      );
+      // Retain each lane's wakeup even if it arrives between a failed claim and its wait.
+      return Effect.all(
+        [
+          Queue.offerAll(available.turn, notifications),
+          Queue.offerAll(available.maintenance, notifications),
+        ],
+        { discard: true },
+      ).pipe(Effect.uninterruptible);
+    };
     // Retry backoff must block later effects so turns cannot race a pending rollback.
     const claimableCandidatePredicate = (
       availableBefore?: string,
@@ -471,7 +483,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           }),
           Effect.mapError((cause) => new EffectOutboxError({ operation: "get", effectId, cause })),
         ),
-      awaitAvailable: Queue.take(available),
+      awaitAvailable: (lane) => Queue.take(available[lane]),
       notifyAvailable,
       listByCommandId: (commandId) =>
         sql<EffectRow>`
