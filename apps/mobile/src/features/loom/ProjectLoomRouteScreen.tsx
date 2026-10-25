@@ -15,9 +15,10 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { useMemo, useState } from "react";
-import { Pressable, ScrollView, View } from "react-native";
+import { Platform, Pressable, ScrollView, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
+import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -26,8 +27,8 @@ import { useProject } from "../../state/entities";
 import { projectLoom } from "../../state/projectLoom";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
-import { useHomeThreadSelection } from "../home/home-thread-navigation";
 import { ListFilterMenu } from "../workspace/ListFilterMenu";
+import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 import { buildLoomActivityList, type LoomActivityListItem } from "./loomActivityList";
 
 const WINDOWS = { "24h": 1, "7d": 7, "30d": 30 } as const;
@@ -65,7 +66,7 @@ function ProjectLoomScreen(props: {
   readonly projectId: ProjectId;
 }) {
   const navigation = useNavigation();
-  const openThread = useHomeThreadSelection();
+  const selectDetail = useSelectWorkspaceDetail();
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const supported = config?.environment.capabilities.projectLoom === true;
   const project = useProject(props);
@@ -112,7 +113,7 @@ function ProjectLoomScreen(props: {
     });
   };
   const selectThread = (threadId: ThreadId) =>
-    openThread({ environmentId: props.environmentId, id: threadId });
+    selectDetail({ name: "Thread", params: { environmentId: props.environmentId, threadId } });
   const renderItem = ({ item }: { item: LoomActivityListItem }) => {
     if (item.kind === "date") {
       return (
@@ -216,6 +217,7 @@ function ProjectLoomScreen(props: {
       />
       <ScreenContent>
         <LegendList
+          renderScrollComponent={Platform.OS === "ios" ? NativeScrollView : undefined}
           className="flex-1"
           data={items}
           keyExtractor={(item) => item.key}

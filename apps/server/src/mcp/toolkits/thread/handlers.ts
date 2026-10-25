@@ -8,6 +8,7 @@ import {
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -103,7 +104,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   ),
   t3_thread_search: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
-      const { caller } = yield* readCaller();
+      const { caller, threads } = yield* readCaller();
       const threadSearch = yield* ThreadSearch.ThreadSearch;
       const { projectId: requestedProjectId, ...query } = input;
       const projectId = requestedProjectId ?? caller?.projectId;
@@ -113,7 +114,19 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           ...(projectId === undefined ? {} : { projectId }),
           includeArchived: input.includeArchived ?? false,
         })
-        .pipe(Effect.mapError(unavailable));
+        .pipe(
+          Effect.flatMap((result) =>
+            Effect.forEach(result.matches, (match) =>
+              threads.getThreadShell(match.threadId).pipe(
+                Effect.map((thread) => ({
+                  ...match,
+                  link: formatThreadLink(match.threadId, thread?.title ?? "Thread"),
+                })),
+              ),
+            ).pipe(Effect.map((matches) => ({ ...result, matches }))),
+          ),
+          Effect.mapError(unavailable),
+        );
     }),
   ),
   t3_thread_fork: writesThread((input) =>

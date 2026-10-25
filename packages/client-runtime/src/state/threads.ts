@@ -961,7 +961,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           ...(canResume ? { afterSequence: sequence } : {}),
           ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
           ...(acceptBoundedSnapshot
-            ? { acceptBoundedSnapshot: true as const, acceptCompactTurnItems: true as const }
+            ? {
+                acceptBoundedSnapshot: true as const,
+                acceptCompactTurnItems: true as const,
+                acceptCompactIds: true as const,
+              }
             : {}),
           acceptDedupedBodies: true as const,
         };
@@ -1049,5 +1053,6 @@ export * from "./threadCommands.ts";
 export * from "./threadFeedback.ts";
 export * from "./threadDetail.ts";
 export * from "./threadFamilies.ts";
+export * from "./olderSettledThreads.ts";
 export * from "./threadShell.ts";
 export * from "./threadState.ts";

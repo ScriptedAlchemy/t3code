@@ -75,19 +75,15 @@ vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({
     goBack: () => {},
     addListener: () => () => {},
-    dispatch: (action: (value: unknown) => unknown) =>
-      state.actions.push(action({ index: 0, routes: [{ name: "ProjectLoom", key: "loom" }] })),
   }),
-  CommonActions: {
-    navigate: (name: string, params: unknown) => ({ type: "NAVIGATE", payload: { name, params } }),
-  },
 }));
-vi.mock("../workspace/useAndroidWorkspaceSelection", () => ({
-  useAndroidWorkspaceSelection: () => () => {},
+vi.mock("../workspace/useSelectWorkspaceDetail", () => ({
+  useSelectWorkspaceDetail: () => (detail: unknown) => state.actions.push(detail),
 }));
 vi.mock("../../components/ui/AppText", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
+vi.mock("../../native/NativeScrollViewMarker", () => ({ NativeScrollView: () => null }));
 vi.mock("../../components/ui/AppBar", () => ({ AppBar: () => <header>Loom</header> }));
 vi.mock("../../components/ui/Button", () => ({
   Button: ({
@@ -300,14 +296,8 @@ it("groups dates, nests delegated activity, collapses descendants and navigates 
   await screen.press("Open thread child");
   await screen.press("Run 1 · completed");
   expect(state.actions).toEqual([
-    {
-      type: "NAVIGATE",
-      payload: { name: "Thread", params: { environmentId: "remote", threadId: "child" } },
-    },
-    {
-      type: "NAVIGATE",
-      payload: { name: "Thread", params: { environmentId: "remote", threadId: "root" } },
-    },
+    { name: "Thread", params: { environmentId: "remote", threadId: "child" } },
+    { name: "Thread", params: { environmentId: "remote", threadId: "root" } },
   ]);
   await screen.press("Pull request linked: #1");
   expect(state.urls).toEqual(["https://github.com/t3/t3code/pull/1"]);

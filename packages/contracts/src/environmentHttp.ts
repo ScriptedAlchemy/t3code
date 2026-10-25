@@ -669,17 +669,20 @@ const EnvironmentOrchestrationThreadSnapshotParams = Schema.Struct({
 
 const EnvironmentOrchestrationShellSnapshotQuery = Schema.Struct({
   omitIdleSubagents: Schema.optionalKey(Schema.String),
+  omitOlderSettled: Schema.optionalKey(Schema.String),
 });
 
 const EnvironmentOrchestrationThreadBoundedSnapshotQuery = Schema.Struct({
   compactTurnItems: Schema.optionalKey(Schema.String),
   dedupeBodies: Schema.optionalKey(Schema.String),
+  compactIds: Schema.optionalKey(Schema.String),
 });
 
 const EnvironmentOrchestrationThreadHistoryQuery = Schema.Struct({
   cursor: TrimmedNonEmptyString,
   throughEntryId: Schema.optional(TrimmedNonEmptyString),
   view: Schema.optional(Schema.Literals(["conversation", "activity"])),
+  compactIds: Schema.optionalKey(Schema.String),
 });
 
 const EnvironmentOrchestrationThreadHistoryErrors = [

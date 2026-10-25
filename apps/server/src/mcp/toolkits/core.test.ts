@@ -40,6 +40,7 @@ import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapter
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import * as PreviewBrowser from "../../preview/PreviewBrowser.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -975,3 +976,54 @@ it.effect("only the caller that prepared a pending upload can discard it", () =>
     ),
   ),
 );
+
+it.effect("thread search preserves citations and pagination and returns a thread link", () => {
+  const shell = McpToolAccessTestkit.liveThreadShell(threadId);
+  const match = {
+    threadId,
+    projectId: shell.projectId,
+    source: "assistant" as const,
+    snippet: "exact citation",
+    messageCreatedAt: null,
+    messageId: "search-message" as import("@t3tools/contracts").MessageId,
+    digest: "digest",
+  };
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const result = yield* server
+      .callTool({ name: "t3_thread_search", arguments: { query: "citation" } })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    const text = result.content[0];
+    expect(result.isError).not.toBe(true);
+    expect(text?.type).toBe("text");
+    if (text?.type !== "text") return;
+    expect(JSON.parse(text.text)).toEqual({
+      matches: [{ ...match, link: formatThreadLink(threadId, shell.title) }],
+      nextCursor: null,
+    });
+  }).pipe(
+    Effect.provide(
+      McpHttpServer.layerThreadToolkit.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.mock(ThreadSearch.ThreadSearch)({
+            search: () => Effect.succeed({ matches: [match], nextCursor: null }),
+          }),
+        ),
+        Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+        Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+        Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+        Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: () => Effect.succeed(shell),
+          }),
+        ),
+      ),
+    ),
+  );
+});

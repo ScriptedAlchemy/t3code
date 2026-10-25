@@ -86,6 +86,7 @@ import type { SourceControlProviderContext } from "@t3tools/source-control-core/
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import {
   type ProviderChangeRequest,
+  type ProviderDiffFilePaths,
   type ProviderFilterOptionPage,
   type ProviderListCursor,
   type ProviderChangeRequestWatchFingerprint,
@@ -140,9 +141,23 @@ const LIST_CACHE_CAPACITY = 64;
 const LIST_STATS_CACHE_CAPACITY = 32;
 const DETAIL_CACHE_CAPACITY = 128;
 const DIFF_CACHE_CAPACITY = 128;
-const MAX_CACHED_DIFF_PATCH_BYTES = 512 * 1024;
+// Each holder stays within this UTF-16 patch budget as well as its entry-count bound.
+const DIFF_CACHE_PATCH_BUDGET_BYTES = 32 * 1024 * 1024;
 const canCacheDiff = (value: PullRequestDiffResult) =>
-  value.patch.length * 2 <= MAX_CACHED_DIFF_PATCH_BYTES;
+  value.patch.length * 2 <= DIFF_CACHE_PATCH_BUDGET_BYTES;
+const diffCacheEvictions = (entries: Iterable<readonly [string, PullRequestDiffResult]>) => {
+  let bytes = 0;
+  const evictions: string[] = [];
+  for (const [key, value] of Array.from(entries).toReversed()) {
+    const size = value.patch.length * 2;
+    if (bytes + size > DIFF_CACHE_PATCH_BUDGET_BYTES) {
+      evictions.push(key);
+    } else {
+      bytes += size;
+    }
+  }
+  return evictions;
+};
 const FILES_VIEWED_CACHE_CAPACITY = 128;
 const VIEWER_CACHE_CAPACITY = 32;
 
@@ -543,6 +558,9 @@ function withRateLimitBackoff(
         }),
     getViewerPermissions: interactive("getViewerPermissions", api.getViewerPermissions),
     getDiff: wrap("getDiff", api.getDiff),
+    ...(api.getDiffFilePaths === undefined
+      ? {}
+      : { getDiffFilePaths: wrap("getDiffFilePaths", api.getDiffFilePaths) }),
     ...(api.getDiffFileContents === undefined
       ? {}
       : { getDiffFileContents: wrap("getDiffFileContents", api.getDiffFileContents) }),
@@ -677,6 +695,7 @@ export const make = Effect.gen(function* () {
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
+  const clock = yield* Clock.Clock;
 
   /**
    * Where each project's remote is served from, by the remote's recognised base URL: a remote no
@@ -2613,6 +2632,11 @@ export const make = Effect.gen(function* () {
           if (oldest !== undefined) held.delete(oldest);
         }
         held.set(key, { at, value });
+        for (const evicted of diffCacheEvictions(
+          Array.from(held, ([key, snapshot]) => [key, snapshot.value] as const),
+        )) {
+          held.delete(evicted);
+        }
         armDiffSweep();
       });
     const serve = <E>(key: string, read: Effect.Effect<PullRequestDiffResult, E>) => {
@@ -2960,7 +2984,20 @@ export const make = Effect.gen(function* () {
     },
     {
       capacity: DETAIL_CACHE_CAPACITY,
-      timeToLive: (exit) => (Exit.isSuccess(exit) ? CHECKS_CACHE_TTL : Duration.zero),
+      // Expire from the read's start so checks seeded from a slow detail read keep their age.
+      timeToLive: (exit) =>
+        !Exit.isSuccess(exit)
+          ? Duration.zero
+          : exit.value === null
+            ? CHECKS_CACHE_TTL
+            : Duration.millis(
+                Math.max(
+                  0,
+                  exit.value.observedAt +
+                    Duration.toMillis(CHECKS_CACHE_TTL) -
+                    clock.currentTimeMillisUnsafe(),
+                ),
+              ),
     },
   );
 
@@ -2994,6 +3031,18 @@ export const make = Effect.gen(function* () {
       return detailUncached(refOfCacheKey(key)).pipe(
         Effect.tap(
           Effect.fn("PullRequestService.recordDetailStats")(function* (value: PullRequestDetail) {
+            // GitHub detail includes the same checks; the checks TTL counts from their observation.
+            if (
+              value.provider === "github" &&
+              value.observedAt !== undefined &&
+              !(yield* Cache.has(checksCache, key))
+            ) {
+              yield* Cache.set(checksCache, key, {
+                state: value.state,
+                checks: value.checks,
+                observedAt: value.observedAt,
+              });
+            }
             recordStats(
               statsKey,
               {
@@ -3202,14 +3251,24 @@ export const make = Effect.gen(function* () {
         ...refOfCacheKey(reference),
         ...(cursor === null ? {} : { cursor }),
         ...(commit === null ? {} : { commit }),
-      } as PullRequestDiffInput);
+      } as PullRequestDiffInput).pipe(
+        observeRead,
+        Effect.tap(({ value, observedAt }) => {
+          // Keep the loader's epoch and read time if a refresh occurs during the provider read.
+          diffFiles.record(JSON.stringify([reference, cursor, commit]), value, observedAt);
+          return Effect.void;
+        }),
+      );
     },
     {
       capacity: DIFF_CACHE_CAPACITY,
       timeToLive: (exit, key) => {
         if (!Exit.isSuccess(exit)) return Duration.zero;
         const commit = (JSON.parse(key) as ReadonlyArray<unknown>)[2];
-        return commit === null ? DIFF_CACHE_TTL : COMMIT_DIFF_CACHE_TTL;
+        const ttl = Duration.toMillis(commit === null ? DIFF_CACHE_TTL : COMMIT_DIFF_CACHE_TTL);
+        return Duration.millis(
+          Math.max(0, exit.value.observedAt + ttl - clock.currentTimeMillisUnsafe()),
+        );
       },
     },
   );
@@ -3235,7 +3294,7 @@ export const make = Effect.gen(function* () {
       if (held > 0) armDiffSweep();
     }),
   );
-  const diff: PullRequestService["Service"]["diff"] = (input) => {
+  const readDiff = (input: PullRequestDiffInput) => {
     const key = JSON.stringify([
       refCacheKey(input),
       input.cursor ?? null,
@@ -3244,22 +3303,24 @@ export const make = Effect.gen(function* () {
         ? (lastGoodSummary.peek(refCacheKey(input))?.updatedAt ?? null)
         : null,
     ]);
-    const read = Cache.get(diffCache, key).pipe(
-      Effect.tap((value) =>
-        canCacheDiff(value)
-          ? Effect.void
-          : Cache.getSuccess(diffCache, key).pipe(
-              Effect.flatMap((current) =>
-                Option.isSome(current) && current.value === value
-                  ? Cache.invalidate(diffCache, key)
-                  : Effect.void,
-              ),
-              Effect.uninterruptible,
-            ),
+    const evictDiffs = Cache.entries(diffCache).pipe(
+      Effect.flatMap((entries) =>
+        Effect.forEach(
+          diffCacheEvictions(Array.from(entries, ([key, read]) => [key, read.value] as const)),
+          (evicted) => Cache.invalidate(diffCache, evicted),
+        ),
       ),
+      Effect.uninterruptible,
+    );
+    const read = Cache.get(diffCache, key).pipe(
+      Effect.ensuring(evictDiffs),
       Effect.ensuring(Effect.sync(armDiffSweep)),
     );
-    return staleDiff.serve(key, read);
+    return { key, read };
+  };
+  const diff: PullRequestService["Service"]["diff"] = (input) => {
+    const { key, read } = readDiff(input);
+    return staleDiff.serve(key, read.pipe(Effect.map((read) => read.value)));
   };
 
   const filesViewedCache = yield* Cache.makeWith(
@@ -3468,19 +3529,10 @@ export const make = Effect.gen(function* () {
     const fileKey = (oldPath: string, newPath: string) => JSON.stringify([oldPath, newPath]);
     const sliceKey = (input: PullRequestDiffInput) =>
       JSON.stringify([refCacheKey(input), input.cursor ?? null, input.commit ?? null]);
-    const read = Effect.fn("PullRequestService.read")(function* (input: PullRequestDiffInput) {
-      const key = sliceKey(input);
-      const now = yield* Clock.currentTimeMillis;
-      const cached = held.get(key);
-      if (cached !== undefined && now - cached.at <= ttlMs) return cached;
-      const slice = yield* diff(input);
+    const recordPaths = (key: string, slice: ProviderDiffFilePaths, at: number) => {
       const entry = {
-        at: now,
-        files: new Set(
-          parseDiffFilePaths(slice.patch).map((file) =>
-            fileKey(file.oldPath ?? file.newPath ?? "", file.newPath ?? file.oldPath ?? ""),
-          ),
-        ),
+        at,
+        files: new Set(slice.files.map((file) => fileKey(file.oldPath, file.newPath))),
         nextCursor: slice.nextCursor,
       };
       held.delete(key);
@@ -3490,8 +3542,42 @@ export const make = Effect.gen(function* () {
       }
       held.set(key, entry);
       return entry;
+    };
+    const record = (key: string, slice: PullRequestDiffResult, at: number) =>
+      recordPaths(
+        key,
+        {
+          files: parseDiffFilePaths(slice.patch).map((file) => ({
+            oldPath: file.oldPath ?? file.newPath ?? "",
+            newPath: file.newPath ?? file.oldPath ?? "",
+          })),
+          nextCursor: slice.nextCursor,
+        },
+        at,
+      );
+    const read = Effect.fn("PullRequestService.read")(function* (input: PullRequestDiffInput) {
+      const key = sliceKey(input);
+      const now = yield* Clock.currentTimeMillis;
+      const cached = held.get(key);
+      if (cached !== undefined && now - cached.at <= ttlMs) return cached;
+      const project = yield* requireProject(input);
+      if (project.api.capabilities.diff && project.api.getDiffFilePaths) {
+        const slice = yield* project.api
+          .getDiffFilePaths({
+            cwd: project.project.workspaceRoot,
+            repository: project.repository,
+            host: project.host,
+            number: input.number,
+            ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+            ...(input.commit === undefined ? {} : { commit: input.commit }),
+          })
+          .pipe(Effect.mapError(toPullRequestError("diffFileContents")));
+        return recordPaths(key, slice, now);
+      }
+      const { value, observedAt } = yield* readDiff(input).read;
+      return record(key, value, observedAt);
     });
-    return { read: credentialCached(read), fileKey };
+    return { read: credentialCached(read), record, fileKey };
   })();
   const changesFile = (input: PullRequestDiffFileContentsInput) => {
     const wanted = diffFiles.fileKey(input.oldPath, input.newPath);

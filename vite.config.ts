@@ -1,6 +1,8 @@
 import "vite-plus/test/config";
 import { defineConfig } from "vite-plus";
 import * as NodeURL from "node:url";
+import { remoteCacheUrl } from "./infra/task-cache/src/remoteCache.ts";
+import { cachedTestTasks } from "./scripts/lib/cached-tests.ts";
 
 const DOM_TEST_ENVIRONMENT_ALLOWLIST: Array<string> = [];
 
@@ -39,6 +41,12 @@ const RESTRICTED_IMPORT_PATHS = [
     importNames: ["CodeView"],
     message: "Use StyledDiffCodeView so web diff surfaces share styling and virtualized geometry.",
   },
+  {
+    name: "react-native-screens",
+    importNames: ["ScrollViewMarker"],
+    message:
+      "Use NativeScrollViewMarker or NativeScrollView (src/native/NativeScrollViewMarker.tsx): they carry the header's scroll-edge blur under the Duo's vertical bar.",
+  },
 ];
 
 const RESTRICTED_UI_VARIANT_PATTERNS = [
@@ -72,7 +80,18 @@ const RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS = {
     "Pick a glyph by meaning from PullRequestGlyph in apps/web/src/components/pullRequest/pullRequestIcons.tsx so every surface draws the same pull request the same way.",
 };
 
+// Vite+ supports remote configuration before its published types include it.
+const cacheUrl = remoteCacheUrl(import.meta.dirname);
+const taskCacheConfig = {
+  scripts: false,
+  ...(cacheUrl ? { remote: { url: cacheUrl } } : {}),
+};
+
 export default defineConfig({
+  run: {
+    cache: taskCacheConfig,
+    tasks: cachedTestTasks(process.env.T3_CACHED_TESTS),
+  },
   resolve: {
     alias: {
       "~": NodeURL.fileURLToPath(new URL("./apps/web/src", import.meta.url)),
@@ -80,6 +99,8 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // Fixture subprocesses must not inherit the outer task runner’s cache policy.
+    env: { VP_REMOTE_CACHE: "off", VP_REMOTE_CACHE_URL: "" },
     exclude: TEST_EXCLUDE,
     hookTimeout: 60_000,
     testTimeout: 60_000,
@@ -135,6 +156,7 @@ export default defineConfig({
   fmt: {
     ignorePatterns: [
       ".repos/**",
+      "infra/task-cache/vendor/**",
       // Macroscope requires one glob per line; Markdown formatting corrupts it.
       ".macroscope/ignore.md",
       ".alchemy",
@@ -169,6 +191,7 @@ export default defineConfig({
     ignorePatterns: [
       ".repos",
       ".repos/**",
+      "infra/task-cache/vendor/**",
       "dist",
       "dist-electron",
       "node_modules",
@@ -424,7 +447,10 @@ export default defineConfig({
       },
       {
         files: ["apps/mobile/src/**"],
-        rules: { "t3code/no-mobile-uniwind-theme-escape-hatches": "error" },
+        rules: {
+          "t3code/no-mobile-uniwind-theme-escape-hatches": "error",
+          "t3code/require-registered-list-scroll": "error",
+        },
       },
       {
         files: ["apps/mobile/src/**"],
@@ -434,6 +460,11 @@ export default defineConfig({
           "apps/mobile/src/features/pull-requests/pullRequestGlyphs.ts",
         ],
         rules: { "t3code/no-mobile-pull-request-glyph-literals": "error" },
+      },
+      {
+        files: ["apps/mobile/src/**"],
+        excludeFiles: ["**/*.test.{ts,tsx}"],
+        rules: { "t3code/no-ambiguous-detail-navigation": "error" },
       },
       {
         // Raw ResizeObserver state commits miss the paint; observeResize flushes derived layout together.

@@ -34,7 +34,7 @@ import {
   type EnvironmentQueryTarget,
 } from "~/state/pullRequests";
 import { useEnvironmentQuery } from "~/state/query";
-import { useComposerPathSearch, useDebouncedValue } from "~/state/queries";
+import { useComposerPathSearch, useDebouncedValue, useThreadSearch } from "~/state/queries";
 import {
   matchesPullRequestQuery,
   rankPullRequestMatches,
@@ -106,6 +106,8 @@ export function useComposerMenuItems({
     ...identity,
     machine: environmentMachines.get(identity.environmentId) ?? ("server" as const),
   }));
+  // Mounts older settled threads matching the mention, which shells may leave out.
+  useThreadSearch(isPathTrigger ? [environmentId] : [], pathTriggerQuery, { titlesOnly: true });
   const workspaceEntries = useComposerPathSearch({
     environmentId,
     cwd: isPathTrigger ? gitCwd : null,

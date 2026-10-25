@@ -28,7 +28,8 @@ import {
   projectScriptTerminalInput,
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
-import { Platform, ScrollView } from "react-native";
+import { Platform } from "react-native";
+import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useConnectionsReady } from "../../state/workspace";
 import { useEnvironmentShellReadiness } from "../../state/shell";
@@ -100,6 +101,7 @@ import {
   useWorkspaceBackNavigation,
 } from "../workspace/useAndroidWorkspaceNavigation";
 import { openSettings } from "../settings/settings-navigation";
+import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 
 interface ThreadInspectorSelection {
   readonly routeThreadIdentity: string | null;
@@ -352,6 +354,7 @@ function ThreadRouteContent(
       threadId: summaryThreadId,
     });
   }, [navigation, summaryEnvironmentId, summaryProjectId, summaryThreadId]);
+  const selectDetail = useSelectWorkspaceDetail();
   const openPullRequest = useOpenPullRequest();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack, "merge thread back");
   const mergeBackTargetThreadId = resolveMergeBackTargetThreadId(selectedThreadDetail);
@@ -379,9 +382,9 @@ function ThreadRouteContent(
     });
     mergeBackBusyRef.current = false;
     if (result._tag !== "Success") return;
-    navigation.navigate("Thread", {
-      environmentId: selectedThread.environmentId,
-      threadId: mergeBackTargetThreadId,
+    selectDetail({
+      name: "Thread",
+      params: { environmentId: selectedThread.environmentId, threadId: mergeBackTargetThreadId },
     });
   };
   const params = props.route.params ?? {};

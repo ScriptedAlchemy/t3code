@@ -135,6 +135,8 @@ import {
   type ProjectionRecordFilter,
   type ProjectionRecords,
   type ProjectionCheckpointContext,
+  type OlderSettledThreadsListing,
+  type OlderSettledThreadsQuery,
   type ShellSnapshotOptions,
 } from "./ProjectionStore.ts";
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
@@ -393,6 +395,9 @@ export interface OrchestratorV2Shape {
     ReadonlyArray<ThreadId>,
     OrchestratorV2Error
   >;
+  readonly listOlderSettledThreads: (
+    query: OlderSettledThreadsQuery,
+  ) => Effect.Effect<OlderSettledThreadsListing, OrchestratorV2Error>;
   readonly readShellSnapshot: (
     options?: ShellSnapshotOptions,
   ) => Effect.Effect<
@@ -603,6 +608,17 @@ function cancelledAppOwnedTask(
     updatedAt: now,
     completionDelivery: { state: "disposed", observedByRunId: null },
   };
+}
+
+// Provider wakes can start follow-up work; monitor updates only report progress.
+// Dispatch takes the parent's lock for follow-ups because intake writes the parent.
+function mayStartSubagentFollowup(
+  command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+): boolean {
+  if (command.scheduledTaskId !== undefined || command.restartContinuationOfRunId !== undefined)
+    return false;
+  if (command.notification !== undefined) return command.notification.source.kind !== "monitor";
+  return command.createdBy === "user" || command.creationSource === "mcp";
 }
 
 function isBlockingRun(run: OrchestrationV2Run): boolean {
@@ -7755,13 +7771,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
   ) {
-    if (
-      command.scheduledTaskId !== undefined ||
-      command.notification !== undefined ||
-      command.restartContinuationOfRunId !== undefined ||
-      (command.createdBy !== "user" && command.creationSource !== "mcp")
-    )
-      return;
+    if (!mayStartSubagentFollowup(command)) return;
     const pending = yield* Ref.get(events);
     const message = pending
       .flatMap((event) =>
@@ -7783,7 +7793,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       child.lineage.relationshipToParent !== "subagent" ||
       parentThreadId === null ||
-      (command.createdBy !== "user" && command.senderThreadId !== parentThreadId)
+      (command.notification === undefined &&
+        command.createdBy !== "user" &&
+        command.senderThreadId !== parentThreadId)
     )
       return;
     const run =
@@ -8562,6 +8574,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             label: command.label,
             reason: command.reason,
             ...(command.placeholder === undefined ? {} : { placeholder: command.placeholder }),
+            ...(command.delivery === undefined ? {} : { delivery: command.delivery }),
             secretStatus: command.secretStatus,
           };
       yield* emit(
@@ -13150,10 +13163,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       commandThreadId(command),
       dispatchWithReceiptEffect(command),
     );
-    if (
-      command.type !== "message.dispatch" ||
-      (command.createdBy !== "user" && command.creationSource !== "mcp")
-    )
+    if (command.type !== "message.dispatch" || !mayStartSubagentFollowup(command))
       return yield* dispatch;
     const parentThreadId = yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
       Effect.mapError(
@@ -13512,6 +13522,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projectionStore.getShellSnapshot(options).pipe(Effect.mapError(shellProjectionError)),
     listActiveSubagentThreadIds: () =>
       projectionStore.listActiveSubagentThreadIds().pipe(Effect.mapError(shellProjectionError)),
+    listOlderSettledThreads: (query) =>
+      projectionStore.listOlderSettledThreads(query).pipe(Effect.mapError(shellProjectionError)),
     readShellSnapshot: (options) =>
       projectionStore
         .readShellSnapshot(options)
@@ -13657,6 +13669,13 @@ const layerUnavailable: Layer.Layer<OrchestratorV2> = Layer.succeed(
         }),
       ),
     listActiveSubagentThreadIds: () =>
+      Effect.fail(
+        new OrchestratorProjectionError({
+          threadId: ThreadId.make("thread:shell"),
+          cause: "Orchestration V2 live runtime is not configured.",
+        }),
+      ),
+    listOlderSettledThreads: () =>
       Effect.fail(
         new OrchestratorProjectionError({
           threadId: ThreadId.make("thread:shell"),

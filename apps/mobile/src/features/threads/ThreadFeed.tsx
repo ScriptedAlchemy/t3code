@@ -133,7 +133,8 @@ import { assetImageSource } from "../../lib/assetImageSource";
 import { composerImageGallery } from "../../lib/composerImageGallery";
 import { messageImageGallery } from "./messageImageGallery";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
-import { isPdfFile } from "../../lib/filePreview";
+import { inlineFilePreviewKind, isPdfFile } from "../../lib/filePreview";
+import { ThreadInlineFilePreview } from "./ThreadInlineFilePreview";
 import { flattenThemeColor } from "../../lib/mobileTheme";
 import { PresentationSource } from "../../components/ui/NativePresentation";
 import { NativeScrollViewMarker } from "../../native/NativeScrollViewMarker";
@@ -160,9 +161,8 @@ import {
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
-import { VideoAttachmentTile } from "../../components/VideoAttachmentTile";
 import { MediaVideoPlayer } from "../../components/MediaVideoPlayer";
-import { resolveMarkdownMediaPreview } from "../../lib/markdownMedia";
+import { markdownFileEmbedLabel, resolveMarkdownMediaPreview } from "../../lib/markdownMedia";
 import {
   attachmentVideoPreviewSource,
   mediaVideoPreviewUri,
@@ -292,6 +292,7 @@ import {
   ThreadMarkdownImageView,
 } from "./ThreadMarkdownImage";
 import { openSettings } from "../settings/settings-navigation";
+import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 
 const WIDE_MARKDOWN_BLOCK_OPTIONS = {
   // iOS blockquotes and selectable text measure separately; definite bubble width matches UIKit's drawing width.
@@ -452,6 +453,7 @@ function AssistantForkButton(props: {
   });
   const forkFromRun = useAtomCommand(threadEnvironment.forkFromRun, "fork from response");
   const navigation = useNavigation();
+  const selectDetail = useSelectWorkspaceDetail();
   const [busy, setBusy] = useState(false);
   const canFork = canForkProjectedAssistantItem({
     projectedItem: props.projectedItem,
@@ -490,9 +492,9 @@ function AssistantForkButton(props: {
               );
               return;
             }
-            navigation.navigate("Thread", {
-              environmentId: props.environmentId,
-              threadId: targetThreadId,
+            selectDetail({
+              name: "Thread",
+              params: { environmentId: props.environmentId, threadId: targetThreadId },
             });
           })
           .finally(() => setBusy(false));
@@ -599,7 +601,7 @@ function MessageAttachmentFile(props: {
   readonly environmentId: EnvironmentId;
   readonly attachment: ChatFileAttachment;
   readonly onPressPreview: (source: FilePreviewSource) => void;
-  readonly onPressVideo: (attachment: ChatFileAttachment, sourceIdentifier: string) => void;
+  readonly onPlaybackStart: () => void;
 }) {
   const sourceIdentifier = useId();
   const navigation = useNavigation();
@@ -616,17 +618,6 @@ function MessageAttachmentFile(props: {
     ? "PDF"
     : (attachment.name.match(/\.([a-z0-9]{1,8})$/i)?.[1]?.toUpperCase() ?? "File");
   const sizeLabel = formatAttachmentSize(attachment.sizeBytes);
-  const thumbnailUrl = useAssetUrl(
-    props.environmentId,
-    videoType === null
-      ? null
-      : {
-          _tag: "attachment",
-          attachmentId: attachment.id,
-          fileName: attachment.name,
-          mimeType: videoType,
-        },
-  );
   const httpBaseUrl = Option.isSome(preparedConnection)
     ? preparedConnection.value.httpBaseUrl
     : null;
@@ -692,22 +683,64 @@ function MessageAttachmentFile(props: {
     })();
   };
 
-  if (videoType !== null) {
-    const sourceIdentifier = `attachment:${props.environmentId}:${attachment.id}`;
+  const openAttachment = () =>
+    isPdf
+      ? props.onPressPreview({
+          kind: "pdf",
+          name: attachment.name,
+          environmentId: props.environmentId,
+          resource: {
+            _tag: "attachment",
+            attachmentId: attachment.id,
+            fileName: attachment.name,
+            mimeType: "application/pdf",
+          },
+          sourceIdentifier,
+        })
+      : navigation.navigate("ThreadAttachment", {
+          environmentId: String(props.environmentId),
+          ...(selectedThread ? { threadId: String(selectedThread.id) } : {}),
+          attachmentId: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: String(attachment.sizeBytes),
+        });
+  const inlineKind = inlineFilePreviewKind(attachment);
+  if (inlineKind) {
     return (
-      <VideoAttachmentTile
-        name={attachment.name}
-        sourceIdentifier={sourceIdentifier}
-        thumbnailSource={thumbnailUrl}
-        actionsSource={
-          attachmentVideoPreviewSource(props.environmentId, attachment, sourceIdentifier)
-            .actionsSource
-        }
-        disabled={opening || httpBaseUrl === null}
-        onPress={(sourceIdentifier) => props.onPressVideo(attachment, sourceIdentifier)}
-        className="my-1 rounded-2xl"
-        style={{ width: 224, maxWidth: "100%", aspectRatio: 16 / 9 }}
-      />
+      <PresentationSource identifier={sourceIdentifier}>
+        <ThreadInlineFilePreview
+          key={attachment.id}
+          source={{
+            kind: "document",
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            environmentId: props.environmentId,
+            resource: {
+              _tag: "attachment",
+              attachmentId: attachment.id,
+              fileName: attachment.name,
+              mimeType: attachment.mimeType,
+              disposition: "inline",
+            },
+          }}
+          sizeBytes={attachment.sizeBytes}
+          onOpen={openAttachment}
+          onPlaybackStart={props.onPlaybackStart}
+          onLongPress={() => shareFile(sourceIdentifier)}
+        />
+      </PresentationSource>
+    );
+  }
+
+  if (videoType !== null) {
+    return (
+      <View className="my-1" style={{ width: 224, maxWidth: "100%" }}>
+        <ThreadMarkdownVideo
+          source={attachmentVideoPreviewSource(props.environmentId, attachment, sourceIdentifier)}
+          onPlaybackStart={props.onPlaybackStart}
+        />
+      </View>
     );
   }
 
@@ -726,29 +759,7 @@ function MessageAttachmentFile(props: {
           disabled={opening || httpBaseUrl === null}
           className="min-w-0 flex-row items-center gap-3 rounded-xl border border-border bg-card p-3 active:bg-subtle"
           onLongPress={() => shareFile(sourceIdentifier)}
-          onPress={() =>
-            isPdf
-              ? props.onPressPreview({
-                  kind: "pdf",
-                  name: attachment.name,
-                  environmentId: props.environmentId,
-                  resource: {
-                    _tag: "attachment",
-                    attachmentId: attachment.id,
-                    fileName: attachment.name,
-                    mimeType: "application/pdf",
-                  },
-                  sourceIdentifier,
-                })
-              : navigation.navigate("ThreadAttachment", {
-                  environmentId: String(props.environmentId),
-                  ...(selectedThread ? { threadId: String(selectedThread.id) } : {}),
-                  attachmentId: attachment.id,
-                  name: attachment.name,
-                  mimeType: attachment.mimeType,
-                  sizeBytes: String(attachment.sizeBytes),
-                })
-          }
+          onPress={openAttachment}
         >
           <View className="h-12 w-10 shrink-0 items-center justify-center rounded-lg bg-subtle">
             {opening ? (
@@ -782,7 +793,7 @@ function MessageAttachmentList(props: {
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly environmentId: EnvironmentId;
   readonly onPressPreview: (source: FilePreviewSource) => void;
-  readonly onPressVideo: (attachment: ChatFileAttachment, sourceIdentifier: string) => void;
+  readonly onPlaybackStart: () => void;
 }) {
   return props.attachments.map((attachment) =>
     isImageAttachment(attachment) ? (
@@ -801,7 +812,7 @@ function MessageAttachmentList(props: {
         environmentId={props.environmentId}
         attachment={attachment}
         onPressPreview={props.onPressPreview}
-        onPressVideo={props.onPressVideo}
+        onPlaybackStart={props.onPlaybackStart}
       />
     ) : (
       <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
@@ -847,6 +858,7 @@ interface MarkdownLinkHandlers {
   readonly onFileContextMenuAction: (href: string, actionId: string) => void;
   readonly onImagePress?: (href: string) => void;
   readonly resolveImageSource?: MarkdownImageSourceResolver;
+  readonly fileEmbedLabel?: (href: string, standalone: boolean) => string | null;
   readonly linkCustomization?: (href: string) => MarkdownLinkCustomization | undefined;
 }
 
@@ -1277,7 +1289,7 @@ function renderFeedEntry(
     readonly onToggleTurnFold: (runId: RunId) => void;
     readonly onOpenTurnDiff: (checkpoint: ThreadCheckpointSummary) => void;
     readonly onPressPreview: (source: FilePreviewSource) => void;
-    readonly onPressVideo: (attachment: ChatFileAttachment, sourceIdentifier: string) => void;
+    readonly onPlaybackStart: () => void;
     readonly markdownLinkHandlers: MarkdownLinkHandlers;
     readonly renderMarkdownImage: MarkdownImageRenderer;
     readonly renderViewedImage: MarkdownImageRenderer;
@@ -1313,7 +1325,7 @@ function renderFeedEntry(
             attachments={attachments}
             environmentId={props.environmentId}
             onPressPreview={props.onPressPreview}
-            onPressVideo={props.onPressVideo}
+            onPlaybackStart={props.onPlaybackStart}
           />
         )}
       />
@@ -1672,7 +1684,7 @@ function renderFeedEntry(
                           environmentId={props.environmentId}
                           attachment={attachment}
                           onPressPreview={props.onPressPreview}
-                          onPressVideo={props.onPressVideo}
+                          onPlaybackStart={props.onPlaybackStart}
                         />
                       ) : (
                         <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
@@ -1815,7 +1827,7 @@ function renderFeedEntry(
           attachments={attachments}
           environmentId={props.environmentId}
           onPressPreview={props.onPressPreview}
-          onPressVideo={props.onPressVideo}
+          onPlaybackStart={props.onPlaybackStart}
         />
         {showAssistantMeta && message.checkpointSummary ? (
           <TurnDiffStat
@@ -2266,6 +2278,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const [expandedFile, setExpandedFile] = useState<FilePreviewSource | null>(null);
   const [expandedVideo, setExpandedVideo] = useState<VideoPreviewSource | null>(null);
   const markdownLinkRequest = useRef<AbortController | null>(null);
+  const onInlinePlaybackStart = () => {
+    markdownLinkRequest.current?.abort();
+  };
   useFocusEffect(useCallback(() => () => markdownLinkRequest.current?.abort(), []));
   const markdownLinkScope = JSON.stringify([
     props.environmentId,
@@ -2362,7 +2377,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       workspaceRoot: props.workspaceRoot,
       imageEmbed,
     });
-    if (media) {
+    if (media && media.kind !== "file") {
       void Haptics.selectionAsync();
       const openPreview = () => {
         if (request.signal.aborted) return;
@@ -2484,6 +2499,16 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     workspaceRoot: props.workspaceRoot ?? null,
   });
   const markdownLinkHandlers: MarkdownLinkHandlers = {
+    fileEmbedLabel: (href, standalone) =>
+      markdownFileEmbedLabel(
+        href,
+        {
+          environmentId: props.environmentId,
+          threadId: props.threadId,
+          workspaceRoot: props.workspaceRoot,
+        },
+        standalone,
+      ),
     onLinkPress: onMarkdownLinkPress,
     linkCustomization: enrichedThreadLinkCustomization,
     onImagePress: (href) => onMarkdownLinkPress(href, true),
@@ -2560,7 +2585,39 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         <ThreadMarkdownVideo
           key={image.href}
           source={{ ...media.source, name: image.alt ?? media.source.name }}
+          onPlaybackStart={onInlinePlaybackStart}
         />
+      );
+    }
+    if (media?.kind === "audio") {
+      return (
+        <ThreadInlineFilePreview
+          key={image.href}
+          source={media.source}
+          onOpen={() => onMarkdownLinkPress(image.href, true)}
+          onPlaybackStart={onInlinePlaybackStart}
+        />
+      );
+    }
+    const fileLink = resolveMarkdownLinkPresentation(image.href);
+    if (
+      (media && (media.kind === "pdf" || media.kind === "document" || media.kind === "file")) ||
+      (fileLink.kind === "file" && fileLink.line !== undefined)
+    ) {
+      const name = media?.source.name ?? (fileLink.kind === "file" ? fileLink.label : "Open file");
+      return (
+        <Text
+          accessibilityRole="link"
+          accessibilityLabel={`Open ${name}`}
+          onPress={() => onMarkdownLinkPress(image.href, true)}
+          style={{
+            color: markdownStyles.assistant.nativeTextStyle.linkColor,
+            fontSize: markdownStyles.assistant.nativeTextStyle.fontSize,
+            lineHeight: markdownStyles.assistant.nativeTextStyle.lineHeight,
+          }}
+        >
+          {name}
+        </Text>
       );
     }
     const imageSource = classifyMarkdownImageSource(image.href, props.workspaceRoot ?? null);
@@ -3036,13 +3093,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     markdownLinkRequest.current?.abort();
     setExpandedFile((current) => current ?? source);
   };
-  const onPressVideo = (attachment: ChatFileAttachment, sourceIdentifier: string) => {
-    markdownLinkRequest.current?.abort();
-    setExpandedVideo(
-      (current) =>
-        current ?? attachmentVideoPreviewSource(props.environmentId, attachment, sourceIdentifier),
-    );
-  };
 
   // Without this, every row above the viewport is assumed to be
   // estimatedItemSize tall, and scrolling up through unmeasured content
@@ -3126,7 +3176,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onToggleTurnFold,
             onOpenTurnDiff,
             onPressPreview,
-            onPressVideo,
+            onPlaybackStart: onInlinePlaybackStart,
             markdownLinkHandlers,
             renderMarkdownImage,
             renderViewedImage,
@@ -3174,6 +3224,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     <PresentationSource identifier={fileShareSourceIdentifier} style={{ flex: 1 }}>
       <View className="flex-1" onLayout={handleViewportLayout}>
         <View className="flex-1">
+          {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- ThreadFeedScrollView is passed through the iOS-only spread below; the prop rejects undefined. */}
           <KeyboardAwareLegendList
             ref={listRef}
             // LegendList cannot see adjustedContentInset; remount so initial positioning waits for UIKit attachment.

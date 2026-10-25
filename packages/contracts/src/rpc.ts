@@ -41,6 +41,8 @@ import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
+  OrchestrationV2SearchThreadsInput,
+  OrchestrationV2SearchThreadsResult,
 } from "./orchestrationV2.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
@@ -199,11 +201,7 @@ import {
   ReviewDiffPreviewResult,
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
-import {
-  OrchestrationSearchThreadsError,
-  OrchestrationSearchThreadsInput,
-  OrchestrationSearchThreadsResult,
-} from "./threadSearch.ts";
+import { OrchestrationSearchThreadsError } from "./threadSearch.ts";
 import {
   ProviderUploadFeedbackError,
   ProviderUploadFeedbackInput,
@@ -1479,7 +1477,10 @@ const WsVcsPullRpc = Rpc.make(WS_METHODS.vcsPull, {
 });
 
 const WsVcsRefreshStatusRpc = Rpc.make(WS_METHODS.vcsRefreshStatus, {
-  payload: VcsStatusInput,
+  payload: Schema.Struct({
+    ...VcsStatusInput.fields,
+    localOnly: Schema.optional(Schema.Boolean),
+  }),
   success: VcsStatusResult,
   error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
 });
@@ -1777,8 +1778,8 @@ const WsOrchestrationV2SearchThreadStreamRpc = Rpc.make(
 );
 
 const WsOrchestrationV2SearchThreadsRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.searchThreads, {
-  payload: OrchestrationSearchThreadsInput,
-  success: OrchestrationSearchThreadsResult,
+  payload: OrchestrationV2SearchThreadsInput,
+  success: OrchestrationV2SearchThreadsResult,
   error: Schema.Union([OrchestrationSearchThreadsError, EnvironmentAuthorizationError]),
 });
 
@@ -1802,6 +1803,15 @@ const WsOrchestrationV2GetWorktreeThreadIdsRpc = Rpc.make(
   {
     payload: OrchestrationV2RpcSchemas.getWorktreeThreadIds.input,
     success: OrchestrationV2RpcSchemas.getWorktreeThreadIds.output,
+    error: Schema.Union([OrchestrationV2GetShellSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2GetOlderSettledThreadsRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getOlderSettledThreads,
+  {
+    payload: OrchestrationV2RpcSchemas.getOlderSettledThreads.input,
+    success: OrchestrationV2RpcSchemas.getOlderSettledThreads.output,
     error: Schema.Union([OrchestrationV2GetShellSnapshotError, EnvironmentAuthorizationError]),
   },
 );
@@ -2316,6 +2326,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2GetArchivedShellSnapshotRpc,
   WsOrchestrationV2GetThreadFamilyRpc,
   WsOrchestrationV2GetWorktreeThreadIdsRpc,
+  WsOrchestrationV2GetOlderSettledThreadsRpc,
   WsOrchestrationV2GetThreadProjectionRpc,
   WsOrchestrationV2LaunchThreadRpc,
   WsOrchestrationV2SubscribeArchivedShellRpc,
