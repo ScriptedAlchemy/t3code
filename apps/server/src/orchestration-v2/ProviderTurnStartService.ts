@@ -1,3 +1,4 @@
+import * as PstackPack from "../pstack/PstackPack.ts";
 import {
   collectComposerContextReferences,
   projectComposerContextForProvider,
@@ -112,6 +113,7 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
+  | PstackPack.PstackPack
   | EventSink.EventSinkV2
   | ContextHandoffService.ContextHandoffServiceV2
   | IdAllocator.IdAllocatorV2
@@ -130,6 +132,7 @@ export const layer: Layer.Layer<
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
+    const pstack = yield* PstackPack.PstackPack;
     const eventSink = yield* EventSink.EventSinkV2;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -1114,10 +1117,17 @@ export const layer: Layer.Layer<
           });
         },
       );
+      const pstackComposer = yield* pstack.expandComposer(
+        {
+          projectId: projection.thread.projectId,
+          text: message.text,
+          records: message.context?.records ?? [],
+        },
+        message,
+      );
       const composer = yield* resolveKnowledgeComposer({
         projectId: projection.thread.projectId,
-        text: message.text,
-        records: message.context?.records ?? [],
+        ...pstackComposer,
       }).pipe(
         Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge),
         Effect.tapError(recordKnowledgeRefusal),

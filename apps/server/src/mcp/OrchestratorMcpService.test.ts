@@ -1,3 +1,5 @@
+import { BUNDLED_CLAUDE_MODEL_CATALOG } from "../provider/ClaudeModelCatalog.ts";
+import { parseModelsFile, resolveRoles } from "../pstack/pstackModels.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -2706,6 +2708,157 @@ describe("OrchestratorMcpService provider resolution", () => {
             );
           }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
         }
+      }),
+  );
+
+  it.effect(
+    "pstack Opus and Astra targets dispatch identically under Claude and Codex parents",
+    () =>
+      Effect.gen(function* () {
+        const claudeId = ProviderInstanceId.make("claudeAgent");
+        const providers: ServerProvider[] = [
+          {
+            ...providerSnapshot({
+              instanceId: claudeId,
+              driver: ProviderDriverKind.make("claudeAgent"),
+            }),
+            models: BUNDLED_CLAUDE_MODEL_CATALOG.models.map(({ model }) => model),
+          },
+          {
+            ...providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+            }),
+            models: [
+              {
+                slug: "gpt-6-astra",
+                name: "Astra",
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "reasoningEffort",
+                      label: "Effort",
+                      type: "select",
+                      currentValue: "medium",
+                      options: ["low", "medium", "high", "xhigh"].map((id) => ({ id, label: id })),
+                    },
+                    {
+                      id: "serviceTier",
+                      label: "Tier",
+                      type: "select",
+                      currentValue: "default",
+                      options: ["default", "priority"].map((id) => ({ id, label: id })),
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ];
+        const resolved = resolveRoles({
+          file: parseModelsFile(
+            "architect runners: claudeAgent/claude-opus-5-5 effort=xhigh, codex/gpt-6-astra reasoningEffort=high",
+          ),
+          defaults: [{ label: "architect runners", defaultValue: "auto" }],
+          providers,
+          capableInstanceIds: new Set(providers.map((provider) => provider.instanceId)),
+        });
+        const results: unknown[][] = [];
+        for (const inherited of [
+          {
+            instanceId: claudeId,
+            model: "claude-opus-5-5",
+            options: [
+              { id: "effort", value: "low" },
+              { id: "fastMode", value: true },
+            ],
+          },
+          {
+            instanceId: codexInstanceId,
+            model: "gpt-6-astra",
+            options: [
+              { id: "reasoningEffort", value: "xhigh" },
+              { id: "serviceTier", value: "priority" },
+            ],
+          },
+        ]) {
+          const selections: unknown[] = [];
+          for (const seat of resolved.roles[0]!.seats) {
+            assert.equal(seat.kind, "target");
+            if (seat.kind !== "target") continue;
+            const target = seat.target;
+            const commands: unknown[] = [];
+            const task = {
+              id: taskId,
+              threadId: parentThreadId,
+              origin: "app_owned",
+              childThreadId,
+              providerInstanceId: target.providerInstanceId,
+              model: target.model,
+              status: "running",
+              result: null,
+            };
+            const dependencies = Layer.mergeAll(
+              NodeServices.layer,
+              Layer.mock(ThreadManagementService.ThreadManagementService)({
+                hasReceipt: () => Effect.succeed(false),
+                assertProviderInstanceEnabled: () => Effect.void,
+                getThreadRecords: (threadId) =>
+                  Effect.succeed(
+                    threadId === parentThreadId
+                      ? parentProjection(commands.length ? [task] : [], inherited)
+                      : childProjection,
+                  ),
+                dispatch: (command) =>
+                  Effect.sync(() => {
+                    commands.push(command);
+                    return {
+                      sequence: 1,
+                      storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+                    } as never;
+                  }),
+              }),
+              ServerSettings.layerTest(),
+              providerRegistryLayer(providers),
+              adapterRegistryLayer(providers.map((provider) => provider.instanceId)),
+              Layer.mock(ProjectService.ProjectService)({}),
+              Layer.mock(SecretRequests.SecretRequests)({}),
+              Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+              Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+            );
+            yield* Effect.gen(function* () {
+              const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+              yield* service.delegateTask(scope, {
+                task: "Design the change.",
+                target: yield* decodeTarget(target),
+                mode: "async",
+                clientRequestId: `pstack-${inherited.instanceId}-${target.providerInstanceId}`,
+              });
+            }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+            selections.push((commands[0] as { modelSelection: unknown }).modelSelection);
+          }
+          results.push(selections);
+        }
+        assert.deepEqual(results[0], results[1]);
+        assert.deepEqual(results[0], [
+          {
+            instanceId: claudeId,
+            model: "claude-opus-5-5",
+            options: [
+              { id: "effort", value: "xhigh" },
+              { id: "fastMode", value: false },
+            ],
+          },
+          {
+            instanceId: codexInstanceId,
+            model: "gpt-6-astra",
+            options: [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "default" },
+            ],
+          },
+        ]);
       }),
   );
 

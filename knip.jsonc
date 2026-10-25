@@ -137,6 +137,11 @@
       // These workspace packages are private to this monorepo.
       "includeEntryExports": true,
     },
+    "packages/pstack": {
+      "includeEntryExports": true,
+      "entry": ["scripts/sync.ts"],
+      "ignore": ["upstream/**"],
+    },
     "packages/effect-acp": {
       "includeEntryExports": true,
       "entry": ["test/fixtures/*.ts"],

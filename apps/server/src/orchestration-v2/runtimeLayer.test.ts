@@ -1,3 +1,4 @@
+import { disabledLayer } from "../pstack/PstackPack.testkit.ts";
 import * as ProjectKnowledge from "../project/knowledge/ProjectKnowledge.ts";
 import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import { SourceControlProviderKind } from "@t3tools/contracts";
@@ -275,7 +276,10 @@ const moveProject = (projectId: ProjectId, workspaceRoot: string, updatedAt: str
   );
 
 const layerTest = Layer.mergeAll(
-  RuntimeLayer.layer.pipe(Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({}))),
+  RuntimeLayer.layer.pipe(
+    Layer.provide(disabledLayer),
+    Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
+  ),
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,
@@ -295,6 +299,7 @@ const layerTest = Layer.mergeAll(
 );
 
 const layerLegacyImportTest = RuntimeLayer.layer.pipe(
+  Layer.provide(disabledLayer),
   Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
@@ -334,6 +339,7 @@ const layerResourceCleanupTest = ResourceCleanupService.layer.pipe(
 
 const layerProjectDeletionTest = Layer.mergeAll(
   RuntimeLayer.layer.pipe(
+    Layer.provide(disabledLayer),
     Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
     Layer.provide(RuntimeLayer.layerProjectService),
   ),
@@ -604,6 +610,7 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
 
 const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
   RuntimeLayer.layer.pipe(
+    Layer.provide(disabledLayer),
     Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
     Layer.provide(RuntimeLayer.layerProjectService),
   ),
@@ -7028,7 +7035,10 @@ const queueResumeDisabledInstanceProjectId = ProjectId.make(
 );
 
 const layerQueueResumeDisabledInstanceTest = Layer.mergeAll(
-  RuntimeLayer.layer.pipe(Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({}))),
+  RuntimeLayer.layer.pipe(
+    Layer.provide(disabledLayer),
+    Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
+  ),
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,

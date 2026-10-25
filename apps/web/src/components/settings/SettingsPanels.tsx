@@ -478,6 +478,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.showSkillsInSlashMenu !== DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu
       ? ["Show skills in slash menu"]
       : []),
+    ...(settings.pstackEnabled !== DEFAULT_UNIFIED_SETTINGS.pstackEnabled ? ["pstack"] : []),
     ...(settings.composerCollapseOnScroll !== DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll
       ? ["Collapse composer on scroll"]
       : []),
@@ -600,6 +601,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout,
       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,
       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
+      pstackEnabled: DEFAULT_UNIFIED_SETTINGS.pstackEnabled,
       composerCollapseOnScroll: DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll,
       composerRichTextEnabled: DEFAULT_UNIFIED_SETTINGS.composerRichTextEnabled,
       sendShortcut: DEFAULT_UNIFIED_SETTINGS.sendShortcut,
@@ -1380,6 +1382,31 @@ export function GeneralSettingsPanel() {
                 updateSettings({ showSkillsInSlashMenu: Boolean(checked) })
               }
               aria-label="Show skills in slash menu"
+            />
+          }
+        />
+
+        <SettingsRow
+          serverScoped
+          settingKeys={["pstackEnabled"]}
+          {...searchableSetting("pstack")}
+          description="Offer Lauren Tan's pstack workflows as skills in every provider. Run $pstack:setup-pstack once to choose models."
+          resetAction={
+            settings.pstackEnabled !== DEFAULT_UNIFIED_SETTINGS.pstackEnabled ? (
+              <SettingResetButton
+                label="pstack"
+                onClick={() =>
+                  updateSettings({ pstackEnabled: DEFAULT_UNIFIED_SETTINGS.pstackEnabled })
+                }
+              />
+            ) : null
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["pstackEnabled"]}
+              checked={settings.pstackEnabled}
+              onCheckedChange={(checked) => updateSettings({ pstackEnabled: Boolean(checked) })}
+              aria-label="pstack"
             />
           }
         />

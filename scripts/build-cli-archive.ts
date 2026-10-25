@@ -446,6 +446,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
     "dist-exe/project/knowledge/codeIntelligenceWorkerThread.mjs",
   );
   const webClient = path.join(serverDir, "dist/client");
+  const pstackPack = path.join(serverDir, "dist/pstack");
   const resourceMonitorDir = Option.getOrElse(input.resourceMonitorDir, () =>
     path.join(serverDir, "dist/resource-monitor"),
   );
@@ -459,6 +460,10 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
     `Run \`node apps/server/scripts/cli.ts build-exe --target ${targetKey}\` first.`,
   );
   yield* requireInput(path.join(webClient, "index.html"), "Run `vp run --filter t3 build` first.");
+  yield* requireInput(
+    path.join(pstackPack, "UPSTREAM.json"),
+    "Run `vp run --filter t3 build` first.",
+  );
   yield* requireInput(
     resourceMonitorDir,
     "Build the resource monitor or pass --resource-monitor-dir.",
@@ -478,6 +483,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   yield* fs.makeDirectory(path.dirname(codeIntelligenceWorkerTarget), { recursive: true });
   yield* fs.copyFile(codeIntelligenceWorker, codeIntelligenceWorkerTarget);
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
+  yield* fs.copy(pstackPack, path.join(contentDir, "pstack"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
   const rustArch = input.arch === "arm64" ? "aarch64" : "x86_64";
   const rustSuffix =

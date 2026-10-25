@@ -1,3 +1,4 @@
+import { disabledLayer } from "../pstack/PstackPack.testkit.ts";
 import * as ProjectKnowledge from "../project/knowledge/ProjectKnowledge.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -136,6 +137,7 @@ const layerRuntime = (dbPath: string) => {
   );
   return Layer.mergeAll(
     RuntimeLayer.layer.pipe(
+      Layer.provide(disabledLayer),
       Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
       Layer.provide(RuntimeLayer.layerProjectService),
     ),

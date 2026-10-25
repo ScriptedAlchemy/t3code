@@ -1,3 +1,4 @@
+import * as PstackPack from "./pstack/PstackPack.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
 import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
@@ -331,7 +332,16 @@ const resolveEditorConfig = Effect.fn("ws.resolveEditorConfig")(function* <E, R>
 
 export const withLateEditorConfig = <E, R>(
   config: ClientServerConfig,
-  liveUpdates: Stream.Stream<ServerConfigStreamEvent, E, R>,
+  liveUpdates: Stream.Stream<
+    | ServerConfigStreamEvent
+    | {
+        readonly type: "pstackUpdated";
+        readonly settings: ClientServerConfig["settings"];
+        readonly pstackSkills: ClientServerConfig["pstackSkills"];
+      },
+    E,
+    R
+  >,
   launcher: EditorDiscovery,
 ) => {
   const lateEditorConfig = Stream.fromEffect(launcher.resolveAvailableEditors()).pipe(
@@ -367,6 +377,17 @@ export const withLateEditorConfig = <E, R>(
             const next = { ...rest, ...event.editorConfig };
             return [next, [{ version: 1, type: "snapshot", config: next }]];
           }
+          case "pstackUpdated": {
+            const { pstackSkills: _pstackSkills, ...rest } = current;
+            const next = {
+              ...rest,
+              settings: event.settings,
+              ...(event.pstackSkills === undefined ? {} : { pstackSkills: event.pstackSkills }),
+            };
+            return [next, [{ version: 1, type: "snapshot", config: next }]];
+          }
+          case "snapshot":
+            return [event.config, [event]];
           case "keybindingsUpdated":
             return [{ ...current, ...event.payload }, [event]];
           case "providerStatuses":
@@ -1482,6 +1503,7 @@ export const layerWsRpc = (
       const storageCleanup = yield* StorageCleanup.StorageCleanup;
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const pstack = yield* PstackPack.PstackPack;
       const peerLinks = yield* PeerLinks.PeerLinks;
       const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
@@ -1881,6 +1903,7 @@ export const layerWsRpc = (
         const settings = ServerSettings.redactServerSettingsForClient(
           yield* serverSettings.getSettings,
         );
+        const pstackSkills = yield* pstack.catalog;
         const environment = yield* serverEnvironment.getDescriptor;
         const auth = yield* serverAuth.getDescriptor();
         const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
@@ -1894,6 +1917,7 @@ export const layerWsRpc = (
           environment,
           auth,
           cwd: config.cwd,
+          ...(pstackSkills === undefined ? {} : { pstackSkills }),
           keybindingsConfigPath: config.keybindingsConfigPath,
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
@@ -3350,12 +3374,29 @@ export const layerWsRpc = (
                     )
                   : Stream.empty;
               const settingsUpdates = settingsChanges.pipe(
-                Stream.map((settings) => ServerSettings.redactServerSettingsForClient(settings)),
-                Stream.map((settings) => ({
-                  version: 1 as const,
-                  type: "settingsUpdated" as const,
-                  payload: { settings },
-                })),
+                Stream.mapAccum(
+                  () => config.settings.pstackEnabled,
+                  (enabled, settings) =>
+                    [
+                      settings.pstackEnabled,
+                      [{ settings, changed: enabled !== settings.pstackEnabled }],
+                    ] as const,
+                ),
+                Stream.mapEffect(({ settings, changed }) =>
+                  Effect.gen(function* () {
+                    if (changed)
+                      return {
+                        type: "pstackUpdated" as const,
+                        settings: ServerSettings.redactServerSettingsForClient(settings),
+                        pstackSkills: yield* pstack.catalog,
+                      };
+                    return {
+                      version: 1,
+                      type: "settingsUpdated",
+                      payload: { settings: ServerSettings.redactServerSettingsForClient(settings) },
+                    } satisfies ServerConfigStreamEvent;
+                  }),
+                ),
               );
 
               const liveUpdates = Stream.merge(

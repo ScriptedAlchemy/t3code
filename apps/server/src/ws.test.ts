@@ -1,3 +1,4 @@
+import * as PstackPack from "./pstack/PstackPack.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
 import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
@@ -507,15 +508,36 @@ it.effect(
       const discoveryStarted = yield* Deferred.make<void>();
       const finishDiscovery = yield* Deferred.make<void>();
       const responses = yield* Queue.unbounded<ServerConfigStreamEvent>();
+      let editorDiscoveryCalls = 0;
       const configRpcServices = Layer.mergeAll(
         layerUnusedConfigRpcServices,
         Layer.mock(ExternalLauncher.ExternalLauncher)({
           resolveAvailableEditors: () =>
-            Deferred.succeed(discoveryStarted, undefined).pipe(
+            Effect.sync(() => {
+              editorDiscoveryCalls += 1;
+            }).pipe(
+              Effect.andThen(Deferred.succeed(discoveryStarted, undefined)),
               Effect.andThen(Deferred.await(finishDiscovery)),
               Effect.as([]),
             ),
           resolveFileManagerRevealKind: () => Effect.succeed(undefined),
+        }),
+        Layer.mock(PstackPack.PstackPack)({
+          catalog: settings.getSettings.pipe(
+            Effect.map((settings) =>
+              settings.pstackEnabled
+                ? [
+                    {
+                      name: "pstack:architect",
+                      path: "/pack/skills/architect/SKILL.md",
+                      scope: "t3",
+                      enabled: true,
+                    },
+                  ]
+                : undefined,
+            ),
+            Effect.orDie,
+          ),
         }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed([]),
@@ -642,6 +664,21 @@ it.effect(
       }
       assert.isEmpty(expectedSettings);
       assert.isEmpty(expectedKeybindings);
+      const callsBeforeToggle = editorDiscoveryCalls;
+      for (const enabled of [true, false]) {
+        yield* settings.updateSettings({ pstackEnabled: enabled });
+        const event = yield* Queue.take(responses);
+        assert.equal(event.type, "snapshot");
+        if (event.type !== "snapshot")
+          return yield* Effect.die("Pstack toggle did not republish config");
+        assert.equal(editorDiscoveryCalls, callsBeforeToggle);
+        assert.equal(event.config.settings.pstackEnabled, enabled);
+        assert.deepEqual(
+          event.config.pstackSkills?.map((skill) => skill.name),
+          enabled ? ["pstack:architect"] : undefined,
+        );
+        yield* acknowledge;
+      }
       yield* server.write(0, { _tag: "Interrupt", requestId, interruptors: [] });
     }).pipe(
       Effect.provide(

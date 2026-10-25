@@ -3,6 +3,18 @@
     {
       "bundles": ["desktop", "web"],
       "license": "MIT",
+      "name": "pstack by Lauren Tan",
+      "sourceUrl": "https://github.com/cursor/plugins/tree/main/pstack",
+      "generatedNotices": [
+        {
+          "licenseId": "MIT",
+          "copyrights": ["Copyright (c) 2026 Lauren Tan"]
+        }
+      ]
+    },
+    {
+      "bundles": ["desktop", "web"],
+      "license": "MIT",
       "name": "Ionic keyboard assist",
       "sourceUrl": "https://github.com/ionic-team/ionic-framework/blob/main/core/src/utils/keyboard/keyboard.ts",
       "generatedNotices": [

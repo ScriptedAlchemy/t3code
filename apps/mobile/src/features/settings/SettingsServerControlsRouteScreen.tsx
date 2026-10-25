@@ -472,6 +472,20 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       onValueChange={(value) => write({ enableConversationSummaries: value })}
                     />
                   </SettingsSection>
+                  <SettingsSection title="Skills">
+                    <SettingsSwitchRow
+                      icon="square.grid.2x2"
+                      label="pstack"
+                      subtitle={
+                        projectSelected
+                          ? "Environment-wide setting. Select All projects to change it."
+                          : "Offer Lauren Tan's pstack workflows as skills in every provider. Run $pstack:setup-pstack once to choose models."
+                      }
+                      value={uniform("pstackEnabled")}
+                      disabled={disabledFor("pstackEnabled")}
+                      onValueChange={(value) => write({ pstackEnabled: value })}
+                    />
+                  </SettingsSection>
                 </>
               ) : null}
 

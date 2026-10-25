@@ -385,6 +385,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(layerProvidedRegistry),
   );
   const layerProviderTurnControlServiceProvided = ProviderTurnControlService.layer.pipe(
+    Layer.provide(layerServerSettings),
     Layer.provide(Layer.merge(layerStores, layerProviderSessionManagerProvided)),
   );
   const layerRuntimeRequestServiceProvided = RuntimeRequestService.layer.pipe(

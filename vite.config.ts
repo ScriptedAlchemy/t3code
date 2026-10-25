@@ -7,6 +7,7 @@ import { cachedTestTasks } from "./scripts/lib/cached-tests.ts";
 const DOM_TEST_ENVIRONMENT_ALLOWLIST: Array<string> = [];
 
 const TEST_EXCLUDE = [
+  "**/pstack/upstream/**",
   "**/.repos/**",
   "**/.t3/**",
   "**/node_modules/**",
@@ -155,6 +156,8 @@ export default defineConfig({
   },
   fmt: {
     ignorePatterns: [
+      "packages/pstack/t3-code.md",
+      "packages/pstack/upstream/**",
       ".repos/**",
       "infra/task-cache/vendor/**",
       // Macroscope requires one glob per line; Markdown formatting corrupts it.
@@ -189,6 +192,7 @@ export default defineConfig({
   },
   lint: {
     ignorePatterns: [
+      "packages/pstack/upstream/**",
       ".repos",
       ".repos/**",
       "infra/task-cache/vendor/**",
