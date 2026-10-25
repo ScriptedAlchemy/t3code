@@ -59,6 +59,7 @@ import * as SourceControlRepositoryService from "../sourceControl/SourceControlR
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
+import * as PeerMcpClient from "./PeerMcpClient.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
@@ -1566,15 +1567,16 @@ it.effect("a parent stopped while the box is unreachable still stops its task th
         ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
       >([]);
       const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const offline = yield* Deferred.make<void>();
       const unreachable = yield* Deferred.make<void>();
       const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
-      const links = Context.get(linking, PeerLinks.PeerLinks);
-      const observed = Context.add(linking, PeerLinks.PeerLinks, {
-        ...links,
-        resolve: (environmentId) =>
-          links
-            .resolve(environmentId)
-            .pipe(Effect.tapError(() => Deferred.succeed(unreachable, undefined))),
+      const client = Context.get(linking, PeerMcpClient.PeerMcpClient);
+      const observed = Context.add(linking, PeerMcpClient.PeerMcpClient, {
+        call: (input) =>
+          (input.tool === "t3_thread_wait" ? Deferred.await(offline) : Effect.void).pipe(
+            Effect.andThen(client.call(input)),
+            Effect.tapError(() => Deferred.succeed(unreachable, undefined)),
+          ),
       });
       const a = yield* makeLaptop(database, offers, observed);
       yield* linkTo(a.links, b, "full-access");
@@ -1582,6 +1584,7 @@ it.effect("a parent stopped while the box is unreachable still stops its task th
       // The box sleeps as soon as the task is there, so its follower backs off.
       const delegated = yield* delegateToBox(a);
       yield* Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
+      yield* Deferred.succeed(offline, undefined);
       yield* Deferred.await(unreachable);
       // The parent is stopped meanwhile.
       yield* a.threads.stopDelegatedTasks({
