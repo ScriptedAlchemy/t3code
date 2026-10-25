@@ -1196,6 +1196,8 @@ export const ServerSettings = Schema.Struct({
   projectSettingsFolded: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 
   enableAgentDeviceAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Offer the bundled pstack skills in every provider composer. */
+  pstackEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Off by default: each settled run in an opted-in project costs a text generation call. */
   enableAssistedLearning: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Off by default: summarizing older history costs text generation calls. */
@@ -1580,6 +1582,7 @@ export const ServerSettingsPatch = Schema.Struct({
     ),
   ),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
+  pstackEnabled: Schema.optionalKey(Schema.Boolean),
   enableAssistedLearning: Schema.optionalKey(Schema.Boolean),
   enableConversationSummaries: Schema.optionalKey(Schema.Boolean),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),

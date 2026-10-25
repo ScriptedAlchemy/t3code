@@ -635,6 +635,8 @@ export const ServerConfig = Schema.Struct({
   environmentThemes: Schema.optional(Schema.Array(EnvironmentTheme)),
   /** Stream-only and opt-in; the source stream emits the current set on subscribe. */
   usageLimitSources: Schema.optional(UsageLimitSourceSnapshots),
+  /** Bundled pstack skills, offered by every provider; present only while `settings.pstackEnabled`. */
+  pstackSkills: Schema.optionalKey(Schema.Array(ServerProviderSkill)),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 
