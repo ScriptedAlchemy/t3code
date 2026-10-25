@@ -4,6 +4,8 @@ import "vite-plus/test/config";
 const reactTests = [
   "src/features/conversation-summaries/ConversationSummariesRouteScreen.test.tsx",
   "src/components/ProjectKnowledgeEntry.test.tsx",
+  "src/features/diffs/nativeReviewDiffSurface.test.tsx",
+  "src/features/pull-requests/usePullRequestDiff.test.tsx",
   "src/components/ui/Dialog.android.test.tsx",
   "src/features/files/FileCodeRelationships.test.tsx",
   "src/features/loom/ProjectLoomRouteScreen.test.tsx",
@@ -11,6 +13,7 @@ const reactTests = [
   "src/features/settings/components/BranchNamingSettings.test.tsx",
   "src/native/NativeHeaderToolbar.test.tsx",
   "src/native/useRestingTopOffset.test.tsx",
+  "src/native/useRetryingImageSource.test.tsx",
   "src/state/use-selected-thread-git-actions.test.tsx",
 ];
 

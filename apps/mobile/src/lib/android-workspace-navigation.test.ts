@@ -7,12 +7,13 @@ import {
 } from "../features/workspace/android-workspace-tabs";
 import {
   androidWorkspaceNavigationState,
+  linkedThreadStep,
   parentThreadIsBelow,
   resetAndroidWorkspace,
   returnToAndroidWorkspaceList,
   type AndroidWorkspaceDestination,
-  type AndroidWorkspaceResetAction,
 } from "./android-workspace-navigation";
+import type { RootStackResetAction } from "./root-stack-reset";
 
 const require = NodeModule.createRequire(import.meta.url);
 const nativePackage = require.resolve("@react-navigation/native/package.json");
@@ -37,7 +38,9 @@ const options = {
     "PullRequest",
     "PullRequestFile",
     "PullRequestReviewers",
-    "SettingsSheet",
+    "Settings",
+    "SettingsUsage",
+    "SettingsUsageAccount",
   ],
   routeParamList: {},
   routeGetIdList: {},
@@ -158,7 +161,7 @@ describe("Android workspace navigation", () => {
     );
     let listSelected = false;
     const navigation = {
-      dispatch: (action: AndroidWorkspaceResetAction) => {
+      dispatch: (action: RootStackResetAction) => {
         state = apply(state, action);
       },
       getParent: () => undefined,
@@ -202,6 +205,30 @@ describe("Android workspace navigation", () => {
     });
   });
 
+  it("opens a linked thread above the current one so Back returns to it", () => {
+    const parent = select(router.getInitialState(options), thread);
+    const child = { ...thread.params, threadId: "child-a" };
+    const open = (
+      state: ReturnType<typeof router.getInitialState>,
+      target: ReactNavigation.RootParamList["Thread"],
+    ) => {
+      const step = linkedThreadStep(state, target);
+      if (step === "stay") return state;
+      return apply(
+        state,
+        step === "pop" ? StackActions.pop() : StackActions.push("Thread", target),
+      );
+    };
+
+    const inChild = open(parent, child);
+    expect(inChild.routes.map((route) => route.params)).toEqual([undefined, thread.params, child]);
+    expect(open(inChild, child)).toBe(inChild);
+
+    const backInParent = open(inChild, thread.params);
+    expect(backInParent.routes).toEqual(parent.routes);
+    expect(backInParent.index).toBe(parent.index);
+  });
+
   it("recognizes a parent only when its environment and thread are immediately below", () => {
     const parent = select(router.getInitialState(options), thread);
     const child = apply(
@@ -223,13 +250,10 @@ describe("Android workspace navigation", () => {
     ).toBe(false);
   });
 
-  it("resets the root stack when a nested Settings stack has focus", () => {
-    const root = apply(router.getInitialState(options), StackActions.push("SettingsSheet"));
-    const settings = router.getInitialState({
-      ...options,
-      routeNames: ["SettingsContent", "SettingsEnvironments"],
-    });
-    const actions: AndroidWorkspaceResetAction[] = [];
+  it("resets the root stack when a nested stack has focus", () => {
+    const root = apply(router.getInitialState(options), StackActions.push("Thread", thread.params));
+    const nested = router.getInitialState({ ...options, routeNames: ["Nested", "NestedChild"] });
+    const actions: RootStackResetAction[] = [];
     const rootNavigation = {
       dispatch: () => undefined,
       getParent: () => undefined,
@@ -239,7 +263,7 @@ describe("Android workspace navigation", () => {
       {
         dispatch: (action) => actions.push(action),
         getParent: () => rootNavigation,
-        getState: () => settings,
+        getState: () => nested,
       },
       thread,
     );
@@ -250,7 +274,7 @@ describe("Android workspace navigation", () => {
 
   it("resets from the navigation container before any navigation action", () => {
     const root = router.getInitialState(options);
-    const actions: AndroidWorkspaceResetAction[] = [];
+    const actions: RootStackResetAction[] = [];
     // The container only learns the root state after the first action.
     resetAndroidWorkspace(
       {
@@ -278,7 +302,7 @@ describe("Android Settings tab", () => {
   it("opens over Home alone, dropping chat and PR history, and Back returns to Home", () => {
     const previous = legacyHistory();
     const settings = openTab(previous, "settings");
-    expect(names(settings)).toEqual(["Home", "SettingsSheet"]);
+    expect(names(settings)).toEqual(["Home", "Settings"]);
     expect(settings.routes[0]?.key).toBe(previous.routes[0]?.key);
     expect(selectedTab(settings, "threads")).toBe("settings");
     const back = apply(settings, StackActions.pop());
@@ -287,32 +311,21 @@ describe("Android Settings tab", () => {
     expect(selectedTab(back, "settings")).not.toBe("settings");
   });
 
-  it("stays selected under a nested settings page until a list tab returns to Home", () => {
+  it("stays selected under a settings page until a list tab returns to Home", () => {
     const previous = legacyHistory();
-    const settings = openTab(previous, "settings");
-    // Usage pushes inside the nested settings navigator, which the root router never sees.
-    const usage: State = {
-      ...settings,
-      routes: settings.routes.map((route) =>
-        route.name === "SettingsSheet"
-          ? {
-              ...route,
-              state: {
-                routes: [
-                  {
-                    name: "SettingsContent",
-                    state: { index: 1, routes: [{ name: "Settings" }, { name: "SettingsUsage" }] },
-                  },
-                ],
-              },
-            }
-          : route,
-      ),
-    };
+    const usage = apply(openTab(previous, "settings"), StackActions.push("SettingsUsage"));
     expect(selectedTab(usage, "threads")).toBe("settings");
     const list = openTab(usage, "pullRequests");
     expect(names(list)).toEqual(["Home"]);
     expect(list.routes[0]?.key).toBe(previous.routes[0]?.key);
     expect(selectedTab(list, "pullRequests")).toBe("pullRequests");
+  });
+
+  it("leaves a settings page opened from the Usage tab in that tab", () => {
+    const account = apply(
+      router.getInitialState(options),
+      StackActions.push("SettingsUsageAccount"),
+    );
+    expect(selectedTab(account, "usage")).toBe("usage");
   });
 });

@@ -66,6 +66,25 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("adds upstream indexes to an existing fork database", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 77 });
+      const before = yield* history;
+      assert.deepStrictEqual(yield* runMigrations(), [
+        [78, "ShellStopRequestIndex"],
+        [79, "ThreadMessageSearch"],
+      ]);
+      assert.deepStrictEqual((yield* history).slice(0, before.length), before);
+      const indexes = yield* sql`
+        SELECT name FROM sqlite_master
+        WHERE name = 'orchestration_v2_projection_turn_items_stop_request_idx'
+      `;
+      assert.lengthOf(indexes, 1);
+      assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("upgrades a database at exactly 54", () =>
     Effect.gen(function* () {
       yield* runMigrations({ toMigrationInclusive: 54 });

@@ -12,19 +12,12 @@ const CLAUDE_GROUP_WATCH_SCRIPT = [
   'exec "$@" 3<&-',
 ].join("\n");
 
-/**
- * When the CLI exits it stops the MCP servers it started, but not their children: a plugin's
- * `bun run start` wrapper dies and its `bun server.ts` keeps running, writing to a pipe nobody
- * reads (#3089). Those stay in the CLI's group, so the rest of the group gets SIGKILL once the
- * CLI exits for any reason.
- *
- * The CLI keeps working after its pipes close. A watcher in its group reads a pipe only this
- * server holds and stops the group at end-of-file, including when this server crashes (#23370).
- */
+/** Kill leftover MCP children on CLI exit; the watcher also stops the group if the server crashes. */
 export function spawnClaudeProcess(
   options: ClaudeSpawnOptions,
   platform: NodeJS.Platform,
   configDir?: string,
+  onExit?: () => void,
 ): ClaudeSpawnedProcess {
   const child = NodeChildProcess.spawn(
     platform === "win32" ? options.command : "/bin/sh",
@@ -41,6 +34,7 @@ export function spawnClaudeProcess(
     },
   );
   child.once("exit", () => {
+    onExit?.();
     if (platform === "win32") return;
     try {
       signalProcessGroup(child.pid ?? 0, "SIGKILL");

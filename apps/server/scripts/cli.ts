@@ -100,7 +100,7 @@ const buildCmd = Command.make(
         yield* applyDevelopmentIconOverrides(repoRoot, serverDir);
         yield* Effect.log("[cli] Bundled web app into dist/client");
       } else {
-        yield* Effect.logWarning("[cli] Web dist not found — skipping client bundle.");
+        yield* Effect.logWarning("[cli] Web dist not found. Skipping client bundle.");
       }
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
@@ -193,11 +193,7 @@ const buildExeCmd = Command.make(
   ),
 );
 
-/**
- * Publishes the `t3.tgz` launcher scripts/build-npm-launcher.ts produced. The
- * launcher downloads its executable from the GitHub Release, so the release
- * workflow runs this only after that release is published.
- */
+/** Publish after the GitHub release exists; the launcher downloads from it. */
 const publishCmd = Command.make(
   "publish",
   {

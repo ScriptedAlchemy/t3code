@@ -54,11 +54,7 @@ export interface ProviderInstanceEntry {
 
 export type ProviderCatalogAvailability = "loading" | "ready" | "unavailable" | "unconfigured";
 
-/**
- * Environment config streams are reactive: treating their initial `null` as a
- * final empty list strands otherwise recoverable threads behind a misleading
- * "no providers" state.
- */
+/** Initial null config is still loading; treating it as empty would strand recoverable threads. */
 export function resolveProviderCatalogAvailability(input: {
   readonly catalogLoaded: boolean;
   readonly entries: ReadonlyArray<ProviderInstanceEntry>;
@@ -69,10 +65,7 @@ export function resolveProviderCatalogAvailability(input: {
   return input.entries.length === 0 ? "unconfigured" : "unavailable";
 }
 
-/**
- * Disabling an instance updates `enabled` independently, while its previous `ready` probe
- * status can remain in the streamed snapshot until reconciliation.
- */
+/** Disabled instances may retain ready status until reconciliation. */
 export function isProviderInstancePickerReady(entry: ProviderInstanceEntry): boolean {
   return entry.enabled && entry.isAvailable && entry.status === "ready";
 }
@@ -109,12 +102,7 @@ export function deriveProviderInstanceEntries(
   });
 }
 
-/**
- * Instance ids are per-environment routing keys, and `defaultInstanceIdForDriver` makes the
- * default id literally the driver slug, so every environment running the same driver reports
- * the same id. Flattening across environments would clobber entries and mis-resolve accent
- * colors; lookups must stay scoped to the thread's own environment.
- */
+/** Instance ids repeat across environments; lookups must stay scoped. */
 export function deriveProviderEntriesByEnvironment(
   providersByEnvironment: Iterable<
     readonly [string, ReadonlyArray<ServerProvider>, ProviderInstanceSettings?]
@@ -135,13 +123,7 @@ export function deriveProviderEntriesByEnvironment(
   return byEnvironment;
 }
 
-/**
- * `projectId` folds in that project's `providerInstances[id].enabled` override (enable or
- * disable in either direction over the machine value); `null` resolves the machine value only.
- * It has no default: a caller that renders for a single project but forgets to pass it would
- * silently show the machine's enablement instead of that project's, so passing `null` for a
- * surface that isn't project-aware must be a deliberate choice, not an omission.
- */
+/** projectId applies project overrides; explicit null uses machine settings. */
 export function applyProviderInstanceSettings(
   entries: ReadonlyArray<ProviderInstanceEntry>,
   settings: ProviderInstanceSettings,
