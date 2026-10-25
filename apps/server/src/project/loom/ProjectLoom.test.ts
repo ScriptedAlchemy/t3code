@@ -242,7 +242,9 @@ const command = (spec: {
   readonly id: string;
   readonly input: string;
   readonly hours: number;
+  readonly startedHours?: number | null;
   readonly exitCode?: number;
+  readonly output?: string;
 }) =>
   apply({
     type: "turn-item.updated",
@@ -261,15 +263,27 @@ const command = (spec: {
       ordinal: 0,
       status: "completed",
       title: null,
-      startedAt: at(spec.hours),
+      startedAt: spec.startedHours === null ? null : at(spec.startedHours ?? spec.hours),
       completedAt: at(spec.hours + 0.1),
       updatedAt: at(spec.hours + 0.1),
       type: "command_execution",
       input: spec.input,
-      output: "x".repeat(10_000),
+      output: spec.output ?? "x".repeat(10_000),
       ...(spec.exitCode === undefined ? {} : { exitCode: spec.exitCode }),
     },
   });
+
+// Activity reads must not depend on the large provider payloads.
+const activityItem = (threadId: string, index: number, type: string, hours: number) =>
+  Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql`
+    INSERT INTO orchestration_v2_projection_turn_items
+      (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
+    VALUES (${threadId + "-item-" + index}, ${threadId}, ${runId({ thread: threadId, ordinal: 1 })},
+      ${index}, ${type}, 'completed', ${DateTime.formatIso(at(hours))}, '{}')
+  `,
+  ).pipe(Effect.asVoid);
 
 const transfer = (spec: {
   readonly id: string;
@@ -367,6 +381,98 @@ const repeat = <E, R>(count: number, make: (index: number) => Effect.Effect<void
   );
 
 describe("ProjectLoom.readWindow", () => {
+  it.effect(
+    "maps activity kinds and offsets oldest first without excluded or out-of-window items",
+    () =>
+      Effect.gen(function* () {
+        yield* seedProjects;
+        yield* thread({ id: "activity", createdHours: 0 });
+        yield* run({ thread: "activity", ordinal: 1, requestedHours: 2, completedHours: 10 });
+        const types = [
+          "user_message",
+          "assistant_message",
+          "command_execution",
+          "file_change",
+          "dynamic_tool",
+          "file_search",
+          "web_search",
+          "error",
+          "reasoning",
+          "checkpoint",
+        ];
+        yield* repeat(types.length, (index) =>
+          activityItem("activity", index, types[index]!, index + 1),
+        );
+        yield* activityItem("activity", 20, "user_message", -1);
+        yield* activityItem("activity", 21, "assistant_message", 169);
+        const result = yield* read(window);
+        assert.deepEqual(result.activity, [
+          {
+            runId: runId({ thread: "activity", ordinal: 1 }),
+            threadId: ThreadId.make("activity"),
+            ticks: (
+              ["user", "agent", "command", "edit", "tool", "tool", "tool", "error"] as const
+            ).map((kind, index) => [(index - 1) * HOUR, kind] as const),
+          },
+        ]);
+        assert.isFalse(result.truncated.activity);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps the newest activity ticks and reports the tick limit", () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      yield* thread({ id: "ticks", createdHours: 0 });
+      yield* run({ thread: "ticks", ordinal: 1, requestedHours: 0, completedHours: 10 });
+      yield* repeat(LOOM_LIMITS.activityTicks + 2, (index) =>
+        activityItem("ticks", index, "user_message", index / HOUR),
+      );
+      const result = yield* read(window);
+      assert.isTrue(result.truncated.activity);
+      assert.equal(result.activity[0]?.ticks.length, LOOM_LIMITS.activityTicks);
+      assert.deepEqual(result.activity[0]?.ticks[0], [2, "user"]);
+      assert.deepEqual(result.activity[0]?.ticks.at(-1), [LOOM_LIMITS.activityTicks + 1, "user"]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("does not spend the tick limit on activity after the window", () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      yield* thread({ id: "late", createdHours: 0 });
+      yield* run({ thread: "late", ordinal: 1, requestedHours: 0, completedHours: 200 });
+      yield* activityItem("late", 0, "command_execution", 1);
+      yield* repeat(LOOM_LIMITS.activityTicks + 1, (index) =>
+        activityItem("late", index + 1, "assistant_message", 169 + index / HOUR),
+      );
+      const result = yield* read(window);
+      assert.deepEqual(result.activity[0]?.ticks, [[HOUR, "command"]]);
+      assert.isFalse(result.truncated.activity);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("trims activity before markers to meet the byte budget", () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      const budget = "budget" + "b".repeat(20);
+      yield* thread({ id: budget, createdHours: 0 });
+      yield* run({ thread: budget, ordinal: 1, requestedHours: 0, completedHours: 10 });
+      yield* repeat(950, (index) => checkpoint(budget, index, 1 + index / HOUR));
+      const baseline = yield* read(window);
+      assert.isFalse(baseline.truncated.bytes);
+      yield* repeat(LOOM_LIMITS.activityTicks, (index) =>
+        activityItem(budget, index, "assistant_message", 100 + index / HOUR),
+      );
+      const result = yield* read(window);
+      assert.isTrue(result.truncated.bytes);
+      assert.isBelow(
+        result.activity.reduce((count, entry) => count + entry.ticks.length, 0),
+        LOOM_LIMITS.activityTicks,
+      );
+      assert.deepEqual(result.markers, baseline.markers);
+      assert.isAtMost(Buffer.byteLength(JSON.stringify(result)), LOOM_LIMITS.bytes);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("keeps lanes and runs that overlap the window and nothing else", () =>
     Effect.gen(function* () {
       yield* seedProjects;
@@ -484,6 +590,7 @@ describe("ProjectLoom.readWindow", () => {
         runs: true,
         markers: false,
         edges: false,
+        activity: false,
         bytes: false,
       });
       // The newest runs are kept.
@@ -653,6 +760,57 @@ describe("ProjectLoom.readWindow", () => {
       );
       assert.equal(result.coverage.untimedTasks, 1);
       assert.isFalse(JSON.stringify(result).includes("xxxxxxxx"));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("does not spend the command scan budget on commands after a historical window", () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      yield* thread({ id: "long-run", createdHours: 0 });
+      yield* run({ thread: "long-run", ordinal: 1, requestedHours: 1, completedHours: 200 });
+      yield* command({
+        thread: "long-run",
+        ordinal: 1,
+        id: "early-test",
+        input: "vp test run",
+        hours: 2,
+      });
+      yield* command({
+        thread: "long-run",
+        ordinal: 1,
+        id: "completion-only-test",
+        input: "vp test run",
+        hours: 3,
+        startedHours: null,
+      });
+      // A command started inside the window stays visible when it finishes after the window.
+      yield* command({
+        thread: "long-run",
+        ordinal: 1,
+        id: "boundary-test",
+        input: "vp test run",
+        hours: 168 - 0.05,
+      });
+      yield* repeat(4_001, (index) =>
+        command({
+          thread: "long-run",
+          ordinal: 1,
+          id: `later-${index}`,
+          input: "echo later",
+          hours: 169 + index / HOUR,
+          output: "",
+        }),
+      );
+
+      const result = yield* read(window);
+      assert.deepEqual(
+        result.markers
+          .filter((marker) => marker.kind === "test_command")
+          .map((marker) => marker.id),
+        ["boundary-test", "completion-only-test", "early-test"],
+      );
+      assert.equal(result.coverage.commandsScanned, 3);
+      assert.isFalse(result.coverage.commandsTruncated);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -867,6 +1025,26 @@ describe("ProjectLoom.readWindow", () => {
       return yield* recordReads(read(window));
     });
 
+    it.effect("bounds activity reads by run and time without selecting payloads", () =>
+      Effect.gen(function* () {
+        const { statements } = yield* seedBusyLane;
+        const activityReads = statements.filter(([query]) =>
+          query.includes("SELECT run_id, thread_id, type, updated_at"),
+        );
+        assert.lengthOf(activityReads, 1);
+        assert.isFalse(activityReads[0]![0].includes("payload_json"));
+        const plans = yield* queryPlans(activityReads);
+        assert.isTrue(
+          plans.some(
+            (detail) =>
+              detail.includes(
+                "COVERING INDEX orchestration_v2_projection_turn_items_run_updated_idx",
+              ) && detail.includes("(run_id=? AND updated_at>? AND updated_at<?)"),
+          ),
+        );
+      }).pipe(Effect.provide(layer)),
+    );
+
     it.effect("reads native tasks by lane, not by the child thread index", () =>
       Effect.gen(function* () {
         const plans = yield* queryPlans((yield* seedBusyLane).statements);
@@ -892,14 +1070,14 @@ describe("ProjectLoom.readWindow", () => {
       }).pipe(Effect.provide(layer)),
     );
 
-    it.effect("orders command candidates from a covering index, never sorting payloads", () =>
+    it.effect("bounds command candidates by their recorded time before reading payloads", () =>
       Effect.gen(function* () {
         const plans = yield* queryPlans((yield* seedBusyLane).statements);
         assert.isTrue(
-          plans.some((detail) =>
-            detail.includes(
-              "COVERING INDEX orchestration_v2_projection_turn_items_run_command_updated_idx",
-            ),
+          plans.some(
+            (detail) =>
+              detail.includes("INDEX orchestration_v2_projection_turn_items_run_command_at_idx") &&
+              detail.includes("(run_id=? AND <expr>>? AND <expr><?)"),
           ),
         );
       }).pipe(Effect.provide(layer)),

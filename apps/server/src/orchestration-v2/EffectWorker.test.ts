@@ -4,6 +4,7 @@ import {
   CheckpointScopeId,
   CommandId,
   NodeId,
+  ProjectId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -21,6 +22,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
@@ -34,13 +36,218 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { AssistedLearningRunner } from "../project/knowledge/assistedLearningSchedule.ts";
+import {
+  DeliveryScrubRunner,
+  deliveryScrubEffect,
+} from "../project/knowledge/deliveryScrubSchedule.ts";
+
+it.effect("coalesces delivery scrub roots and resumes bounded pages after process loss", () =>
+  Effect.gen(function* () {
+    const pages = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
+    const projectId = ProjectId.make("project:scrub-pages");
+    const root = deliveryScrubEffect({ projectId, removalId: "removal:1" });
+    const duplicate = deliveryScrubEffect({ projectId, removalId: "removal:2" });
+    const runner = Layer.succeed(DeliveryScrubRunner, {
+      scrubPage: ({ afterId }) =>
+        Ref.update(pages, (values) => [...values, afterId]).pipe(
+          Effect.as(afterId === undefined ? "delivery:page-1" : null),
+        ),
+    });
+    const dependencies = Layer.merge(
+      EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+      Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, { execute: () => Effect.void }),
+    );
+    const layer = EffectWorker.layer.pipe(Layer.provideMerge(dependencies), Layer.provide(runner));
+    yield* Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      yield* outbox.enqueue([root, duplicate]);
+      assert.isTrue(Option.isNone(yield* outbox.get(duplicate.id)));
+      assert.isTrue(yield* worker.runMaintenanceOnce);
+      assert.deepEqual(yield* Ref.get(pages), [undefined]);
+      const continuation = deliveryScrubEffect({
+        projectId,
+        removalId: "removal:1",
+        afterId: "delivery:page-1",
+      });
+      yield* outbox.enqueue([continuation]);
+      const claimed = yield* outbox.claimNext({
+        workerId: "lost-worker",
+        leaseDurationMs: 1000,
+        lane: "maintenance",
+      });
+      assert.isTrue(Option.isSome(claimed));
+      assert.deepEqual(yield* outbox.reconcileAfterProcessLoss, { requeued: 1, cancelled: 0 });
+      assert.equal(yield* worker.drain(), 1);
+      assert.deepEqual(yield* Ref.get(pages), [undefined, "delivery:page-1"]);
+      yield* outbox.enqueue([root, continuation]);
+      assert.equal(yield* worker.drain(), 0);
+    }).pipe(Effect.provide(layer));
+  }),
+);
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
+
+it.effect("admits turns while delivery scrub is held and retains the next removal", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const turns = yield* Ref.make(0);
+    const projectId = ProjectId.make("project:scrub-held");
+    const root = deliveryScrubEffect({ projectId, removalId: "held:1" });
+    const next = deliveryScrubEffect({ projectId, removalId: "held:2" });
+    const runner = Layer.succeed(DeliveryScrubRunner, {
+      scrubPage: () =>
+        Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.as(null),
+        ),
+    });
+    const dependencies = Layer.merge(
+      EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+      Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+        execute: () => Ref.update(turns, (count) => count + 1),
+      }),
+    );
+    const layer = EffectWorker.layer.pipe(Layer.provideMerge(dependencies), Layer.provide(runner));
+    yield* Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      yield* outbox.enqueue([root]);
+      yield* worker.runMaintenanceOnce.pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* outbox.enqueue([
+        next,
+        {
+          id: "effect:scrub-turn",
+          commandId: CommandId.make("command:scrub-turn"),
+          threadId: root.threadId,
+          request: { type: "provider-turn.start", runId: RunId.make("run:scrub-turn") },
+        },
+      ]);
+      assert.isTrue(Option.isSome(yield* outbox.get(next.id)));
+      assert.isTrue(yield* worker.runTurnOnce);
+      assert.equal(yield* Ref.get(turns), 1);
+      assert.isFalse(yield* Deferred.isDone(release));
+      yield* Deferred.succeed(release, undefined);
+      yield* outbox.awaitSettled(root.id);
+      assert.equal(yield* worker.drain(), 1);
+    }).pipe(Effect.provide(layer));
+  }),
+);
 const oldSessionId = ProviderSessionId.make("provider-session:effect-worker-restart:old");
 const providerThreadId = ProviderThreadId.make("provider-thread:effect-worker-restart");
 const providerTurnId = ProviderTurnId.make("provider-turn:effect-worker-restart");
 const attemptId = RunAttemptId.make("run-attempt:effect-worker-restart");
 const runId = RunId.make("run:effect-worker-restart");
+
+it.effect("starts a follow-up turn while assisted learning is held", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const outboxLayer = EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory));
+    const executorLayer = layerExecutorFor({ events }).pipe(
+      Layer.provide(
+        Layer.succeed(AssistedLearningRunner, {
+          extractRun: () =>
+            Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        }),
+      ),
+    );
+    const dependencies = Layer.merge(outboxLayer, executorLayer);
+    const layer = EffectWorker.layer.pipe(Layer.provideMerge(dependencies));
+    yield* Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      yield* outbox.enqueue([
+        {
+          id: "effect:held-learning",
+          commandId: CommandId.make("command:held-learning"),
+          threadId,
+          request: { type: "project-knowledge.extract", runId, runOutcome: "completed" },
+        },
+      ]);
+      yield* worker.runMaintenanceOnce.pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* outbox.enqueue([
+        {
+          id: "effect:follow-up",
+          commandId: CommandId.make("command:follow-up"),
+          threadId,
+          request: { type: "provider-turn.start", runId: RunId.make("run:follow-up") },
+        },
+      ]);
+      assert.isTrue(yield* worker.runTurnOnce);
+      assert.deepEqual(yield* Ref.get(events), ["start"]);
+      assert.isFalse(yield* Deferred.isDone(release));
+      yield* Deferred.succeed(release, undefined);
+      yield* outbox.awaitSettled("effect:held-learning");
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
+it.effect.each(["provider-turn.start", "thread-title.generate"] as const)(
+  "admits %s while heavy maintenance is held",
+  (target) =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const completed = yield* Deferred.make<void>();
+      const executor = Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+        execute: (effect) =>
+          effect.request.type === "project-knowledge.extract"
+            ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Deferred.succeed(completed, undefined).pipe(Effect.asVoid),
+      });
+      const dependencies = Layer.merge(
+        EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+        executor,
+      );
+      const layer = EffectWorker.layer.pipe(Layer.provideMerge(dependencies));
+      yield* Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        // Independent threads expose global pool saturation rather than per-thread ordering.
+        yield* outbox.enqueue(
+          Array.from({ length: target === "provider-turn.start" ? 5 : 1 }, (_, index) => ({
+            id: `effect:heavy:${index}`,
+            commandId: CommandId.make(`command:heavy:${index}`),
+            threadId: ThreadId.make(`thread:heavy:${index}`),
+            request: {
+              type: "project-knowledge.extract" as const,
+              runId: RunId.make(`run:heavy:${index}`),
+              runOutcome: "completed" as const,
+            },
+          })),
+        );
+        yield* EffectWorker.runDaemonWithOptions({ concurrency: 4 }).pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        yield* outbox.enqueue([
+          {
+            id: "effect:visible",
+            commandId: CommandId.make("command:visible"),
+            threadId,
+            request:
+              target === "provider-turn.start"
+                ? { type: target, runId }
+                : { type: target, kind: { type: "regenerate" } },
+          },
+        ]);
+        // Settle runnable daemon fibers through its safety wakeup on the virtual clock.
+        yield* TestClock.adjust("30 seconds");
+        assert.isTrue(
+          yield* Deferred.isDone(completed),
+          `${target} must complete while maintenance is held`,
+        );
+        yield* outbox.awaitSettled("effect:visible");
+        assert.isFalse(yield* Deferred.isDone(release));
+        yield* Deferred.succeed(release, undefined);
+        yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+      }).pipe(Effect.provide(layer));
+    }),
+);
 
 function restartEffect(
   now: DateTime.Utc,

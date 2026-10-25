@@ -3,7 +3,7 @@ import {
   WS_METHODS,
   type CrossEnvironmentAsk,
   type CrossEnvironmentFulfillment,
-  type EnvironmentId,
+  type CrossEnvironmentLaunchDestination,
   type OrchestrationProjectShell,
   type ProjectId,
 } from "@t3tools/contracts";
@@ -55,10 +55,10 @@ const respond = Effect.fn("CrossEnvironmentBridgeClient.respond")(function* (
       }
       const caller = yield* EnvironmentSupervisor.EnvironmentSupervisor;
       const claim = Effect.fn("CrossEnvironmentBridgeClient.claim")(
-        (environmentId: EnvironmentId) =>
+        (destination: CrossEnvironmentLaunchDestination) =>
           requestGuarded(WS_METHODS.crossEnvironmentBridgeClaim, {
             requestId: ask.requestId,
-            environmentId,
+            ...destination,
           }).pipe(
             Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, caller),
             Effect.timeout("5 seconds"),
@@ -80,6 +80,7 @@ const respond = Effect.fn("CrossEnvironmentBridgeClient.respond")(function* (
         ...(ask.message === undefined ? {} : { message: ask.message }),
         runtimeMode: ask.runtimeMode,
         interactionMode: ask.interactionMode,
+        ...(ask.destination === undefined ? {} : { destination: ask.destination }),
         claim,
       });
       return { requestId: ask.requestId, op: "launch" as const, result };

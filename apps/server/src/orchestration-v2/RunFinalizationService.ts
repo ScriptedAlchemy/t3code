@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
+import * as CodeIntelligence from "../project/knowledge/CodeIntelligence.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
@@ -96,10 +97,13 @@ export const layerObserver = Layer.effect(
     const vcsStatus = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const codeIntelligence = yield* CodeIntelligence.CodeIntelligence;
     return {
       refreshAfterTurn: pullRequests.refreshAfterTurn,
       refresh: Effect.fn("RunFinalizationService.refresh")(
         function* ({ cwd, threadId, runId }) {
+          // The index builds in the code intelligence service, off this turn's lane.
+          yield* codeIntelligence.refreshIfIndexed(cwd);
           const [, local] = yield* Effect.all(
             [workspaceEntries.refresh(cwd), vcsStatus.refreshLocalStatus(cwd)],
             { concurrency: "unbounded" },

@@ -21,20 +21,50 @@ const decodeReply = Schema.decodeUnknownOption(
     Schema.Struct({
       result: Schema.Struct({ nodes: Schema.Array(Schema.Struct({ name: Schema.String })) }),
     }),
+    Schema.Struct({ built: Schema.Struct({ changed: Schema.Boolean }) }),
     Schema.Struct({ error: Schema.String }),
   ]),
 );
+type Reply = Exclude<ReturnType<typeof decodeReply>, { readonly _tag: "None" }>["value"];
+
+const GENERATION = ".codegraph-t3-g1";
 
 /**
- * Answers one `callers` query through `<command> <args> __code-intelligence` on a throwaway
- * checkout, the way the server does. A packaged server passes only if its executable accepts
- * its baked V8 flags, dispatches the subcommand, and its worker loads the CodeGraph SDK.
+ * Builds an index generation and answers one `callers` query from it through
+ * `<command> <args> __code-intelligence` on a throwaway checkout, the way the server does. A
+ * packaged server passes only if its executable accepts its baked V8 flags, dispatches the
+ * subcommand, and its worker loads the CodeGraph SDK.
  */
 export const smokeCodeIntelligenceProcess = Effect.fn("smokeCodeIntelligenceProcess")(function* (
   command: string,
   args: ReadonlyArray<string>,
 ) {
   const fail = (detail: string) => new CodeIntelligenceSmokeError({ command, detail });
+  const ask = (message: object) =>
+    Effect.callback<Reply, CodeIntelligenceSmokeError>((resume) => {
+      const child = NodeChildProcess.spawn(command, [...args, "__code-intelligence"], {
+        env: { ...process.env, CODEGRAPH_DIR: ".codegraph-t3", ELECTRON_RUN_AS_NODE: "1" },
+        stdio: ["ignore", "ignore", "inherit", "ipc"],
+      });
+      let reply: Reply | undefined;
+      child.on("message", (raw: unknown) => {
+        const decoded = decodeReply(raw);
+        if (decoded._tag === "Some") reply = decoded.value;
+      });
+      child.once("error", (error) => resume(Effect.fail(fail(error.message))));
+      child.once("close", (code, signal) => {
+        if (reply === undefined) resume(Effect.fail(fail(`exited with ${code ?? signal}`)));
+        else if ("error" in reply) resume(Effect.fail(fail(reply.error)));
+        else resume(Effect.succeed(reply));
+      });
+      child.send(message);
+      return Effect.sync(() => child.kill("SIGKILL"));
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: "60 seconds",
+        orElse: () => Effect.fail(fail("no answer within 60 seconds")),
+      }),
+    );
   const callers = yield* Effect.acquireUseRelease(
     Effect.promise(async () => {
       const checkout = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-code-smoke-"));
@@ -46,42 +76,29 @@ export const smokeCodeIntelligenceProcess = Effect.fn("smokeCodeIntelligenceProc
       return checkout;
     }),
     (checkout) =>
-      Effect.callback<ReadonlyArray<string>, CodeIntelligenceSmokeError>((resume) => {
-        const child = NodeChildProcess.spawn(command, [...args, "__code-intelligence"], {
-          env: { ...process.env, CODEGRAPH_DIR: ".codegraph-t3", ELECTRON_RUN_AS_NODE: "1" },
-          stdio: ["ignore", "ignore", "inherit", "ipc"],
+      Effect.gen(function* () {
+        const listing = {
+          checkoutPath: checkout,
+          files: ["src/a.ts"],
+          filesListed: 1,
+          listingTruncated: false,
+        };
+        const built = yield* ask({
+          type: "build",
+          input: { ...listing, from: null, to: GENERATION, generation: 1 },
         });
-        let reply: string | ReadonlyArray<string> | undefined;
-        child.on("message", (message: unknown) => {
-          const decoded = decodeReply(message);
-          if (decoded._tag === "None") return;
-          reply =
-            "error" in decoded.value
-              ? decoded.value.error
-              : decoded.value.result.nodes.map((node) => node.name);
-        });
-        child.once("error", (error) => resume(Effect.fail(fail(error.message))));
-        child.once("close", (code, signal) => {
-          if (typeof reply === "object") resume(Effect.succeed(reply));
-          else resume(Effect.fail(fail(reply ?? `exited with ${code ?? signal} and no result`)));
-        });
-        child.send({
+        if (!("built" in built)) return yield* fail("the build returned no outcome");
+        const answer = yield* ask({
           type: "query",
           input: {
-            checkoutPath: checkout,
-            files: ["src/a.ts"],
-            filesListed: 1,
-            listingTruncated: false,
+            ...listing,
             query: { operation: "callers", symbol: { name: "greet" } },
+            indexDirectory: GENERATION,
           },
         });
-        return Effect.sync(() => child.kill("SIGKILL"));
-      }).pipe(
-        Effect.timeoutOrElse({
-          duration: "60 seconds",
-          orElse: () => Effect.fail(fail("no answer within 60 seconds")),
-        }),
-      ),
+        if (!("result" in answer)) return yield* fail("the query returned no result");
+        return answer.result.nodes.map((node) => node.name);
+      }),
     (checkout) => Effect.promise(() => NodeFSP.rm(checkout, { recursive: true, force: true })),
   );
   if (!callers.includes("caller")) {

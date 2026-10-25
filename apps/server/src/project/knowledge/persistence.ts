@@ -13,6 +13,7 @@ import {
   ProjectFactId,
   ProjectId,
   ProjectKnowledgeDelivery,
+  ProjectKnowledgeDeliveryBudget,
   ProjectKnowledgeDeliveryItem,
   ProjectKnowledgeDeliveryOmission,
   type MessageId,
@@ -89,6 +90,8 @@ export type HistoryRecord = Omit<
 
 const DeliveryRow = Schema.Struct({
   ...ProjectKnowledgeDelivery.fields,
+  budget: Schema.NullOr(Schema.fromJsonString(ProjectKnowledgeDeliveryBudget)),
+  providerThreadId: Schema.NullOr(ProjectKnowledgeDelivery.fields.providerThreadId),
   items: Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryItem)),
   omissions: Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryOmission)),
 });
@@ -326,6 +329,19 @@ export const makeStore = Effect.gen(function* () {
       .map((row) => ({ ...row, helpful: row.helpful === null ? null : row.helpful !== 0 }))
       .toReversed();
   });
+  const sourcesAtRevision = Effect.fn("ProjectKnowledgeStore.sourcesAtRevision")(function* (
+    projectId: ProjectId,
+    factId: ProjectFactId,
+    revision: number,
+  ) {
+    // Confirmation and feedback change a revision without replacing its content or citations.
+    const rows = yield* sql<{ readonly sources: string }>`
+      SELECT sources_json AS sources FROM project_knowledge_fact_history
+      WHERE project_id = ${projectId} AND fact_id = ${factId} AND revision <= ${revision}
+        AND event IN ('baseline', 'created', 'edited')
+      ORDER BY sequence DESC LIMIT 1`;
+    return rows[0] === undefined ? null : yield* decodeSources(rows[0].sources);
+  });
   const statusCounts = Effect.fn("ProjectKnowledgeStore.statusCounts")(function* (
     projectId: ProjectId,
     recallThreshold: number,
@@ -426,20 +442,23 @@ export const makeStore = Effect.gen(function* () {
         const items = withoutForgotten(delivery.items, new Set(forgotten.map((row) => row.id)));
         yield* sql`INSERT INTO project_knowledge_deliveries (
           attempt_id, run_id, thread_id, message_id, project_id, provider_instance_id, status,
-          items_json, omissions_json, created_at, updated_at
+          items_json, omissions_json, created_at, updated_at, provider_thread_id, native_thread_id, budget_json
         ) VALUES (
           ${delivery.attemptId}, ${delivery.runId}, ${delivery.threadId}, ${delivery.messageId},
           ${delivery.projectId}, ${delivery.providerInstanceId}, ${delivery.status},
           ${encodeDeliveryItems(items)}, ${encodeDeliveryOmissions(delivery.omissions)},
-          ${delivery.createdAt}, ${delivery.updatedAt}
+          ${delivery.createdAt}, ${delivery.updatedAt}, ${delivery.providerThreadId ?? null},
+          ${delivery.nativeThreadId ?? null}, ${delivery.budget === undefined ? null : yield* Schema.encodeEffect(Schema.fromJsonString(ProjectKnowledgeDeliveryBudget))(delivery.budget)}
         ) ON CONFLICT (attempt_id) DO UPDATE SET
-          status = excluded.status, updated_at = excluded.updated_at
+          status = excluded.status, updated_at = excluded.updated_at,
+          provider_thread_id = excluded.provider_thread_id, native_thread_id = excluded.native_thread_id, budget_json = excluded.budget_json, omissions_json = excluded.omissions_json
           ${
             delivery.status === "prepared"
               ? sql`, items_json = excluded.items_json, omissions_json = excluded.omissions_json`
               : sql``
           }
-        WHERE project_knowledge_deliveries.status != 'sent'`;
+        WHERE project_knowledge_deliveries.status != 'sent'
+          OR project_knowledge_deliveries.native_thread_id IS NOT excluded.native_thread_id`;
       }),
     );
   });
@@ -467,6 +486,15 @@ export const makeStore = Effect.gen(function* () {
           WHERE attempt_id = ${row.attemptId}`;
     }
   });
+  const replaceDeliveryItems = Effect.fn("ProjectKnowledgeStore.replaceDeliveryItems")(function* (
+    delivery: ProjectKnowledgeDelivery,
+    original: ProjectKnowledgeDelivery,
+  ) {
+    yield* sql`UPDATE project_knowledge_deliveries
+      SET items_json = ${encodeDeliveryItems(delivery.items)}, omissions_json = ${encodeDeliveryOmissions(delivery.omissions)}
+      WHERE attempt_id = ${delivery.attemptId} AND project_id = ${delivery.projectId}
+        AND items_json = ${encodeDeliveryItems(original.items)}`;
+  });
   const deliveries = Effect.fn("ProjectKnowledgeStore.deliveries")(function* (
     projectId: ProjectId,
     threadId: ThreadId,
@@ -475,12 +503,37 @@ export const makeStore = Effect.gen(function* () {
     const rows = yield* sql`
       SELECT attempt_id AS "attemptId", run_id AS "runId", thread_id AS "threadId",
         message_id AS "messageId", project_id AS "projectId",
-        provider_instance_id AS "providerInstanceId", status, items_json AS items,
-        omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
+        provider_instance_id AS "providerInstanceId", provider_thread_id AS "providerThreadId",
+        native_thread_id AS "nativeThreadId", status, items_json AS items,
+        budget_json AS budget, omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
       FROM project_knowledge_deliveries
       WHERE project_id = ${projectId} AND thread_id = ${threadId} AND message_id = ${messageId}
       ORDER BY created_at ASC, attempt_id ASC LIMIT 20`;
-    return yield* decodeDeliveries(rows);
+    return (yield* decodeDeliveries(rows)).map(({ providerThreadId, budget, ...row }) => ({
+      ...row,
+      ...(budget == null ? {} : { budget }),
+      ...(providerThreadId == null ? {} : { providerThreadId }),
+    }));
+  });
+  const deliveryPage = Effect.fn("ProjectKnowledgeStore.deliveryPage")(function* (
+    projectId: ProjectId,
+    afterId: string | undefined,
+    limit: number,
+  ) {
+    const rows = yield* sql`
+      SELECT attempt_id AS "attemptId", run_id AS "runId", thread_id AS "threadId",
+        message_id AS "messageId", project_id AS "projectId",
+        provider_instance_id AS "providerInstanceId", provider_thread_id AS "providerThreadId",
+        native_thread_id AS "nativeThreadId", status, items_json AS items,
+        budget_json AS budget, omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM project_knowledge_deliveries
+      WHERE project_id = ${projectId} AND attempt_id > ${afterId ?? ""}
+      ORDER BY attempt_id ASC LIMIT ${limit}`;
+    return (yield* decodeDeliveries(rows)).map(({ providerThreadId, budget, ...row }) => ({
+      ...row,
+      ...(budget == null ? {} : { budget }),
+      ...(providerThreadId == null ? {} : { providerThreadId }),
+    }));
   });
   const sentDeliveries = Effect.fn("ProjectKnowledgeStore.sentDeliveries")(function* (
     projectId: ProjectId,
@@ -491,13 +544,18 @@ export const makeStore = Effect.gen(function* () {
     const rows = yield* sql`
       SELECT attempt_id AS "attemptId", run_id AS "runId", thread_id AS "threadId",
         message_id AS "messageId", project_id AS "projectId",
-        provider_instance_id AS "providerInstanceId", status, items_json AS items,
-        omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
+        provider_instance_id AS "providerInstanceId", provider_thread_id AS "providerThreadId",
+        native_thread_id AS "nativeThreadId", status, items_json AS items,
+        budget_json AS budget, omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
       FROM project_knowledge_deliveries
       WHERE project_id = ${projectId} AND ${sql.in("thread_id", threadIds)}
         AND ${sql.in("run_id", runIds)} AND status = 'sent'
       ORDER BY created_at ASC, attempt_id ASC`;
-    return yield* decodeDeliveries(rows);
+    return (yield* decodeDeliveries(rows)).map(({ providerThreadId, budget, ...row }) => ({
+      ...row,
+      ...(budget == null ? {} : { budget }),
+      ...(providerThreadId == null ? {} : { providerThreadId }),
+    }));
   });
   const assistedRunRecorded = Effect.fn("ProjectKnowledgeStore.assistedRunRecorded")(function* (
     runId: RunId,
@@ -548,12 +606,15 @@ export const makeStore = Effect.gen(function* () {
     recordHistory,
     eraseHistory,
     history,
+    sourcesAtRevision,
     statusCounts,
     citedFacts,
     recordRetrieval,
     recordDelivery,
     scrubDeliveries,
+    replaceDeliveryItems,
     deliveries,
     sentDeliveries,
+    deliveryPage,
   };
 });

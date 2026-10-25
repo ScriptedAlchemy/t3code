@@ -84,6 +84,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectCodeAffected: Schema.optionalKey(Schema.Boolean),
   projectCodePath: Schema.optionalKey(Schema.Boolean),
   projectCodeFileHistory: Schema.optionalKey(Schema.Boolean),
+  /** projectCode.subscribeIndex, and index.refresh on query results. */
+  projectCodeIndexEvents: Schema.optionalKey(Schema.Boolean),
   /** conversationSummaries.* reads and the enableConversationSummaries project setting. */
   conversationSummaries: Schema.optionalKey(Schema.Boolean),
   /** project.readLoomWindow and the project Loom view. */

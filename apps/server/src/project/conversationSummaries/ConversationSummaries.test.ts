@@ -38,6 +38,8 @@ import { deliverContextHandoffs } from "../../orchestration-v2/ContextHandoffDel
 import * as ContextHandoffService from "../../orchestration-v2/ContextHandoffService.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import * as EventStore from "../../orchestration-v2/EventStore.ts";
+import * as ProjectionMaintenance from "../../orchestration-v2/ProjectionMaintenance.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
@@ -96,7 +98,15 @@ const makeLayer = (generate: Generate, settings: Parameters<typeof ServerSetting
     Layer.provide(IdAllocator.layer),
     Layer.provideMerge(ProjectKnowledge.layer.pipe(Layer.provide(HolographicMemory.layer))),
     Layer.provideMerge(
-      Layer.mergeAll(ProjectStore.layer, ProjectionStore.layer, ThreadSearch.layer),
+      Layer.mergeAll(
+        ProjectStore.layer,
+        ProjectionStore.layer,
+        ThreadSearch.layer,
+        ProjectionMaintenance.layer.pipe(
+          Layer.provideMerge(EventStore.layer),
+          Layer.provide(ProjectionStore.layer),
+        ),
+      ),
     ),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provideMerge(ServerSettings.layerTest(settings)),
@@ -212,7 +222,14 @@ const seed = Effect.gen(function* () {
     },
   });
   const projections = yield* ProjectionStore.ProjectionStoreV2;
-  yield* projections.apply({
+  const events = yield* EventStore.EventStoreV2;
+  const apply = Effect.fn("test.persistSummarySource")(function* (
+    event: OrchestrationV2DomainEvent,
+  ) {
+    yield* events.append({ events: [event] });
+    yield* projections.apply(event);
+  });
+  yield* apply({
     id: EventId.make("thread-created"),
     type: "thread.created",
     threadId,
@@ -221,8 +238,8 @@ const seed = Effect.gen(function* () {
     payload: threadPayload,
   });
   for (let index = 0; index < MESSAGE_COUNT; index++) {
-    yield* projections.apply(messageEvent(index, rawText(index)));
-    yield* projections.apply({
+    yield* apply(messageEvent(index, rawText(index)));
+    yield* apply({
       id: EventId.make(`item-${index}`),
       type: "turn-item.updated",
       threadId,
@@ -338,7 +355,11 @@ it.effect(
       const summary = yield* onlySummary;
       const service = yield* ConversationSummaries.ConversationSummaries;
       const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const events = yield* EventStore.EventStoreV2;
+      yield* events.append({ events: [messageEvent(0, "Edited request")] });
       yield* projections.apply(messageEvent(0, "Edited request"));
+      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      yield* maintenance.rebuild;
 
       const described = yield* service.describe({ ...scope, summaryId: summary.id });
       assert.deepEqual(described, {
@@ -357,6 +378,12 @@ it.effect(
       const lastPage = yield* service.expand({ ...scope, summaryId: summary.id, offset: 8 });
       assert.equal(lastPage.sources.length, 2);
       assert.equal(lastPage.nextOffset, null);
+      const sql = yield* SqlClient.SqlClient;
+      const stored = yield* sql<{
+        payload: string;
+      }>`SELECT payload_json AS payload FROM conversation_summaries WHERE summary_id = ${summary.id}`;
+      assert.notInclude(stored[0]?.payload, summary.statements[0]!.text);
+      assert.include(stored[0]?.payload, "Source unavailable");
 
       // The stale range no longer counts as covered, so the next pass summarizes it as it is now.
       yield* summarize;
@@ -498,6 +525,54 @@ const providerThread: OrchestrationV2ProviderThread = {
   createdAt: at,
   updatedAt: at,
 };
+
+it.effect(
+  "stops offering existing summaries after the project opts out and resumes on opt-in",
+  () => {
+    const model = citing();
+    return Effect.gen(function* () {
+      yield* seed;
+      yield* summarize;
+      const summary = yield* onlySummary;
+      const service = yield* ConversationSummaries.ConversationSummaries;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const handoffs = yield* ContextHandoffService.ContextHandoffServiceV2;
+      const handoff = yield* handoffs.prepareProviderHandoff({
+        threadId,
+        targetRunId: RunId.make("opt-out-target-run"),
+        transferId: null,
+        fromProviderThreadIds: [],
+        toProviderThreadId: providerThread.id,
+        fromProviderInstanceId: instanceId,
+        toProviderInstanceId: instanceId,
+        coveredRunOrdinals: { from: 1, to: 1 },
+        strategy: "full_thread_summary",
+        items: Array.from({ length: MESSAGE_COUNT }, (_, index) => item(index)),
+        createdAt: at,
+      });
+      const read = service.forHandoff({
+        projectId,
+        handoffs: [handoff],
+        itemIds: new Set(Array.from({ length: MESSAGE_COUNT }, (_, index) => itemId(index))),
+      });
+      assert.deepEqual(
+        (yield* read).map((offered) => offered.id),
+        [summary.id],
+      );
+      yield* settings.updateSettings({
+        projectSettingsOverrides: { [projectId]: { enableConversationSummaries: false } },
+      });
+      assert.deepEqual(yield* read, []);
+      assert.equal((yield* list).summaries[0]?.state, "available");
+      yield* settings.updateSettings(optedIn);
+      assert.deepEqual(
+        (yield* read).map((offered) => offered.id),
+        [summary.id],
+      );
+      assert.equal(model.calls.length, 1);
+    }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+  },
+);
 
 it.effect("hands off a labelled summary plus the intact tail within budget, once", () => {
   const model = citing();

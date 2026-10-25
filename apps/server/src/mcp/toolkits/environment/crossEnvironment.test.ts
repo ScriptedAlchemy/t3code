@@ -14,12 +14,17 @@ import {
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
 import * as Environment from "../../../environment/ServerEnvironment.ts";
+import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
@@ -91,28 +96,38 @@ const stableCommandId = (requestKey: string) =>
     [
       "command",
       "mcp",
-      encodeURIComponent(namespace),
-      encodeURIComponent("cross-environment-launch"),
+      "cross-environment-launch",
+      encodeURIComponent(environmentId),
+      encodeURIComponent(threadId),
       encodeURIComponent(requestKey),
     ].join(":"),
   );
 
 const stableThreadId = (requestKey: string) =>
   ThreadId.make(
-    ["thread", "mcp", encodeURIComponent(namespace), encodeURIComponent(requestKey), "0"].join(":"),
+    [
+      "thread",
+      "mcp",
+      "cross-environment-launch",
+      encodeURIComponent(environmentId),
+      encodeURIComponent(threadId),
+      encodeURIComponent(requestKey),
+    ].join(":"),
   );
 
-const toolLayer = <BridgeR>(input: {
-  readonly bridge: Layer.Layer<CrossEnvironmentBridge.CrossEnvironmentBridge, never, BridgeR>;
+const toolLayer = <BridgeE, BridgeR>(input: {
+  readonly bridge: Layer.Layer<CrossEnvironmentBridge.CrossEnvironmentBridge, BridgeE, BridgeR>;
   readonly resources: Effect.Effect<HostResourcesSnapshot>;
   readonly shells: Effect.Effect<readonly OrchestrationProjectShell[]>;
+  readonly invocationScope?: typeof scope;
+  readonly databasePath?: string;
 }) =>
   McpToolAccess.HandlersLayer.layer(EnvironmentHandlers.layer).pipe(
     Layer.provideMerge(CrossEnvironmentMcpService.layer),
     Layer.provideMerge(
       Layer.mergeAll(
         ThreadCommandExecutor.layer,
-        Layer.succeed(McpInvocationContext.McpInvocationContext, scope),
+        Layer.succeed(McpInvocationContext.McpInvocationContext, input.invocationScope ?? scope),
         Layer.mock(ThreadManagement.ThreadManagementService)({
           getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
         }),
@@ -131,7 +146,16 @@ const toolLayer = <BridgeR>(input: {
         }),
         Layer.mock(HostResources.HostResources)({ read: input.resources }),
         Layer.mock(ProjectService.ProjectService)({ listShells: () => input.shells }),
-        input.bridge.pipe(Layer.provide(NodeCrypto.layer)),
+        input.bridge.pipe(
+          Layer.provide([
+            NodeCrypto.layer,
+            input.databasePath === undefined
+              ? SqlitePersistence.layerMemory
+              : SqlitePersistence.layerFromPath(input.databasePath).pipe(
+                  Layer.provide(NodeServices.layer),
+                ),
+          ]),
+        ),
       ),
     ),
   );
@@ -221,7 +245,8 @@ it.effect("returns PeerCatalogUnavailable for a launch when no client is subscri
         toolLayer({
           bridge: Layer.mock(CrossEnvironmentBridge.CrossEnvironmentBridge)({
             hasSubscriber: Effect.succeed(false),
-            askLaunch: () => Ref.set(asked, true).pipe(Effect.andThen(Effect.die("asked"))),
+            askLaunch: () =>
+              Ref.set(asked, true).pipe(Effect.andThen(Effect.fail(new PeerCatalogUnavailable()))),
             askList: () => Effect.die("listed"),
           }),
           resources: Effect.die("unused"),
@@ -232,7 +257,7 @@ it.effect("returns PeerCatalogUnavailable for a launch when no client is subscri
     expect(result).toBeInstanceOf(PeerCatalogUnavailable);
     expect(result).toMatchObject({ _tag: "PeerCatalogUnavailable" });
     expect(result).not.toHaveProperty("taskId");
-    expect(yield* Ref.get(asked)).toBe(false);
+    expect(yield* Ref.get(asked)).toBe(true);
   }),
 );
 
@@ -249,7 +274,8 @@ it.effect("returns TargetIsSourceEnvironment before asking this server to launch
         toolLayer({
           bridge: Layer.mock(CrossEnvironmentBridge.CrossEnvironmentBridge)({
             hasSubscriber: Effect.succeed(true),
-            askLaunch: () => Ref.set(asked, true).pipe(Effect.andThen(Effect.die("asked"))),
+            askLaunch: () =>
+              Ref.set(asked, true).pipe(Effect.andThen(Effect.fail(new PeerCatalogUnavailable()))),
             askList: () => Effect.die("listed"),
           }),
           resources: Effect.die("unused"),
@@ -273,18 +299,29 @@ it.effect.each(["run", "thread"] as const)(
       yield* Stream.runForEach(stream, (ask) => {
         if (ask.op !== "launch") return Effect.void;
         asks.push(ask);
-        return bridge.fulfill("client-1", {
-          requestId: ask.requestId,
-          op: "launch",
-          result: {
+        return bridge
+          .claim("client-1", {
+            requestId: ask.requestId,
             environmentId: peerId,
             projectId,
-            threadId: ask.threadId,
-            runId: RunId.make("run-remote"),
-            status: "running",
-            kind: ask.kind,
-          },
-        });
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "peer-model" },
+          })
+          .pipe(
+            Effect.andThen(
+              bridge.fulfill("client-1", {
+                requestId: ask.requestId,
+                op: "launch",
+                result: {
+                  environmentId: peerId,
+                  projectId,
+                  threadId: ask.threadId,
+                  runId: RunId.make("run-remote"),
+                  status: "running",
+                  kind: ask.kind,
+                },
+              }),
+            ),
+          );
       }).pipe(Effect.forkScoped);
       const params = {
         target: { kind: "environment" as const, environmentId: peerId },
@@ -307,13 +344,10 @@ it.effect.each(["run", "thread"] as const)(
       });
       expect(first).not.toHaveProperty("taskId");
       expect(second).toEqual(first);
-      expect(asks.map((ask) => ask.commandId)).toEqual([
-        stableCommandId("req-1"),
-        stableCommandId("req-1"),
-      ]);
-      expect(asks.map((ask) => ask.threadId)).toEqual([expectedThreadId, expectedThreadId]);
-      expect(asks.map((ask) => ask.sourceProjectId)).toEqual([projectId, projectId]);
-      expect(asks.map((ask) => ask.runtimeMode)).toEqual(["full-access", "full-access"]);
+      expect(asks.map((ask) => ask.commandId)).toEqual([stableCommandId("req-1")]);
+      expect(asks.map((ask) => ask.threadId)).toEqual([expectedThreadId]);
+      expect(asks.map((ask) => ask.sourceProjectId)).toEqual([projectId]);
+      expect(asks.map((ask) => ask.runtimeMode)).toEqual(["full-access"]);
     }).pipe(
       Effect.provide(
         toolLayer({
@@ -323,4 +357,149 @@ it.effect.each(["run", "thread"] as const)(
         }),
       ),
     ),
+);
+
+it.effect(
+  "keeps destination command and thread ids stable when the provider namespace changes",
+  () =>
+    Effect.gen(function* () {
+      const asks: CrossEnvironmentLaunchAsk[] = [];
+      const bridge = Layer.mock(CrossEnvironmentBridge.CrossEnvironmentBridge)({
+        hasSubscriber: Effect.succeed(true),
+        askLaunch: (ask) => {
+          asks.push({ ...ask, op: "launch", requestId: "request" });
+          return Effect.succeed({
+            environmentId: peerId,
+            projectId,
+            threadId: ask.threadId,
+            runId: null,
+            status: null,
+            kind: ask.kind,
+          });
+        },
+      });
+      for (const requestNamespace of ["before-restart", "after-restart"]) {
+        yield* toolResult("t3_environment_launch", {
+          target: { kind: "load_balanced" },
+          kind: "run",
+          title: "Ship it",
+          message: "do the thing",
+          clientRequestId: "same-request",
+        }).pipe(
+          Effect.provide(
+            toolLayer({
+              bridge,
+              resources: Effect.die("unused"),
+              shells: Effect.die("unused"),
+              invocationScope: { ...scope, requestNamespace },
+            }),
+          ),
+        );
+      }
+      expect(asks).toHaveLength(2);
+      expect(asks[1]?.commandId).toBe(asks[0]?.commandId);
+      expect(asks[1]?.threadId).toBe(asks[0]?.threadId);
+    }),
+);
+
+it.effect.each([false, true])(
+  "reuses a saved destination after closing the database and reminting credentials (confirmed: %s)",
+  (confirmed) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-cross-environment-restart-",
+      });
+      const database = `${directory}/state.sqlite`;
+      const destination = {
+        environmentId: peerId,
+        projectId,
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "original-model" },
+      };
+      const asks: CrossEnvironmentLaunchAsk[] = [];
+      const params = {
+        target: { kind: "load_balanced" },
+        kind: "run",
+        title: "Survive restart",
+        message: "do the thing once",
+        clientRequestId: "durable-request",
+      };
+      for (const [index, requestNamespace] of ["before-restart", "after-restart"].entries()) {
+        const result = yield* Effect.gen(function* () {
+          const bridge = yield* CrossEnvironmentBridge.CrossEnvironmentBridge;
+          if (index === 0 || !confirmed) {
+            const stream = yield* bridge.listen(`client-${index}`);
+            const request = yield* toolResult("t3_environment_launch", params).pipe(
+              Effect.forkScoped,
+            );
+            const ask = Option.getOrThrow(
+              yield* Stream.runHead(Stream.take(stream, 1)).pipe(
+                Effect.raceFirst(
+                  Fiber.join(request).pipe(
+                    Effect.flatMap((result) =>
+                      Effect.die(
+                        new Error(`Launch ended before dispatch: ${JSON.stringify(result)}`),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+            if (ask.op !== "launch") return yield* Effect.die("Expected a launch");
+            asks.push(ask);
+            if (index === 1) {
+              expect(ask.target).toEqual({ kind: "environment", environmentId: peerId });
+              expect(ask.destination).toEqual(destination);
+              expect(ask.commandId).toBe(asks[0]?.commandId);
+              expect(ask.threadId).toBe(asks[0]?.threadId);
+            }
+            expect(
+              yield* bridge.claim(`client-${index}`, { requestId: ask.requestId, ...destination }),
+            ).toBe(true);
+            if (index === 0 && !confirmed) {
+              yield* Fiber.interrupt(request);
+              return null;
+            }
+            yield* bridge.fulfill(`client-${index}`, {
+              requestId: ask.requestId,
+              op: "launch",
+              result: {
+                environmentId: peerId,
+                projectId,
+                threadId: ask.threadId,
+                runId: RunId.make("original-run"),
+                status: "running",
+                kind: ask.kind,
+              },
+            });
+            return yield* Fiber.join(request);
+          }
+          expect(yield* bridge.hasSubscriber).toBe(false);
+          return yield* toolResult("t3_environment_launch", params);
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            toolLayer({
+              bridge: CrossEnvironmentBridge.layer,
+              databasePath: database,
+              resources: Effect.die("unused"),
+              shells: Effect.die("unused"),
+              invocationScope: {
+                ...scope,
+                requestNamespace,
+                thread: { ...scope.thread, providerSessionId: requestNamespace },
+              },
+            }),
+          ),
+        );
+        if (index === 1 || confirmed) {
+          expect(result).toMatchObject({
+            environmentId: peerId,
+            threadId: asks[0]?.threadId,
+            runId: RunId.make("original-run"),
+          });
+        }
+      }
+      expect(asks).toHaveLength(confirmed ? 1 : 2);
+    }).pipe(Effect.provide(NodeServices.layer)),
 );

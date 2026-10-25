@@ -1,5 +1,6 @@
 import {
   CrossEnvironmentLaunchRejected,
+  CrossEnvironmentLaunchDestination,
   CrossEnvironmentLaunchUncertain,
   PeerCatalogUnavailable,
   type ConnectedEnvironmentsResult,
@@ -9,6 +10,7 @@ import {
   type CrossEnvironmentFulfillment,
   type CrossEnvironmentLaunchAsk,
   type CrossEnvironmentLaunchResult,
+  type CrossEnvironmentRequestConflict,
   type CrossEnvironmentListAsk,
   type EnvironmentId,
   type ProjectId,
@@ -22,20 +24,32 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+
+import * as CrossEnvironmentLaunchStore from "./CrossEnvironmentLaunchStore.ts";
 
 type LaunchWaitResult = ConnectedEnvironmentsResult | CrossEnvironmentLaunchResult;
 
 type LaunchAskInput =
-  | Omit<Extract<CrossEnvironmentLaunchAsk, { readonly kind: "run" }>, "requestId" | "op">
-  | Omit<Extract<CrossEnvironmentLaunchAsk, { readonly kind: "thread" }>, "requestId" | "op">;
+  | Omit<
+      Extract<CrossEnvironmentLaunchAsk, { readonly kind: "run" }>,
+      "requestId" | "op" | "destination"
+    >
+  | Omit<
+      Extract<CrossEnvironmentLaunchAsk, { readonly kind: "thread" }>,
+      "requestId" | "op" | "destination"
+    >;
 
 interface PendingAsk {
   readonly ask: CrossEnvironmentAsk;
   readonly connectionId: string;
   readonly deferred: Deferred.Deferred<LaunchWaitResult, CrossEnvironmentFailure>;
-  claimedEnvironmentId: EnvironmentId | null;
+  claimed: boolean;
+  destination: CrossEnvironmentLaunchDestination | null;
 }
+
+const sameDestination = Schema.toEquivalence(CrossEnvironmentLaunchDestination);
 
 interface Subscriber {
   readonly connectionId: string;
@@ -73,6 +87,7 @@ export class CrossEnvironmentBridge extends Context.Service<
 
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
+  const launches = yield* CrossEnvironmentLaunchStore.CrossEnvironmentLaunchStore;
   const lock = yield* Semaphore.make(1);
   const state = yield* Ref.make<BridgeState>({
     subscriber: null,
@@ -82,15 +97,32 @@ const make = Effect.gen(function* () {
 
   const withLock = <A, E, R>(effect: Effect.Effect<A, E, R>) => lock.withPermits(1)(effect);
 
-  const unavailableResponse = ({ ask, claimedEnvironmentId }: PendingAsk) =>
+  const unavailableResponse = ({ ask, destination }: Pick<PendingAsk, "ask" | "destination">) =>
     ask.op === "launch"
       ? new CrossEnvironmentLaunchUncertain({
           threadId: ask.threadId,
           environmentId:
-            claimedEnvironmentId ??
+            destination?.environmentId ??
             (ask.target.kind === "environment" ? ask.target.environmentId : null),
         })
       : new PeerCatalogUnavailable();
+
+  const persist = <A>(
+    pending: Pick<PendingAsk, "ask" | "destination">,
+    effect: Effect.Effect<
+      A,
+      CrossEnvironmentRequestConflict | CrossEnvironmentLaunchStore.CrossEnvironmentLaunchStoreError
+    >,
+  ) =>
+    effect.pipe(
+      Effect.catchTags({
+        CrossEnvironmentLaunchStoreError: (error) =>
+          Effect.logWarning("Could not persist a cross-environment launch.", {
+            operation: error.operation,
+            commandId: error.commandId,
+          }).pipe(Effect.andThen(Effect.fail(unavailableResponse(pending)))),
+      }),
+    );
 
   const failPending = (pending: ReadonlyMap<string, PendingAsk>) =>
     Effect.forEach(
@@ -111,8 +143,7 @@ const make = Effect.gen(function* () {
           subscribers.delete(connectionId);
           subscribers.set(connectionId, subscriber);
           yield* Ref.set(state, { subscriber, subscribers, pending: new Map() });
-          // The previous client may already have launched on a peer. Replaying
-          // can choose a different peer, outside the destination's deduplication.
+          // Takeover cannot establish whether a previous remote dispatch is still in flight.
           yield* failPending(current.pending);
           if (previousConnection !== undefined) {
             yield* Queue.shutdown(previousConnection.queue);
@@ -169,13 +200,25 @@ const make = Effect.gen(function* () {
           pending === undefined ||
           pending.connectionId !== connectionId ||
           pending.ask.op !== "launch" ||
-          pending.claimedEnvironmentId !== null ||
+          pending.claimed ||
           pending.ask.callerEnvironmentId === body.environmentId ||
           (pending.ask.target.kind === "environment" &&
             pending.ask.target.environmentId !== body.environmentId)
         )
           return false;
-        pending.claimedEnvironmentId = body.environmentId;
+        const destination = {
+          environmentId: body.environmentId,
+          projectId: body.projectId,
+          modelSelection: body.modelSelection,
+        };
+        const recorded = yield* persist(
+          pending,
+          launches.claim(pending.ask.commandId, destination),
+        ).pipe(Effect.catch(() => Effect.succeed(null)));
+        if (recorded === null) return false;
+        pending.destination = recorded;
+        if (!sameDestination(recorded, destination)) return false;
+        pending.claimed = true;
         return true;
       }),
     );
@@ -192,12 +235,28 @@ const make = Effect.gen(function* () {
         if (pending === undefined || pending.connectionId !== connectionId) {
           return;
         }
-        const outcome =
-          "error" in body
-            ? Effect.fail(body.error)
-            : body.op === pending.ask.op
-              ? Effect.succeed(body.result)
-              : Effect.fail(new CrossEnvironmentLaunchRejected());
+        const outcome = Effect.gen(function* () {
+          if ("error" in body) {
+            return yield* body.error._tag === "CrossEnvironmentLaunchUncertain"
+              ? unavailableResponse(pending)
+              : body.error;
+          }
+          if (body.op === "list" && pending.ask.op === "list") return body.result;
+          if (body.op !== "launch" || pending.ask.op !== "launch") {
+            return yield* new CrossEnvironmentLaunchRejected();
+          }
+          if (
+            !pending.claimed ||
+            pending.destination === null ||
+            body.result.environmentId !== pending.destination.environmentId ||
+            body.result.projectId !== pending.destination.projectId ||
+            body.result.threadId !== pending.ask.threadId ||
+            body.result.kind !== pending.ask.kind
+          ) {
+            return yield* unavailableResponse(pending);
+          }
+          return yield* persist(pending, launches.complete(pending.ask.commandId, body.result));
+        });
         const completed = yield* Deferred.complete(pending.deferred, outcome);
         if (completed) {
           current.pending.delete(body.requestId);
@@ -206,17 +265,34 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const wait = Effect.fn("CrossEnvironmentBridge.wait")(function* (ask: CrossEnvironmentAsk) {
+  const wait = Effect.fn("CrossEnvironmentBridge.wait")(function* (
+    originalAsk: CrossEnvironmentAsk,
+  ) {
     const deferred = yield* Deferred.make<LaunchWaitResult, CrossEnvironmentFailure>();
     return yield* Effect.acquireUseRelease(
       withLock(
         Effect.gen(function* () {
           const current = yield* Ref.get(state);
+          let ask = originalAsk;
+          let destination: CrossEnvironmentLaunchDestination | null = null;
           if (ask.op === "launch") {
+            const record = yield* persist({ ask, destination }, launches.reserve(ask));
+            if (record.result !== null)
+              return { _tag: "completed" as const, result: record.result };
+            destination = record.destination;
+            if (destination !== null) {
+              ask = {
+                ...ask,
+                destination,
+                target: { kind: "environment", environmentId: destination.environmentId },
+              };
+            }
+            const commandId = ask.commandId;
             const existing = [...current.pending.values()].find(
-              (entry) => entry.ask.op === "launch" && entry.ask.commandId === ask.commandId,
+              (entry) => entry.ask.op === "launch" && entry.ask.commandId === commandId,
             );
-            if (existing !== undefined) return { pending: existing, ownsRequest: false };
+            if (existing !== undefined)
+              return { _tag: "pending" as const, pending: existing, ownsRequest: false };
           }
           if (current.subscriber === null) {
             return yield* new PeerCatalogUnavailable();
@@ -225,27 +301,30 @@ const make = Effect.gen(function* () {
             ask,
             deferred,
             connectionId: current.subscriber.connectionId,
-            claimedEnvironmentId: null,
+            destination,
+            claimed: false,
           };
           current.pending.set(ask.requestId, pending);
           yield* Queue.offer(current.subscriber.queue, ask);
-          return { pending, ownsRequest: true };
+          return { _tag: "pending" as const, pending, ownsRequest: true };
         }),
       ),
-      ({ pending }) =>
-        Deferred.await(pending.deferred).pipe(
-          Effect.timeoutOrElse({
-            duration: ask.op === "list" ? "15 seconds" : "1 minute",
-            orElse: () => Effect.fail(unavailableResponse(pending)),
-          }),
-        ),
-      ({ pending, ownsRequest }) =>
-        ownsRequest
+      (entry) =>
+        entry._tag === "completed"
+          ? Effect.succeed(entry.result)
+          : Deferred.await(entry.pending.deferred).pipe(
+              Effect.timeoutOrElse({
+                duration: originalAsk.op === "list" ? "15 seconds" : "1 minute",
+                orElse: () => Effect.fail(unavailableResponse(entry.pending)),
+              }),
+            ),
+      (entry) =>
+        entry._tag === "pending" && entry.ownsRequest
           ? withLock(
               Effect.gen(function* () {
                 const current = yield* Ref.get(state);
-                current.pending.delete(pending.ask.requestId);
-                yield* Deferred.fail(pending.deferred, unavailableResponse(pending));
+                current.pending.delete(entry.pending.ask.requestId);
+                yield* Deferred.fail(entry.pending.deferred, unavailableResponse(entry.pending));
               }),
             )
           : Effect.void,
@@ -299,4 +378,6 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(CrossEnvironmentBridge, make);
+export const layer = Layer.effect(CrossEnvironmentBridge, make).pipe(
+  Layer.provide(CrossEnvironmentLaunchStore.layer),
+);

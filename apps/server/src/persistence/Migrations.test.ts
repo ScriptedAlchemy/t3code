@@ -8,6 +8,101 @@ import { migrationManifest, runMigrations } from "./Migrations.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
+const consolidatedMigration = [80, "ProjectIntelligenceAndCrossEnvironment"] as const;
+
+const previewNativeColumns = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE project_knowledge_deliveries ADD COLUMN provider_thread_id TEXT`;
+  yield* sql`ALTER TABLE project_knowledge_deliveries ADD COLUMN native_thread_id TEXT`;
+});
+
+const previewBudgetColumn = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE project_knowledge_deliveries ADD COLUMN budget_json TEXT`;
+});
+
+const previewLoomIndexes = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE INDEX orchestration_v2_projection_turn_items_run_updated_idx
+    ON orchestration_v2_projection_turn_items(run_id, updated_at, type, thread_id)
+  `;
+  yield* sql`
+    CREATE INDEX orchestration_v2_projection_turn_items_run_command_at_idx
+    ON orchestration_v2_projection_turn_items(
+      run_id,
+      COALESCE(json_extract(payload_json, '$.startedAt'), json_extract(payload_json, '$.completedAt'))
+    )
+    WHERE type = 'command_execution'
+  `;
+});
+
+const previewRoutes = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE cross_environment_launches (
+      command_id TEXT PRIMARY KEY,
+      request_hash TEXT NOT NULL,
+      destination_json TEXT,
+      result_json TEXT,
+      CHECK (result_json IS NULL OR destination_json IS NOT NULL)
+    )
+  `;
+  yield* sql`
+    INSERT INTO cross_environment_launches (command_id, request_hash, destination_json, result_json)
+    VALUES ('launch', 'request-hash', '{"environmentId":"peer","projectId":"project"}', '{"threadId":"remote-thread"}')
+  `;
+});
+
+const seedDelivery = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO project_knowledge_deliveries (
+      attempt_id, run_id, thread_id, message_id, project_id, provider_instance_id,
+      status, items_json, omissions_json, created_at, updated_at,
+      provider_thread_id, native_thread_id
+    ) VALUES (
+      'attempt', 'run', 'thread', 'message', 'project', 'provider',
+      'sent', '[]', '[]', '2026-10-23', '2026-10-23', 'provider-thread', 'native-thread'
+    )
+  `;
+});
+
+const assertConsolidatedSchema = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const columns = yield* sql<{
+    readonly name: string;
+  }>`PRAGMA table_info(project_knowledge_deliveries)`;
+  for (const name of ["provider_thread_id", "native_thread_id", "budget_json"]) {
+    assert.ok(columns.some((column) => column.name === name));
+  }
+  const indexes = yield* sql<{ readonly name: string }>`
+    SELECT name FROM sqlite_master WHERE type = 'index'
+  `;
+  for (const name of [
+    "orchestration_v2_projection_turn_items_stop_request_idx",
+    "orchestration_v2_projection_turn_items_run_updated_idx",
+    "orchestration_v2_projection_turn_items_run_command_at_idx",
+    "orchestration_v2_projection_turn_items_run_command_updated_idx",
+  ]) {
+    assert.ok(indexes.some((index) => index.name === name));
+  }
+  const routingColumns = yield* sql<{
+    readonly name: string;
+  }>`PRAGMA table_info(cross_environment_launches)`;
+  assert.deepStrictEqual(
+    routingColumns.map((column) => column.name),
+    ["command_id", "request_hash", "destination_json", "result_json"],
+  );
+  assert.isTrue(
+    Exit.isFailure(
+      yield* Effect.exit(sql`
+      INSERT INTO cross_environment_launches (command_id, request_hash, result_json)
+      VALUES ('invalid', 'hash', '{}')
+    `),
+    ),
+  );
+});
 
 const history = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -74,6 +169,7 @@ describe("runMigrations", () => {
       assert.deepStrictEqual(yield* runMigrations(), [
         [78, "ShellStopRequestIndex"],
         [79, "ThreadMessageSearch"],
+        consolidatedMigration,
       ]);
       assert.deepStrictEqual((yield* history).slice(0, before.length), before);
       const indexes = yield* sql`
@@ -81,8 +177,257 @@ describe("runMigrations", () => {
         WHERE name = 'orchestration_v2_projection_turn_items_stop_request_idx'
       `;
       assert.lengthOf(indexes, 1);
+      yield* assertConsolidatedSchema;
       assert.deepStrictEqual(yield* runMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect.each([
+    { through: 77, hasBudget: false },
+    { through: 77, hasBudget: true },
+    { through: 78, hasBudget: false },
+    { through: 78, hasBudget: true },
+  ])(
+    "preserves knowledge preview receipts when reconciling migration ids: %j",
+    ({ through, hasBudget }) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: through });
+        yield* previewNativeColumns;
+        yield* sql`
+          INSERT INTO effect_sql_migrations (migration_id, name, created_at)
+          VALUES (79, 'ProjectKnowledgeNativeDelivery', '2026-10-23 01:00:00')
+        `;
+        if (hasBudget) {
+          yield* previewBudgetColumn;
+          yield* sql`
+            INSERT INTO effect_sql_migrations (migration_id, name, created_at)
+            VALUES (80, 'ProjectKnowledgeDeliveryBudget', '2026-10-23 02:00:00')
+          `;
+        }
+        yield* seedDelivery;
+        if (hasBudget) {
+          yield* sql`UPDATE project_knowledge_deliveries SET budget_json = '{"capacity":128000}'`;
+        }
+
+        yield* runMigrations();
+
+        assert.deepStrictEqual(yield* history, migrationManifest);
+        assert.deepStrictEqual(
+          yield* sql`SELECT provider_thread_id, native_thread_id, budget_json FROM project_knowledge_deliveries`,
+          [
+            {
+              provider_thread_id: "provider-thread",
+              native_thread_id: "native-thread",
+              budget_json: hasBudget ? '{"capacity":128000}' : null,
+            },
+          ],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT created_at FROM effect_sql_migrations WHERE migration_id = 80`,
+          [{ created_at: "2026-10-23 01:00:00" }],
+        );
+        assert.lengthOf(
+          yield* sql`SELECT name FROM sqlite_master WHERE name = 'orchestration_v2_projection_turn_items_stop_request_idx'`,
+          1,
+        );
+        assert.deepStrictEqual(
+          (yield* history).filter(([id]) => id >= 80),
+          [consolidatedMigration],
+        );
+        yield* assertConsolidatedSchema;
+        assert.deepStrictEqual(yield* runMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("does not rewrite a knowledge preview with unexpected later migrations", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 77 });
+      yield* previewNativeColumns;
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (79, 'ProjectKnowledgeNativeDelivery'), (80, 'UnrelatedMigration')
+      `;
+      const before = yield* history;
+
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+      assert.deepStrictEqual(yield* history, before);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("adds one migration to the current main schema", () =>
+    Effect.gen(function* () {
+      yield* runMigrations({ toMigrationInclusive: 79 });
+      assert.deepStrictEqual(
+        migrationManifest.filter(([id]) => id >= 80),
+        [consolidatedMigration],
+      );
+      assert.deepStrictEqual(yield* runMigrations(), [consolidatedMigration]);
+      yield* assertConsolidatedSchema;
+      assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect.each([80, 81, 82, 83])(
+    "consolidates the split preview through %s without losing delivery or routing data",
+    (through) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 79 });
+        yield* previewNativeColumns;
+        yield* sql`
+          INSERT INTO effect_sql_migrations (migration_id, name, created_at)
+          VALUES (80, 'ProjectKnowledgeNativeDelivery', '2026-10-23 01:00:00')
+        `;
+        yield* seedDelivery;
+        if (through >= 81) {
+          yield* previewBudgetColumn;
+          yield* sql`UPDATE project_knowledge_deliveries SET budget_json = '{"capacity":128000}'`;
+          yield* sql`
+            INSERT INTO effect_sql_migrations (migration_id, name)
+            VALUES (81, 'ProjectKnowledgeDeliveryBudget')
+          `;
+        }
+        if (through >= 82) {
+          yield* previewLoomIndexes;
+          yield* sql`
+            INSERT INTO effect_sql_migrations (migration_id, name)
+            VALUES (82, 'ProjectLoomWindowItems')
+          `;
+        }
+        if (through >= 83) {
+          yield* previewRoutes;
+          yield* sql`
+            INSERT INTO effect_sql_migrations (migration_id, name)
+            VALUES (83, 'CrossEnvironmentLaunches')
+          `;
+        }
+
+        assert.deepStrictEqual(yield* runMigrations(), [consolidatedMigration]);
+        assert.deepStrictEqual(yield* history, migrationManifest);
+        assert.deepStrictEqual(
+          yield* sql`SELECT provider_thread_id, native_thread_id, budget_json FROM project_knowledge_deliveries`,
+          [
+            {
+              provider_thread_id: "provider-thread",
+              native_thread_id: "native-thread",
+              budget_json: through >= 81 ? '{"capacity":128000}' : null,
+            },
+          ],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT created_at FROM effect_sql_migrations WHERE migration_id = 80`,
+          [{ created_at: "2026-10-23 01:00:00" }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM cross_environment_launches`,
+          through >= 83
+            ? [
+                {
+                  command_id: "launch",
+                  request_hash: "request-hash",
+                  destination_json: '{"environmentId":"peer","projectId":"project"}',
+                  result_json: '{"threadId":"remote-thread"}',
+                },
+              ]
+            : [],
+        );
+        yield* assertConsolidatedSchema;
+        assert.deepStrictEqual(yield* runMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "preserves routing-only preview receipts when the memory preview was not installed",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 79 });
+        yield* previewRoutes;
+        yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name, created_at)
+        VALUES (83, 'CrossEnvironmentLaunches', '2026-10-25 01:00:00')
+      `;
+        const routes = yield* sql`SELECT * FROM cross_environment_launches`;
+        assert.deepStrictEqual(yield* runMigrations(), [consolidatedMigration]);
+        assert.deepStrictEqual(yield* history, migrationManifest);
+        assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, routes);
+        yield* assertConsolidatedSchema;
+        assert.deepStrictEqual(yield* runMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "rolls back preview schema and history together when consolidation fails, then retries",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 77 });
+        yield* previewNativeColumns;
+        yield* seedDelivery;
+        yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name, created_at)
+        VALUES (79, 'ProjectKnowledgeNativeDelivery', '2026-10-23 01:00:00')
+      `;
+        yield* sql`
+        CREATE TRIGGER fail_combined_upgrade BEFORE INSERT ON effect_sql_migrations
+        WHEN NEW.name = 'ProjectIntelligenceAndCrossEnvironment'
+        BEGIN SELECT RAISE(ABORT, 'injected failure'); END
+      `;
+        const beforeHistory = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+        const beforeSchema = yield* sql`SELECT name, type, sql FROM sqlite_master ORDER BY name`;
+        const beforeReceipts = yield* sql`SELECT * FROM project_knowledge_deliveries`;
+
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+          beforeHistory,
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT name, type, sql FROM sqlite_master ORDER BY name`,
+          beforeSchema,
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM project_knowledge_deliveries`,
+          beforeReceipts,
+        );
+
+        yield* sql`DROP TRIGGER fail_combined_upgrade`;
+        yield* runMigrations();
+        yield* assertConsolidatedSchema;
+        assert.deepStrictEqual(yield* history, migrationManifest);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect.each(["earlier", "later"] as const)(
+    "does not modify a split preview with an unexpected %s migration",
+    (position) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 79 });
+        yield* previewNativeColumns;
+        yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (80, 'ProjectKnowledgeNativeDelivery')
+      `;
+        if (position === "earlier") {
+          yield* sql`UPDATE effect_sql_migrations SET name = 'UnrelatedMigration' WHERE migration_id = 77`;
+        } else {
+          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (81, 'UnrelatedMigration')`;
+        }
+        const beforeHistory = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+        const beforeSchema = yield* sql`SELECT name, type, sql FROM sqlite_master ORDER BY name`;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+          beforeHistory,
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT name, type, sql FROM sqlite_master ORDER BY name`,
+          beforeSchema,
+        );
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect("upgrades a database at exactly 54", () =>

@@ -13,6 +13,17 @@ Provider handoffs use either the full eligible app history or the delta since th
 participated. Fork merge-back handoffs summarize eligible delta items from the child. Neither path
 reconstructs provider-native session state, tool state, approvals, or omitted text.
 
+Project-knowledge and conversation-summary references must revalidate their cited messages before
+expansion or replay into a new provider history. Deleted threads/projects, rolled-back runs, and
+digest mismatches make evidence unavailable; durable facts remain, but retained delivery excerpts
+are scrubbed by bounded, model-free maintenance after removal commits, even if nobody reads the
+receipt. Read-time revalidation remains the safety net; references and digests survive, not the
+removed excerpts. Derived summary statements are excluded on revalidation. Archive is reversible
+visibility, not removal.
+Projection rebuilds replay deletion, correction, and run-state events in order, so the final
+projection applies the same exclusion without a second removal registry. Do not interpret this
+as recalling copies already sent to a provider.
+
 Legacy v1 continuation uses a separate algorithm. It considers only user and assistant messages,
 walks backward from the newest message, and builds a transcript suffix within a 32,000-character
 budget. Do not describe that migration budget as the limit for portable handoffs, and do not describe

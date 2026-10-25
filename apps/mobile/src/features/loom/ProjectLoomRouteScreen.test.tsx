@@ -217,12 +217,14 @@ function setup() {
         title: null,
       },
     ],
+    activity: [],
     truncated: {
       lanes: false,
       ancestors: false,
       runs: false,
       markers: false,
       edges: false,
+      activity: false,
       bytes: false,
     },
     coverage: {

@@ -299,7 +299,7 @@ export function useComposerContextImport(input: {
                     ? existing.record.id
                     : undefined,
                 })
-              : existing?.kind === "thread"
+              : existing?.kind === "thread" || existing?.kind === "project-knowledge"
                 ? existing.record
                 : existing
                   ? (uploadedContextRecordFromDraft(existing) ?? undefined)
@@ -358,7 +358,9 @@ export function useComposerContextImport(input: {
             record.knowledge.projectId !== activeThread?.projectId
           )
             break;
-          useComposerDraftStore.getState().setKnowledgeContext(threadDraftTarget, record);
+          useComposerDraftStore.getState().setKnowledgeContext(threadDraftTarget, record, {
+            appendReference: false,
+          });
           rewritten.set(record.contextId, record.contextId);
           break;
         }

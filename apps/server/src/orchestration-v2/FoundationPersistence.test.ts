@@ -1333,8 +1333,9 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       );
       yield* Effect.gen(function* () {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        assert.isTrue(yield* worker.runOnce);
-        assert.isFalse(yield* worker.runOnce);
+        // This suite shares its database; source corrections also queue independent maintenance.
+        assert.isAtLeast(yield* worker.drain(), 1);
+        assert.isFalse(yield* worker.runTurnOnce);
       }).pipe(Effect.provide(layerWorker));
 
       assert.equal(yield* Ref.get(executionCount), 1);
@@ -1743,7 +1744,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       yield* Effect.gen(function* () {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const workerFiber = yield* worker.runOnce.pipe(Effect.forkChild);
+        const workerFiber = yield* worker.runTurnOnce.pipe(Effect.forkChild);
         yield* Deferred.await(started);
         const cancelledEffectIds = yield* outbox.cancelUnsettled({
           threadId,
@@ -1811,7 +1812,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       assert.isTrue(
         yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-          Effect.flatMap((worker) => worker.runOnce),
+          Effect.flatMap((worker) => worker.runTurnOnce),
           Effect.provide(layerWorker),
         ),
       );
@@ -1837,8 +1838,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       const claims = yield* Effect.all(
         [
-          outbox.claimNext({ workerId: "worker-a", leaseDurationMs: 30_000 }),
-          outbox.claimNext({ workerId: "worker-b", leaseDurationMs: 30_000 }),
+          outbox.claimNext({ workerId: "worker-a", leaseDurationMs: 30_000, lane: "turn" }),
+          outbox.claimNext({ workerId: "worker-b", leaseDurationMs: 30_000, lane: "turn" }),
         ],
         { concurrency: "unbounded" },
       );
@@ -2394,15 +2395,9 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         yield* Deferred.succeed(releaseB1, undefined);
         yield* Deferred.await(startedA2);
         yield* Deferred.succeed(releaseA2, undefined);
-        let settled = false;
-        while (!settled) {
-          settled = (yield* outbox.listByCommandId(commandId)).every(
-            (effect) => effect.status === "succeeded",
-          );
-          if (!settled) yield* Effect.yieldNow;
-        }
+        yield* Effect.all([effectA1, effectA2, effectB1].map((id) => outbox.awaitSettled(id)));
       }).pipe(Effect.provide(layerWorker), Effect.scoped);
-    }),
+    }).pipe(Effect.provide(layerIsolatedOutbox)),
   );
 
   it.effect("does not reclaim a running effect after its process-local lease expires", () =>
@@ -2457,7 +2452,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       yield* Effect.gen(function* () {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const firstFiber = yield* worker.runOnce.pipe(Effect.forkChild);
+        const firstFiber = yield* worker.runTurnOnce.pipe(Effect.forkChild);
         yield* Deferred.await(firstStarted);
         yield* sql`
           UPDATE orchestration_v2_effect_outbox
@@ -2465,12 +2460,12 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           WHERE effect_id = ${firstEffectId}
         `;
 
-        assert.isFalse(yield* worker.runOnce);
+        assert.isFalse(yield* worker.runTurnOnce);
         assert.deepEqual(yield* Ref.get(executions), [firstEffectId]);
 
         yield* Deferred.succeed(releaseFirst, undefined);
         assert.isTrue(yield* Fiber.join(firstFiber));
-        assert.isTrue(yield* worker.runOnce);
+        assert.isTrue(yield* worker.runTurnOnce);
         assert.deepEqual(yield* Ref.get(executions), [firstEffectId, secondEffectId]);
       }).pipe(Effect.provide(layerWorker));
     }),
@@ -2731,6 +2726,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             awaitWork: Effect.void,
             runRecoveryOnce: Effect.succeed(false),
             runOnce: Effect.succeed(false),
+            runTurnOnce: Effect.succeed(false),
+            runMaintenanceOnce: Effect.succeed(false),
             nextClaimableAt: Effect.succeed(Option.none()),
             drain: () => Effect.succeed(0),
           }),
@@ -2948,6 +2945,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             awaitWork: Effect.void,
             runRecoveryOnce: Effect.succeed(false),
             runOnce: Effect.succeed(false),
+            runTurnOnce: Effect.succeed(false),
+            runMaintenanceOnce: Effect.succeed(false),
             nextClaimableAt: Effect.succeed(Option.none()),
             drain: () => Effect.succeed(0),
           }),

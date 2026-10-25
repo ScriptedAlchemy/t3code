@@ -1,7 +1,6 @@
 import {
   CommandId,
   OrchestratorMcpFailure,
-  PeerCatalogUnavailable,
   TargetIsSourceEnvironment,
   ThreadId,
   type ConnectedEnvironmentsResult,
@@ -142,9 +141,6 @@ const make = Effect.gen(function* () {
     ) {
       return yield* new TargetIsSourceEnvironment({ environmentId: descriptor.environmentId });
     }
-    if (!(yield* bridge.hasSubscriber)) {
-      return yield* new PeerCatalogUnavailable();
-    }
     const threadScope = yield* McpInvocationContext.requireThreadScope(
       scope,
       "t3_environment_launch",
@@ -155,24 +151,18 @@ const make = Effect.gen(function* () {
     if (shell === null) {
       return yield* unavailable();
     }
-    const requestKey = input.clientRequestId;
+    const requestKey = [
+      "mcp",
+      "cross-environment-launch",
+      stablePart(descriptor.environmentId),
+      stablePart(threadScope.thread.threadId),
+      stablePart(input.clientRequestId),
+    ].join(":");
     const ask = {
       callerEnvironmentId: descriptor.environmentId,
       sourceProjectId: shell.projectId,
-      commandId: CommandId.make(
-        [
-          "command",
-          "mcp",
-          stablePart(scope.requestNamespace),
-          stablePart("cross-environment-launch"),
-          stablePart(requestKey),
-        ].join(":"),
-      ),
-      threadId: ThreadId.make(
-        ["thread", "mcp", stablePart(scope.requestNamespace), stablePart(requestKey), "0"].join(
-          ":",
-        ),
-      ),
+      commandId: CommandId.make(`command:${requestKey}`),
+      threadId: ThreadId.make(`thread:${requestKey}`),
       target: input.target,
       title: input.title,
       runtimeMode: modes.runtimeMode,

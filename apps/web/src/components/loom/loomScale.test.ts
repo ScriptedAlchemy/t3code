@@ -20,12 +20,14 @@ function loomWindow(patch: Partial<LoomWindow>): LoomWindow {
     runs: [],
     markers: [],
     edges: [],
+    activity: [],
     truncated: {
       lanes: false,
       ancestors: false,
       runs: false,
       markers: false,
       edges: false,
+      activity: false,
       bytes: false,
     },
     coverage: { lanes: true },
@@ -66,5 +68,47 @@ describe("fitLoomView", () => {
 
   it("shows the whole window when nothing happened in it", () => {
     expect(fitLoomView(loomWindow({}), bounds)).toEqual(bounds);
+  });
+
+  it.each(["completed", "failed", "interrupted", "cancelled", "rolled_back"] as const)(
+    "fits recorded activity for a %s run without a completion time",
+    (status) => {
+      const start = FROM + HOUR;
+      const view = fitLoomView(
+        loomWindow({
+          runs: [
+            {
+              status,
+              requestedAt: iso(start),
+              startedAt: iso(start + 1_000),
+              completedAt: null,
+            } as LoomWindow["runs"][number],
+          ],
+        }),
+        bounds,
+      );
+      expect(view.fromMs).toBeLessThanOrEqual(start);
+      expect(view.toMs).toBeGreaterThanOrEqual(start + 1_000);
+      expect(view.toMs - view.fromMs).toBeLessThan(HOUR);
+    },
+  );
+
+  it("fits through the as-of time for a run that is still active", () => {
+    const start = FROM + HOUR;
+    const view = fitLoomView(
+      loomWindow({
+        runs: [
+          {
+            status: "running",
+            requestedAt: iso(start),
+            startedAt: iso(start + 1_000),
+            completedAt: null,
+          } as LoomWindow["runs"][number],
+        ],
+      }),
+      bounds,
+    );
+    expect(view.fromMs).toBeLessThanOrEqual(start);
+    expect(view.toMs).toBe(TO);
   });
 });

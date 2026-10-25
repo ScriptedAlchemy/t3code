@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { ProjectKnowledgeListResult } from "./projectKnowledge.ts";
+import { ProjectKnowledgeListResult, ProjectKnowledgeDelivery } from "./projectKnowledge.ts";
 
 const decodeList = Schema.decodeUnknownSync(ProjectKnowledgeListResult);
 const encodeList = Schema.encodeSync(ProjectKnowledgeListResult);
@@ -44,3 +44,29 @@ describe("KnowledgeOrigin", () => {
     ).toThrow();
   });
 });
+
+const oldDelivery = {
+  attemptId: "attempt",
+  runId: "run",
+  threadId: "thread",
+  messageId: "message",
+  projectId: "project",
+  providerInstanceId: "provider",
+  status: "sent",
+  items: [],
+  omissions: [],
+  createdAt: "2026-10-22T00:00:00.000Z",
+  updatedAt: "2026-10-22T00:00:00.000Z",
+};
+it("decodes old delivery receipts without budget assumptions", () => {
+  expect(Schema.decodeUnknownSync(ProjectKnowledgeDelivery)(oldDelivery)).toEqual(oldDelivery);
+});
+it.each(["over_budget", "source_unavailable", "stale_revision", "not_permitted", "recall_failed"])(
+  "decodes omission %s",
+  (reason) => {
+    const omissions = [{ contextId: "source", label: "Source", reason }];
+    expect(
+      Schema.decodeUnknownSync(ProjectKnowledgeDelivery)({ ...oldDelivery, omissions }).omissions,
+    ).toEqual(omissions);
+  },
+);

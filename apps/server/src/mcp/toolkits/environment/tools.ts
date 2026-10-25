@@ -73,7 +73,7 @@ const EnvironmentLaunchTool = Tool.make("t3_environment_launch", {
   failureMode: "return" as const,
   dependencies: [...shared.dependencies, CrossEnvironmentMcpService.CrossEnvironmentMcpService],
   description:
-    "Start a thread on a connected peer that has this repository. The thread is independent of this one. If a launch is unconfirmed, inspect its threadId on the destination and pin any retry to that environment. Load-balanced retries can choose another peer and are not idempotent.",
+    "Start a thread on a connected peer that has this repository. The thread is independent of this one. Retry with the same clientRequestId and parameters: the source saves the chosen destination before dispatch and reuses it across reconnects and restarts. Reusing a clientRequestId with different parameters is rejected. An unconfirmed launch may already have started; inspect its threadId or retry the same request.",
   parameters: CrossEnvironmentLaunchRequest,
   success: CrossEnvironmentLaunchResult,
 }).annotate(Tool.Destructive, true);

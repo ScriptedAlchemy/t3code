@@ -630,6 +630,7 @@ interface ComposerDraftStoreState {
   setKnowledgeContext: (
     threadRef: ComposerThreadTarget,
     record: ProjectKnowledgeContextRecord | null,
+    options?: { appendReference?: boolean | undefined },
   ) => void;
   setThreadContexts: (
     threadRef: ComposerThreadTarget,
@@ -3885,7 +3886,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             };
           });
         },
-        setKnowledgeContext: (threadRef, record) => {
+        setKnowledgeContext: (threadRef, record, options) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef);
           if (!threadKey) return;
           set((state) => {
@@ -3893,7 +3894,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             let prompt = existing.prompt;
             for (const previous of existing.knowledgeContexts ?? [])
               prompt = removeInlineContextReference(prompt, previous.contextId).prompt;
-            if (record !== null) prompt = ensureInlineContextReferences(prompt, [record]);
+            if (record !== null && options?.appendReference !== false)
+              prompt = ensureInlineContextReferences(prompt, [record]);
             return {
               draftsByThreadKey: {
                 ...state.draftsByThreadKey,

@@ -6,6 +6,7 @@ import {
   type OrchestrationV2HistoricalMessage,
   type ProjectId,
   type ProjectKnowledgeDeliveryItem,
+  type ProjectKnowledgeDelivery,
 } from "@t3tools/contracts";
 import {
   collectComposerContextReferences,
@@ -98,16 +99,17 @@ export const resolveKnowledgeComposer = Effect.fn("ProjectKnowledge.resolveCompo
       }
     }
     // Attached records the message text no longer references never reach the provider.
-    const omissions = input.records.flatMap((record) =>
-      record.kind === "project-knowledge" && !referenced.has(record.contextId)
-        ? [
-            {
-              contextId: record.contextId,
-              label: record.label,
-              reason: "not_referenced" as const,
-            },
-          ]
-        : [],
+    const omissions: Array<ProjectKnowledgeDelivery["omissions"][number]> = input.records.flatMap(
+      (record) =>
+        record.kind === "project-knowledge" && !referenced.has(record.contextId)
+          ? [
+              {
+                contextId: record.contextId,
+                label: record.label,
+                reason: "not_referenced" as const,
+              },
+            ]
+          : [],
     );
     return { text, baseText, byteLength, items, omissions };
   },

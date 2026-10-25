@@ -1,9 +1,10 @@
 # Code navigation
 
 Open a file from a thread's file browser and expand **Code relationships** below the preview to
-see how it connects to the rest of the project. Nothing is analyzed until you expand it, so the
-first expansion on a checkout can take a while as T3 Code indexes it. Results come from the
-thread's own checkout, its worktree when it has one.
+see how it connects to the rest of the project. Nothing is analyzed until you expand it. The
+first expansion on a checkout starts indexing it in the background, and until that finishes the
+section says the checkout is not indexed yet. Results come from the thread's own checkout, its
+worktree when it has one.
 
 - **Symbols** lists the file's declarations. Select one to see its callers, callees, references,
   impact (files that depend on it), and **Tests**: test files that reach it within a few calls.
@@ -23,8 +24,10 @@ that nothing calls the code or that it is untested.
 The badge next to **Code relationships**, and **Code index** in a thread's details, shows whether
 the index matches the checkout: **Ready**, **Partial** (some files are not indexed), **Stale**
 (files changed since indexing; **Stale @abc1234** when the checkout has moved past the commit it
-was indexed at), **Indexing**, or **Unavailable** (not indexed yet). Checking the badge never
-starts indexing; the next code query brings a stale index up to date.
+was indexed at), **Indexing** (building the first index), or **Unavailable** (not indexed yet).
+Checking the badge never starts indexing. Code queries and finished turns refresh a stale index
+in the background, and results keep coming from the previous index until the new one is ready.
+If a refresh fails, the badge says so and the previous index keeps answering.
 
 On mobile, the file screen has a compact **Code relationships** section with symbols, callers,
 and impact.

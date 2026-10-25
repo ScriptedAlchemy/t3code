@@ -13,6 +13,7 @@ import { RepositoryIdentity, repositoryGroupingKeyOf } from "./environment.ts";
 import { OrchestrationV2RunStatus } from "./orchestrationV2.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
 import { HostResourcesSnapshot } from "./resourceTelemetry.ts";
+import { ModelSelection } from "./modelSelection.ts";
 
 export const DisconnectedEnvironmentPhase = Schema.Literals([
   "available",
@@ -178,7 +179,16 @@ export class CrossEnvironmentLaunchUncertain extends Schema.TaggedError<CrossEnv
   },
 ) {
   override get message(): string {
-    return `The launch of thread ${this.threadId} was not confirmed. It may already have started; locate it on the destination before retrying and pin any retry to that environment.`;
+    return `The launch of thread ${this.threadId} was not confirmed. It may already have started; retry with the same clientRequestId and parameters to reuse its saved destination.`;
+  }
+}
+
+export class CrossEnvironmentRequestConflict extends Schema.TaggedError<CrossEnvironmentRequestConflict>()(
+  "CrossEnvironmentRequestConflict",
+  { commandId: CommandId },
+) {
+  override get message(): string {
+    return "This clientRequestId was already used with different launch parameters. Reuse the original parameters or choose a new clientRequestId.";
   }
 }
 
@@ -194,6 +204,7 @@ export const CrossEnvironmentFailure = Schema.Union([
   TargetModelUnavailable,
   CrossEnvironmentLaunchRejected,
   CrossEnvironmentLaunchUncertain,
+  CrossEnvironmentRequestConflict,
 ]);
 export type CrossEnvironmentFailure = typeof CrossEnvironmentFailure.Type;
 
@@ -215,6 +226,13 @@ export const CrossEnvironmentLaunchResult = Schema.Struct({
   kind: CrossEnvironmentLaunchKind,
 });
 export type CrossEnvironmentLaunchResult = typeof CrossEnvironmentLaunchResult.Type;
+
+export const CrossEnvironmentLaunchDestination = Schema.Struct({
+  environmentId: EnvironmentId,
+  projectId: ProjectId,
+  modelSelection: ModelSelection,
+});
+export type CrossEnvironmentLaunchDestination = typeof CrossEnvironmentLaunchDestination.Type;
 
 const CrossEnvironmentLaunchFields = {
   target: CrossEnvironmentTarget,
@@ -256,6 +274,7 @@ const CrossEnvironmentLaunchAskFields = {
   title: TrimmedNonEmptyString,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  destination: Schema.optional(CrossEnvironmentLaunchDestination),
 };
 
 export const CrossEnvironmentLaunchAsk = Schema.Union([
@@ -282,7 +301,7 @@ export type CrossEnvironmentAsk = typeof CrossEnvironmentAsk.Type;
 
 export const CrossEnvironmentClaim = Schema.Struct({
   requestId: Schema.String,
-  environmentId: EnvironmentId,
+  ...CrossEnvironmentLaunchDestination.fields,
 });
 export type CrossEnvironmentClaim = typeof CrossEnvironmentClaim.Type;
 

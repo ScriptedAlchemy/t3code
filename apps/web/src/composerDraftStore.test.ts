@@ -718,6 +718,20 @@ describe("composerDraftStore context persistence", () => {
     ).toEqual([]);
   });
 
+  it("registers pasted knowledge without appending a second reference to the draft", () => {
+    const record = projectKnowledgeContextRecord({
+      environmentId: TEST_ENVIRONMENT_ID,
+      projectId: ProjectId.make("knowledge-project"),
+      selections: [{ kind: "fact", factId: ProjectFactId.make("remembered-fact"), revision: 3 }],
+      maxBytes: 48000,
+    });
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadRef, "Explain the decision.");
+    store.setKnowledgeContext(threadRef, record, { appendReference: false });
+    expect(store.getComposerDraft(threadRef)?.prompt).toBe("Explain the decision.");
+    expect(store.getComposerDraft(threadRef)?.knowledgeContexts).toEqual([record]);
+  });
+
   it("preserves snapshots and inline positions through repeated persistence and hydration", () => {
     const terminal = {
       ...makeTerminalContext({ id: "checkout-console" }),

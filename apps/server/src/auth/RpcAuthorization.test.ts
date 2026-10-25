@@ -76,8 +76,11 @@ describe("RPC authorization scopes", () => {
     );
   });
 
-  it("requires filesystem read permission for project code queries", () => {
+  it("requires filesystem read permission for project code queries and index events", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeQuery)).toBe(AuthFilesystemReadScope);
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeSubscribeIndex)).toBe(
+      AuthFilesystemReadScope,
+    );
   });
 
   it("requires thread read permission for file history, which joins files to threads", () => {
@@ -139,6 +142,11 @@ const projectCodeClient = (scopes: Parameters<typeof RpcAuthorization.layer>[0])
               }),
             ),
           ),
+          group.toLayerHandler(WS_METHODS.projectCodeSubscribeIndex, () =>
+            Stream.fromEffect(
+              Effect.sync(() => handled.push(WS_METHODS.projectCodeSubscribeIndex)),
+            ).pipe(Stream.flatMap(() => Stream.never)),
+          ),
           RpcAuthorization.layer(scopes),
         ),
       ),
@@ -154,6 +162,21 @@ it.effect("denies project code queries before the handler without filesystem rea
         projectId: ProjectId.make("project-1"),
         query: { operation: "status" },
       }).pipe(Effect.flip),
+    ).toMatchObject({
+      _tag: "EnvironmentAuthorizationError",
+      requiredPermission: AuthFilesystemReadScope,
+    });
+    expect(handled).toEqual([]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("denies index events before the handler without filesystem read permission", () =>
+  Effect.gen(function* () {
+    const { client, handled } = yield* projectCodeClient([AuthOrchestrationReadScope]);
+    expect(
+      yield* client[WS_METHODS.projectCodeSubscribeIndex]({
+        projectId: ProjectId.make("project-1"),
+      }).pipe(Stream.runDrain, Effect.flip),
     ).toMatchObject({
       _tag: "EnvironmentAuthorizationError",
       requiredPermission: AuthFilesystemReadScope,

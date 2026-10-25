@@ -2,6 +2,7 @@ import {
   CrossEnvironmentLaunchUncertain,
   ORCHESTRATION_V2_WS_METHODS,
   SourceIdentityUnresolved,
+  ProjectMissingOnTarget,
   TargetModelUnavailable,
   WS_METHODS,
   type ConnectedEnvironmentView,
@@ -9,6 +10,7 @@ import {
   type CrossEnvironmentFailure,
   type CrossEnvironmentLaunchKind,
   type CrossEnvironmentLaunchResult,
+  type CrossEnvironmentLaunchDestination,
   type CrossEnvironmentTarget,
   type EnvironmentId,
   type ModelSelection,
@@ -62,7 +64,8 @@ export class CrossEnvironmentPlacement extends Context.Service<
       readonly message?: string;
       readonly runtimeMode: RuntimeMode;
       readonly interactionMode: ProviderInteractionMode;
-      readonly claim: (environmentId: EnvironmentId) => Effect.Effect<boolean>;
+      readonly destination?: CrossEnvironmentLaunchDestination;
+      readonly claim: (destination: CrossEnvironmentLaunchDestination) => Effect.Effect<boolean>;
     }) => Effect.Effect<CrossEnvironmentLaunchResult, CrossEnvironmentFailure>;
   }
 >()("@t3tools/client-runtime/crossEnvironment/placement/CrossEnvironmentPlacement") {}
@@ -182,7 +185,8 @@ const make = Effect.gen(function* () {
     readonly message?: string;
     readonly runtimeMode: RuntimeMode;
     readonly interactionMode: ProviderInteractionMode;
-    readonly claim: (environmentId: EnvironmentId) => Effect.Effect<boolean>;
+    readonly destination?: CrossEnvironmentLaunchDestination;
+    readonly claim: (destination: CrossEnvironmentLaunchDestination) => Effect.Effect<boolean>;
   }) {
     if (isSourceIdentityUnresolved(input.source)) {
       return yield* input.source;
@@ -224,8 +228,19 @@ const make = Effect.gen(function* () {
     if ("_tag" in resolved) {
       return yield* resolved;
     }
+    if (
+      input.destination !== undefined &&
+      (input.destination.environmentId !== resolved.environmentId ||
+        input.destination.projectId !== resolved.projectId)
+    ) {
+      return yield* new ProjectMissingOnTarget({
+        environmentId: input.destination.environmentId,
+        groupingKey: resolved.groupingKey,
+      });
+    }
     const chosen = connected.find((row) => row.environmentId === resolved.environmentId);
     const modelSelection =
+      input.destination?.modelSelection ??
       chosen?.shells?.find((shell) => shell.id === resolved.projectId)?.defaultModelSelection ??
       null;
     if (modelSelection === null) {
@@ -241,7 +256,13 @@ const make = Effect.gen(function* () {
       runtimeMode: input.runtimeMode,
       interactionMode: input.interactionMode,
     });
-    if (!(yield* input.claim(resolved.environmentId))) {
+    if (
+      !(yield* input.claim({
+        environmentId: resolved.environmentId,
+        projectId: resolved.projectId,
+        modelSelection,
+      }))
+    ) {
       return yield* new CrossEnvironmentLaunchUncertain({
         threadId: input.threadId,
         environmentId: resolved.environmentId,

@@ -234,6 +234,7 @@ export const make = Effect.gen(function* () {
       projectCodeAffected: true,
       projectCodePath: true,
       projectCodeFileHistory: true,
+      projectCodeIndexEvents: true,
       requiredWorktreeBootstrap: true,
       threadSettlement: true,
       threadAutoSettlement: true,

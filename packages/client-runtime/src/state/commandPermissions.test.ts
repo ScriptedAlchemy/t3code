@@ -14,6 +14,8 @@ import {
   AuthSourceControlWriteScope,
   ThreadId,
   EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
   ScheduledTaskId,
   WS_METHODS,
   type AuthSessionState,
@@ -362,6 +364,8 @@ it.effect("rejects protected unary and streamed RPCs outside a guarded command",
     const claim = yield* requestGuarded(WS_METHODS.crossEnvironmentBridgeClaim, {
       requestId: "cross-environment-request",
       environmentId: other,
+      projectId: ProjectId.make("peer-project"),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "peer-model" },
     }).pipe(Effect.provideService(EnvironmentSupervisor, supervisor), Effect.flip);
     expect(claim._tag).toBe("EnvironmentAuthorizationError");
     const streamed = yield* runStreamGuarded(WS_METHODS.gitRunStackedAction, {

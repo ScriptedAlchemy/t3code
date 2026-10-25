@@ -5,6 +5,7 @@ import {
   LOOM_MAX_WINDOW_MS,
   LoomWindow,
   ProjectLoomError,
+  type LoomActivityKind,
   type LoomFilters,
   type LoomRunStatusFilter,
   type LoomWindowInput,
@@ -32,6 +33,17 @@ const COMMAND_SCAN_CHARS = 600;
 // byte cap and an oversized value never reaches the server's memory whole.
 const LABEL_CHARS = 200;
 const URL_CHARS = 1_000;
+
+const ACTIVITY_KINDS = {
+  user_message: "user",
+  assistant_message: "agent",
+  command_execution: "command",
+  file_change: "edit",
+  dynamic_tool: "tool",
+  file_search: "tool",
+  web_search: "tool",
+  error: "error",
+} as const satisfies Record<string, LoomActivityKind>;
 
 const STATUS_BUCKETS: Record<LoomRunStatusFilter, ReadonlyArray<OrchestrationV2RunStatus>> = {
   active: ["preparing", "queued", "starting", "running", "waiting"],
@@ -385,8 +397,8 @@ const make = Effect.gen(function* () {
     LIMIT ${LOOM_LIMITS.markers + 1}
   `;
 
-  // Candidates are picked from the run and type index alone; only they have payloads parsed.
-  const readCommands = (runIds: ReadonlyArray<string>) => sql<{
+  // The expression index picks commands inside the window before any payloads are read.
+  const readCommands = (runIds: ReadonlyArray<string>, window: ResolvedWindow) => sql<{
     readonly turn_item_id: string;
     readonly thread_id: string;
     readonly run_id: string | null;
@@ -402,16 +414,35 @@ const make = Effect.gen(function* () {
       json_extract(item.payload_json, '$.exitCode') AS exit_code,
       substr(json_extract(item.payload_json, '$.input'), 1, ${COMMAND_SCAN_CHARS}) AS input
     FROM (
-      SELECT rowid AS id, updated_at
+      SELECT rowid AS id,
+        COALESCE(json_extract(payload_json, '$.startedAt'), json_extract(payload_json, '$.completedAt')) AS at
       FROM orchestration_v2_projection_turn_items
-        INDEXED BY orchestration_v2_projection_turn_items_run_command_updated_idx
+        INDEXED BY orchestration_v2_projection_turn_items_run_command_at_idx
       WHERE run_id IN (SELECT value FROM json_each(${ids(runIds)}))
         AND type = 'command_execution'
-      ORDER BY updated_at DESC, rowid DESC
+        AND COALESCE(json_extract(payload_json, '$.startedAt'), json_extract(payload_json, '$.completedAt')) >= ${window.from}
+        AND COALESCE(json_extract(payload_json, '$.startedAt'), json_extract(payload_json, '$.completedAt')) <= ${window.to}
+      ORDER BY at DESC, rowid DESC
       LIMIT ${COMMAND_CANDIDATE_LIMIT + 1}
     ) candidate
     JOIN orchestration_v2_projection_turn_items item ON item.rowid = candidate.id
-    ORDER BY candidate.updated_at DESC, candidate.id DESC
+    ORDER BY candidate.at DESC, candidate.id DESC
+  `;
+
+  const readActivity = (runIds: ReadonlyArray<string>, window: ResolvedWindow) => sql<{
+    readonly run_id: string;
+    readonly thread_id: string;
+    readonly type: keyof typeof ACTIVITY_KINDS;
+    readonly updated_at: string;
+  }>`
+    SELECT run_id, thread_id, type, updated_at
+    FROM orchestration_v2_projection_turn_items
+      INDEXED BY orchestration_v2_projection_turn_items_run_updated_idx
+    WHERE run_id IN (SELECT value FROM json_each(${ids(runIds)}))
+      AND type IN (SELECT value FROM json_each(${ids(Object.keys(ACTIVITY_KINDS))}))
+      AND updated_at >= ${window.from} AND updated_at <= ${window.to}
+    ORDER BY updated_at DESC, rowid DESC
+    LIMIT ${LOOM_LIMITS.activityTicks + 1}
   `;
 
   // Named, because SQLite otherwise reads child_thread_id IS NULL through the child thread
@@ -498,14 +529,16 @@ const make = Effect.gen(function* () {
           const ancestors = yield* readAncestors(projectId, lanes);
           const runRows = yield* readRuns(laneIds, window, filters);
           const runIds = runRows.slice(0, LOOM_LIMITS.runs).map((run) => run.run_id);
-          const [checkpoints, pullRequests, commands, tasks, untimed, edges] = yield* Effect.all([
-            readCheckpoints(laneIds, window),
-            readPullRequests(laneIds, window),
-            readCommands(runIds),
-            readNativeTasks(laneIds, window),
-            countUntimedTasks(laneIds, window),
-            readEdges(projectId, laneIds, window),
-          ]);
+          const [checkpoints, pullRequests, commands, activity, tasks, untimed, edges] =
+            yield* Effect.all([
+              readCheckpoints(laneIds, window),
+              readPullRequests(laneIds, window),
+              readCommands(runIds, window),
+              readActivity(runIds, window),
+              readNativeTasks(laneIds, window),
+              countUntimedTasks(laneIds, window),
+              readEdges(projectId, laneIds, window),
+            ]);
           return {
             moreLanes: laneRows.length > LOOM_LIMITS.lanes,
             lanes,
@@ -514,6 +547,7 @@ const make = Effect.gen(function* () {
             checkpoints,
             pullRequests,
             commands,
+            activity,
             tasks,
             untimedTasks: untimed[0]?.count ?? 0,
             edges,
@@ -546,6 +580,9 @@ const make = Effect.gen(function* () {
     const rows = yield* readRows(projectId, window, filters, after);
     const runs = rows.runRows.slice(0, LOOM_LIMITS.runs);
     const inWindow = (at: string) => at >= window.from && at <= window.to;
+
+    const runById = new Map(runs.map((run) => [run.run_id, run]));
+    let activityRows = rows.activity.slice(0, LOOM_LIMITS.activityTicks);
 
     const pullRequestMarkers = rows.pullRequests.slice(0, LOOM_LIMITS.markers).map((link) => {
       const pullRequest = `${link.host ?? ""}/${link.repository}#${link.number}`;
@@ -641,6 +678,25 @@ const make = Effect.gen(function* () {
     }));
     let bytesTruncated = false;
     const response = () => {
+      const remainingRuns = new Set(runEntries.map((run) => run.id));
+      const activity = new Map<
+        string,
+        { runId: string; threadId: string; ticks: Array<[number, LoomActivityKind]> }
+      >();
+      // Reversing the newest-first read also preserves rowid order for equal timestamps.
+      for (const row of activityRows.toReversed()) {
+        if (!remainingRuns.has(row.run_id)) continue;
+        const run = runById.get(row.run_id)!;
+        let entry = activity.get(row.run_id);
+        if (entry === undefined) {
+          entry = { runId: row.run_id, threadId: row.thread_id, ticks: [] };
+          activity.set(row.run_id, entry);
+        }
+        entry.ticks.push([
+          Date.parse(row.updated_at) - Date.parse(run.requested_at),
+          ACTIVITY_KINDS[row.type],
+        ]);
+      }
       const lastLane = lanes.at(-1);
       const nextCursor =
         moreLanes && lastLane !== undefined
@@ -663,12 +719,14 @@ const make = Effect.gen(function* () {
         runs: runEntries,
         markers,
         edges,
+        activity: [...activity.values()],
         truncated: {
           lanes: nextCursor !== null,
           ancestors: rows.ancestors.truncated,
           runs: rows.runRows.length > LOOM_LIMITS.runs,
           markers: allMarkers.length > LOOM_LIMITS.markers || markerCandidatesTruncated,
           edges: rows.edges.length > LOOM_LIMITS.edges,
+          activity: rows.activity.length > LOOM_LIMITS.activityTicks,
           bytes: bytesTruncated,
         },
         coverage: {
@@ -681,12 +739,14 @@ const make = Effect.gen(function* () {
       };
     };
 
-    // Oldest marks go first, then oldest runs, then oldest edges. Lanes and ancestors fit by
+    // Oldest activity goes first, then marks, runs and edges. Lanes and ancestors fit by
     // construction; if oversized ids still overflow, later lanes move to the next page.
     let result = response();
     while (byteLength(result) > LOOM_LIMITS.bytes) {
       bytesTruncated = true;
-      if (markers.length > 0) markers = markers.slice(0, Math.floor(markers.length * 0.8));
+      if (activityRows.length > 0)
+        activityRows = activityRows.slice(0, Math.floor(activityRows.length * 0.8));
+      else if (markers.length > 0) markers = markers.slice(0, Math.floor(markers.length * 0.8));
       else if (runEntries.length > 0)
         runEntries = runEntries.slice(0, Math.floor(runEntries.length * 0.8));
       else if (edges.length > 0) edges = edges.slice(0, Math.floor(edges.length * 0.8));

@@ -69,6 +69,98 @@ const placed = <A, E>(
   );
 
 describe("CrossEnvironmentPlacement", () => {
+  it.effect("reuses a saved model after the destination default changes", () =>
+    Effect.gen(function* () {
+      const harness = yield* makePlacementRegistry([
+        { id: callerId, label: "Caller" },
+        { id: destId, label: "Dest" },
+      ]);
+      const destination = {
+        environmentId: destId,
+        projectId: destProjectId,
+        modelSelection: destModel,
+      };
+      const claims: unknown[] = [];
+      yield* placed(
+        harness.registry,
+        Effect.gen(function* () {
+          const catalog = yield* EnvironmentProjectCatalog.EnvironmentProjectCatalog;
+          yield* catalog.replace(callerId, [sourceShell]);
+          yield* catalog.replace(destId, [
+            { ...destShell, defaultModelSelection: { ...destModel, model: "new-default" } },
+          ]);
+          const placement = yield* CrossEnvironmentPlacement.CrossEnvironmentPlacement;
+          yield* placement.launch({
+            callerEnvironmentId: callerId,
+            source: activeSource(),
+            commandId: CommandId.make("saved-command"),
+            threadId: ThreadId.make("saved-thread"),
+            target: { kind: "environment", environmentId: destId },
+            destination,
+            kind: "run",
+            title: "Saved launch",
+            message: "original work",
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            claim: (value) =>
+              Effect.sync(() => {
+                claims.push(value);
+                return true;
+              }),
+          });
+        }),
+      );
+      expect(claims).toEqual([destination]);
+      expect(harness.launches).toHaveLength(1);
+      expect(harness.launches[0]?.input).toMatchObject({
+        commandId: "saved-command",
+        threadId: "saved-thread",
+        modelSelection: destModel,
+        workspaceStrategy: { type: "root" },
+      });
+    }),
+  );
+
+  it.effect("does not substitute another matching project for a saved destination project", () =>
+    Effect.gen(function* () {
+      const harness = yield* makePlacementRegistry([
+        { id: callerId, label: "Caller" },
+        { id: destId, label: "Dest" },
+      ]);
+      const error = yield* placed(
+        harness.registry,
+        Effect.gen(function* () {
+          const catalog = yield* EnvironmentProjectCatalog.EnvironmentProjectCatalog;
+          yield* catalog.replace(destId, [
+            { ...destShell, id: ProjectId.make("replacement-project") },
+          ]);
+          const placement = yield* CrossEnvironmentPlacement.CrossEnvironmentPlacement;
+          return yield* placement
+            .launch({
+              callerEnvironmentId: callerId,
+              source: activeSource(),
+              commandId: CommandId.make("saved-command"),
+              threadId: ThreadId.make("saved-thread"),
+              target: { kind: "environment", environmentId: destId },
+              destination: {
+                environmentId: destId,
+                projectId: destProjectId,
+                modelSelection: destModel,
+              },
+              kind: "thread",
+              title: "Saved launch",
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              claim: () => Effect.die("must not claim a different project"),
+            })
+            .pipe(Effect.flip);
+        }),
+      );
+      expect(error).toBeInstanceOf(ProjectMissingOnTarget);
+      expect(harness.launches).toEqual([]);
+    }),
+  );
+
   it.effect("reports the destination and thread when a launch acknowledgement is lost", () =>
     Effect.gen(function* () {
       const harness = yield* makePlacementRegistry([

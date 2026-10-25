@@ -531,6 +531,7 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
     ),
   ),
   Layer.provide(ConversationSummaries.layerRuntime),
+  Layer.provide(ProjectKnowledge.layerDeliveryScrubber),
 );
 
 const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
