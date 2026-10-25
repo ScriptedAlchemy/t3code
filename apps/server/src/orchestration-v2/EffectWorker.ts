@@ -625,7 +625,7 @@ export class OrchestrationEffectWorkerError extends Schema.TaggedError<Orchestra
 const isOrchestrationEffectWorkerError = Schema.is(OrchestrationEffectWorkerError);
 
 export interface OrchestrationEffectWorkerV2Shape {
-  readonly awaitWork: Effect.Effect<void>;
+  readonly awaitWork: (lane: "turn" | "maintenance") => Effect.Effect<void>;
   readonly runOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly runTurnOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly runMaintenanceOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
@@ -952,6 +952,7 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
       // missed in-process notification or work inserted by another process.
       const runWorker = Effect.fn("OrchestrationEffectDaemon.runWorker")(function* (
         runOnce: OrchestrationEffectWorkerV2Shape["runOnce"],
+        lane: "turn" | "maintenance",
       ) {
         while (true) {
           const outcome = yield* runOnce.pipe(
@@ -989,7 +990,7 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
             },
           });
           yield* Effect.raceFirst(
-            worker.awaitWork.pipe(Effect.as("notified" as const)),
+            worker.awaitWork(lane).pipe(Effect.as("notified" as const)),
             Effect.sleep(Duration.millis(sleepMs)).pipe(Effect.as("scheduled" as const)),
           );
         }
@@ -997,9 +998,9 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
 
       return yield* Effect.all(
         [
-          ...Array.from({ length: concurrency }, () => runWorker(worker.runTurnOnce)),
+          ...Array.from({ length: concurrency }, () => runWorker(worker.runTurnOnce, "turn")),
           // Model maintenance must not consume the capacity that admits provider turns.
-          runWorker(worker.runMaintenanceOnce),
+          runWorker(worker.runMaintenanceOnce, "maintenance"),
         ],
         {
           concurrency: "unbounded",

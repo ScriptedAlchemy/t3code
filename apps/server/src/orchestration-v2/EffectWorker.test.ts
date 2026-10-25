@@ -90,6 +90,65 @@ it.effect("coalesces delivery scrub roots and resumes bounded pages after proces
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
 
+it.effect.each(["turn", "maintenance"] as const)(
+  "wakes the %s lane when the other lane is waiting first",
+  (lane) =>
+    Effect.gen(function* () {
+      const releaseTarget = yield* Deferred.make<void>();
+      const executed = yield* Deferred.make<void>();
+      const dependencies = Layer.merge(
+        EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+        Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+          execute: () => Deferred.succeed(executed, undefined).pipe(Effect.asVoid),
+        }),
+      );
+      const layer = EffectWorker.layer.pipe(Layer.provideMerge(dependencies));
+      yield* Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const delayedProbe = Deferred.await(releaseTarget).pipe(
+          Effect.andThen(lane === "turn" ? worker.runTurnOnce : worker.runMaintenanceOnce),
+        );
+        yield* EffectWorker.runDaemonWithOptions({ concurrency: 1 }).pipe(
+          Effect.provideService(EffectWorker.OrchestrationEffectWorkerV2, {
+            ...worker,
+            ...(lane === "turn"
+              ? { runTurnOnce: delayedProbe }
+              : { runMaintenanceOnce: delayedProbe }),
+          }),
+          Effect.forkScoped,
+        );
+        // Park the other lane first without advancing the liveness clock.
+        yield* TestClock.adjust(0);
+        yield* Deferred.succeed(releaseTarget, undefined);
+        yield* TestClock.adjust(0);
+        const effectId = `effect:wake:${lane}`;
+        yield* outbox.enqueue([
+          {
+            id: effectId,
+            commandId: CommandId.make(`command:wake:${lane}`),
+            threadId,
+            request:
+              lane === "turn"
+                ? { type: "provider-turn.start", runId: RunId.make("run:wake:turn") }
+                : {
+                    type: "project-knowledge.extract",
+                    runId: RunId.make("run:wake:maintenance"),
+                    runOutcome: "completed",
+                  },
+          },
+        ]);
+        yield* outbox.notifyAvailable();
+        yield* TestClock.adjust(0);
+        assert.isTrue(
+          yield* Deferred.isDone(executed),
+          `A single commit notification must wake the ${lane} lane without polling`,
+        );
+        yield* outbox.awaitSettled(effectId);
+      }).pipe(Effect.provide(layer));
+    }),
+);
+
 it.effect("admits turns while delivery scrub is held and retains the next removal", () =>
   Effect.gen(function* () {
     const entered = yield* Deferred.make<void>();

@@ -1415,7 +1415,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         })).committed,
       );
       assert.isTrue(Option.isSome(yield* outbox.get(captureEffect.id)));
-      yield* outbox.awaitAvailable;
+      yield* outbox.awaitAvailable("turn");
       const staleCaptureEffect = { ...captureEffect, id: "effect:foundation-stale-capture" };
 
       const reachedPrecommitGap = yield* Deferred.make<void>();
@@ -2226,7 +2226,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       });
       yield* outbox.signalCancellations(cancelledEffectIds);
 
-      const wake = yield* outbox.awaitAvailable.pipe(Effect.forkChild);
+      const wake = yield* outbox.awaitAvailable("turn").pipe(Effect.forkChild);
       yield* Effect.yieldNow;
       assert.isDefined(wake.pollUnsafe());
 
@@ -2723,7 +2723,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         Effect.provideService(
           EffectWorker.OrchestrationEffectWorkerV2,
           EffectWorker.OrchestrationEffectWorkerV2.of({
-            awaitWork: Effect.void,
+            awaitWork: () => Effect.void,
             runRecoveryOnce: Effect.succeed(false),
             runOnce: Effect.succeed(false),
             runTurnOnce: Effect.succeed(false),
@@ -2942,7 +2942,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         Effect.provideService(
           EffectWorker.OrchestrationEffectWorkerV2,
           EffectWorker.OrchestrationEffectWorkerV2.of({
-            awaitWork: Effect.void,
+            awaitWork: () => Effect.void,
             runRecoveryOnce: Effect.succeed(false),
             runOnce: Effect.succeed(false),
             runTurnOnce: Effect.succeed(false),

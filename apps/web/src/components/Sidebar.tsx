@@ -178,7 +178,7 @@ import {
   type SidebarListItem,
   type SidebarSection,
   resolveLoomTargets,
-  resolveSidebarRowThreadId,
+  resolveSidebarRowThreadRef,
 } from "./Sidebar.logic";
 import {
   createSidebarCollisionDetection,
@@ -365,20 +365,11 @@ function useSidebarThreads(input: {
   const { projectScopeKey, scopedProjectKeys, serverConfigs, optimisticDrop, routeThreadRef } =
     input;
   const threads = useQuietThreadShells();
+  const delegatedUnderParent = useDelegatedUnderParent();
   const routeRowThreadKey =
     routeThreadRef === null
       ? null
-      : scopedThreadKey(
-          scopeThreadRef(
-            routeThreadRef.environmentId,
-            resolveSidebarRowThreadId(
-              routeThreadRef.threadId,
-              routeThreadRef.environmentId,
-              threads,
-            ),
-          ),
-        );
-  const delegatedUnderParent = useDelegatedUnderParent();
+      : scopedThreadKey(resolveSidebarRowThreadRef(routeThreadRef, threads, delegatedUnderParent));
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const nowMinute = useNowMinute();
   // Minute-quantized clocks would delay second-precise snooze wakes by up to a minute.

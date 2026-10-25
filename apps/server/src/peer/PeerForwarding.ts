@@ -13,7 +13,6 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Tool from "effect/ai/Tool";
@@ -24,6 +23,7 @@ import { readCaller, unavailable } from "../mcp/threadAccess.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
+import { requestIdentity } from "../mcp/requestIdentity.ts";
 
 /**
  * A peer's `/mcp` holds a wait open for its whole timeout without sending
@@ -102,17 +102,6 @@ const make = Effect.gen(function* () {
       Effect.provideService(ThreadManagement.ThreadManagementService, threads),
     );
 
-  /**
-   * Every caller here reaches the peer as the one link session, so a retry
-   * key is scoped to its caller before it leaves: two agents here reusing a
-   * key never collide there, and one agent retrying gets its first result.
-   */
-  const scopedRequestId = (namespace: string, clientRequestId: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(`${namespace}\n${clientRequestId}`)).pipe(
-      Effect.map((digest) => `fwd:${Hex.encode(digest)}`),
-      Effect.orDie,
-    );
-
   /** Tool and contract schemas are plain data: they encode and decode without services. */
   const forward = Effect.fn("PeerForwarding.forward")(function* <A>(
     scope: Scope,
@@ -135,7 +124,12 @@ const make = Effect.gen(function* () {
       });
     }
     if (typeof args.clientRequestId === "string") {
-      args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
+      // Every caller reaches the peer as one link; its own durable identity must survive forwarding.
+      args.clientRequestId = `fwd:${yield* requestIdentity(
+        scope,
+        toolName,
+        args.clientRequestId,
+      ).pipe(Effect.provideService(Crypto.Crypto, crypto))}`;
     }
     return yield* peers.call({
       environmentId,

@@ -8,11 +8,16 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as Sse from "effect/encoding/Sse";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpBody from "effect/http/HttpBody";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as PeerLinks from "./PeerLinks.ts";
@@ -46,6 +51,8 @@ export class PeerMcpClient extends Context.Service<
 >()("t3/peer/PeerMcpClient") {}
 
 const ToolCallResponse = Schema.Struct({
+  jsonrpc: Schema.Literal("2.0"),
+  id: Schema.Number,
   result: Schema.optional(
     Schema.Struct({
       content: Schema.Array(
@@ -58,6 +65,10 @@ const ToolCallResponse = Schema.Struct({
   error: Schema.optional(Schema.Struct({ code: Schema.Number, message: Schema.String })),
 });
 const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolCallResponse));
+const decodeResponseId = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ id: Schema.Number })),
+);
+const encodeRequest = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeFailure = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Struct({ code: OrchestratorMcpFailure.fields.code, message: Schema.String }),
@@ -76,34 +87,77 @@ const fromLinkError = (error: PeerLinkError) =>
     message: error.message,
   });
 
-/** The body of an MCP response: JSON, or a single server-sent event carrying JSON. */
-const responseJson = (contentType: string | undefined, text: string) =>
-  contentType?.includes("text/event-stream") === true
-    ? text
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice("data:".length).trim())
-        .join("")
-    : text;
+const readResponse = Effect.fn("PeerMcpClient.readResponse")(function* (
+  response: HttpClientResponse.HttpClientResponse,
+  requestId: number,
+) {
+  const invalid = new OrchestratorMcpFailure({
+    code: "orchestration_error",
+    message: "The linked environment answered in an unexpected shape.",
+  });
+  let json: string;
+  if (response.headers["content-type"]?.includes("text/event-stream") === true) {
+    let pending: Array<string> = [];
+    const parser = Sse.makeParser((event) => {
+      if (event._tag === "Event") pending.push(event.data);
+    });
+    // Notifications may precede the response, and the connection may stay open after it.
+    const message = yield* response.stream.pipe(
+      Stream.decodeText(),
+      Stream.mapEffect((chunk) =>
+        Effect.suspend(() => {
+          if (parser.feed(chunk) !== undefined) return Effect.fail(invalid);
+          const events = pending;
+          pending = [];
+          return Effect.succeed(events);
+        }),
+      ),
+      Stream.flatMap(Stream.fromIterable),
+      Stream.filter((data) => {
+        const decoded = decodeResponseId(data);
+        return Option.isSome(decoded) && decoded.value.id === requestId;
+      }),
+      Stream.runHead,
+    );
+    if (Option.isNone(message)) return yield* invalid;
+    json = message.value;
+  } else {
+    json = yield* response.text;
+  }
+  const decoded = yield* decodeToolCallResponse(json).pipe(Effect.mapError(() => invalid));
+  if (decoded.id !== requestId) return yield* invalid;
+  return decoded;
+});
 
 const make = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const httpClient = yield* HttpClient.HttpClient;
+  const peerHttpClient = HttpClient.transform(httpClient, (response) =>
+    Effect.provideService(response, FetchHttpClient.RequestInit, { redirect: "manual" }),
+  );
   // One MCP session per peer and address, reused across calls. The peer keeps
   // sessions in memory, so a restart there answers 404 and we start a new one.
   const sessions = yield* Ref.make<ReadonlyMap<string, string>>(new Map());
+  const requestIds = yield* Ref.make(0);
 
-  const post = (url: string, token: string, body: unknown, headers: Record<string, string>) =>
-    httpClient.execute(
+  const post = Effect.fn("PeerMcpClient.post")(function* (
+    url: string,
+    token: string,
+    body: unknown,
+    headers: Record<string, string>,
+  ) {
+    const encoded = yield* encodeRequest(body).pipe(Effect.orDie);
+    return yield* peerHttpClient.execute(
       HttpClientRequest.post(`${url}/mcp`).pipe(
         HttpClientRequest.setHeaders({
           accept: "application/json, text/event-stream",
           authorization: `Bearer ${token}`,
           ...headers,
         }),
-        HttpClientRequest.setBody(HttpBody.text(JSON.stringify(body), "application/json")),
+        HttpClientRequest.setBody(HttpBody.text(encoded, "application/json")),
       ),
     );
+  });
 
   const openSession = Effect.fn("PeerMcpClient.openSession")(function* (
     url: string,
@@ -153,13 +207,14 @@ const make = Effect.gen(function* () {
         [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
       };
       const sessionKey = `${input.environmentId} ${resolved.url}`;
+      const requestId = yield* Ref.updateAndGet(requestIds, (previous) => previous + 1);
       const callOnce = (sessionId: string) =>
         post(
           resolved.url,
           resolved.token,
           {
             jsonrpc: "2.0",
-            id: 1,
+            id: requestId,
             method: "tools/call",
             params: { name: input.tool, arguments: input.arguments },
           },
@@ -188,17 +243,7 @@ const make = Effect.gen(function* () {
           message: `The linked environment answered HTTP ${response.status}.`,
         });
       }
-      const body = yield* decodeToolCallResponse(
-        responseJson(response.headers["content-type"], yield* response.text),
-      ).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "The linked environment answered in an unexpected shape.",
-            }),
-        ),
-      );
+      const body = yield* readResponse(response, requestId);
       if (body.error !== undefined || body.result === undefined) {
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
@@ -216,8 +261,13 @@ const make = Effect.gen(function* () {
               message: text || "The linked environment refused the call.",
             });
       }
-      const success = Schema.fromJsonString(input.success);
-      return yield* Schema.decodeUnknownEffect(success)(text).pipe(
+      const decoded =
+        body.result.structuredContent === undefined
+          ? // oxlint-disable-next-line t3code/no-inline-schema-compile -- Each caller supplies its tool's result schema.
+            Schema.decodeUnknownEffect(Schema.fromJsonString(input.success))(text)
+          : // oxlint-disable-next-line t3code/no-inline-schema-compile -- Each caller supplies its tool's result schema.
+            Schema.decodeUnknownEffect(input.success)(body.result.structuredContent);
+      return yield* decoded.pipe(
         Effect.mapError(
           () =>
             new OrchestratorMcpFailure({

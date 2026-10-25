@@ -311,12 +311,13 @@ const makeLaptop = Effect.gen(function* () {
   const scopeOf = (
     caller: string,
     capabilities: ReadonlySet<McpInvocationContext.McpCapability> = new Set(["orchestration"]),
+    providerSessionId = `provider-session:${caller}`,
   ): McpInvocationContext.McpInvocationScope => ({
     environmentId: laptop.environmentId,
-    requestNamespace: `provider-session:${caller}`,
+    requestNamespace: providerSessionId,
     thread: {
       threadId: ThreadId.make(caller),
-      providerSessionId: `provider-session:${caller}`,
+      providerSessionId,
       providerInstanceId: ProviderInstanceId.make("codex"),
     },
     client: undefined,
@@ -328,13 +329,14 @@ const makeLaptop = Effect.gen(function* () {
     name: string,
     args: Record<string, unknown>,
     capabilities?: ReadonlySet<McpInvocationContext.McpCapability>,
+    providerSessionId?: string,
   ) =>
     server
       .callTool({ name, arguments: args })
       .pipe(
         Effect.provideService(
           McpInvocationContext.McpInvocationContext,
-          scopeOf(caller, capabilities),
+          scopeOf(caller, capabilities, providerSessionId),
         ),
         Effect.provideService(McpSchema.McpServerClient, mcpClient),
       );
@@ -464,6 +466,67 @@ it.effect("keeps a forwarded wait short and its retries scoped to the caller", (
       expect(retried).toBe(first);
       expect(other).not.toBe(first);
       expect(first).not.toContain("same-key");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("keeps a forwarded launch's identity after the provider credential is renewed", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const seen = yield* Ref.make<Seen>(nothingSeen);
+      const linkSession = yield* Ref.make("");
+      const b = yield* serveBox(seen, linkSession);
+      const a = yield* makeLaptop;
+      yield* linkTo(a.links, b, "full-access");
+      yield* Ref.set(linkSession, (yield* b.linkedSessions)[0]!.sessionId);
+      const args = {
+        environmentId: box.environmentId,
+        projectId: boxProject,
+        title: "Run once",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        message: "Run the suite.",
+        clientRequestId: "launch-after-restart",
+      };
+      for (const session of ["provider:before-restart", "provider:after-restart"]) {
+        const result = yield* a.call(
+          "thread:laptop-full",
+          "t3_thread_launch",
+          args,
+          undefined,
+          session,
+        );
+        expect(result.isError, JSON.stringify(result.content)).toBe(false);
+      }
+      const [first, retry] = (yield* Ref.get(seen)).launches;
+      expect(retry?.commandId).toBe(first?.commandId);
+      expect(retry?.threadId).toBe(first?.threadId);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("does not alias newline-containing caller and request keys", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const seen = yield* Ref.make<Seen>(nothingSeen);
+      const linkSession = yield* Ref.make("");
+      const b = yield* serveBox(seen, linkSession);
+      const a = yield* makeLaptop;
+      yield* linkTo(a.links, b, "full-access");
+      yield* Ref.set(linkSession, (yield* b.linkedSessions)[0]!.sessionId);
+      for (const [caller, clientRequestId] of [
+        ["thread:a\nb", "c"],
+        ["thread:a", "b\nc"],
+      ]) {
+        const result = yield* a.call(caller!, "t3_thread_send", {
+          environmentId: box.environmentId,
+          threadId: boxThread,
+          message: "Distinct work.",
+          clientRequestId,
+        });
+        expect(result.isError, JSON.stringify(result.content)).toBe(false);
+      }
+      const [first, second] = (yield* Ref.get(seen)).sends;
+      expect(second?.commandId).not.toBe(first?.commandId);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

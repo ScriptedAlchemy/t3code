@@ -10,7 +10,7 @@ import {
   deleteSelectedThreadEntries,
   getFallbackThreadIdAfterDelete,
   hasUnseenCompletion,
-  resolveSidebarRowThreadId,
+  resolveSidebarRowThreadRef,
   isSidebarThreadWorking,
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
@@ -164,6 +164,96 @@ describe("archiveSelectedThreadEntries", () => {
 });
 
 describe("sidebar thread lineage helpers", () => {
+  const ref = (thread: Pick<Thread, "id" | "environmentId">) => ({
+    environmentId: thread.environmentId,
+    threadId: thread.id,
+  });
+
+  it("reveals the originating parent's row when its remote task is open", () => {
+    const environmentId = EnvironmentId.make("environment-parent");
+    const remoteEnvironmentId = EnvironmentId.make("environment-task");
+    const parent = makeThreadFixture({ id: ThreadId.make("thread-parent"), environmentId });
+    const remote = makeThreadFixture({
+      id: ThreadId.make("thread-remote"),
+      environmentId: remoteEnvironmentId,
+      delegatedFrom: { environmentId, threadId: parent.id, title: parent.title },
+    });
+
+    expect(
+      resolveSidebarRowThreadRef(ref(remote), [parent, remote], new Set([threadKey(ref(remote))])),
+    ).toEqual(ref(parent));
+  });
+
+  it("walks local and remote ancestry without confusing equal ids on different machines", () => {
+    const environmentId = EnvironmentId.make("environment-parent");
+    const remoteEnvironmentId = EnvironmentId.make("environment-task");
+    const parent = makeThreadFixture({ id: ThreadId.make("thread-shared"), environmentId });
+    const remote = makeThreadFixture({
+      id: parent.id,
+      environmentId: remoteEnvironmentId,
+      delegatedFrom: { environmentId, threadId: parent.id, title: parent.title },
+    });
+    const grandchild = makeThreadFixture({
+      id: ThreadId.make("thread-grandchild"),
+      environmentId: remoteEnvironmentId,
+      lineage: {
+        rootThreadId: remote.id,
+        parentThreadId: remote.id,
+        relationshipToParent: "subagent",
+      },
+    });
+    const threads = [remote, parent, grandchild];
+    const delegated = new Set([threadKey(ref(remote))]);
+
+    expect(resolveSidebarRowThreadRef(ref(remote), threads, delegated)).toEqual(ref(parent));
+    expect(resolveSidebarRowThreadRef(ref(grandchild), threads, delegated)).toEqual(ref(parent));
+  });
+
+  it("keeps a remote task's own row when its parent is unavailable", () => {
+    const environmentId = EnvironmentId.make("environment-parent");
+    const parent = makeThreadFixture({
+      id: ThreadId.make("thread-parent"),
+      environmentId,
+      archivedAt: "2026-10-01T00:00:00.000Z",
+    });
+    const remote = makeThreadFixture({
+      id: ThreadId.make("thread-remote"),
+      environmentId: EnvironmentId.make("environment-task"),
+      delegatedFrom: { environmentId, threadId: parent.id, title: parent.title },
+    });
+
+    expect(resolveSidebarRowThreadRef(ref(remote), [parent, remote], new Set())).toEqual(
+      ref(remote),
+    );
+    expect(
+      resolveSidebarRowThreadRef(ref(remote), [remote], new Set([threadKey(ref(remote))])),
+    ).toEqual(ref(remote));
+  });
+
+  it("leaves the route unchanged when remote ancestry cycles", () => {
+    const firstRef = {
+      environmentId: EnvironmentId.make("environment-first"),
+      threadId: ThreadId.make("thread-first"),
+    };
+    const secondRef = {
+      environmentId: EnvironmentId.make("environment-second"),
+      threadId: ThreadId.make("thread-second"),
+    };
+    const first = makeThreadFixture({
+      id: firstRef.threadId,
+      environmentId: firstRef.environmentId,
+      delegatedFrom: { ...secondRef, title: "Second" },
+    });
+    const second = makeThreadFixture({
+      id: secondRef.threadId,
+      environmentId: secondRef.environmentId,
+      delegatedFrom: { ...firstRef, title: "First" },
+    });
+    const delegated = new Set([threadKey(firstRef), threadKey(secondRef)]);
+
+    expect(resolveSidebarRowThreadRef(firstRef, [first, second], delegated)).toEqual(firstRef);
+  });
+
   it("maps an open subagent to its nearest visible ancestor's sidebar row", () => {
     const environmentId = EnvironmentId.make("environment-row");
     const otherEnvironmentId = EnvironmentId.make("environment-other");
@@ -194,14 +284,14 @@ describe("sidebar thread lineage helpers", () => {
     const elsewhere = subagentOf("thread-elsewhere", root.id, otherEnvironmentId);
     const threads = [root, fork, child, grandchild, forkChild, orphan, elsewhere];
 
-    expect(resolveSidebarRowThreadId(child.id, environmentId, threads)).toBe(root.id);
-    expect(resolveSidebarRowThreadId(grandchild.id, environmentId, threads)).toBe(root.id);
-    expect(resolveSidebarRowThreadId(forkChild.id, environmentId, threads)).toBe(fork.id);
-    expect(resolveSidebarRowThreadId(elsewhere.id, otherEnvironmentId, threads)).toBe(elsewhere.id);
-    expect(resolveSidebarRowThreadId(orphan.id, environmentId, threads)).toBe(orphan.id);
+    expect(resolveSidebarRowThreadRef(ref(child), threads, new Set())).toEqual(ref(root));
+    expect(resolveSidebarRowThreadRef(ref(grandchild), threads, new Set())).toEqual(ref(root));
+    expect(resolveSidebarRowThreadRef(ref(forkChild), threads, new Set())).toEqual(ref(fork));
+    expect(resolveSidebarRowThreadRef(ref(elsewhere), threads, new Set())).toEqual(ref(elsewhere));
+    expect(resolveSidebarRowThreadRef(ref(orphan), threads, new Set())).toEqual(ref(orphan));
     const loopA = subagentOf("thread-loop-a", ThreadId.make("thread-loop-b"));
     const loopB = subagentOf("thread-loop-b", loopA.id);
-    expect(resolveSidebarRowThreadId(loopA.id, environmentId, [loopA, loopB])).toBe(loopA.id);
+    expect(resolveSidebarRowThreadRef(ref(loopA), [loopA, loopB], new Set())).toEqual(ref(loopA));
   });
 });
 

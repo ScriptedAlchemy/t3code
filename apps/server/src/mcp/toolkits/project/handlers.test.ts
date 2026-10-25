@@ -37,10 +37,12 @@ const clientLaunchHarness = (input: {
   /** Where Settings saves a project's model; the legacy project field stays null. */
   readonly overrideModel?: ModelSelection;
   readonly launched: Array<ThreadLaunch.ThreadLaunchInput>;
+  readonly clientSessionId?: string;
   readonly workspaceRoot?: string;
   readonly checkWorktreeBase?: ThreadLaunch.ThreadLaunchService["Service"]["checkWorktreeBase"];
 }) => {
   const projectId = ProjectId.make("project:client-target");
+  const clientSessionId = input.clientSessionId ?? "session-1";
   const modelSelection = {
     instanceId: ProviderInstanceId.make("claudeAgent"),
     model: "claude-opus",
@@ -66,10 +68,10 @@ const clientLaunchHarness = (input: {
     NodeCrypto.layer,
     Layer.succeed(McpInvocationContext.McpInvocationContext, {
       environmentId: EnvironmentId.make("environment"),
-      requestNamespace: "client:session-1",
+      requestNamespace: `client:${clientSessionId}`,
       thread: undefined,
       client: {
-        sessionId: "session-1",
+        sessionId: clientSessionId,
         label: "Claude Code",
         access: input.runtimeModeCeiling,
       },
@@ -250,10 +252,34 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
     // The same key sends the same command and thread ids, which the launch
     // service replays instead of starting a second thread.
     expect(ids[0]).toEqual(ids[1]);
-    expect(ids[0]?.[0]).toContain("client%3Asession-1");
     expect(ids[2]).not.toEqual(ids[0]);
     // Without a key every launch is new.
     expect(ids[3]).not.toEqual(ids[4]);
+  }),
+);
+
+it.effect("keeps launch retry keys isolated between outside MCP clients", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    for (const clientSessionId of ["client-a", "client-b"]) {
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "auto",
+        clientSessionId,
+        launched,
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      yield* toolkit
+        .handle("t3_thread_launch", { title: "Fix", projectId, clientRequestId: "fix-1" })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    }
+    expect(launched).toHaveLength(2);
+    expect(launched[1]?.threadId).not.toBe(launched[0]?.threadId);
   }),
 );
 
@@ -281,6 +307,36 @@ it.effect("a retried launch replays after the project loses its default model", 
       launched[0]?.threadId,
       launched[0]?.threadId,
     ]);
+  }),
+);
+
+it.effect("launch keys accept unpaired Unicode and keep destination IDs bounded", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    for (const clientRequestId of ["retry-\ud800", "任".repeat(256)]) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = yield* toolkit
+          .handle("t3_thread_launch", { title: "Fix", projectId, clientRequestId })
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+        expect(result.at(-1)?.result).toMatchObject({ projectId });
+      }
+    }
+    expect(launched[1]?.threadId).toBe(launched[0]?.threadId);
+    expect(launched[3]?.threadId).toBe(launched[2]?.threadId);
+    expect(launched[2]?.threadId).not.toBe(launched[0]?.threadId);
+    for (const input of launched) {
+      expect(input.threadId?.length).toBeLessThan(128);
+      expect(input.commandId.length).toBeLessThan(128);
+    }
   }),
 );
 

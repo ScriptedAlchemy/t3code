@@ -179,7 +179,12 @@ function LinkEnvironmentAction({ environmentId }: { readonly environmentId: Envi
   // Enter then a click can both run before a re-render; this guard is synchronous.
   const inFlight = useRef(false);
   const formId = useId();
-  const link = useAtomCommand(peerLinkEnvironment.link, { label: "link environment" });
+  const link = useAtomCommand(peerLinkEnvironment.link, {
+    label: "link environment",
+    // Transport and encoding failures can retain the one-use pairing code.
+    reportFailure: false,
+    reportDefect: false,
+  });
   const selected = choice ?? (machines.length === 0 ? ANOTHER_ADDRESS : null);
   const machine = machines.find((candidate) => candidate.environmentId === selected) ?? null;
   // This client can mint a code there when it is connected to that
@@ -242,7 +247,10 @@ function LinkEnvironmentAction({ environmentId }: { readonly environmentId: Envi
       toastManager.add({ type: "success", title: `Linked ${result.value.label}` });
       handleOpenChange(false);
     } else if (!isAtomCommandInterrupted(result)) {
-      failureToast("Could not link the environment", String(squashAtomCommandFailure(result)));
+      failureToast(
+        "Could not link the environment",
+        linkRequestFailureMessage(squashAtomCommandFailure(result)),
+      );
     }
   };
   return (
