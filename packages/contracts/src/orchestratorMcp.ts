@@ -2,8 +2,10 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
+import { AuthMcpClientAccess } from "./auth.ts";
 import {
   ContextTransferId,
+  EnvironmentId,
   IsoDateTime,
   MessageId,
   NodeId,
@@ -46,7 +48,7 @@ const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120
 const OrchestratorMcpTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512)).annotate({
   description: "Optional concise display title.",
 });
-const OrchestratorMcpClientRequestId = TrimmedNonEmptyString.check(
+export const OrchestratorMcpClientRequestId = TrimmedNonEmptyString.check(
   Schema.isMaxLength(256),
 ).annotate({ description: "Stable idempotency key to reuse when retrying this mutation." });
 
@@ -109,6 +111,18 @@ export const OrchestratorMcpTarget = Schema.Struct({
     OrchestratorMcpTargetOptions.annotate({
       description:
         "Model options from orchestrator_capabilities. For the same provider instance and model, overrides individual inherited values; [] or {} clears them. Claude: {effort: 'max', fastMode: true}; Codex: {reasoningEffort: 'max', serviceTier: 'priority'}. Only use options advertised by the selected model.",
+    }),
+  ),
+  environmentId: Schema.optional(
+    EnvironmentId.annotate({
+      description:
+        "Run the task in a linked environment (t3_environment_links). It uses this thread's provider and model unless providerInstanceId and model name others from orchestrator_capabilities with this environmentId.",
+    }),
+  ),
+  projectId: Schema.optional(
+    ProjectId.annotate({
+      description:
+        "With environmentId: that environment's project to run in. Omit to use the one with the same repository as this thread's project.",
     }),
   ),
 });
@@ -189,7 +203,12 @@ export type OrchestratorMcpDelegateTaskInput = typeof OrchestratorMcpDelegateTas
 
 export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   taskId: NodeId,
-  childThreadId: ThreadId,
+  /** Null for a task that runs in a linked environment; see `remoteChild`. */
+  childThreadId: Schema.NullOr(ThreadId),
+  /** The linked environment and thread a remote task runs as. */
+  remoteChild: Schema.optional(
+    Schema.Struct({ environmentId: EnvironmentId, threadId: ThreadId, label: Schema.String }),
+  ),
   childRunId: Schema.NullOr(RunId),
   childNodeId: NodeId,
   status: OrchestratorMcpDelegatedTaskStatus,
@@ -301,7 +320,20 @@ const OrchestratorMcpProjectTarget = Schema.optional(
   }),
 );
 
+/**
+ * A linked environment to act in instead of this one. The tools that take it
+ * forward the call there, where the link's access and the caller's own modes
+ * both apply.
+ */
+export const OrchestratorMcpEnvironmentTarget = Schema.optional(
+  EnvironmentId.annotate({
+    description:
+      "A linked environment to do this in; t3_environment_links lists them. Omit for this environment. Ids (projects, threads, runs) then belong to that environment.",
+  }),
+);
+
 export const OrchestratorMcpThreadListInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
   projectId: OrchestratorMcpProjectTarget,
   statuses: Schema.optional(
     Schema.Array(OrchestratorMcpThreadStatus).check(Schema.isMaxLength(10)),
@@ -373,6 +405,7 @@ const clampedPositiveInt = (maximum: number) =>
   );
 
 export const OrchestratorMcpThreadReadInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   itemId: Schema.optional(TurnItemId),
   textOffset: Schema.optional(NonNegativeInt),
@@ -466,6 +499,7 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,
   mode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
@@ -484,9 +518,16 @@ export const OrchestratorMcpThreadSendResult = Schema.Struct({
 export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendResult.Type;
 
 export const OrchestratorMcpThreadWaitInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   runId: Schema.optional(RunId),
   timeoutMs: Schema.optional(Schema.Finite),
+  untilDelegatedWorkSettled: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Also wait until the thread's own delegated tasks, background tasks and their completion deliveries settle, as a delegated task's result does. resultRun then names the run with the thread's final answer.",
+    }),
+  ),
 });
 export type OrchestratorMcpThreadWaitInput = typeof OrchestratorMcpThreadWaitInput.Type;
 
@@ -495,13 +536,22 @@ export const OrchestratorMcpThreadWaitResult = Schema.Struct({
   runId: Schema.NullOr(RunId),
   status: OrchestratorMcpThreadStatus,
   timedOut: Schema.Boolean,
+  /** With untilDelegatedWorkSettled, once settled: the run whose reply is the thread's result. */
+  resultRun: Schema.optional(Schema.Struct({ runId: RunId, status: OrchestrationV2RunStatus })),
 });
 export type OrchestratorMcpThreadWaitResult = typeof OrchestratorMcpThreadWaitResult.Type;
 
 export const OrchestratorMcpThreadInterruptInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   runId: Schema.optional(RunId),
   reason: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
+  /**
+   * Stop the thread as its Stop button does instead: interrupt its running
+   * turn whichever run that is, hold its queued messages, end its pull request
+   * watches and stop every task it delegated. `runId` is then not used.
+   */
+  stop: Schema.optional(Schema.Boolean),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpThreadInterruptInput = typeof OrchestratorMcpThreadInterruptInput.Type;
@@ -518,6 +568,7 @@ export const OrchestratorMcpThreadInterruptResult = Schema.Struct({
 export type OrchestratorMcpThreadInterruptResult = typeof OrchestratorMcpThreadInterruptResult.Type;
 
 export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
   search: Schema.optional(
     TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
       description:
@@ -555,6 +606,27 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
 
+export const OrchestratorMcpEnvironmentLink = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: Schema.String,
+  /** Whether it answered just now. An expired link must be linked again there. */
+  status: Schema.Literals(["reachable", "unreachable", "expired"]),
+  /** The most the linked environment lets this one's agents do there. */
+  access: AuthMcpClientAccess,
+  expiresAt: IsoDateTime,
+  lastError: Schema.NullOr(Schema.String),
+});
+export type OrchestratorMcpEnvironmentLink = typeof OrchestratorMcpEnvironmentLink.Type;
+
+export const OrchestratorMcpEnvironmentLinksResult = Schema.Struct({
+  environmentId: EnvironmentId,
+  links: Schema.Array(OrchestratorMcpEnvironmentLink),
+  /** What to do when the machine the user means is not among `links`. */
+  notListed: Schema.String,
+});
+export type OrchestratorMcpEnvironmentLinksResult =
+  typeof OrchestratorMcpEnvironmentLinksResult.Type;
+
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   parentThreadId: Schema.NullOr(ThreadId),
   inheritedProviderInstanceId: Schema.NullOr(ProviderInstanceId),
@@ -577,6 +649,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;
 
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
   projectId: OrchestratorMcpProjectTarget,
   prompt: OrchestratorMcpPrompt.annotate({
     description: "Prompt executed on every scheduled run.",
@@ -620,6 +693,7 @@ export const OrchestratorMcpScheduleTaskResult = OrchestratorMcpScheduledTask;
 export type OrchestratorMcpScheduleTaskResult = typeof OrchestratorMcpScheduleTaskResult.Type;
 
 export const OrchestratorMcpListScheduledTasksInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
   projectId: Schema.optional(
     ProjectId.annotate({
       description:
@@ -637,6 +711,7 @@ export type OrchestratorMcpListScheduledTasksResult =
   typeof OrchestratorMcpListScheduledTasksResult.Type;
 
 export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
   scheduledTaskId: ScheduledTaskId,
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
@@ -685,7 +760,81 @@ export const OrchestratorMcpRequestSecretResult = Schema.Union([
 ]);
 export type OrchestratorMcpRequestSecretResult = typeof OrchestratorMcpRequestSecretResult.Type;
 
+export const OrchestratorMcpEnvironmentLinkInput = Schema.Struct({
+  environmentId: Schema.optional(EnvironmentId).annotate({
+    description:
+      "The environment to link, when you know it, e.g. from a machine the user mentioned. Omit it otherwise: the user picks the machine in the card.",
+  }),
+  url: Schema.optional(TrimmedNonEmptyString).annotate({
+    description:
+      "Only when the user gave an address: its https, Tailscale, LAN or loopback base URL. Never guess one.",
+  }),
+  hint: Schema.optional(TrimmedNonEmptyString).annotate({
+    description:
+      'A short phrase from the user\'s words naming the machine, e.g. "vps" or "mac mini". It only preselects a machine in the card.',
+  }),
+  reason: Schema.optional(TrimmedNonEmptyString).annotate({
+    description: "One sentence on why, shown on the card.",
+  }),
+  requestedAccess: Schema.optional(AuthMcpClientAccess).annotate({
+    description:
+      "The access to suggest. The user picks the access in the card; it defaults to approval-required.",
+  }),
+  clientRequestId: Schema.optional(OrchestratorMcpClientRequestId).annotate({
+    description:
+      "Reuse when retrying a call that lost its result, so the user sees one card and its current outcome is returned. Use a new id to ask again.",
+  }),
+});
+export type OrchestratorMcpEnvironmentLinkInput = typeof OrchestratorMcpEnvironmentLinkInput.Type;
+
+export const OrchestratorMcpEnvironmentLinkResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("pending").annotate({
+      description:
+        "The card is waiting for the user. Their answer arrives as a message in this thread.",
+    }),
+    turnItemId: TurnItemId,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("linked"),
+    environmentId: EnvironmentId.annotate({
+      description: "Pass it as environmentId to act there; t3_environment_links lists it.",
+    }),
+    label: Schema.String,
+    access: AuthMcpClientAccess.annotate({ description: "The access the user chose." }),
+  }),
+  Schema.Struct({
+    status: Schema.Literals(["declined", "cancelled"]).annotate({
+      description:
+        "declined: the user chose not to. cancelled: the card closed unanswered, when the thread was stopped or archived.",
+    }),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("failed"),
+    message: Schema.String.annotate({
+      description: "Why the other environment refused the link, as the user saw it.",
+    }),
+  }),
+]);
+export type OrchestratorMcpEnvironmentLinkResult = typeof OrchestratorMcpEnvironmentLinkResult.Type;
+
+export const OrchestratorMcpEnvironmentUnlinkInput = Schema.Struct({
+  environmentId: EnvironmentId.annotate({
+    description: "The linked environment to forget, from t3_environment_links.",
+  }),
+});
+export type OrchestratorMcpEnvironmentUnlinkInput =
+  typeof OrchestratorMcpEnvironmentUnlinkInput.Type;
+
+export const OrchestratorMcpEnvironmentUnlinkResult = Schema.Struct({
+  environmentId: EnvironmentId,
+  removed: Schema.Boolean,
+});
+export type OrchestratorMcpEnvironmentUnlinkResult =
+  typeof OrchestratorMcpEnvironmentUnlinkResult.Type;
+
 export const OrchestratorMcpDeleteScheduledTaskInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
   scheduledTaskId: ScheduledTaskId,
 });
 export type OrchestratorMcpDeleteScheduledTaskInput =

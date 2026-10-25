@@ -54,6 +54,16 @@ import {
   McpAppUpdateModelContextInput,
 } from "./mcpApps.ts";
 import {
+  PeerLink,
+  PeerLinkCreateInput,
+  PeerLinkError,
+  PeerLinkRemoveInput,
+  PeerLinkRemoveResult,
+  PeerLinkRequestAnswerInput,
+  PeerLinkRequestError,
+  PeerLinkSummary,
+} from "./peerLink.ts";
+import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
   ChatGptImportProfileInput,
@@ -65,11 +75,6 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import {
-  CrossEnvironmentAsk,
-  CrossEnvironmentClaim,
-  CrossEnvironmentFulfillment,
-} from "./crossEnvironment.ts";
 import {
   CodexAuthCallbackInput,
   CodexAuthCallbackState,
@@ -557,6 +562,10 @@ export const WS_METHODS = {
   serverRunStorageCleanup: "server.runStorageCleanup",
   serverGetStorageCleanupReport: "server.getStorageCleanupReport",
   serverGetDatabaseStorage: "server.getDatabaseStorage",
+  peerLinksList: "peerLinks.list",
+  peerLinksLink: "peerLinks.link",
+  peerLinksUnlink: "peerLinks.unlink",
+  peerLinksAnswerRequest: "peerLinks.answerRequest",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
@@ -656,9 +665,6 @@ export const WS_METHODS = {
   subscribeAuthAccess: "subscribeAuthAccess",
   subscribeBackgroundPolicy: "subscribeBackgroundPolicy",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
-  crossEnvironmentBridgeSubscribe: "crossEnvironment.bridge.subscribe",
-  crossEnvironmentBridgeClaim: "crossEnvironment.bridge.claim",
-  crossEnvironmentBridgeFulfill: "crossEnvironment.bridge.fulfill",
 } as const;
 
 const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -848,6 +854,29 @@ const WsServerGetDatabaseStorageRpc = Rpc.make(WS_METHODS.serverGetDatabaseStora
   success: Schema.NullOr(DatabaseStorageStatus),
   stream: true,
   error: EnvironmentAuthorizationError,
+});
+
+const WsPeerLinksListRpc = Rpc.make(WS_METHODS.peerLinksList, {
+  payload: Schema.Struct({}),
+  success: Schema.Struct({ links: Schema.Array(PeerLinkSummary) }),
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+const WsPeerLinksLinkRpc = Rpc.make(WS_METHODS.peerLinksLink, {
+  payload: PeerLinkCreateInput,
+  success: PeerLink,
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+const WsPeerLinksUnlinkRpc = Rpc.make(WS_METHODS.peerLinksUnlink, {
+  payload: PeerLinkRemoveInput,
+  success: PeerLinkRemoveResult,
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+const WsPeerLinksAnswerRequestRpc = Rpc.make(WS_METHODS.peerLinksAnswerRequest, {
+  payload: PeerLinkRequestAnswerInput,
+  error: Schema.Union([PeerLinkRequestError, EnvironmentAuthorizationError]),
 });
 
 const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
@@ -1977,25 +2006,6 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
-const WsCrossEnvironmentBridgeSubscribeRpc = Rpc.make(WS_METHODS.crossEnvironmentBridgeSubscribe, {
-  payload: Schema.Struct({}),
-  success: CrossEnvironmentAsk,
-  error: EnvironmentAuthorizationError,
-  stream: true,
-});
-
-const WsCrossEnvironmentBridgeFulfillRpc = Rpc.make(WS_METHODS.crossEnvironmentBridgeFulfill, {
-  payload: CrossEnvironmentFulfillment,
-  success: Schema.Void,
-  error: EnvironmentAuthorizationError,
-});
-
-const WsCrossEnvironmentBridgeClaimRpc = Rpc.make(WS_METHODS.crossEnvironmentBridgeClaim, {
-  payload: CrossEnvironmentClaim,
-  success: Schema.Boolean,
-  error: EnvironmentAuthorizationError,
-});
-
 export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthorization>()(
   "t3/contracts/RpcScopeAuthorization",
   { error: EnvironmentAuthorizationError },
@@ -2136,6 +2146,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetDatabaseStorageRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsPeerLinksListRpc,
+  WsPeerLinksLinkRpc,
+  WsPeerLinksUnlinkRpc,
+  WsPeerLinksAnswerRequestRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerSearchAcpRegistryRpc,
   WsServerPrepareAcpRegistryAgentRpc,
@@ -2290,9 +2304,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeAuthAccessRpc,
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
-  WsCrossEnvironmentBridgeSubscribeRpc,
-  WsCrossEnvironmentBridgeClaimRpc,
-  WsCrossEnvironmentBridgeFulfillRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2StopWorkflowRpc,

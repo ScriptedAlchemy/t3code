@@ -37,7 +37,6 @@ import {
   createRuntimeCommand,
   scheduleAtomCommandEffect,
 } from "./runtime.ts";
-import { runCrossEnvironmentBridgeClient } from "../crossEnvironment/bridgeClient.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
@@ -451,8 +450,6 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
       ),
       Effect.forkScoped,
     );
-
-    yield* runCrossEnvironmentBridgeClient().pipe(Effect.forkScoped);
 
     return state;
   },
@@ -1402,6 +1399,16 @@ export function createServerEnvironmentAtoms<R, E>(
     answerSecretRequest: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:secrets:answer-request",
       tag: WS_METHODS.secretsAnswerRequest,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId, input.turnItemId]),
+      },
+    }),
+    // Like a secret card's answer: off the config lane, one per card at a time.
+    answerLinkRequest: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:peer-links:answer-request",
+      tag: WS_METHODS.peerLinksAnswerRequest,
       concurrency: {
         mode: "singleFlight",
         key: ({ environmentId, input }) =>

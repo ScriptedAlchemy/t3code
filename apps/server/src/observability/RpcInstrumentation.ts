@@ -75,6 +75,10 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverGetStorageCleanupReport]: "server",
   [WS_METHODS.serverGetDatabaseStorage]: "server",
   [WS_METHODS.serverGetSettings]: "server",
+  [WS_METHODS.peerLinksList]: "peerLinks",
+  [WS_METHODS.peerLinksLink]: "peerLinks",
+  [WS_METHODS.peerLinksUnlink]: "peerLinks",
+  [WS_METHODS.peerLinksAnswerRequest]: "peerLinks",
   [WS_METHODS.serverUpdateSettings]: "server",
   [WS_METHODS.serverSearchAcpRegistry]: "server",
   [WS_METHODS.serverPrepareAcpRegistryAgent]: "server",
@@ -230,9 +234,6 @@ const RPC_AGGREGATES = {
   [WS_METHODS.subscribeServerLifecycle]: "server",
   [WS_METHODS.subscribeAuthAccess]: "auth",
   [WS_METHODS.subscribeBackgroundPolicy]: "server",
-  [WS_METHODS.crossEnvironmentBridgeSubscribe]: "orchestration",
-  [WS_METHODS.crossEnvironmentBridgeClaim]: "orchestration",
-  [WS_METHODS.crossEnvironmentBridgeFulfill]: "orchestration",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

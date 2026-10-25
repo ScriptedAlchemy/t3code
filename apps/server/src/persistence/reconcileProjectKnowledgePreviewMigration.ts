@@ -6,8 +6,8 @@ import ShellStopRequestIndex from "./Migrations/078_ShellStopRequestIndex.ts";
 import ThreadMessageSearch from "./Migrations/079_ThreadMessageSearch.ts";
 import ProjectIntelligenceAndCrossEnvironment from "./Migrations/080_ProjectIntelligenceAndCrossEnvironment.ts";
 
-// Preview builds used both a conflicting 79 and split 80–83. Complete their
-// schema before replacing only those known receipts with the released migration.
+// Preview builds used a conflicting 79, split 80–83, and an earlier combined 80.
+// Complete their schema before replacing only known obsolete migration receipts.
 export const reconcileProjectKnowledgePreviewMigration = Effect.fn(
   "reconcileProjectKnowledgePreviewMigration",
 )(function* (manifest: ReadonlyArray<readonly [number, string]>) {
@@ -27,7 +27,32 @@ export const reconcileProjectKnowledgePreviewMigration = Effect.fn(
         WHERE migration_id >= 55 ORDER BY migration_id
       `;
       const recorded = new Map(history.map((row) => [row.migration_id, row.name]));
-      if (recorded.get(80) === "ProjectIntelligenceAndCrossEnvironment") return [];
+      if (recorded.get(80) === "ProjectIntelligenceAndCrossEnvironment") {
+        const peerColumns = yield* sql<{
+          readonly name: string;
+        }>`PRAGMA table_info(peer_environment_links)`;
+        const waitingIndex = yield* sql`
+          SELECT name FROM sqlite_master WHERE type = 'index'
+            AND name = 'orchestration_v2_projection_turn_items_waiting_link_idx'
+        `;
+        if (peerColumns.some((column) => column.name === "fenced") && waitingIndex.length > 0) {
+          return [];
+        }
+        const expected = new Map(manifest.filter(([id]) => id >= 55 && id <= 80));
+        if (
+          [...expected].some(([id, name]) => recorded.get(id) !== name) ||
+          history.some((row) => expected.get(row.migration_id) !== row.name)
+        ) {
+          return yield* new Migrator.MigrationError({
+            kind: "BadState",
+            message: "Cannot complete project preview with unexpected migration history.",
+          });
+        }
+        // The published combined preview already recorded 80. Preserve its receipt,
+        // delivery data, and any now-unused client-bridge routing table.
+        yield* ProjectIntelligenceAndCrossEnvironment;
+        return [];
+      }
       const legacy = recorded.get(79) === "ProjectKnowledgeNativeDelivery";
       const split = new Map([
         [80, "ProjectKnowledgeNativeDelivery"],

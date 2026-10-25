@@ -52,6 +52,9 @@ export type T3McpToolSummaryAction =
   | "project-clone"
   | "project-code-query"
   | "environment-read"
+  | "environment-links"
+  | "environment-link"
+  | "environment-unlink"
   | "environment-update"
   | "attachment-prepare"
   | "attachment-discard"
@@ -315,13 +318,17 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["Read", "Reading", "Read", "environment preferences"],
     "environment-read",
   ),
-  t3_connected_environments: tool(
-    ["Read", "Reading", "Read", "connected environments"],
-    "environment-read",
+  t3_environment_links: tool(
+    ["List", "Listing", "Listed", "linked environments"],
+    "environment-links",
   ),
-  t3_environment_launch: tool(
-    ["Launch", "Launching", "Launched", "a thread on a connected environment"],
-    "thread-create",
+  t3_environment_link: tool(
+    ["Ask to link", "Asking to link", "Asked to link", "an environment"],
+    "environment-link",
+  ),
+  t3_environment_unlink: tool(
+    ["Forget", "Forgetting", "Forgot", "a linked environment"],
+    "environment-unlink",
   ),
   t3_environment_preferences_update: tool(
     ["Update", "Updating", "Updated", "environment preferences"],

@@ -10,6 +10,7 @@ import {
 import type {
   ComposerContextId,
   ComposerContextRecord,
+  EnvironmentContextRecord,
   EnvironmentId,
   FileContextRecord,
   ImageContextRecord,
@@ -175,6 +176,26 @@ export function threadContextRecord(ref: ScopedThreadRef, title: string): Thread
   };
 }
 
+/** One record per machine: mentioning the same machine twice reuses the chip. */
+export function environmentContextReference(
+  record: EnvironmentContextRecord,
+): ComposerContextReference {
+  return { kind: "environment", contextId: record.contextId, label: record.label };
+}
+
+export function environmentContextRecord(
+  environmentId: EnvironmentId,
+  label: string,
+): EnvironmentContextRecord {
+  return {
+    version: 1,
+    kind: "environment",
+    contextId: toKindScopedComposerContextId("environment", environmentId),
+    label: sanitizeComposerContextLabel(label, "environment"),
+    environmentId,
+  };
+}
+
 export function terminalContextRecord(context: TerminalContextDraft): TerminalContextRecord {
   return {
     version: 1,
@@ -316,6 +337,7 @@ export function buildMessageContext(input: {
   previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
   threadContexts?: ReadonlyArray<ThreadContextRecord>;
   knowledgeContexts?: ReadonlyArray<ProjectKnowledgeContextRecord>;
+  environmentContexts?: ReadonlyArray<EnvironmentContextRecord>;
   attachments?: ReadonlyArray<BoundComposerAttachment>;
 }): OrchestrationMessageContext | undefined {
   const screenshotAttachmentIds = new Set(
@@ -328,6 +350,7 @@ export function buildMessageContext(input: {
     ...input.reviewComments.map(reviewCommentContextRecord),
     ...(input.threadContexts ?? []),
     ...(input.knowledgeContexts ?? []),
+    ...(input.environmentContexts ?? []),
     ...input.previewAnnotations.map((annotation) =>
       previewAnnotationContextRecord(annotation, {
         screenshotContextId: screenshotAttachmentIds.has(annotation.id) ? annotation.id : undefined,

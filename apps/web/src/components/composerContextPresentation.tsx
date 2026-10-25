@@ -2,7 +2,11 @@ import { ProjectKnowledgeContextChip } from "./projectKnowledge/ProjectKnowledge
 import type { ProjectKnowledgeContextRecord } from "@t3tools/contracts";
 import ChatMarkdown from "./ChatMarkdown";
 import { ReadOnlySourcePreview } from "./files/AttachmentFilePreview";
-import type { PreviewAnnotationPayload, ThreadContextRecord } from "@t3tools/contracts";
+import type {
+  EnvironmentContextRecord,
+  PreviewAnnotationPayload,
+  ThreadContextRecord,
+} from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { videoMimeType } from "@t3tools/shared/video";
 import { MessageCircleIcon, MousePointerClickIcon } from "lucide-react";
@@ -33,6 +37,7 @@ import {
 import type { TerminalContextDraft } from "~/lib/terminalContext";
 import type { ReviewCommentContext } from "~/reviewCommentContext";
 import { ComposerPendingTerminalContextChip } from "./chat/ComposerPendingTerminalContexts";
+import { EnvironmentContextChip } from "./EnvironmentContextChip";
 import { ThreadContextChip } from "./ThreadContextChip";
 import {
   createContextPresentationRegistry,
@@ -61,7 +66,8 @@ export type ComposerDraftContextRecord =
   | { kind: "image"; record: ComposerImageAttachment; upload?: AttachmentUploadState | undefined }
   | { kind: "file"; record: ComposerFileAttachment; upload?: AttachmentUploadState | undefined }
   | { kind: "thread"; record: ThreadContextRecord }
-  | { kind: "project-knowledge"; record: ProjectKnowledgeContextRecord };
+  | { kind: "project-knowledge"; record: ProjectKnowledgeContextRecord }
+  | { kind: "environment"; record: EnvironmentContextRecord };
 
 export interface ComposerContextActions {
   environmentId: EnvironmentId | null;
@@ -101,6 +107,7 @@ export function composerContextRecordsFromDraft(input: {
   previewAnnotations?: ReadonlyArray<PreviewAnnotationPayload>;
   threadContexts?: ReadonlyArray<ThreadContextRecord>;
   knowledgeContexts?: ReadonlyArray<ProjectKnowledgeContextRecord>;
+  environmentContexts?: ReadonlyArray<EnvironmentContextRecord>;
   images?: ReadonlyArray<ComposerImageAttachment>;
   files?: ReadonlyArray<ComposerFileAttachment>;
   uploadsByImageId?: Readonly<Record<string, AttachmentUploadState>>;
@@ -138,6 +145,9 @@ export function composerContextRecordsFromDraft(input: {
     records.set(record.contextId, { kind: "project-knowledge", record });
   for (const record of input.threadContexts ?? []) {
     records.set(record.contextId, { kind: "thread", record });
+  }
+  for (const record of input.environmentContexts ?? []) {
+    records.set(record.contextId, { kind: "environment", record });
   }
   return records;
 }
@@ -357,7 +367,15 @@ const composerContextPresentationRegistry = createContextPresentationRegistry<
   ComposerContextRenderContext,
   ReactElement
 >({
-  requiredKinds: ["image", "file", "terminal", "review-comment", "preview-annotation", "thread"],
+  requiredKinds: [
+    "image",
+    "file",
+    "terminal",
+    "review-comment",
+    "preview-annotation",
+    "thread",
+    "environment",
+  ],
   handlers: [
     {
       kind: "project-knowledge",
@@ -459,6 +477,16 @@ const composerContextPresentationRegistry = createContextPresentationRegistry<
       render: (entry, context) =>
         entry.kind === "thread" ? (
           <ComposerThreadContextChip record={entry.record} />
+        ) : (
+          <UnresolvedContextChip label={context.label} />
+        ),
+    },
+    {
+      kind: "environment",
+      canRender: (entry) => entry.kind === "environment",
+      render: (entry, context) =>
+        entry.kind === "environment" ? (
+          <EnvironmentContextChip record={entry.record} />
         ) : (
           <UnresolvedContextChip label={context.label} />
         ),

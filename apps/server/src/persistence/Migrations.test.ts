@@ -68,6 +68,45 @@ const seedDelivery = Effect.gen(function* () {
   `;
 });
 
+const publishedConsolidatedPreview = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* runMigrations({ toMigrationInclusive: 79 });
+  yield* previewNativeColumns;
+  yield* previewBudgetColumn;
+  yield* previewLoomIndexes;
+  yield* previewRoutes;
+  yield* seedDelivery;
+  yield* sql`
+    INSERT INTO effect_sql_migrations (migration_id, name, created_at)
+    VALUES (80, 'ProjectIntelligenceAndCrossEnvironment', '2026-10-25 02:00:00')
+  `;
+});
+
+const previewPeerLinks = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE peer_environment_links (
+      environment_id TEXT PRIMARY KEY,
+      secret_name TEXT NOT NULL,
+      label TEXT NOT NULL,
+      urls_json TEXT NOT NULL,
+      access TEXT NOT NULL,
+      linked_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_reached_at TEXT,
+      last_error TEXT
+    )
+  `;
+  yield* sql`
+    INSERT INTO peer_environment_links (
+      environment_id, secret_name, label, urls_json, access, linked_at, expires_at
+    ) VALUES (
+      'peer', 'peer-secret-name', 'Box', '["https://box.example"]', 'auto',
+      '2026-10-25', '2026-11-24'
+    )
+  `;
+});
+
 const assertConsolidatedSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const columns = yield* sql<{
@@ -84,24 +123,43 @@ const assertConsolidatedSchema = Effect.gen(function* () {
     "orchestration_v2_projection_turn_items_run_updated_idx",
     "orchestration_v2_projection_turn_items_run_command_at_idx",
     "orchestration_v2_projection_turn_items_run_command_updated_idx",
+    "orchestration_v2_projection_turn_items_waiting_link_idx",
   ]) {
     assert.ok(indexes.some((index) => index.name === name));
   }
-  const routingColumns = yield* sql<{
+  const peerColumns = yield* sql<{
     readonly name: string;
-  }>`PRAGMA table_info(cross_environment_launches)`;
+    readonly notnull: number;
+    readonly dflt_value: string | null;
+  }>`PRAGMA table_info(peer_environment_links)`;
   assert.deepStrictEqual(
-    routingColumns.map((column) => column.name),
-    ["command_id", "request_hash", "destination_json", "result_json"],
+    peerColumns.map((column) => column.name),
+    [
+      "environment_id",
+      "secret_name",
+      "label",
+      "urls_json",
+      "access",
+      "linked_at",
+      "expires_at",
+      "last_reached_at",
+      "last_error",
+      "fenced",
+    ],
   );
-  assert.isTrue(
-    Exit.isFailure(
-      yield* Effect.exit(sql`
-      INSERT INTO cross_environment_launches (command_id, request_hash, result_json)
-      VALUES ('invalid', 'hash', '{}')
-    `),
-    ),
+  assert.include(
+    peerColumns.find((column) => column.name === "fenced"),
+    {
+      notnull: 1,
+      dflt_value: "0",
+    },
   );
+  const waitingIndex = yield* sql<{ readonly sql: string }>`
+    SELECT sql FROM sqlite_master
+    WHERE type = 'index' AND name = 'orchestration_v2_projection_turn_items_waiting_link_idx'
+  `;
+  assert.include(waitingIndex[0]?.sql, "(thread_id, updated_at DESC, turn_item_id DESC)");
+  assert.include(waitingIndex[0]?.sql, "WHERE type = 'link_request' AND status = 'waiting'");
 });
 
 const history = Effect.gen(function* () {
@@ -258,6 +316,7 @@ describe("runMigrations", () => {
 
   it.effect("adds one migration to the current main schema", () =>
     Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 79 });
       assert.deepStrictEqual(
         migrationManifest.filter(([id]) => id >= 80),
@@ -265,7 +324,129 @@ describe("runMigrations", () => {
       );
       assert.deepStrictEqual(yield* runMigrations(), [consolidatedMigration]);
       yield* assertConsolidatedSchema;
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE name = 'cross_environment_launches'`,
+        [],
+      );
       assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect.each(["absent", "unfenced", "fenced"] as const)(
+    "completes the published consolidated preview with %s peer schema without rewriting data",
+    (peerSchema) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* publishedConsolidatedPreview;
+        if (peerSchema !== "absent") yield* previewPeerLinks;
+        if (peerSchema === "fenced") {
+          yield* sql`ALTER TABLE peer_environment_links ADD COLUMN fenced INTEGER NOT NULL DEFAULT 0`;
+          yield* sql`UPDATE peer_environment_links SET fenced = 1`;
+        }
+        const beforeHistory = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+        const beforeRoutes = yield* sql`SELECT * FROM cross_environment_launches`;
+        const beforeDeliveries = yield* sql`SELECT * FROM project_knowledge_deliveries`;
+
+        assert.deepStrictEqual(yield* runMigrations(), []);
+
+        yield* assertConsolidatedSchema;
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+          beforeHistory,
+        );
+        assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, beforeRoutes);
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM project_knowledge_deliveries`,
+          beforeDeliveries,
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM peer_environment_links`,
+          peerSchema === "absent"
+            ? []
+            : [
+                {
+                  environment_id: "peer",
+                  secret_name: "peer-secret-name",
+                  label: "Box",
+                  urls_json: '["https://box.example"]',
+                  access: "auto",
+                  linked_at: "2026-10-25",
+                  expires_at: "2026-11-24",
+                  last_reached_at: null,
+                  last_error: null,
+                  fenced: peerSchema === "fenced" ? 1 : 0,
+                },
+              ],
+        );
+        const schema = yield* sql`SELECT name, type, sql FROM sqlite_master ORDER BY name`;
+        assert.deepStrictEqual(yield* runMigrations(), []);
+        assert.deepStrictEqual(
+          yield* sql`SELECT name, type, sql FROM sqlite_master ORDER BY name`,
+          schema,
+        );
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect.each(["foreign", "missing", "later"] as const)(
+    "does not complete a published preview with a %s migration history",
+    (position) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* publishedConsolidatedPreview;
+        if (position === "foreign") {
+          yield* sql`UPDATE effect_sql_migrations SET name = 'PeerLinks' WHERE migration_id = 68`;
+        } else if (position === "missing") {
+          yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 77`;
+        } else {
+          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (81, 'UnrelatedMigration')`;
+        }
+        const beforeHistory = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+        const beforeSchema = yield* sql`SELECT name, type, sql FROM sqlite_master ORDER BY name`;
+
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+          beforeHistory,
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT name, type, sql FROM sqlite_master ORDER BY name`,
+          beforeSchema,
+        );
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("rolls back peer schema completion before retrying a published preview", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* publishedConsolidatedPreview;
+      yield* previewPeerLinks;
+      // Force the final index creation to fail after the fenced column was added.
+      yield* sql`CREATE VIEW orchestration_v2_projection_turn_items_waiting_link_idx AS SELECT 1`;
+      const beforeHistory = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+      const beforeSchema = yield* sql`SELECT name, type, sql FROM sqlite_master ORDER BY name`;
+      const beforePeers = yield* sql`SELECT * FROM peer_environment_links`;
+      const beforeRoutes = yield* sql`SELECT * FROM cross_environment_launches`;
+
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        beforeHistory,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT name, type, sql FROM sqlite_master ORDER BY name`,
+        beforeSchema,
+      );
+      assert.deepStrictEqual(yield* sql`SELECT * FROM peer_environment_links`, beforePeers);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, beforeRoutes);
+
+      yield* sql`DROP VIEW orchestration_v2_projection_turn_items_waiting_link_idx`;
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      yield* assertConsolidatedSchema;
+      assert.deepStrictEqual(yield* sql`SELECT secret_name, fenced FROM peer_environment_links`, [
+        { secret_name: "peer-secret-name", fenced: 0 },
+      ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
@@ -320,19 +501,21 @@ describe("runMigrations", () => {
           yield* sql`SELECT created_at FROM effect_sql_migrations WHERE migration_id = 80`,
           [{ created_at: "2026-10-23 01:00:00" }],
         );
-        assert.deepStrictEqual(
-          yield* sql`SELECT * FROM cross_environment_launches`,
-          through >= 83
-            ? [
-                {
-                  command_id: "launch",
-                  request_hash: "request-hash",
-                  destination_json: '{"environmentId":"peer","projectId":"project"}',
-                  result_json: '{"threadId":"remote-thread"}',
-                },
-              ]
-            : [],
-        );
+        if (through >= 83) {
+          assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, [
+            {
+              command_id: "launch",
+              request_hash: "request-hash",
+              destination_json: '{"environmentId":"peer","projectId":"project"}',
+              result_json: '{"threadId":"remote-thread"}',
+            },
+          ]);
+        } else {
+          assert.deepStrictEqual(
+            yield* sql`SELECT name FROM sqlite_master WHERE name = 'cross_environment_launches'`,
+            [],
+          );
+        }
         yield* assertConsolidatedSchema;
         assert.deepStrictEqual(yield* runMigrations(), []);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
