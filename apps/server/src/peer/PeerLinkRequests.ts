@@ -1,20 +1,6 @@
 /**
- * PeerLinkRequests - links an agent asks the user to make.
- *
- * The agent rarely knows where the user's machines answer, so it usually
- * names none: the user picks the machine in a card, along with the access,
- * and their client answers with the addresses it knows for that machine and
- * a pairing code from it, which the client mints with its own session there
- * or the user pastes. The code goes straight
- * to `PeerLinks.link` and is never recorded, so it never reaches the
- * transcript, projections, or the agent's context.
- *
- * Asking does not wait: provider CLIs abandon a tool call after a few
- * minutes, and a person may answer much later. The card stays open until the
- * user answers it or stops or archives the thread, and the answer reaches the
- * agent as a notification in its thread.
- *
- * @module PeerLinkRequests
+ * Pairing codes go directly to PeerLinks.link, never into transcripts or projections.
+ * User approval may outlive a provider tool timeout, so requests return before the card is answered.
  */
 import {
   CommandId,

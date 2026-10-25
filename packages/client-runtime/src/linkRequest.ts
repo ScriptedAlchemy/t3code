@@ -43,11 +43,8 @@ export interface LinkableMachine {
 }
 
 /**
- * The machines in the client's catalog other than the thread's own
- * environment, in catalog order, then the ones only T3 Connect knows.
- * `linkedIds` are the environments the thread's environment links to already.
- * `connect` is what relay discovery found, by environment id: a server reaches
- * a machine there as a browser does, so its Connect address is a usable one.
+ * Keep catalog order before relay-only machines; only exclude the caller.
+ * A server can use the same T3 Connect address as a browser.
  */
 export function linkableMachines(input: {
   readonly environments: ReadonlyArray<

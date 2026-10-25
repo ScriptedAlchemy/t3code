@@ -802,12 +802,8 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
   /** The run there that carries the task; absent on tasks recorded before it was kept. */
   runId: Schema.optional(RunId),
   /**
-   * Nothing is left to stop there: a stop from here reached the thread there,
-   * the other side refused it for good, or the thread or its link is gone. A
-   * task's run that ended there by itself also sets it, unless the task here
-   * was cancelled or stopped, which still owes a stop for whatever runs on the
-   * thread there now. Its follower keeps sending that stop, across restarts.
-   * `false` is a stop owed by a Stop here on a task that already had its result.
+   * True means no remote stop remains owed. A local cancellation still owes a stop even if its run ended.
+   * False also marks a new Stop after the task already returned its result; followers retry across restarts.
    */
   stoppedThere: Schema.optional(Schema.Boolean),
   /**
@@ -3341,22 +3337,16 @@ const OrchestrationV2InternalCommand = Schema.Union([
     status: Schema.Literals(["completed", "failed", "cancelled", "interrupted"]),
     result: Schema.String,
     /**
-     * What this report says about stopping there: `ran-out` when the task's
-     * run ended there by itself, `stopped` when a stop from here reached it.
-     * Either sets `remoteChild.stoppedThere` on a task this report completes;
-     * on a task already cancelled or stopped here, only `stopped` does, since
-     * a run that ended by itself leaves the stop owed for what may follow it.
+     * Both outcomes acknowledge completion, but only stopped clears a stop owed by local cancellation.
+     * A run that ended itself may leave follow-up work on the remote thread.
      */
     stoppedThere: Schema.optional(Schema.Literals(["ran-out", "stopped"])),
     /** The stop generation this report acknowledges; absent for the original unnumbered stop. */
     stopCount: Schema.optional(NonNegativeInt),
   }),
   /**
-   * Owes a stop to the thread there of a remote task that already has its
-   * result, as Stop on a parent stops a finished child here: whatever runs on
-   * that thread now is stopped. The task keeps its status, result and
-   * completion delivery; its follower sends the stop and reports it with
-   * `delegated_task.remote.complete`.
+   * Stop after a task returns still stops later work on its remote thread without changing its result.
+   * The follower acknowledges this stop through delegated_task.remote.complete.
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.stop"),

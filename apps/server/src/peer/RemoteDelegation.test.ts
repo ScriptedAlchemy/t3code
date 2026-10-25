@@ -1386,11 +1386,11 @@ it.effect("stopping the parent stops its task there", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-/** Waits until the task here records that the `stopCount`th Stop after its result reached there. */
+/** Waits for a recorded remote Stop, optionally limited to one stop generation. */
 const stoppedThere = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
   taskId: NodeId,
-  stopCount = 1,
+  stopCount: number | null = 1,
 ) =>
   laptopEnv.orchestrator
     .streamStoredEventsFrom({
@@ -1404,7 +1404,7 @@ const stoppedThere = (
           stored.event.type === "subagent.updated" &&
           stored.event.payload.id === taskId &&
           stored.event.payload.remoteChild?.stoppedThere === true &&
-          stored.event.payload.remoteChild.stopCount === stopCount,
+          (stopCount === null || stored.event.payload.remoteChild.stopCount === stopCount),
       ),
       Stream.runHead,
       Effect.map((stored) =>
@@ -1566,17 +1566,23 @@ it.effect("a parent stopped while the box is unreachable still stops its task th
         ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
       >([]);
       const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers);
+      const unreachable = yield* Deferred.make<void>();
+      const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+      const links = Context.get(linking, PeerLinks.PeerLinks);
+      const observed = Context.add(linking, PeerLinks.PeerLinks, {
+        ...links,
+        resolve: (environmentId) =>
+          links
+            .resolve(environmentId)
+            .pipe(Effect.tapError(() => Deferred.succeed(unreachable, undefined))),
+      });
+      const a = yield* makeLaptop(database, offers, observed);
       yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
       // The box sleeps as soon as the task is there, so its follower backs off.
       const delegated = yield* delegateToBox(a);
       yield* Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
-      for (let attempt = 0; attempt < 50; attempt += 1) {
-        const [link] = yield* a.links.list;
-        if (link?.lastError !== null && link?.lastError !== undefined) break;
-        yield* Effect.sleep(Duration.millis(20)).pipe(TestClock.withLive);
-      }
+      yield* Deferred.await(unreachable);
       // The parent is stopped meanwhile.
       yield* a.threads.stopDelegatedTasks({
         threadId: parentThreadId,
@@ -1586,11 +1592,8 @@ it.effect("a parent stopped while the box is unreachable still stops its task th
 
       // Once the box is back, the follower's next attempt stops the task there.
       yield* Ref.set(b.descriptor, box);
-      for (let attempt = 0; attempt < 12; attempt += 1) {
-        if (yield* Deferred.isDone(thread.interruptedOnce)) break;
-        yield* TestClock.adjust(Duration.minutes(5));
-        yield* Effect.sleep(Duration.millis(50)).pipe(TestClock.withLive);
-      }
+      yield* TestClock.adjust(Duration.minutes(5));
+      yield* Deferred.await(thread.interruptedOnce);
       expect(yield* Ref.get(thread.interrupted)).toBe(1);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
@@ -1627,13 +1630,7 @@ it.effect("a task cancelled while the box is unreachable is stopped there after 
       yield* after.remote.start();
       yield* Deferred.await(thread.interruptedOnce);
       // Once the stop is recorded, nothing is owed there any more.
-      for (let attempt = 0; attempt < 50; attempt += 1) {
-        const task = (yield* after.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
-          (candidate) => candidate.id === delegated.taskId,
-        );
-        if (task?.remoteChild?.stoppedThere === true) break;
-        yield* Effect.sleep(Duration.millis(20)).pipe(TestClock.withLive);
-      }
+      yield* stoppedThere(after, delegated.taskId, null);
       expect(yield* after.projections.getOpenRemoteDelegatedTasks).toEqual([]);
       expect(yield* Ref.get(thread.stops)).toEqual(["thread.stop", "delegated-tasks"]);
       // The result here is still the cancel's.
