@@ -72,9 +72,26 @@ export function deliveredKnowledgeSnapshot(result: ProjectKnowledgeDeliveries, c
   const matches = result.deliveries
     .map((delivery) => {
       const item = delivery.items.find((candidate) => candidate.contextId === contextId);
-      if (item) return { status: delivery.status, item, omission: null };
+      if (item)
+        return {
+          status: delivery.status,
+          item,
+          omission: null,
+          ...(delivery.omissions.some((entry) => entry.reason === "recall_failed")
+            ? { recallFailed: true }
+            : {}),
+        };
       const omission = delivery.omissions.find((candidate) => candidate.contextId === contextId);
-      return omission ? { status: delivery.status, item: null, omission } : null;
+      return omission
+        ? {
+            status: delivery.status,
+            item: null,
+            omission,
+            ...(delivery.omissions.some((entry) => entry.reason === "recall_failed")
+              ? { recallFailed: true }
+              : {}),
+          }
+        : null;
     })
     .filter((match) => match !== null);
   const chosen = matches.findLast((match) => match.status === "sent") ?? matches.at(-1);
@@ -85,9 +102,11 @@ export function deliveredKnowledgeNotes(
   snapshot: NonNullable<ReturnType<typeof deliveredKnowledgeSnapshot>>,
 ): ReadonlyArray<string> {
   const notes: string[] = [];
+  if (snapshot.recallFailed)
+    notes.push("Optional knowledge recall failed; historical evidence was omitted.");
   if (snapshot.status === "prepared" || snapshot.status === "uncertain")
     notes.push("Delivery to the provider was not confirmed.");
-  if (snapshot.status === "failed") notes.push("The provider refused this turn before reading it.");
+  if (snapshot.status === "failed") notes.push("This turn was not sent to the provider.");
   if (snapshot.attempts > 1) notes.push(`Prepared for ${snapshot.attempts} provider attempts.`);
   if (snapshot.item === null) return notes;
   if (snapshot.item.current === "changed")
@@ -108,6 +127,11 @@ export const KNOWLEDGE_DELIVERY_OMISSION_LABEL: Record<
   string
 > = {
   not_referenced: "not referenced in the message",
+  over_budget: "exceeds the context allowance",
+  source_unavailable: "source unavailable",
+  stale_revision: "selected revision could not be verified",
+  not_permitted: "source not permitted for this project",
+  recall_failed: "optional knowledge recall failed",
 };
 
 export const KNOWLEDGE_SOURCE_UNAVAILABLE_LABEL: Record<KnowledgeSourceUnavailableReason, string> =

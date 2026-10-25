@@ -13,7 +13,8 @@ Other providers receive the same selection as attributed conversation context. A
 copy the outgoing provider's reasoning, tool-call state, or attachments.
 
 Project knowledge referenced in an earlier message travels with that message exactly as it was
-sent, even if the fact has since been edited or forgotten. It counts toward the same history budget.
+sent, even if the fact has since been edited. Forgotten facts are removed, and excerpts whose
+sources were removed or changed are withheld. Retained knowledge counts toward the same history budget.
 
 The handoff includes references to omitted history. The agent can use T3 Code's thread-reading tool
 to retrieve saved messages and activity, including the remainder of a long item. For an important
@@ -33,6 +34,8 @@ because each summary costs one call to your text generation model. After a turn 
 summarizes settled stretches of up to 24 older messages, a few per turn, so a long thread catches up
 over several turns.
 The most recent messages are never summarized.
+Turning summaries off stops both generation and their use in new handoffs. Existing summaries stay
+available to inspect and can be used again if you turn the setting back on.
 
 **Conversation summaries** in a thread's details (or thread actions on mobile) lists the thread's
 summaries and lets you open the messages behind each one. It also shows what the last pass did,

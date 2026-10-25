@@ -29,6 +29,8 @@ import {
 } from "./projectKnowledge.ts";
 import {
   ProjectCodeError,
+  ProjectCodeIndexEvent,
+  ProjectCodeIndexTarget,
   ProjectCodeQueryInput,
   ProjectCodeQueryResult,
   ProjectFileHistoryError,
@@ -51,6 +53,16 @@ import {
   McpAppToolInfoInput,
   McpAppUpdateModelContextInput,
 } from "./mcpApps.ts";
+import {
+  PeerLink,
+  PeerLinkCreateInput,
+  PeerLinkError,
+  PeerLinkRemoveInput,
+  PeerLinkRemoveResult,
+  PeerLinkRequestAnswerInput,
+  PeerLinkRequestError,
+  PeerLinkSummary,
+} from "./peerLink.ts";
 import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
@@ -431,6 +443,7 @@ import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 export const WS_METHODS = {
   projectCodeQuery: "projectCode.query",
   projectCodeFileHistory: "projectCode.fileHistory",
+  projectCodeSubscribeIndex: "projectCode.subscribeIndex",
   projectKnowledgeSearch: "projectKnowledge.search",
   projectKnowledgeList: "projectKnowledge.list",
   projectKnowledgeMutate: "projectKnowledge.mutate",
@@ -549,6 +562,10 @@ export const WS_METHODS = {
   serverRunStorageCleanup: "server.runStorageCleanup",
   serverGetStorageCleanupReport: "server.getStorageCleanupReport",
   serverGetDatabaseStorage: "server.getDatabaseStorage",
+  peerLinksList: "peerLinks.list",
+  peerLinksLink: "peerLinks.link",
+  peerLinksUnlink: "peerLinks.unlink",
+  peerLinksAnswerRequest: "peerLinks.answerRequest",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
@@ -837,6 +854,29 @@ const WsServerGetDatabaseStorageRpc = Rpc.make(WS_METHODS.serverGetDatabaseStora
   success: Schema.NullOr(DatabaseStorageStatus),
   stream: true,
   error: EnvironmentAuthorizationError,
+});
+
+const WsPeerLinksListRpc = Rpc.make(WS_METHODS.peerLinksList, {
+  payload: Schema.Struct({}),
+  success: Schema.Struct({ links: Schema.Array(PeerLinkSummary) }),
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+const WsPeerLinksLinkRpc = Rpc.make(WS_METHODS.peerLinksLink, {
+  payload: PeerLinkCreateInput,
+  success: PeerLink,
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+const WsPeerLinksUnlinkRpc = Rpc.make(WS_METHODS.peerLinksUnlink, {
+  payload: PeerLinkRemoveInput,
+  success: PeerLinkRemoveResult,
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+const WsPeerLinksAnswerRequestRpc = Rpc.make(WS_METHODS.peerLinksAnswerRequest, {
+  payload: PeerLinkRequestAnswerInput,
+  error: Schema.Union([PeerLinkRequestError, EnvironmentAuthorizationError]),
 });
 
 const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
@@ -1981,6 +2021,13 @@ const WsProjectCodeQueryRpc = Rpc.make(WS_METHODS.projectCodeQuery, {
   success: ProjectCodeQueryResult,
   error: Schema.Union([ProjectCodeError, EnvironmentAuthorizationError]),
 });
+// Publications and failed builds of the target's checkout index, for clients to refetch on.
+const WsProjectCodeSubscribeIndexRpc = Rpc.make(WS_METHODS.projectCodeSubscribeIndex, {
+  payload: ProjectCodeIndexTarget,
+  success: ProjectCodeIndexEvent,
+  error: Schema.Union([ProjectCodeError, EnvironmentAuthorizationError]),
+  stream: true,
+});
 const WsProjectCodeFileHistoryRpc = Rpc.make(WS_METHODS.projectCodeFileHistory, {
   payload: ProjectFileHistoryInput,
   success: ProjectFileHistoryResult,
@@ -2063,6 +2110,7 @@ export const WsConversationSummariesRpcGroup = RpcGroup.make(
 export const WsProjectCodeRpcGroup = RpcGroup.make(
   WsProjectCodeQueryRpc,
   WsProjectCodeFileHistoryRpc,
+  WsProjectCodeSubscribeIndexRpc,
 ).middleware(RpcScopeAuthorization);
 
 export const WsRpcGroup = RpcGroup.make(
@@ -2098,6 +2146,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetDatabaseStorageRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsPeerLinksListRpc,
+  WsPeerLinksLinkRpc,
+  WsPeerLinksUnlinkRpc,
+  WsPeerLinksAnswerRequestRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerSearchAcpRegistryRpc,
   WsServerPrepareAcpRegistryAgentRpc,

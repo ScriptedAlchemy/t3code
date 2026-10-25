@@ -234,6 +234,7 @@ export const make = Effect.gen(function* () {
       projectCodeAffected: true,
       projectCodePath: true,
       projectCodeFileHistory: true,
+      projectCodeIndexEvents: true,
       requiredWorktreeBootstrap: true,
       threadSettlement: true,
       threadAutoSettlement: true,
@@ -278,6 +279,9 @@ export const make = Effect.gen(function* () {
         : {}),
       ...(desktopAppUpdate ? { desktopAppUpdate: true } : {}),
       serverBrowser: true,
+      peerLinks: true,
+      mcpModeLimitHeader: true,
+      linkFence: true,
     },
   };
 

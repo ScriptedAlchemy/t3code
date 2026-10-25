@@ -13,6 +13,8 @@ import {
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
+import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
+import * as PeerLinks from "./peer/PeerLinks.ts";
 
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -571,6 +573,7 @@ const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
 const ServerCoreWsRpcGroup = ServerWsRpcGroup.omit(
   WS_METHODS.projectCodeQuery,
   WS_METHODS.projectCodeFileHistory,
+  WS_METHODS.projectCodeSubscribeIndex,
   WS_METHODS.projectKnowledgeSearch,
   WS_METHODS.projectKnowledgeList,
   WS_METHODS.projectKnowledgeReadSource,
@@ -620,6 +623,50 @@ const layerKnowledgeRpc = WsProjectKnowledgeRpcGroup.middleware(RpcInstrumentati
     };
   }),
 );
+function toProjectCodeError(
+  error: Effect.Error<ReturnType<CodeIntelligence.CodeIntelligence["Service"]["query"]>>,
+): ProjectCodeError {
+  switch (error._tag) {
+    case "CodeIntelligenceProjectNotFound":
+      return {
+        _tag: "project-not-found",
+        projectId: ProjectIdSchema.make(error.projectId),
+      } as const;
+    case "CodeIntelligenceThreadMismatch":
+      return {
+        _tag: "thread-project-mismatch",
+        projectId: ProjectIdSchema.make(error.projectId),
+        threadId: ThreadIdSchema.make(error.threadId),
+      } as const;
+    case "CodeIntelligencePathOutsideCheckout":
+      return { _tag: "path-outside-checkout", path: error.path } as const;
+    case "WorkspacePathOutsideRootError":
+      return { _tag: "path-outside-checkout", path: error.relativePath } as const;
+    case "CodeIntelligenceInspectionFailed":
+      return {
+        _tag: "analysis-failed",
+        path: error.path,
+        reason: error.reason,
+      } as const;
+    case "ProjectStoreV2Error":
+      return { _tag: "authority-failed", authority: "project-store" } as const;
+    case "ProjectionStoreSetupError":
+    case "ProjectionStoreApplyEventError":
+    case "ProjectionStoreThreadNotFoundError":
+    case "ProjectionStoreReadError":
+      return { _tag: "authority-failed", authority: "thread-store" } as const;
+    case "WorkspaceRootNotExistsError":
+    case "WorkspaceRootCreateFailedError":
+    case "WorkspaceRootStatFailedError":
+    case "WorkspaceRootNotDirectoryError":
+      return { _tag: "authority-failed", authority: "workspace-paths" } as const;
+    case "WorkspaceEntriesReadDirectoryError":
+    case "WorkspaceSearchIndexCreateFailed":
+    case "WorkspaceSearchIndexScanTimedOut":
+    case "WorkspaceSearchIndexSearchFailed":
+      return { _tag: "authority-failed", authority: "workspace-entries" } as const;
+  }
+}
 const layerProjectCodeRpc = WsProjectCodeRpcGroup.middleware(RpcInstrumentation).toLayer(
   Effect.gen(function* () {
     const codeIntelligence = yield* CodeIntelligence.CodeIntelligence;
@@ -636,49 +683,10 @@ const layerProjectCodeRpc = WsProjectCodeRpcGroup.middleware(RpcInstrumentation)
             ),
           ),
       [WS_METHODS.projectCodeQuery]: (input) =>
-        codeIntelligence.query(input).pipe(
-          Effect.mapError((error): ProjectCodeError => {
-            switch (error._tag) {
-              case "CodeIntelligenceProjectNotFound":
-                return {
-                  _tag: "project-not-found",
-                  projectId: ProjectIdSchema.make(error.projectId),
-                } as const;
-              case "CodeIntelligenceThreadMismatch":
-                return {
-                  _tag: "thread-project-mismatch",
-                  projectId: ProjectIdSchema.make(error.projectId),
-                  threadId: ThreadIdSchema.make(error.threadId),
-                } as const;
-              case "CodeIntelligencePathOutsideCheckout":
-                return { _tag: "path-outside-checkout", path: error.path } as const;
-              case "WorkspacePathOutsideRootError":
-                return { _tag: "path-outside-checkout", path: error.relativePath } as const;
-              case "CodeIntelligenceInspectionFailed":
-                return {
-                  _tag: "analysis-failed",
-                  path: error.path,
-                  reason: error.reason,
-                } as const;
-              case "ProjectStoreV2Error":
-                return { _tag: "authority-failed", authority: "project-store" } as const;
-              case "ProjectionStoreSetupError":
-              case "ProjectionStoreApplyEventError":
-              case "ProjectionStoreThreadNotFoundError":
-              case "ProjectionStoreReadError":
-                return { _tag: "authority-failed", authority: "thread-store" } as const;
-              case "WorkspaceRootNotExistsError":
-              case "WorkspaceRootCreateFailedError":
-              case "WorkspaceRootStatFailedError":
-              case "WorkspaceRootNotDirectoryError":
-                return { _tag: "authority-failed", authority: "workspace-paths" } as const;
-              case "WorkspaceEntriesReadDirectoryError":
-              case "WorkspaceSearchIndexCreateFailed":
-              case "WorkspaceSearchIndexScanTimedOut":
-              case "WorkspaceSearchIndexSearchFailed":
-                return { _tag: "authority-failed", authority: "workspace-entries" } as const;
-            }
-          }),
+        codeIntelligence.query(input).pipe(Effect.mapError(toProjectCodeError)),
+      [WS_METHODS.projectCodeSubscribeIndex]: (input) =>
+        Stream.unwrap(codeIntelligence.subscribeIndex(input)).pipe(
+          Stream.mapError(toProjectCodeError),
         ),
     };
   }),
@@ -1462,6 +1470,8 @@ export const layerWsRpc = (
       const storageCleanup = yield* StorageCleanup.StorageCleanup;
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const peerLinks = yield* PeerLinks.PeerLinks;
+      const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
@@ -2616,6 +2626,15 @@ export const layerWsRpc = (
         [WS_METHODS.serverRunStorageCleanup]: () => storageCleanup.runNow,
         [WS_METHODS.serverGetStorageCleanupReport]: () => storageCleanup.reports,
         [WS_METHODS.serverGetDatabaseStorage]: () => databaseStorage.status,
+        [WS_METHODS.peerLinksList]: (_input) =>
+          peerLinks.list.pipe(Effect.map((links) => ({ links }))),
+        [WS_METHODS.peerLinksLink]: (input) => peerLinks.link(input),
+        [WS_METHODS.peerLinksUnlink]: ({ environmentId }) =>
+          peerLinks.unlink(environmentId).pipe(Effect.map((removed) => ({ removed }))),
+        [WS_METHODS.peerLinksAnswerRequest]: (input) =>
+          Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
+            Effect.andThen(peerLinkRequests.answer(input)),
+          ),
         [WS_METHODS.serverGetSettings]: (_input) =>
           serverSettings.getSettings.pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
         [WS_METHODS.serverUpdateSettings]:
@@ -3375,6 +3394,8 @@ export const layer = Layer.unwrap(
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
+    const peerLinks = yield* PeerLinks.PeerLinks;
+    const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3463,6 +3484,8 @@ export const layer = Layer.unwrap(
                   reviewGuides,
                 ),
               ),
+              Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
+              Layer.provide(Layer.succeed(PeerLinkRequests.PeerLinkRequests, peerLinkRequests)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

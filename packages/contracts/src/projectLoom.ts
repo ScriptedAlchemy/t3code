@@ -31,6 +31,7 @@ export const LOOM_LIMITS = {
   runs: 500,
   markers: 1_000,
   edges: 200,
+  activityTicks: 4_000,
   bytes: 256 * 1024,
 } as const;
 
@@ -177,6 +178,28 @@ export const LoomEdge = Schema.Struct({
 });
 export type LoomEdge = typeof LoomEdge.Type;
 
+export const LoomActivityKind = Schema.Literals([
+  "user",
+  "agent",
+  "command",
+  "edit",
+  "tool",
+  "error",
+]);
+export type LoomActivityKind = typeof LoomActivityKind.Type;
+
+/**
+ * One run's turn items, each placed at its last update, which for a tool call is about when it
+ * finished. Offsets keep thousands of ticks inside the window's byte budget.
+ */
+export const LoomRunActivity = Schema.Struct({
+  runId: RunId,
+  threadId: ThreadId,
+  /** [ms after the run's requestedAt, kind], oldest first. */
+  ticks: Schema.Array(Schema.Tuple([Schema.Int, LoomActivityKind])),
+});
+export type LoomRunActivity = typeof LoomRunActivity.Type;
+
 export const LoomWindow = Schema.Struct({
   projectId: ProjectId,
   asOf: IsoDateTime,
@@ -188,6 +211,7 @@ export const LoomWindow = Schema.Struct({
   runs: Schema.Array(LoomRun),
   markers: Schema.Array(LoomMarker),
   edges: Schema.Array(LoomEdge),
+  activity: Schema.Array(LoomRunActivity),
   /** True where a limit dropped rows; lanes is true exactly when nextCursor is set. */
   truncated: Schema.Struct({
     lanes: Schema.Boolean,
@@ -195,6 +219,7 @@ export const LoomWindow = Schema.Struct({
     runs: Schema.Boolean,
     markers: Schema.Boolean,
     edges: Schema.Boolean,
+    activity: Schema.Boolean,
     bytes: Schema.Boolean,
   }),
   coverage: Schema.Struct({

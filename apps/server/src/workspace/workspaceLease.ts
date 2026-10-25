@@ -20,5 +20,3 @@ export const withWorkspaceLease = <A, E, R>(
       ),
     );
   });
-
-export const isWorkspaceLeaseHeld = (cwd: string): boolean => leases.has(cwd);

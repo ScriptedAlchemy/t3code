@@ -1,0 +1,246 @@
+name: Fork CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: Changes
+    if: github.repository != 'pingdotgg/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.detect.outputs.build }}
+      test: ${{ steps.detect.outputs.test }}
+      test_packages: ${{ steps.detect.outputs.test_packages }}
+      test_web: ${{ steps.detect.outputs.test_web }}
+      test_server: ${{ steps.detect.outputs.test_server }}
+      rust: ${{ steps.detect.outputs.rust }}
+      release_smoke: ${{ steps.detect.outputs.release_smoke }}
+      mobile_native: ${{ steps.detect.outputs.mobile_native }}
+    steps:
+      # Manual checkout avoids credential cleanup traversing orphaned vendored gitlinks.
+      - name: Checkout
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/' '!/apps/mobile/modules/t3-terminal/Vendor/**/*.a'
+          git checkout --detach FETCH_HEAD
+      - name: Detect affected jobs
+        id: detect
+        uses: ./.github/actions/ci-changes
+
+  checks:
+    name: Checks and build
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/' '!/apps/mobile/modules/t3-terminal/Vendor/**/*.a'
+          git checkout --detach FETCH_HEAD
+      - uses: ./.github/actions/setup-apt-mirrors
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - name: Ensure Electron
+        run: vp run --filter @t3tools/desktop ensure:electron
+      - name: Install Chromium
+        run: node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium
+      - name: Validate changed files
+        if: github.event_name == 'pull_request'
+        run: vp run check:changed HEAD^1 --serial
+      - name: Validate full repository
+        if: github.event_name != 'pull_request'
+        run: |
+          vp check
+          vp run knip:check
+          vp run --filter t3 generate --check
+          vp run --filter @t3tools/source-control-github generate --check
+          vp run -r --cache --concurrency-limit 2 typecheck
+      - name: Build desktop pipeline
+        if: needs.changes.outputs.build != 'false'
+        run: vp run build:desktop
+      - name: Verify preload bundle
+        if: needs.changes.outputs.build != 'false'
+        run: node apps/desktop/scripts/verify-preload-bundle.mjs
+      - name: Exercise release workflow steps
+        if: needs.changes.outputs.release_smoke != 'false'
+        run: node scripts/release-smoke.ts
+
+  clients:
+    name: Client and package tests
+    needs: changes
+    if: needs.changes.outputs.test != 'false' || needs.changes.outputs.test_web != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/' '!/apps/mobile/modules/t3-terminal/Vendor/**/*.a'
+          git checkout --detach FETCH_HEAD
+      - uses: ./.github/actions/setup-apt-mirrors
+      - name: Install native test dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Ensure Electron
+        run: vp run --filter @t3tools/desktop ensure:electron
+      - name: Install Chromium
+        if: needs.changes.outputs.test_web != 'false'
+        run: node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium
+      - name: Test release checks
+        run: |
+          python3 -B .github/scripts/stage-preview-bundle.test.py
+          node --test .github/scripts/check-nightly-release.test.cjs .github/scripts/vercel-deployment-output.test.cjs
+      - name: Test affected packages
+        if: needs.changes.outputs.test != 'false'
+        env:
+          TEST_PACKAGES: ${{ needs.changes.outputs.test_packages }}
+        run: |
+          filters=(--filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web')
+          if [[ -n "$TEST_PACKAGES" ]]; then
+            filters=()
+            for package in $TEST_PACKAGES; do filters+=(--filter "$package"); done
+          fi
+          vp run --parallel --concurrency-limit 2 "${filters[@]}" test
+      - name: Test web
+        if: needs.changes.outputs.test_web != 'false'
+        run: vp run --filter @t3tools/web test
+
+  server:
+    name: Server tests ${{ matrix.shard }}
+    needs: changes
+    if: needs.changes.outputs.test_server != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - name: Checkout
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/' '!/apps/mobile/modules/t3-terminal/Vendor/**/*.a'
+          git checkout --detach FETCH_HEAD
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - name: Install Chromium
+        run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
+      - name: Test server shard
+        run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+
+  rust:
+    name: Rust
+    needs: changes
+    if: needs.changes.outputs.rust != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/' '!/apps/mobile/modules/t3-terminal/Vendor/**/*.a'
+          git checkout --detach FETCH_HEAD
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Check Rust crates
+        run: |
+          for crate in resource-monitor kde-snap-shot hyprland-snap-shot project-memory; do
+            cargo fmt --manifest-path "native/$crate/Cargo.toml" -- --check
+            cargo test --locked --manifest-path "native/$crate/Cargo.toml"
+          done
+      - name: Test project memory binding
+        run: |
+          node native/project-memory/build.mjs
+          node --test native/project-memory/kernel.test.mjs
+
+  mobile_native:
+    name: Mobile native checks
+    needs: changes
+    if: needs.changes.outputs.mobile_native != 'false'
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+      - name: Install native analysis tools
+        run: brew bundle install --file apps/mobile/Brewfile
+      - name: Lint mobile native sources
+        run: vp run lint:mobile
+
+  check:
+    name: Fork Check
+    if: ${{ !cancelled() && github.repository != 'pingdotgg/t3code' }}
+    needs: [changes, checks, clients, server, rust, mobile_native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every affected job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e '.changes.outputs as $gates
+            | {clients: ["test", "test_web"], server: ["test_server"]} as $renamed
+            | all(to_entries[];
+                .value.result == "success"
+                or (.value.result == "skipped"
+                  and (($renamed[.key] // [.key]) | all(.[]; $gates[.] == "false"))))' > /dev/null

@@ -1,4 +1,7 @@
-import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import {
+  collectComposerContextReferences,
+  projectComposerContextForProvider,
+} from "@t3tools/shared/composerContextReferences";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import {
   deliveredKnowledgeForHistory,
@@ -17,6 +20,7 @@ import {
   type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
   type ProjectKnowledgeDeliveryStatus,
+  type RunAttemptId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -45,6 +49,7 @@ import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
   handoffBudget,
+  handoffBudgetAssumptions,
   attachmentTokenAllowance,
   contextUsageForHandoff,
   historicalMessage,
@@ -224,23 +229,20 @@ export const layer: Layer.Layer<
         compact?: boolean,
       ) => ReturnType<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>,
     ) => {
-      let deliver: typeof startWithHandoffs | undefined = startWithHandoffs;
+      let deliveredAttemptId: RunAttemptId | undefined;
       const start = (
         input: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0],
         compact = false,
       ) =>
         Effect.suspend(() => {
-          if (deliver !== undefined) return deliver(input, compact);
+          if (deliveredAttemptId === undefined || deliveredAttemptId === input.attemptId) {
+            deliveredAttemptId = input.attemptId;
+            return startWithHandoffs(input, compact);
+          }
           return compact && session.compactThread !== undefined
             ? session.compactThread(input)
             : session.startTurn(input);
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              deliver = undefined;
-            }),
-          ),
-        );
+        });
       return {
         ...session,
         startTurn: (input: Parameters<typeof session.startTurn>[0]) => start(input),
@@ -756,12 +758,38 @@ export const layer: Layer.Layer<
             }),
           );
         }
-        const uncertainDelivery = projection.contextHandoffs.some(
-          (handoff) =>
-            handoff.toProviderThreadId === providerThread.id &&
-            handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
-            handoff.delivery?.status === "pending",
+        const knowledgeReceipts = message.context?.records.some(
+          (record) => record.kind === "project-knowledge",
+        )
+          ? (yield* knowledge.readDeliveries({
+              projectId: projection.thread.projectId,
+              threadId: projection.thread.id,
+              messageId: message.id,
+            })).deliveries
+          : [];
+        const uncertainKnowledge = knowledgeReceipts.filter(
+          (receipt) =>
+            receipt.providerThreadId === providerThread.id &&
+            receipt.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
+            (receipt.status === "prepared" || receipt.status === "uncertain"),
         );
+        // A crash after dispatch leaves prepared indistinguishable from an accepted prompt.
+        // Like pending handoff injection, recover onto a fresh native conversation.
+        for (const receipt of uncertainKnowledge) {
+          yield* knowledge.recordDelivery({
+            ...receipt,
+            status: "uncertain",
+            updatedAt: DateTime.formatIso(yield* DateTime.now),
+          });
+        }
+        const uncertainDelivery =
+          uncertainKnowledge.length > 0 ||
+          projection.contextHandoffs.some(
+            (handoff) =>
+              handoff.toProviderThreadId === providerThread.id &&
+              handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
+              handoff.delivery?.status === "pending",
+          );
         const resumed = yield* Effect.result(
           uncertainDelivery
             ? Effect.fail(
@@ -1036,13 +1064,73 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
+      let knowledgeBudget: ReturnType<typeof handoffBudgetAssumptions> | undefined;
+      const recordKnowledgeRefusal = Effect.fn("ProviderTurnStartService.recordKnowledgeRefusal")(
+        function* (error: ProjectKnowledgeError) {
+          const reason =
+            error.reason === "context_budget"
+              ? ("over_budget" as const)
+              : error.reason === "stale_context"
+                ? ("stale_revision" as const)
+                : error.reason === "wrong_project" || error.reason === "wrong_environment"
+                  ? ("not_permitted" as const)
+                  : error.reason === "storage" || error.reason === "scoring"
+                    ? ("recall_failed" as const)
+                    : ("source_unavailable" as const);
+          const referenced = new Set(
+            collectComposerContextReferences(message.text).map((reference) => reference.contextId),
+          );
+          const omissions = (message.context?.records ?? []).flatMap((record) =>
+            record.kind === "project-knowledge"
+              ? [{ contextId: record.contextId, label: record.label, reason }]
+              : [],
+          );
+          if (omissions.length === 0) return;
+          const now = DateTime.formatIso(yield* DateTime.now);
+          yield* knowledge.recordDelivery({
+            attemptId: attempt.id,
+            runId: run.id,
+            threadId: projection.thread.id,
+            messageId: message.id,
+            projectId: projection.thread.projectId,
+            providerInstanceId: run.providerInstanceId,
+            providerThreadId: runningProviderThread.id,
+            nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? null,
+            status: "failed",
+            items: [],
+            omissions,
+            ...(knowledgeBudget === undefined ? {} : { budget: knowledgeBudget }),
+            createdAt: now,
+            updatedAt: now,
+          });
+        },
+      );
       const composer = yield* resolveKnowledgeComposer({
         projectId: projection.thread.projectId,
         text: message.text,
         records: message.context?.records ?? [],
-      }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge));
+      }).pipe(
+        Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge),
+        Effect.tapError(recordKnowledgeRefusal),
+      );
       if (composer.byteLength > 0 && !(yield* isCurrentAttemptInStatus("running"))) return;
-      const userText = composer.text;
+      const receipts =
+        composer.items.length === 0 && composer.omissions.length === 0
+          ? []
+          : (yield* knowledge.readDeliveries({
+              projectId: projection.thread.projectId,
+              threadId: projection.thread.id,
+              messageId: message.id,
+            })).deliveries;
+      const alreadySent = receipts.some(
+        (receipt) =>
+          receipt.status === "sent" &&
+          receipt.providerInstanceId === run.providerInstanceId &&
+          receipt.providerThreadId === runningProviderThread.id &&
+          receipt.nativeThreadId != null &&
+          receipt.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId,
+      );
+      const userText = alreadySent ? composer.baseText : composer.text;
       // Keyed by attempt so a retried start updates the same record, while a replacement
       // attempt (account failover) keeps its own account of what its provider received.
       const recordKnowledgeDelivery = Effect.fn("ProviderTurnStartService.recordKnowledgeDelivery")(
@@ -1057,7 +1145,10 @@ export const layer: Layer.Layer<
             messageId: message.id,
             projectId: projection.thread.projectId,
             providerInstanceId: run.providerInstanceId,
+            providerThreadId: runningProviderThread.id,
+            nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? null,
             status,
+            ...(knowledgeBudget === undefined ? {} : { budget: knowledgeBudget }),
             items: composer.items,
             omissions: composer.omissions,
             createdAt: now,
@@ -1214,8 +1305,8 @@ export const layer: Layer.Layer<
                 !coveredItemIds.has(item.id) &&
                 historicalMessage(item) !== null,
             );
-      if (composer.byteLength > 0) {
-        const allowance = handoffBudget({
+      {
+        knowledgeBudget = handoffBudgetAssumptions({
           tokenCap,
           modelContextWindow,
           userText:
@@ -1227,17 +1318,54 @@ export const layer: Layer.Layer<
               ? yield* nativeContextEstimate
               : 0,
         });
-        if (composer.byteLength > allowance) {
-          return yield* new ProjectKnowledgeError({
+        if (composer.byteLength > knowledgeBudget.knowledgeAllowance) {
+          const error = new ProjectKnowledgeError({
             reason: "context_budget",
             projectId: projection.thread.projectId,
             byteLength: composer.byteLength,
           });
+          yield* recordKnowledgeRefusal(error);
+          return yield* error;
         }
         if (!(yield* isCurrentAttemptInStatus("running"))) return;
       }
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
+          // The wrapper can be retried without rebuilding turn-start context. Read the
+          // committed receipt here, before any native history or prompt injection.
+          const latestReceipts =
+            composer.items.length === 0 && composer.omissions.length === 0
+              ? []
+              : (yield* knowledge.readDeliveries({
+                  projectId: projection.thread.projectId,
+                  threadId: projection.thread.id,
+                  messageId: message.id,
+                })).deliveries;
+          const sameConversation = latestReceipts.filter(
+            (receipt) =>
+              receipt.providerThreadId === runningProviderThread.id &&
+              receipt.nativeThreadId != null &&
+              receipt.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId,
+          );
+          if (
+            sameConversation.some(
+              (receipt) => receipt.attemptId === attempt.id && receipt.status === "sent",
+            )
+          )
+            return;
+          if (
+            sameConversation.some(
+              (receipt) => receipt.status === "prepared" || receipt.status === "uncertain",
+            )
+          ) {
+            return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
+              driver: session.driver,
+              threadId: projection.thread.id,
+              providerThreadId: runningProviderThread.id,
+              runId: run.id,
+              cause: "Uncertain native history injection",
+            });
+          }
           const retryHandoff =
             missedItems.length === 0
               ? []
@@ -1292,12 +1420,23 @@ export const layer: Layer.Layer<
               }).pipe(
                 Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge),
                 // Missing evidence degrades the replay; it must not block the turn.
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("Failed to read delivered project knowledge for handoff", {
-                    runId: run.id,
-                    cause,
-                  }).pipe(Effect.as(new Map<string, string>())),
-                ),
+                Effect.catchCause((cause) => {
+                  for (const historical of messages) {
+                    if (historical.kind !== "user_message") continue;
+                    composer.omissions.push({
+                      contextId: historical.itemId,
+                      label: "Historical project knowledge",
+                      reason: "recall_failed",
+                    });
+                  }
+                  return Effect.logWarning(
+                    "Failed to read delivered project knowledge for handoff",
+                    {
+                      runId: run.id,
+                      cause,
+                    },
+                  ).pipe(Effect.as(new Map<string, string>()));
+                }),
               ),
             ...(session.injectHistory === undefined
               ? {}
@@ -1334,10 +1473,18 @@ export const layer: Layer.Layer<
               records: message.context?.records ?? [],
             }).pipe(
               Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge),
+              Effect.tapError(recordKnowledgeRefusal),
               Effect.tapError(() => delivery.unsent),
             );
           }
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
+          if (
+            alreadySent &&
+            receipts.some(
+              (receipt) => receipt.attemptId === attempt.id && receipt.status === "sent",
+            )
+          )
+            return;
           yield* recordKnowledgeDelivery("prepared").pipe(Effect.tapError(() => delivery.unsent));
           const start = compact ? session.compactThread! : session.startTurn;
           const context = [delivery.context, restartNote]

@@ -95,15 +95,17 @@ export function attachmentTokenAllowance(attachments: ReadonlyArray<ChatAttachme
   );
 }
 
-// One UTF-8 byte per token is a pessimistic estimate, not a guarantee for custom models.
-export function handoffBudget(input: {
+// One UTF-8 byte per token is deliberately pessimistic for byte-based tokenizers,
+// including multilingual text. It is not a tokenizer or a guarantee for arbitrary
+// custom models.
+export function handoffBudgetAssumptions(input: {
   readonly tokenCap: number;
   readonly userText: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly nativeContextEstimate: number;
   readonly modelContextWindow?: number | undefined;
-}): number {
+}) {
   const usage = input.providerThread.contextUsage;
   const window = Math.min(
     input.modelContextWindow ?? usage?.maxTokens ?? 128_000,
@@ -113,15 +115,24 @@ export function handoffBudget(input: {
   const native = usage?.usedTokens ?? input.nativeContextEstimate;
   const current =
     Buffer.byteLength(JSON.stringify(input.userText)) + attachmentTokenAllowance(input.attachments);
-  return Math.max(
+  const headroom = Math.max(16_000, Math.ceil(window / 4));
+  const knowledgeAllowance = Math.max(
     0,
-    Math.min(
-      input.tokenCap,
-      // Cap imported history only; adapters own attachment transport limits.
-      HANDOFF_BYTE_CAP,
-      window - native - current - Math.max(16_000, Math.ceil(window / 4)),
-    ),
+    Math.min(input.tokenCap, HANDOFF_BYTE_CAP, window - native - current - headroom),
   );
+  return {
+    capacity: window,
+    occupancy: native,
+    requestSize: current,
+    headroom,
+    knowledgeAllowance,
+    tokenCap: input.tokenCap,
+    byteCap: HANDOFF_BYTE_CAP,
+  };
+}
+
+export function handoffBudget(input: Parameters<typeof handoffBudgetAssumptions>[0]): number {
+  return handoffBudgetAssumptions(input).knowledgeAllowance;
 }
 
 export function historicalMessage(

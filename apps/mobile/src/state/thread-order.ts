@@ -50,7 +50,7 @@ export function beginPendingThreadOrder(pending: PendingThreadOrder) {
     if (current === null) return;
     const configs = appAtomRegistry.get(environmentServerConfigsAtom);
     const ordered = getThreadListV2OrderedSection({
-      threads: appAtomRegistry.get(environmentThreadShells.threadShellsAtom),
+      threads: appAtomRegistry.get(environmentThreadShells.navigationThreadShellsAtom),
       section: current.section,
       now: new Date().toISOString(),
       queuedThreadKeys: appAtomRegistry.get(queuedThreadKeysAtom),
@@ -72,7 +72,7 @@ export function beginPendingThreadOrder(pending: PendingThreadOrder) {
   refreshPendingOrder = refresh;
   appAtomRegistry.set(pendingThreadOrderAtom, pending);
   unsubscribers.push(
-    appAtomRegistry.subscribe(environmentThreadShells.threadShellsAtom, refresh),
+    appAtomRegistry.subscribe(environmentThreadShells.navigationThreadShellsAtom, refresh),
     appAtomRegistry.subscribe(environmentServerConfigsAtom, refresh),
     appAtomRegistry.subscribe(queuedThreadKeysAtom, refresh),
   );

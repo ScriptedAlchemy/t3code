@@ -84,6 +84,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectCodeAffected: Schema.optionalKey(Schema.Boolean),
   projectCodePath: Schema.optionalKey(Schema.Boolean),
   projectCodeFileHistory: Schema.optionalKey(Schema.Boolean),
+  /** projectCode.subscribeIndex, and index.refresh on query results. */
+  projectCodeIndexEvents: Schema.optionalKey(Schema.Boolean),
   /** conversationSummaries.* reads and the enableConversationSummaries project setting. */
   conversationSummaries: Schema.optionalKey(Schema.Boolean),
   /** project.readLoomWindow and the project Loom view. */
@@ -152,6 +154,18 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   commandOutputStreaming: Schema.optionalKey(Schema.Boolean),
   /** Hosts headless Chromium tabs streamed over /api/preview-stream for clients without a local runtime. */
   serverBrowser: Schema.optionalKey(Schema.Boolean),
+  /** Server links to other environments (`PeerLink`) and its agents can work
+      in them. Absent on servers from before linking, which clients must not
+      offer linking for. */
+  peerLinks: Schema.optionalKey(Schema.Boolean),
+  /** Server's `/mcp` narrows an OAuth client's modes from `T3-Mode-Limit`, so
+      a linked environment's calls keep its agent's limits. Another environment
+      links to this one only when it is set. */
+  mcpModeLimitHeader: Schema.optionalKey(Schema.Boolean),
+  /** Work a linked environment starts here stays within its link
+      (`linkOrigin`). Another environment links to this one only when it is
+      set, since without it that work could change the user's own threads. */
+  linkFence: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

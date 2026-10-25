@@ -7,6 +7,7 @@
 //
 //   vp run check:changed          compare against the merge base with origin/main
 //   vp run check:changed <ref>    compare against the merge base with <ref>
+//   vp run check:changed --serial reduce peak memory on smaller machines
 //
 // Uncommitted and untracked files count. Affected packages come from
 // .github/scripts/ci-changes.cjs, the same mapping CI uses to gate its jobs.
@@ -32,7 +33,9 @@ const git = (...args: Array<string>) =>
     .split("\n")
     .filter(Boolean);
 
-const ref = process.argv[2] ?? "origin/main";
+const args = process.argv.slice(2);
+const serial = args.includes("--serial");
+const ref = args.find((arg) => arg !== "--serial") ?? "origin/main";
 const mergeBase = NodeChildProcess.spawnSync("git", ["merge-base", "HEAD", ref], {
   cwd: root,
   encoding: "utf8",
@@ -130,12 +133,16 @@ const { affected, outputs } = decide(files, packages, false);
 // `related` reaches most of a package: one leaf server file pulled in 252 of
 // 406 server test files and took 7 minutes. CI runs the rest.
 const TEST = /\.test\.[cm]?[jt]sx?$/;
-const tests = new Set(code.filter((file) => TEST.test(file)));
+const nativeTests = new Set(code.filter((file) => file.startsWith("native/") && TEST.test(file)));
+const tests = new Set(code.filter((file) => !file.startsWith("native/") && TEST.test(file)));
 for (const file of code) {
   const dir = NodePath.dirname(file);
   const prefix = `${NodePath.basename(file).replace(CODE, "")}.`;
   for (const entry of NodeFS.readdirSync(NodePath.join(root, dir))) {
-    if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(NodePath.join(dir, entry));
+    if (entry.startsWith(prefix) && TEST.test(entry)) {
+      const test = NodePath.join(dir, entry);
+      (test.startsWith("native/") ? nativeTests : tests).add(test);
+    }
   }
 }
 
@@ -245,11 +252,16 @@ const steps = [
       "--cache",
       "--parallel",
       "--concurrency-limit",
-      "4",
+      serial ? "1" : "4",
       ...filters(affected),
       "typecheck",
     ],
   },
+  // Native binding tests use node:test, not Vitest.
+  ...Array.from(nativeTests, (file) => ({
+    name: `native test (${file})`,
+    args: ["exec", "node", "--test", file],
+  })),
   // From the repo root, the root vite.config.ts hands each file to its package's config.
   tests.size > 0 && {
     name: `test (${tests.size} files)`,
@@ -259,30 +271,77 @@ const steps = [
 
 // Output is piped, so keep the colors a terminal would get.
 const env = process.stdout.isTTY ? { ...process.env, FORCE_COLOR: "1" } : process.env;
-const results = await Promise.all(
-  steps.map(
-    (step) =>
-      new Promise<{ name: string; ok: boolean; seconds: string }>((resolve) => {
-        const started = performance.now();
-        const finish = (ok: boolean, output?: Buffer) => {
-          const seconds = ((performance.now() - started) / 1000).toFixed(1);
-          console.log(`\n> vp ${step.name}  ${ok ? "pass" : "FAIL"}  ${seconds}s`);
-          if (output) process.stdout.write(output);
-          resolve({ name: step.name, ok, seconds });
-        };
-        // In-process steps print their own output. The patch check is first and
-        // takes about a second, so the commands start right after it.
-        if ("run" in step) return finish(step.run());
-        const output: Array<Buffer> = [];
-        const child = NodeChildProcess.spawn("vp", step.args, { cwd: root, env });
-        child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-        child.stderr.on("data", (chunk: Buffer) => output.push(chunk));
-        // A failed spawn emits "error", then "close" with a nonzero code.
-        child.on("error", (error) => output.push(Buffer.from(`${error.message}\n`)));
-        child.on("close", (status) => finish(status === 0, Buffer.concat(output)));
-      }),
-  ),
+const runStep = (
+  step: { name: string; args: string[]; command?: string } | { name: string; run: () => boolean },
+) =>
+  new Promise<{ name: string; ok: boolean; seconds: string }>((resolve) => {
+    const started = performance.now();
+    const finish = (ok: boolean, output?: Buffer) => {
+      const seconds = ((performance.now() - started) / 1000).toFixed(1);
+      console.log(`\n> vp ${step.name}  ${ok ? "pass" : "FAIL"}  ${seconds}s`);
+      if (output) process.stdout.write(output);
+      resolve({ name: step.name, ok, seconds });
+    };
+    // In-process steps print their own output. The patch check is first and
+    // takes about a second, so the commands start right after it.
+    if ("run" in step) return finish(step.run());
+    const output: Array<Buffer> = [];
+    const child = NodeChildProcess.spawn(step.command ?? "vp", step.args, { cwd: root, env });
+    child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => output.push(chunk));
+    // A failed spawn emits "error", then "close" with a nonzero code.
+    child.on("error", (error) => output.push(Buffer.from(`${error.message}\n`)));
+    child.on("close", (status) => finish(status === 0, Buffer.concat(output)));
+  });
+
+const serverTests = Array.from(tests).some((file) => file.startsWith("apps/server/"));
+const memoryNativeTests = Array.from(nativeTests).some((file) =>
+  file.startsWith("native/project-memory/"),
 );
+// Native and server tests share one build; unrelated checks can run while it compiles.
+const memoryBuild =
+  serverTests || memoryNativeTests
+    ? (() => {
+        const cargo = NodeChildProcess.spawnSync("cargo", ["--version"], {
+          cwd: root,
+          stdio: "ignore",
+        });
+        return runStep(
+          cargo.error || cargo.status !== 0
+            ? {
+                name: "project-memory addon",
+                run: () => {
+                  console.error(
+                    "check:changed: project-memory tests require cargo to build the native addon.",
+                  );
+                  return false;
+                },
+              }
+            : {
+                name: "project-memory addon",
+                command: process.execPath,
+                args: ["native/project-memory/build.mjs"],
+              },
+        );
+      })()
+    : undefined;
+const runPreparedStep = async (step: (typeof steps)[number]) => {
+  const needsMemory =
+    (serverTests && step.name.startsWith("test (")) ||
+    step.name.startsWith("native test (native/project-memory/");
+  if (needsMemory && memoryBuild && !(await memoryBuild).ok) {
+    console.error(`> vp ${step.name} skipped: project-memory addon build failed`);
+    return { name: step.name, ok: false, seconds: "0.0" };
+  }
+  return runStep(step);
+};
+const results = serial
+  ? await (async () => {
+      const results = memoryBuild ? [await memoryBuild] : [];
+      for (const step of steps) results.push(await runPreparedStep(step));
+      return results;
+    })()
+  : await Promise.all([...(memoryBuild ? [memoryBuild] : []), ...steps.map(runPreparedStep)]);
 
 const summary = ["check:changed summary"];
 for (const result of results) {

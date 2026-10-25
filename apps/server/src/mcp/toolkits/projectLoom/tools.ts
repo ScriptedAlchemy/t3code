@@ -14,7 +14,7 @@ export const ProjectLoomToolkit = Toolkit.make(
       McpInvocationContext.McpInvocationContext,
     ],
     description:
-      "Read a project's activity timeline for a time window (default: the last 7 days): its threads as lanes with fork and subagent parents, runs with request, start and completion times, checkpoints with file counts, linked pull requests, commands that look like test runs, provider-native tasks, and fork or handoff transfers between threads. Use it to see what happened across a project recently or which thread did what when, before reading individual threads with t3_thread_read. Resolve projectId with t3_project_list. A null time is unknown, not zero. A test command marker means a test command ran, not that tests passed. Limits apply per kind; check truncated, and page lanes with cursor=nextCursor using the returned from and to.",
+      "Read a project's activity timeline for a time window (default: the last 7 days): its threads as lanes with fork and subagent parents, runs with request, start and completion times, checkpoints with file counts, linked pull requests, commands that look like test runs, provider-native tasks, and fork or handoff transfers between threads. Use it to see what happened across a project recently or which thread did what when, before reading individual threads with t3_thread_read. Resolve projectId with t3_project_list. Activity ticks are omitted. A null time is unknown, not zero. A test command marker means a test command ran, not that tests passed. Limits apply per kind; check truncated, and page lanes with cursor=nextCursor using the returned from and to.",
     parameters: LoomWindowInput,
     success: LoomWindow,
   })

@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import {
+  ArrowLeftIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   ListFilterIcon,
@@ -54,18 +55,27 @@ import {
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
+import { LoomBranchNavigator } from "./LoomBranchNavigator";
 import { LoomEventPanel, type LoomActions } from "./LoomEventPanel";
+import { LoomLegend } from "./LoomLegend";
+import { LoomMinimap } from "./LoomMinimap";
 import { fitLoomView, formatLoomTime, type LoomView } from "./loomScale";
 import {
   decodeLoomSelection,
   encodeLoomSelection,
+  LOOM_MODES,
   LOOM_STATUS_OPTIONS,
   loomFiltersOf,
+  type LoomMode,
   type LoomSearch,
   type LoomSearchPatch,
   type LoomSelection,
 } from "./loomSearch";
 import { LoomTimeline } from "./LoomTimeline";
+import { branchView } from "./loomBranch";
+import { spindleView } from "./loomSpindle";
+import { buildWeave, spineWorkstream } from "./loomWeave";
+import { LoomWeaveField } from "./LoomWeaveField";
 
 const HOUR = 60 * 60 * 1000;
 const WINDOW_PRESETS = [
@@ -296,11 +306,24 @@ function LoomLoaded(props: {
 }) {
   const { data, search, update } = props;
   const bounds = { fromMs: Date.parse(data.from), toMs: Date.parse(data.to) };
-  const [view, setView] = useState<LoomView>(bounds);
-  const [navigatorSearch, setNavigatorSearch] = useState("");
+  const [laneSearch, setLaneSearch] = useState("");
+  const mode: LoomMode = search.mode ?? "workstream";
   const collapsed = new Set(search.collapsed ?? []);
-  const rows = buildLoomRows(data, collapsed, navigatorSearch);
+  const rows = buildLoomRows(data, collapsed, laneSearch);
   const activity = groupLoomActivity(data);
+  const weave = buildWeave(data);
+  const spine = spineWorkstream(weave, search.root);
+  const fit = (): LoomView =>
+    mode === "lanes"
+      ? fitLoomView(data, bounds)
+      : mode === "agent" && spine !== null
+        ? branchView(spine, bounds, weave.tailMs)
+        : spindleView(weave, bounds);
+  // Agent mode frames its workstream; entering it, switching workstream or leaving it refits.
+  const viewKey = mode === "agent" ? `agent:${spine?.rootId}` : "window";
+  const [viewState, setViewState] = useState(() => ({ key: viewKey, view: fit() }));
+  const view = viewState.key === viewKey ? viewState.view : fit();
+  const setView = (next: LoomView) => setViewState({ key: viewKey, view: next });
   const visibleRowOf = (() => {
     const rowIndex = new Map(rows.map((row, index) => [row.threadId as string, index]));
     const parentOf = new Map<string, string | null>(
@@ -322,22 +345,52 @@ function LoomLoaded(props: {
   })();
   const selection = decodeLoomSelection(search.sel);
   const truncation = [...loomTruncationNotes(data), ...loomCoverageNotes(data)];
+  const select = (next: LoomSelection | null) =>
+    update({ sel: next === null ? undefined : encodeLoomSelection(next) });
+  const openWorkstream = (rootId: string) =>
+    update({ root: rootId, mode: "agent", sel: undefined });
+  const empty = data.lanes.length === 0 && data.ancestors.length === 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="flex shrink-0 items-center gap-2 border-b border-border/70 px-3 py-1.5">
-          <div className="flex w-56 items-center gap-1.5">
-            <SearchIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-            <Input
-              size="compact"
-              aria-label="Search lanes"
-              placeholder="Search lanes"
-              value={navigatorSearch}
-              onChange={(event) => setNavigatorSearch(event.currentTarget.value)}
-            />
-          </div>
-          <Button size="xs" variant="ghost" onClick={() => setView(fitLoomView(data, bounds))}>
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/70 px-3 py-1.5">
+          <ToggleGroup
+            aria-label="Mode"
+            variant="segmented"
+            value={[mode]}
+            onValueChange={(next) => {
+              const option = LOOM_MODES.find((candidate) => candidate === next[0]);
+              if (option !== undefined)
+                update({ mode: option === "workstream" ? undefined : option });
+            }}
+          >
+            <Toggle value="workstream">Workstream</Toggle>
+            <Toggle value="agent">Agent</Toggle>
+            <Toggle value="lanes">Lanes</Toggle>
+          </ToggleGroup>
+          {mode === "agent" && spine !== null ? (
+            <>
+              <Button size="xs" variant="ghost" onClick={() => update({ mode: undefined })}>
+                <ArrowLeftIcon aria-hidden />
+                Overview
+              </Button>
+              <span className="min-w-0 truncate text-xs text-foreground/90">{spine.title}</span>
+            </>
+          ) : null}
+          {mode === "lanes" ? (
+            <div className="flex w-56 items-center gap-1.5">
+              <SearchIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+              <Input
+                size="compact"
+                aria-label="Search lanes"
+                placeholder="Search lanes"
+                value={laneSearch}
+                onChange={(event) => setLaneSearch(event.currentTarget.value)}
+              />
+            </div>
+          ) : null}
+          <Button size="xs" variant="ghost" onClick={() => setView(fit())}>
             <ScanIcon aria-hidden />
             Fit
           </Button>
@@ -354,29 +407,56 @@ function LoomLoaded(props: {
             {truncation.length > 0 ? `Limited: ${truncation.join(", ")}.` : ""}
           </p>
         ) : null}
-        {rows.length === 0 ? (
+        {empty ? (
           <p className="px-5 py-6 text-sm text-muted-foreground">
-            {navigatorSearch.length > 0
-              ? "No lanes match this search."
-              : "No thread activity in this window."}
+            No thread activity in this window.
           </p>
+        ) : mode === "lanes" ? (
+          rows.length === 0 ? (
+            <p className="px-5 py-6 text-sm text-muted-foreground">No lanes match this search.</p>
+          ) : (
+            <LoomTimeline
+              window={data}
+              rows={rows}
+              activity={activity}
+              visibleRowOf={visibleRowOf}
+              view={view}
+              bounds={bounds}
+              selection={selection}
+              onViewChange={setView}
+              onSelect={select}
+              onToggleCollapse={(threadId) => {
+                const next = new Set(collapsed);
+                if (!next.delete(threadId)) next.add(threadId);
+                update({ collapsed: next.size === 0 ? undefined : [...next] });
+              }}
+            />
+          )
         ) : (
-          <LoomTimeline
+          <LoomWeaveField
             window={data}
-            rows={rows}
-            activity={activity}
-            visibleRowOf={visibleRowOf}
+            weave={weave}
+            mode={mode}
+            spine={spine}
             view={view}
             bounds={bounds}
             selection={selection}
             onViewChange={setView}
-            onSelect={(next: LoomSelection) => update({ sel: encodeLoomSelection(next) })}
-            onToggleCollapse={(threadId) => {
-              const next = new Set(collapsed);
-              if (!next.delete(threadId)) next.add(threadId);
-              update({ collapsed: next.size === 0 ? undefined : [...next] });
-            }}
+            onSelect={select}
+            onOpenWorkstream={openWorkstream}
           />
+        )}
+        {empty ? null : (
+          <>
+            {mode === "lanes" ? null : <LoomLegend />}
+            <LoomMinimap
+              weave={weave}
+              spine={spine}
+              bounds={bounds}
+              view={view}
+              onViewChange={setView}
+            />
+          </>
         )}
         {props.onOlderLanes === null && props.onNewerLanes === null ? null : (
           <div className="flex shrink-0 items-center gap-2 border-t border-border/70 px-3 py-1.5 text-xs text-muted-foreground">
@@ -404,7 +484,14 @@ function LoomLoaded(props: {
         data={data}
         selection={selection}
         actions={props.actions}
-        onSelect={(next) => update({ sel: next === null ? undefined : encodeLoomSelection(next) })}
+        navigator={
+          <LoomBranchNavigator
+            weave={weave}
+            currentRootId={mode === "agent" ? (spine?.rootId ?? null) : null}
+            onOpen={openWorkstream}
+          />
+        }
+        onSelect={select}
       />
     </div>
   );

@@ -1,4 +1,12 @@
-import type { LoomWindow } from "@t3tools/contracts";
+import type { LoomRun, LoomWindow } from "@t3tools/contracts";
+
+export const ACTIVE_RUN = new Set<LoomRun["status"]>([
+  "preparing",
+  "queued",
+  "starting",
+  "running",
+  "waiting",
+]);
 
 export interface LoomView {
   readonly fromMs: number;
@@ -39,13 +47,18 @@ export function loomScale(view: LoomView, width: number) {
   };
 }
 
-/** Frames the window's activity with a margin, or the whole window when nothing happened. */
-export function fitLoomView(window: LoomWindow, bounds: LoomView): LoomView {
+export interface LoomSpan {
+  readonly firstMs: number;
+  readonly lastMs: number;
+}
+
+/** When the window's recorded activity begins and ends, or null when nothing happened in it. */
+export function loomActivitySpan(window: LoomWindow, bounds: LoomView): LoomSpan | null {
   const times = [
     ...window.runs.flatMap((run) => [
       run.requestedAt,
       run.startedAt,
-      run.completedAt ?? window.asOf,
+      run.completedAt ?? (ACTIVE_RUN.has(run.status) ? window.asOf : null),
     ]),
     ...window.markers.flatMap((marker) => [
       marker.at,
@@ -55,15 +68,29 @@ export function fitLoomView(window: LoomWindow, bounds: LoomView): LoomView {
   ]
     .flatMap((iso) => (iso === null ? [] : [Date.parse(iso)]))
     .filter((ms) => ms >= bounds.fromMs && ms <= bounds.toMs);
-  if (times.length === 0) return bounds;
-  const first = Math.min(...times);
-  const last = Math.max(...times);
-  const span = Math.min(
-    Math.max((last - first) * 1.1, LOOM_MIN_VIEW_MS),
-    bounds.toMs - bounds.fromMs,
-  );
-  const center = (first + last) / 2;
-  return clampLoomView({ fromMs: center - span / 2, toMs: center + span / 2 }, bounds);
+  return times.length === 0 ? null : { firstMs: Math.min(...times), lastMs: Math.max(...times) };
+}
+
+/**
+ * A view of the span with `lead` and `trail` of the view's width left free before and after it,
+ * or the whole window when there is no span.
+ */
+export function frameLoomSpan(
+  span: LoomSpan | null,
+  bounds: LoomView,
+  lead = 0.05,
+  trail = 0.05,
+): LoomView {
+  if (span === null) return bounds;
+  const inner = Math.max(span.lastMs - span.firstMs, LOOM_MIN_VIEW_MS * (1 - lead - trail));
+  const total = Math.min(inner / (1 - lead - trail), bounds.toMs - bounds.fromMs);
+  const fromMs = span.firstMs - lead * total;
+  return clampLoomView({ fromMs, toMs: fromMs + total }, bounds);
+}
+
+/** Frames the window's activity with a margin, or the whole window when nothing happened. */
+export function fitLoomView(window: LoomWindow, bounds: LoomView): LoomView {
+  return frameLoomSpan(loomActivitySpan(window, bounds), bounds);
 }
 
 /** Evenly stepped ticks aligned to local time, at most one per `minGapPx`. */
@@ -85,6 +112,11 @@ export function formatLoomTick(ms: number, view: LoomView): string {
     return date.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "numeric" });
   }
   return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+/** Hours and minutes only, for labels that sit under a dated axis. */
+export function formatLoomClock(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 export function formatLoomTime(iso: string): string {
