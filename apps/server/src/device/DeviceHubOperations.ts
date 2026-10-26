@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
@@ -13,6 +14,24 @@ import type { DeviceHostReady, DeviceOperations, HostDevice } from "./DeviceHost
 
 const BOOT_TIMEOUT = Duration.minutes(3);
 const SCREENSHOT_TIMEOUT = Duration.seconds(20);
+
+const decodeSimulators = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      devices: Schema.Record(
+        Schema.String,
+        Schema.Array(
+          Schema.Struct({
+            udid: Schema.String,
+            name: Schema.String,
+            state: Schema.String,
+            isAvailable: Schema.Boolean,
+          }),
+        ),
+      ),
+    }),
+  ),
+);
 
 const HubDevice = Schema.Struct({
   id: Schema.String,
@@ -48,6 +67,7 @@ export const makeDeviceHubOperations = (options: {
   readonly origin: string;
   readonly http: HttpClient.HttpClient;
   readonly run: DeviceHostReady["run"];
+  readonly iosAvailable: Effect.Effect<boolean>;
   /** Whether to list AVDs, which the hub does not report until they boot. */
   readonly androidAvailable: Effect.Effect<boolean>;
 }): DeviceOperations => {
@@ -107,6 +127,36 @@ export const makeDeviceHubOperations = (options: {
         ),
     );
     const details = warnings?.map((error) => error.message) ?? [];
+    if (yield* options.iosAvailable) {
+      // The hub hides simulators without usage timestamps, including every freshly created device.
+      const result = yield* run("xcrun", ["simctl", "list", "devices", "available", "--json"]);
+      const inventory = result.code === 0 ? decodeSimulators(result.stdout) : Option.none();
+      if (Option.isNone(inventory)) {
+        details.push(
+          "Could not list iOS simulators (xcrun simctl list devices available --json). Discovered devices remain available.",
+        );
+      } else {
+        const prefix = "com.apple.CoreSimulator.SimRuntime.iOS-";
+        for (const [runtime, simulators] of Object.entries(inventory.value.devices)) {
+          if (!runtime.startsWith(prefix)) continue;
+          for (const simulator of simulators) {
+            if (
+              simulator.isAvailable &&
+              !devices.some((device) => device.platform === "ios" && device.id === simulator.udid)
+            ) {
+              devices.push({
+                id: simulator.udid,
+                name: simulator.name,
+                platform: "ios",
+                version: `iOS ${runtime.slice(prefix.length).replaceAll("-", ".")}`,
+                booted: simulator.state === "Booted",
+                physical: false,
+              });
+            }
+          }
+        }
+      }
+    }
     let androidDiscoveryIncomplete = false;
     if (yield* options.androidAvailable) {
       const avds = yield* run("emulator", ["-list-avds"]);
