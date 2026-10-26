@@ -19,6 +19,8 @@ import {
   type OrchestrationV2TurnItem,
   type ProjectKnowledgeDeliveryStatus,
   type RunAttemptId,
+  isCompactionCommandMessage,
+  parseGoalCommand,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -295,11 +297,12 @@ export const layer: Layer.Layer<
                     source.status === "interrupted" ||
                     (source.status === "completed" &&
                       handoff.delivery === undefined &&
+                      // Compaction and /goal turns defer history to the next turn.
                       projection.messages.some(
                         (message) =>
                           message.id === source.userMessageId &&
-                          message.attachments.length === 0 &&
-                          message.text.trim().toLowerCase() === "/compact",
+                          (isCompactionCommandMessage(message) ||
+                            parseGoalCommand(message) !== null),
                       ))),
               ))),
       );
@@ -1176,8 +1179,10 @@ export const layer: Layer.Layer<
             }),
           ),
         );
-      // Delivered once: this run's provider turn marks the work as told. A
-      // restart continuation is prompted by its own text or resumes natively.
+      // Codex and Claude parse /goal from the prompt, so it goes verbatim and history waits a turn.
+      const goalDriver = session.driver === "codex" || session.driver === "claudeAgent";
+      const goalCommand = goalDriver && parseGoalCommand(message) !== null;
+      // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
       const noteContinuation = isRestartNoteContinuation(
         run,
         projection.runs,
@@ -1191,8 +1196,8 @@ export const layer: Layer.Layer<
           projection.messages
             .filter(
               (candidate) =>
-                candidate.attachments.length === 0 &&
-                candidate.text.trim().toLowerCase() === "/compact",
+                isCompactionCommandMessage(candidate) ||
+                (goalDriver && parseGoalCommand(candidate) !== null),
             )
             .map((candidate) => candidate.id),
         ),
@@ -1404,7 +1409,7 @@ export const layer: Layer.Layer<
                 ];
           const delivery = yield* deliverContextHandoffs({
             handoffs: [...effectiveHandoffs, ...retryHandoff],
-            deferInline: compact,
+            deferInline: compact || goalCommand,
             providerThread: runningProviderThread,
             budget: Effect.gen(function* () {
               return handoffBudget({
@@ -1509,7 +1514,10 @@ export const layer: Layer.Layer<
             ...(noteContinuation ? promptedInput : turnInput),
             message: {
               ...turnInput.message,
-              text: context === "" ? userText : `${context}\n\nUser message:\n${userText}`,
+              text:
+                context === "" || goalCommand
+                  ? userText
+                  : `${context}\n\nUser message:\n${userText}`,
             },
           }).pipe(
             // Clear pending handoff markers for refused prompts so the next turn retains the native session.

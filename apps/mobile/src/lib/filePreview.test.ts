@@ -437,6 +437,7 @@ describe("ThreadInlineFilePreview playback", () => {
           createElement(ThreadFeed, {
             environmentId,
             threadId,
+            detailRef: null,
             threadTitle: "preview",
             composerDraftKey: "preview",
             workspaceRoot: "/repo",
@@ -1377,6 +1378,7 @@ describe("ThreadFeed previews", () => {
         createElement(ThreadFeed, {
           environmentId,
           threadId,
+          detailRef: null,
           threadTitle: "preview",
           composerDraftKey: "preview",
           workspaceRoot: "/repo",

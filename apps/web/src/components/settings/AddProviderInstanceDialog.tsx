@@ -48,7 +48,7 @@ import {
   type WizardNavigation,
 } from "./AddProviderInstanceDialog.logic";
 import { AddProviderInstanceWizardSteps } from "./AddProviderInstanceWizardSteps";
-import { AcpRegistrySearchStep } from "./AcpRegistrySearchStep";
+import { AcpRegistrySearchStep, useAcpRegistrySearch } from "./AcpRegistrySearchStep";
 import { ProviderWizardAuthenticationStep } from "./ProviderWizardAuthenticationStep";
 import { resolveOfficialAcpRegistryIconUrl } from "./AcpRegistryIcon";
 import { AddManagedCodexAccountDialog } from "./CodexSetupSection";
@@ -153,8 +153,6 @@ export function AddProviderInstanceDialog({
     ReadonlyArray<ProviderInstanceEnvironmentVariable>
   >([]);
   const [isManualAcpConfiguration, setIsManualAcpConfiguration] = useState(false);
-  const [isRegistryLoading, setIsRegistryLoading] = useState(false);
-  const [isPreparingRegistryAgent, setIsPreparingRegistryAgent] = useState(false);
   const [configByDriver, setConfigByDriver] = useState<Record<string, Record<string, unknown>>>({});
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -175,6 +173,13 @@ export function AddProviderInstanceDialog({
   const connectionOptions =
     selection === "claudeAgent" ? CONNECTION_OPTIONS.claudeAgent : CONNECTION_OPTIONS.codex;
   const isCliAccount = hasConnectionChoice && connectionChoice === "cli";
+  const showRegistrySearch =
+    !createdInstanceId &&
+    providerView === "catalog" &&
+    wizardStep === 0 &&
+    !(isAcpRegistry && isManualAcpConfiguration);
+  const registry = useAcpRegistrySearch(environmentId, showRegistrySearch);
+  const isPreparingRegistryAgent = registry.preparingId !== null;
   const defaultIdentity: ProviderIdentityDraft = {
     label: selection === TRAEX_BRIDGE_PRESET ? "Traex" : driverOption.label,
     accentColor: "",
@@ -474,7 +479,7 @@ export function AddProviderInstanceDialog({
           <>
             <WizardPanel
               className={cn(isAcpRegistry && wizardStep === identityStep && "min-h-72")}
-              holdHeight={wizardStep === 0 && !isManualAcpConfiguration && isRegistryLoading}
+              holdHeight={showRegistrySearch && registry.search.isPending}
             >
               <div
                 className={cn(
@@ -631,12 +636,11 @@ export function AddProviderInstanceDialog({
                     <>
                       <AcpRegistrySearchStep
                         environmentId={environmentId}
+                        registry={registry}
                         providerInstances={settings.providerInstances}
                         onPrepared={handleAcpPrepared}
                         onManualConfiguration={handleManualAcpConfiguration}
                         onLocalConfiguration={handleLocalAcpConfiguration}
-                        onLoadingChange={setIsRegistryLoading}
-                        onPreparingChange={setIsPreparingRegistryAgent}
                       />
                       {isAcpRegistry && hasAttemptedSubmit && acpSelectionError ? (
                         <p className="mt-2 text-2xs text-destructive">{acpSelectionError}</p>
