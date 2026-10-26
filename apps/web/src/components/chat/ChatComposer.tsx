@@ -2133,7 +2133,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
         return;
       }
-      onProviderModelSelect(item.instanceId, item.model);
+      onProviderModelSelect(item.instanceId, item.model, { focusComposer: false });
       return;
     }
     if (item.type === "environment") {

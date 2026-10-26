@@ -5,8 +5,8 @@ const COMPOSER_MODEL_MENTION_LIMIT = 8;
 /** Mentions can't contain spaces, so `:`, `/` and `-` split words, as in `@gpt:traex`. */
 function mentionSearchQueries(query: string): ReadonlyArray<string> {
   const spaced = query.replace(/[:/]+/gu, " ").trim();
-  if (spaced.length === 0) return [];
   const unhyphenated = spaced.replace(/-+/gu, " ").trim();
+  if (unhyphenated.length === 0) return [];
   return unhyphenated === spaced ? [spaced] : [spaced, unhyphenated];
 }
 

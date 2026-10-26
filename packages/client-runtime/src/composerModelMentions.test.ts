@@ -29,6 +29,10 @@ describe("rankComposerModelMentions", () => {
     expect(rank("")).toEqual([]);
   });
 
+  it.each(["-", "---", ":/-/:"])("offers no models for separator-only @%s", (query) => {
+    expect(rank(query)).toEqual([]);
+  });
+
   it("finds a model under every provider that serves it", () => {
     expect(rank("gpt").toSorted()).toEqual(["opencode:traex-gpt", "traex:gpt"]);
   });
