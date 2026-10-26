@@ -2,7 +2,7 @@ import { rankModelPickerSearch, type ModelPickerSearchableModel } from "./modelS
 
 const COMPOSER_MODEL_MENTION_LIMIT = 8;
 
-/** A mention can't hold a space, so `@traex:gpt`, `@opencode/gpt` and `@traex-gpt` split into words. */
+/** Mentions can't contain spaces, so `:`, `/` and `-` split words, as in `@gpt:traex`. */
 function mentionSearchQueries(query: string): ReadonlyArray<string> {
   const spaced = query.replace(/[:/]+/gu, " ").trim();
   if (spaced.length === 0) return [];
@@ -10,14 +10,14 @@ function mentionSearchQueries(query: string): ReadonlyArray<string> {
   return unhyphenated === spaced ? [spaced] : [spaced, unhyphenated];
 }
 
-/** Ranks the models an `@` mention names. A bare `@` names none. */
+/** Returns the models matching an `@` mention, best first. A bare `@` matches none. */
 export function rankComposerModelMentions<T>(
   candidates: ReadonlyArray<T>,
   query: string,
   toSearchable: (candidate: T) => ModelPickerSearchableModel,
 ): T[] {
   for (const words of mentionSearchQueries(query)) {
-    // Literal words only: fuzzy model hits would push file matches out of the `@` menu.
+    // Every word must match literally. Fuzzy model hits would push files out of the `@` menu.
     const tokens = words.toLowerCase().split(/\s+/u);
     const literal = candidates.filter((candidate) => {
       const model = toSearchable(candidate);

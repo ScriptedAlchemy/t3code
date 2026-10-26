@@ -40,7 +40,7 @@ export function matchComposerModelItems(input: {
       continue;
     }
     for (const option of input.modelOptionsByInstance.get(entry.instanceId) ?? []) {
-      // Legacy models stay behind the picker's toggle so current ones aren't crowded out.
+      // The picker hides legacy models by default; skip them so they don't fill the result cap.
       if (option.isLegacy || option.isUnavailable) continue;
       if (input.isModelDisabled(entry.instanceId, option.slug)) continue;
       candidates.push({ entry, option });
