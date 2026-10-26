@@ -1,4 +1,6 @@
 import * as Context from "effect/Context";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { PSTACK_SOURCE_ROOT_ENV } from "@t3tools/shared/pstack";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -283,6 +285,9 @@ export const resolvePstackSourceRoot = Effect.fn("ServerConfig.resolvePstackSour
   function* () {
     const { join, resolve } = yield* Path.Path;
     const fs = yield* FileSystem.FileSystem;
+    const environment = yield* HostProcess.Environment;
+    const override = environment[PSTACK_SOURCE_ROOT_ENV];
+    if (override && (yield* fs.exists(join(override, "UPSTREAM.json")))) return resolve(override);
     const bundled = resolve(join(import.meta.dirname, "pstack"));
     if (yield* fs.exists(join(bundled, "UPSTREAM.json"))) return bundled;
     return resolve(join(import.meta.dirname, "../../../packages/pstack"));

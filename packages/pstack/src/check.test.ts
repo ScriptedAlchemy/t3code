@@ -192,6 +192,29 @@ describe("checkPack", () => {
 });
 
 describe("pack interface", () => {
+  it("omits gitignore metadata from delivery while verifying its upstream bytes", () => {
+    using pack = fixture();
+    pack.write("upstream/.gitignore", "node_modules/\n");
+    pack.write("upstream/skills/.gitignore", "local/\n");
+    pack.write("upstream/skills/bun.lock", "lockfile\n");
+    pack.seal();
+    expect(checkPack(pack.root)).toEqual([]);
+    const paths = pstackPackEntries(pack.root).map(({ packPath }) => packPath);
+    expect(paths).not.toContain(".gitignore");
+    expect(paths).not.toContain("skills/.gitignore");
+    expect(paths).toContain("skills/bun.lock");
+    pack.write("upstream/.gitignore", "changed\n");
+    expect(checkPack(pack.root)).toContain("Hash mismatch: .gitignore");
+    NodeFS.rmSync(NodePath.join(pack.root, "upstream/.gitignore"));
+    expect(checkPack(pack.root)).toContain("Missing upstream file: .gitignore");
+    expect(() => pstackPackEntries(pack.root)).not.toThrow();
+  });
+
+  it("invalidates the delivery stamp from the layout that included gitignore files", () => {
+    using pack = fixture();
+    expect(pstackContentHash(pack.root)).not.toBe(pstackContentHash(pack.root, 1));
+  });
+
   it("uses manifest executable flags despite archive modes and keeps T3 files non-executable", () => {
     using pack = fixture();
     NodeFS.chmodSync(NodePath.join(pack.root, "upstream/helper.sh"), 0o644);

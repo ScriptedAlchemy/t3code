@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./pstack": {
+      "types": "./src/pstack.ts",
+      "import": "./src/pstack.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"

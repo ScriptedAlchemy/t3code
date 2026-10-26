@@ -218,6 +218,51 @@ const withPackagedWslHarness = <A, E, R>(
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 describe("DesktopBackendConfiguration", () => {
+  it.effect.each(
+    (["darwin", "linux", "win32"] as const).flatMap((platform) =>
+      (["packaged", "missing", "file", "development"] as const).map((source) => ({
+        platform,
+        source,
+      })),
+    ),
+  )(
+    "passes the external pstack source only for a packaged directory ($platform, $source)",
+    ({ platform, source }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pstack-config-" });
+        const sourceRoot = path.join(baseDir, "pstack");
+        if (source === "file") yield* fs.writeFileString(sourceRoot, "not a directory");
+        else if (source !== "missing") yield* fs.makeDirectory(sourceRoot);
+        yield* Effect.gen(function* () {
+          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+          const config = yield* configuration.resolvePrimary;
+          assert.equal(
+            config.env?.T3CODE_PSTACK_SOURCE_ROOT,
+            source === "packaged" ? sourceRoot : undefined,
+          );
+        }).pipe(
+          Effect.provide(
+            layerBackendConfiguration().pipe(
+              Layer.provideMerge(layerServerExposure),
+              Layer.provideMerge(DesktopAppSettings.layerTest()),
+              Layer.provideMerge(DesktopWslServerTree.layerTest()),
+              Layer.provideMerge(DesktopWslEnvironment.layerTest()),
+              Layer.provideMerge(
+                layerEnvironment(baseDir, {
+                  platform,
+                  resourcesPath: baseDir,
+                  isPackaged: source !== "development",
+                  ...(source === "development" ? { devServerUrl: "http://localhost:5173" } : {}),
+                }),
+              ),
+            ),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("resolvePrimary produces a stable scoped bootstrap token", () =>
     withHarness(
       Effect.gen(function* () {
