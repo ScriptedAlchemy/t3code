@@ -1123,14 +1123,11 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
   );
   const selectedInstanceId = props.selectedThread.modelSelection.instanceId;
   useStreamingHaptics(props.selectedThread.id, props.selectedThreadFeed);
-  const selectedProviderSkills = (() => {
-    const provider = props.serverConfig?.providers.find(
-      (candidate) => candidate.instanceId === selectedInstanceId,
-    );
-    return provider
-      ? resolveProviderSkillsForCwd(provider, props.threadCwd ?? props.projectWorkspaceRoot)
-      : [];
-  })();
+  const selectedProviderSkills = resolveProviderSkillsForCwd(
+    props.serverConfig?.providers.find((candidate) => candidate.instanceId === selectedInstanceId),
+    props.threadCwd ?? props.projectWorkspaceRoot,
+    props.serverConfig?.pstackSkills,
+  );
 
   useLayoutEffect(() => {
     selectedThreadKeyRef.current = selectedThreadKey;

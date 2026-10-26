@@ -1,3 +1,5 @@
+import * as ServerSettings from "../serverSettings.ts";
+import { disabledLayer } from "../pstack/PstackPack.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
   EventId,
@@ -344,6 +346,8 @@ it.effect.each(storageCases)(
       }).pipe(
         Effect.provide(
           Layer.merge(ProviderTurnControlService.layer, RuntimeRequestService.layer).pipe(
+            Layer.provide(disabledLayer),
+            Layer.provide(ServerSettings.layerTest()),
             Layer.provide(layerSessions),
           ),
         ),

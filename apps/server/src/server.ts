@@ -1,3 +1,4 @@
+import * as PstackPack from "./pstack/PstackPack.ts";
 import * as HolographicMemory from "./project/knowledge/HolographicMemory.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as AssistedLearning from "./project/knowledge/AssistedLearning.ts";
@@ -633,6 +634,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
+  Layer.provideMerge(
+    PstackPack.layer.pipe(Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry)),
+  ),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(
     ConversationSummaries.layer.pipe(

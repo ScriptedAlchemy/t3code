@@ -469,6 +469,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["command menu dollar $ slash /"],
   },
   {
+    id: "pstack",
+    title: "pstack",
+    to: "/settings/general",
+    searchTerms: ["lauren tan skills workflows plugin pack architect setup models"],
+  },
+  {
     id: "composer-rich-text",
     title: "Rich text composer",
     to: "/settings/general",

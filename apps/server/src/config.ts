@@ -278,3 +278,13 @@ export const resolveStaticDir = Effect.fn(function* () {
   }
   return undefined;
 });
+
+export const resolvePstackSourceRoot = Effect.fn("ServerConfig.resolvePstackSourceRoot")(
+  function* () {
+    const { join, resolve } = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const bundled = resolve(join(import.meta.dirname, "pstack"));
+    if (yield* fs.exists(join(bundled, "UPSTREAM.json"))) return bundled;
+    return resolve(join(import.meta.dirname, "../../../packages/pstack"));
+  },
+);

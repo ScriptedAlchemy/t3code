@@ -29,6 +29,7 @@ import type {
   RuntimeMode,
   RuntimeRequestId,
   ScopedThreadRef,
+  ServerConfig,
   ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
@@ -452,6 +453,7 @@ export interface ChatComposerProps {
   lockedProvider: ProviderDriverKind | null;
   providerStatuses: ServerProvider[];
   providerCatalogKnown: boolean;
+  pstackSkills: ServerConfig["pstackSkills"];
   activeProjectDefaultModelSelection: ModelSelection | null | undefined;
   activeThreadModelSelection: ModelSelection | null | undefined;
   reportedModelSelection?: ModelSelection | null;
@@ -538,7 +540,6 @@ export interface ChatComposerProps {
   onFileOpen: (attachment: ChatFileAttachment) => void;
 }
 
-const NO_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const NO_PROVIDER_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
@@ -590,6 +591,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     lockedProvider,
     providerStatuses,
     providerCatalogKnown,
+    pstackSkills,
     activeProjectDefaultModelSelection,
     activeThreadModelSelection,
     reportedModelSelection,
@@ -1007,9 +1009,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const isSendDisabled = sendDisabledReason !== null;
   const selectedProviderStatus = selectedProviderEntry?.snapshot ?? null;
   const compactCommandAvailable = providerSupportsManualCompaction(selectedProviderEntry);
-  const selectedProviderSkills = selectedProviderStatus
-    ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd)
-    : NO_PROVIDER_SKILLS;
+  const selectedProviderSkills = resolveProviderSkillsForCwd(
+    selectedProviderStatus,
+    gitCwd,
+    pstackSkills,
+  );
   const selectedProviderSlashCommands = selectedProviderStatus
     ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, gitCwd)
     : NO_PROVIDER_SLASH_COMMANDS;

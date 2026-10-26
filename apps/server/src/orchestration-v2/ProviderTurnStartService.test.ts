@@ -1,3 +1,6 @@
+import { ScheduledTaskId } from "@t3tools/contracts";
+import * as PstackPack from "../pstack/PstackPack.ts";
+import { claudeProvider, disabledLayer, makeFixture } from "../pstack/PstackPack.testkit.ts";
 import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
 import * as KnowledgePersistence from "../project/knowledge/persistence.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -135,6 +138,7 @@ function startWithMissingWorktree(
   const pruneWorktrees = vi.fn(() => Effect.void);
   const createWorktree = vi.fn(() => Effect.succeed({} as never));
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(disabledLayer),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectKnowledge.ProjectKnowledge)({}),
@@ -270,6 +274,7 @@ it.each([
 });
 
 function makeLocalCommandHarness(input: {
+  readonly pstack?: PstackPack.PstackPack["Service"];
   readonly text: string;
   readonly knowledgeStore?: Effect.Success<typeof KnowledgePersistence.makeStore>;
   readonly initialDeliveries?: ReadonlyArray<ProjectKnowledgeDelivery>;
@@ -715,6 +720,9 @@ function makeLocalCommandHarness(input: {
   );
   const knowledgeDeliveries: Array<ProjectKnowledgeDelivery> = [...(input.initialDeliveries ?? [])];
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(
+      input.pstack ? Layer.succeed(PstackPack.PstackPack, input.pstack) : disabledLayer,
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectKnowledge.ProjectKnowledge)({
@@ -2036,4 +2044,126 @@ effectIt.effect("records an over-budget mandatory attachment without starting th
     expect(harness.nativeStart).not.toHaveBeenCalled();
     expect(harness.knowledgeDeliveries.at(-1)?.omissions[0]?.reason).toBe("over_budget");
   }),
+);
+
+effectIt.effect.each([
+  true,
+  false,
+  "agent-authored",
+  "notification",
+  "delegated-completion",
+  "scheduled",
+  "project-disabled",
+  "pack-failure",
+] as const)("start delivers bundled pstack records before native projection, enabled=%s", (mode) =>
+  Effect.gen(function* () {
+    const enabled = mode !== false;
+    const authoredByUser = mode !== "agent-authored";
+    const fixture = yield* makeFixture([claudeProvider]);
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
+    yield* fs.writeFileString(
+      `${fixture.stateDir}/pstack/models.md`,
+      "architect runners: claudeAgent/claude-opus-5-5 effort=xhigh fastMode=false",
+    );
+    if (mode === "pack-failure") yield* fs.remove(fixture.sourceRoot, { recursive: true });
+    yield* Effect.gen(function* () {
+      const pstack = yield* PstackPack.PstackPack;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* settings.updateSettings({ pstackEnabled: enabled });
+      const record = {
+        version: 1 as const,
+        kind: "skill" as const,
+        contextId: ComposerContextId.make("pstack-start"),
+        name: "pstack:architect",
+        label: "architect",
+      };
+      const native = {
+        ...record,
+        contextId: ComposerContextId.make("native-start"),
+        name: "native:review",
+        label: "review",
+      };
+      const harness = makeLocalCommandHarness({
+        text: `Result mentions $pstack:architect then ${formatComposerContextReference(record)} plan ${formatComposerContextReference(native)}`,
+        pstack,
+        previousTurn: { runStatus: "completed", turnStatus: "completed" },
+      });
+      const projection = harness.projection();
+      if (mode === "project-disabled")
+        yield* settings.updateSettings({
+          projectSettingsOverrides: {
+            [projection.thread.projectId]: {
+              providerInstances: { [claudeProvider.instanceId]: { enabled: false } },
+            },
+          },
+        });
+      harness.setProjection({
+        ...projection,
+        messages: projection.messages.map((message) => ({
+          ...message,
+          ...(mode === "scheduled"
+            ? { scheduledTaskId: ScheduledTaskId.make("pstack-saved-prompt") }
+            : {}),
+          ...(mode === "notification"
+            ? {
+                notification: {
+                  source: { kind: "command" as const },
+                  outcome: "completed" as const,
+                  summary: "Task finished",
+                },
+              }
+            : {}),
+          ...(mode === "delegated-completion"
+            ? {
+                delegatedCompletion: {
+                  parentRunId: RunId.make("parent"),
+                  generation: 1,
+                  taskIds: [NodeId.make("child")],
+                },
+              }
+            : {}),
+          createdBy: authoredByUser ? "user" : "agent",
+          creationSource: authoredByUser ? "web" : "server",
+          context: { version: 1, records: [record, native] },
+        })),
+      });
+      yield* harness.start;
+      const start = harness.startRootRun.mock.calls[0]![0];
+      yield* start.session.startTurn({
+        appThread: start.appThread,
+        threadId: start.appThread.id,
+        runId: start.run.id,
+        runOrdinal: start.run.ordinal,
+        providerTurnOrdinal: start.providerTurnOrdinal,
+        attemptId: start.attemptId,
+        rootNodeId: start.rootNode.id,
+        providerThread: start.providerThread,
+        message: start.message,
+        modelSelection: start.modelSelection,
+        runtimePolicy: start.runtimePolicy,
+      });
+      const text = harness.nativeStart.mock.calls[0]![0].message.text;
+      expect(text).toContain("native:review");
+      if (mode === "pack-failure") {
+        expect(text).toContain("pstack is unavailable:");
+        expect(text).toContain("$pstack:architect");
+        expect(text).not.toContain("<t3_pstack>");
+      } else if (
+        enabled &&
+        authoredByUser &&
+        mode !== "notification" &&
+        mode !== "delegated-completion"
+      ) {
+        if (mode === "project-disabled")
+          expect(text).toContain("Fallback: architect runners seat 1");
+        else expect(text).not.toContain("Fallback:");
+        expect(text).toContain("<t3_pstack>");
+        expect(text).not.toContain("$pstack:architect");
+      } else {
+        expect(text).not.toContain("<t3_pstack>");
+        expect(text).toContain("pstack:architect");
+      }
+    }).pipe(Effect.provide(Layer.merge(fixture.layer, fixture.settingsLayer)));
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

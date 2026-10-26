@@ -7,8 +7,14 @@ import {
 
 export type ProviderSkillSourceKind = "app" | "repo" | "project" | "personal" | "system" | "other";
 
+const NO_SKILLS: ServerProvider["skills"] = [];
+
 function normalizePathSeparators(pathValue: string): string {
   return pathValue.replaceAll("\\", "/");
+}
+
+function normalizeSkillName(name: string): string {
+  return name.trim().toLowerCase();
 }
 
 export function dedupeProviderSkillsByName(
@@ -16,7 +22,7 @@ export function dedupeProviderSkillsByName(
 ): ServerProviderSkill[] {
   const seenNames = new Set<string>();
   return skills.filter((skill) => {
-    const normalizedName = skill.name.trim().toLowerCase();
+    const normalizedName = normalizeSkillName(skill.name);
     if (seenNames.has(normalizedName)) {
       return false;
     }
@@ -48,8 +54,8 @@ export function getProviderSlashCommandsForSlashMenu(
   slashCommands: ReadonlyArray<ServerProviderSlashCommand>,
   visibleSkills: ReadonlyArray<ServerProviderSkill>,
 ): ServerProviderSlashCommand[] {
-  const skillNames = new Set(visibleSkills.map((skill) => skill.name.trim().toLowerCase()));
-  return slashCommands.filter((command) => !skillNames.has(command.name.trim().toLowerCase()));
+  const skillNames = new Set(visibleSkills.map((skill) => normalizeSkillName(skill.name)));
+  return slashCommands.filter((command) => !skillNames.has(normalizeSkillName(command.name)));
 }
 
 export function resolveProviderSkillSourceKind(
@@ -74,6 +80,8 @@ export function resolveProviderSkillSourceKind(
       return "personal";
     case "system":
       return "system";
+    case "t3":
+      return "app";
     case undefined:
     case "":
       return "other";
@@ -111,11 +119,21 @@ export function hasCurrentProviderWorkspaceSnapshot(
   );
 }
 
+/** Pack entries (`ServerConfig.pstackSkills`) shadow same-named provider skills. */
 export function resolveProviderSkillsForCwd(
-  provider: ServerProvider,
+  provider: ServerProvider | null | undefined,
   cwd: string | null | undefined,
+  pstackSkills: ReadonlyArray<ServerProviderSkill> | undefined,
 ): ServerProvider["skills"] {
-  return resolveProviderWorkspaceSnapshot(provider, cwd)?.skills ?? provider.skills;
+  const providerSkills = provider
+    ? (resolveProviderWorkspaceSnapshot(provider, cwd)?.skills ?? provider.skills)
+    : NO_SKILLS;
+  if (!pstackSkills || pstackSkills.length === 0) return providerSkills;
+  const packNames = new Set(pstackSkills.map((skill) => normalizeSkillName(skill.name)));
+  return [
+    ...providerSkills.filter((skill) => !packNames.has(normalizeSkillName(skill.name))),
+    ...pstackSkills,
+  ];
 }
 
 export function resolveProviderSlashCommandsForCwd(

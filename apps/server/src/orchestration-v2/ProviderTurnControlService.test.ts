@@ -1,3 +1,9 @@
+import * as FileSystem from "effect/FileSystem";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ComposerContextId, MessageId, ServerSettingsError } from "@t3tools/contracts";
+import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
+import { claudeProvider, disabledLayer, makeFixture } from "../pstack/PstackPack.testkit.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { assert, it } from "@effect/vitest";
 import {
   type ModelSelection,
@@ -284,6 +290,8 @@ it.effect(
         }),
       );
       const layerControl = ProviderTurnControlService.layer.pipe(
+        Layer.provide(disabledLayer),
+        Layer.provide(ServerSettings.layerTest()),
         Layer.provide(Layer.merge(layerProjection, layerSessionManager)),
       );
 
@@ -332,4 +340,236 @@ it.effect(
       assert.equal(interrupted?.id, providerThreadId);
       assert.equal(interrupted?.nativeThreadRef?.nativeId, "native-thread:restart-session");
     }),
+);
+
+it.effect.each([
+  true,
+  false,
+  "agent-authored",
+  "notification",
+  "delegated-completion",
+  "no-mention",
+  "plain-name",
+  "record-only",
+  "project-disabled",
+  "pack-failure",
+  "settings-failure",
+] as const)("steer consumes pstack before native projection, enabled=%s", (mode) =>
+  Effect.gen(function* () {
+    const enabled = mode !== false;
+    const authoredByUser = mode !== "agent-authored";
+    const shouldExpand =
+      enabled &&
+      authoredByUser &&
+      mode !== "notification" &&
+      mode !== "delegated-completion" &&
+      mode !== "no-mention" &&
+      mode !== "plain-name";
+    const fixture = yield* makeFixture(
+      [claudeProvider],
+      mode === "settings-failure"
+        ? Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: Effect.fail(
+              new ServerSettingsError({
+                operation: "read-file",
+                settingsPath: "/fixture/settings.json",
+              }),
+            ),
+          })
+        : undefined,
+    );
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
+    yield* fs.writeFileString(
+      `${fixture.stateDir}/pstack/models.md`,
+      "architect runners: claudeAgent/claude-opus-5-5 effort=xhigh fastMode=false",
+    );
+    if (mode === "pack-failure") yield* fs.remove(fixture.sourceRoot, { recursive: true });
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("pstack-steer");
+    const providerSessionId = ProviderSessionId.make("pstack-steer-session");
+    const providerThreadId = ProviderThreadId.make("pstack-steer-thread");
+    const providerTurnId = ProviderTurnId.make("pstack-steer-turn");
+    const messageId = MessageId.make("pstack-steer-message");
+    const runId = RunId.make("pstack-steer-run");
+    const attemptId = RunAttemptId.make("pstack-steer-attempt");
+    const providerThread: OrchestrationV2ProviderThread = {
+      id: providerThreadId,
+      driver,
+      providerInstanceId,
+      providerSessionId,
+      appThreadId: threadId,
+      ownerNodeId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+      status: "not_loaded",
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const projection = makeProjection({
+      now,
+      threadId,
+      providerThread,
+      providerTurnId,
+      attemptId,
+    });
+    const record = {
+      version: 1 as const,
+      kind: "skill" as const,
+      contextId: ComposerContextId.make("pstack-steer"),
+      name: "pstack:architect",
+      label: "architect",
+    };
+    const native = {
+      ...record,
+      contextId: ComposerContextId.make("native-steer"),
+      name: "native:review",
+      label: "review",
+    };
+    const received: string[] = [];
+    let threadReads = 0;
+    const layers = ProviderTurnControlService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          fixture.layer,
+          fixture.settingsLayer,
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThread: () =>
+              Effect.sync(() => {
+                threadReads += 1;
+                return projection.thread;
+              }),
+            getThreadRecords: () =>
+              Effect.succeed({
+                ...projection,
+                runs: [
+                  {
+                    id: runId,
+                    threadId,
+                    ordinal: 1,
+                    providerInstanceId,
+                    modelSelection,
+                    providerThreadId,
+                    userMessageId: messageId,
+                    rootNodeId: null,
+                    activeAttemptId: attemptId,
+                    status: "running" as const,
+                    requestedAt: now,
+                    startedAt: now,
+                    completedAt: null,
+                    checkpointId: null,
+                    contextHandoffId: null,
+                    delegatedCompletion: {
+                      disposition: "open" as const,
+                      nextGeneration: 2,
+                      delivery: { messageId, generation: 1, taskIds: [NodeId.make("child")] },
+                    },
+                  },
+                ],
+              }),
+            getProviderControlContext: () =>
+              Effect.succeed({
+                providerThread,
+                providerTurn: projection.providerTurns[0],
+                attempt: undefined,
+                run: { id: runId } as OrchestrationV2ThreadProjection["runs"][number],
+                message: {
+                  id: messageId,
+                  text:
+                    mode === "plain-name"
+                      ? `Discuss pstack:architect ${formatComposerContextReference(native)}`
+                      : mode === "no-mention"
+                        ? `Refine ${formatComposerContextReference(native)}`
+                        : `${mode === "record-only" ? "" : "Result mentions $pstack:architect then "}${formatComposerContextReference(record)} refine ${formatComposerContextReference(native)}`,
+                  context: {
+                    version: 1,
+                    records:
+                      mode === "no-mention" || mode === "plain-name" ? [native] : [record, native],
+                  },
+                  ...(mode === "notification"
+                    ? {
+                        notification: {
+                          source: { kind: "command" },
+                          outcome: "completed",
+                          summary: "Task finished",
+                        },
+                      }
+                    : {}),
+                  ...(mode === "delegated-completion"
+                    ? {
+                        delegatedCompletion: {
+                          parentRunId: runId,
+                          generation: 1,
+                          taskIds: [NodeId.make("child")],
+                        },
+                      }
+                    : {}),
+                  attachments: [],
+                  createdBy: authoredByUser ? "user" : "agent",
+                  creationSource: authoredByUser ? "web" : "server",
+                } as unknown as OrchestrationV2ThreadProjection["messages"][number],
+              }),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            get: () =>
+              Effect.succeed(
+                Option.some({
+                  steerTurn: (
+                    input: Parameters<
+                      ProviderAdapter.ProviderAdapterV2SessionRuntime["steerTurn"]
+                    >[0],
+                  ) =>
+                    Effect.sync(() => {
+                      received.push(input.message.text);
+                    }),
+                } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+              ),
+          }),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      if (mode !== "settings-failure")
+        yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
+          pstackEnabled: enabled,
+          ...(mode === "project-disabled"
+            ? {
+                projectSettingsOverrides: {
+                  [projection.thread.projectId]: {
+                    providerInstances: { [claudeProvider.instanceId]: { enabled: false } },
+                  },
+                },
+              }
+            : {}),
+        });
+      yield* (yield* ProviderTurnControlService.ProviderTurnControlServiceV2).steer({
+        threadId,
+        providerSessionId,
+        providerThreadId,
+        providerTurnId,
+        messageId,
+      });
+    }).pipe(Effect.provide(Layer.merge(layers, fixture.settingsLayer)));
+    assert.equal(threadReads, shouldExpand ? 1 : 0);
+    assert.lengthOf(received, 1);
+    assert.include(received[0]!, "native:review");
+    if (mode === "pack-failure" || mode === "settings-failure") {
+      assert.include(received[0]!, "pstack is unavailable:");
+      assert.include(received[0]!, "$pstack:architect");
+      assert.notInclude(received[0]!, "<t3_pstack>");
+    } else if (shouldExpand) {
+      if (mode === "project-disabled")
+        assert.include(received[0]!, "Fallback: architect runners seat 1");
+      else assert.notInclude(received[0]!, "Fallback:");
+      assert.include(received[0]!, "<t3_pstack>");
+      assert.notInclude(received[0]!, "$pstack:architect");
+    } else {
+      assert.notInclude(received[0]!, "<t3_pstack>");
+      if (mode !== "no-mention") assert.include(received[0]!, "pstack:architect");
+    }
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

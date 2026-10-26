@@ -1,3 +1,6 @@
+import * as ServerSettings from "../serverSettings.ts";
+import { hasPstackComposerInvocation } from "../pstack/composer.ts";
+import * as PstackPack from "../pstack/PstackPack.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
@@ -84,10 +87,15 @@ export class ProviderTurnControlServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnControlServiceV2,
   never,
-  ProjectionStore.ProjectionStoreV2 | ProviderSessionManager.ProviderSessionManagerV2
+  | ProjectionStore.ProjectionStoreV2
+  | ProviderSessionManager.ProviderSessionManagerV2
+  | PstackPack.PstackPack
+  | ServerSettings.ServerSettingsService
 > = Layer.effect(
   ProviderTurnControlServiceV2,
   Effect.gen(function* () {
+    const pstack = yield* PstackPack.PstackPack;
+    const settings = yield* ServerSettings.ServerSettingsService;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
 
@@ -345,6 +353,21 @@ export const layer: Layer.Layer<
               cause: "The persisted steering message or target run is missing.",
             });
           }
+          let composer = { text: message.text, records: message.context?.records ?? [] };
+          if (
+            hasPstackComposerInvocation(composer, message) &&
+            (yield* settings.getSettings.pipe(
+              Effect.map((current) => current.pstackEnabled),
+              // Expansion reports settings failures without preventing message delivery.
+              Effect.orElseSucceed(() => true),
+            ))
+          ) {
+            const thread = yield* projections.getThread(input.threadId);
+            composer = yield* pstack.expandComposer(
+              { ...composer, projectId: thread.projectId },
+              message,
+            );
+          }
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
@@ -353,10 +376,7 @@ export const layer: Layer.Layer<
               providerTurnId: loaded.providerTurn.id,
               message: {
                 messageId: message.id,
-                text: projectComposerContextForProvider({
-                  text: message.text,
-                  records: message.context?.records ?? [],
-                }),
+                text: projectComposerContextForProvider(composer),
                 attachments: message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,

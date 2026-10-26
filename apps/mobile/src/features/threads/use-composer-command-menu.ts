@@ -3,6 +3,7 @@ import type {
   EnvironmentId,
   ProjectId,
   ProviderInteractionMode,
+  ServerConfig,
   ServerProvider,
   ThreadId,
   ThreadPullRequestLink,
@@ -194,6 +195,7 @@ export function useComposerCommandMenu({
   pullRequestRepository = null,
   threadPullRequests,
   selectedProviderStatus,
+  pstackSkills,
   hasThread,
   hasCompactableConversation,
   offersUsageLimits = false,
@@ -213,6 +215,7 @@ export function useComposerCommandMenu({
   readonly pullRequestRepository?: string | null;
   readonly threadPullRequests?: ReadonlyArray<ThreadPullRequestLink>;
   readonly selectedProviderStatus: ServerProvider | null;
+  readonly pstackSkills: ServerConfig["pstackSkills"];
   readonly hasThread: boolean;
   readonly hasCompactableConversation: boolean;
   readonly offersUsageLimits?: boolean;
@@ -252,9 +255,7 @@ export function useComposerCommandMenu({
     setSelection(composerSelectionAtEnd(draftMessage));
   }, [draftMessage, ownerKey]);
 
-  const skills = selectedProviderStatus
-    ? resolveProviderSkillsForCwd(selectedProviderStatus, projectCwd)
-    : [];
+  const skills = resolveProviderSkillsForCwd(selectedProviderStatus, projectCwd, pstackSkills);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
