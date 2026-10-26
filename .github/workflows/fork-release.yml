@@ -127,8 +127,11 @@ jobs:
             arch: x64
             rust_target: x86_64-unknown-linux-gnu
             resource_key: linux-x64
+          # Like release.yml: Windows packages on Linux and runs its native
+          # checks on a Windows runner.
           - label: Windows x64
-            runner: windows-2025
+            runner: ubuntu-24.04
+            verify_runner: windows-2025
             platform: win
             target: nsis
             arch: x64
@@ -147,6 +150,7 @@ jobs:
       relay_url: ${{ needs.bundle.outputs.relay_url }}
       label: ${{ matrix.label }}
       runner: ${{ matrix.runner }}
+      verify_runner: ${{ matrix.verify_runner || '' }}
       platform: ${{ matrix.platform }}
       target: ${{ matrix.target }}
       arch: ${{ matrix.arch }}
