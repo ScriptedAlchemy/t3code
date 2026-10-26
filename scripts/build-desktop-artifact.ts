@@ -981,6 +981,8 @@ export const STAGE_INSTALL_ARGS = [
 ] as const;
 export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
+  "!apps/server/dist/pstack",
+  "!apps/server/dist/pstack/**/*",
   // Cursor walks from argv[1] to platform assets; helpers and native addons need real paths outside ASAR.
   "!**/node_modules/@cursor/sdk-*/**/*",
   "!apps/desktop/prod-resources/cursor-sdk",
@@ -1034,6 +1036,8 @@ export const WINDOWS_SERVER_ASAR_UNPACK_GLOBS = [
 ] as const;
 // Keep sidecar exclusions aligned with the app; .bin symlinks are unused and unsupported by ASAR extraction.
 export const WINDOWS_SERVER_ASAR_IGNORE_GLOBS = [
+  "apps/server/dist/pstack",
+  "apps/server/dist/pstack/**",
   "**/node_modules/@cursor/sdk-*",
   "**/node_modules/@cursor/sdk-*/**",
   "**/node_modules/@anthropic-ai/claude-agent-sdk-*",
@@ -1057,7 +1061,8 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
   ];
 }
 
-export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;
+// The external pstack pack contributes about 200 files in addition to the server's native sidecars.
+export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 300;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
@@ -1087,6 +1092,11 @@ export const WSL_RUNTIME_EXTRA_RESOURCES = [
   WSL_RUNTIME_ARCHIVE_HASH_EXTRA_RESOURCE,
 ] as const;
 export const DESKTOP_EXTRA_RESOURCES = [
+  // The main app matcher strips bun.lock; extraResources preserves the runtime pack.
+  {
+    from: "apps/server/dist/pstack",
+    to: "pstack",
+  },
   {
     from: "apps/desktop/prod-resources/cursor-sdk",
     to: "node_modules/@cursor",
@@ -3073,6 +3083,22 @@ export const packWindowsServerAsar = Effect.fn("packWindowsServerAsar")(function
   }
 });
 
+export const stageDesktopServerDist = Effect.fn("stageDesktopServerDist")(function* (input: {
+  readonly platform: typeof BuildPlatform.Type;
+  readonly serverDistDir: string;
+  readonly stageAppDir: string;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const destination = path.join(input.stageAppDir, "apps/server/dist");
+  yield* fs.makeDirectory(destination, { recursive: true });
+  if (input.platform === "win") {
+    yield* fs.copy(path.join(input.serverDistDir, "pstack"), path.join(destination, "pstack"));
+  } else {
+    yield* fs.copy(input.serverDistDir, destination);
+  }
+});
+
 export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(function* (input: {
   readonly stageRoot: string;
   readonly repoRoot: string;
@@ -3703,9 +3729,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   yield* validateBundledClientAssets(path.dirname(bundledClientEntry));
 
   yield* fs.makeDirectory(path.join(stageAppDir, "apps/desktop"), { recursive: true });
-  if (options.platform !== "win") {
-    yield* fs.makeDirectory(path.join(stageAppDir, "apps/server"), { recursive: true });
-  }
 
   yield* Effect.log("[desktop-artifact] Staging release app...");
   yield* fs.copy(distDirs.desktopDist, path.join(stageAppDir, "apps/desktop/dist-electron"));
@@ -3727,8 +3750,12 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       options.verbose,
     );
   }
+  yield* stageDesktopServerDist({
+    platform: options.platform,
+    serverDistDir: distDirs.serverDist,
+    stageAppDir,
+  });
   if (options.platform !== "win") {
-    yield* fs.copy(distDirs.serverDist, path.join(stageAppDir, "apps/server/dist"));
     yield* stageProjectMemory({
       repoRoot,
       outputDir: path.join(stageAppDir, "apps/server/dist/project-memory"),

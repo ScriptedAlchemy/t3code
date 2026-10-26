@@ -29,6 +29,8 @@ import {
   readWorkspaceConfig,
   createBuildConfig,
   DESKTOP_FILE_EXCLUSIONS,
+  DESKTOP_EXTRA_RESOURCES,
+  stageDesktopServerDist,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   UnsupportedDesktopBuildArchitectureError,
@@ -212,6 +214,72 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
 });
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+  it.effect.each(["mac", "linux", "win"] as const)(
+    "stages pstack at the extraResources source on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pstack-stage-" });
+        const serverDistDir = path.join(root, "dist");
+        const stageAppDir = path.join(root, "app");
+        const files = [
+          "UPSTREAM.json",
+          "upstream/.gitignore",
+          "upstream/skills/poteto-mode/scripts/bun.lock",
+        ];
+        for (const file of files) {
+          const source = path.join(serverDistDir, "pstack", file);
+          yield* fs.makeDirectory(path.dirname(source), { recursive: true });
+          yield* fs.writeFileString(source, file);
+        }
+        yield* fs.writeFileString(path.join(serverDistDir, "bin.mjs"), "server");
+        yield* stageDesktopServerDist({ platform, serverDistDir, stageAppDir });
+        for (const file of files) {
+          assert.equal(
+            yield* fs.readFileString(path.join(stageAppDir, "apps/server/dist/pstack", file)),
+            file,
+          );
+        }
+        assert.equal(
+          yield* fs.exists(path.join(stageAppDir, "apps/server/dist/bin.mjs")),
+          platform !== "win",
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each(["mac", "linux", "win"] as const)(
+    "ships pstack outside asar without filtering runtime lockfiles on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const config = yield* createBuildConfig(
+          platform,
+          "dir",
+          "1.2.3",
+          false,
+          false,
+          undefined,
+          undefined,
+        );
+        const resource = { from: "apps/server/dist/pstack", to: "pstack" };
+        assert.deepInclude(DESKTOP_EXTRA_RESOURCES, resource);
+        assert.deepInclude(config.extraResources as unknown[], resource);
+        for (const file of ["UPSTREAM.json", "upstream/skills/poteto-mode/scripts/bun.lock"]) {
+          const packagedPath = `${resource.from}/${file}`;
+          assert.isTrue(
+            DESKTOP_FILE_EXCLUSIONS.some((glob) =>
+              NodePath.matchesGlob(packagedPath, glob.slice(1)),
+            ),
+          );
+          assert.isTrue(
+            WINDOWS_SERVER_ASAR_IGNORE_GLOBS.some((glob) =>
+              NodePath.matchesGlob(packagedPath, glob),
+            ),
+          );
+        }
+      }),
+  );
+
   it.effect("rejects overlapping builds from another process until restoration finishes", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -1261,6 +1329,28 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.equal(error.reason, "file-limit-exceeded");
         assert.isAbove(error.fileCount ?? 0, 2);
       }),
+    ),
+  );
+
+  it.effect("allows the vendored pstack files within the Windows payload budget", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const fixture = yield* makeWindowsPayloadFixture({ copyUnpackedNatives: true });
+      yield* fs.copy(
+        path.join(import.meta.dirname, "../packages/pstack/upstream"),
+        path.join(fixture.packagedAppDir, "resources/pstack/upstream"),
+      );
+      yield* validateWindowsPackagedPayload({
+        stageDistDir: fixture.stageDistDir,
+        appExecutableName: fixture.appExecutableName,
+        targetArch: "arm64",
+        appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+      });
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(HostProcess.Architecture, "x64"),
     ),
   );
 

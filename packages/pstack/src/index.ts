@@ -7,7 +7,9 @@ import { readManifest } from "./files.ts";
 export { parsePstackRoleDefaults, type PstackRoleDefault } from "./roles.ts";
 
 export const PSTACK_SKILL_PREFIX = "pstack:";
-export const PSTACK_LAYOUT_VERSION = 1;
+export const PSTACK_LAYOUT_VERSION = 2;
+
+const isRuntimePackFile = (packPath: string) => NodePath.posix.basename(packPath) !== ".gitignore";
 
 /** Files relative to a source root containing upstream/, t3-code.md, and UPSTREAM.json. */
 export function pstackPackEntries(sourceRoot: string): ReadonlyArray<{
@@ -17,11 +19,13 @@ export function pstackPackEntries(sourceRoot: string): ReadonlyArray<{
 }> {
   const root = NodePath.resolve(sourceRoot);
   return [
-    ...Object.entries(readManifest(root).files).map(([packPath, { executable }]) => ({
-      packPath,
-      sourcePath: NodePath.join(root, "upstream", packPath),
-      executable,
-    })),
+    ...Object.entries(readManifest(root).files)
+      .filter(([packPath]) => isRuntimePackFile(packPath))
+      .map(([packPath, { executable }]) => ({
+        packPath,
+        sourcePath: NodePath.join(root, "upstream", packPath),
+        executable,
+      })),
     {
       packPath: "docs/harness/t3-code.md",
       sourcePath: NodePath.join(root, "t3-code.md"),
