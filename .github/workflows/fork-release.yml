@@ -185,6 +185,16 @@ jobs:
           rm -f assets/builder-debug.yml
           mv assets/latest-win-x64.yml assets/latest.yml
 
+      # t3 update verifies the CLI archive it downloads against this file.
+      - name: Write CLI archive checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd assets
+          shopt -s nullglob
+          sha256sum t3-*.tar.gz t3-*.zip > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Publish release
         shell: bash
         env:
