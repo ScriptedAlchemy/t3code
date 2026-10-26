@@ -337,6 +337,12 @@ it.effect(
         title: "Parent",
       };
       const launched = yield* launches.launch({ ...input, delegatedFrom });
+      const startedInput = launchInput({
+        command: "command:started",
+        thread: "thread:started",
+        message: "Accepted work",
+      });
+      const started = yield* launches.launch({ ...startedInput, delegatedFrom });
       providers[0] = { ...providers[0]!, limitedUntil: "2099-01-01T00:00:00.000Z" };
       const next = launchInput({ command: "command:next", thread: "thread:next" });
       const refused = yield* launches.launch({ ...next, delegatedFrom }).pipe(Effect.result);
@@ -345,6 +351,19 @@ it.effect(
       assert.equal(ordinary.threadId, next.threadId);
       const replay = yield* launches.launch({ ...input, delegatedFrom });
       assert.equal(replay.threadId, launched.threadId);
+      const startedReplay = yield* launches.launch({ ...startedInput, delegatedFrom });
+      assert.equal(startedReplay.threadId, started.threadId);
+      assert.equal(startedReplay.projection.messages.length, 1);
+      const freshWork = yield* launches
+        .launch({
+          ...input,
+          delegatedFrom,
+          initialMessage: { text: "New work", attachments: [] },
+        })
+        .pipe(Effect.result);
+      assert.isTrue(Result.isFailure(freshWork));
+      const untouched = yield* launches.launch({ ...input, delegatedFrom });
+      assert.equal(untouched.projection.messages.length, 0);
     }).pipe(Effect.provide(harness.layer));
   },
 );

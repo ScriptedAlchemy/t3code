@@ -66,6 +66,7 @@ import {
   type ServerProviderModel,
   ThreadId,
   isOrchestrationV2WorkActive,
+  resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -2085,6 +2086,15 @@ const make = Effect.gen(function* () {
         providers: providers
           .filter((provider) => provider.pool?.role !== "member")
           .flatMap((provider) => {
+            if (
+              provider.pool?.role !== "pool" &&
+              !resolveProjectProviderInstanceEnabled(
+                settings,
+                availability.projectId,
+                provider.instanceId,
+              )
+            )
+              return [];
             const constraints = delegationProviderConstraints(
               provider,
               orchestrationCapableInstanceIds.has(provider.instanceId),
@@ -2588,7 +2598,17 @@ const make = Effect.gen(function* () {
                 requestKey: key,
                 index,
               });
+              const messageCommandId = stableCommandId({
+                scope,
+                requestKey: key,
+                operation: "dispatch-thread",
+                index,
+              });
               const isRetryOfAcceptedCreation = yield* threadManagement.hasReceipt(commandId);
+              const isRetryOfAcceptedWork =
+                isRetryOfAcceptedCreation &&
+                (request.prompt === undefined ||
+                  (yield* threadManagement.hasReceipt(messageCommandId)));
               const committedThread = isRetryOfAcceptedCreation
                 ? yield* threadManagement
                     .getThreadShell(threadId)
@@ -2604,7 +2624,7 @@ const make = Effect.gen(function* () {
                         providerInstanceId: committedThread.modelSelection.instanceId,
                       },
                 providers,
-                skipProjectEnablementFilter: isRetryOfAcceptedCreation,
+                skipProjectEnablementFilter: isRetryOfAcceptedWork,
               });
               const runtimeMode = yield* resolveRuntimeMode(
                 parent.thread.runtimeMode,
@@ -2658,12 +2678,7 @@ const make = Effect.gen(function* () {
                     type: "message.dispatch",
                     createdBy: "agent",
                     creationSource: "mcp",
-                    commandId: stableCommandId({
-                      scope,
-                      requestKey: key,
-                      operation: "dispatch-thread",
-                      index,
-                    }),
+                    commandId: messageCommandId,
                     threadId,
                     senderThreadId: scope.thread.threadId,
                     messageId: stableMessageId({

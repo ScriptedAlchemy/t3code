@@ -838,9 +838,13 @@ const make = Effect.gen(function* () {
       }
 
       const launchReceipt = yield* readReceipt(input, input.commandId);
+      const delegationReceipt =
+        input.delegatedFrom !== undefined && input.initialMessage !== undefined
+          ? yield* readReceipt(input, CommandId.make(`${input.commandId}:initial-message`))
+          : launchReceipt;
       if (
         input.delegatedFrom !== undefined &&
-        !(Option.isSome(launchReceipt) && launchReceipt.value.status === "accepted")
+        !(Option.isSome(delegationReceipt) && delegationReceipt.value.status === "accepted")
       ) {
         const providers = yield* providerRegistry.getPublishedProviders;
         const provider = providers.find(
