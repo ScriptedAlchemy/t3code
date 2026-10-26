@@ -1084,6 +1084,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     approvalsReviewer: "user",
                     sandboxPolicy: { type: "dangerFullAccess" },
                     summary: "detailed",
+                    collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
                     ...(setupMode === "existing" ? { serviceTier: "priority" } : {}),
                   },
                 },
