@@ -567,6 +567,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     onUsageLimits:
       usageLimitsOffered && draftAttachments.length === 0 ? openUsageLimits : undefined,
     modelOptions,
+    modelProviders: props.serverConfig?.providers,
     onSelectModel:
       props.interactionLocked === true
         ? undefined

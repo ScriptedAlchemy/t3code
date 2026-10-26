@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
 
@@ -94,6 +94,23 @@ describe("mobile slash commands", () => {
 });
 
 describe("mobile model mentions", () => {
+  const provider = (
+    instanceId: string,
+    overrides: Partial<ServerProvider> = {},
+  ): ServerProvider => ({
+    instanceId: ProviderInstanceId.make(instanceId),
+    driver: ProviderDriverKind.make("codex"),
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-01-01T00:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+    ...overrides,
+  });
   const option = (key: string, overrides: Partial<ModelOption> = {}): ModelOption => {
     const [instanceId = "", model = ""] = key.split(":");
     return {
@@ -125,10 +142,21 @@ describe("mobile model mentions", () => {
         option("old:gpt-5", { label: "GPT-5", isLegacy: true }),
       ],
       "gpt",
+      ["traex", "opencode", "hidden", "gone", "old"].map((id) => provider(id)),
     );
     expect(items.map((item) => [item.id, item.description]).toSorted()).toEqual([
       ["model:opencode:traex/gpt-6.1", "OpenCode · Traex"],
       ["model:traex:gpt-6.1", "Traex"],
     ]);
+  });
+
+  it.each([
+    ["missing", []],
+    ["not installed", [provider("traex", { installed: false })]],
+    ["signed out", [provider("traex", { auth: { status: "unauthenticated" } })]],
+    ["not ready", [provider("traex", { status: "error" })]],
+    ["unavailable", [provider("traex", { availability: "unavailable" })]],
+  ] as const)("does not suggest a preserved selection whose provider is %s", (_, providers) => {
+    expect(buildComposerModelItems([option("traex:gpt-6.1")], "gpt", providers)).toEqual([]);
   });
 });

@@ -152,9 +152,28 @@ export function buildComposerSlashCommandItems(input: {
 export function buildComposerModelItems(
   modelOptions: ReadonlyArray<ModelOption>,
   query: string,
+  providers: ReadonlyArray<ServerProvider>,
 ): ComposerCommandItem[] {
+  // The picker retains saved selections even when their provider is no longer usable.
+  const readyProviderIds = new Set(
+    providers
+      .filter(
+        (provider) =>
+          provider.installed &&
+          provider.status === "ready" &&
+          provider.auth.status !== "unauthenticated" &&
+          provider.availability !== "unavailable",
+      )
+      .map((provider) => provider.instanceId),
+  );
   return rankComposerModelMentions(
-    modelOptions.filter((option) => !option.isUnavailable && !option.isHidden && !option.isLegacy),
+    modelOptions.filter(
+      (option) =>
+        readyProviderIds.has(option.selection.instanceId) &&
+        !option.isUnavailable &&
+        !option.isHidden &&
+        !option.isLegacy,
+    ),
     query,
     (option) => ({
       name: option.label,
@@ -232,6 +251,7 @@ export function useComposerCommandMenu({
   onUpdateInteractionMode,
   onUsageLimits,
   modelOptions,
+  modelProviders,
   onSelectModel,
 }: {
   readonly draftMessage: string;
@@ -255,6 +275,7 @@ export function useComposerCommandMenu({
   readonly onUsageLimits?: () => void;
   /** Models an `@` mention can switch to; leave `onSelectModel` unset when switching isn't allowed. */
   readonly modelOptions?: ReadonlyArray<ModelOption>;
+  readonly modelProviders?: ReadonlyArray<ServerProvider>;
   readonly onSelectModel?: (option: ModelOption) => void;
 }) {
   const [selection, setSelection] = useState(() => composerSelectionAtEnd(draftMessage));
@@ -491,7 +512,9 @@ export function useComposerCommandMenu({
         ? matchComposerEnvironmentItems({ environments, environmentId, query: trigger.query })
         : [];
       const modelItems =
-        modelOptions && onSelectModel ? buildComposerModelItems(modelOptions, trigger.query) : [];
+        modelOptions && modelProviders && onSelectModel
+          ? buildComposerModelItems(modelOptions, trigger.query, modelProviders)
+          : [];
       return [
         ...threadItems,
         ...environmentItems,
