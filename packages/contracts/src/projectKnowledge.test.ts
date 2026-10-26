@@ -3,6 +3,8 @@ import * as Schema from "effect/Schema";
 
 import { ProjectKnowledgeListResult, ProjectKnowledgeDelivery } from "./projectKnowledge.ts";
 
+const decodeDelivery = Schema.decodeUnknownSync(ProjectKnowledgeDelivery);
+
 const decodeList = Schema.decodeUnknownSync(ProjectKnowledgeListResult);
 const encodeList = Schema.encodeSync(ProjectKnowledgeListResult);
 
@@ -59,14 +61,12 @@ const oldDelivery = {
   updatedAt: "2026-10-22T00:00:00.000Z",
 };
 it("decodes old delivery receipts without budget assumptions", () => {
-  expect(Schema.decodeUnknownSync(ProjectKnowledgeDelivery)(oldDelivery)).toEqual(oldDelivery);
+  expect(decodeDelivery(oldDelivery)).toEqual(oldDelivery);
 });
 it.each(["over_budget", "source_unavailable", "stale_revision", "not_permitted", "recall_failed"])(
   "decodes omission %s",
   (reason) => {
     const omissions = [{ contextId: "source", label: "Source", reason }];
-    expect(
-      Schema.decodeUnknownSync(ProjectKnowledgeDelivery)({ ...oldDelivery, omissions }).omissions,
-    ).toEqual(omissions);
+    expect(decodeDelivery({ ...oldDelivery, omissions }).omissions).toEqual(omissions);
   },
 );

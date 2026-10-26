@@ -28,7 +28,7 @@ export const claudeProvider: ServerProvider = {
 const encodeManifest = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 export const disabledLayer = Layer.mock(PstackPack.PstackPack)({
-  catalog: Effect.succeed(undefined),
+  catalog: Effect.sync(() => undefined),
   expandComposer: (input) => Effect.succeed(input),
 });
 
@@ -50,12 +50,16 @@ export const makeFixture = Effect.fn("PstackPackTest.makeFixture")(function* (
       subtreeHash: "b".repeat(40),
       version: "test",
       files: Object.fromEntries([
+        [".gitignore", { sha256: "c".repeat(64), executable: false }],
+        ["skills/poteto-mode/scripts/bun.lock", { sha256: "c".repeat(64), executable: false }],
         ["skills/architect/SKILL.md", { sha256: "c".repeat(64), executable: false }],
         ["skills/setup-pstack/SKILL.md", { sha256: "c".repeat(64), executable: false }],
         ["scripts/helper.sh", { sha256: "c".repeat(64), executable: true }],
       ]),
     }),
     "t3-code.md": "# T3 harness",
+    "upstream/.gitignore": "node_modules/\n",
+    "upstream/skills/poteto-mode/scripts/bun.lock": "lockfile\n",
     "upstream/skills/architect/SKILL.md":
       "---\nname: architect\ndescription: Design: a system.\ndisable-model-invocation: true\n---\nArchitect",
     "upstream/skills/setup-pstack/SKILL.md":

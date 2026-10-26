@@ -71,6 +71,32 @@ const ensureWith = (input: {
   );
 
 describe("DesktopWslServerTree", () => {
+  it.effect("includes the external pstack pack in the extracted WSL server tree", () =>
+    withTempDir((tempDir) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const resourcesPath = path.join(tempDir, "resources");
+        yield* fs.makeDirectory(path.join(resourcesPath, "server.asar/apps/server/dist"), {
+          recursive: true,
+        });
+        const lockfile = "pstack/upstream/skills/poteto-mode/scripts/bun.lock";
+        yield* fs.makeDirectory(path.dirname(path.join(resourcesPath, lockfile)), {
+          recursive: true,
+        });
+        yield* fs.writeFileString(path.join(resourcesPath, lockfile), "lockfile\n");
+        const result = yield* ensureWith({ baseDir: tempDir, resourcesPath });
+        assert.isTrue(result.ok);
+        assert.equal(
+          yield* fs.readFileString(
+            path.join(result.ok ? result.root : "", "apps/server/dist", lockfile),
+          ),
+          "lockfile\n",
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("bounds entry work across an eight-way nested tree", () =>
     Effect.gen(function* () {
       const active = yield* Ref.make(0);

@@ -130,6 +130,10 @@ export const make = Effect.gen(function* () {
     });
     yield* Effect.gen(function* () {
       yield* copyTree(fs, join, serverRoot, partialDir);
+      const pstackSource = join(environment.resourcesPath, "pstack");
+      if (yield* fs.exists(pstackSource)) {
+        yield* copyTree(fs, join, pstackSource, join(partialDir, "apps/server/dist/pstack"));
+      }
       const markerJson = yield* encodeMarker({ version });
       yield* fs.writeFileString(join(partialDir, MARKER_FILE_NAME), `${markerJson}\n`);
       yield* fs.remove(versionDir, { recursive: true }).pipe(Effect.ignore);

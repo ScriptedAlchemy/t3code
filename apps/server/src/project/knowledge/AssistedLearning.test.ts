@@ -35,6 +35,8 @@ import { AssistedLearningRunner, assistedLearningEffects } from "./assistedLearn
 import * as HolographicMemory from "./HolographicMemory.ts";
 import * as ProjectKnowledge from "./ProjectKnowledge.ts";
 
+const isTextGenerationError = Schema.is(TextGenerationError);
+
 type Generate = TextGeneration.TextGeneration["Service"]["generateKnowledgeCandidates"];
 
 const projectId = ProjectId.make("learning");
@@ -71,7 +73,7 @@ const scripted = (
   const generate: Generate = (input) => {
     const reply = replies[Math.min(calls.length, replies.length - 1)]!;
     calls.push(input);
-    return Schema.is(TextGenerationError)(reply) ? Effect.fail(reply) : Effect.succeed(reply);
+    return isTextGenerationError(reply) ? Effect.fail(reply) : Effect.succeed(reply);
   };
   return { calls, generate };
 };

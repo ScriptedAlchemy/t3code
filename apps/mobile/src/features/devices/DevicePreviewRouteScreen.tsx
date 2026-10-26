@@ -9,10 +9,10 @@ import {
 import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import * as Haptics from "expo-haptics";
 import { Accelerometer } from "expo-sensors";
-import { AppState, BackHandler, Pressable, StatusBar, View } from "react-native";
+import { Pressable, StatusBar, View } from "react-native";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -27,9 +27,12 @@ import {
   findHeaderMenuAction,
 } from "../../components/ui/headerMenu.android";
 import type { AppBarMenuItem } from "../../components/ui/AppBar.types";
+import { useAppForeground } from "../../lib/appState";
+import { useHardwareBack } from "../../lib/backHandler";
 import { deriveBottomControlInsets } from "../../lib/reserved-regions";
 import { useNativeColumnLayoutMetrics } from "../../native/native-layout-metrics";
-import { deviceEnvironment, refreshDeviceHubAccess, useDeviceHubAccess } from "../../state/device";
+import { uuidv4 } from "../../lib/uuid";
+import { deviceEnvironment, useDeviceHubAccess } from "../../state/device";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
@@ -88,7 +91,7 @@ export function DevicePreviewScreen({
   const handleBounds = deriveBottomControlInsets(useNativeColumnLayoutMetrics());
   const { themeVariables } = useAppearancePreferences();
   const focused = useIsFocused();
-  const [foreground, setForeground] = useState(AppState.currentState !== "background");
+  const foreground = useAppForeground();
   const [selectedKey, setSelectedKey] = useState<string | null>(initialDeviceKey ?? null);
   const [inputConnected, setInputConnected] = useState(false);
   const [streamAttempt, setStreamAttempt] = useState(0);
@@ -100,19 +103,10 @@ export function DevicePreviewScreen({
   const state = useEnvironmentQuery(deviceEnvironment.state({ environmentId, input: {} }));
   const previews = threadDevicePreviews(state.data, threadId);
   const preview = selectedThreadDevicePreview(previews, selectedKey);
-  const onInputConnected = useCallback(
-    async (connected: boolean) => {
-      setInputConnected(connected);
-      if (connected && !embedded) setControlsVisible(false);
-    },
-    [embedded],
-  );
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) =>
-      setForeground(state !== "background"),
-    );
-    return () => subscription.remove();
-  }, []);
+  const onInputConnected = async (connected: boolean) => {
+    setInputConnected(connected);
+    if (connected && !embedded) setControlsVisible(false);
+  };
   useEffect(() => {
     if (focused && state.data !== null && previews.length === 0) onClose();
   }, [focused, state.data, previews.length, onClose]);
@@ -127,14 +121,10 @@ export function DevicePreviewScreen({
     });
     return () => subscription.remove();
   }, [focused, foreground, embedded]);
-  useEffect(() => {
-    if (controlsVisible) return;
-    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-      setControlsVisible(true);
-      return true;
-    });
-    return () => subscription.remove();
-  }, [controlsVisible]);
+  useHardwareBack(!controlsVisible, () => {
+    setControlsVisible(true);
+    return true;
+  });
 
   const shutDownDevice = async () => {
     if (!preview || shuttingDown) return;
@@ -409,12 +399,9 @@ function OpenDevicePreview({
 }) {
   const { session } = preview;
   const { themeVariables } = useAppearancePreferences();
-  const { access, error, refresh } = useDeviceHubAccess(environmentId, session.hostId);
-  const onUnauthorized = async () => refreshDeviceHubAccess(environmentId);
-  useEffect(() => {
-    refreshDeviceHubAccess(environmentId);
-    return () => void onInputConnected(false);
-  }, [environmentId, onInputConnected]);
+  const [viewer] = useState(uuidv4);
+  const { access, error, refresh } = useDeviceHubAccess(environmentId, session.hostId, viewer);
+  const onUnauthorized = async () => refresh();
   return access ? (
     <DeviceStreamWebView
       ref={streamRef}

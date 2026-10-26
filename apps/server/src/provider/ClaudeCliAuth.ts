@@ -136,7 +136,6 @@ export const makeClaudeCliAuth = Effect.fn("makeClaudeCliAuth")(function* (optio
                 }
                 pending += chunk;
                 const match =
-                  // oxlint-disable-next-line no-control-regex -- ANSI escapes delimit the CLI's colored browser link.
                   /https:\/\/(?:claude\.com|claude\.ai)\/(?:cai\/)?oauth\/authorize\?[^\s\u001b]+(?=[\s\u001b])/.exec(
                     pending,
                   );

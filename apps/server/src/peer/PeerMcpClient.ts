@@ -264,9 +264,9 @@ const make = Effect.gen(function* () {
       const decoded =
         body.result.structuredContent === undefined
           ? // oxlint-disable-next-line t3code/no-inline-schema-compile -- Each caller supplies its tool's result schema.
-            Schema.decodeUnknownEffect(Schema.fromJsonString(input.success))(text)
+            Schema.decodeEffect(Schema.fromJsonString(input.success))(text)
           : // oxlint-disable-next-line t3code/no-inline-schema-compile -- Each caller supplies its tool's result schema.
-            Schema.decodeUnknownEffect(input.success)(body.result.structuredContent);
+            Schema.decodeEffect(input.success)(body.result.structuredContent);
       return yield* decoded.pipe(
         Effect.mapError(
           () =>

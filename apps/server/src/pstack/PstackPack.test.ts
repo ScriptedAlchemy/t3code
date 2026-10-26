@@ -1,4 +1,5 @@
 import { resolvePstackSourceRoot } from "../config.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Layer from "effect/Layer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -23,6 +24,67 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
         yield* resolvePstackSourceRoot(),
         path.resolve(import.meta.dirname, "../../../../packages/pstack"),
       );
+    }).pipe(Effect.provideService(HostProcess.Environment, {})),
+  );
+
+  it.effect("prefers an existing external pstack source over the bundled source", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const fixture = yield* makeFixture();
+      assert.equal(
+        yield* resolvePstackSourceRoot().pipe(
+          Effect.provideService(HostProcess.Environment, {
+            T3CODE_PSTACK_SOURCE_ROOT: fixture.sourceRoot,
+          }),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            exists: () => Effect.succeed(true),
+          }),
+        ),
+        fixture.sourceRoot,
+      );
+    }),
+  );
+
+  it.effect("falls back to the bundled source when the external source is missing", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const bundled = path.resolve(import.meta.dirname, "../pstack");
+      assert.equal(
+        yield* resolvePstackSourceRoot().pipe(
+          Effect.provideService(HostProcess.Environment, {
+            T3CODE_PSTACK_SOURCE_ROOT: "/missing/pstack",
+          }),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            exists: (file) => Effect.succeed(file === path.join(bundled, "UPSTREAM.json")),
+          }),
+        ),
+        bundled,
+      );
+    }),
+  );
+
+  it.effect("materializes a published pack without gitignore metadata and preserves bun.lock", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture();
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.remove(`${fixture.sourceRoot}/upstream/.gitignore`);
+      yield* Effect.gen(function* () {
+        const catalog = yield* (yield* PstackPack.PstackPack).catalog;
+        assert.lengthOf(catalog!, 2);
+        const packDir = `${fixture.stateDir}/pstack/pack`;
+        assert.isFalse(yield* fs.exists(`${packDir}/.gitignore`));
+        assert.equal(
+          yield* fs.readFileString(`${packDir}/skills/poteto-mode/scripts/bun.lock`),
+          "lockfile\n",
+        );
+        assert.equal(
+          yield* fs.readFileString(`${packDir}/.t3-pstack-hash`),
+          pstackContentHash(fixture.sourceRoot),
+        );
+      }).pipe(Effect.provide(fixture.layer));
     }),
   );
 

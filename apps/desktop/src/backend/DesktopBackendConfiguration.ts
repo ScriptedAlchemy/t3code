@@ -2,6 +2,7 @@ import * as NodeOS from "node:os";
 
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
 import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import { PSTACK_SOURCE_ROOT_ENV } from "@t3tools/shared/pstack";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -490,11 +491,22 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
   ): Effect.fn.Return<
     DesktopBackendManager.DesktopBackendStartConfig,
     never,
-    DesktopEnvironment.DesktopEnvironment | DesktopServerExposure.DesktopServerExposure
+    | DesktopEnvironment.DesktopEnvironment
+    | DesktopServerExposure.DesktopServerExposure
+    | FileSystem.FileSystem
   > {
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
     const backendExposure = yield* serverExposure.backendConfig;
+    const fs = yield* FileSystem.FileSystem;
+    const pstackSourceRoot = environment.path.join(environment.resourcesPath, "pstack");
+    const hasPstackSource =
+      environment.isPackaged &&
+      !environment.isDevelopment &&
+      (yield* fs.stat(pstackSourceRoot).pipe(
+        Effect.map((stat) => stat.type === "Directory"),
+        Effect.orElseSucceed(() => false),
+      ));
 
     const bootstrap = {
       mode: "desktop" as const,
@@ -533,6 +545,7 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         ...backendChildEnvPatch(),
         ELECTRON_RUN_AS_NODE: "1",
         T3CODE_CLI_PATH: Option.getOrUndefined(input.cliPath),
+        [PSTACK_SOURCE_ROOT_ENV]: hasPstackSource ? pstackSourceRoot : undefined,
       },
       extendEnv: true,
       bootstrap,
@@ -791,6 +804,7 @@ export const make = Effect.gen(function* () {
     }).pipe(
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
       Effect.provideService(DesktopServerExposure.DesktopServerExposure, serverExposure),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
     );
   });
 

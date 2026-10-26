@@ -18,6 +18,7 @@ export function spawnClaudeProcess(
   platform: NodeJS.Platform,
   configDir?: string,
   onExit?: () => void,
+  onStderr?: (chunk: string) => void,
 ): ClaudeSpawnedProcess {
   const child = NodeChildProcess.spawn(
     platform === "win32" ? options.command : "/bin/sh",
@@ -28,11 +29,15 @@ export function spawnClaudeProcess(
       cwd: options.cwd,
       env: configDir === undefined ? options.env : claudeCliEnvironment(options.env, configDir),
       signal: options.signal,
-      stdio: platform === "win32" ? ["pipe", "pipe", "ignore"] : ["pipe", "pipe", "ignore", "pipe"],
+      stdio:
+        platform === "win32"
+          ? ["pipe", "pipe", onStderr === undefined ? "ignore" : "pipe"]
+          : ["pipe", "pipe", "ignore", "pipe"],
       detached: platform !== "win32",
       windowsHide: true,
     },
   );
+  if (onStderr !== undefined) child.stderr?.setEncoding("utf8").on("data", onStderr);
   child.once("exit", () => {
     onExit?.();
     if (platform === "win32") return;

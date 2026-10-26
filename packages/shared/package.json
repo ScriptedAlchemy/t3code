@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./pstack": {
+      "types": "./src/pstack.ts",
+      "import": "./src/pstack.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"
@@ -302,6 +306,10 @@
     "./previewViewport": {
       "types": "./src/previewViewport.ts",
       "import": "./src/previewViewport.ts"
+    },
+    "./mediaPreview": {
+      "types": "./src/mediaPreview.ts",
+      "import": "./src/mediaPreview.ts"
     },
     "./filePreview": {
       "types": "./src/filePreview.ts",

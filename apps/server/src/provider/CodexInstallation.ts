@@ -257,7 +257,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
           now < retryAt &&
           lastDiscoveryFailureCredentialFingerprint === currentDiscoveryCredentialFingerprint
         )
-          return yield* Effect.fail(lastDiscoveryFailure);
+          return yield* lastDiscoveryFailure;
         retryAt = undefined;
         lastDiscoveryFailure = undefined;
         lastDiscoveryFailureCredentialFingerprint = undefined;
@@ -300,7 +300,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
         if (!rateLimited && response.status === 403) {
           const body = yield* response.text.pipe(
             Effect.timeout("5 seconds"),
-            Effect.catch(() => Effect.succeed("")),
+            Effect.orElseSucceed(() => ""),
           );
           rateLimited = /rate limit/i.test(body);
         }
@@ -353,7 +353,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
         "resolve",
         "The managed Codex installation record is invalid. Reinstall Codex.",
       );
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(
+    return yield* Schema.decodeEffect(Schema.fromJsonString(schema))(
       yield* fs.readFileString(file),
     );
   });

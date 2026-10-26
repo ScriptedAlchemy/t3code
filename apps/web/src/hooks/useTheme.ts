@@ -509,7 +509,7 @@ export function useRenderedAppearance() {
   return previewAppearance ?? resolvedTheme;
 }
 
-function setTheme(next: Theme): boolean {
+export function setTheme(next: Theme): boolean {
   if (typeof window === "undefined") return false;
   try {
     // Save the current mode first; inferring it from the new theme can switch dark to light.
@@ -549,7 +549,7 @@ function setTheme(next: Theme): boolean {
   return true;
 }
 
-function setAppearanceMode(nextAppearanceMode: ThemePreferenceMode): boolean {
+export function setAppearanceMode(nextAppearanceMode: ThemePreferenceMode): boolean {
   if (typeof window === "undefined") return false;
   try {
     writeAppearanceModePreference(nextAppearanceMode);
@@ -626,7 +626,7 @@ function clearThemeHalves(): boolean {
   return true;
 }
 
-function refreshTheme({ preservePreview = false } = {}): void {
+export function refreshTheme({ preservePreview = false } = {}): void {
   if (typeof window === "undefined") return;
   lastAppliedTheme = null;
   applyTheme(getStored(), { suppressTransitions: true, preservePreview });

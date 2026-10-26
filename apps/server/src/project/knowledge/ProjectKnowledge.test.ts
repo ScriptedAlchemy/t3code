@@ -55,6 +55,8 @@ import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as ProjectKnowledge from "./ProjectKnowledge.ts";
 
+const decodeKnowledgeSearchResult = Schema.decodeUnknownEffect(ProjectKnowledgeSearchResult);
+
 const environmentId = EnvironmentId.make("knowledge-test-environment");
 const knowledgeTestLayer = (scoring: typeof HolographicMemory.layer = HolographicMemory.layer) =>
   ProjectKnowledge.layer.pipe(
@@ -256,8 +258,9 @@ it.effect("persists edits with CAS, erases forgotten content and cannot resurrec
       .pipe(Effect.result);
     assert.equal(Result.isFailure(oversized) && oversized.failure.reason, "fact_size");
     assert.deepEqual((yield* knowledge.list({ projectId })).facts, [saved]);
-    const edits = yield* Effect.all(
-      ["region", "account"].map((entity) =>
+    const edits = yield* Effect.forEach(
+      ["region", "account"],
+      (entity) =>
         knowledge
           .mutate(
             {
@@ -275,7 +278,6 @@ it.effect("persists edits with CAS, erases forgotten content and cannot resurrec
             { kind: "user" },
           )
           .pipe(Effect.result),
-      ),
       { concurrency: "unbounded" },
     );
     assert.equal(edits.filter(Result.isSuccess).length, 1);
@@ -1616,9 +1618,7 @@ it.effect(
       const results = yield* toolkit
         .handle("t3_knowledge_search", query)
         .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
-      const result = yield* Schema.decodeUnknownEffect(ProjectKnowledgeSearchResult)(
-        results.at(-1)?.result,
-      );
+      const result = yield* decodeKnowledgeSearchResult(results.at(-1)?.result);
       if (result.facts.state !== "available")
         return assert.fail("Real native ranking must be available");
       assert.equal(result.facts.coverage, "complete");
