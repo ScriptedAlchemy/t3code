@@ -127,6 +127,7 @@ const fixture = Effect.fn("fixture")(function* (
         origin: "http://device.test",
         http,
         run,
+        iosAvailable: Effect.succeed(false),
         androidAvailable: Effect.succeed(true),
       }),
       ...(options.endsDevices ? { endsDevices: true } : {}),
@@ -642,6 +643,7 @@ it.effect.each(["shutdown", "close"] as const)(
           origin: "http://device.test",
           http,
           run,
+          iosAvailable: Effect.succeed(false),
           androidAvailable: Effect.succeed(true),
         }),
         helpers: { serveSimAxSettings: null, serveSimCli: null },
@@ -741,6 +743,7 @@ it.effect.each([
           origin: "http://device.test",
           http,
           run,
+          iosAvailable: Effect.succeed(false),
           androidAvailable: Effect.succeed(true),
         }),
         helpers: { serveSimAxSettings: null, serveSimCli: null },
@@ -787,6 +790,164 @@ it.effect.each([
 );
 
 it.effect.each([LOCAL_DEVICE_HOST_ID, "ssh-fixture"])(
+  "discovers and boots never-used iOS simulators on %s when the hub omits them",
+  (hostId) =>
+    Effect.gen(function* () {
+      const deviceId = "never-booted";
+      const paths: string[] = [];
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          const path = new URL(request.url).pathname;
+          paths.push(path);
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json(
+              path === "/api/devices"
+                ? { simulators: [], emulators: [] }
+                : { ok: true, id: deviceId },
+            ),
+          );
+        }),
+      );
+      const operations = makeDeviceHubOperations({
+        hostId,
+        origin: "http://device.test",
+        http,
+        run: (command, args) => {
+          expect([command, ...args]).toEqual([
+            "xcrun",
+            "simctl",
+            "list",
+            "devices",
+            "available",
+            "--json",
+          ]);
+          return Effect.succeed({
+            code: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              devices: {
+                "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
+                  { udid: deviceId, name: "iPhone", state: "Shutdown", isAvailable: true },
+                  {
+                    udid: "missing-runtime",
+                    name: "Old iPhone",
+                    state: "Shutdown",
+                    isAvailable: false,
+                  },
+                ],
+                "com.apple.CoreSimulator.SimRuntime.tvOS-27-0": [
+                  { udid: "tv", name: "Apple TV", state: "Shutdown", isAvailable: true },
+                ],
+              },
+            }),
+          });
+        },
+        iosAvailable: Effect.succeed(true),
+        androidAvailable: Effect.succeed(false),
+      });
+      const listed = yield* operations.list;
+      expect(listed.devices).toEqual([
+        {
+          id: deviceId,
+          name: "iPhone",
+          platform: "ios",
+          version: "iOS 27.0",
+          booted: false,
+          physical: false,
+        },
+      ]);
+      expect(paths).toEqual(["/api/devices"]);
+      expect(yield* operations.boot(listed.devices[0]!)).toBe(deviceId);
+      expect(paths).toEqual([
+        "/api/devices",
+        "/api/devices/boot",
+        "/vendor/serve-sim/grid/api/start",
+      ]);
+    }).pipe(Effect.scoped),
+);
+
+it.effect.each([
+  { code: 1, stdout: "private output" },
+  { code: 0, stdout: "invalid JSON" },
+])("retains hub inventory and recovers after iOS enumeration fails: $code/$stdout", (failure) =>
+  Effect.gen(function* () {
+    const hubDevice = {
+      id: "existing",
+      name: "Hub iPhone",
+      platform: "ios" as const,
+      version: "iOS 27.0",
+      booted: true,
+      physical: false,
+    };
+    const inventory = yield* Ref.make({ ...failure, stderr: "private error" });
+    const operations = makeDeviceHubOperations({
+      hostId: LOCAL_DEVICE_HOST_ID,
+      origin: "http://device.test",
+      http: HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            Response.json({ simulators: [hubDevice], emulators: [] }),
+          ),
+        ),
+      ),
+      run: () => Ref.get(inventory),
+      iosAvailable: Effect.succeed(true),
+      androidAvailable: Effect.succeed(false),
+    });
+    const incomplete = yield* operations.list;
+    expect(incomplete.devices).toEqual([hubDevice]);
+    expect(incomplete.detail).toBe(
+      "Could not list iOS simulators (xcrun simctl list devices available --json). Discovered devices remain available.",
+    );
+    yield* Ref.set(inventory, {
+      code: 0,
+      stderr: "",
+      stdout: JSON.stringify({
+        devices: {
+          "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
+            { udid: "existing", name: "Native iPhone", state: "Shutdown", isAvailable: true },
+            { udid: "new", name: "New iPhone", state: "Shutdown", isAvailable: true },
+          ],
+        },
+      }),
+    });
+    const recovered = yield* operations.list;
+    expect(recovered.devices).toEqual([
+      hubDevice,
+      {
+        id: "new",
+        name: "New iPhone",
+        platform: "ios",
+        version: "iOS 27.0",
+        booted: false,
+        physical: false,
+      },
+    ]);
+    expect(recovered.detail).toBeUndefined();
+  }).pipe(Effect.scoped),
+);
+
+it.effect("does not run simctl on hosts without iOS support", () =>
+  Effect.gen(function* () {
+    const operations = makeDeviceHubOperations({
+      hostId: "linux-host",
+      origin: "http://device.test",
+      http: HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(request, Response.json({ simulators: [], emulators: [] })),
+        ),
+      ),
+      run: () => Effect.die("Unexpected platform command"),
+      iosAvailable: Effect.succeed(false),
+      androidAvailable: Effect.succeed(false),
+    });
+    expect((yield* operations.list).devices).toEqual([]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect.each([LOCAL_DEVICE_HOST_ID, "ssh-fixture"])(
   "retains hub inventory on %s when AVD enumeration fails and recovers on retry",
   (hostId) =>
     Effect.gen(function* () {
@@ -813,6 +974,7 @@ it.effect.each([LOCAL_DEVICE_HOST_ID, "ssh-fixture"])(
           origin: "http://device.test",
           http,
           run,
+          iosAvailable: Effect.succeed(false),
           androidAvailable: Effect.succeed(true),
         }),
         helpers: { serveSimAxSettings: null, serveSimCli: null },
