@@ -983,10 +983,11 @@ export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
   "!apps/server/dist/pstack",
   "!apps/server/dist/pstack/**/*",
-  // Cursor walks from argv[1] to platform assets; helpers and native addons need real paths outside ASAR.
+  // Self-contained platform packages ship from extraResources, which keeps their real paths and nested node_modules.
   "!**/node_modules/@cursor/sdk-*/**/*",
-  "!apps/desktop/prod-resources/cursor-sdk",
-  "!apps/desktop/prod-resources/cursor-sdk/**/*",
+  "!**/node_modules/@colbymchenry/codegraph-*/**/*",
+  "!apps/desktop/prod-resources/platform-packages",
+  "!apps/desktop/prod-resources/platform-packages/**/*",
   // The installed Claude CLI is supplied explicitly; exclude optional bundled executables, retaining SDK JavaScript.
   "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
   "!**/*.map",
@@ -1040,6 +1041,8 @@ export const WINDOWS_SERVER_ASAR_IGNORE_GLOBS = [
   "apps/server/dist/pstack/**",
   "**/node_modules/@cursor/sdk-*",
   "**/node_modules/@cursor/sdk-*/**",
+  "**/node_modules/@colbymchenry/codegraph-*",
+  "**/node_modules/@colbymchenry/codegraph-*/**",
   "**/node_modules/@anthropic-ai/claude-agent-sdk-*",
   "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
   "**/node_modules/.bin",
@@ -1098,8 +1101,8 @@ export const DESKTOP_EXTRA_RESOURCES = [
     to: "pstack",
   },
   {
-    from: "apps/desktop/prod-resources/cursor-sdk",
-    to: "node_modules/@cursor",
+    from: "apps/desktop/prod-resources/platform-packages",
+    to: "node_modules",
   },
   {
     from: "apps/desktop/prod-resources/resource-monitor",
@@ -1449,19 +1452,28 @@ export function resolveMergedStageDependencies(input: {
   };
 }
 
-/** Cursor's helper lookup falls through the archive to this real resources tree. */
-export const stageCursorSdkPlatformPackages = Effect.fn("stageCursorSdkPlatformPackages")(
+// electron-builder drops nested node_modules from app files, so these bundles ship verbatim as extraResources.
+const SELF_CONTAINED_PLATFORM_PACKAGES = [
+  { packageName: "@cursor/sdk", platformPrefix: "sdk-" },
+  { packageName: "@colbymchenry/codegraph", platformPrefix: "codegraph-" },
+] as const;
+
+/** Lookups from inside the archive fall through to this real resources tree. */
+export const stageSelfContainedPlatformPackages = Effect.fn("stageSelfContainedPlatformPackages")(
   function* (nodeModulesDir: string, destination: string) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     yield* fs.makeDirectory(destination, { recursive: true });
-    const sdkDirectory = path.join(nodeModulesDir, "@cursor/sdk");
-    if (!(yield* fs.exists(sdkDirectory))) return;
-    const cursorDirectory = path.dirname(yield* fs.realPath(sdkDirectory));
-    for (const name of yield* fs.readDirectory(cursorDirectory)) {
-      if (!name.startsWith("sdk-")) continue;
-      const source = yield* fs.realPath(path.join(cursorDirectory, name));
-      yield* fs.copy(source, path.join(destination, name));
+    for (const { packageName, platformPrefix } of SELF_CONTAINED_PLATFORM_PACKAGES) {
+      const packageDirectory = path.join(nodeModulesDir, packageName);
+      if (!(yield* fs.exists(packageDirectory))) continue;
+      const scope = path.dirname(packageName);
+      const scopeDirectory = path.dirname(yield* fs.realPath(packageDirectory));
+      for (const name of yield* fs.readDirectory(scopeDirectory)) {
+        if (!name.startsWith(platformPrefix)) continue;
+        const source = yield* fs.realPath(path.join(scopeDirectory, name));
+        yield* fs.copy(source, path.join(destination, scope, name));
+      }
     }
   },
 );
@@ -3944,12 +3956,12 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       verbose: options.verbose,
     });
   }
-  yield* stageCursorSdkPlatformPackages(
+  yield* stageSelfContainedPlatformPackages(
     path.join(
       options.platform === "win" ? path.join(stageRoot, "server") : stageAppDir,
       "node_modules",
     ),
-    path.join(stageProdResourcesDir, "cursor-sdk"),
+    path.join(stageProdResourcesDir, "platform-packages"),
   );
   if (
     options.wslRuntime !== undefined &&
