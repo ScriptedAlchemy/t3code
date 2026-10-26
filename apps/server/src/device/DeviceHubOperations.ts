@@ -3,6 +3,7 @@ import {
   type DeviceHostId,
   DeviceOperationError,
   type DevicePlatform,
+  type DevicePlatformAvailability,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -67,9 +68,7 @@ export const makeDeviceHubOperations = (options: {
   readonly origin: string;
   readonly http: HttpClient.HttpClient;
   readonly run: DeviceHostReady["run"];
-  readonly iosAvailable: Effect.Effect<boolean>;
-  /** Whether to list AVDs, which the hub does not report until they boot. */
-  readonly androidAvailable: Effect.Effect<boolean>;
+  readonly platforms: Effect.Effect<ReadonlyArray<DevicePlatformAvailability>>;
 }): DeviceOperations => {
   const { hostId, origin, run } = options;
   const httpClient = options.http.pipe(HttpClient.withScope);
@@ -127,11 +126,14 @@ export const makeDeviceHubOperations = (options: {
         ),
     );
     const details = warnings?.map((error) => error.message) ?? [];
-    if (yield* options.iosAvailable) {
+    const platforms = yield* options.platforms;
+    let iosDiscoveryIncomplete = false;
+    if (platforms.some((platform) => platform.platform === "ios" && platform.available)) {
       // The hub hides simulators without usage timestamps, including every freshly created device.
       const result = yield* run("xcrun", ["simctl", "list", "devices", "available", "--json"]);
       const inventory = result.code === 0 ? decodeSimulators(result.stdout) : Option.none();
       if (Option.isNone(inventory)) {
+        iosDiscoveryIncomplete = true;
         details.push(
           "Could not list iOS simulators (xcrun simctl list devices available --json). Discovered devices remain available.",
         );
@@ -158,7 +160,7 @@ export const makeDeviceHubOperations = (options: {
       }
     }
     let androidDiscoveryIncomplete = false;
-    if (yield* options.androidAvailable) {
+    if (platforms.some((platform) => platform.platform === "android" && platform.available)) {
       const avds = yield* run("emulator", ["-list-avds"]);
       // Discovered devices stay listed; the AVDs that could not be listed are a warning.
       if (avds.code !== 0) {
@@ -186,6 +188,7 @@ export const makeDeviceHubOperations = (options: {
     return {
       devices,
       detail: details.join("\n") || undefined,
+      iosDiscoveryIncomplete,
       androidDiscoveryIncomplete,
     };
   }).pipe(Effect.withSpan("DeviceHubOperations.list"));

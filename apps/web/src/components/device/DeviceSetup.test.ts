@@ -43,6 +43,17 @@ describe("device setup guidance", () => {
     ).toContain("Device Manager");
   });
 
+  it("waits for complete iOS discovery before advising installation of a runtime", () => {
+    const state = deviceState({
+      hostStatuses: { local: { status: "ready", iosDiscoveryIncomplete: true } },
+    });
+    expect(platformSetupStatus(state, "ios").message).toContain("may be incomplete");
+    expect(platformSetupStatus(state, "android").message).toContain("Device Manager");
+    expect(platformSetupStatus({ ...state, hostStatuses: {} }, "ios").message).toContain(
+      "Xcode Settings",
+    );
+  });
+
   it("counts a remote device host when this machine has no simulator tooling", () => {
     const state = deviceState({
       hostStatus: "idle",
