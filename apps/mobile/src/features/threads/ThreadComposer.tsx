@@ -559,6 +559,16 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     return report !== null;
   };
 
+  const lockedProviderInstanceId = props.canSwitchProvider
+    ? undefined
+    : currentModelSelection.instanceId;
+  const modelOptions = buildModelOptions(
+    props.serverConfig,
+    currentModelSelection,
+    lockedProviderInstanceId,
+    props.selectedThread.projectId,
+    "composer",
+  );
   const composerMenu = useComposerCommandMenu({
     draftMessage: draftMessage,
     ownerKey: composerDraftKey,
@@ -584,6 +594,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     offersUsageLimits: usageLimitsOffered,
     onUsageLimits:
       usageLimitsOffered && draftAttachments.length === 0 ? openUsageLimits : undefined,
+    modelOptions,
+    onSelectModel:
+      props.interactionLocked === true
+        ? undefined
+        : (option) => props.onUpdateModelSelection(withRememberedModelOptions(option.selection)),
   });
   const voiceInput = useVoiceInputController({
     ownerKey: composerDraftKey,
@@ -718,16 +733,6 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     });
   };
 
-  const lockedProviderInstanceId = props.canSwitchProvider
-    ? undefined
-    : currentModelSelection.instanceId;
-  const modelOptions = buildModelOptions(
-    props.serverConfig,
-    currentModelSelection,
-    lockedProviderInstanceId,
-    props.selectedThread.projectId,
-    "composer",
-  );
   const threadProviderGroups = groupByProvider(modelOptions);
   const currentModelOption =
     modelOptions.find(

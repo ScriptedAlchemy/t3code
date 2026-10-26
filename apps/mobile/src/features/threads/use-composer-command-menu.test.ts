@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 
 const refreshProviders = vi.hoisted(() => vi.fn());
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
@@ -21,7 +21,9 @@ vi.mock("../../state/use-atom-command", () => ({
   useAtomCommand: () => refreshProviders,
 }));
 
+import type { ModelOption } from "../../lib/modelOptions";
 import {
+  buildComposerModelItems,
   buildComposerSlashCommandItems,
   resolveComposerCommandSelection,
 } from "./use-composer-command-menu";
@@ -89,5 +91,45 @@ describe("mobile slash commands", () => {
         allowInteractionMode: false,
       }),
     ).toEqual({ text: "/plan ", cursor: 6, interactionMode: null });
+  });
+});
+
+describe("mobile model mentions", () => {
+  const option = (key: string, overrides: Partial<ModelOption> = {}): ModelOption => {
+    const [instanceId = "", model = ""] = key.split(":");
+    return {
+      key,
+      label: "GPT-6.1",
+      subtitle: "",
+      providerKey: instanceId,
+      providerLabel: "Traex",
+      providerDriver: "codex",
+      isDefault: false,
+      isLegacy: false,
+      capabilities: null,
+      selection: { instanceId: ProviderInstanceId.make(instanceId), model },
+      ...overrides,
+    };
+  };
+
+  it("offers current, visible models labelled with their provider", () => {
+    const items = buildComposerModelItems(
+      [
+        option("traex:gpt-6.1"),
+        option("opencode:traex/gpt-6.1", {
+          subtitle: "Traex",
+          providerLabel: "OpenCode",
+          providerDriver: "opencode",
+        }),
+        option("hidden:gpt-6.1", { isHidden: true }),
+        option("gone:gpt-6.1", { isUnavailable: true }),
+        option("old:gpt-5", { label: "GPT-5", isLegacy: true }),
+      ],
+      "gpt",
+    );
+    expect(items.map((item) => [item.id, item.description]).toSorted()).toEqual([
+      ["model:opencode:traex/gpt-6.1", "OpenCode · Traex"],
+      ["model:traex:gpt-6.1", "Traex"],
+    ]);
   });
 });

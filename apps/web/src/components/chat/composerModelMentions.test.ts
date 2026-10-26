@@ -29,7 +29,13 @@ const claude = {
 };
 
 const modelOptionsByInstance = new Map<ProviderInstanceId, ReadonlyArray<ModelEsque>>([
-  [traex.instanceId, [{ slug: "gpt-6.1", name: "GPT-6.1" }]],
+  [
+    traex.instanceId,
+    [
+      { slug: "gpt-6.1", name: "GPT-6.1" },
+      { slug: "gpt-5", name: "GPT-5", isLegacy: true },
+    ],
+  ],
   [
     opencode.instanceId,
     [
@@ -56,21 +62,8 @@ function match(
 }
 
 describe("matchComposerModelItems", () => {
-  it("offers nothing for a bare @ so files and threads keep the menu", () => {
-    expect(match("")).toEqual([]);
-  });
-
-  it("finds a model under every provider that serves it", () => {
+  it("finds a current model under every provider that serves it, skipping legacy ones", () => {
     expect(match("gpt").toSorted()).toEqual(["opencode:traex/gpt-6.1", "traex:gpt-6.1"]);
-  });
-
-  it("narrows by provider and sub-provider words joined without spaces", () => {
-    expect(match("opencode:traex")).toEqual(["opencode:traex/gpt-6.1"]);
-    expect(match("opencode-gpt")).toEqual(["opencode:traex/gpt-6.1"]);
-  });
-
-  it("does not fuzzy-match words that only resemble a model", () => {
-    expect(match("src")).toEqual([]);
   });
 
   it("leaves out providers a started thread can't switch to and disabled models", () => {

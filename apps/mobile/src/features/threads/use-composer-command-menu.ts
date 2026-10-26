@@ -55,6 +55,7 @@ import {
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
+import { rankComposerModelMentions } from "@t3tools/client-runtime/composerModelMentions";
 import { useEffect, useRef, useState } from "react";
 
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
@@ -65,6 +66,7 @@ import {
   useComposerPullRequestSearch,
   useThreadSearch,
 } from "../../state/queries";
+import type { ModelOption } from "../../lib/modelOptions";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
 
@@ -145,6 +147,30 @@ export function buildComposerSlashCommandItems(input: {
   return items;
 }
 
+export function buildComposerModelItems(
+  modelOptions: ReadonlyArray<ModelOption>,
+  query: string,
+): ComposerCommandItem[] {
+  return rankComposerModelMentions(
+    modelOptions.filter((option) => !option.isUnavailable && !option.isHidden && !option.isLegacy),
+    query,
+    (option) => ({
+      name: option.label,
+      ...(option.subtitle ? { subProvider: option.subtitle } : {}),
+      driverKind: option.providerDriver,
+      providerDisplayName: option.providerLabel,
+    }),
+  ).map((option) => ({
+    id: `model:${option.key}`,
+    type: "model",
+    option,
+    label: option.label,
+    description: option.subtitle
+      ? `${option.providerLabel} · ${option.subtitle}`
+      : option.providerLabel,
+  }));
+}
+
 export function resolveComposerCommandSelection(input: {
   readonly draftMessage: string;
   readonly trigger: Pick<ComposerTrigger, "rangeStart" | "rangeEnd">;
@@ -203,6 +229,8 @@ export function useComposerCommandMenu({
   onChangeDraftMessage,
   onUpdateInteractionMode,
   onUsageLimits,
+  modelOptions,
+  onSelectModel,
 }: {
   readonly draftMessage: string;
   readonly ownerKey: string | null;
@@ -223,6 +251,9 @@ export function useComposerCommandMenu({
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onUpdateInteractionMode?: (mode: ProviderInteractionMode) => void;
   readonly onUsageLimits?: () => void;
+  /** Models an `@` mention can switch to; leave `onSelectModel` unset when switching isn't allowed. */
+  readonly modelOptions?: ReadonlyArray<ModelOption>;
+  readonly onSelectModel?: (option: ModelOption) => void;
 }) {
   const [selection, setSelection] = useState(() => composerSelectionAtEnd(draftMessage));
   // Thread mentions rank by recency as of when the composer mounted.
@@ -538,9 +569,12 @@ export function useComposerCommandMenu({
       const environmentItems = environmentId
         ? matchComposerEnvironmentItems({ environments, environmentId, query: trigger.query })
         : [];
+      const modelItems =
+        modelOptions && onSelectModel ? buildComposerModelItems(modelOptions, trigger.query) : [];
       return [
         ...threadItems,
         ...environmentItems,
+        ...modelItems,
         ...pathSearch.entries.map((entry) => {
           const parts = entry.path.split("/");
           return {
@@ -560,6 +594,14 @@ export function useComposerCommandMenu({
 
   const onSelect = (item: ComposerCommandItem) => {
     if (!trigger) return;
+    if (item.type === "model") {
+      if (trigger.kind !== "path" || !onSelectModel) return;
+      const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
+      setSelection({ start: cleared.cursor, end: cleared.cursor });
+      onChangeDraftMessage(cleared.text);
+      onSelectModel(item.option);
+      return;
+    }
     if (item.type === "environment") {
       if (!ownerKey || trigger.kind !== "path") return;
       const record = environmentComposerContext(item.environmentId, item.label);
