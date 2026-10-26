@@ -1,3 +1,4 @@
+import { ProjectKnowledgeEntry } from "../../components/ProjectKnowledgeEntry";
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
@@ -876,6 +877,15 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
           />
         ) : null}
 
+        {!props.hidden && composerDraftKey ? (
+          <ProjectKnowledgeEntry
+            environmentId={props.environmentId}
+            projectId={props.selectedThread.projectId}
+            draftKey={composerDraftKey}
+            disabled={isSubmissionLocked}
+          />
+        ) : null}
+
         <ComposerSurface
           animateLayout={false}
           style={{
@@ -996,7 +1006,6 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                 hidden={props.hidden}
                 draftKey={composerDraftKey}
                 environmentId={props.environmentId}
-                projectId={props.selectedThread.projectId}
                 onOpenMention={(path) => {
                   Keyboard.dismiss();
                   if (props.isDraft) {
