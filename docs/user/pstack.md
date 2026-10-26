@@ -2,15 +2,15 @@
 
 pstack is [Lauren Tan's](https://github.com/cursor/plugins/tree/main/pstack) set of rigorous agent
 workflows, such as `architect`, `arena`, `how`, `why`, and `poteto-mode`. T3 Code ships it built in
-and runs it the same way in every provider. Its multi-model steps can mix providers: one
-`$pstack:architect` can run an Opus runner and a GPT runner side by side, whichever provider your
-thread uses.
+and runs it the same way in every provider. Its multi-model steps can mix providers. For example,
+one `$pstack:architect` can run an Opus runner and a GPT runner side by side, whichever provider
+your thread uses.
 
 ## Turn it on
 
 On web and desktop, open **Settings → General** and turn on **pstack** under Behavior. On mobile,
-open **Settings → Agent behavior**. The setting belongs to the environment, so turn
-it on for each machine you want it on. Turning it off removes the `pstack:` skills from the composer
+open **Settings → Agent behavior**. The setting applies to one environment, so turn it on for each
+machine you want it on. Turning it off removes the `pstack:` skills from the composer
 and keeps your model choices.
 
 ## Choose models once
@@ -38,6 +38,5 @@ own model instead, and the reply says `Fallback: …`. Turn the provider back on
   no longer need from the scheduled tasks list.
 - Steps that need a Cursor-only feature, such as Bugbot setup or a Cursor cloud machine, are skipped
   with a one-line note in the reply.
-- If you also installed pstack directly in Claude Code or Cursor, use the T3 Code `pstack:` skills
-  inside T3 Code. They replace the native ones in the composer and are the ones that can mix
-  providers.
+- If you also installed pstack directly in Claude Code or Cursor, the T3 Code `pstack:` skills
+  replace those in the composer. Only the T3 Code skills can mix providers.
