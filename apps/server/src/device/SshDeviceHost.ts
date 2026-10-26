@@ -197,17 +197,18 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       summary = { ...summary, platforms: value.platforms };
       return value.platforms;
     }),
-    Effect.orElseSucceed(() =>
-      (["ios", "android"] as const).map((platform) => ({
+  );
+  const platformAvailability: DeviceHost.DeviceHost["Service"]["platformAvailability"] = (
+    platform,
+  ) =>
+    platforms.pipe(
+      Effect.map((values) => values.find((value) => value.platform === platform)!),
+      Effect.orElseSucceed(() => ({
         platform,
         available: false,
         reason: "Cannot reach device host. Test its SSH connection in Settings.",
       })),
-    ),
-  );
-  const platformAvailability: DeviceHost.DeviceHost["Service"]["platformAvailability"] = (
-    platform,
-  ) => platforms.pipe(Effect.map((values) => values.find((value) => value.platform === platform)!));
+    );
 
   const connectOnce = Effect.fn("SshDeviceHost.connectOnce")(function* (): Effect.fn.Return<
     DeviceHost.DeviceHostReady & { agentDevice?: DeviceHost.DeviceHostAgentReady["agentDevice"] },
@@ -318,7 +319,8 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
         origin: hubOrigin,
         http,
         run,
-        platforms,
+        // A failed probe cannot prove that a known simulator inventory is empty.
+        platforms: platforms.pipe(Effect.orElseSucceed(() => summary.platforms)),
       }),
       ...(remote.daemonPort !== undefined &&
       remote.token !== undefined &&

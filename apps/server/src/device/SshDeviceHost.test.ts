@@ -25,6 +25,7 @@ it.effect("preserves installed status after probes and cleans failed agent activ
     const commandArgs: string[][] = [];
     let forwards = 0;
     let failForward = true;
+    let failProbe = false;
     let rejectConfig = true;
     const spawner = ChildProcessSpawner.make((command) =>
       Effect.gen(function* () {
@@ -83,6 +84,9 @@ it.effect("preserves installed status after probes and cleans failed agent activ
           });
           if (mode === "") {
             output = `${"verbose-prefix ".repeat(400)}PANIC: emulator SDK is broken\n`;
+            exitCode = 1;
+          } else if (mode === "probe" && failProbe) {
+            output = "SSH capability probe failed";
             exitCode = 1;
           }
         }
@@ -147,6 +151,12 @@ it.effect("preserves installed status after probes and cleans failed agent activ
       const probesBefore = modes.filter((mode) => mode === "probe").length;
       yield* ready.devices.list;
       expect(modes.filter((mode) => mode === "probe")).toHaveLength(probesBefore + 1);
+      failProbe = true;
+      const incomplete = yield* ready.devices.list;
+      expect(incomplete.iosDiscoveryIncomplete).toBe(true);
+      expect(incomplete.detail).toContain("Could not list iOS simulators");
+      expect((yield* host.platformAvailability("ios")).available).toBe(false);
+      failProbe = false;
       const failed = yield* ready.run("emulator", ["-list-avds"]);
       expect(failed.code).toBe(1);
       expect(failed.stdout).toMatch(/^\[truncated\]/);
