@@ -104,7 +104,7 @@ export const layerExecutor: Layer.Layer<
     const deliveryScrubber = yield* DeliveryScrubRunner;
     const conversationSummaries = yield* ConversationSummaryRuntime;
     return OrchestrationEffectExecutorV2.of({
-      execute: (effect, options) => {
+      execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function (effect, options) {
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
           case "provider-runtime.continue": {
@@ -608,7 +608,7 @@ export const layerExecutor: Layer.Layer<
                 ),
               );
         }
-      },
+      }),
     });
   }),
 );

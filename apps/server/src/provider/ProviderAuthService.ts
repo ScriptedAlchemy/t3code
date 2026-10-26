@@ -212,8 +212,8 @@ export const makeProviderAuthService = Effect.gen(function* () {
         });
       return yield* auth.reconnectProfile(input.methodId);
     }),
-    importProfile: (input) =>
-      credentialChanges.withPermit(
+    importProfile: Effect.fn("ProviderAuthService.importProfile")(function (input) {
+      return credentialChanges.withPermit(
         Effect.gen(function* () {
           const auth = yield* getController(input.instanceId, "import");
           yield* checkSharedBinding(input.instanceId, "start", auth);
@@ -228,16 +228,18 @@ export const makeProviderAuthService = Effect.gen(function* () {
             stopSessions(input.instanceId, auth.credentialBinding),
           );
         }),
-      ),
-    readStaticCredential: (input) =>
-      credentialChanges.withPermit(
+      );
+    }),
+    readStaticCredential: Effect.fn("ProviderAuthService.readStaticCredential")(function (input) {
+      return credentialChanges.withPermit(
         Effect.gen(function* () {
           const auth = (yield* registry.getInstance(input.instanceId))?.auth;
           return auth?.exportStaticCredential === undefined
             ? Option.none()
             : yield* auth.exportStaticCredential;
         }),
-      ),
+      );
+    }),
     start: Effect.fn("ProviderAuthService.start")(function* (input, ownerSessionId) {
       return yield* credentialChanges.withPermit(
         Effect.gen(function* () {
