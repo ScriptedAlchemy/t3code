@@ -310,8 +310,13 @@ it.effect.each(["sqlite", "memory"] as const)(
         const sql = yield* SqlClient.SqlClient;
         const original = yield* sql<{ payload_json: string }>`SELECT payload_json
           FROM orchestration_v2_projection_turn_items WHERE turn_item_id = ${item.id}`;
+        // The command-time index requires valid JSON, but the payload must remain undecodable.
         yield* sql`UPDATE orchestration_v2_projection_turn_items
-          SET payload_json = 'invalid JSON' WHERE turn_item_id = ${item.id}`;
+          SET payload_json = '{"obsolete":true}' WHERE turn_item_id = ${item.id}`;
+        assert.equal(
+          (yield* Effect.exit(store.getTurnItem({ threadId, itemId: item.id })))._tag,
+          "Failure",
+        );
         assert.isTrue(
           yield* store.hasUnpairedRunInterruptRequest(
             threadId,
