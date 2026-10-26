@@ -7,6 +7,7 @@ import type {
   EnvironmentId,
   ProjectId,
   ProviderDriverKind,
+  ProviderInstanceId,
   PullRequestListInput,
   ServerProvider,
   ThreadId,
@@ -40,6 +41,9 @@ import {
   rankPullRequestMatches,
 } from "../pullRequest/pullRequestList.logic";
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
+import { matchComposerModelItems } from "./composerModelMentions";
+import type { ModelEsque } from "./providerIconUtils";
+import type { ProviderInstanceEntry } from "../../providerInstances";
 import {
   searchSlashCommandItems,
   slashCommandItemsForPromptPosition,
@@ -66,6 +70,7 @@ export function useComposerMenuItems({
   selectedProviderSlashCommands,
   showSkillsInSlashMenu,
   questionAttachmentTarget,
+  modelMentions,
 }: {
   readonly composerTrigger: ComposerTrigger | null;
   readonly environmentId: EnvironmentId;
@@ -81,6 +86,14 @@ export function useComposerMenuItems({
   readonly selectedProviderSlashCommands: ServerProvider["slashCommands"];
   readonly showSkillsInSlashMenu: boolean;
   readonly questionAttachmentTarget: DraftId | null;
+  /** Null when the composer can't switch models, such as while answering an agent's question. */
+  readonly modelMentions: {
+    readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
+    readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
+    readonly lockedProvider: ProviderDriverKind | null;
+    readonly lockedContinuationGroupKey: string | null | undefined;
+    readonly isModelDisabled: (instanceId: ProviderInstanceId, model: string) => boolean;
+  } | null;
 }) {
   // Thread mentions rank by recency as of when the composer mounted.
   const [now] = useState(() => Date.now());
@@ -191,6 +204,9 @@ export function useComposerMenuItems({
               query: composerTrigger.query,
             })
           : []),
+        ...(modelMentions === null
+          ? []
+          : matchComposerModelItems({ ...modelMentions, query: composerTrigger.query })),
         ...workspaceEntries.entries.map((entry) => ({
           id: `path:${entry.kind}:${entry.path}`,
           type: "path" as const,
