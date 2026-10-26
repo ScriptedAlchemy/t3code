@@ -21,6 +21,8 @@ import {
   type ScheduledTaskId,
   ThreadId,
 } from "@t3tools/contracts";
+import { delegationProviderConstraints } from "../provider/orchestrationTargets.ts";
+import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -836,6 +838,29 @@ const make = Effect.gen(function* () {
       }
 
       const launchReceipt = yield* readReceipt(input, input.commandId);
+      if (
+        input.delegatedFrom !== undefined &&
+        !(Option.isSome(launchReceipt) && launchReceipt.value.status === "accepted")
+      ) {
+        const providers = yield* providerRegistry.getPublishedProviders;
+        const provider = providers.find(
+          (candidate) => candidate.instanceId === input.modelSelection.instanceId,
+        );
+        const settings = yield* serverSettings.getSettings.pipe(
+          Effect.mapError(mapError(input, "create-thread")),
+        );
+        const constraints =
+          provider === undefined
+            ? ["Provider instance is not registered."]
+            : delegationProviderConstraints(provider, true, {
+                providers,
+                settings,
+                projectId: input.projectId,
+                nowMs: yield* Clock.currentTimeMillis,
+              });
+        if (constraints.length > 0)
+          return yield* mapError(input, "create-thread")(constraints.join(" "));
+      }
       yield* threads.assertProviderInstanceEnabled({
         projectId: input.projectId,
         commandId: input.commandId,

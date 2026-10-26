@@ -1,5 +1,6 @@
 import {
   providerConstraints,
+  delegationProviderConstraints,
   invalidOptionSelections,
   readOrchestrationProviders,
 } from "../provider/orchestrationTargets.ts";
@@ -1180,9 +1181,10 @@ const make = Effect.gen(function* () {
       Effect.catchIf(
         (error) => error.code === "provider_unavailable",
         () =>
-          providerRegistry
-            .refreshInstance(instanceId)
-            .pipe(Effect.flatMap((providers) => resolveTarget({ ...input, providers }))),
+          providerRegistry.refreshInstance(instanceId).pipe(
+            Effect.andThen(loadProviders),
+            Effect.flatMap((providers) => resolveTarget({ ...input, providers })),
+          ),
       ),
     );
   };
@@ -1191,12 +1193,28 @@ const make = Effect.gen(function* () {
     readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
     readonly target: OrchestratorMcpTarget | undefined;
     readonly providers: ReadonlyArray<ServerProvider>;
-    /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
+    /** Receipt replays bypass current cooldowns and project settings because they start no work. Dispatch must reuse the checked command ID. */
     readonly skipProjectEnablementFilter?: boolean;
   }): Effect.fn.Return<ResolvedTarget, OrchestratorMcpFailure> {
     const requestedInstanceId = input.target?.providerInstanceId;
     const requestedDriver = input.target?.driverKind;
     const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+    const availability = {
+      providers: input.providers,
+      settings: yield* serverSettings.getSettings.pipe(
+        Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
+      ),
+      projectId: input.parent.thread.projectId,
+      nowMs: yield* Clock.currentTimeMillis,
+    };
+    const constraintsFor = (provider: ServerProvider) =>
+      input.skipProjectEnablementFilter === true
+        ? providerConstraints(provider, orchestrationCapableInstanceIds.has(provider.instanceId))
+        : delegationProviderConstraints(
+            provider,
+            orchestrationCapableInstanceIds.has(provider.instanceId),
+            availability,
+          );
     let instanceId = requestedInstanceId;
 
     if (instanceId === undefined && requestedDriver !== undefined) {
@@ -1212,7 +1230,7 @@ const make = Effect.gen(function* () {
         );
       }
       const healthyCandidates = candidates.filter(
-        (candidate) => providerConstraints(candidate, true).length === 0,
+        (candidate) => constraintsFor(candidate).length === 0,
       );
       const poolCandidate = healthyCandidates.find((candidate) => candidate.pool?.role === "pool");
       const inheritedCandidate = healthyCandidates.find(
@@ -1261,10 +1279,7 @@ const make = Effect.gen(function* () {
         `Provider instance ${instanceId} uses driver ${provider.driver}, not ${requestedDriver}.`,
       );
     }
-    const constraints = providerConstraints(
-      provider,
-      orchestrationCapableInstanceIds.has(provider.instanceId),
-    );
+    const constraints = constraintsFor(provider);
     if (constraints.length > 0) {
       return yield* failure(
         "provider_unavailable",
@@ -2052,6 +2067,12 @@ const make = Effect.gen(function* () {
       const settings = yield* serverSettings.getSettings.pipe(
         Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
       );
+      const availability = {
+        providers,
+        settings,
+        projectId: parent?.thread.projectId ?? null,
+        nowMs: yield* Clock.currentTimeMillis,
+      };
       const inherited = parent?.thread.modelSelection;
       const searchTerms = input.search?.toLowerCase().split(/\s+/) ?? [];
       return {
@@ -2063,11 +2084,13 @@ const make = Effect.gen(function* () {
         interactionMode: limits.interactionMode,
         providers: providers
           .filter((provider) => provider.pool?.role !== "member")
-          .map((provider) => {
-            const constraints = providerConstraints(
+          .flatMap((provider) => {
+            const constraints = delegationProviderConstraints(
               provider,
               orchestrationCapableInstanceIds.has(provider.instanceId),
+              availability,
             );
+            if (constraints.length > 0) return [];
             const { listed, omitted } = listCapabilityModels({
               provider,
               preferences: settings.providerModelPreferences?.[provider.instanceId],

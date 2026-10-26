@@ -15,6 +15,7 @@ import {
   ComposerContextId,
   type ChatAttachment,
   CommandId,
+  EnvironmentId,
   DEFAULT_SERVER_SETTINGS,
   GitCommandError,
   MessageId,
@@ -307,6 +308,46 @@ function launchInput(input: {
     creationSource: "web" as const,
   };
 }
+
+it.effect(
+  "rejects a remote delegation to a cooling provider but preserves ordinary launches and receipt replay",
+  () => {
+    const providers: ServerProvider[] = [
+      {
+        instanceId: modelSelection.instanceId,
+        driver: ProviderDriverKind.make("codex"),
+        enabled: true,
+        installed: true,
+        version: "test",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        models: [],
+        slashCommands: [],
+        skills: [],
+      },
+    ];
+    const harness = makeHarness({ providers });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = launchInput({ command: "command:cooling", thread: "thread:cooling" });
+      const delegatedFrom = {
+        environmentId: EnvironmentId.make("environment:remote"),
+        threadId: ThreadId.make("thread:remote"),
+        title: "Parent",
+      };
+      const launched = yield* launches.launch({ ...input, delegatedFrom });
+      providers[0] = { ...providers[0]!, limitedUntil: "2099-01-01T00:00:00.000Z" };
+      const next = launchInput({ command: "command:next", thread: "thread:next" });
+      const refused = yield* launches.launch({ ...next, delegatedFrom }).pipe(Effect.result);
+      assert.isTrue(Result.isFailure(refused));
+      const ordinary = yield* launches.launch(next);
+      assert.equal(ordinary.threadId, next.threadId);
+      const replay = yield* launches.launch({ ...input, delegatedFrom });
+      assert.equal(replay.threadId, launched.threadId);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
 
 it.effect.each(
   (["new", "existing"] as const).flatMap((target) =>

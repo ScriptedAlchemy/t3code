@@ -1,9 +1,13 @@
 import {
   isProviderAvailable,
+  findProviderPool,
+  providerLimitedUntilMs,
+  type ProjectId,
   type ServerProvider,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
+import { poolMemberHealth } from "../orchestration-v2/ProviderPoolRouting.ts";
 import * as Effect from "effect/Effect";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -31,6 +35,36 @@ export function providerConstraints(
   }
   if (provider.auth.status === "unauthenticated") {
     constraints.push("Provider is not authenticated.");
+  }
+  return constraints;
+}
+
+export function delegationProviderConstraints(
+  provider: ServerProvider,
+  supportsOrchestrationV2: boolean,
+  input: {
+    readonly providers: ReadonlyArray<ServerProvider>;
+    readonly settings: Parameters<typeof poolMemberHealth>[0]["settings"];
+    readonly projectId: ProjectId | null;
+    readonly nowMs: number;
+  },
+): ReadonlyArray<string> {
+  const constraints = [...providerConstraints(provider, supportsOrchestrationV2)];
+  const owner = findProviderPool(input.providers, provider.instanceId);
+  if (owner === null) {
+    if (providerLimitedUntilMs(provider, input.nowMs) !== null) {
+      constraints.push("Provider is rate limited. Retry after its cooldown expires.");
+    }
+    return constraints;
+  }
+  const members = poolMemberHealth({ ...input, members: owner.members });
+  const eligible = members.filter((member) => member.eligible);
+  if (eligible.length === 0) {
+    constraints.push("No pool member is available for this project.");
+  } else if (eligible.every((member) => member.limitedUntilMs !== null)) {
+    constraints.push(
+      "Every available pool member is rate limited. Retry after a cooldown expires.",
+    );
   }
   return constraints;
 }
