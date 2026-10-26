@@ -8,10 +8,7 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import {
-  threadSearchMatchKey,
-  type EnvironmentThreadSearchMatch,
-} from "@t3tools/client-runtime/state/thread-search";
+import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import { THREAD_SIDEBAR_ROW_LAYOUT } from "./threadListAnimations";
 import type { MenuAction } from "@react-native-menu/menu";
@@ -278,6 +275,7 @@ function ThreadNavigationSidebarPane(
   const nowMinute = now.slice(0, 16);
   const [snoozeWakeTick, bumpSnoozeWakeTick] = useState(0);
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- Refreshes the minute clock when the minute interval starts.
     setNow(new Date().toISOString());
     const id = setInterval(() => setNow(new Date().toISOString()), 60_000);
     return () => clearInterval(id);
@@ -334,7 +332,7 @@ function ThreadNavigationSidebarPane(
       bumpSnoozeWakeTick((tick) => tick + 1);
     }, delayMs);
     return () => clearTimeout(id);
-    // snoozeWakeTick re-arms clamped timers even when the wake date exceeds 32-bit setTimeout and stays unchanged.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- snoozeWakeTick re-arms clamped timers even when the wake date exceeds 32-bit setTimeout and stays unchanged.
   }, [nextSnoozeWakeAt, snoozeWakeTick]);
   const listItems: readonly SidebarListItem[] =
     settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0

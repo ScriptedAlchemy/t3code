@@ -76,7 +76,7 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
   const readStamp = fs.readFileString(stampPath).pipe(
     Effect.catchIf(
       (error) => error.reason._tag === "NotFound",
-      () => Effect.succeed(undefined),
+      () => Effect.void,
     ),
   );
   const remove = Effect.fn("PstackPack.remove")(function* (target: string) {
@@ -209,9 +209,7 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
                     Effect.flatMap((stamp) => (stamp === hash ? Effect.void : Effect.fail(error))),
                   ),
                 ),
-                Effect.onError(() =>
-                  fs.rename(trash, packDir).pipe(Effect.catchCause(() => Effect.void)),
-                ),
+                Effect.onError(() => fs.rename(trash, packDir).pipe(Effect.ignoreCause)),
                 Effect.ensuring(
                   readStamp.pipe(
                     Effect.flatMap((stamp) => (stamp === undefined ? Effect.void : remove(trash))),
@@ -284,7 +282,7 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
       const file = yield* fs.readFileString(modelsPath).pipe(
         Effect.catchIf(
           (error) => error.reason._tag === "NotFound",
-          () => Effect.succeed(undefined),
+          () => Effect.void,
         ),
         Effect.mapError(
           (cause) => new PstackPackError({ path: modelsPath, operation: "expand", cause }),

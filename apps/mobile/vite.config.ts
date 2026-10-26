@@ -14,11 +14,14 @@ const reactTests = [
   "src/features/loom/ProjectLoomRouteScreen.test.tsx",
   "src/features/settings/SettingsServerControlsRouteScreen.test.tsx",
   "src/features/settings/components/BranchNamingSettings.test.tsx",
+  "src/features/threads/ThreadMarkdownImage.test.tsx",
+  "src/features/threads/UsageLimitRecoveryCard.test.tsx",
   "src/native/NativeHeaderToolbar.test.tsx",
   "src/native/useRestingTopOffset.test.tsx",
   "src/native/useRetryingImageSource.test.tsx",
   "src/state/queries.debounce.test.tsx",
   "src/state/use-selected-thread-git-actions.test.tsx",
+  "src/features/terminal/useTerminalExitNavigation.test.tsx",
 ];
 
 export default defineConfig({

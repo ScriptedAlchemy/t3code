@@ -31,7 +31,7 @@ import {
 } from "./CommandPalette.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
 import { CommandPaletteResults } from "./CommandPaletteResults";
-import { requestThreadFindOpen } from "./chat/threadFindActionBus";
+import { findForMessageMatch, openThreadFindOnQuery } from "./chat/threadFindStore";
 import { useOpenCodeExplorer } from "./codeExplorer/openCodeExplorer";
 import { useOpenProjectMemory } from "./projectKnowledge/ProjectMemoryPanel";
 
@@ -218,17 +218,14 @@ function useConversationGroup(target: ProjectSearchTarget, query: string | null)
       icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         const threadRef = scopeThreadRef(target.environmentId, match.threadId);
-        if (config?.threadFind === true && query !== null) {
-          requestThreadFindOpen({
-            threadKey: scopedThreadKey(threadRef),
-            query,
-            ...(match.messageId ? { entryId: match.messageId } : {}),
-          });
-        }
         await navigate({
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(threadRef),
         });
+        // Find belongs to the shown thread, so it opens once the route shows this one.
+        if (config?.threadFind === true && query !== null) {
+          openThreadFindOnQuery(scopedThreadKey(threadRef), findForMessageMatch(match, query));
+        }
       },
     })),
   };

@@ -18,6 +18,8 @@ import * as IdAllocator from "./IdAllocator.ts";
 import type { ProviderAdapterFailureReason } from "./ProviderAdapter.ts";
 import * as Schema from "effect/Schema";
 
+const isProjectKnowledgeError = Schema.is(ProjectKnowledgeError);
+
 export class ContextHandoffBudgetError extends Schema.TaggedError<ContextHandoffBudgetError>()(
   "ContextHandoffBudgetError",
   {},
@@ -87,7 +89,7 @@ function curatedCauseMessages(cause: unknown): {
       const tag = (cause as Record<string, unknown>)._tag;
       switch (tag) {
         case "ProjectKnowledgeError":
-          if (Schema.is(ProjectKnowledgeError)(cause))
+          if (isProjectKnowledgeError(cause))
             return { known: cause.message, category: categoryMessage() };
           break;
         case "ContextHandoffBudgetError":

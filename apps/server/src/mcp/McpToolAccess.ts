@@ -131,7 +131,7 @@ export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A,
   declare(
     (params: P) =>
       requireThreadCaller.pipe(
-        Effect.flatMap(() => writingCaller),
+        Effect.andThen(writingCaller),
         Effect.flatMap(() => handle(params)),
       ),
     undefined,

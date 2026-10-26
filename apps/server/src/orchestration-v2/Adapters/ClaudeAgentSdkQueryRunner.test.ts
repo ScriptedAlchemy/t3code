@@ -196,7 +196,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
             args: [],
             cwd: dir,
             env: process.env,
-            signal: new AbortController().signal,
+            signal: AbortSignal.any([]),
           },
           HostProcess.Platform.defaultValue(),
           mode === "cli" ? dir : undefined,

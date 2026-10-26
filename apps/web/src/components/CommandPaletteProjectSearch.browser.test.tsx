@@ -241,15 +241,16 @@ it("keeps each group independent when one source fails, and opens symbols and co
 
   await screen.getByText("Auth refresh bug").click();
   await vi.waitFor(() => expect(screen.router?.state.location.pathname).toBe("/env/thread-b"));
-  // The conversation lands on its message with the palette query in thread find.
-  await expect.element(screen.getByPlaceholder("Find in thread")).toHaveValue("refresh token");
+  // The conversation lands on its message, finding the query's longest word since the
+  // snippet does not hold the whole query as typed.
+  await expect.element(screen.getByPlaceholder("Find in thread")).toHaveValue("refresh");
   await expect
     .element(screen.getByRole("status", { name: "Active match" }))
     .toHaveTextContent("message-b");
   await expect.element(screen.getByText("2/3")).toBeVisible();
   expect(state.queries.find((query) => query.kind === "thread-find")?.input).toMatchObject({
     threadId: "thread-b",
-    query: "refresh token",
+    query: "refresh",
     start: { entryId: "message-b", occurrence: 0 },
   });
 });

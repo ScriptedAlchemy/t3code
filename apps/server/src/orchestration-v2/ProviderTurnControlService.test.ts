@@ -516,18 +516,16 @@ it.effect.each([
           }),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
             get: () =>
-              Effect.succeed(
-                Option.some({
-                  steerTurn: (
-                    input: Parameters<
-                      ProviderAdapter.ProviderAdapterV2SessionRuntime["steerTurn"]
-                    >[0],
-                  ) =>
-                    Effect.sync(() => {
-                      received.push(input.message.text);
-                    }),
-                } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime),
-              ),
+              Effect.succeedSome({
+                steerTurn: (
+                  input: Parameters<
+                    ProviderAdapter.ProviderAdapterV2SessionRuntime["steerTurn"]
+                  >[0],
+                ) =>
+                  Effect.sync(() => {
+                    received.push(input.message.text);
+                  }),
+              } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime),
           }),
         ),
       ),

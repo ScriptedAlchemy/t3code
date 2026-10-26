@@ -1,8 +1,5 @@
 import * as PstackPack from "../pstack/PstackPack.ts";
-import {
-  collectComposerContextReferences,
-  projectComposerContextForProvider,
-} from "@t3tools/shared/composerContextReferences";
+import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import {
   deliveredKnowledgeForHistory,
@@ -35,7 +32,6 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -138,8 +134,6 @@ export const layer: Layer.Layer<
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const serverConfig = yield* ServerConfig.ServerConfig;
-    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
@@ -220,6 +214,7 @@ export const layer: Layer.Layer<
                 const request = turnItems.find((item) => item.type === "run_interrupt_request");
                 return request?.type === "run_interrupt_request" ? request.message : undefined;
               }),
+              // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
               Effect.catchCause(() => Effect.succeed(undefined)),
             ),
       };
@@ -523,14 +518,14 @@ export const layer: Layer.Layer<
                   path: worktreePath,
                 }),
               ),
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.failCause(cause)
-                  : Effect.logWarning("provider turn start failed to recreate worktree", {
-                      threadId: projection.thread.id,
-                      worktreePath,
-                      cause: Cause.pretty(cause),
-                    }),
+              Effect.catchCauseIf(
+                (cause) => !Cause.hasInterruptsOnly(cause),
+                (cause) =>
+                  Effect.logWarning("provider turn start failed to recreate worktree", {
+                    threadId: projection.thread.id,
+                    worktreePath,
+                    cause: Cause.pretty(cause),
+                  }),
               ),
             );
           }
@@ -1089,9 +1084,6 @@ export const layer: Layer.Layer<
                   : error.reason === "storage" || error.reason === "scoring"
                     ? ("recall_failed" as const)
                     : ("source_unavailable" as const);
-          const referenced = new Set(
-            collectComposerContextReferences(message.text).map((reference) => reference.contextId),
-          );
           const omissions = (message.context?.records ?? []).flatMap((record) =>
             record.kind === "project-knowledge"
               ? [{ contextId: record.contextId, label: record.label, reason }]

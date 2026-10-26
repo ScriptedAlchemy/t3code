@@ -120,6 +120,9 @@ const make = Effect.gen(function* () {
             "Content-Type": "application/octet-stream",
             "Content-Length": String(object.size),
             "Cache-Control": "no-store",
+            // agent-device install-from-source picks the archive type from this name.
+            // iOS clients are uploaded as a tarred .app, Android ones as the bare APK.
+            "Content-Disposition": `attachment; filename="${key.split("/").at(-1)}.${key.startsWith("ios/") ? "tgz" : "apk"}"`,
             "X-T3-Digest": object.customMetadata?.digest ?? "",
             "X-T3-Build-Ms": object.customMetadata?.buildMs ?? "0",
           },

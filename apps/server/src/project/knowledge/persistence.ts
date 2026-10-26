@@ -24,6 +24,10 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+const encodeDeliveryBudget = Schema.encodeEffect(
+  Schema.fromJsonString(ProjectKnowledgeDeliveryBudget),
+);
+
 const decodeAssistedRuns = Schema.decodeUnknownEffect(Schema.Array(AssistedLearningRun));
 const SearchRanking = Schema.Struct({
   matches: Schema.Array(
@@ -448,7 +452,7 @@ export const makeStore = Effect.gen(function* () {
           ${delivery.projectId}, ${delivery.providerInstanceId}, ${delivery.status},
           ${encodeDeliveryItems(items)}, ${encodeDeliveryOmissions(delivery.omissions)},
           ${delivery.createdAt}, ${delivery.updatedAt}, ${delivery.providerThreadId ?? null},
-          ${delivery.nativeThreadId ?? null}, ${delivery.budget === undefined ? null : yield* Schema.encodeEffect(Schema.fromJsonString(ProjectKnowledgeDeliveryBudget))(delivery.budget)}
+          ${delivery.nativeThreadId ?? null}, ${delivery.budget === undefined ? null : yield* encodeDeliveryBudget(delivery.budget)}
         ) ON CONFLICT (attempt_id) DO UPDATE SET
           status = excluded.status, updated_at = excluded.updated_at,
           provider_thread_id = excluded.provider_thread_id, native_thread_id = excluded.native_thread_id, budget_json = excluded.budget_json, omissions_json = excluded.omissions_json

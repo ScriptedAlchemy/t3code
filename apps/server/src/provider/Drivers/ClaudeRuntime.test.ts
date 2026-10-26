@@ -36,8 +36,9 @@ const hostile = {
 
 it.effect.each(["adapter", "probe"] as const)(
   "pins the %s final SDK child after ambient credentials are merged back in",
-  (consumer) =>
-    Effect.gen(function* () {
+  (consumer) => {
+    const controller = new AbortController();
+    return Effect.gen(function* () {
       const runtime = yield* resolveClaudeRuntime({
         instanceId: ProviderInstanceId.make("one"),
         config: yield* decodeClaudeSettings({ setupMode: "cli" }),
@@ -63,7 +64,7 @@ it.effect.each(["adapter", "probe"] as const)(
           : buildClaudeCapabilitiesProbeQueryOptions({
               platform: yield* HostProcess.Platform,
               executablePath: process.execPath,
-              abortController: new AbortController(),
+              abortController: controller,
               environment: runtime.environment,
               cwd: "/project",
               managedMcpConfig: false,
@@ -121,7 +122,8 @@ it.effect.each(["adapter", "probe"] as const)(
         lowercaseCredential: null,
         gateway: null,
       });
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+  },
 );
 
 it.effect("runs text generation with private credentials and final account settings", () =>

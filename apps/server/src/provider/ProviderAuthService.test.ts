@@ -282,13 +282,11 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
               actions.push(`stop:${providerSessionId}`);
               yield* input.beforeStop ?? Effect.void;
               if (input.stopError) {
-                return yield* Effect.fail(
-                  new ProviderSessionManager.ProviderSessionReleaseError({
-                    providerSessionId,
-                    reason,
-                    cause: new Error("private process diagnostics"),
-                  }),
-                );
+                return yield* new ProviderSessionManager.ProviderSessionReleaseError({
+                  providerSessionId,
+                  reason,
+                  cause: new Error("private process diagnostics"),
+                });
               }
               released.push(providerSessionId);
               for (const [threadId, list] of sessions) {
@@ -434,7 +432,7 @@ describe("ProviderAuthService.readStaticCredential", () => {
         makeInstance({
           instanceId,
           enabled: true,
-          auth: controller(Effect.succeed(Option.some(credential))),
+          auth: controller(Effect.succeedSome(credential)),
         }),
         makeInstance({ instanceId: otherInstanceId, enabled: true, auth: controller() }),
         makeInstance({ instanceId: unsupportedInstanceId, enabled: true }),

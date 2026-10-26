@@ -141,7 +141,7 @@ const syncAccounts = Effect.fn("providerAccountSync.syncAccounts")(function* (
       Effect.map((config): EnvironmentBlockReason | null =>
         serverSupportsAccountTransfer(config) ? null : "update-required",
       ),
-      Effect.catch(() => Effect.succeed<EnvironmentBlockReason | null>("not-connected")),
+      Effect.orElseSucceed((): EnvironmentBlockReason | null => "not-connected"),
     );
   const sourceBlock = yield* gate(source);
   const destinationBlocks = new Map(

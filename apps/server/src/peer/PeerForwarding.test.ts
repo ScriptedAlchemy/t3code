@@ -1,3 +1,4 @@
+import * as DocumentText from "../provider/DocumentText.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -14,7 +15,6 @@ import {
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import { McpSchema, McpServer } from "effect/ai";
@@ -158,7 +158,7 @@ const boxLaunches = (seen: Ref.Ref<Seen>) =>
 const boxProjects = (seen: Ref.Ref<Seen>) =>
   Layer.merge(
     Layer.mock(ProjectService.ProjectService)({
-      getById: () => Effect.succeed(Option.none()),
+      getById: () => Effect.succeedNone,
       create: (input) =>
         Ref.update(seen, (current) => ({
           ...current,
@@ -198,7 +198,7 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
     box,
     Layer.mergeAll(
       McpHttpServer.layerOrchestratorToolkit,
-      McpHttpServer.layerProjectRegistration,
+      McpHttpServer.layerProjectRegistration.pipe(Layer.provide(DocumentText.layer)),
       McpHttpServer.layerThreadToolkit,
     ).pipe(
       Layer.provide(NodeCrypto.layer),
@@ -249,7 +249,7 @@ const makeLaptop = Effect.gen(function* () {
   const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
   const layerHere = Layer.mergeAll(
     McpHttpServer.layerOrchestratorToolkit,
-    McpHttpServer.layerProjectRegistration,
+    McpHttpServer.layerProjectRegistration.pipe(Layer.provide(DocumentText.layer)),
     McpHttpServer.layerThreadToolkit,
   ).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),

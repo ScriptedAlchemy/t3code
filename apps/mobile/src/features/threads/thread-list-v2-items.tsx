@@ -714,6 +714,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const canUnsettle = variant === "slim";
   // Keep time in state; cached render-time reads freeze the gate and trigger 50ms expiry loops.
   const [snoozeGateClock, setSnoozeGateClock] = useState(() => ({ thread, now: Date.now() }));
+  // oxlint-disable-next-line react/purity -- Reseeds the snooze gate clock only in the render-phase adjustment that runs when the thread changes.
   if (snoozeGateClock.thread !== thread) setSnoozeGateClock({ thread, now: Date.now() });
   const snoozeGateNow = new Date(snoozeGateClock.now).toISOString();
   const snoozeGateExpiryMs = props.snoozeSupported
@@ -735,7 +736,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     snoozed: snoozedRow,
   });
   const snoozePresets = useMemo(
+    // oxlint-disable-next-line react/purity -- The memo recomputes on the snoozePresetMinute tick, so preset times refresh every minute.
     () => (swipeActions.secondary === "snooze" ? resolveSnoozePresets(new Date()) : ([] as const)),
+    // oxlint-disable-next-line react/memo-dependencies -- The minute tick refreshes relative snooze times while the row remains mounted.
     [props.snoozePresetMinute, swipeActions.secondary],
   );
   const snoozePresetActions = useMemo<MenuAction[]>(
@@ -782,7 +785,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       props.reorderSupported,
       props.pinningSupported,
       thread.pinnedAt,
-      variant,
     ],
   );
   const autoSettleMenuItems = useMemo<MenuAction[]>(
@@ -1238,11 +1240,16 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         ) : null}
         {providerInstance ? (
           <View className="flex-row items-center">
-            {providerDrivers.slice(0, -1).map((driver, index) => (
-              <View key={`${driver}:${index}`} className="-mr-1 opacity-30">
-                <ProviderIcon provider={driver} size={12} />
-              </View>
-            ))}
+            {providerDrivers.slice(0, -1).map(
+              (driver, index) => (
+                /* oxlint-disable react/no-array-index-key -- Provider history can repeat a driver; these decorative icons have no local state. */ <View
+                  key={`${driver}:${index}`}
+                  className="-mr-1 opacity-30"
+                >
+                  <ProviderIcon provider={driver} size={12} />
+                </View>
+              ) /* oxlint-enable react/no-array-index-key */,
+            )}
             <ProviderInstanceIcon
               iconUrl={providerIconUrl}
               provider={providerInstance.driverKind}
