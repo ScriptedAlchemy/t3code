@@ -56,8 +56,6 @@ import Animated, {
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { themeColorWithAlpha } from "../../lib/mobileTheme";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
-import { updateThreadDraftModelSelection } from "../../state/use-thread-composer-state";
-import { withRememberedModelOptions } from "../../state/use-model-option-memory";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import {
   getComposerDraftSnapshot,
@@ -241,7 +239,6 @@ export interface ThreadComposerProps {
   ) => Promise<MessageId | null>;
   readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
   readonly canSwitchProvider: boolean;
-  readonly onUpdateModelSelection?: (modelSelection: ModelSelection) => void;
   readonly onUpdateInteractionMode?: (interactionMode: ProviderInteractionMode) => void;
   readonly onHeightChange?: (height: number) => void;
   readonly onEditorFocusChange?: (focused: boolean) => void;
@@ -569,21 +566,15 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     offersUsageLimits: usageLimitsOffered,
     onUsageLimits:
       usageLimitsOffered && draftAttachments.length === 0 ? openUsageLimits : undefined,
-    modelOptions,
+    // Mentions name any model for the agent, so they aren't limited to models this thread can switch to.
+    modelOptions: buildModelOptions(
+      props.serverConfig,
+      currentModelSelection,
+      undefined,
+      props.selectedThread.projectId,
+      "composer",
+    ),
     modelProviders: props.serverConfig?.providers,
-    onSelectModel:
-      props.interactionLocked === true
-        ? undefined
-        : (option) => {
-            const selection = withRememberedModelOptions(option.selection);
-            if (props.onUpdateModelSelection) props.onUpdateModelSelection(selection);
-            else
-              updateThreadDraftModelSelection(
-                composerOwnerKey,
-                selection,
-                props.serverConfig?.providers ?? [],
-              );
-          },
   });
   const voiceInput = useVoiceInputController({
     ownerKey: composerDraftKey,

@@ -86,12 +86,10 @@ export function useComposerMenuItems({
   readonly selectedProviderSlashCommands: ServerProvider["slashCommands"];
   readonly showSkillsInSlashMenu: boolean;
   readonly questionAttachmentTarget: DraftId | null;
-  /** Null when the composer can't switch models, such as while answering an agent's question. */
+  /** Null when model mentions are off, such as while answering an agent's question. */
   readonly modelMentions: {
     readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
     readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
-    readonly lockedProvider: ProviderDriverKind | null;
-    readonly lockedContinuationGroupKey: string | null | undefined;
     readonly isModelDisabled: (instanceId: ProviderInstanceId, model: string) => boolean;
   } | null;
 }) {

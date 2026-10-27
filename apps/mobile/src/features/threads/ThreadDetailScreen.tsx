@@ -1641,7 +1641,6 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                         onSendMessage={handleSendMessage}
                         onShowUsageLimits={showUsageLimits}
                         canSwitchProvider={props.canSwitchThreadProvider}
-                        onUpdateModelSelection={props.onUpdateThreadModelSelection}
                         onUpdateInteractionMode={props.onUpdateThreadInteractionMode}
                         onHeightChange={handleComposerHeightChange}
                         onEditorFocusChange={handleOwnedInputFocusChange}

@@ -51,7 +51,10 @@ import {
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
-import { rankComposerModelMentions } from "@t3tools/client-runtime/composerModelMentions";
+import {
+  formatComposerModelMention,
+  rankComposerModelMentions,
+} from "@t3tools/client-runtime/composerModelMentions";
 import { useAtomRefresh } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
@@ -273,7 +276,6 @@ export function useComposerCommandMenu({
   onUsageLimits,
   modelOptions,
   modelProviders,
-  onSelectModel,
 }: {
   readonly draftMessage: string;
   readonly ownerKey: string | null;
@@ -294,10 +296,9 @@ export function useComposerCommandMenu({
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onUpdateInteractionMode?: (mode: ProviderInteractionMode) => void;
   readonly onUsageLimits?: () => void;
-  /** Models an `@` mention can switch to; leave `onSelectModel` unset when switching isn't allowed. */
+  /** Models an `@` mention can name in the prompt. */
   readonly modelOptions?: ReadonlyArray<ModelOption>;
   readonly modelProviders?: ReadonlyArray<ServerProvider>;
-  readonly onSelectModel?: (option: ModelOption) => void;
 }) {
   const [localSelection, setLocalSelection] = useState(() => ({
     ownerKey,
@@ -520,7 +521,7 @@ export function useComposerCommandMenu({
         ? matchComposerEnvironmentItems({ environments, environmentId, query: trigger.query })
         : [];
       const modelItems =
-        modelOptions && modelProviders && onSelectModel
+        modelOptions && modelProviders
           ? buildComposerModelItems(modelOptions, trigger.query, modelProviders)
           : [];
       return [
@@ -547,11 +548,16 @@ export function useComposerCommandMenu({
   const onSelect = (item: ComposerCommandItem) => {
     if (!trigger) return;
     if (item.type === "model") {
-      if (trigger.kind !== "path" || !onSelectModel) return;
-      const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
-      setSelection({ start: cleared.cursor, end: cleared.cursor });
-      onChangeDraftMessage(cleared.text);
-      onSelectModel(item.option);
+      if (trigger.kind !== "path") return;
+      const { instanceId, model } = item.option.selection;
+      const result = replaceTextRange(
+        draftMessage,
+        trigger.rangeStart,
+        trigger.rangeEnd,
+        `${formatComposerModelMention(instanceId, model)} `,
+      );
+      onChangeDraftMessage(result.text);
+      setSelection({ start: result.cursor, end: result.cursor });
       return;
     }
     if (item.type === "environment") {

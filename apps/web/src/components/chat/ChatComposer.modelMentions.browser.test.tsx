@@ -5,12 +5,11 @@ import type { Editor } from "@tiptap/core";
 import { createRef, type ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
-import { act, fakeTimers, render } from "../../../test/render";
+import { act, render } from "../../../test/render";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import { makeThreadFixture } from "../../test-fixtures";
 import { ChatComposer, type ChatComposerHandle, type ChatComposerProps } from "./ChatComposer";
-import { useComposerSelection } from "./useComposerSelection";
 
 vi.mock("../../state/primaryEnvironment", async () => {
   const { Atom } = await import("effect/reactivity");
@@ -70,9 +69,6 @@ function setup() {
     slashCommands: [],
     skills: [],
   };
-  const focusComposer = () => composerRef.current?.focusAtEnd();
-  // ChatView schedules focusAtEnd after a provider selection.
-  const scheduleComposerFocus = vi.fn(() => window.requestAnimationFrame(focusComposer));
   const noop = () => {};
   const props: ChatComposerProps = {
     composerDraftTarget: target,
@@ -178,8 +174,8 @@ function setup() {
     toggleInteractionMode: noop,
     handleRuntimeModeChange: noop,
     handleInteractionModeChange: noop,
-    focusComposer,
-    scheduleComposerFocus,
+    focusComposer: noop,
+    scheduleComposerFocus: noop,
     setThreadError: noop,
     onExpandImage: noop,
     onFileOpen: noop,
@@ -187,49 +183,20 @@ function setup() {
   return { props, composerRef };
 }
 
-function ComposerWithSelection({ props }: { props: ChatComposerProps }) {
-  const selection = useComposerSelection({
-    environmentId: props.environmentId,
-    composerDraftTarget: props.composerDraftTarget,
-    draftThread: null,
-    activeThread: props.activeThread,
-    activeRuntime: null,
-    activeProjectSettings: { settings: { newWorktreesStartFromOrigin: false } },
-    settings: props.settings,
-    providerStatuses: props.providerStatuses,
-    lockedProvider: null,
-    supportsProviderSwitchingViaHandoff: false,
-    multipleModelSelections: null,
-    runtimeMode: props.runtimeMode,
-    interactionMode: props.interactionMode,
-    interactionModeEnabled: true,
-    isLocalDraftThread: false,
-    canOverrideServerThreadEnvMode: false,
-    setPendingServerThreadEnvModeEntry: () => {},
-    setPendingServerThreadStartFromOriginByThreadId: () => {},
-    scheduleComposerFocus: props.scheduleComposerFocus,
-  });
-  return <ChatComposer {...props} onProviderModelSelect={selection.onProviderModelSelectStable} />;
-}
-
-it("keeps typing at the removed model mention before the remaining text", async () => {
+it("inserts the picked model as text without switching the thread's model", async () => {
   const { props, composerRef } = setup();
+  const onProviderModelSelect = vi.fn();
   await using screen = await render(
     <AppAtomRegistryProvider>
-      <ComposerWithSelection props={props} />
+      <ChatComposer {...props} onProviderModelSelect={onProviderModelSelect} />
     </AppAtomRegistryProvider>,
   );
   const element = screen.container.querySelector<HTMLElement & { editor: Editor }>(".tiptap");
   if (!element) throw new Error("Composer did not mount");
-  const editor = element.editor;
-  using _timers = fakeTimers();
   await act(() => composerRef.current?.focusAt(7));
   await userEvent.keyboard("@gpt");
   expect(props.promptRef.current).toBe("before @gpt after");
   await userEvent.keyboard("{Enter}");
-  await act(() => vi.advanceTimersByTime(32));
-  expect(editor.getText()).toBe("before  after");
-  await expect.element(element).toHaveTextContent("before after");
-  await userEvent.keyboard("X");
-  await expect.element(element).toHaveTextContent("before X after");
+  await expect.element(element).toHaveTextContent("before model:codex/gpt-5.4 after");
+  expect(onProviderModelSelect).not.toHaveBeenCalled();
 });
