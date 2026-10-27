@@ -8,8 +8,8 @@ your thread uses.
 
 ## Turn it on
 
-On web and desktop, open **Settings → General** and turn on **pstack** under Behavior. On mobile,
-open **Settings → Agent behavior**. The setting applies to one environment, so turn it on for each
+On web and desktop, open **Settings → Chat** and turn on **pstack** under Advanced. On mobile,
+open **Settings → Threads**. The setting applies to one environment, so turn it on for each
 machine you want it on. Turning it off removes the `pstack:` skills from the composer
 and keeps your model choices.
 

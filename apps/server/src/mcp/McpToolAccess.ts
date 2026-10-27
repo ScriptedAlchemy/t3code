@@ -260,6 +260,23 @@ export const startsThreads = <P, A, E, R>(
   );
 };
 
+/** One tool with two access rules, picked per call, such as create versus update. */
+export const either = <P, A, E, R, A2, E2, R2>(
+  useFirst: (params: P) => boolean,
+  first: Declaration<(params: P) => Effect.Effect<A, E, R>>,
+  second: Declaration<(params: P) => Effect.Effect<A2, E2, R2>>,
+) => {
+  const firstRemote = remoteCheckOf(first) as RemoteCheck<P> | undefined;
+  const secondRemote = remoteCheckOf(second) as RemoteCheck<P> | undefined;
+  return declare(
+    (params: P): Effect.Effect<A | A2, E | E2, R | R2> =>
+      useFirst(params) ? checkedHandler(first)(params) : checkedHandler(second)(params),
+    firstRemote === undefined || secondRemote === undefined
+      ? undefined
+      : (params: P) => (useFirst(params) ? firstRemote(params) : secondRemote(params)),
+  );
+};
+
 const fullAccessRequired =
   "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.";
 

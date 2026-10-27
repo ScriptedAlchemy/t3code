@@ -28,7 +28,7 @@ summaries instead of being left out. The newest messages still arrive word for w
 labelled as model-written and names the messages it was written from, so the agent can open the
 exact originals.
 
-Turn on **Summarize older messages** in **Settings → General**, for one project or every project,
+Turn on **Summarize older messages** in **Settings → Threads**, for one project or every project,
 or from **Conversation summaries** in a thread's details on web and desktop. It is off by default
 because each summary costs one call to your text generation model. After a turn completes, T3 Code
 summarizes settled stretches of up to 24 older messages, a few per turn, so a long thread catches up

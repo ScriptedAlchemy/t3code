@@ -121,8 +121,6 @@ function setup() {
     respondingRequestIds: [],
     showPlanFollowUpPrompt: false,
     activeProposedPlan: null,
-    activeTasksProgress: null,
-    activeTaskSteps: null,
     threadSyncPhase: null,
     runtimeMode: "full-access",
     interactionMode: "default",

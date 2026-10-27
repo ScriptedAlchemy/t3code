@@ -644,21 +644,36 @@ it.effect("runs any tool that takes a linked environment there", () =>
       yield* linkTo(a.links, b, "auto");
       yield* Ref.set(linkSession, (yield* b.linkedSessions)[0]!.sessionId);
 
-      const there = yield* a.call("thread:laptop-full", "t3_thread_configuration", {
+      const there = yield* a.call("thread:laptop-full", "t3_thread_configure", {
         environmentId: box.environmentId,
         threadId: boxThread,
       });
       expect(there.structuredContent).toMatchObject({ threadId: boxThread, runtimeMode: "auto" });
+      const configured = yield* a.call("thread:laptop-full", "t3_thread_configure", {
+        environmentId: box.environmentId,
+        threadId: boxThread,
+        modelSelection: { instanceId: "codex", model: "gpt-5" },
+      });
+      expect(configured.isError).toBe(false);
+      const planned = yield* a.call("thread:laptop-plan", "t3_thread_configure", {
+        environmentId: box.environmentId,
+        threadId: boxThread,
+        modelSelection: { instanceId: "codex", model: "gpt-5" },
+      });
+      expect(failureOf(planned)).toMatchObject({ code: "interaction_mode_escalation_denied" });
       const archived = yield* a.call("thread:laptop-full", "t3_thread_organize", {
         environmentId: box.environmentId,
         threadId: boxThread,
         action: "archive",
       });
       expect(archived.isError).toBe(false);
-      expect((yield* Ref.get(seen)).stops).toEqual([`thread.archive ${boxThread}`]);
+      expect((yield* Ref.get(seen)).stops).toEqual([
+        `thread.model-selection.set ${boxThread}`,
+        `thread.archive ${boxThread}`,
+      ]);
 
       // This environment's own id keeps the call here.
-      const own = yield* a.call("thread:laptop-full", "t3_thread_configuration", {
+      const own = yield* a.call("thread:laptop-full", "t3_thread_configure", {
         environmentId: laptop.environmentId,
       });
       expect(own.structuredContent).toMatchObject({
@@ -696,6 +711,15 @@ it.effect("refuses what a linked environment cannot take before anything leaves"
         ["t3_thread_list", { environmentId: box.environmentId, projectId: boxProject }],
         ["t3_thread_read", { environmentId: box.environmentId, threadId: boxThread }],
         ["t3_thread_wait", { environmentId: box.environmentId, threadId: boxThread }],
+        ["t3_thread_configure", { environmentId: box.environmentId, threadId: boxThread }],
+        [
+          "t3_thread_configure",
+          {
+            environmentId: box.environmentId,
+            threadId: boxThread,
+            modelSelection: { instanceId: "codex", model: "gpt-5" },
+          },
+        ],
         [
           "t3_thread_send",
           { environmentId: box.environmentId, threadId: boxThread, message: "Carry on there." },
