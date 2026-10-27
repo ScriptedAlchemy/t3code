@@ -1,0 +1,68 @@
+import { rankComposerModelMentions } from "@t3tools/client-runtime/composerModelMentions";
+import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+
+import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
+import type { ComposerCommandItem } from "./ComposerCommandMenu";
+import { getDisplayModelName, getProviderRowLabel, type ModelEsque } from "./providerIconUtils";
+
+type ComposerModelItem = Extract<ComposerCommandItem, { type: "model" }>;
+
+type ComposerModelMentionProvider = Pick<
+  ProviderInstanceEntry,
+  | "instanceId"
+  | "driverKind"
+  | "displayName"
+  | "acpRegistryAgentId"
+  | "acpRegistryIconUrl"
+  | "continuationGroupKey"
+  | "enabled"
+  | "isAvailable"
+  | "status"
+>;
+
+export function matchComposerModelItems(input: {
+  readonly instanceEntries: ReadonlyArray<ComposerModelMentionProvider>;
+  readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
+  readonly lockedProvider: ProviderDriverKind | null;
+  readonly lockedContinuationGroupKey: string | null | undefined;
+  readonly isModelDisabled: (instanceId: ProviderInstanceId, model: string) => boolean;
+  readonly query: string;
+}): ComposerModelItem[] {
+  const candidates: Array<{ entry: ComposerModelMentionProvider; option: ModelEsque }> = [];
+  for (const entry of input.instanceEntries) {
+    if (!isProviderInstancePickerReady(entry)) continue;
+    if (
+      input.lockedProvider !== null &&
+      (entry.driverKind !== input.lockedProvider ||
+        (input.lockedContinuationGroupKey &&
+          entry.continuationGroupKey !== input.lockedContinuationGroupKey))
+    ) {
+      continue;
+    }
+    for (const option of input.modelOptionsByInstance.get(entry.instanceId) ?? []) {
+      // The picker hides legacy models by default; skip them so they don't fill the result cap.
+      if (option.isLegacy || option.isUnavailable) continue;
+      if (input.isModelDisabled(entry.instanceId, option.slug)) continue;
+      candidates.push({ entry, option });
+    }
+  }
+
+  return rankComposerModelMentions(candidates, input.query, ({ entry, option }) => ({
+    name: option.name,
+    ...(option.shortName ? { shortName: option.shortName } : {}),
+    ...(option.subProvider ? { subProvider: option.subProvider } : {}),
+    driverKind: entry.driverKind,
+    providerDisplayName: entry.displayName,
+  })).map(({ entry, option }) => ({
+    id: `model:${entry.instanceId}:${option.slug}`,
+    type: "model",
+    instanceId: entry.instanceId,
+    model: option.slug,
+    driverKind: entry.driverKind,
+    providerDisplayName: entry.displayName,
+    acpRegistryAgentId: entry.acpRegistryAgentId,
+    acpRegistryIconUrl: entry.acpRegistryIconUrl,
+    label: getDisplayModelName(option),
+    description: getProviderRowLabel(entry.displayName, option.subProvider),
+  }));
+}

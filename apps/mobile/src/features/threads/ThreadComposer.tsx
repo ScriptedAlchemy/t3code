@@ -1,3 +1,4 @@
+import { ProjectKnowledgeEntry } from "../../components/ProjectKnowledgeEntry";
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
@@ -52,6 +53,8 @@ import Animated, {
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { themeColorWithAlpha } from "../../lib/mobileTheme";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
+import { updateThreadDraftModelSelection } from "../../state/use-thread-composer-state";
+import { withRememberedModelOptions } from "../../state/use-model-option-memory";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import {
   getComposerDraftSnapshot,
@@ -235,6 +238,7 @@ export interface ThreadComposerProps {
   ) => Promise<MessageId | null>;
   readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
   readonly canSwitchProvider: boolean;
+  readonly onUpdateModelSelection?: (modelSelection: ModelSelection) => void;
   readonly onUpdateInteractionMode?: (interactionMode: ProviderInteractionMode) => void;
   readonly onHeightChange?: (height: number) => void;
   readonly onEditorFocusChange?: (focused: boolean) => void;
@@ -517,6 +521,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         props.selectedThread.modelSelection.instanceId,
       props.serverConfig?.providers ?? [],
       props.serverConfig?.usageLimitSources ?? [],
+      // oxlint-disable-next-line react/purity -- The submit and menu handlers read usage limits only after a user action.
       Date.now(),
     );
     onShowUsageLimits(report);
@@ -526,6 +531,16 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     return report !== null;
   };
 
+  const lockedProviderInstanceId = props.canSwitchProvider
+    ? undefined
+    : currentModelSelection.instanceId;
+  const modelOptions = buildModelOptions(
+    props.serverConfig,
+    currentModelSelection,
+    lockedProviderInstanceId,
+    props.selectedThread.projectId,
+    "composer",
+  );
   const composerMenu = useComposerCommandMenu({
     draftMessage: draftMessage,
     ownerKey: composerDraftKey,
@@ -551,6 +566,21 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     offersUsageLimits: usageLimitsOffered,
     onUsageLimits:
       usageLimitsOffered && draftAttachments.length === 0 ? openUsageLimits : undefined,
+    modelOptions,
+    modelProviders: props.serverConfig?.providers,
+    onSelectModel:
+      props.interactionLocked === true
+        ? undefined
+        : (option) => {
+            const selection = withRememberedModelOptions(option.selection);
+            if (props.onUpdateModelSelection) props.onUpdateModelSelection(selection);
+            else
+              updateThreadDraftModelSelection(
+                composerOwnerKey,
+                selection,
+                props.serverConfig?.providers ?? [],
+              );
+          },
   });
   const voiceInput = useVoiceInputController({
     ownerKey: composerDraftKey,
@@ -689,16 +719,6 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     });
   };
 
-  const lockedProviderInstanceId = props.canSwitchProvider
-    ? undefined
-    : currentModelSelection.instanceId;
-  const modelOptions = buildModelOptions(
-    props.serverConfig,
-    currentModelSelection,
-    lockedProviderInstanceId,
-    props.selectedThread.projectId,
-    "composer",
-  );
   const currentModelOption =
     modelOptions.find(
       (option) =>
@@ -858,6 +878,15 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
           />
         ) : null}
 
+        {!props.hidden && composerDraftKey ? (
+          <ProjectKnowledgeEntry
+            environmentId={props.environmentId}
+            projectId={props.selectedThread.projectId}
+            draftKey={composerDraftKey}
+            disabled={isSubmissionLocked}
+          />
+        ) : null}
+
         <ComposerSurface
           animateLayout={false}
           style={{
@@ -978,7 +1007,6 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                 hidden={props.hidden}
                 draftKey={composerDraftKey}
                 environmentId={props.environmentId}
-                projectId={props.selectedThread.projectId}
                 onOpenMention={(path) => {
                   Keyboard.dismiss();
                   if (props.isDraft) {

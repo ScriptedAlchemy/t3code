@@ -1221,6 +1221,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProviderSlashCommands,
     showSkillsInSlashMenu: settings.showSkillsInSlashMenu,
     questionAttachmentTarget,
+    modelMentions:
+      questionAttachmentTarget === null && !isSendBusy && !providerCatalogPending
+        ? {
+            instanceEntries: providerInstanceEntries,
+            modelOptionsByInstance,
+            lockedProvider,
+            lockedContinuationGroupKey,
+            isModelDisabled: (instanceId, model) =>
+              getModelDisabledReason(instanceId, model) !== null,
+          }
+        : null,
   });
 
   const composerMenuOpen = Boolean(composerTrigger);
@@ -2097,6 +2108,31 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         });
         setComposerHighlightedItemId(null);
       }
+      return;
+    }
+    if (item.type === "model") {
+      if (trigger.kind !== "path") return;
+      const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+        expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+      });
+      if (!applied) return;
+      setComposerHighlightedItemId(null);
+      // With several models picked, a mention adds one instead of replacing them all.
+      if (multipleModelSelections !== null) {
+        if (
+          !multipleModelSelections.some(
+            (selection) =>
+              selection.instanceId === item.instanceId && selection.model === item.model,
+          )
+        ) {
+          setMultipleModelSelections([
+            ...multipleModelSelections,
+            createModelSelection(item.instanceId, item.model),
+          ]);
+        }
+        return;
+      }
+      onProviderModelSelect(item.instanceId, item.model, { focusComposer: false });
       return;
     }
     if (item.type === "environment") {
