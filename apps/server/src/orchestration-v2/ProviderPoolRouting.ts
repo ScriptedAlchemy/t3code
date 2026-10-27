@@ -149,7 +149,7 @@ const sharesLogin = (a: ServerProvider, b: ServerProvider): boolean => {
 export function poolMemberHealth(input: {
   readonly members: ReadonlyArray<ServerProvider>;
   readonly settings: Parameters<typeof resolveProjectProviderInstanceEnabled>[0];
-  readonly projectId: ProjectId;
+  readonly projectId: ProjectId | null;
   readonly nowMs: number;
 }): ReadonlyArray<PoolMemberHealth> {
   return input.members.map((member) => {
