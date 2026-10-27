@@ -192,14 +192,17 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       ),
     );
 
+  const platforms = provide(probe(config, owner)).pipe(
+    Effect.map((value) => {
+      summary = { ...summary, platforms: value.platforms };
+      return value.platforms;
+    }),
+  );
   const platformAvailability: DeviceHost.DeviceHost["Service"]["platformAvailability"] = (
     platform,
   ) =>
-    provide(probe(config, owner)).pipe(
-      Effect.map((value) => {
-        summary = { ...summary, platforms: value.platforms };
-        return value.platforms.find((p) => p.platform === platform)!;
-      }),
+    platforms.pipe(
+      Effect.map((values) => values.find((value) => value.platform === platform)!),
       Effect.orElseSucceed(() => ({
         platform,
         available: false,
@@ -316,12 +319,8 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
         origin: hubOrigin,
         http,
         run,
-        iosAvailable: platformAvailability("ios").pipe(
-          Effect.map((availability) => availability.available),
-        ),
-        androidAvailable: platformAvailability("android").pipe(
-          Effect.map((availability) => availability.available),
-        ),
+        // A failed probe cannot prove that a known simulator inventory is empty.
+        platforms: platforms.pipe(Effect.orElseSucceed(() => summary.platforms)),
       }),
       ...(remote.daemonPort !== undefined &&
       remote.token !== undefined &&

@@ -77,10 +77,15 @@ export function DeviceHostDiagnostics(props: {
 
 export function platformSetupStatus(state: DeviceServiceState, platform: DevicePlatform) {
   const hasDevices = state.devices.some((device) => device.platform === platform);
-  if (platform === "android" && !hasDevices && isAndroidDiscoveryUncertain(state)) {
+  const discoveryIncomplete = Object.values(state.hostStatuses).some(
+    (status) =>
+      status.status === "ready" &&
+      (platform === "ios" ? status.iosDiscoveryIncomplete : status.androidDiscoveryIncomplete),
+  );
+  if (!hasDevices && discoveryIncomplete) {
     return {
       ready: false,
-      message: "The Android device list may be incomplete. Check the device host and try again.",
+      message: `The ${platformName(platform)} device list may be incomplete. Check the device host and try again.`,
     };
   }
   const availabilities = state.hosts.flatMap((host) =>

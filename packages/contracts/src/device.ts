@@ -188,6 +188,7 @@ export const DeviceHostStatuses = Schema.Record(
   Schema.Struct({
     status: DeviceHostStatus,
     detail: Schema.optional(Schema.String),
+    iosDiscoveryIncomplete: Schema.optional(Schema.Boolean),
     androidDiscoveryIncomplete: Schema.optional(Schema.Boolean),
   }),
 );

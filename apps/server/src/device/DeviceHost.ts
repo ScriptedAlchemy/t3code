@@ -97,6 +97,7 @@ export interface DeviceOperations {
     {
       readonly devices: ReadonlyArray<HostDevice>;
       readonly detail: string | undefined;
+      readonly iosDiscoveryIncomplete?: boolean;
       /** Some Android virtual devices could not be listed; the rest are. */
       readonly androidDiscoveryIncomplete?: boolean;
     },

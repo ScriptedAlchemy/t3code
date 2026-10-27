@@ -253,6 +253,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             hostStatuses: {
               ...state.hostStatuses,
               [hostId]: {
+                ...(state.hostStatuses[hostId]?.iosDiscoveryIncomplete
+                  ? { iosDiscoveryIncomplete: true }
+                  : {}),
                 ...(state.hostStatuses[hostId]?.androidDiscoveryIncomplete
                   ? { androidDiscoveryIncomplete: true }
                   : {}),
@@ -384,10 +387,12 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     );
 
   const fetchDevices = Effect.fn("DeviceService.fetchDevices")(function* (ready: DeviceReadiness) {
-    const { devices, detail, androidDiscoveryIncomplete } = yield* ready.devices.list;
+    const { devices, detail, iosDiscoveryIncomplete, androidDiscoveryIncomplete } =
+      yield* ready.devices.list;
     return {
       devices: devices.map((device): DeviceSummary => ({ ...device, hostId: ready.hostId })),
       detail,
+      iosDiscoveryIncomplete,
       androidDiscoveryIncomplete,
     };
   });
@@ -399,7 +404,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     const sessionKey = (session: DeviceSession) =>
       `${session.hostId}\u0000${session.deviceId}\u0000${session.threadId}\u0000${session.openedAt}`;
     const before = new Set((yield* SynchronizedRef.get(stateRef)).state.sessions.map(sessionKey));
-    const { devices, detail, androidDiscoveryIncomplete } = yield* fetchDevices(ready);
+    const { devices, detail, iosDiscoveryIncomplete, androidDiscoveryIncomplete } =
+      yield* fetchDevices(ready);
     const hostSummaries = yield* Effect.forEach(hosts.values(), (host) => host.summary);
     return yield* lifecycleLock.withPermit(
       Effect.gen(function* () {
@@ -429,6 +435,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             [ready.hostId]: {
               status: "ready",
               ...(detail ? { detail } : {}),
+              ...(iosDiscoveryIncomplete ? { iosDiscoveryIncomplete } : {}),
               ...(androidDiscoveryIncomplete ? { androidDiscoveryIncomplete } : {}),
             },
           },
