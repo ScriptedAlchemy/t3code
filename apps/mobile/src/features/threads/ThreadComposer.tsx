@@ -541,6 +541,17 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     props.selectedThread.projectId,
     "composer",
   );
+  // Mentions name any model for the agent, so they aren't limited to models this thread can switch to.
+  const mentionModelOptions =
+    lockedProviderInstanceId === undefined
+      ? modelOptions
+      : buildModelOptions(
+          props.serverConfig,
+          currentModelSelection,
+          undefined,
+          props.selectedThread.projectId,
+          "composer",
+        );
   const composerMenu = useComposerCommandMenu({
     draftMessage: draftMessage,
     ownerKey: composerDraftKey,
@@ -566,14 +577,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     offersUsageLimits: usageLimitsOffered,
     onUsageLimits:
       usageLimitsOffered && draftAttachments.length === 0 ? openUsageLimits : undefined,
-    // Mentions name any model for the agent, so they aren't limited to models this thread can switch to.
-    modelOptions: buildModelOptions(
-      props.serverConfig,
-      currentModelSelection,
-      undefined,
-      props.selectedThread.projectId,
-      "composer",
-    ),
+    modelOptions: mentionModelOptions,
     modelProviders: props.serverConfig?.providers,
   });
   const voiceInput = useVoiceInputController({

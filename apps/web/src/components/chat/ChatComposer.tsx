@@ -1169,15 +1169,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProviderSlashCommands,
     showSkillsInSlashMenu: settings.showSkillsInSlashMenu,
     questionAttachmentTarget,
-    modelMentions:
-      questionAttachmentTarget === null && !providerCatalogPending
-        ? {
-            instanceEntries: providerInstanceEntries,
-            modelOptionsByInstance,
-            isModelDisabled: (instanceId, model) =>
-              getModelDisabledReason(instanceId, model) !== null,
-          }
-        : null,
+    modelMentions: !providerCatalogPending
+      ? {
+          instanceEntries: providerInstanceEntries,
+          modelOptionsByInstance,
+        }
+      : null,
   });
 
   const composerMenuOpen = Boolean(composerTrigger);

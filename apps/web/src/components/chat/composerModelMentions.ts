@@ -22,7 +22,6 @@ type ComposerModelMentionProvider = Pick<
 export function matchComposerModelItems(input: {
   readonly instanceEntries: ReadonlyArray<ComposerModelMentionProvider>;
   readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
-  readonly isModelDisabled: (instanceId: ProviderInstanceId, model: string) => boolean;
   readonly query: string;
 }): ComposerModelItem[] {
   const candidates: Array<{ entry: ComposerModelMentionProvider; option: ModelEsque }> = [];
@@ -31,7 +30,6 @@ export function matchComposerModelItems(input: {
     for (const option of input.modelOptionsByInstance.get(entry.instanceId) ?? []) {
       // The picker hides legacy models by default; skip them so they don't fill the result cap.
       if (option.isLegacy || option.isUnavailable) continue;
-      if (input.isModelDisabled(entry.instanceId, option.slug)) continue;
       candidates.push({ entry, option });
     }
   }

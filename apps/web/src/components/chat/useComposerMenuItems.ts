@@ -86,11 +86,10 @@ export function useComposerMenuItems({
   readonly selectedProviderSlashCommands: ServerProvider["slashCommands"];
   readonly showSkillsInSlashMenu: boolean;
   readonly questionAttachmentTarget: DraftId | null;
-  /** Null when model mentions are off, such as while answering an agent's question. */
+  /** Null while the provider catalog is still loading. */
   readonly modelMentions: {
     readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
     readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
-    readonly isModelDisabled: (instanceId: ProviderInstanceId, model: string) => boolean;
   } | null;
 }) {
   // Thread mentions rank by recency as of when the composer mounted.

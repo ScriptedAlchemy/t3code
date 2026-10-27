@@ -247,6 +247,8 @@ export function resolveComposerCommandSelection(input: {
     replacement = `/${item.command} `;
   } else if (item.type === "provider-slash-command") {
     replacement = `/${item.command.name} `;
+  } else if (item.type === "model") {
+    replacement = `${formatComposerModelMention(item.option.selection.instanceId, item.option.selection.model)} `;
   }
   return {
     ...replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, replacement),
@@ -547,19 +549,6 @@ export function useComposerCommandMenu({
 
   const onSelect = (item: ComposerCommandItem) => {
     if (!trigger) return;
-    if (item.type === "model") {
-      if (trigger.kind !== "path") return;
-      const { instanceId, model } = item.option.selection;
-      const result = replaceTextRange(
-        draftMessage,
-        trigger.rangeStart,
-        trigger.rangeEnd,
-        `${formatComposerModelMention(instanceId, model)} `,
-      );
-      onChangeDraftMessage(result.text);
-      setSelection({ start: result.cursor, end: result.cursor });
-      return;
-    }
     if (item.type === "environment") {
       if (!ownerKey || trigger.kind !== "path") return;
       const record = environmentComposerContext(item.environmentId, item.label);

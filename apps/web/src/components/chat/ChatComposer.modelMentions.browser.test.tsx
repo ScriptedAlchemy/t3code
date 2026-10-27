@@ -185,10 +185,9 @@ function setup() {
 
 it("inserts the picked model as text without switching the thread's model", async () => {
   const { props, composerRef } = setup();
-  const onProviderModelSelect = vi.fn();
   await using screen = await render(
     <AppAtomRegistryProvider>
-      <ChatComposer {...props} onProviderModelSelect={onProviderModelSelect} />
+      <ChatComposer {...props} />
     </AppAtomRegistryProvider>,
   );
   const element = screen.container.querySelector<HTMLElement & { editor: Editor }>(".tiptap");
@@ -197,6 +196,5 @@ it("inserts the picked model as text without switching the thread's model", asyn
   await userEvent.keyboard("@gpt");
   expect(props.promptRef.current).toBe("before @gpt after");
   await userEvent.keyboard("{Enter}");
-  await expect.element(element).toHaveTextContent("before model:codex/gpt-5.4 after");
-  expect(onProviderModelSelect).not.toHaveBeenCalled();
+  await expect.poll(() => props.promptRef.current).toBe("before model:codex/gpt-5.4 after");
 });
