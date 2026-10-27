@@ -58,6 +58,7 @@ const fixture = Effect.fn("fixture")(function* (
   const requests: string[] = [];
   const devices: Array<Omit<DeviceSummary, "hostId">> = [];
   const discoveryErrors = yield* Ref.make<Array<{ message: string; error?: string }>>([]);
+  const androidAvailable = yield* Ref.make(true);
   const encoderResult = yield* Ref.make({ code: 0, stdout: " V....D libx264", stderr: "" });
   const simulator = {
     id: "never-booted",
@@ -155,10 +156,12 @@ const fixture = Effect.fn("fixture")(function* (
         origin: "http://device.test",
         http,
         run,
-        platforms: Effect.succeed([
-          { platform: "ios", available: options.iosSimulator ?? false },
-          { platform: "android", available: true },
-        ]),
+        platforms: Ref.get(androidAvailable).pipe(
+          Effect.map((available) => [
+            { platform: "ios", available: options.iosSimulator ?? false },
+            { platform: "android", available },
+          ]),
+        ),
       }),
       ...(options.endsDevices ? { endsDevices: true } : {}),
     },
@@ -263,6 +266,7 @@ const fixture = Effect.fn("fixture")(function* (
     encoderResult,
     simulatorResult,
     discoveryErrors,
+    androidAvailable,
     endDevice,
   };
 });
@@ -536,6 +540,20 @@ it.effect("keeps other discovery warnings and clears them when only a deleted pl
     const refreshed = yield* service.list;
     expect(refreshed.hostStatusDetail).toBeUndefined();
     expect(refreshed.hostStatuses.local?.detail).toBeUndefined();
+  }).pipe(Effect.scoped),
+);
+
+it.effect("hides Android discovery failures when the host has no Android SDK", () =>
+  Effect.gen(function* () {
+    const { service, discoveryErrors, androidAvailable } = yield* fixture();
+    const avdmanagerFailure = { message: "[android-utils] Failed to run `avdmanager list avd`:" };
+    yield* Ref.set(discoveryErrors, [avdmanagerFailure, { message: "iOS discovery failed." }]);
+    yield* Ref.set(androidAvailable, false);
+    const withoutSdk = yield* service.configure({ enabled: true });
+    expect(withoutSdk.hostStatusDetail).toBe("iOS discovery failed.");
+    yield* Ref.set(androidAvailable, true);
+    const withSdk = yield* service.list;
+    expect(withSdk.hostStatusDetail).toBe(`${avdmanagerFailure.message}\niOS discovery failed.`);
   }).pipe(Effect.scoped),
 );
 

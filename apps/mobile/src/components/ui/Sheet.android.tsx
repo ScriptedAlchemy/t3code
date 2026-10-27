@@ -3,11 +3,13 @@ import { View } from "react-native";
 import { FormSheet } from "react-native-screens";
 import { useResolveClassNames } from "uniwind";
 import { AndroidSheetHeader } from "./AndroidScreenHeader";
+import { RoutedFormSheetContext } from "./RoutedFormSheetContext";
+import { ScreenContent } from "./ScreenContent";
 import type { SheetProps } from "./Sheet.types";
 export type { SheetProps } from "./Sheet.types";
 
 export function Sheet(props: SheetProps) {
-  const containerStyle = useResolveClassNames("bg-sheet");
+  const containerStyle = useResolveClassNames("bg-header");
   const [isOpen, setIsOpen] = useState(true);
   const requestClose = () => {
     if (props.onRequestClose) props.onRequestClose();
@@ -21,7 +23,7 @@ export function Sheet(props: SheetProps) {
     <FormSheet
       isOpen={isOpen}
       detents={[0.5, 0.9]}
-      prefersGrabberVisible
+      prefersGrabberVisible={false}
       nativeContainerStyle={containerStyle}
       onDismiss={props.onClose}
       onNativeDismiss={props.onClose}
@@ -29,11 +31,17 @@ export function Sheet(props: SheetProps) {
       preventNativeDismiss={Boolean(props.onBack || props.onRequestClose)}
       onNativeDismissPrevented={back}
     >
-      {/* Android FormSheet does not bound flex children. Material drags target the first scroll view, so place content before the header. */}
-      <View collapsable={false} className="absolute inset-0 flex-col-reverse bg-sheet">
-        <View className="flex-1">{props.children}</View>
-        <AndroidSheetHeader title={props.title} onBack={back} />
-      </View>
+      <RoutedFormSheetContext value={false}>
+        {/* Android FormSheet does not bound flex children. Material drags target the first scroll view, so place content before the header. */}
+        <View collapsable={false} className="absolute inset-0 flex-col-reverse bg-header">
+          <ScreenContent>{props.children}</ScreenContent>
+          <AndroidSheetHeader title={props.title} onBack={back} hideBottomBorder />
+          <View
+            pointerEvents="none"
+            className="absolute top-1 h-1 w-8 self-center rounded-full bg-header-foreground/40"
+          />
+        </View>
+      </RoutedFormSheetContext>
     </FormSheet>
   );
 }
