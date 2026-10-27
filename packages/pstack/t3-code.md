@@ -112,6 +112,7 @@ All harnesses use `$pstack:` composer chips and the `t3-code` tools; none instal
 | `cursor` | Supported | Cursor SDK driver. A Cursor-installed pstack keeps Cursor names; T3 chips run this file instead. |
 | `opencode` | Supported |  |
 | `grok` | Supported | ACP, same fallback. |
+| `fx` | Supported when the agent exposes the T3 tools | ACP, same fallback. |
 | `pi` | Supported | The T3 tools come from T3 Code's Pi extension. |
 | `muse` | Supported | The T3 tools are attached without T3 Code's orchestration instructions, so follow each tool's description. |
 | `antigravity` | Supported when the session exposes the T3 tools | Otherwise the opening check stops the run. |
