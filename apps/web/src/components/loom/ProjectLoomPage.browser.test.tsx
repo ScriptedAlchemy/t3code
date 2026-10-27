@@ -4,6 +4,7 @@ import {
   CheckpointId,
   EnvironmentId,
   MessageId,
+  NodeId,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -23,6 +24,7 @@ const state = vi.hoisted(() => ({
   config: null as unknown,
   windows: new Map<string, unknown>(),
   respond: (_input: unknown): unknown => null,
+  environments: [] as string[],
 }));
 vi.mock(
   import("../../state/server"),
@@ -42,6 +44,10 @@ vi.mock(
     }) as never,
 );
 vi.mock(import("../../state/entities"), () => ({ useProject: () => null }) as never);
+vi.mock(
+  import("../../state/environments"),
+  () => ({ useEnvironmentIds: () => state.environments }) as never,
+);
 vi.mock(
   import("../../lib/openPullRequestLink"),
   () => ({ useOpenPrLink: () => () => false }) as never,
@@ -130,6 +136,7 @@ const fullWindow: LoomWindow = {
 };
 
 function setup() {
+  state.environments = [environmentId, "build-server", "origin-server"];
   state.config = Atom.make({ environment: { capabilities: { projectLoom: true } } });
   state.windows.clear();
   state.respond = (input) => {
@@ -217,6 +224,124 @@ async function renderLoom(registry: AtomRegistry.AtomRegistry, initialSearch?: L
     { router: "/loom/loom-browser/project" },
   );
 }
+
+it("opens a remote task in its destination even when its id equals a local thread", async () => {
+  const registry = setup();
+  const destination = EnvironmentId.make("build-server");
+  state.respond = () =>
+    Atom.make(
+      AsyncResult.success({
+        ...fullWindow,
+        markers: [
+          {
+            kind: "subagent_task",
+            id: NodeId.make("remote-task"),
+            threadId: rootId,
+            runId: null,
+            at: "2026-10-20T11:00:00.000Z",
+            completedAt: null,
+            status: "running",
+            title: "Build",
+            remoteChild: { environmentId: destination, threadId: rootId, label: "Build server" },
+          },
+        ],
+      } satisfies LoomWindow),
+    );
+  await using screen = await renderLoom(registry, {
+    from,
+    to,
+    mode: "lanes",
+    sel: "marker:subagent_task:remote-task",
+  });
+  await expect
+    .element(
+      page
+        .getByRole("list", { name: "Events" })
+        .getByText("Agent task on Build server: Build (running)", { exact: true }),
+    )
+    .toBeVisible();
+  await userEvent.click(page.getByRole("button", { name: "Open remote task" }));
+  await vi.waitFor(() =>
+    expect(screen.router?.state.location.pathname).toBe(`/${destination}/${rootId}`),
+  );
+});
+
+it("opens the parent of a remotely delegated lane in the origin environment", async () => {
+  const registry = setup();
+  const origin = EnvironmentId.make("origin-server");
+  state.respond = () =>
+    Atom.make(
+      AsyncResult.success({
+        ...fullWindow,
+        lanes: fullWindow.lanes.map((entry) =>
+          entry.threadId === rootId
+            ? {
+                ...entry,
+                relationship: "subagent",
+                delegatedFrom: {
+                  environmentId: origin,
+                  threadId: rootId,
+                  title: "Remote parent",
+                },
+              }
+            : entry,
+        ),
+      } satisfies LoomWindow),
+    );
+  await using screen = await renderLoom(registry, {
+    from,
+    to,
+    mode: "lanes",
+    sel: `lane:${rootId}`,
+  });
+  await userEvent.click(
+    page.getByRole("button", { name: "Open parent thread Remote parent on origin-server" }),
+  );
+  await vi.waitFor(() =>
+    expect(screen.router?.state.location.pathname).toBe(`/${origin}/${rootId}`),
+  );
+});
+
+it("keeps a remote task visible and explains why an unconnected destination cannot open", async () => {
+  const registry = setup();
+  state.environments = [environmentId];
+  state.respond = () =>
+    Atom.make(
+      AsyncResult.success({
+        ...fullWindow,
+        markers: [
+          {
+            kind: "subagent_task",
+            id: NodeId.make("remote-task"),
+            threadId: rootId,
+            runId: null,
+            at: "2026-10-20T11:00:00.000Z",
+            completedAt: null,
+            status: "running",
+            title: "Build",
+            remoteChild: {
+              environmentId: EnvironmentId.make("build-server"),
+              threadId: rootId,
+              label: "Build server",
+            },
+          },
+        ],
+      } satisfies LoomWindow),
+    );
+  await using _screen = await renderLoom(registry, {
+    from,
+    to,
+    mode: "lanes",
+    sel: "marker:subagent_task:remote-task",
+  });
+  await expect.element(page.getByRole("button", { name: "Open remote task" })).toBeDisabled();
+  await expect
+    .element(page.getByRole("button", { name: "Open thread", exact: true }))
+    .toBeEnabled();
+  await expect
+    .element(page.getByText("Connect to Build server to open this thread."))
+    .toBeVisible();
+});
 
 it("pages older lanes of the default window within the bounds that produced the cursor", async () => {
   const registry = setup();

@@ -33,13 +33,17 @@ import { ORCHESTRATOR_MCP_RUNNING_TASK_NEXT } from "@t3tools/contracts";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
+import { ConversationSummariesToolkit } from "../../apps/server/src/mcp/toolkits/conversationSummaries/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import { EnvironmentToolkit } from "../../apps/server/src/mcp/toolkits/environment/tools.ts";
 import { HtmlToolkit } from "../../apps/server/src/mcp/toolkits/html/tools.ts";
+import { KnowledgeToolkit } from "../../apps/server/src/mcp/toolkits/knowledge/tools.ts";
 import { OrchestratorToolkit } from "../../apps/server/src/mcp/toolkits/orchestrator/tools.ts";
 import { PreviewToolkit } from "../../apps/server/src/mcp/toolkits/preview/tools.ts";
 import { PreviewControlsToolkit } from "../../apps/server/src/mcp/toolkits/previewControls/tools.ts";
 import { ProjectToolkit } from "../../apps/server/src/mcp/toolkits/project/tools.ts";
+import { ProjectCodeToolkit } from "../../apps/server/src/mcp/toolkits/projectCode/tools.ts";
+import { ProjectLoomToolkit } from "../../apps/server/src/mcp/toolkits/projectLoom/tools.ts";
 import {
   CHILD_PULL_REQUEST_REPORT_NEXT,
   PullRequestsToolkit,
@@ -294,6 +298,10 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   ThreadToolkit,
   AttachmentToolkit,
   ProjectToolkit,
+  KnowledgeToolkit,
+  ConversationSummariesToolkit,
+  ProjectCodeToolkit,
+  ProjectLoomToolkit,
   EnvironmentToolkit,
   PreviewControlsToolkit,
   WorktreeToolkit,

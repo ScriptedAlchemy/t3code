@@ -7,6 +7,7 @@ import {
   type DesktopUpdateChannel,
   IDLE_COMPACTION_MODES,
   globalIdleCompaction,
+  isProviderTextGenerationCapable,
   ProviderDriverKind,
   type ProviderInstanceId,
   type SidebarProjectGroupingMode,
@@ -1535,8 +1536,8 @@ export function ThreadsSettingsPanel() {
     (target) => target.serverConfig?.environment.capabilities.threadAutoSettlementScope === true,
   );
 
-  const textGenerationProviders = serverProviders.filter(
-    (provider) => provider.supportsTextGeneration !== false,
+  const textGenerationProviders = serverProviders.filter((provider) =>
+    isProviderTextGenerationCapable(provider),
   );
   const textGenerationModelSelection = resolveAppModelSelectionState(
     settings,
@@ -1573,6 +1574,18 @@ export function ThreadsSettingsPanel() {
   const textGenerationModelDisabledReason = useScopedModelDisabledReason(
     settings,
     textGenerationModelInstanceEntries,
+    [
+      "generateCommitMessage",
+      "generatePrContent",
+      "generateBranchName",
+      "generateThreadTitle",
+      "generateKnowledgeCandidates",
+      "generateConversationSummary",
+    ],
+  );
+  const textGenerationSelectionIssue = textGenerationModelDisabledReason(
+    textGenInstanceId,
+    textGenModel,
   );
   const mixedAddProjectBaseDirectory = useScopedSettingsMixed(["addProjectBaseDirectory"]);
   const mixedTextGenerationModel = useScopedSettingsMixed(["textGenerationModelSelection"]);
@@ -1753,7 +1766,15 @@ export function ThreadsSettingsPanel() {
           serverScoped
           settingKeys={["textGenerationModelSelection"]}
           {...searchableSetting("text-generation-model")}
-          description="Used for thread titles and other generated text on connected devices with this provider. Source control can override it."
+          description={
+            <>
+              Used for thread titles, project knowledge, conversation summaries, and other generated
+              text on connected devices with this provider. Source control can override it.
+              {textGenerationSelectionIssue && !mixedTextGenerationModel ? (
+                <span className="mt-1 block text-warning">{textGenerationSelectionIssue}</span>
+              ) : null}
+            </>
+          }
           resetAction={
             hasServerTargets && isTextGenerationModelDirty ? (
               <SettingResetButton

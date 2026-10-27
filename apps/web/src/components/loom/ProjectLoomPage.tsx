@@ -31,6 +31,7 @@ import { isElectron } from "~/env";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { useProject } from "~/state/entities";
+import { useEnvironmentIds } from "~/state/environments";
 import { projectLoom } from "~/state/projectLoom";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
@@ -138,6 +139,7 @@ interface LoomPage {
 function LoomWorkspace(props: ProjectLoomPageProps) {
   const { search, onSearchChange } = props;
   const navigate = useNavigate();
+  const environmentIds = useEnvironmentIds();
   const openPrLink = useOpenPrLink();
   const filters = loomFiltersOf(search);
   // Lane pages are ephemeral: a cursor only belongs to the project, window and filters that made
@@ -181,10 +183,12 @@ function LoomWorkspace(props: ProjectLoomPageProps) {
   );
 
   const actions: LoomActions = {
-    openThread: (threadId: ThreadId) =>
+    canOpenThread: (target) =>
+      target.environmentId === props.environmentId || environmentIds.includes(target.environmentId),
+    openThread: (target) =>
       void navigate({
         to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),
+        params: buildThreadRouteParams(target),
       }),
     openDiff: (threadId: ThreadId, runId: RunId) => {
       const threadRef = scopeThreadRef(props.environmentId, threadId);
@@ -275,6 +279,7 @@ function LoomWorkspace(props: ProjectLoomPageProps) {
       ) : (
         <LoomLoaded
           key={`${data.from}|${data.to}`}
+          environmentId={props.environmentId}
           data={data}
           stale={query.error !== null}
           search={search}
@@ -295,6 +300,7 @@ function LoomWorkspace(props: ProjectLoomPageProps) {
 }
 
 function LoomLoaded(props: {
+  readonly environmentId: EnvironmentId;
   readonly data: LoomWindow;
   readonly stale: boolean;
   readonly search: LoomSearch;
@@ -481,6 +487,7 @@ function LoomLoaded(props: {
         )}
       </div>
       <LoomEventPanel
+        environmentId={props.environmentId}
         data={data}
         selection={selection}
         actions={props.actions}

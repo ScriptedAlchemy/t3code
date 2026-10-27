@@ -374,6 +374,7 @@ export const ClaudeDriver: ProviderDriver<
       );
     const textGeneration: ProviderInstance["textGeneration"] = auth
       ? {
+          supportedOperations: nativeGeneration.supportedOperations,
           generateCommitMessage: (input) =>
             protect("generateCommitMessage", nativeGeneration.generateCommitMessage(input)),
           generatePrContent: (input) =>

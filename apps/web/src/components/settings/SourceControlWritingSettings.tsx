@@ -1,9 +1,10 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
-import type {
-  ProviderInstanceId,
-  ServerSettings,
-  SourceControlWritingStyleMode,
+import {
+  isProviderTextGenerationCapable,
+  type ProviderInstanceId,
+  type ServerSettings,
+  type SourceControlWritingStyleMode,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -107,8 +108,8 @@ export function SourceControlWritingSettingsSection() {
     style.mode !== defaults.mode ||
     style.customInstructions !== defaults.customInstructions;
 
-  const textGenerationProviders = serverProviders.filter(
-    (provider) => provider.supportsTextGeneration !== false,
+  const textGenerationProviders = serverProviders.filter((provider) =>
+    isProviderTextGenerationCapable(provider),
   );
   const instanceEntries = sortProviderInstanceEntries(
     applyProviderInstanceSettings(
@@ -151,7 +152,14 @@ export function SourceControlWritingSettingsSection() {
     activeSelection.instanceId,
     activeSelection.model,
   );
-  const writerModelDisabledReason = useScopedModelDisabledReason(settings, instanceEntries);
+  const writerModelDisabledReason = useScopedModelDisabledReason(settings, instanceEntries, [
+    "generateCommitMessage",
+    "generatePrContent",
+    "generateBranchName",
+  ]);
+  const reviewGuideModelDisabledReason = useScopedModelDisabledReason(settings, instanceEntries, [
+    "generateReviewGuide",
+  ]);
   const writerInstanceEntry = instanceEntries.find(
     (entry) => entry.instanceId === activeSelection.instanceId,
   );
@@ -175,6 +183,10 @@ export function SourceControlWritingSettingsSection() {
   );
   const reviewGuideInstanceEntry = instanceEntries.find(
     (entry) => entry.instanceId === reviewGuideSelection.instanceId,
+  );
+  const reviewGuideSelectionIssue = reviewGuideModelDisabledReason(
+    reviewGuideSelection.instanceId,
+    reviewGuideSelection.model,
   );
 
   return (
@@ -318,7 +330,16 @@ export function SourceControlWritingSettingsSection() {
             serverScoped
             settingKeys={["reviewGuideModelSelection"]}
             {...searchableSetting("review-guide-model")}
-            description="Model that reads a pull request to write its review guide. It reads the change itself over many steps, so a stronger model helps. Off uses the source control writer model."
+            description={
+              <>
+                Model that reads a pull request to write its review guide. It reads the change
+                itself over many steps, so a stronger model helps. Off uses the source control
+                writer model.
+                {reviewGuideSelectionIssue && !mixedReviewGuideModel ? (
+                  <span className="mt-1 block text-warning">{reviewGuideSelectionIssue}</span>
+                ) : null}
+              </>
+            }
             control={
               !hasServerTargets ? (
                 <span className="text-sm text-muted-foreground">
@@ -337,9 +358,9 @@ export function SourceControlWritingSettingsSection() {
                       triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                       triggerAriaLabel="Review guide model"
                       {...(mixedReviewGuideModel ? { triggerLabel: "Mixed" } : {})}
-                      getModelDisabledReason={writerModelDisabledReason}
+                      getModelDisabledReason={reviewGuideModelDisabledReason}
                       onInstanceModelChange={(instanceId, model) => {
-                        const reason = writerModelDisabledReason(instanceId, model);
+                        const reason = reviewGuideModelDisabledReason(instanceId, model);
                         if (reason) {
                           toastManager.add({
                             type: "error",

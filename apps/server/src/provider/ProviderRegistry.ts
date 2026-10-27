@@ -329,7 +329,15 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  return Effect.succeed(snapshot);
+  return Effect.succeed({
+    ...snapshot,
+    ...(source.textGenerationOperations === undefined
+      ? {}
+      : {
+          supportsTextGeneration: source.textGenerationOperations.length > 0,
+          textGenerationOperations: source.textGenerationOperations,
+        }),
+  });
 };
 
 const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
@@ -340,6 +348,7 @@ const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
 const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource => ({
   instanceId: instance.instanceId,
   driverKind: instance.driverKind,
+  textGenerationOperations: instance.textGeneration.supportedOperations,
   getSnapshot: instance.snapshot.getSnapshot,
   refresh: instance.snapshot.refresh,
   streamChanges: instance.snapshot.streamChanges,

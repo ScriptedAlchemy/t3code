@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
   OtlpEndpointCheckInput,
+  isProviderTextGenerationCapable,
   resolveEnvironmentMachineKind,
   ServerObservability,
   ServerProvider,
@@ -27,6 +28,30 @@ const baseProviderSnapshot = {
 };
 
 describe("ServerProvider", () => {
+  it("honors operation capabilities without breaking older server snapshots", () => {
+    const legacy = decodeServerProvider(baseProviderSnapshot);
+    expect(isProviderTextGenerationCapable(legacy, "generateConversationSummary")).toBe(true);
+    const limited = decodeServerProvider({
+      ...baseProviderSnapshot,
+      textGenerationOperations: ["generateThreadTitle", "futureOperation"],
+    });
+    expect(limited.textGenerationOperations).toEqual(["generateThreadTitle"]);
+    expect(isProviderTextGenerationCapable(limited)).toBe(true);
+    expect(isProviderTextGenerationCapable(limited, "generateThreadTitle")).toBe(true);
+    expect(isProviderTextGenerationCapable(limited, "generateConversationSummary")).toBe(false);
+    expect(
+      isProviderTextGenerationCapable(
+        decodeServerProvider({ ...baseProviderSnapshot, textGenerationOperations: [] }),
+      ),
+    ).toBe(false);
+    expect(
+      isProviderTextGenerationCapable(
+        decodeServerProvider({ ...baseProviderSnapshot, supportsTextGeneration: false }),
+        "generateKnowledgeCandidates",
+      ),
+    ).toBe(false);
+  });
+
   it("preserves installed-version presence through the provider wire codec", () => {
     const encode = Schema.encodeSync(ServerProvider);
     for (const installation of [{}, { installedVersion: null }, { installedVersion: "1.2.3" }]) {

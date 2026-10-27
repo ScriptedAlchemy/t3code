@@ -1,5 +1,6 @@
 import {
   WS_METHODS,
+  type EnvironmentId,
   type LoomAncestor,
   type LoomEdge,
   type LoomLane,
@@ -8,10 +9,12 @@ import {
   type LoomRun,
   type LoomRunActivity,
   type LoomWindow,
+  type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
 import type { Atom } from "effect/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
+import { scopeThreadRef } from "../environment/scoped.ts";
 import { createEnvironmentRpcQueryAtomFamily } from "../state/runtime.ts";
 
 export function createProjectLoomAtoms<R, E>(
@@ -31,6 +34,8 @@ export interface LoomRow {
   readonly threadId: ThreadId;
   readonly title: string;
   readonly relationship: LoomLaneRelationship;
+  /** Kept on ancestor stubs too; this parent lives outside the local lane tree. */
+  readonly delegatedFrom?: LoomLane["delegatedFrom"];
   readonly depth: number;
   /** Null for an ancestor that is not on this page and carries no activity. */
   readonly lane: LoomLane | null;
@@ -118,6 +123,9 @@ export function buildLoomRows(
       threadId,
       title: node.identity.title,
       relationship: node.identity.relationship,
+      ...(node.identity.delegatedFrom === undefined
+        ? {}
+        : { delegatedFrom: node.identity.delegatedFrom }),
       depth,
       lane: node.lane,
       childCount: node.children.length,
@@ -166,6 +174,16 @@ const MARKER_LABELS: Record<LoomMarker["kind"], string> = {
   subagent_task: "Agent task",
 };
 
+/** Remote tasks open their child there; native tasks and other markers open their local lane. */
+export function loomMarkerThreadRef(
+  environmentId: EnvironmentId,
+  marker: LoomMarker,
+): ScopedThreadRef {
+  return marker.kind === "subagent_task" && marker.remoteChild !== undefined
+    ? scopeThreadRef(marker.remoteChild.environmentId, marker.remoteChild.threadId)
+    : scopeThreadRef(environmentId, marker.threadId);
+}
+
 export function loomMarkerLabel(marker: LoomMarker): string {
   switch (marker.kind) {
     case "checkpoint":
@@ -175,7 +193,7 @@ export function loomMarkerLabel(marker: LoomMarker): string {
     case "test_command":
       return `${MARKER_LABELS.test_command}${marker.exitCode === null ? "" : ` (exit ${marker.exitCode})`}: ${marker.command}`;
     case "subagent_task":
-      return `${MARKER_LABELS.subagent_task}: ${marker.title ?? "untitled"} (${marker.status})`;
+      return `${MARKER_LABELS.subagent_task}${marker.remoteChild === undefined ? "" : ` on ${marker.remoteChild.label}`}: ${marker.title ?? "untitled"} (${marker.status})`;
   }
 }
 

@@ -1,9 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   loomCoverageNotes,
   loomMarkerLabel,
+  loomMarkerThreadRef,
   loomTruncationNotes,
 } from "@t3tools/client-runtime/projectLoom";
 import {
@@ -12,7 +14,7 @@ import {
   type LoomRunStatusFilter,
   type LoomWindowInput,
   type ProviderInstanceId,
-  type ThreadId,
+  type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useMemo, useState } from "react";
 import { Platform, Pressable, ScrollView, View } from "react-native";
@@ -27,6 +29,7 @@ import { useProject } from "../../state/entities";
 import { projectLoom } from "../../state/projectLoom";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { useEnvironments } from "../../state/environments";
 import { ListFilterMenu } from "../workspace/ListFilterMenu";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 import { buildLoomActivityList, type LoomActivityListItem } from "./loomActivityList";
@@ -67,6 +70,7 @@ function ProjectLoomScreen(props: {
 }) {
   const navigation = useNavigation();
   const selectDetail = useSelectWorkspaceDetail();
+  const { presentationById } = useEnvironments();
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const supported = config?.environment.capabilities.projectLoom === true;
   const project = useProject(props);
@@ -112,8 +116,10 @@ function ProjectLoomScreen(props: {
       return next;
     });
   };
-  const selectThread = (threadId: ThreadId) =>
-    selectDetail({ name: "Thread", params: { environmentId: props.environmentId, threadId } });
+  const selectThread = (target: ScopedThreadRef) =>
+    selectDetail({ name: "Thread", params: target });
+  const canOpenThread = (target: ScopedThreadRef) =>
+    target.environmentId === props.environmentId || presentationById.has(target.environmentId);
   const renderItem = ({ item }: { item: LoomActivityListItem }) => {
     if (item.kind === "date") {
       return (
@@ -129,6 +135,8 @@ function ProjectLoomScreen(props: {
     }
     if (item.kind === "thread") {
       const { row } = item;
+      const delegatedFrom = row.delegatedFrom;
+      const parentAvailable = delegatedFrom === undefined || canOpenThread(delegatedFrom);
       return (
         <View
           className="flex-row items-center gap-2 border-b border-separator bg-grouped-card px-3 py-3"
@@ -149,7 +157,7 @@ function ProjectLoomScreen(props: {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Open thread ${row.title}`}
-            onPress={() => selectThread(row.threadId)}
+            onPress={() => selectThread(scopeThreadRef(props.environmentId, row.threadId))}
             className="min-h-11 min-w-0 flex-1 justify-center gap-1"
           >
             <Text className="text-base font-t3-bold text-foreground" numberOfLines={2}>
@@ -170,6 +178,24 @@ function ProjectLoomScreen(props: {
                 .join(" · ")}
             </Text>
           </Pressable>
+          {delegatedFrom === undefined ? null : (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Open parent thread ${delegatedFrom.title} on ${delegatedFrom.environmentId}`}
+              disabled={!parentAvailable}
+              accessibilityState={{ disabled: !parentAvailable }}
+              onPress={() =>
+                selectThread(scopeThreadRef(delegatedFrom.environmentId, delegatedFrom.threadId))
+              }
+              className="min-h-11 max-w-36 justify-center"
+            >
+              <Text className="text-xs text-foreground-muted" numberOfLines={2}>
+                {parentAvailable
+                  ? `Parent on ${delegatedFrom.environmentId}`
+                  : `Connect to ${delegatedFrom.environmentId} to open this parent.`}
+              </Text>
+            </Pressable>
+          )}
         </View>
       );
     }
@@ -178,16 +204,27 @@ function ProjectLoomScreen(props: {
       item.kind === "run"
         ? `Run ${item.run.ordinal} · ${item.run.status}`
         : loomMarkerLabel(item.marker);
+    const target =
+      item.kind === "run"
+        ? scopeThreadRef(props.environmentId, item.run.threadId)
+        : loomMarkerThreadRef(props.environmentId, item.marker);
+    const available = canOpenThread(target);
+    const remoteLabel =
+      item.kind === "marker" && item.marker.kind === "subagent_task"
+        ? item.marker.remoteChild?.label
+        : undefined;
     return (
       <Pressable
         accessibilityRole={
           item.kind === "marker" && item.marker.kind === "pull_request" ? "link" : "button"
         }
         accessibilityLabel={label}
+        disabled={!available}
+        accessibilityState={{ disabled: !available }}
         onPress={() => {
           if (item.kind === "marker" && item.marker.kind === "pull_request") {
             void tryOpenExternalUrl(item.marker.url, "pull-request");
-          } else selectThread(item.kind === "run" ? item.run.threadId : item.marker.threadId);
+          } else selectThread(target);
         }}
         className="min-h-11 gap-1 border-b border-separator bg-grouped-card px-4 py-3"
         style={{ marginLeft: Math.min(item.depth, 5) * 16 + 16 }}
@@ -203,6 +240,11 @@ function ProjectLoomScreen(props: {
               } · ${item.run.completedAt === null ? "End not recorded" : `Ended ${time(item.run.completedAt)}`}`
             : ""}
         </Text>
+        {available ? null : (
+          <Text className="text-xs text-foreground-muted">
+            Connect to {remoteLabel ?? target.environmentId} to open this thread.
+          </Text>
+        )}
       </Pressable>
     );
   };

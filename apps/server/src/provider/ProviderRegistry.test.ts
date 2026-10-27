@@ -67,6 +67,7 @@ import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenanceResolver";
+import { fromRunner } from "@t3tools/provider-core/server/textGenerationOperations";
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
 
 const decodeServerProvider = Schema.decodeSync(ServerProvider);
@@ -428,6 +429,79 @@ it.layer(
   });
 
   describe("ProviderRegistry.layer", () => {
+    it.effect(
+      "publishes operation capabilities from the runtime instead of stale probe flags",
+      () =>
+        Effect.gen(function* () {
+          const instanceId = ProviderInstanceId.make("writer");
+          const driverKind = ProviderDriverKind.make("muse");
+          const provider = decodeServerProvider({
+            instanceId,
+            driver: driverKind,
+            enabled: true,
+            installed: true,
+            version: "1.0.0",
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: "2026-06-10T00:00:00.000Z",
+            models: [],
+            supportsTextGeneration: false,
+            textGenerationOperations: ["generateReviewGuide"],
+          });
+          const instance: ProviderInstance = {
+            instanceId,
+            driverKind,
+            displayName: undefined,
+            enabled: true,
+            continuationIdentity: { driverKind, continuationKey: "muse:instance:writer" },
+            snapshot: {
+              getSnapshot: Effect.succeed(provider),
+              refresh: Effect.succeed(provider),
+              streamChanges: Stream.empty,
+              applyUsageLimits: () => Effect.void,
+              markLimited: () => Effect.void,
+              resolveMaintenance: () =>
+                Effect.succeed(
+                  makeManualOnlyProviderMaintenanceCapabilities({
+                    provider: driverKind,
+                    packageName: null,
+                  }),
+                ),
+            },
+            orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+            textGeneration: {
+              ...fromRunner("Fixture", () => Effect.die("Unexpected generation operation")),
+              supportedOperations: ["generateConversationSummary"],
+            },
+          };
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry.ProviderRegistry;
+            const providers = yield* registry.refresh();
+            expect(providers[0]?.supportsTextGeneration).toBe(true);
+            expect(providers[0]?.textGenerationOperations).toEqual(["generateConversationSummary"]);
+          }).pipe(
+            Effect.provide(
+              ProviderRegistry.layer.pipe(
+                Layer.provide(
+                  Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+                    getInstance: () => Effect.succeed(instance),
+                    listInstances: Effect.succeed([instance]),
+                    listUnavailable: Effect.succeed([]),
+                    streamChanges: Stream.empty,
+                    subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+                  }),
+                ),
+                Layer.provide(
+                  ServerConfig.layerTest(process.cwd(), {
+                    prefix: "t3-provider-operation-capabilities-",
+                  }),
+                ),
+              ),
+            ),
+          );
+        }),
+    );
+
     it("stores workspace skills, commands and options without changing machine metadata", () => {
       const provider = {
         instanceId: ProviderInstanceId.make("codex"),

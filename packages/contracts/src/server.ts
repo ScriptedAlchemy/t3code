@@ -204,6 +204,17 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+export const TextGenerationOperation = Schema.Literals([
+  "generateCommitMessage",
+  "generatePrContent",
+  "generateBranchName",
+  "generateThreadTitle",
+  "generateReviewGuide",
+  "generateKnowledgeCandidates",
+  "generateConversationSummary",
+]);
+export type TextGenerationOperation = typeof TextGenerationOperation.Type;
+
 export const ServerProvider = Schema.Struct({
   // Only instanceId is stable enough for provider routing.
   instanceId: ProviderInstanceId,
@@ -220,6 +231,7 @@ export const ServerProvider = Schema.Struct({
   requiresNewThreadForModelChange: Schema.optional(Schema.Boolean),
   supportsConversationRollback: Schema.optional(Schema.Boolean),
   supportsTextGeneration: Schema.optional(Schema.Boolean),
+  textGenerationOperations: Schema.optional(ForwardCompatibleArray(TextGenerationOperation)),
   setup: Schema.optional(
     Schema.Struct({
       canAuthenticate: Schema.Boolean,
@@ -280,9 +292,16 @@ export type ServerProviders = typeof ServerProviders.Type;
 export const isProviderAvailable = (snapshot: ServerProvider): boolean =>
   snapshot.availability !== "unavailable";
 
-/** Legacy producers omit this field and support text generation. */
-export const isProviderTextGenerationCapable = (snapshot: ServerProvider): boolean =>
-  snapshot.supportsTextGeneration !== false;
+/** Older servers only advertise the generic flag; they remain eligible and validate on execution. */
+export const isProviderTextGenerationCapable = (
+  snapshot: ServerProvider,
+  operation?: TextGenerationOperation,
+): boolean =>
+  snapshot.supportsTextGeneration !== false &&
+  (snapshot.textGenerationOperations === undefined ||
+    (operation === undefined
+      ? snapshot.textGenerationOperations.length > 0
+      : snapshot.textGenerationOperations.includes(operation)));
 
 export const OtlpEndpointSource = Schema.Literals(["environment", "bootstrap", "settings"]);
 export type OtlpEndpointSource = typeof OtlpEndpointSource.Type;

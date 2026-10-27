@@ -16,6 +16,14 @@ Ordinary coding tasks need no T3 tools.
 - In your reply, a thread's first mention is its \`link\` verbatim. No \`link\`: \`[title](t3-thread://v1/<exact id>)\`. Never a plain title or bare id.
 - A secret: call \`request_secret\` yourself. Pass its \`secretRef\` to a T3 tool, or use \`delivery: "file"\` for a shell command. Never ask in chat or invent one. When asked only to schedule, \`schedule_task\` without running its prompt.
 - T3 tools may load late. Try the name once before you call it absent.`,
+  `### Project intelligence
+
+- Use intelligence when the task needs project history or relationships; do not prefetch it for a routine edit. Resolve an unknown project with \`t3_project_list\` and \`t3_project_read\`.
+- Prior decisions, conventions, and constraints: \`t3_knowledge_search\`, then verify message citations with \`t3_knowledge_read_source\`. Recall is on demand. When asked to remember project knowledge, use \`t3_knowledge_mutate\` with exact message citations when available; an agent proposal is not a user confirmation.
+- Symbols, callers, dependencies, affected code, or reaching tests: \`t3_project_code_query\`. Pass the thread id for its registered worktree. Check coverage, freshness, and edge evidence; static candidates are not proof of runtime behavior.
+- Work across threads: \`t3_project_loom_read\`. For a file's checkpoint history, \`t3_project_file_history\`. A checkpoint does not establish authorship, and a test command marker does not establish that tests passed.
+- A handoff summary is model-written. Use \`t3_conversation_summary_expand\` for the original messages; list or describe summaries to locate one. If a source is unavailable, report that rather than quoting a stale excerpt.
+- \`t3_knowledge_prepare_context\` previews selected facts or messages for attachment; it does not send them. These tools use the same \`environmentId\` routing as other T3 tools. Keep the project, thread, fact, summary, and message ids on their owning environment; omit \`environmentId\` for this machine.`,
   `### Linked environments
 
 - \`t3_environment_links\` lists linked machines. Pass \`environmentId\` to work there; project, thread, run, and model IDs then belong to that environment. Pass \`threadId\` explicitly. Work stays within your modes and the link's access.

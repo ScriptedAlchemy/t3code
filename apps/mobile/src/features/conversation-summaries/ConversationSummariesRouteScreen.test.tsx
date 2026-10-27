@@ -1,6 +1,8 @@
-import { act, useSyncExternalStore, type ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
+import { RegistryContext } from "@effect/atom-react";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import {
   EnvironmentId,
   MessageId,
@@ -15,8 +17,7 @@ import {
 } from "@t3tools/contracts";
 
 const state = vi.hoisted(() => ({
-  listeners: new Set<() => void>(),
-  supported: true,
+  supported: null as unknown,
   focused: true,
   list: null as ConversationSummaryList | null,
   lists: [] as { environmentId: EnvironmentId; input: ConversationSummaryListInput }[],
@@ -29,16 +30,6 @@ vi.mock("react-native", () => ({
 vi.mock("@react-navigation/native", () => ({
   useIsFocused: () => state.focused,
   useNavigation: () => ({ goBack: () => {} }),
-}));
-vi.mock("@effect/atom-react", () => ({
-  useAtomValue: () =>
-    useSyncExternalStore(
-      (listener) => {
-        state.listeners.add(listener);
-        return () => state.listeners.delete(listener);
-      },
-      () => state.supported,
-    ),
 }));
 vi.mock("../../components/ui/AppBar", () => ({
   AppBar: () => <header>Conversation summaries</header>,
@@ -101,29 +92,33 @@ vi.mock("../../state/query", () => ({
 import { ConversationSummariesRouteScreen } from "./ConversationSummariesRouteScreen";
 
 function setup() {
-  state.listeners.clear();
-  state.supported = true;
+  const supported = Atom.make(true);
+  const registry = AtomRegistry.make();
+  state.supported = supported;
   state.focused = false;
   state.lists = [];
   state.expansions = [];
   state.list = null;
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");
   const root = createRoot(container);
   const rerender = () =>
-    act(() => {
-      for (const listener of state.listeners) listener();
+    act(() =>
       root.render(
-        <ConversationSummariesRouteScreen
-          route={{
-            params: { environmentId: "remote", projectId: "project", threadId: "thread" },
-          }}
-        />,
-      );
-    });
+        <RegistryContext.Provider value={registry}>
+          <ConversationSummariesRouteScreen
+            route={{
+              params: { environmentId: "remote", projectId: "project", threadId: "thread" },
+            }}
+          />
+        </RegistryContext.Provider>,
+      ),
+    );
   rerender();
   return {
     container,
     rerender,
+    setSupported: (value: boolean) => act(() => registry.set(supported, value)),
     click: async (label: string) => {
       const button = [...container.querySelectorAll("button")].find(
         (node) => node.textContent === label,
@@ -131,18 +126,21 @@ function setup() {
       if (!button) throw new Error("Missing button: " + label);
       await act(async () => button.click());
     },
-    [Symbol.dispose]: () => act(() => root.unmount()),
+    [Symbol.dispose]: () => {
+      act(() => root.unmount());
+      registry.dispose();
+      vi.unstubAllGlobals();
+    },
   };
 }
 
 it("reads only while open and supported, shows pass/citations/stale reasons and pages exact sources", async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   using screen = setup();
   expect(state.lists).toEqual([]);
   state.focused = true;
-  state.supported = false;
-  screen.rerender();
+  screen.setSupported(false);
   expect(state.lists).toEqual([]);
+  expect(screen.container.textContent).toContain("Update the server");
   const summary: ConversationSummary = {
     id: "summary:" + "a".repeat(64),
     projectId: ProjectId.make("project"),
@@ -185,8 +183,7 @@ it("reads only while open and supported, shows pass/citations/stale reasons and 
     ],
     nextCursor: staleId,
   };
-  state.supported = true;
-  screen.rerender();
+  screen.setSupported(true);
   expect(state.lists.at(-1)).toEqual({
     environmentId: "remote",
     input: { projectId: "project", threadId: "thread", limit: 20 },
@@ -223,6 +220,16 @@ it("reads only while open and supported, shows pass/citations/stale reasons and 
   expect(state.expansions.at(-1)?.input.offset).toBe(0);
   await screen.click("Back to summaries");
   expect(screen.container.textContent).not.toContain("Exact source");
+  await screen.click("Show source messages");
+  const listsBeforeCapabilityLoss = state.lists.length;
+  const expansionsBeforeCapabilityLoss = state.expansions.length;
+  screen.setSupported(false);
+  expect(screen.container.textContent).toContain("Update the server");
+  expect(screen.container.textContent).not.toContain("Exact source");
+  screen.rerender();
+  expect(state.lists).toHaveLength(listsBeforeCapabilityLoss);
+  expect(state.expansions).toHaveLength(expansionsBeforeCapabilityLoss);
+  screen.setSupported(true);
   state.focused = false;
   screen.rerender();
   const reads = state.lists.length;

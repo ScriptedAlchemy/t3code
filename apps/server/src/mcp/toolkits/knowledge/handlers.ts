@@ -38,7 +38,12 @@ export const layer = McpToolAccess.toLayer(KnowledgeToolkit, {
     ),
   ),
   t3_knowledge_prepare_context: McpToolAccess.reads((input) =>
-    Effect.flatMap(access, (service) => service.prepareContext(input)).pipe(
+    Effect.gen(function* () {
+      const { scope } = yield* readCaller();
+      const service = yield* ProjectKnowledge.ProjectKnowledge;
+      // The router consumes the target; attachments belong to the environment that serves them.
+      return yield* service.prepareContext({ ...input, environmentId: scope.environmentId });
+    }).pipe(
       Effect.mapError((error) => (error._tag === "ProjectKnowledgeError" ? failure(error) : error)),
     ),
   ),
