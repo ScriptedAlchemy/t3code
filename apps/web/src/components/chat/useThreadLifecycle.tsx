@@ -32,9 +32,8 @@ import { useAcknowledgeThreadWoke, useThreadActions } from "../../hooks/useThrea
 import { settleAndAdvance } from "../../settleAndAdvance";
 import type { ChatShortcutCommands } from "./useChatShortcuts";
 import { resolveThreadLastVisitedAt } from "../Sidebar.logic";
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { type SetStateAction, useRef, useState } from "react";
-import { useNavigate, useRouter } from "@tanstack/react-router";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { type SetStateAction, useState } from "react";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -45,22 +44,19 @@ import { type ChatMessage } from "../../types";
 import { AlarmClockIcon, CheckCircle2Icon } from "lucide-react";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { newMessageId } from "~/lib/utils";
-import { buildThreadRouteParams } from "../../threadRoutes";
 import { composerDraftHasUserContent, useComposerDraftStore } from "../../composerDraftStore";
 import { useEnvironmentScope } from "~/state/session";
 import { threadEnvironment } from "../../state/threads";
 import { vcsEnvironment } from "../../state/vcs";
-import { useChildThreadInputs, readThreadShell, waitForThreadShell } from "../../state/entities";
-import { environmentShell } from "../../state/shell";
+import { useChildThreadInputs } from "../../state/entities";
 import { ThreadStatusLine } from "./ThreadStatusLine";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
-import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { backgroundWorkNowItem, childInputNowItem, goalNowItem } from "./ThreadActivityBanners";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
-const RELATED_THREAD_SHELL_WAIT_MS = 1_000;
+import { useOpenRelatedThread } from "./useOpenRelatedThread";
 
 type PendingThreadRequests = ReturnType<typeof usePendingThreadRequests>;
 type LocalDispatchState = ReturnType<typeof useLocalDispatchState>;
@@ -149,8 +145,6 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     scrollToEnd,
     persistThreadSettingsForNextTurn,
   } = input;
-  const navigate = useNavigate();
-  const router = useRouter();
   const { settleThread, pinThread, confirmAndUnpinThread } = useThreadActions();
   const canWriteSourceControl = useEnvironmentScope(environmentId, AuthSourceControlWriteScope);
   const switchGitRef = useAtomCommand(vcsEnvironment.switchRef, { reportFailure: false });
@@ -396,37 +390,11 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     }
   };
   const handleStopBackgroundWorkStable = useStableCallback(handleStopBackgroundWork);
-  const openRelatedThreadGenerationRef = useRef(0);
-  const onOpenRelatedThread = async (threadId: ThreadId) => {
-    const generation = ++openRelatedThreadGenerationRef.current;
-    const threadRef = scopeThreadRef(environmentId, threadId);
-    const isEnvironmentLive = () =>
-      appAtomRegistry.get(environmentShell.stateValueAtom(environmentId)).status === "live";
-    // The shell can leave idle subagent children out, so absence is not deletion there: the
-    // route decides from the thread's own detail.
-    const shellOmitsChildren = serverConfig?.shellThreadFamilies === true;
-    // A just-launched child can reach this timeline before its shell syncs.
-    if (!shellOmitsChildren && isEnvironmentLive() && readThreadShell(threadRef) === null) {
-      const location = router.latestLocation;
-      await waitForThreadShell(threadRef, RELATED_THREAD_SHELL_WAIT_MS);
-      if (
-        generation !== openRelatedThreadGenerationRef.current ||
-        currentRouteThreadKeyRef.current !== routeThreadKey ||
-        router.latestLocation !== location
-      ) {
-        return;
-      }
-    }
-    const shell = readThreadShell(threadRef);
-    if (shell === null ? !shellOmitsChildren && isEnvironmentLive() : shell.deletedAt != null) {
-      toastManager.add({ type: "info", title: "This thread is no longer available" });
-      return;
-    }
-    void navigate({
-      to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(threadRef),
-    });
-  };
+  const onOpenRelatedThread = useOpenRelatedThread({
+    environmentId,
+    routeThreadKey,
+    currentRouteThreadKeyRef,
+  });
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
   const childInputNow = childInputNowItem({

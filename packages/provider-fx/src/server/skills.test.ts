@@ -16,7 +16,9 @@ describe("discoverFxSkills", () => {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       // The workspace sits under the fake HOME, so the upward walk stops there.
-      const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-fx-skills-home-" });
+      const home = yield* fileSystem
+        .makeTempDirectoryScoped({ prefix: "t3-fx-skills-home-" })
+        .pipe(Effect.flatMap(fileSystem.realPath));
       const parent = path.join(home, "projects");
       const workspace = path.join(parent, "app");
       const writeSkill = (root: string, name: string) =>
@@ -63,7 +65,9 @@ describe("discoverFxSkills", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-fx-skills-home-" });
+      const home = yield* fileSystem
+        .makeTempDirectoryScoped({ prefix: "t3-fx-skills-home-" })
+        .pipe(Effect.flatMap(fileSystem.realPath));
       const workspace = path.join(home, "app");
       const writeSkillFile = (folder: string, contents: string) =>
         fileSystem
@@ -168,7 +172,9 @@ describe("discoverFxSkills", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-fx-skills-home-" });
+      const home = yield* fileSystem
+        .makeTempDirectoryScoped({ prefix: "t3-fx-skills-home-" })
+        .pipe(Effect.flatMap(fileSystem.realPath));
       for (const [root, name] of [
         ["dotfiles/fx-skills", "managed"],
         [".claude/skills", "compat"],
@@ -180,6 +186,7 @@ describe("discoverFxSkills", () => {
         );
       }
       yield* fileSystem.makeDirectory(path.join(home, ".fx"));
+      yield* fileSystem.makeDirectory(path.join(home, "app"));
       yield* fileSystem.symlink(
         path.join(home, "dotfiles/fx-skills"),
         path.join(home, ".fx/skills"),

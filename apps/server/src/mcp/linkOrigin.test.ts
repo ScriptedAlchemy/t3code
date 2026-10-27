@@ -115,8 +115,9 @@ const layerLaunches = Layer.effect(
 const layerTools = Layer.mergeAll(
   McpHttpServer.layerOrchestratorToolkit,
   McpHttpServer.layerThreadToolkit,
-  McpHttpServer.layerProjectRegistration.pipe(Layer.provide(DocumentText.layer)),
+  McpHttpServer.layerProjectRegistration,
 ).pipe(
+  Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provide(layerLaunches),
   Layer.provide(NodeCrypto.layer),

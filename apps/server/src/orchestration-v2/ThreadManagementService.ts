@@ -919,6 +919,13 @@ const make = Effect.gen(function* () {
         { messageRoles: ["user"] },
       );
       const progress = delegatedTaskProgress(records);
+      // A thread rolled back past all its work, with nothing left running, has no answer to wait for.
+      if (
+        progress.resultRun === undefined &&
+        records.runs.every((run) => isTerminalRunStatus(run.status))
+      ) {
+        return latestRun(records);
+      }
       if (progress.state !== "result_available") return undefined;
       const pending = yield* orchestrator
         .delegatedTaskResultPending(input.threadId)

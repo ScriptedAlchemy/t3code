@@ -47,6 +47,7 @@ import {
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
+  type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2ThreadShell,
@@ -8198,17 +8199,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.stoppedThere === undefined
         ? task.remoteChild
         : { ...task.remoteChild!, stoppedThere: true };
-    // The follower may report a result twice; the first one stands, and the
-    // repeat records nothing, which the dispatcher refuses. A stop there that
-    // reached the thread after the result is still recorded, but a run that
-    // ended by itself does not settle a stop the task here still owes.
+    // The first result stands; a repeated follower report records nothing, which
+    // the dispatcher refuses. A stop there after the result is still recorded, but
+    // a run that ended by itself does not settle a stop the task here still owes.
     if (task.result !== null) {
+      // A Stop or cancel here that lost the race to the result still owes its stop.
+      if (command.stoppedThere === undefined) {
+        return yield* emitRemoteStopOwed(events, command, task, task.remoteChild!);
+      }
       const owesStop =
         task.status === "cancelled" ||
         task.status === "interrupted" ||
         task.remoteChild?.stoppedThere === false;
       if (
-        command.stoppedThere === undefined ||
         task.remoteChild?.stoppedThere === true ||
         (owesStop && command.stoppedThere !== "stopped")
       )
@@ -8350,6 +8353,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Delegated task ${command.taskId} is not a finished remote task of thread ${command.parentThreadId}.`,
       });
     }
+    yield* emitRemoteStopOwed(events, command, task, task.remoteChild);
+  });
+
+  const emitRemoteStopOwed = Effect.fn("orchestrationV2.dispatch.remoteStopOwed")(function* (
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "delegated_task.remote.complete" | "delegated_task.remote.stop" }
+    >,
+    task: OrchestrationV2Subagent,
+    remoteChild: OrchestrationV2RemoteTaskChild,
+  ) {
     const now = yield* DateTime.now;
     yield* emit(
       events,
@@ -8364,9 +8379,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: {
         ...task,
         remoteChild: {
-          ...task.remoteChild,
+          ...remoteChild,
           stoppedThere: false,
-          stopCount: (task.remoteChild.stopCount ?? 0) + 1,
+          stopCount: (remoteChild.stopCount ?? 0) + 1,
         },
         updatedAt: now,
       },

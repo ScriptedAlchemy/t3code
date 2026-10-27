@@ -839,8 +839,10 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
   /** The run there that carries the task; absent on tasks recorded before it was kept. */
   runId: Schema.optional(RunId),
   /**
-   * True means no remote stop remains owed. A local cancellation still owes a stop even if its run ended.
-   * False also marks a new Stop after the task already returned its result; followers retry across restarts.
+   * Nothing is left to stop there: a stop reached it, was refused for good, or the thread
+   * or link is gone. A run ending there by itself sets it too, unless the task here was
+   * cancelled or stopped and still owes a stop, which its follower keeps sending across
+   * restarts. `false`: a Stop here owes one to a task that already had its result.
    */
   stoppedThere: Schema.optional(Schema.Boolean),
   /**
@@ -3404,7 +3406,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
   /**
    * Completes a delegated task that ran in a linked environment, with what its
    * thread there ended as. The parent wakes exactly as for a child here. A
-   * task that already has a result keeps it; `stoppedThere` is still recorded.
+   * task that already has a result keeps it; `stoppedThere` is still recorded,
+   * and without it (a Stop or cancel here) the task owes a stop there instead.
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.complete"),
@@ -3414,16 +3417,19 @@ const OrchestrationV2InternalCommand = Schema.Union([
     status: Schema.Literals(["completed", "failed", "cancelled", "interrupted"]),
     result: Schema.String,
     /**
-     * Both outcomes acknowledge completion, but only stopped clears a stop owed by local cancellation.
-     * A run that ended itself may leave follow-up work on the remote thread.
+     * `ran-out`: the run there ended by itself; `stopped`: a stop from here reached it. Either
+     * sets `remoteChild.stoppedThere` on a task this report completes. On a task already
+     * cancelled or stopped here only `stopped` does, since a run that ended by itself leaves
+     * the stop owed for whatever follows it.
      */
     stoppedThere: Schema.optional(Schema.Literals(["ran-out", "stopped"])),
     /** The stop generation this report acknowledges; absent for the original unnumbered stop. */
     stopCount: Schema.optional(NonNegativeInt),
   }),
   /**
-   * Stop after a task returns still stops later work on its remote thread without changing its result.
-   * The follower acknowledges this stop through delegated_task.remote.complete.
+   * Owes a stop to the thread there of a remote task that already has its result, as Stop on
+   * a parent stops a finished child here. The task keeps its status, result and completion
+   * delivery; its follower sends the stop and reports it with `delegated_task.remote.complete`.
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.stop"),

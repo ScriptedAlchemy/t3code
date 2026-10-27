@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import { acpRegistryClient } from "@t3tools/provider-acp-registry/client";
 import { cursorClient } from "@t3tools/provider-cursor/client";
+import { fxClient } from "@t3tools/provider-fx/client";
 import { grokClient } from "@t3tools/provider-grok/client";
 import { museClient } from "@t3tools/provider-muse/client";
 import { openCodeClient } from "@t3tools/provider-opencode/client";
@@ -33,9 +34,15 @@ const providerSettingsSchemas = [
   ["codex", CodexSettings],
   ["claudeAgent", ClaudeSettings],
   ["antigravity", AntigravitySettings],
-  ...[cursorClient, grokClient, museClient, openCodeClient, piClient, acpRegistryClient].map(
-    (definition) => [definition.driverKind, definition.settingsSchema] as const,
-  ),
+  ...[
+    cursorClient,
+    fxClient,
+    grokClient,
+    museClient,
+    openCodeClient,
+    piClient,
+    acpRegistryClient,
+  ].map((definition) => [definition.driverKind, definition.settingsSchema] as const),
 ] as const;
 
 const providerFieldPolicies = new Map<string, ProviderSettingsFieldPolicy>(

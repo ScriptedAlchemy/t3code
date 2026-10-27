@@ -216,7 +216,7 @@ it("keeps each group independent when one source fails, and opens symbols and co
     { router: "/env/thread-a" },
   );
 
-  await userEvent.type(screen.getByRole("combobox"), "refresh token");
+  await userEvent.fill(screen.getByRole("combobox"), "refresh token");
 
   // Facts fail on their own; the other groups still render their results.
   await expect.element(screen.getByText("Fact storage is offline.")).toBeVisible();

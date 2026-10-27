@@ -265,8 +265,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
       Effect.gen(function* () {
         const projects = yield* Project.ProjectService;
         if (workspaceRoot === undefined) {
-          // Project creation records no model default (only an update does), so
-          // reject what this mode would otherwise drop silently.
+          // Only updates record model defaults; reject defaults that creation would silently drop.
           if (
             input.scripts !== undefined ||
             input.createWorkspaceRootIfMissing !== undefined ||

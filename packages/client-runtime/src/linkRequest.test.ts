@@ -195,7 +195,7 @@ describe("linkableMachines", () => {
       linkableMachines({
         environments: [here, vps, mini],
         threadEnvironmentId: here.environmentId,
-        linkedIds: new Set([mini.environmentId]),
+        links: [{ environmentId: mini.environmentId, status: "unreachable" }],
         connect: new Map(),
       }),
     ).toEqual([
@@ -226,7 +226,7 @@ describe("linkableMachines", () => {
     const [listed] = linkableMachines({
       environments: [here, box],
       threadEnvironmentId: here.environmentId,
-      linkedIds: new Set(),
+      links: [],
       connect: new Map([[box.environmentId, discovered(box.environmentId, "Box")]]),
     });
     expect(listed?.urls).toEqual(["https://environment-box.t3.example"]);
@@ -235,10 +235,50 @@ describe("linkableMachines", () => {
       linkableMachines({
         environments: [here, box],
         threadEnvironmentId: here.environmentId,
-        linkedIds: new Set(),
+        links: [],
         connect: new Map(),
       })[0]?.urls,
     ).toEqual([]);
+  });
+
+  it("also offers the Connect address of a machine saved by direct address, last", () => {
+    const here = presentation("environment-here", "Here", { saved: ["http://localhost:3773"] });
+    const vps = presentation("environment-vps", "VPS", {
+      saved: ["http://192.168.1.20:3773"],
+      reported: ["https://vps.ts.net"],
+    });
+    const [listed] = linkableMachines({
+      environments: [here, vps],
+      threadEnvironmentId: here.environmentId,
+      links: [],
+      connect: new Map([[vps.environmentId, discovered(vps.environmentId, "VPS")]]),
+    });
+    expect(listed?.urls).toEqual([
+      "https://vps.ts.net",
+      "http://192.168.1.20:3773",
+      "https://environment-vps.t3.example",
+    ]);
+  });
+
+  it("no longer counts a machine as linked once its link expired", () => {
+    const here = presentation("environment-here", "Here", { saved: ["http://localhost:3773"] });
+    const vps = presentation("environment-vps", "VPS", { saved: ["https://vps.ts.net"] });
+    const mini = presentation("environment-mini", "Mini", { saved: ["http://mini.local:3773"] });
+    const listed = linkableMachines({
+      environments: [here, vps, mini],
+      threadEnvironmentId: here.environmentId,
+      links: [
+        { environmentId: vps.environmentId, status: "expired" },
+        { environmentId: mini.environmentId, status: "unreachable" },
+        { environmentId: EnvironmentId.make("environment-old"), status: "expired" },
+      ],
+      connect: new Map([["environment-old", discovered("environment-old", "Old box")]]),
+    });
+    expect(listed.map((machine) => [machine.label, machine.linked])).toEqual([
+      ["VPS", false],
+      ["Mini", true],
+      ["Old box", false],
+    ]);
   });
 
   it("offers machines only on T3 Connect after the saved ones, at their Connect address", () => {
@@ -247,7 +287,7 @@ describe("linkableMachines", () => {
     const listed = linkableMachines({
       environments: [here, vps],
       threadEnvironmentId: here.environmentId,
-      linkedIds: new Set([EnvironmentId.make("environment-old")]),
+      links: [{ environmentId: EnvironmentId.make("environment-old"), status: "reachable" }],
       connect: new Map([
         // This environment and saved machines are listed once, as saved.
         [here.environmentId, discovered(here.environmentId, "Here")],

@@ -107,13 +107,13 @@ export const OrchestratorMcpTarget = Schema.Struct({
   environmentId: Schema.optional(
     EnvironmentId.annotate({
       description:
-        "Run the task in a linked environment (t3_environment_links). It uses this thread's provider and model unless providerInstanceId and model name others from orchestrator_capabilities with this environmentId.",
+        "Linked environment to run in. Provider and model default to yours; others come from `orchestrator_capabilities` with this `environmentId`.",
     }),
   ),
   projectId: Schema.optional(
     ProjectId.annotate({
       description:
-        "With environmentId: that environment's project to run in. Omit to use the one with the same repository as this thread's project.",
+        "With `environmentId`: its project to run in. Default: the one with this project's repository.",
     }),
   ),
 });
@@ -316,7 +316,7 @@ const OrchestratorMcpProjectTarget = Schema.optional(
 export const OrchestratorMcpEnvironmentTarget = Schema.optional(
   EnvironmentId.annotate({
     description:
-      "A linked environment to do this in; t3_environment_links lists them. Omit for this environment. Ids (projects, threads, runs) then belong to that environment.",
+      "Linked environment to act in. Omit for this one. Ids are then that environment's.",
   }),
 );
 
@@ -516,7 +516,7 @@ export const OrchestratorMcpThreadWaitInput = Schema.Struct({
   untilDelegatedWorkSettled: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "Also wait until the thread's own delegated tasks, background tasks and their completion deliveries settle, as a delegated task's result does. resultRun then names the run with the thread's final answer.",
+        "Also wait for its delegated and background tasks and their completions to settle. `resultRun` then names the run with its final answer.",
     }),
   ),
 });
@@ -527,9 +527,9 @@ export const OrchestratorMcpThreadWaitResult = Schema.Struct({
   runId: Schema.NullOr(RunId),
   status: OrchestratorMcpThreadStatus,
   timedOut: Schema.Boolean,
+  next: Schema.optional(OrchestratorMcpRunningTaskNext),
   /** With untilDelegatedWorkSettled, once settled: the run whose reply is the thread's result. */
   resultRun: Schema.optional(Schema.Struct({ runId: RunId, status: OrchestrationV2RunStatus })),
-  next: Schema.optional(OrchestratorMcpRunningTaskNext),
 });
 export type OrchestratorMcpThreadWaitResult = typeof OrchestratorMcpThreadWaitResult.Type;
 
@@ -762,27 +762,22 @@ export type OrchestratorMcpRequestSecretResult = typeof OrchestratorMcpRequestSe
 export const OrchestratorMcpEnvironmentLinkInput = Schema.Struct({
   environmentId: Schema.optional(EnvironmentId).annotate({
     description:
-      "The environment to link, when you know it, e.g. from a machine the user mentioned. Omit it otherwise: the user picks the machine in the card.",
+      "The machine, when known, e.g. from a mentioned machine. Otherwise the user picks it in the card.",
   }),
   url: Schema.optional(TrimmedNonEmptyString).annotate({
     description:
-      "Only when the user gave an address: its https, Tailscale, LAN or loopback base URL. Never guess one.",
+      "Only an address the user gave: https, Tailscale, LAN or loopback. Never guess one.",
   }),
   hint: Schema.optional(TrimmedNonEmptyString).annotate({
-    description:
-      'A short phrase from the user\'s words naming the machine, e.g. "vps" or "mac mini". It only preselects a machine in the card.',
+    description: 'The user\'s words for the machine, e.g. "vps". Preselects it in the card.',
   }),
   reason: Schema.optional(TrimmedNonEmptyString).annotate({
-    description: "One sentence on why, shown on the card.",
+    description: "One sentence for the card.",
   }),
   requestedAccess: Schema.optional(AuthMcpClientAccess).annotate({
-    description:
-      "The access to suggest. The user picks the access in the card; it defaults to approval-required.",
+    description: "Suggested access. The user picks; default approval-required.",
   }),
-  clientRequestId: Schema.optional(OrchestratorMcpClientRequestId).annotate({
-    description:
-      "Reuse when retrying a call that lost its result, so the user sees one card and its current outcome is returned. Use a new id to ask again.",
-  }),
+  clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpEnvironmentLinkInput = typeof OrchestratorMcpEnvironmentLinkInput.Type;
 

@@ -1,4 +1,4 @@
-import { act, type ReactNode } from "react";
+import { act, useSyncExternalStore, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
 import {
@@ -15,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 
 const state = vi.hoisted(() => ({
+  listeners: new Set<() => void>(),
   supported: true,
   focused: true,
   list: null as ConversationSummaryList | null,
@@ -29,7 +30,16 @@ vi.mock("@react-navigation/native", () => ({
   useIsFocused: () => state.focused,
   useNavigation: () => ({ goBack: () => {} }),
 }));
-vi.mock("@effect/atom-react", () => ({ useAtomValue: (value: unknown) => value }));
+vi.mock("@effect/atom-react", () => ({
+  useAtomValue: () =>
+    useSyncExternalStore(
+      (listener) => {
+        state.listeners.add(listener);
+        return () => state.listeners.delete(listener);
+      },
+      () => state.supported,
+    ),
+}));
 vi.mock("../../components/ui/AppBar", () => ({
   AppBar: () => <header>Conversation summaries</header>,
 }));
@@ -91,6 +101,7 @@ vi.mock("../../state/query", () => ({
 import { ConversationSummariesRouteScreen } from "./ConversationSummariesRouteScreen";
 
 function setup() {
+  state.listeners.clear();
   state.supported = true;
   state.focused = false;
   state.lists = [];
@@ -99,15 +110,16 @@ function setup() {
   const container = document.createElement("div");
   const root = createRoot(container);
   const rerender = () =>
-    act(() =>
+    act(() => {
+      for (const listener of state.listeners) listener();
       root.render(
         <ConversationSummariesRouteScreen
           route={{
             params: { environmentId: "remote", projectId: "project", threadId: "thread" },
           }}
         />,
-      ),
-    );
+      );
+    });
   rerender();
   return {
     container,
