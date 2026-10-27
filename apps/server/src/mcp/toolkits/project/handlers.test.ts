@@ -255,6 +255,7 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
     // The same key sends the same command and thread ids, which the launch
     // service replays instead of starting a second thread.
     expect(ids[0]).toEqual(ids[1]);
+    expect(ids[0]?.[0]).toMatch(/^mcp:launch:[0-9a-f]{64}$/);
     expect(ids[2]).not.toEqual(ids[0]);
     // Without a key every launch is new.
     expect(ids[3]).not.toEqual(ids[4]);

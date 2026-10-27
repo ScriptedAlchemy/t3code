@@ -240,32 +240,38 @@ export function startThreadNotifications(
         if (state) present(environmentId, state, kind);
       }),
     };
-    const observe = () => {
-      const shell = registry.get(environmentShell.stateValueAtom(environmentId));
-      const threads =
-        shell.status === "live" && Option.isSome(shell.snapshot)
-          ? shell.snapshot.value.threads
-          : null;
-      if (threads !== null) {
-        observeThreads(environmentId, entry, threads);
-        return;
-      }
-      entry.gate.clear();
-      entry.previous = new Map();
+    let threads: ReadonlyArray<OrchestrationV2ThreadShell> | null = null;
+    const unsubscribeShell = registry.subscribe(
+      environmentShell.stateValueAtom(environmentId),
+      (shell) => {
+        threads =
+          shell.status === "live" && Option.isSome(shell.snapshot)
+            ? shell.snapshot.value.threads
+            : null;
+        if (threads !== null) {
+          observeThreads(environmentId, entry, threads);
+          return;
+        }
+        entry.gate.clear();
+        entry.previous = new Map();
+      },
+      { immediate: true },
+    );
+    const reobserve = () => {
+      if (threads !== null) observeThreads(environmentId, entry, threads);
     };
-    // Linked environments change what this one's threads ask and which rows sit under a parent.
-    const unsubscribes = [
-      registry.subscribe(environmentShell.stateValueAtom(environmentId), observe, {
-        immediate: true,
-      }),
-      registry.subscribe(
-        environmentThreadShells.pendingSubagentRequestsAtom(environmentId),
-        observe,
-      ),
-      registry.subscribe(environmentThreadShells.delegatedUnderParentAtom, observe),
-    ];
+    const unsubscribeRequests = registry.subscribe(
+      environmentThreadShells.pendingSubagentRequestsAtom(environmentId),
+      reobserve,
+    );
+    const unsubscribeDelegated = registry.subscribe(
+      environmentThreadShells.delegatedUnderParentAtom,
+      reobserve,
+    );
     entry.unsubscribe = () => {
-      for (const unsubscribe of unsubscribes) unsubscribe();
+      unsubscribeShell();
+      unsubscribeRequests();
+      unsubscribeDelegated();
       entry.gate.clear();
     };
     return entry;

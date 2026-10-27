@@ -129,6 +129,12 @@ const readResponse = Effect.fn("PeerMcpClient.readResponse")(function* (
   return decoded;
 });
 
+const linkedEnvironmentsOffThere = new OrchestratorMcpFailure({
+  code: "orchestration_error",
+  message:
+    "The linked environment has Linked environments turned off. Turn it on in its Settings → Labs.",
+});
+
 const make = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const httpClient = yield* HttpClient.HttpClient;
@@ -179,6 +185,7 @@ const make = Effect.gen(function* () {
       },
       limitHeader,
     );
+    if (initialized.status === 403) return yield* linkedEnvironmentsOffThere;
     const sessionId = initialized.headers["mcp-session-id"];
     if (initialized.status !== 200 || sessionId === undefined) {
       return yield* new OrchestratorMcpFailure({
@@ -236,6 +243,9 @@ const make = Effect.gen(function* () {
           message:
             "The linked environment no longer accepts this link. It may have been revoked there; link it again.",
         });
+      }
+      if (response.status === 403) {
+        return yield* linkedEnvironmentsOffThere;
       }
       if (response.status !== 200) {
         return yield* new OrchestratorMcpFailure({
