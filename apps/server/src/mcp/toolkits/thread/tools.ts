@@ -85,7 +85,6 @@ const QueueTool = Tool.make("t3_queue", {
   description:
     "Manage a thread's queued messages. Omit `threadId` for this thread. list: send order, paged by `cursor` and `limit`. read: up to 16,000 chars of one. edit: replace its `text`; attachments stay. cancel. reorder: before `beforeRunId`, or to the end with null. promote_to_steer: send it now as steering to active `targetRunId`. Writes fail once the run is no longer queued.",
   parameters: Schema.Struct({
-    environmentId: OrchestratorMcpEnvironmentTarget,
     action: Schema.Literals([
       ...QUEUE_READ_ACTIONS,
       "edit",
@@ -93,6 +92,7 @@ const QueueTool = Tool.make("t3_queue", {
       "reorder",
       "promote_to_steer",
     ]),
+    environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
     queuedRunId: Schema.optional(RunId),
     text: Schema.optional(Schema.String.check(Schema.isMaxLength(100000))),
@@ -129,8 +129,8 @@ const PendingRequestTool = Tool.make("t3_pending_request", {
   description:
     "Pending user questions in a thread. Omit `threadId` for this thread. list: their ids; approvals are not listed. read: one by `requestId`. respond: answer one with `answers`; this cannot approve a permission request.",
   parameters: Schema.Struct({
-    environmentId: OrchestratorMcpEnvironmentTarget,
     action: Schema.Literals(["list", "read", "respond"]),
+    environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
     requestId: Schema.optional(RuntimeRequestId),
     answers: Schema.optional(ProviderUserInputAnswers),
@@ -167,8 +167,8 @@ const ThreadTransferTool = Tool.make("t3_thread_transfer", {
   description:
     "Move context between threads. Omit `threadId` for this thread. fork: copy it from `sourcePoint` (default latest stable run) into a new thread with the same setup; no turn runs yet. merge_back: merge it from `sourcePoint` into a related `targetThreadId` in the same project. status: its context transfers.",
   parameters: Schema.Struct({
-    environmentId: OrchestratorMcpEnvironmentTarget,
     action: Schema.Literals(["fork", "merge_back", "status"]),
+    environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
     sourcePoint: Schema.optional(OrchestrationV2ThreadForkSourcePoint),
     targetThreadId: Schema.optional(ThreadId),

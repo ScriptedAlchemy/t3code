@@ -2975,6 +2975,11 @@ const make = Effect.gen(function* () {
               resultRun: { runId: result.resultRun.id, status: runOutcome(result.resultRun) },
             }),
         ...(wakesCaller ? { next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT } : {}),
+        ...(result.resultRun === undefined
+          ? {}
+          : {
+              resultRun: { runId: result.resultRun.id, status: runOutcome(result.resultRun) },
+            }),
       } satisfies OrchestratorMcpThreadWaitResult;
     }),
     interruptThread: Effect.fn("OrchestratorMcpService.interruptThread")(function* (scope, input) {
@@ -3012,9 +3017,15 @@ const make = Effect.gen(function* () {
           .stopDelegatedTasks({ threadId: input.threadId, commandId, reason: input.reason })
           .pipe(Effect.catch(stopFailed));
         // The run this stop interrupted, from its own events, so a retry
-        // reports the same run even if another has started since.
+        // reports the same run even if another has started since. Stop also
+        // holds queued runs and marks runs it could not interrupt, with no
+        // provider turn; neither is the run it interrupted.
         const interrupted = stopped.storedEvents.find(
-          (stored) => stored.event.type === "run.updated",
+          ({ event }) =>
+            (event.type === "run.updated" && event.payload.status === "interrupted") ||
+            (event.type === "turn-item.updated" &&
+              event.payload.type === "run_interrupt_request" &&
+              event.payload.providerTurnId !== null),
         )?.event.runId;
         return {
           threadId: input.threadId,

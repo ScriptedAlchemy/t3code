@@ -178,6 +178,7 @@ const makeLaptop = Effect.gen(function* () {
   const server = Context.get(here, McpServer.McpServer);
   return {
     links: Context.get(linking, PeerLinks.PeerLinks),
+    linksSql: Context.get(linking, SqlClient.SqlClient),
     requests: Context.get(here, PeerLinkRequests.PeerLinkRequests),
     orchestrator: Context.get(here, Orchestrator.OrchestratorV2),
     sink: Context.get(here, EventSink.EventSinkV2),
@@ -934,6 +935,19 @@ it.live("a link that expired goes through the card, so the user can link it agai
         .pipe(afterLinksExpire);
       expect(yield* cardOf(a)).toMatchObject({ linkStatus: "failed" });
       expect((yield* outcomeMessages(a)).messages[0]!.text).toContain("expired");
+    }),
+  ),
+);
+
+it.live("a link made before links were fenced goes through the card, as an expired one", () =>
+  withBoth((a, b) =>
+    Effect.gen(function* () {
+      yield* seedThread(a);
+      yield* linkTo(a.links, b);
+      yield* a.linksSql`UPDATE peer_environment_links SET fenced = 0`;
+      const asked = yield* a.call({ environmentId: box.environmentId });
+      expect(asked.structuredContent).toMatchObject({ status: "pending" });
+      yield* pendingCard(a);
     }),
   ),
 );

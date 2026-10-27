@@ -18,12 +18,14 @@ import {
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -381,6 +383,63 @@ it.effect("waitForThread can wait past an ended run for the thread's delegated w
       timedOut: false,
       run: { id: runId, status: "completed" },
       resultRun: { id: wakeRunId, status: "completed" },
+    });
+  }),
+);
+
+it.effect("waitForThread settles delegated work on a thread rolled back past its only run", () =>
+  Effect.gen(function* () {
+    const projectId = ProjectId.make("project:thread-management:wait-rolled-back");
+    const threadId = ThreadId.make("thread:thread-management:wait-rolled-back");
+    const runId = RunId.make("run:thread-management:wait-rolled-back");
+    const rolledBack = {
+      id: runId,
+      ordinal: 1,
+      status: "rolled_back",
+      startedAt: DateTime.makeUnsafe(0),
+      completedAt: DateTime.makeUnsafe(1_000),
+    } as unknown as OrchestrationV2Run;
+    const layerTest = ThreadManagementService.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          getThreadEventSequence: () => Effect.succeed(0),
+          restartContinuationPending: () => Effect.succeed(false),
+          delegatedTaskResultPending: () => Effect.succeed(false),
+          streamStoredEventsFrom: () => Stream.never,
+          getThreadRecords: () =>
+            Effect.succeed({
+              thread: { id: threadId, projectId, deletedAt: null },
+              runs: [rolledBack],
+              messages: [],
+              subagents: [],
+              providerThreads: [],
+            } as unknown as OrchestrationV2ThreadProjection),
+        }),
+      ),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(layerReceiptsTest),
+    );
+    const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+      Effect.provide(layerTest),
+    );
+    const fiber = yield* service
+      .waitForThread({
+        projectId,
+        threadId,
+        runId,
+        timeoutMs: 60_000,
+        untilDelegatedWorkSettled: true,
+      })
+      .pipe(Effect.forkChild);
+    // Nothing will ever run there again, so a wait still open runs out here.
+    yield* TestClock.adjust(Duration.millis(60_000));
+    const result = yield* Fiber.join(fiber);
+
+    expect(result).toMatchObject({
+      timedOut: false,
+      run: { id: runId, status: "rolled_back" },
+      resultRun: { id: runId, status: "rolled_back" },
     });
   }),
 );

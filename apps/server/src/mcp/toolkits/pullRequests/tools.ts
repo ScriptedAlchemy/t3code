@@ -309,9 +309,7 @@ const ListThreadPullRequestsTool = Tool.make("list_thread_pull_requests", {
     "List PRs linked to a thread, with last known state and stack order (bottom to top). Call only when you need that list. Never as an end-of-work check.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
-    threadId: Schema.optional(
-      ThreadId.annotate({ description: "Thread to list. Omit for this thread." }),
-    ),
+    threadId: Schema.optional(ThreadId.annotate({ description: "Thread. Default: this thread." })),
   }),
   success: ListThreadPullRequestsResult,
   failure: PullRequestToolError,

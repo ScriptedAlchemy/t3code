@@ -62,6 +62,9 @@ const makeHarness = Effect.fn(function* (options: {
           getThreadShell: () => Effect.succeed(null),
         }),
         Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThreadShell: () => Effect.succeed(null),
+        }),
         ServerSettings.layerTest(),
         NodeCrypto.layer,
       ),
