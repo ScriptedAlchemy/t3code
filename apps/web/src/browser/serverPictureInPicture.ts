@@ -107,6 +107,7 @@ export async function openServerPictureInPicture(input: {
     }
     client = createPreviewStreamClient(
       {
+        createWebSocket: createDesktopWebSocket,
         access,
         threadId: input.threadId,
         tabId: input.tabId,
@@ -195,3 +196,4 @@ export async function openServerPictureInPicture(input: {
     if (active === current) void connect(false);
   }
 }
+import { createDesktopWebSocket } from "../lib/desktopWebSocket";

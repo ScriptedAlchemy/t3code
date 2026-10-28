@@ -71,6 +71,9 @@ function PairingForm({
   const [initialPairing] = useState(() => parsePairingUrl(routePairingUrl || connectionPairingUrl));
   const [hostInput, setHostInput] = useState(initialPairing.host);
   const [codeInput, setCodeInput] = useState(initialPairing.code);
+  const [fullPairingUrl, setFullPairingUrl] = useState<string | null>(
+    routePairingUrl || connectionPairingUrl || null,
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   // The user's own edit or submit dismisses the dev auto-connect report.
@@ -98,11 +101,13 @@ function PairingForm({
   };
 
   const handleHostChange = (value: string) => {
+    setFullPairingUrl(null);
     setHostInput(value);
     clearError();
   };
 
   const handleCodeChange = (value: string) => {
+    setFullPairingUrl(null);
     setCodeInput(value);
     clearError();
   };
@@ -134,6 +139,7 @@ function PairingForm({
     try {
       const pairingUrl = extractPairingUrlFromQrPayload(data);
       const { host, code } = parsePairingUrl(pairingUrl);
+      setFullPairingUrl(pairingUrl);
       setHostInput(host);
       setCodeInput(code);
       onChangeConnectionPairingUrl(pairingUrl);
@@ -152,7 +158,7 @@ function PairingForm({
   };
 
   const handleSubmit = async () => {
-    const pairingUrl = buildPairingUrl(hostInput, codeInput);
+    const pairingUrl = fullPairingUrl ?? buildPairingUrl(hostInput, codeInput);
     setOwnAttempt(true);
     setSubmitError(null);
     setIsSubmitting(true);

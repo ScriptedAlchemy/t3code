@@ -25,6 +25,7 @@ import {
   usableRoutes,
 } from "./routes.ts";
 import * as RpcSession from "../rpc/session.ts";
+import { acquireRouteLanTls } from "./lanTls.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
 
 export type ConnectionDriverProgress =
@@ -168,7 +169,10 @@ export const make = Effect.gen(function* () {
   const checkRoute = (entry: ConnectionCatalogEntry, route: ConnectionRoute) => {
     const httpBaseUrl = routeHttpBaseUrl(route);
     if (httpBaseUrl === null) return Effect.succeed<RouteCheck>("unchecked");
-    return checkDescriptor(httpBaseUrl, entry.target.environmentId).pipe(
+    return acquireRouteLanTls(route).pipe(
+      Effect.andThen(checkDescriptor(httpBaseUrl, entry.target.environmentId)),
+      Effect.scoped,
+      Effect.orElseSucceed((): RouteCheck => "silent"),
       Effect.withSpan("ConnectionDriver.checkRoute", {
         attributes: { "connection.target.kind": route.target._tag },
       }),
@@ -197,6 +201,7 @@ export const make = Effect.gen(function* () {
       entry,
       (route) => checkRoute(entry, route),
       Effect.fnUntraced(function* (route) {
+        yield* acquireRouteLanTls(route);
         const prepared = yield* resolver.prepare(routeEntry(entry, route));
         yield* reportProgress({ stage: "opening", prepared });
         const session = yield* sessions.connect(prepared);
@@ -214,7 +219,9 @@ export const make = Effect.gen(function* () {
     ).pipe(
       Effect.flatMap((check) =>
         check === "answered"
-          ? resolver.prepare(routeEntry(entry, route)).pipe(
+          ? acquireRouteLanTls(route).pipe(
+              Effect.andThen(resolver.prepare(routeEntry(entry, route))),
+              Effect.scoped,
               Effect.as(true),
               Effect.orElseSucceed(() => false),
             )

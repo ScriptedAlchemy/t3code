@@ -154,7 +154,7 @@ const readPairingTlsTrust = (url: URL): LanTlsTrust | undefined => {
   if (encoded === null) return undefined;
   if (url.protocol !== "https:") throw new RemotePairingUrlInvalidError({ protocol: url.protocol });
   try {
-    return Schema.decodeUnknownSync(Schema.fromJsonString(LanTlsTrust))(encoded);
+    return Schema.decodeSync(Schema.fromJsonString(LanTlsTrust))(encoded);
   } catch (cause) {
     throw new RemotePairingUrlInvalidError({ cause });
   }

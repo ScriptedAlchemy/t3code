@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import { setPairingTlsTrustOnUrl } from "@t3tools/shared/remote";
 
 import * as RpcHttp from "../rpc/http.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
@@ -61,11 +62,14 @@ function layerPairingHttp(
     readonly selfUpdate?: boolean;
     readonly grantScopes?: ReadonlyArray<AuthEnvironmentScope>;
     readonly exchangeGate?: { readonly reached: () => void; readonly release: Promise<void> };
+    readonly networkAvailable?: () => boolean;
   },
 ) {
   const grantScopes = options?.grantScopes ?? AuthStandardClientScopes;
   let sessionScopes: ReadonlyArray<string> = [];
   const fetchFn = ((input, init = {}) => {
+    if (options?.networkAvailable?.() === false)
+      return Promise.reject(new Error("TLS trust is not active"));
     const url = String(input);
     calls.push({ url, init });
 
@@ -235,6 +239,63 @@ const registerSwitchedOffEnvironment = Effect.gen(function* () {
 });
 
 describe("connection onboarding", () => {
+  it.effect("enrolls LAN trust before pairing and releases it after success or refusal", () =>
+    Effect.gen(function* () {
+      const tls = {
+        environmentId: EnvironmentId.make("environment-paired"),
+        certificateAuthority: "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n",
+      };
+      const pairingUrl = setPairingTlsTrustOnUrl(
+        new URL("https://192.168.1.10:3774/pair#token=pairing-code"),
+        tls,
+      ).href;
+      for (const failExchange of [false, true]) {
+        let active = false;
+        const result = yield* preparePairingRegistration({ pairingUrl }).pipe(
+          Effect.provide(layerPairingOnboarding({ failExchange, networkAvailable: () => active })),
+          Effect.provideService(ClientCapabilities.LanTlsGateway, {
+            acquire: () =>
+              Effect.acquireRelease(
+                Effect.sync(() => {
+                  active = true;
+                }),
+                () =>
+                  Effect.sync(() => {
+                    active = false;
+                  }),
+              ),
+          }),
+          Effect.result,
+        );
+        expect(active).toBe(false);
+        expect(result._tag).toBe(failExchange ? "Failure" : "Success");
+        if (result._tag === "Success") {
+          expect(result.success.profile.tls).toEqual(tls);
+          expect(result.success.credential.token).toBe("bearer-token");
+        }
+      }
+    }),
+  );
+
+  it.effect("sends no request when the client cannot verify a LAN HTTPS identity", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+      const pairingUrl = setPairingTlsTrustOnUrl(
+        new URL("https://192.168.1.10/pair#token=secret"),
+        {
+          environmentId: EnvironmentId.make("environment-paired"),
+          certificateAuthority: "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n",
+        },
+      ).href;
+      const error = yield* preparePairingRegistration({ pairingUrl }).pipe(
+        Effect.provide(layerPairingOnboarding(undefined, calls)),
+        Effect.flip,
+      );
+      expect(error).toMatchObject({ reason: "configuration" });
+      expect(calls).toEqual([]);
+    }),
+  );
+
   it.effect("prepares a persisted bearer registration from pairing details", () =>
     Effect.gen(function* () {
       const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];

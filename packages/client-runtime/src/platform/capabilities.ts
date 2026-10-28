@@ -3,12 +3,31 @@ import {
   type DesktopSshEnvironmentBootstrap,
   type DesktopSshEnvironmentTarget,
   EnvironmentId,
+  type LanTlsTrust,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
+import type * as Scope from "effect/Scope";
 
-import type { ConnectionAttemptError } from "../connection/model.ts";
+import { ConnectionBlockedError, type ConnectionAttemptError } from "../connection/model.ts";
+
+export class LanTlsGateway extends Context.Reference<{
+  readonly acquire: (input: {
+    readonly httpBaseUrl: string;
+    readonly tls: LanTlsTrust;
+  }) => Effect.Effect<void, ConnectionAttemptError, Scope.Scope>;
+}>("@t3tools/client-runtime/platform/capabilities/LanTlsGateway", {
+  defaultValue: () => ({
+    acquire: () =>
+      Effect.fail(
+        new ConnectionBlockedError({
+          reason: "configuration",
+          detail: "Use the T3 desktop app for this LAN HTTPS link, or use a Tailscale HTTPS link.",
+        }),
+      ),
+  }),
+}) {}
 
 export interface PreparedSshEnvironment {
   readonly bootstrap: DesktopSshEnvironmentBootstrap;

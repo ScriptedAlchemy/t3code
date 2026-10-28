@@ -33,6 +33,7 @@ import * as Persistence from "../platform/persistence.ts";
 import * as EnvironmentRegistry from "./registry.ts";
 import { orchestrationProtocolCompatibilityError } from "./compatibility.ts";
 import { connectionRoutes, routeEntry, sshTargetKey } from "./routes.ts";
+import { acquireLanTls } from "./lanTls.ts";
 
 export interface PairingConnectionInput {
   readonly pairingUrl?: string;
@@ -103,13 +104,40 @@ export const preparePairingRegistration = Effect.fn(
 )(function* (input: PairingConnectionInput) {
   const target = yield* resolvePairingTarget(input);
   const presentation = yield* ClientCapabilities.ClientPresentation;
+  if (target.tls !== undefined) {
+    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+    const saved = (yield* SubscriptionRef.get(registry.entries)).get(target.tls.environmentId);
+    const conflictingTrust =
+      saved &&
+      connectionRoutes(saved).some((route) => {
+        const profile = Option.getOrNull(route.profile);
+        return (
+          profile?._tag === "BearerConnectionProfile" &&
+          profile.tls !== undefined &&
+          profile.tls.certificateAuthority !== target.tls?.certificateAuthority
+        );
+      });
+    if (conflictingTrust) {
+      return yield* new ConnectionBlockedError({
+        reason: "configuration",
+        detail:
+          "This environment's LAN certificate identity changed. Forget its old connection before pairing again.",
+      });
+    }
+    yield* acquireLanTls({
+      httpBaseUrl: target.httpBaseUrl,
+      environmentId: input.expectedEnvironmentId ?? target.tls.environmentId,
+      tls: target.tls,
+    });
+  }
   const descriptor = yield* fetchRemoteEnvironmentDescriptor({
     httpBaseUrl: target.httpBaseUrl,
   }).pipe(Effect.mapError(mapRemoteEnvironmentError));
   // Checked before redeeming the one-time code, so a wrong link is not spent.
   if (
-    input.expectedEnvironmentId !== undefined &&
-    descriptor.environmentId !== input.expectedEnvironmentId
+    (input.expectedEnvironmentId !== undefined &&
+      descriptor.environmentId !== input.expectedEnvironmentId) ||
+    (target.tls !== undefined && descriptor.environmentId !== target.tls.environmentId)
   ) {
     return yield* differentMachineError(descriptor.label);
   }
@@ -126,6 +154,7 @@ export const preparePairingRegistration = Effect.fn(
       label: descriptor.label,
       httpBaseUrl: target.httpBaseUrl,
       wsBaseUrl: target.wsBaseUrl,
+      ...(target.tls === undefined ? {} : { tls: target.tls }),
     }),
   };
   // The registry checks again under its lease; this early check keeps a refused code unspent.
@@ -150,7 +179,7 @@ export const preparePairingRegistration = Effect.fn(
       token: access.access_token,
     }),
   });
-});
+}, Effect.scoped);
 
 const registerPairingConnection = Effect.fn(
   "clientRuntime.connection.onboarding.registerPairingConnection",
@@ -241,6 +270,12 @@ export const prepareBearerConnectionUpdate = Effect.fn(
       }),
   });
   const connectionId = entry.target.connectionId;
+  if (entry.profile.value.tls !== undefined && new URL(httpBaseUrl).protocol !== "https:") {
+    return yield* new ConnectionBlockedError({
+      reason: "configuration",
+      detail: "A LAN HTTPS connection cannot be changed to an unencrypted address.",
+    });
+  }
   return new BearerConnectionRegistration({
     target: new BearerConnectionTarget({
       environmentId: options.input.environmentId,
@@ -253,6 +288,7 @@ export const prepareBearerConnectionUpdate = Effect.fn(
       label,
       httpBaseUrl,
       wsBaseUrl: deriveWsBaseUrl(httpBaseUrl),
+      ...(entry.profile.value.tls === undefined ? {} : { tls: entry.profile.value.tls }),
     }),
     credential: credential.value,
   });

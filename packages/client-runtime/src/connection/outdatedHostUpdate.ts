@@ -26,6 +26,7 @@ import { isLegacyUpdateHandoffLoss, resolveServerUpdateProgressResult } from "..
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 import * as ConnectionResolver from "./resolver.ts";
 import * as EnvironmentRegistry from "./registry.ts";
+import { acquireRouteLanTls } from "./lanTls.ts";
 import {
   connectionRoutes,
   hasRelayRoute,
@@ -58,14 +59,21 @@ const reachOutdatedHost = Effect.fn("clientRuntime.connection.reachOutdatedHost"
     return yield* new EnvironmentRegistry.EnvironmentNotRegisteredError({ environmentId });
   }
   const { prepared, descriptor } = yield* Effect.firstSuccessOf(
-    usableRoutes(entry).map((route) => resolver.prepareForUpdate(routeEntry(entry, route))),
+    usableRoutes(entry).map((route) =>
+      acquireRouteLanTls(route).pipe(
+        Effect.andThen(resolver.prepareForUpdate(routeEntry(entry, route))),
+      ),
+    ),
   );
   return { entry, prepared, descriptor };
 });
 
 // The normal session cannot read config from a host behind the protocol gate.
 export const describeOutdatedHost = (environmentId: EnvironmentId) =>
-  reachOutdatedHost(environmentId).pipe(Effect.map(({ descriptor }) => descriptor));
+  reachOutdatedHost(environmentId).pipe(
+    Effect.map(({ descriptor }) => descriptor),
+    Effect.scoped,
+  );
 
 /**
  * The normal session refuses to open against such a host, so this opens a bare
@@ -225,6 +233,7 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
     yield* switchBackOn;
     return { ...result, targetVersion: resumed.value.serverVersion };
   },
+  Effect.scoped,
 );
 
 function isCompatibleDescriptor(descriptor: ExecutionEnvironmentDescriptor): boolean {

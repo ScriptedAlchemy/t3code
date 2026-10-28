@@ -26,6 +26,7 @@ import { EnvironmentRpcRequestObserver } from "@t3tools/client-runtime/rpc";
 import {
   AuthStandardClientScopes,
   type DesktopBridge,
+  type LanTlsTrust,
   type DesktopEnvironmentBootstrap,
   type DesktopSshEnvironmentBootstrap,
   type DesktopSshEnvironmentTarget,
@@ -410,12 +411,40 @@ const layerCapabilities = Layer.effectContext(
       }),
     });
 
+    const lanTls = {
+      acquire: Effect.fn("web.connectionPlatform.lanTls.acquire")(function* (input: {
+        readonly httpBaseUrl: string;
+        readonly tls: LanTlsTrust;
+      }) {
+        const bridge = window.desktopBridge;
+        if (bridge?.acquireLanTls === undefined) {
+          return yield* new ConnectionBlockedError({
+            reason: "configuration",
+            detail:
+              "Update the T3 desktop app to use this LAN HTTPS link, or use a Tailscale HTTPS link.",
+          });
+        }
+        yield* Effect.acquireRelease(
+          Effect.tryPromise({
+            try: () => bridge.acquireLanTls(input),
+            catch: (cause) =>
+              new ConnectionBlockedError({
+                reason: "configuration",
+                detail: `Could not verify the LAN certificate identity: ${String(cause)}`,
+              }),
+          }),
+          (leaseId) => Effect.promise(() => bridge.releaseLanTls(leaseId)),
+        );
+      }),
+    };
+
     return Context.make(ClientCapabilities.CloudSession, cloudSession).pipe(
       Context.add(ClientCapabilities.AnalyticsDevice, analyticsDevice),
       Context.add(ClientCapabilities.PrimaryEnvironmentAuth, primaryAuth),
       Context.add(ClientCapabilities.RelayDeviceIdentity, identity),
       Context.add(ClientCapabilities.ClientPresentation, presentation),
       Context.add(ClientCapabilities.SshEnvironmentGateway, ssh),
+      Context.add(ClientCapabilities.LanTlsGateway, lanTls),
     );
   }),
 );

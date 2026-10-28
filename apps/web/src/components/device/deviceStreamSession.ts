@@ -89,7 +89,12 @@ export const deviceStreamSessionAtom = Atom.family((key: DeviceStreamKey) =>
       get.setSelf(session);
     };
     const client = createDeviceStreamClient(
-      { platform: key.platform, deviceId: key.deviceId, access: key.access },
+      {
+        platform: key.platform,
+        deviceId: key.deviceId,
+        access: key.access,
+        createWebSocket: createDesktopWebSocket,
+      },
       createCanvasFrameSink(canvas, () => frameListener?.()),
       {
         onDuoControl: (duoControl) => {
@@ -137,3 +142,4 @@ export const deviceStreamSessionAtom = Atom.family((key: DeviceStreamKey) =>
     return session;
   }).pipe(Atom.withLabel(`device-stream:${key.platform}:${key.deviceId}`)),
 );
+import { createDesktopWebSocket } from "../../lib/desktopWebSocket";

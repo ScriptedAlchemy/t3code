@@ -365,7 +365,14 @@ export function ServerBrowserSurface(props: {
       firstFrame();
     });
     const client = createPreviewStreamClient(
-      { access, threadId, tabId, maxWidth: cap.width, maxHeight: cap.height },
+      {
+        access,
+        threadId,
+        tabId,
+        maxWidth: cap.width,
+        maxHeight: cap.height,
+        createWebSocket: createDesktopWebSocket,
+      },
       {
         onFrame: (jpeg) => {
           unauthorizedRef.current = 0;
@@ -914,3 +921,4 @@ function placeAgentCursor(
     top: (box.height - height) / 2 + (pointer.y * height) / viewport.height,
   };
 }
+import { createDesktopWebSocket } from "../lib/desktopWebSocket";

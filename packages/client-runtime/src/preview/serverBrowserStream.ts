@@ -172,6 +172,7 @@ export const previewStreamModifiers = (event: {
   (event.shiftKey ? 8 : 0);
 
 export interface PreviewStreamTarget {
+  readonly createWebSocket?: (url: string) => WebSocket;
   readonly access: DeviceHubAccess;
   readonly threadId: string;
   readonly tabId: string;
@@ -226,7 +227,7 @@ export function createPreviewStreamClient(
 
   const connect = () => {
     if (stopped) return;
-    const ws = new WebSocket(url);
+    const ws = target.createWebSocket?.(url) ?? new WebSocket(url);
     ws.binaryType = "arraybuffer";
     socket = ws;
     let opened = false;

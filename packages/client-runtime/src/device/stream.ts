@@ -113,6 +113,7 @@ export interface DeviceStreamEvents {
 }
 
 export interface DeviceStreamTarget {
+  readonly createWebSocket?: (url: string) => WebSocket;
   readonly platform: DevicePlatform;
   readonly deviceId: string;
   readonly access: DeviceHubAccess;
@@ -1072,7 +1073,8 @@ export function createDeviceStreamClient(
     const session = generation;
     await primeIosHelper(session);
     if (stopped || generation !== session) return;
-    const ws = new WebSocket(wsUrl(`/helper/ws?device=${device}`));
+    const url = wsUrl(`/helper/ws?device=${device}`);
+    const ws = target.createWebSocket?.(url) ?? new WebSocket(url);
     ws.binaryType = "arraybuffer";
     socket = ws;
     iosInputAdmitted = false;
@@ -1155,7 +1157,8 @@ export function createDeviceStreamClient(
 
   const connectAndroid = () => {
     if (stopped) return;
-    const ws = new WebSocket(wsUrl(`/ws?device=${device}&frame-meta=1`));
+    const url = wsUrl(`/ws?device=${device}&frame-meta=1`);
+    const ws = target.createWebSocket?.(url) ?? new WebSocket(url);
     ws.binaryType = "arraybuffer";
     socket = ws;
     ws.onopen = () => {

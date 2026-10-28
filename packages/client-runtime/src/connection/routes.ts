@@ -4,7 +4,7 @@ import {
   isSharedAddressSpaceHost,
   isTailnetHost,
 } from "@t3tools/shared/hostClassification";
-import type { DesktopSshEnvironmentTarget } from "@t3tools/contracts";
+import type { DesktopSshEnvironmentTarget, LanTlsTrust } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 
 import {
@@ -223,6 +223,23 @@ export function mergeLearnedRoutes(input: {
       ? credentialConnectionId(active.connectionId)
       : undefined;
   const reported = new Map<string, URL>();
+  const reportedTrust = new Map<string, LanTlsTrust>();
+  const rejectedTrustOrigins = new Set<string>();
+  const savedTrust = saved.flatMap((route) => {
+    const profile = Option.getOrNull(route.profile);
+    return profile?._tag === "BearerConnectionProfile" && profile.tls !== undefined
+      ? [profile.tls]
+      : [];
+  });
+  const activeUrl = routeHttpBaseUrl(input.activeRoute);
+  const activeEndpoint = activeUrl === null ? null : URL.parse(activeUrl);
+  const trustSource =
+    active._tag === "RelayConnectionTarget" ||
+    (activeUrl !== null &&
+      (activeEndpoint?.protocol === "https:" ||
+        (activeEndpoint !== null && isTailnetHost(activeEndpoint.hostname)) ||
+        (activeProfile?._tag === "BearerConnectionProfile" &&
+          activeProfile.network === "tailscale")));
   const tailscaleOrigins = new Set<string>();
   for (const endpoint of input.reported) {
     let url: URL;
@@ -235,6 +252,18 @@ export function mergeLearnedRoutes(input: {
     if (url.protocol === "http:" && !input.allowInsecure) continue;
     // A loopback address names whichever device opens it, never the server.
     if (isLocalLoopbackHost(url.hostname)) continue;
+    if (endpoint.tls !== undefined) {
+      if (
+        !trustSource ||
+        url.protocol !== "https:" ||
+        endpoint.tls.environmentId !== entry.target.environmentId ||
+        savedTrust.some((tls) => tls.certificateAuthority !== endpoint.tls?.certificateAuthority)
+      ) {
+        rejectedTrustOrigins.add(url.origin);
+        continue;
+      }
+      reportedTrust.set(url.origin, endpoint.tls);
+    }
     reported.set(url.origin, url);
     if (endpoint.kind === "tailnet") tailscaleOrigins.add(url.origin);
   }
@@ -251,13 +280,24 @@ export function mergeLearnedRoutes(input: {
       return [
         url === null || !reported.has(normalized(url))
           ? route
-          : withNetwork(route, tailscaleOrigins.has(normalized(url))),
+          : withEndpointMetadata(
+              route,
+              tailscaleOrigins.has(normalized(url)),
+              reportedTrust.get(normalized(url)),
+            ),
       ];
     }
+    if (url !== null && rejectedTrustOrigins.has(normalized(url))) return [route];
     if (url === null || !reported.has(normalized(url)) || known.has(normalized(url))) return [];
     if (sendsTokenInClear(saved, route, tailscaleOrigins.has(normalized(url)))) return [];
     known.add(normalized(url));
-    return [withNetwork(route, tailscaleOrigins.has(normalized(url)))];
+    return [
+      withEndpointMetadata(
+        route,
+        tailscaleOrigins.has(normalized(url)),
+        reportedTrust.get(normalized(url)),
+      ),
+    ];
   });
   let next: ReadonlyArray<ConnectionRoute> = kept;
   for (const url of reported.values()) {
@@ -292,16 +332,22 @@ export function mergeLearnedRoutes(input: {
           learned: true,
           ...(authorization === undefined ? {} : { authorization }),
           ...(tailscaleOrigins.has(url.origin) ? { network: "tailscale" as const } : {}),
+          ...(reportedTrust.has(url.origin) ? { tls: reportedTrust.get(url.origin)! } : {}),
         }),
       ),
     });
   }
   const signature = (routes: ReadonlyArray<ConnectionRoute>) =>
     routes
-      .map(
-        (route) =>
-          `${connectionRouteId(route.target)} ${routeHttpBaseUrl(route) ?? ""} ${connectionRouteKind(route)}`,
-      )
+      .map((route) => {
+        const profile = Option.getOrNull(route.profile);
+        return JSON.stringify([
+          connectionRouteId(route.target),
+          routeHttpBaseUrl(route),
+          connectionRouteKind(route),
+          profile?._tag === "BearerConnectionProfile" ? profile.tls : undefined,
+        ]);
+      })
       .join("\n");
   return signature(saved) === signature(next) ? null : next;
 }
@@ -354,12 +400,21 @@ export function usableRoutes(entry: ConnectionCatalogEntry): ReadonlyArray<Conne
 export interface ReportedEndpoint {
   readonly httpBaseUrl: string;
   readonly kind?: string;
+  readonly tls?: LanTlsTrust;
 }
 
-function withNetwork(route: ConnectionRoute, tailscale: boolean): ConnectionRoute {
+function withEndpointMetadata(
+  route: ConnectionRoute,
+  tailscale: boolean,
+  tls?: LanTlsTrust,
+): ConnectionRoute {
   const profile = Option.getOrNull(route.profile);
   if (profile?._tag !== "BearerConnectionProfile") return route;
-  if ((profile.network === "tailscale") === tailscale) return route;
+  if (
+    (profile.network === "tailscale") === tailscale &&
+    (tls === undefined || tls.certificateAuthority === profile.tls?.certificateAuthority)
+  )
+    return route;
   return {
     target: route.target,
     profile: Option.some(
@@ -371,6 +426,7 @@ function withNetwork(route: ConnectionRoute, tailscale: boolean): ConnectionRout
         wsBaseUrl: profile.wsBaseUrl,
         ...(profile.learned === undefined ? {} : { learned: profile.learned }),
         ...(profile.authorization === undefined ? {} : { authorization: profile.authorization }),
+        ...((tls ?? profile.tls) === undefined ? {} : { tls: tls ?? profile.tls }),
         ...(tailscale ? { network: "tailscale" as const } : {}),
       }),
     ),

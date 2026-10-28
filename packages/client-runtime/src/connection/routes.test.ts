@@ -99,6 +99,57 @@ describe("learned routes", () => {
     routes?.map((route) => connectionRouteId(route.target)) ?? null;
   const profileOf = (route: ConnectionRoute) => Option.getOrThrow(route.profile);
 
+  it("learns LAN certificate trust through authenticated routes without replacing its identity", () => {
+    const tls = {
+      environmentId: ENVIRONMENT_ID,
+      certificateAuthority: "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n",
+    };
+    const endpoint = { kind: "lan", httpBaseUrl: "https://192.168.1.10:3774/", tls };
+    const learned = mergeLearnedRoutes({
+      entry: relayOnly,
+      activeRoute: RELAY,
+      reported: [endpoint],
+      allowInsecure: true,
+    })!;
+    expect(profileOf(learned[0]!)).toMatchObject({
+      tls,
+      httpBaseUrl: endpoint.httpBaseUrl,
+      wsBaseUrl: "wss://192.168.1.10:3774/",
+    });
+    const entry = entryWithRoutes(relayOnly, learned);
+    const changed = mergeLearnedRoutes({
+      entry,
+      activeRoute: RELAY,
+      reported: [
+        {
+          ...endpoint,
+          tls: {
+            ...tls,
+            certificateAuthority: "-----BEGIN CERTIFICATE-----\nZGVm\n-----END CERTIFICATE-----\n",
+          },
+        },
+      ],
+      allowInsecure: true,
+    });
+    expect(changed).toBeNull();
+    expect(
+      mergeLearnedRoutes({
+        entry: { ...LAN, enabled: true },
+        activeRoute: LAN,
+        reported: [endpoint],
+        allowInsecure: true,
+      }),
+    ).toBeNull();
+    expect(
+      mergeLearnedRoutes({
+        entry: relayOnly,
+        activeRoute: RELAY,
+        reported: [{ ...endpoint, tls: { ...tls, environmentId: EnvironmentId.make("other") } }],
+        allowInsecure: true,
+      }),
+    ).toBeNull();
+  });
+
   it("learns a LAN address over T3 Connect, ahead of it, using the T3 Connect credential", () => {
     const routes = mergeLearnedRoutes({
       entry: relayOnly,
