@@ -329,14 +329,14 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
+  if (source.textGenerationOperations === undefined) return Effect.succeed(snapshot);
+  // A runtime `false` (Antigravity with global hooks, unauthenticated) still wins over the static list.
+  const operations =
+    snapshot.supportsTextGeneration === false ? [] : source.textGenerationOperations;
   return Effect.succeed({
     ...snapshot,
-    ...(source.textGenerationOperations === undefined
-      ? {}
-      : {
-          supportsTextGeneration: source.textGenerationOperations.length > 0,
-          textGenerationOperations: source.textGenerationOperations,
-        }),
+    supportsTextGeneration: operations.length > 0,
+    textGenerationOperations: operations,
   });
 };
 

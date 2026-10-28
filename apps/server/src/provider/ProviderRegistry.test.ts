@@ -427,9 +427,12 @@ it.layer(
   });
 
   describe("ProviderRegistry.layer", () => {
-    it.effect(
-      "publishes operation capabilities from the runtime instead of stale probe flags",
-      () =>
+    it.effect.each([
+      ["replaces stale snapshot operations", true, ["generateConversationSummary"]],
+      ["keeps a runtime unavailable flag", false, []],
+    ] as const)(
+      "publishes operation capabilities from the runtime: %s",
+      ([, snapshotSupportsTextGeneration, expectedOperations]) =>
         Effect.gen(function* () {
           const instanceId = ProviderInstanceId.make("writer");
           const driverKind = ProviderDriverKind.make("muse");
@@ -443,7 +446,7 @@ it.layer(
             auth: { status: "authenticated" },
             checkedAt: "2026-06-10T00:00:00.000Z",
             models: [],
-            supportsTextGeneration: false,
+            supportsTextGeneration: snapshotSupportsTextGeneration,
             textGenerationOperations: ["generateReviewGuide"],
           });
           const instance: ProviderInstance = {
@@ -475,8 +478,8 @@ it.layer(
           yield* Effect.gen(function* () {
             const registry = yield* ProviderRegistry.ProviderRegistry;
             const providers = yield* registry.refresh();
-            expect(providers[0]?.supportsTextGeneration).toBe(true);
-            expect(providers[0]?.textGenerationOperations).toEqual(["generateConversationSummary"]);
+            expect(providers[0]?.supportsTextGeneration).toBe(expectedOperations.length > 0);
+            expect(providers[0]?.textGenerationOperations).toEqual(expectedOperations);
           }).pipe(
             Effect.provide(
               ProviderRegistry.layer.pipe(
