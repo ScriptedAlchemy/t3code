@@ -16,7 +16,7 @@ on:
         default: false
 
 concurrency:
-  group: fork-release-${{ github.ref }}
+  group: fork-release
   cancel-in-progress: false
 
 permissions:

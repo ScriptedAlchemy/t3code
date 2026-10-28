@@ -64,6 +64,7 @@ the version.
 GitHub-hosted runners. A push to `main` publishes a `v<version>-nightly.<date>.<run>`
 prerelease in the fork. The bundled updater follows that repository's Nightly feed.
 Manual dispatch defaults to packaging only; enable `publish` to publish the selected ref.
+Release runs share a queue across refs because every ref updates the same Nightly feed.
 No npm, mobile, relay, or hosted web deployment runs in this workflow.
 
 Publishing requires the macOS signing secrets described below: `CSC_LINK`,
