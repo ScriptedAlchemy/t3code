@@ -7,7 +7,6 @@ import {
   getProviderOptionCurrentValue,
   buildProviderOptionSelectionsFromDescriptors,
   isFastProviderOptionSelection,
-  withoutFastProviderOptionDescriptors,
 } from "@t3tools/shared/model";
 import { agentModelOptions } from "../provider/agentFastMode.ts";
 import { type PstackRoleDefault } from "@t3tools/pstack";
@@ -181,15 +180,15 @@ export function resolveRoles(input: {
     const seats = entries.map((seat, index): Seat => {
       if (seat.kind === "inherit") return seat;
       const settings = { agentFastModeEnabled: input.agentFastModeEnabled ?? true };
-      const entry = { ...seat.entry, options: agentModelOptions(settings, seat.entry.options)! };
       const provider = input.providers.find(
-        (provider) => provider.instanceId === entry.providerInstanceId,
+        (provider) => provider.instanceId === seat.entry.providerInstanceId,
       );
-      const model = provider?.models.find((model) => model.slug === entry.model);
+      const model = provider?.models.find((model) => model.slug === seat.entry.model);
       const advertisedDescriptors = model?.capabilities?.optionDescriptors ?? [];
-      const descriptors = settings.agentFastModeEnabled
-        ? advertisedDescriptors
-        : withoutFastProviderOptionDescriptors(advertisedDescriptors);
+      const entry = {
+        ...seat.entry,
+        options: agentModelOptions(settings, seat.entry.options, advertisedDescriptors)!,
+      };
       let reason =
         entry.error ??
         (provider === undefined
@@ -201,7 +200,7 @@ export function resolveRoles(input: {
       reason ??=
         invalidOptionSelections(entry.options, advertisedDescriptors).join(" ") || undefined;
       const options: ProviderOptionSelection[] = [];
-      for (const descriptor of descriptors) {
+      for (const descriptor of advertisedDescriptors) {
         const value =
           entry.options.find((option) => option.id === descriptor.id)?.value ??
           getProviderOptionCurrentValue(descriptor) ??
@@ -209,7 +208,7 @@ export function resolveRoles(input: {
         if (value === undefined) reason ??= `option ${descriptor.id} has no current value`;
         else options.push({ id: descriptor.id, value });
       }
-      reason ??= invalidOptionSelections(options, descriptors).join(" ") || undefined;
+      reason ??= invalidOptionSelections(options, advertisedDescriptors).join(" ") || undefined;
       if (reason !== undefined) {
         diagnostics.push(
           `Fallback: ${role.label} seat ${index + 1} ${entry.providerInstanceId}/${entry.model} unavailable (${reason}); runs on the parent model.`,
@@ -232,7 +231,7 @@ export function resolveRoles(input: {
         target: {
           providerInstanceId: entry.providerInstanceId,
           model: entry.model,
-          options: agentModelOptions(settings, options)!,
+          options: agentModelOptions(settings, options, advertisedDescriptors)!,
         },
       };
     });

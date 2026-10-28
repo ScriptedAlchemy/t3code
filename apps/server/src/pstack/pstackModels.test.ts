@@ -376,7 +376,7 @@ it.effect.each(["", " ,,", " # comment"])(
 );
 
 it.effect(
-  "drops role fast options and provider fast defaults with a diagnostic when disabled",
+  "pins role fast options and provider fast defaults to standard with a diagnostic when disabled",
   () =>
     Effect.sync(() => {
       for (const file of [
@@ -396,7 +396,16 @@ it.effect(
           result.roles[0]!.seats.map((seat) =>
             seat.kind === "target" ? seat.target.options : seat,
           ),
-          [[{ id: "effort", value: "xhigh" }], [{ id: "reasoningEffort", value: "high" }]],
+          [
+            [
+              { id: "effort", value: "xhigh" },
+              { id: "fastMode", value: false },
+            ],
+            [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "default" },
+            ],
+          ],
         );
         assert.isTrue(
           result.diagnostics.some((note) =>
@@ -415,7 +424,6 @@ it.effect(
           options: [
             { id: "default", label: "Default" },
             { id: "priority", label: "Priority", isDefault: true },
-            { id: "flex", label: "Flex" },
           ],
         },
       ]);

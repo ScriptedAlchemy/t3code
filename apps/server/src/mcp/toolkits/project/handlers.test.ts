@@ -22,6 +22,7 @@ import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
@@ -54,6 +55,7 @@ const clientLaunchHarness = (input: {
     model: input.overrideModel === undefined ? modelSelection : null,
   };
   const layerDependencies = Layer.mergeAll(
+    Layer.mock(ProviderRegistry.ProviderRegistry)({ getPublishedProviders: Effect.succeed([]) }),
     ServerSettings.layerTest({
       agentFastModeEnabled: input.agentFastModeEnabled ?? true,
       ...(input.defaultRuntimeMode === undefined
@@ -492,7 +494,7 @@ it.effect("a retried worktree launch replays after its base ref is gone", () =>
   }),
 );
 
-it.effect("agent launches reject explicit fast options and strip fast project defaults", () =>
+it.effect("agent launches reject explicit fast options and pin fast project defaults", () =>
   Effect.gen(function* () {
     const inherited = {
       instanceId: ProviderInstanceId.make("codex"),
@@ -532,9 +534,15 @@ it.effect("agent launches reject explicit fast options and strip fast project de
     expect(result[0]?.result).toMatchObject({
       modelSelection: {
         ...inherited,
-        options: [{ id: "reasoningEffort", value: "high" }],
+        options: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "default" },
+        ],
       },
     });
-    expect(launched[0]?.modelSelection.options).toEqual([{ id: "reasoningEffort", value: "high" }]);
+    expect(launched[0]?.modelSelection.options).toEqual([
+      { id: "reasoningEffort", value: "high" },
+      { id: "serviceTier", value: "default" },
+    ]);
   }),
 );

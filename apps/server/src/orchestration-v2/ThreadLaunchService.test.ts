@@ -2348,7 +2348,7 @@ it.effect("replays an accepted send after the project disables the instance", ()
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
 
-it.effect("agent launches strip fast selections at execution while user launches keep them", () =>
+it.effect("agent launches pin fast selections at execution while user launches keep them", () =>
   Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
     for (const createdBy of ["agent", "user"] as const) {
@@ -2368,7 +2368,10 @@ it.effect("agent launches strip fast selections at execution while user launches
       assert.deepEqual(
         launched.projection.thread.modelSelection.options,
         createdBy === "agent"
-          ? [{ id: "reasoningEffort", value: "high" }]
+          ? [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "default" },
+            ]
           : input.modelSelection.options,
       );
     }

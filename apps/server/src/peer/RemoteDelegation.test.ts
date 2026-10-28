@@ -487,7 +487,9 @@ const boxToolkitLayer = (thread: BoxThread, agentFastModeEnabled = true) => {
         Layer.provide(NodeServices.layer),
       ),
     ),
-    Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+    Layer.provide(
+      Layer.mock(ProviderRegistry.ProviderRegistry)({ getPublishedProviders: Effect.succeed([]) }),
+    ),
     Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
     Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
     Layer.provide(
@@ -2110,7 +2112,7 @@ it.effect(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("the receiving environment rejects explicit fast options and strips inherited ones", () =>
+it.effect("the receiving environment rejects explicit fast options and pins inherited ones", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const thread = yield* makeBoxThread;
@@ -2147,7 +2149,7 @@ it.effect("the receiving environment rejects explicit fast options and strips in
       yield* delegateToBox(a);
       expect((yield* Ref.get(thread.launchedWith))?.modelSelection).toEqual({
         ...modelSelection,
-        options: [],
+        options: [{ id: "serviceTier", value: "default" }],
       });
       expect(
         (yield* a.orchestrator.getThreadShell(parentThreadId))?.modelSelection.options,

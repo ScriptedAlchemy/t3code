@@ -873,6 +873,10 @@ const make = Effect.gen(function* () {
                 Effect.mapError(mapError(input, "create-thread")),
               ),
               input.modelSelection,
+              (yield* providerRegistry.getPublishedProviders)
+                .find((provider) => provider.instanceId === input.modelSelection.instanceId)
+                ?.models.find((model) => model.slug === input.modelSelection.model)?.capabilities
+                ?.optionDescriptors,
             )
           : input.modelSelection;
       yield* threads.assertProviderInstanceEnabled({

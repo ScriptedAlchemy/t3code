@@ -608,7 +608,7 @@ it.effect.each([
   },
 );
 
-it.effect("agent forks drop inherited fast options and user forks retain them", () =>
+it.effect("agent forks pin inherited fast options and user forks retain them", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const eventSink = yield* EventSink.EventSinkV2;
@@ -676,7 +676,7 @@ it.effect("agent forks drop inherited fast options and user forks retain them", 
       const fork = yield* orchestrator.getThreadShell(targetThreadId);
       assert.deepEqual(
         fork?.modelSelection.options,
-        createdBy === "agent" ? [] : selection.options,
+        createdBy === "agent" ? [{ id: "serviceTier", value: "default" }] : selection.options,
       );
     }
     assert.deepEqual(

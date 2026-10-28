@@ -12,7 +12,7 @@ import {
   readCustomModelEntries,
   modelSelectionsEqual,
   isFastProviderOptionSelection,
-  withoutFastProviderOptionSelections,
+  pinStandardProviderOptionSelections,
   withoutFastProviderOptionDescriptors,
 } from "./model.ts";
 
@@ -220,7 +220,7 @@ describe("fast provider options", () => {
     expect(isFastProviderOptionSelection(selection)).toBe(expected);
   });
 
-  it("drops fast selections and preserves standard values and other options", () => {
+  it("pins fast selections and preserves standard values and other options", () => {
     const selections = [
       { id: "fastMode", value: true },
       { id: "serviceTier", value: "priority" },
@@ -229,9 +229,48 @@ describe("fast provider options", () => {
       { id: "serviceTier", value: "default" },
       { id: "reasoningEffort", value: "high" },
     ];
-    expect(withoutFastProviderOptionSelections(selections)).toEqual(selections.slice(3));
+    expect(pinStandardProviderOptionSelections(selections)).toEqual([
+      { id: "fastMode", value: false },
+      { id: "serviceTier", value: "default" },
+      { id: "serviceTier", value: "default" },
+      ...selections.slice(3),
+    ]);
     expect(selections).toHaveLength(6);
+    expect(
+      pinStandardProviderOptionSelections(
+        [],
+        [{ id: "fastMode", label: "Fast", type: "boolean", currentValue: true }],
+      ),
+    ).toEqual([{ id: "fastMode", value: false }]);
   });
+
+  it.each([undefined, "priority"])(
+    "pins an omitted fast default with currentValue %s",
+    (currentValue) => {
+      const descriptors = [
+        {
+          id: "serviceTier",
+          label: "Tier",
+          type: "select",
+          ...(currentValue === undefined ? {} : { currentValue }),
+          options: [
+            { id: "default", label: "Standard" },
+            { id: "priority", label: "Priority", isDefault: true },
+          ],
+        },
+      ] as const;
+      expect(pinStandardProviderOptionSelections([], descriptors)).toEqual([
+        { id: "serviceTier", value: "default" },
+      ]);
+      expect(pinStandardProviderOptionSelections(undefined, descriptors)).toEqual([
+        { id: "serviceTier", value: "default" },
+      ]);
+      expect(
+        pinStandardProviderOptionSelections([{ id: "serviceTier", value: "flex" }], descriptors),
+      ).toEqual([{ id: "serviceTier", value: "flex" }]);
+      expect(pinStandardProviderOptionSelections([], codexCaps.optionDescriptors)).toEqual([]);
+    },
+  );
 
   it("removes fast descriptors and choices without advertising a fast current value", () => {
     const reasoning = codexCaps.optionDescriptors![0]!;

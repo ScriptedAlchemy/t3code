@@ -16,6 +16,7 @@ import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.t
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { agentModelSelection, assertAgentModelOptions } from "../../../provider/agentFastMode.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -182,6 +183,16 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 Effect.orElseSucceed(() => runtimeMode),
               )
             : runtimeMode;
+        const providers =
+          !replaying && !settings.agentFastModeEnabled
+            ? yield* ProviderRegistry.ProviderRegistry.pipe(
+                Effect.flatMap((registry) => registry.getPublishedProviders),
+              )
+            : [];
+        const descriptors = providers
+          .find((provider) => provider.instanceId === modelSelection.instanceId)
+          ?.models.find((model) => model.slug === modelSelection.model)
+          ?.capabilities?.optionDescriptors;
         const result = yield* ThreadMessageIntake.launchThread({
           commandId,
           threadId,
@@ -189,7 +200,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           title: input.title,
           modelSelection: replaying
             ? modelSelection
-            : agentModelSelection(settings, modelSelection),
+            : agentModelSelection(settings, modelSelection, descriptors),
           runtimeMode: startedRuntimeMode,
           interactionMode,
           workspaceStrategy: input.workspaceStrategy ?? { type: "root" },

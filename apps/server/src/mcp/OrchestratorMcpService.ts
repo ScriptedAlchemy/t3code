@@ -1328,10 +1328,10 @@ const make = Effect.gen(function* () {
     }
 
     const requestedOptions = input.target?.options;
+    const descriptors = provider.models.find((candidate) => candidate.slug === model)?.capabilities
+      ?.optionDescriptors;
     yield* assertAgentModelOptions(availability.settings, requestedOptions);
     if (requestedOptions !== undefined) {
-      const descriptors = provider.models.find((candidate) => candidate.slug === model)
-        ?.capabilities?.optionDescriptors;
       const invalid = invalidOptionSelections(requestedOptions, descriptors);
       if (invalid.length > 0) {
         return yield* failure(
@@ -1343,10 +1343,7 @@ const make = Effect.gen(function* () {
 
     const inheritsOptions =
       instanceId === inheritedSelection.instanceId && model === inheritedSelection.model;
-    let options = agentModelOptions(
-      availability.settings,
-      inheritsOptions ? inheritedSelection.options : undefined,
-    );
+    let options = inheritsOptions ? inheritedSelection.options : undefined;
     if (requestedOptions !== undefined) {
       const selections = new Map(
         (requestedOptions.length === 0 ? [] : (options ?? [])).map((selection) => [
@@ -1359,6 +1356,7 @@ const make = Effect.gen(function* () {
       }
       options = [...selections.values()];
     }
+    options = agentModelOptions(availability.settings, options, descriptors);
     return {
       modelSelection: { instanceId, model, ...(options === undefined ? {} : { options }) },
       supportedRuntimeModes: provider.supportedRuntimeModes,
@@ -1831,10 +1829,13 @@ const make = Effect.gen(function* () {
       const settings = yield* serverSettings.getSettings.pipe(
         Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
       );
-      const modelSelection = agentModelSelection(
-        settings,
-        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project)),
-      );
+      const selection =
+        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
+      const providers = yield* loadProviders;
+      const descriptors = providers
+        .find((provider) => provider.instanceId === selection.instanceId)
+        ?.models.find((model) => model.slug === selection.model)?.capabilities?.optionDescriptors;
+      const modelSelection = agentModelSelection(settings, selection, descriptors);
       const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
       const title =
         input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
@@ -2103,12 +2104,16 @@ const make = Effect.gen(function* () {
         nowMs: yield* Clock.currentTimeMillis,
       };
       const inherited = parent?.thread.modelSelection;
+      const inheritedDescriptors = providers
+        .find((provider) => provider.instanceId === inherited?.instanceId)
+        ?.models.find((model) => model.slug === inherited?.model)?.capabilities?.optionDescriptors;
       const searchTerms = input.search?.toLowerCase().split(/\s+/) ?? [];
       return {
         parentThreadId: parent?.thread.id ?? null,
         inheritedProviderInstanceId: inherited?.instanceId ?? null,
         inheritedModel: inherited?.model ?? null,
-        inheritedOptions: agentModelOptions(settings, inherited?.options) ?? [],
+        inheritedOptions:
+          agentModelOptions(settings, inherited?.options, inheritedDescriptors) ?? [],
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
         providers: providers

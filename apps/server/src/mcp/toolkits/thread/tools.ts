@@ -26,6 +26,7 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
 import * as ServerSettings from "../../../serverSettings.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -153,7 +154,11 @@ const threadConfiguration = Schema.Struct({
 });
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
-  dependencies: [...commandTool.dependencies, ServerSettings.ServerSettingsService],
+  dependencies: [
+    ...commandTool.dependencies,
+    ServerSettings.ServerSettingsService,
+    ProviderRegistry.ProviderRegistry,
+  ],
   description:
     "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
   parameters: Schema.Struct({

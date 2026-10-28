@@ -78,6 +78,45 @@ const decodeMcpAttachmentInput = Schema.decodeUnknownEffect(McpAttachmentInput);
 const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
 
 const layerThreadToolkit = McpHttpServer.layerThreadToolkit.pipe(
+  Layer.provide(
+    Layer.mock(ProviderRegistry.ProviderRegistry)({
+      getProviders: Effect.succeed([]),
+      getPublishedProviders: Effect.succeed([
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+          installed: true,
+          version: null,
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-10-28T00:00:00Z",
+          slashCommands: [],
+          skills: [],
+          models: [
+            {
+              slug: "gpt-5",
+              name: "gpt-5",
+              isCustom: false,
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    id: "serviceTier",
+                    label: "Tier",
+                    type: "select",
+                    options: [
+                      { id: "default", label: "Standard" },
+                      { id: "priority", label: "Priority", isDefault: true },
+                    ],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ]),
+    }),
+  ),
   Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
   Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
@@ -598,7 +637,19 @@ it.effect("a client caller targets any thread within its ceiling and cannot act 
                   deletedAt: null,
                 },
               } as never),
-            dispatch: () => Effect.succeed({ sequence: 7, storedEvents: [] }),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                if (
+                  command.type === "thread.model-selection.set" ||
+                  command.type === "provider.switch"
+                ) {
+                  expect(command.modelSelection.options).toEqual([
+                    { id: "fastMode", value: false },
+                    { id: "serviceTier", value: "default" },
+                  ]);
+                }
+                return { sequence: 7, storedEvents: [] };
+              }),
           }),
         ),
       ),
@@ -1043,6 +1094,7 @@ it.effect("thread search preserves citations and pagination and returns a thread
   }).pipe(
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
+        Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
         Layer.provide(ServerSettings.layerTest()),
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(NodeCrypto.layer),

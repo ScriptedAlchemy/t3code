@@ -4318,6 +4318,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               modelSelection: agentModelSelection(
                 yield* serverSettings.getSettings.pipe(Effect.orDie),
                 targetThread.modelSelection,
+                (yield* poolCatalog.getPublishedProviders)
+                  .find(
+                    (provider) => provider.instanceId === targetThread.modelSelection.instanceId,
+                  )
+                  ?.models.find((model) => model.slug === targetThread.modelSelection.model)
+                  ?.capabilities?.optionDescriptors,
               ),
             }
           : targetThread,

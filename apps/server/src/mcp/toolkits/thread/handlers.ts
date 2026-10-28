@@ -21,7 +21,8 @@ import {
   unavailable,
 } from "../../threadAccess.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
-import { assertAgentModelOptions } from "../../../provider/agentFastMode.ts";
+import { agentModelSelection, assertAgentModelOptions } from "../../../provider/agentFastMode.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
@@ -220,13 +221,27 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           Effect.mapError(unavailable),
         );
         yield* assertAgentModelOptions(settings, modelSelection.options);
+        const providers = settings.agentFastModeEnabled
+          ? []
+          : yield* ProviderRegistry.ProviderRegistry.pipe(
+              Effect.flatMap((registry) => registry.getPublishedProviders),
+            );
+        const descriptors = providers
+          .find((provider) => provider.instanceId === modelSelection.instanceId)
+          ?.models.find((model) => model.slug === modelSelection.model)
+          ?.capabilities?.optionDescriptors;
         const {
           threads,
           projection: { thread },
         } = yield* readThread(input.threadId);
         const type = modelSelectionCommandType(thread.providerInstanceId, modelSelection);
         const result = yield* threads
-          .dispatch({ type, threadId: thread.id, commandId: yield* newCommandId(), modelSelection })
+          .dispatch({
+            type,
+            threadId: thread.id,
+            commandId: yield* newCommandId(),
+            modelSelection: agentModelSelection(settings, modelSelection, descriptors),
+          })
           .pipe(Effect.mapError(dispatchFailure));
         return { sequence: result.sequence };
       }),

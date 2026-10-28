@@ -3015,36 +3015,33 @@ describe("OrchestratorMcpService provider resolution", () => {
               driver: ProviderDriverKind.make("codex"),
               model: inherited.model,
             }),
-            models: [
-              {
-                slug: inherited.model,
-                name: inherited.model,
-                isCustom: false,
-                capabilities: {
-                  optionDescriptors: [
-                    {
-                      id: "reasoningEffort",
-                      label: "Effort",
-                      type: "select",
-                      options: [{ id: "high", label: "High" }],
-                    },
-                    { id: "fastMode", label: "Fast", type: "boolean" },
-                    {
-                      id: "serviceTier",
-                      label: "Tier",
-                      type: "select",
-                      currentValue: "priority",
-                      options: [
-                        { id: "default", label: "Standard", isDefault: true },
-                        { id: "priority", label: "Priority" },
-                        { id: "fast", label: "Fast" },
-                        { id: "flex", label: "Flex" },
-                      ],
-                    },
-                  ],
-                },
+            models: [inherited.model, "gpt-fast-default"].map((slug) => ({
+              slug,
+              name: slug,
+              isCustom: false,
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    id: "reasoningEffort",
+                    label: "Effort",
+                    type: "select",
+                    options: [{ id: "high", label: "High" }],
+                  },
+                  { id: "fastMode", label: "Fast", type: "boolean" },
+                  {
+                    id: "serviceTier",
+                    label: "Tier",
+                    type: "select",
+                    options: [
+                      { id: "default", label: "Standard" },
+                      { id: "priority", label: "Priority", isDefault: true },
+                      { id: "fast", label: "Fast" },
+                      { id: "flex", label: "Flex" },
+                    ],
+                  },
+                ],
               },
-            ],
+            })),
           },
         ]),
         adapterRegistryLayer([codexInstanceId]),
@@ -3072,21 +3069,47 @@ describe("OrchestratorMcpService provider resolution", () => {
         }
         assert.deepEqual(commands, []);
         const capabilities = yield* service.capabilities(scope);
-        assert.deepEqual(capabilities.inheritedOptions, [{ id: "reasoningEffort", value: "high" }]);
+        assert.deepEqual(capabilities.inheritedOptions, [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "default" },
+        ]);
         const descriptors = capabilities.providers[0]!.models[0]!.options!;
         assert.isFalse(descriptors.some((option) => option.id === "fastMode"));
         const tier = descriptors.find((option) => option.id === "serviceTier");
         assert.deepEqual(tier?.values, ["default", "flex"]);
+        assert.equal(tier?.default, "default");
         yield* service.delegateTask(scope, { task: "Review the change.", mode: "async" });
         const command = commands[0];
         assert.equal(command?.type, "delegated_task.request");
         if (command?.type === "delegated_task.request") {
           assert.deepEqual(command.modelSelection, {
             ...inherited,
-            options: [{ id: "reasoningEffort", value: "high" }],
+            options: [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "default" },
+            ],
           });
         }
         assert.deepEqual(inherited.options[1], { id: "serviceTier", value: "priority" });
+        for (const options of [undefined, {}]) {
+          yield* service.delegateTask(scope, {
+            task: "Use a model with a fast default.",
+            target: yield* decodeTarget({
+              model: "gpt-fast-default",
+              ...(options === undefined ? {} : { options }),
+            }),
+            mode: "async",
+          });
+          const child = commands.at(-1);
+          assert.equal(child?.type, "delegated_task.request");
+          if (child?.type === "delegated_task.request") {
+            assert.deepEqual(child.modelSelection, {
+              instanceId: codexInstanceId,
+              model: "gpt-fast-default",
+              options: [{ id: "serviceTier", value: "default" }],
+            });
+          }
+        }
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),
   );

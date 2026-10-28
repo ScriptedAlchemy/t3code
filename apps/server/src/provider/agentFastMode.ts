@@ -1,12 +1,13 @@
 import {
   OrchestratorMcpFailure,
   type ModelSelection,
+  type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type ServerSettings,
 } from "@t3tools/contracts";
 import {
   isFastProviderOptionSelection,
-  withoutFastProviderOptionSelections,
+  pinStandardProviderOptionSelections,
 } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 
@@ -15,14 +16,19 @@ type Settings = Pick<ServerSettings, "agentFastModeEnabled">;
 export function agentModelOptions(
   settings: Settings,
   options: ReadonlyArray<ProviderOptionSelection> | undefined,
+  descriptors?: ReadonlyArray<ProviderOptionDescriptor>,
 ) {
-  return settings.agentFastModeEnabled || options === undefined
-    ? options
-    : withoutFastProviderOptionSelections(options);
+  if (settings.agentFastModeEnabled) return options;
+  const pinned = pinStandardProviderOptionSelections(options, descriptors);
+  return options === undefined && pinned.length === 0 ? undefined : pinned;
 }
 
-export function agentModelSelection(settings: Settings, selection: ModelSelection): ModelSelection {
-  const options = agentModelOptions(settings, selection.options);
+export function agentModelSelection(
+  settings: Settings,
+  selection: ModelSelection,
+  descriptors?: ReadonlyArray<ProviderOptionDescriptor>,
+): ModelSelection {
+  const options = agentModelOptions(settings, selection.options, descriptors);
   return { ...selection, ...(options === undefined ? {} : { options }) };
 }
 

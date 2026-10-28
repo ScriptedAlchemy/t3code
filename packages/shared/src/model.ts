@@ -37,22 +37,40 @@ export function createModelCapabilities(input: {
   };
 }
 
-const fastProviderOptions: ReadonlyArray<ProviderOptionSelection> = [
-  { id: "fastMode", value: true },
-  { id: "serviceTier", value: "priority" },
-  { id: "serviceTier", value: "fast" },
+const fastProviderOptions: ReadonlyArray<{
+  id: string;
+  fastValues: ReadonlyArray<string | boolean>;
+  standardValue: string | boolean;
+}> = [
+  { id: "fastMode", fastValues: [true], standardValue: false },
+  { id: "serviceTier", fastValues: ["priority", "fast"], standardValue: "default" },
 ];
 
 export function isFastProviderOptionSelection(selection: ProviderOptionSelection): boolean {
   return fastProviderOptions.some(
-    (fast) => fast.id === selection.id && fast.value === selection.value,
+    (fast) => fast.id === selection.id && fast.fastValues.includes(selection.value),
   );
 }
 
-export function withoutFastProviderOptionSelections(
-  selections: ReadonlyArray<ProviderOptionSelection>,
+export function pinStandardProviderOptionSelections(
+  selections: ReadonlyArray<ProviderOptionSelection> | undefined,
+  descriptors?: ReadonlyArray<ProviderOptionDescriptor>,
 ): Array<ProviderOptionSelection> {
-  return selections.filter((selection) => !isFastProviderOptionSelection(selection));
+  const options = (selections ?? []).map((selection) => {
+    const fast = fastProviderOptions.find(
+      (fast) => fast.id === selection.id && fast.fastValues.includes(selection.value),
+    );
+    return fast === undefined ? selection : { id: selection.id, value: fast.standardValue };
+  });
+  for (const descriptor of descriptors ?? []) {
+    if (options.some((selection) => selection.id === descriptor.id)) continue;
+    const value = getProviderOptionCurrentValue(descriptor);
+    const fast = fastProviderOptions.find(
+      (fast) => fast.id === descriptor.id && value !== undefined && fast.fastValues.includes(value),
+    );
+    if (fast !== undefined) options.push({ id: descriptor.id, value: fast.standardValue });
+  }
+  return options;
 }
 
 export function withoutFastProviderOptionDescriptors(
@@ -67,10 +85,17 @@ export function withoutFastProviderOptionDescriptors(
     if (options.length === descriptor.options.length) return [descriptor];
     if (!options.some((option) => !option.isDefault && option.id !== "default")) return [];
     const { currentValue, promptInjectedValues, ...rest } = descriptor;
+    const resolvedCurrentValue =
+      currentValue ?? descriptor.options.find((option) => option.isDefault)?.id;
+    const standardValue = fastProviderOptions.find(
+      (fast) => fast.id === descriptor.id,
+    )?.standardValue;
     const standardCurrentValue =
-      currentValue !== undefined && !isFast(currentValue)
-        ? currentValue
-        : options.find((option) => option.isDefault || option.id === "default")?.id;
+      resolvedCurrentValue !== undefined && !isFast(resolvedCurrentValue)
+        ? resolvedCurrentValue
+        : typeof standardValue === "string"
+          ? standardValue
+          : options.find((option) => option.isDefault || option.id === "default")?.id;
     return [
       {
         ...rest,
