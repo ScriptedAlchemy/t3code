@@ -1,3 +1,4 @@
+import { installDesktopLanTls } from "./DesktopLanTls.ts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -399,6 +400,7 @@ export const make = Effect.gen(function* () {
       return Option.none();
     }
 
+    installDesktopLanTls(window);
     yield* rendererHistory.register(window.webContents, { surface: "main" });
     if (environment.platform === "darwin") {
       window.setAutoHideCursor(false);

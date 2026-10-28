@@ -261,6 +261,8 @@ export interface DesktopServerExposureBackendConfig {
   readonly port: number;
   readonly bindHost: string;
   readonly httpBaseUrl: URL;
+  readonly lanHttpsEnabled: boolean;
+  readonly lanHttpsPort: number;
   readonly tailscaleServeEnabled: boolean;
   readonly tailscaleServePort: number;
 }
@@ -281,6 +283,10 @@ export class DesktopServerExposure extends Context.Service<
     readonly setMode: (
       mode: DesktopServerExposureMode,
     ) => Effect.Effect<DesktopServerExposureChange, DesktopServerExposureSetModeError>;
+    readonly setLanHttpsEnabled: (input: {
+      readonly enabled: boolean;
+      readonly port?: number;
+    }) => Effect.Effect<DesktopServerExposureChange, DesktopAppSettings.DesktopSettingsWriteError>;
     readonly setTailscaleServeEnabled: (input: {
       readonly enabled: boolean;
       readonly port?: number;
@@ -299,6 +305,8 @@ interface RuntimeState {
   readonly httpBaseUrl: URL;
   readonly endpointUrl: Option.Option<string>;
   readonly advertisedHost: Option.Option<string>;
+  readonly lanHttpsEnabled: boolean;
+  readonly lanHttpsPort: number;
   readonly tailscaleServeEnabled: boolean;
   readonly tailscaleServePort: number;
 }
@@ -324,6 +332,8 @@ const toContractState = (state: RuntimeState): DesktopServerExposureState => ({
   mode: state.mode,
   endpointUrl: Option.getOrNull(state.endpointUrl),
   advertisedHost: Option.getOrNull(state.advertisedHost),
+  lanHttpsEnabled: state.lanHttpsEnabled,
+  lanHttpsPort: state.lanHttpsPort,
   tailscaleServeEnabled: state.tailscaleServeEnabled,
   tailscaleServePort: state.tailscaleServePort,
 });
@@ -332,6 +342,8 @@ const toBackendConfig = (state: RuntimeState): DesktopServerExposureBackendConfi
   port: state.port,
   bindHost: state.bindHost,
   httpBaseUrl: state.httpBaseUrl,
+  lanHttpsEnabled: state.lanHttpsEnabled,
+  lanHttpsPort: state.lanHttpsPort,
   tailscaleServeEnabled: state.tailscaleServeEnabled,
   tailscaleServePort: state.tailscaleServePort,
 });
@@ -361,6 +373,8 @@ function runtimeStateFromResolvedExposure(input: {
     httpBaseUrl: new URL(input.exposure.localHttpUrl),
     endpointUrl: Option.fromNullishOr(input.exposure.endpointUrl),
     advertisedHost: Option.fromNullishOr(input.exposure.advertisedHost),
+    lanHttpsEnabled: input.settings.lanHttpsEnabled,
+    lanHttpsPort: input.settings.lanHttpsPort,
     tailscaleServeEnabled: input.settings.tailscaleServeEnabled,
     tailscaleServePort: input.settings.tailscaleServePort,
   };
@@ -518,6 +532,22 @@ export const make = Effect.gen(function* () {
     };
   }, changePermit.withPermit);
 
+  const setLanHttpsEnabled = Effect.fn("desktop.serverExposure.setLanHttpsEnabled")(
+    function* (input: { readonly enabled: boolean; readonly port?: number }) {
+      const result = yield* desktopSettings.setLanHttps({
+        enabled: input.enabled,
+        port: Option.fromNullishOr(input.port),
+      });
+      const nextState = yield* Ref.updateAndGet(stateRef, (current) => ({
+        ...current,
+        lanHttpsEnabled: result.settings.lanHttpsEnabled,
+        lanHttpsPort: result.settings.lanHttpsPort,
+      }));
+      return { state: toContractState(nextState), requiresRelaunch: result.changed };
+    },
+    changePermit.withPermit,
+  );
+
   const setTailscaleServeEnabled = Effect.fn("desktop.serverExposure.setTailscaleServeEnabled")(
     function* (input: { readonly enabled: boolean; readonly port?: number }) {
       yield* Effect.annotateCurrentSpan({
@@ -590,6 +620,7 @@ export const make = Effect.gen(function* () {
     configureFromSettings,
     setMode,
     setTailscaleServeEnabled,
+    setLanHttpsEnabled,
     getAdvertisedEndpoints,
   });
 });

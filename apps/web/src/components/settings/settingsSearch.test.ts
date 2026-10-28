@@ -118,6 +118,7 @@ describe("searchSettings", () => {
       "source-control-writing-style",
       "t3-connect",
       "hold-webhooks-while-offline",
+      "lan-https",
       "tailscale-https",
       "wsl-backend",
       "auto-settle-inactive-threads",

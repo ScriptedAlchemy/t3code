@@ -1,7 +1,11 @@
 import * as DateTime from "effect/DateTime";
 
 import { resolveDesktopPairingUrl, resolveHostedPairingUrl } from "./pairingUrls";
-import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "@t3tools/shared/remote";
+import {
+  getPairingTokenFromUrl,
+  setPairingTokenOnUrl,
+  setPairingTlsTrustOnUrl,
+} from "@t3tools/shared/remote";
 import { readHostedPairingRequest } from "../../hostedPairing";
 import {
   type ServerClientSessionRecord,
@@ -382,6 +386,12 @@ export function resolveAdvertisedEndpointPairingUrl(
   endpoint: AdvertisedEndpoint,
   credential: string,
 ): string {
+  if (endpoint.tls) {
+    return setPairingTlsTrustOnUrl(
+      new URL(resolveDesktopPairingUrl(endpoint.httpBaseUrl, credential)),
+      endpoint.tls,
+    ).toString();
+  }
   if (endpoint.compatibility.hostedHttpsApp === "compatible") {
     return (
       resolveHostedPairingUrl(endpoint.httpBaseUrl, credential) ??
@@ -406,6 +416,8 @@ export function isHostedAppPairingUrl(value: string): boolean {
 }
 
 export function endpointShareHint(endpoint: AdvertisedEndpoint, url: string): string {
+  if (endpoint.tls)
+    return "Paste this link into the desktop app. Browser and mobile pairing are not supported.";
   if (isHostedAppPairingUrl(url)) {
     return "Opens the hosted app, no install needed";
   }

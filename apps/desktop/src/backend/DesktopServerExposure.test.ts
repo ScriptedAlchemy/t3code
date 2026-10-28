@@ -207,6 +207,8 @@ describe("DesktopServerExposure", () => {
           mode: "network-accessible",
           endpointUrl: "http://192.168.1.20:4173",
           advertisedHost: "192.168.1.20",
+          lanHttpsEnabled: false,
+          lanHttpsPort: 3774,
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
         });

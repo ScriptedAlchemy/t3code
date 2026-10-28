@@ -1079,6 +1079,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     localBackendManagementOnly: true,
   },
   {
+    id: "lan-https",
+    title: "Local network HTTPS",
+    to: "/settings/access",
+    targetId: "connections-environment",
+    searchTerms: ["private secure local network certificate port"],
+    desktopOnly: true,
+    localBackendManagementOnly: true,
+  },
+  {
     id: "tailscale-https",
     title: "Tailscale HTTPS",
     to: "/settings/access",

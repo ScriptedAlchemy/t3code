@@ -41,6 +41,24 @@ export const setServerExposureMode = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const setLanHttpsEnabled = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.SET_LAN_HTTPS_ENABLED_CHANNEL,
+  payload: Schema.Struct({
+    enabled: Schema.Boolean,
+    port: Schema.optionalKey(
+      Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(65_535)),
+    ),
+  }),
+  result: DesktopServerExposureStateSchema,
+  handler: Effect.fn("desktop.ipc.serverExposure.setLanHttpsEnabled")(function* (input) {
+    const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
+    const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+    const change = yield* serverExposure.setLanHttpsEnabled(input);
+    if (change.requiresRelaunch) yield* lifecycle.relaunch("lan-https-changed");
+    return change.state;
+  }),
+});
+
 export const setTailscaleServeEnabled = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.SET_TAILSCALE_SERVE_ENABLED_CHANNEL,
   payload: SetTailscaleServeEnabledInput,

@@ -1,3 +1,4 @@
+import type { LanTlsTrust } from "./lanTls.ts";
 import * as Schema from "effect/Schema";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
 
@@ -486,6 +487,8 @@ export interface DesktopServerExposureState {
   mode: DesktopServerExposureMode;
   endpointUrl: string | null;
   advertisedHost: string | null;
+  lanHttpsEnabled: boolean;
+  lanHttpsPort: number;
   tailscaleServeEnabled: boolean;
   tailscaleServePort: number;
 }
@@ -494,6 +497,8 @@ export const DesktopServerExposureStateSchema = Schema.Struct({
   mode: DesktopServerExposureModeSchema,
   endpointUrl: Schema.NullOr(Schema.String),
   advertisedHost: Schema.NullOr(Schema.String),
+  lanHttpsEnabled: Schema.Boolean,
+  lanHttpsPort: Schema.Number,
   tailscaleServeEnabled: Schema.Boolean,
   tailscaleServePort: Schema.Number,
 });
@@ -1002,7 +1007,25 @@ export const DesktopPreviewRecordingSaveInputSchema = Schema.Struct({
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
+export type DesktopLanTlsSocketEvent =
+  | { id: string; type: "open" }
+  | { id: string; type: "error" }
+  | { id: string; type: "message"; data: string | Uint8Array; sequence: number }
+  | { id: string; type: "close"; data: { code: number; reason: string } };
+
 export interface DesktopBridge {
+  acquireLanTls: (input: { httpBaseUrl: string; tls: LanTlsTrust }) => Promise<string>;
+  releaseLanTls: (id: string) => Promise<void>;
+  isLanTlsOrigin: (url: string) => boolean;
+  openLanTlsSocket: (input: {
+    id: string;
+    url: string;
+    protocols?: string | string[];
+  }) => Promise<void>;
+  acknowledgeLanTlsSocket: (input: { id: string; sequence: number }) => Promise<void>;
+  sendLanTlsSocket: (input: { id: string; data: string | Uint8Array }) => Promise<void>;
+  closeLanTlsSocket: (input: { id: string; code?: number; reason?: string }) => Promise<void>;
+  onLanTlsSocketEvent: (listener: (event: DesktopLanTlsSocketEvent) => void) => () => void;
   getAppBranding: () => DesktopAppBranding | null;
   getRelayTelemetryEnabled: () => boolean;
   getPathForFile: (file: File) => string;
@@ -1065,6 +1088,10 @@ export interface DesktopBridge {
   resolveSshPasswordPrompt: (requestId: string, password: string | null) => Promise<void>;
   getServerExposureState: () => Promise<DesktopServerExposureState>;
   setServerExposureMode: (mode: DesktopServerExposureMode) => Promise<DesktopServerExposureState>;
+  setLanHttpsEnabled: (input: {
+    readonly enabled: boolean;
+    readonly port?: number;
+  }) => Promise<DesktopServerExposureState>;
   setTailscaleServeEnabled: (input: {
     readonly enabled: boolean;
     readonly port?: number;

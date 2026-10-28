@@ -1,3 +1,4 @@
+import * as Option from "effect/Option";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -179,6 +180,8 @@ describe("DesktopSettings", () => {
           mainWindowBounds: { x: 120, y: 80, width: 1280, height: 900 },
           mainWindowMaximized: false,
           serverExposureMode: "network-accessible",
+          lanHttpsEnabled: false,
+          lanHttpsPort: 3774,
           tailscaleServeEnabled: true,
           tailscaleServePort: 8443,
           updateChannel: "latest",
@@ -274,6 +277,8 @@ describe("DesktopSettings", () => {
           mainWindowBounds: null,
           mainWindowMaximized: false,
           serverExposureMode: "local-only",
+          lanHttpsEnabled: false,
+          lanHttpsPort: 3774,
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
           updateChannel: "nightly",
@@ -303,6 +308,8 @@ describe("DesktopSettings", () => {
           mainWindowBounds: null,
           mainWindowMaximized: false,
           serverExposureMode: "local-only",
+          lanHttpsEnabled: false,
+          lanHttpsPort: 3774,
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
           updateChannel: "latest",
@@ -313,6 +320,28 @@ describe("DesktopSettings", () => {
         } satisfies DesktopAppSettings.DesktopSettings);
       }),
       { appVersion: "0.0.17-nightly.20260415.1" },
+    ),
+  );
+
+  it.effect("persists LAN HTTPS independently of existing exposure settings", () =>
+    withSettings(
+      Effect.gen(function* () {
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+        yield* settings.setServerExposureMode("network-accessible");
+        yield* settings.setTailscaleServe({ enabled: true, port: Option.some(8443) });
+        yield* settings.setLanHttps({ enabled: true, port: Option.some(3775) });
+        const reloaded = yield* settings.load;
+        assert.equal(reloaded.lanHttpsEnabled, true);
+        assert.equal(reloaded.lanHttpsPort, 3775);
+        assert.equal(reloaded.serverExposureMode, "network-accessible");
+        assert.equal(reloaded.tailscaleServeEnabled, true);
+        assert.equal(reloaded.tailscaleServePort, 8443);
+        yield* settings.setLanHttps({ enabled: false, port: Option.none() });
+        const disabled = yield* settings.load;
+        assert.equal(disabled.lanHttpsEnabled, false);
+        assert.equal(disabled.lanHttpsPort, 3775);
+        assert.equal(disabled.serverExposureMode, "network-accessible");
+      }),
     ),
   );
 

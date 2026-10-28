@@ -1,3 +1,4 @@
+import { createAdvertisedEndpoint } from "@t3tools/shared/advertisedEndpoint";
 import { SessionPermissions } from "./SessionPermissions";
 import { ChevronRightIcon, EllipsisIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
@@ -247,6 +248,8 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
   const [removingSavedEnvironmentId, setRemovingSavedEnvironmentId] =
     useState<EnvironmentId | null>(null);
   const [isUpdatingDesktopServerExposure, setIsUpdatingDesktopServerExposure] = useState(false);
+  const [isUpdatingLanHttps, setIsUpdatingLanHttps] = useState(false);
+  const [lanHttpsPortInput, setLanHttpsPort] = useState<string | null>(null);
   const [isUpdatingTailscaleServe, setIsUpdatingTailscaleServe] = useState(false);
   const [isUpdatingWslBackend, setIsUpdatingWslBackend] = useState(false);
   const [desktopWslMutationError, setDesktopWslMutationError] = useState<string | null>(null);
@@ -303,8 +306,25 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
   const desktopWslError = desktopWslMutationError ?? desktopWsl.error;
   const isLoadingWslState = desktopWsl.isPending && desktopWsl.data === null;
   const desktopServerExposureState = desktopNetworkAccess.data?.serverExposureState ?? null;
-  const desktopAdvertisedEndpoints =
-    desktopNetworkAccess.data?.advertisedEndpoints ?? EMPTY_ADVERTISED_ENDPOINTS;
+  const lanHttpsPort =
+    lanHttpsPortInput ?? String(desktopServerExposureState?.lanHttpsPort ?? 3774);
+  const desktopAdvertisedEndpoints = [
+    ...(desktopNetworkAccess.data?.advertisedEndpoints ?? EMPTY_ADVERTISED_ENDPOINTS),
+    ...(primaryServerConfig?.directEndpoints ?? [])
+      .filter((endpoint) => endpoint.kind === "lan" && endpoint.tls)
+      .map((endpoint) =>
+        createAdvertisedEndpoint({
+          id: `desktop-lan-https:${endpoint.httpBaseUrl}`,
+          label: "Local network HTTPS",
+          provider: { id: "desktop-core", label: "Desktop", kind: "core", isAddon: false },
+          httpBaseUrl: endpoint.httpBaseUrl,
+          reachability: "lan",
+          source: "server",
+          status: "available",
+          ...(endpoint.tls ? { tls: endpoint.tls } : {}),
+        }),
+      ),
+  ];
   const desktopServerExposureError =
     desktopServerExposureMutationError ?? desktopNetworkAccess.error;
   const desktopAccessManagementError =
@@ -610,9 +630,10 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
 
   const visibleDesktopPairingLinks = desktopPairingLinks;
   const tailscaleHttpsEndpoint = desktopAdvertisedEndpoints.find(isTailscaleHttpsEndpoint) ?? null;
-  const visibleDesktopNetworkAdvertisedEndpoints = isLocalBackendNetworkAccessible
-    ? desktopAdvertisedEndpoints.filter((endpoint) => !isTailscaleHttpsEndpoint(endpoint))
-    : [];
+  const visibleDesktopNetworkAdvertisedEndpoints = desktopAdvertisedEndpoints.filter(
+    (endpoint) =>
+      !isTailscaleHttpsEndpoint(endpoint) && (isLocalBackendNetworkAccessible || endpoint.tls),
+  );
   const visibleDesktopAdvertisedEndpoints = tailscaleHttpsEndpoint
     ? [...visibleDesktopNetworkAdvertisedEndpoints, tailscaleHttpsEndpoint]
     : visibleDesktopNetworkAdvertisedEndpoints;
@@ -1114,6 +1135,49 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
               <>
                 {renderNetworkAccessRow()}
                 {renderEndpointRows()}
+                <SettingsRow
+                  title={searchableSetting("lan-https").title}
+                  description="Create a private HTTPS endpoint. T3 Code restarts when this changes."
+                  control={
+                    <div className="flex items-center gap-2">
+                      <Input
+                        aria-label="Local network HTTPS port"
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={lanHttpsPort}
+                        onChange={(event) => setLanHttpsPort(event.target.value)}
+                        disabled={
+                          isUpdatingLanHttps || !!desktopServerExposureState?.lanHttpsEnabled
+                        }
+                      />
+                      <Switch
+                        aria-label="Enable local network HTTPS"
+                        checked={desktopServerExposureState?.lanHttpsEnabled ?? false}
+                        disabled={
+                          isUpdatingLanHttps ||
+                          !Number.isInteger(Number(lanHttpsPort)) ||
+                          Number(lanHttpsPort) < 1 ||
+                          Number(lanHttpsPort) > 65535
+                        }
+                        onCheckedChange={(enabled) => {
+                          setIsUpdatingLanHttps(true);
+                          void desktopBridge
+                            .setLanHttpsEnabled({ enabled, port: Number(lanHttpsPort) })
+                            .then(refreshDesktopNetworkAccessState)
+                            .catch((error: unknown) =>
+                              setDesktopServerExposureMutationError(
+                                error instanceof Error
+                                  ? error.message
+                                  : "Could not change local HTTPS.",
+                              ),
+                            )
+                            .finally(() => setIsUpdatingLanHttps(false));
+                        }}
+                      />
+                    </div>
+                  }
+                />
                 {renderTailscaleRow()}
                 {renderWslRow()}
                 {canReadRelay || canManageRelay ? (

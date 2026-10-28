@@ -72,7 +72,33 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
   return result as Awaited<ReturnType<DesktopBridge["ensureSshEnvironment"]>>;
 }
 
+const lanTlsLeases = new Map<string, string>();
+
 contextBridge.exposeInMainWorld("desktopBridge", {
+  acquireLanTls: async (input) => {
+    const id = (await ipcRenderer.invoke("desktop:lan-tls-acquire", input)) as string;
+    lanTlsLeases.set(id, new URL(input.httpBaseUrl).origin);
+    return id;
+  },
+  releaseLanTls: async (id) => {
+    await ipcRenderer.invoke("desktop:lan-tls-release", id);
+    lanTlsLeases.delete(id);
+  },
+  isLanTlsOrigin: (value) => {
+    const url = new URL(value);
+    if (url.protocol === "wss:") url.protocol = "https:";
+    return [...lanTlsLeases.values()].includes(url.origin);
+  },
+  openLanTlsSocket: (input) => ipcRenderer.invoke("desktop:lan-tls-websocket-open", input),
+  acknowledgeLanTlsSocket: (input) => ipcRenderer.invoke("desktop:lan-tls-websocket-ack", input),
+  sendLanTlsSocket: (input) => ipcRenderer.invoke("desktop:lan-tls-websocket-send", input),
+  closeLanTlsSocket: (input) => ipcRenderer.invoke("desktop:lan-tls-websocket-close", input),
+  onLanTlsSocketEvent: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: Parameters<typeof listener>[0]) =>
+      listener(value);
+    ipcRenderer.on("desktop:lan-tls-websocket-event", handler);
+    return () => ipcRenderer.removeListener("desktop:lan-tls-websocket-event", handler);
+  },
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {
@@ -174,6 +200,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getServerExposureState: () => ipcRenderer.invoke(IpcChannels.GET_SERVER_EXPOSURE_STATE_CHANNEL),
   setServerExposureMode: (mode) =>
     ipcRenderer.invoke(IpcChannels.SET_SERVER_EXPOSURE_MODE_CHANNEL, mode),
+  setLanHttpsEnabled: (input) =>
+    ipcRenderer.invoke(IpcChannels.SET_LAN_HTTPS_ENABLED_CHANNEL, input),
   setTailscaleServeEnabled: (input) =>
     ipcRenderer.invoke(IpcChannels.SET_TAILSCALE_SERVE_ENABLED_CHANNEL, input),
   getAdvertisedEndpoints: () => ipcRenderer.invoke(IpcChannels.GET_ADVERTISED_ENDPOINTS_CHANNEL),
