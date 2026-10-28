@@ -71,6 +71,9 @@ Publishing requires the macOS signing secrets described below: `CSC_LINK`,
 `CSC_KEY_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, and
 `MACOS_PROVISIONING_PROFILE`, plus the `APPLE_TEAM_ID` repository variable. Use a
 Developer ID Application certificate and a profile belonging to the same team.
+Register your own explicit app identifier with Associated Domains and set the
+`MACOS_APP_ID` repository variable to match its provisioning profile; the upstream
+identifier cannot be registered by another Apple team.
 The reusable packaging workflow receives repository secrets and refuses to publish
 an unsigned macOS update. Windows uses Azure Trusted Signing when its existing
 secrets are configured; otherwise its installer is unsigned.

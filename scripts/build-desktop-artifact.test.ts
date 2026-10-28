@@ -1491,31 +1491,53 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
   });
 
-  it("normalizes explicit macOS passkey RP domains and renders required entitlements", () => {
-    const configuration = resolveMacPasskeySigningConfiguration({
-      T3CODE_APPLE_TEAM_ID: "ABC1234567",
-      T3CODE_MACOS_PROVISIONING_PROFILE: "/tmp/t3code.provisionprofile",
-      T3CODE_CLERK_PASSKEY_RP_DOMAINS:
-        " Clerk.Example.com,example.clerk.accounts.dev,clerk.example.com ",
-    });
-    const entitlements = renderMacPasskeyEntitlements(configuration, {
-      touchIdKeychainAccessGroup: undefined,
-      browserPasskeys: false,
-    });
+  it.effect("normalizes explicit macOS passkey RP domains and renders required entitlements", () =>
+    Effect.gen(function* () {
+      const configuration = resolveMacPasskeySigningConfiguration({
+        T3CODE_APPLE_TEAM_ID: "ABC1234567",
+        T3CODE_MACOS_PROVISIONING_PROFILE: "/tmp/t3code.provisionprofile",
+        T3CODE_MACOS_APP_ID: "com.scriptedalchemy.t3code",
+        T3CODE_CLERK_PASSKEY_RP_DOMAINS:
+          " Clerk.Example.com,example.clerk.accounts.dev,clerk.example.com ",
+      });
+      const entitlements = renderMacPasskeyEntitlements(configuration, {
+        touchIdKeychainAccessGroup: undefined,
+        browserPasskeys: false,
+      });
 
-    assert.deepStrictEqual(configuration.rpDomains, [
-      "clerk.example.com",
-      "example.clerk.accounts.dev",
-    ]);
-    assert.include(entitlements, "<string>ABC1234567.com.t3tools.t3code</string>");
-    assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
-    assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
-    assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
-    assert.match(entitlements, /<key>com\.apple\.security\.device\.camera<\/key>\s*<true\/>/u);
-    assert.match(entitlements, /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\/>/u);
-    assert.notInclude(entitlements, "keychain-access-groups");
-    assert.notInclude(entitlements, "com.apple.developer.web-browser.public-key-credential");
-  });
+      assert.deepStrictEqual(configuration.rpDomains, [
+        "clerk.example.com",
+        "example.clerk.accounts.dev",
+      ]);
+      assert.include(entitlements, "<string>ABC1234567.com.scriptedalchemy.t3code</string>");
+      const build = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        true,
+        false,
+        undefined,
+        undefined,
+      );
+      assert.equal(build.appId, configuration.appId);
+      assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
+      assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
+      assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
+      assert.match(entitlements, /<key>com\.apple\.security\.device\.camera<\/key>\s*<true\/>/u);
+      assert.match(
+        entitlements,
+        /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\/>/u,
+      );
+      assert.notInclude(entitlements, "keychain-access-groups");
+      assert.notInclude(entitlements, "com.apple.developer.web-browser.public-key-credential");
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { T3CODE_MACOS_APP_ID: "com.scriptedalchemy.t3code" } }),
+        ),
+      ),
+    ),
+  );
 
   it("grants in-app browser passkey entitlements only when the provisioning profile does", () => {
     const configuration = { appId: "com.t3tools.t3code", teamId: "ABC1234567" };
