@@ -110,6 +110,8 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     Effect.provideService(FileSystem.FileSystem, lockingFs),
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     Effect.provideService(GitHubCredentials.GitHubCredentials, {
+      saved: () => Effect.succeedNone,
+      fingerprint: (_host, token) => Effect.succeed(token),
       get: (host) => {
         const token = input.githubCredential?.() ?? input.githubToken;
         return token === undefined

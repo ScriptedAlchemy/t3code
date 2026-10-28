@@ -40,6 +40,7 @@ import type { ReviewCommentContext } from "~/reviewCommentContext";
 import { ComposerPendingTerminalContextChip } from "./chat/ComposerPendingTerminalContexts";
 import { EnvironmentContextChip } from "./EnvironmentContextChip";
 import { ThreadContextChip } from "./ThreadContextChip";
+import { useLinkedEnvironments } from "~/state/peerLinks";
 import {
   createContextPresentationRegistry,
   type ContextPresentationCapability,
@@ -351,10 +352,15 @@ function ComposerPreviewAnnotationDetails({
 
 function ComposerThreadContextChip(props: { record: ThreadContextRecord }) {
   const { environmentId } = use(ComposerContextActionsContext);
+  const linkedEnvironments = useLinkedEnvironments(environmentId);
   return (
     <ThreadContextChip
       record={props.record}
-      unreadable={environmentId !== null && props.record.environmentId !== environmentId}
+      unreadable={
+        environmentId !== null &&
+        props.record.environmentId !== environmentId &&
+        !linkedEnvironments.has(props.record.environmentId)
+      }
     />
   );
 }

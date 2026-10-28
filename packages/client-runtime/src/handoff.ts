@@ -37,11 +37,11 @@ export function resolvePendingHandoff(
   const staysOnSource =
     from.instanceId === selection.instanceId ||
     (target?.pool?.role === "pool" && target.pool.memberInstanceIds.includes(from.instanceId));
-  const needsHandoff = staysOnSource
-    ? from.model !== selection.model && source?.requiresNewThreadForModelChange === true
-    : source?.continuation?.groupKey === undefined ||
+  const needsHandoff =
+    !staysOnSource &&
+    (source?.continuation?.groupKey === undefined ||
       source.driver !== target?.driver ||
-      source.continuation.groupKey !== target.continuation?.groupKey;
+      source.continuation.groupKey !== target.continuation?.groupKey);
   return needsHandoff ? { from: [from], to: selection } : null;
 }
 
