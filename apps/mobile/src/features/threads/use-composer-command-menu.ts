@@ -51,7 +51,10 @@ import {
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
-import { rankComposerModelMentions } from "@t3tools/client-runtime/composerModelMentions";
+import {
+  formatComposerModelMention,
+  rankComposerModelMentions,
+} from "@t3tools/client-runtime/composerModelMentions";
 import { useAtomRefresh } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
@@ -244,6 +247,8 @@ export function resolveComposerCommandSelection(input: {
     replacement = `/${item.command} `;
   } else if (item.type === "provider-slash-command") {
     replacement = `/${item.command.name} `;
+  } else if (item.type === "model") {
+    replacement = `${formatComposerModelMention(item.option.selection.instanceId, item.option.selection.model)} `;
   }
   return {
     ...replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, replacement),
@@ -274,7 +279,6 @@ export function useComposerCommandMenu({
   onUsageLimits,
   modelOptions,
   modelProviders,
-  onSelectModel,
 }: {
   readonly draftMessage: string;
   readonly ownerKey: string | null;
@@ -297,10 +301,9 @@ export function useComposerCommandMenu({
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onUpdateInteractionMode?: (mode: ProviderInteractionMode) => void;
   readonly onUsageLimits?: () => void;
-  /** Models an `@` mention can switch to; leave `onSelectModel` unset when switching isn't allowed. */
+  /** Models an `@` mention can name in the prompt. */
   readonly modelOptions?: ReadonlyArray<ModelOption>;
   readonly modelProviders?: ReadonlyArray<ServerProvider>;
-  readonly onSelectModel?: (option: ModelOption) => void;
 }) {
   const [localSelection, setLocalSelection] = useState(() => ({
     ownerKey,
@@ -525,7 +528,7 @@ export function useComposerCommandMenu({
         ? matchComposerEnvironmentItems({ environments, environmentId, query: trigger.query })
         : [];
       const modelItems =
-        modelOptions && modelProviders && onSelectModel
+        modelOptions && modelProviders
           ? buildComposerModelItems(modelOptions, trigger.query, modelProviders)
           : [];
       return [
@@ -551,14 +554,6 @@ export function useComposerCommandMenu({
 
   const onSelect = (item: ComposerCommandItem) => {
     if (!trigger) return;
-    if (item.type === "model") {
-      if (trigger.kind !== "path" || !onSelectModel) return;
-      const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
-      setSelection({ start: cleared.cursor, end: cleared.cursor });
-      onChangeDraftMessage(cleared.text);
-      onSelectModel(item.option);
-      return;
-    }
     if (item.type === "environment") {
       if (!ownerKey || trigger.kind !== "path") return;
       const record = environmentComposerContext(item.environmentId, item.label);
