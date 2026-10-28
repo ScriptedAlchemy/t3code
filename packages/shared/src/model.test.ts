@@ -11,6 +11,9 @@ import {
   getProviderOptionDescriptors,
   readCustomModelEntries,
   modelSelectionsEqual,
+  isFastProviderOptionSelection,
+  withoutFastProviderOptionSelections,
+  withoutFastProviderOptionDescriptors,
 } from "./model.ts";
 
 const codexCaps: ModelCapabilities = createModelCapabilities({
@@ -199,5 +202,75 @@ describe("provider-reported option display", () => {
     { ...selection, options: [{ id: "variant", value: "none" }] },
   ])("ignores reports after changing the model, instance, or option: %j", (selected) => {
     expect(getProviderOptionCurrentLabel(descriptor, selected, reported)).toBe("Unknown");
+  });
+});
+
+describe("fast provider options", () => {
+  it.each([
+    [{ id: "fastMode", value: true }, true],
+    [{ id: "fastMode", value: false }, false],
+    [{ id: "fastMode", value: "true" }, false],
+    [{ id: "serviceTier", value: "priority" }, true],
+    [{ id: "serviceTier", value: "fast" }, true],
+    [{ id: "serviceTier", value: "default" }, false],
+    [{ id: "serviceTier", value: "flex" }, false],
+    [{ id: "reasoningEffort", value: "high" }, false],
+    [{ id: "other", value: "priority" }, false],
+  ])("classifies %j as fast=%s", (selection, expected) => {
+    expect(isFastProviderOptionSelection(selection)).toBe(expected);
+  });
+
+  it("drops fast selections and preserves standard values and other options", () => {
+    const selections = [
+      { id: "fastMode", value: true },
+      { id: "serviceTier", value: "priority" },
+      { id: "serviceTier", value: "fast" },
+      { id: "fastMode", value: false },
+      { id: "serviceTier", value: "default" },
+      { id: "reasoningEffort", value: "high" },
+    ];
+    expect(withoutFastProviderOptionSelections(selections)).toEqual(selections.slice(3));
+    expect(selections).toHaveLength(6);
+  });
+
+  it("removes fast descriptors and choices without advertising a fast current value", () => {
+    const reasoning = codexCaps.optionDescriptors![0]!;
+    const descriptors = [
+      reasoning,
+      { id: "fastMode", label: "Fast", type: "boolean", currentValue: true },
+      {
+        id: "serviceTier",
+        label: "Tier",
+        type: "select",
+        currentValue: "priority",
+        promptInjectedValues: ["priority", "flex"],
+        options: [
+          { id: "default", label: "Default", isDefault: true },
+          { id: "priority", label: "Priority" },
+          { id: "fast", label: "Fast" },
+          { id: "flex", label: "Flex" },
+        ],
+      },
+    ] as const;
+    expect(withoutFastProviderOptionDescriptors(descriptors)).toEqual([
+      reasoning,
+      {
+        id: "serviceTier",
+        label: "Tier",
+        type: "select",
+        currentValue: "default",
+        promptInjectedValues: ["flex"],
+        options: [
+          { id: "default", label: "Default", isDefault: true },
+          { id: "flex", label: "Flex" },
+        ],
+      },
+    ]);
+    expect(descriptors[2].options).toHaveLength(4);
+    expect(
+      withoutFastProviderOptionDescriptors([
+        { ...descriptors[2], options: descriptors[2].options.slice(0, 3) },
+      ]),
+    ).toEqual([]);
   });
 });

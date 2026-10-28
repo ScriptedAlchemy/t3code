@@ -37,6 +37,53 @@ export function createModelCapabilities(input: {
   };
 }
 
+const fastProviderOptions: ReadonlyArray<ProviderOptionSelection> = [
+  { id: "fastMode", value: true },
+  { id: "serviceTier", value: "priority" },
+  { id: "serviceTier", value: "fast" },
+];
+
+export function isFastProviderOptionSelection(selection: ProviderOptionSelection): boolean {
+  return fastProviderOptions.some(
+    (fast) => fast.id === selection.id && fast.value === selection.value,
+  );
+}
+
+export function withoutFastProviderOptionSelections(
+  selections: ReadonlyArray<ProviderOptionSelection>,
+): Array<ProviderOptionSelection> {
+  return selections.filter((selection) => !isFastProviderOptionSelection(selection));
+}
+
+export function withoutFastProviderOptionDescriptors(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): Array<ProviderOptionDescriptor> {
+  return descriptors.flatMap((descriptor): Array<ProviderOptionDescriptor> => {
+    if (descriptor.type === "boolean") {
+      return isFastProviderOptionSelection({ id: descriptor.id, value: true }) ? [] : [descriptor];
+    }
+    const isFast = (value: string) => isFastProviderOptionSelection({ id: descriptor.id, value });
+    const options = descriptor.options.filter((option) => !isFast(option.id));
+    if (options.length === descriptor.options.length) return [descriptor];
+    if (!options.some((option) => !option.isDefault && option.id !== "default")) return [];
+    const { currentValue, promptInjectedValues, ...rest } = descriptor;
+    const standardCurrentValue =
+      currentValue !== undefined && !isFast(currentValue)
+        ? currentValue
+        : options.find((option) => option.isDefault || option.id === "default")?.id;
+    return [
+      {
+        ...rest,
+        options,
+        ...(standardCurrentValue === undefined ? {} : { currentValue: standardCurrentValue }),
+        ...(promptInjectedValues === undefined
+          ? {}
+          : { promptInjectedValues: promptInjectedValues.filter((value) => !isFast(value)) }),
+      },
+    ];
+  });
+}
+
 function getRawSelectionValueById(
   selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
   id: string,
