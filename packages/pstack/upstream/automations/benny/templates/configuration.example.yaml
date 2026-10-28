@@ -12,7 +12,7 @@ slack:
   thread_post_action: "configured-slack-thread-post-action"
   file_download_action: "configured-slack-file-download-action"
   operations_edit_action: "configured-slack-edit-action"
-  prefer_cursor_actions: true
+  prefer_mcp_actions: true
   optional_bot_token_env: "BENNY_SLACK_BOT_TOKEN"
   allow_source_root_posts: false
   allow_worker_slack_writes: false
@@ -39,14 +39,14 @@ tracker:
   require_compensation_action: true
 
 routing:
-  map_path: ".cursor/benny/routing.md"
+  map_path: ".agents/benny/routing.md"
   owner_pings_default: false
   allow_feature_owner_ping: false
   allow_confirmed_regression_author_ping: false
 
 control:
   skill_name: "control-target-app"
-  feature_map_path: ".cursor/benny/feature-map.md"
+  feature_map_path: ".agents/benny/feature-map.md"
   environment: "safe-test-environment-placeholder"
   artifact_directory: "/tmp/benny-artifacts"
   artifact_retention_hours: 24
@@ -77,8 +77,8 @@ budgets:
   fix_minutes: 90
   operations_follow_up_minutes: 45
 
-models:
-  triage: "choose-an-available-public-model-slug"
-  reproduce: "choose-an-available-public-model-slug"
-  code: "choose-an-available-public-model-slug"
-  media_review: "choose-an-available-public-model-slug"
+roles:
+  triage: "why investigators"
+  reproduce: "swarm workers"
+  code: "bug-fix"
+  media_review: "judgment and prose"

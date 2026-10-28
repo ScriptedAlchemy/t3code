@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 # Triage issue reports
 
+For a permitted child use `delegate_task`, the `why investigators` role's exact resolved target from `<t3_pstack>`, and the absolute pack/models paths. T3 has no enforced no-write switch and a worktree does not remove MCP tools or credentials. Where the isolation requirements below cannot be enforced, do the work in the coordinator. Never send Slack secrets to a child.
+
 Classify one Slack report and post one useful verdict in its source thread. Create a tracker issue only for a clear, new bug. Do not reproduce or fix it here.
 
 Load the external Benny configuration supplied by the automation. If the config is missing, malformed, or incomplete, stop without posting or writing to the tracker.

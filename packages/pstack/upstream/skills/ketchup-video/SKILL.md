@@ -1,12 +1,12 @@
 ---
 name: ketchup-video
-description: "Catch the user up like /ketchup, with a short silent video of slides for what happened and the waiting calls as text under it. Use for /ketchup-video."
+description: "Catch the user up like $pstack:ketchup, with a short silent video of slides for what happened and the waiting calls as text under it. Use for $pstack:ketchup-video."
 disable-model-invocation: true
 ---
 
 # Ketchup video
 
-Follow [`/ketchup`](../ketchup/SKILL.md), but show what happened in a short silent video instead of its summary and visuals. Its window starts at the last message the user wrote before `/ketchup-video`, not before any earlier `/ketchup`. Writing and rendering the video, outside the repo, is the one exception to its read-only rule. The reply is ketchup's opening sentence, the embedded video, one line naming any work left that you can do yourself, and the action items. When the video shows a call's options, call each option by the name the video gives it. If the render fails, say so in one line and give only the calls.
+Follow [`$pstack:ketchup`](../ketchup/SKILL.md), but show what happened in a short silent video instead of its summary and visuals. Its window starts at the last message the user wrote before `$pstack:ketchup-video`, not before any earlier `$pstack:ketchup`. Writing and rendering the video, outside the repo, is the one exception to its read-only rule. The reply is ketchup's opening sentence, the embedded video, one line naming any work left that you can do yourself, and the action items. When the video shows a call's options, call each option by the name the video gives it. If the render fails, say so in one line and give only the calls.
 
 ## Slides
 

@@ -20,7 +20,7 @@ ${rule}
 ### PR mechanics
 ### Verdict and merge
 ### Boot recipe
-\`git show origin/main:\` /loop 1h status message
+\`<pstack>/\` schedule_task hourly status message
 
 ## PR 1
 **Depends on.** None.

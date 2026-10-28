@@ -19,9 +19,9 @@ A prompt states the intent and the check for done. The playbook supplies the ste
 ## Load the context first
 
 - For a noisy report, ask the agent to restate the underlying issue in its own words and in plain English before it does anything else. A misreading shows up before any code exists.
-- In a fresh chat, `/recall` earlier work on the topic. Old chats hold context that the new agent lacks.
-- Before a change to unfamiliar code, ask `/how` for the mechanics and `/why` for the reasons. An agent with no traced model fixes the symptom at the first plausible spot.
-- Ask `/teach` to make the case for a choice, as in "convince me it fixes the cause and not the symptom". A case is easier to check than a summary.
+- In a fresh chat, `$pstack:recall` earlier work on the topic. Old chats hold context that the new agent lacks.
+- Before a change to unfamiliar code, ask `$pstack:how` for the mechanics and `$pstack:why` for the reasons. An agent with no traced model fixes the symptom at the first plausible spot.
+- Ask `$pstack:teach` to make the case for a choice, as in "convince me it fixes the cause and not the symptom". A case is easier to check than a summary.
 
 ## Design before the plan
 
@@ -38,7 +38,7 @@ A prompt states the intent and the check for done. The playbook supplies the ste
 ## Before stepping away
 
 - Say "im going to bed" or "im stepping away" so the agent stops asking.
-- Write done as checks every iteration can run, and give `/loop` that predicate.
+- Write done as checks every iteration can run, and give `schedule_task` that predicate.
 - Ask for a fresh worktree off a named base.
 - Pre-answer what the agent would stop for, such as "don't ask me before committing".
 - Ask for a decision log to audit later.
