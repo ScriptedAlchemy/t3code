@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   MessageId,
   NodeId,
@@ -3002,6 +3003,9 @@ describe("OrchestratorMcpService provider resolution", () => {
           },
         ];
         const resolved = resolveRoles({
+          settings: DEFAULT_SERVER_SETTINGS,
+          projectId,
+          nowMs: 0,
           file: parseModelsFile(
             "architect runners: claudeAgent/claude-opus-5-5 effort=xhigh, codex/gpt-6-astra reasoningEffort=high",
           ),

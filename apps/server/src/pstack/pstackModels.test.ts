@@ -1,5 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
+  DEFAULT_SERVER_SETTINGS,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderOptionDescriptor,
@@ -62,12 +64,18 @@ const defaults = [
   },
 ];
 const capableInstanceIds = new Set(providers.map((provider) => provider.instanceId));
+const availability = {
+  settings: DEFAULT_SERVER_SETTINGS,
+  projectId: ProjectId.make("pstack"),
+  nowMs: Date.parse("2026-10-25T00:00:00Z"),
+};
 const file =
   "# budget: balanced\narchitect runners: claudeAgent/claude-opus-5-5 effort=xhigh, codex/gpt-6-astra reasoningEffort=high";
 
 it.effect("completes every omitted Opus and Astra option with its advertised current value", () =>
   Effect.sync(() => {
     const resolved = resolveRoles({
+      ...availability,
       file: parseModelsFile(file),
       defaults,
       providers,
@@ -101,6 +109,7 @@ it.effect("completes every omitted Opus and Astra option with its advertised cur
 it.effect("disabled providers fall back visibly without shrinking panels", () =>
   Effect.sync(() => {
     const result = resolveRoles({
+      ...availability,
       file: parseModelsFile(file),
       defaults,
       providers: providers.map((provider) => ({ ...provider, enabled: false })),
@@ -115,7 +124,13 @@ it.effect("disabled providers fall back visibly without shrinking panels", () =>
 );
 it.effect("missing models file maps upstream family, effort and fast defaults", () =>
   Effect.sync(() => {
-    const result = resolveRoles({ file: undefined, defaults, providers, capableInstanceIds });
+    const result = resolveRoles({
+      ...availability,
+      file: undefined,
+      defaults,
+      providers,
+      capableInstanceIds,
+    });
     assert.deepEqual(result.diagnostics, []);
     const seat = result.roles[0]!.seats[1]!;
     assert.deepEqual(seat, {
@@ -136,6 +151,7 @@ it.effect.each(["effort=ultra", "unknown=true", "fastMode=yes", "effort=high eff
   (option) =>
     Effect.sync(() => {
       const result = resolveRoles({
+        ...availability,
         file: parseModelsFile(`architect runners: claudeAgent/claude-opus-5-5 ${option}`),
         defaults,
         providers,
@@ -150,7 +166,13 @@ it.effect("preserves explicit panel cardinality, aliases, comments and model sla
     const parsed = parseModelsFile(
       "# budget: high\narchitect runners: auto, inherit-parent, missing/vendor/model option=false # note",
     );
-    const result = resolveRoles({ file: parsed, defaults, providers, capableInstanceIds });
+    const result = resolveRoles({
+      ...availability,
+      file: parsed,
+      defaults,
+      providers,
+      capableInstanceIds,
+    });
     assert.equal(result.roles[0]!.seats.length, 3);
     assert.include(result.diagnostics[0]!, "missing/vendor/model");
   }),
@@ -159,6 +181,7 @@ it.effect("recognizes Pi-style thinking as effort and drops unadvertised fast hi
   Effect.sync(() => {
     const piStyle = provider("custom-codex", "codex", "gpt-6-astra", [effort("thinking")]);
     const result = resolveRoles({
+      ...availability,
       file: undefined,
       defaults: [{ label: "runner", defaultValue: "gpt-6-astra-xhigh-fast" }],
       providers: [piStyle],
@@ -180,6 +203,7 @@ it.effect("recognizes Pi-style thinking as effort and drops unadvertised fast hi
 it.effect("unregistered adapters and missing current values cannot leak parent options", () =>
   Effect.sync(() => {
     const unsupported = resolveRoles({
+      ...availability,
       file: parseModelsFile(file),
       defaults,
       providers,
@@ -195,6 +219,7 @@ it.effect("unregistered adapters and missing current values cannot leak parent o
       },
     ]);
     const result = resolveRoles({
+      ...availability,
       file: parseModelsFile("architect runners: codex/gpt-6-astra"),
       defaults,
       providers: [incomplete],
@@ -235,6 +260,7 @@ it.effect.each(["claude-opus-5-5", "claude-sonnet-4-6"])(
   (model) =>
     Effect.sync(() => {
       const result = resolveRoles({
+        ...availability,
         file: parseModelsFile(`architect runners: claudeAgent/${model}`),
         defaults,
         providers,
@@ -263,6 +289,7 @@ it.effect("completes a Pi thinking select from isDefault", () =>
   Effect.sync(() => {
     const pi = provider("pi", "pi", "vendor/model", [effort("thinking")]);
     const result = resolveRoles({
+      ...availability,
       file: parseModelsFile("architect runners: pi/vendor/model"),
       defaults,
       providers: [pi],
@@ -291,6 +318,7 @@ it.effect("default seats skip unhealthy and incapable instances offering the mod
     };
     const incapable = { ...first, instanceId: ProviderInstanceId.make("incapable") };
     const result = resolveRoles({
+      ...availability,
       file: undefined,
       defaults,
       providers: [unhealthy, incapable, ...providers],
@@ -325,6 +353,7 @@ it.effect("clamps default effort below its budget and accepts the advertised fas
       },
     ]);
     const result = resolveRoles({
+      ...availability,
       file: undefined,
       defaults: [{ label: "architect runners", defaultValue: "gpt-6-astra-xhigh-fast" }],
       providers: [codex],
@@ -349,6 +378,7 @@ it.effect("clamps default effort below its budget and accepts the advertised fas
 it.effect("reports unknown role labels and ignores empty comma entries", () =>
   Effect.sync(() => {
     const result = resolveRoles({
+      ...availability,
       file: parseModelsFile("archtect runners: auto\narchitect runners: auto,, inherit-parent, "),
       defaults,
       providers,
@@ -364,12 +394,19 @@ it.effect.each(["", " ,,", " # comment"])(
   (value) =>
     Effect.sync(() => {
       const result = resolveRoles({
+        ...availability,
         file: parseModelsFile(`architect runners:${value}`),
         defaults,
         providers,
         capableInstanceIds,
       });
-      const expected = resolveRoles({ file: undefined, defaults, providers, capableInstanceIds });
+      const expected = resolveRoles({
+        ...availability,
+        file: undefined,
+        defaults,
+        providers,
+        capableInstanceIds,
+      });
       assert.deepEqual(result.roles, expected.roles);
       assert.include(result.diagnostics.join("\n"), "empty role architect runners; using defaults");
     }),
