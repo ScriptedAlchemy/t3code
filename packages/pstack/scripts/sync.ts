@@ -4,28 +4,30 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { checkPack } from "../src/check.ts";
-import { fileFingerprint, packFiles, type UpstreamManifest } from "../src/files.ts";
+import { fileFingerprint, type UpstreamManifest } from "../src/files.ts";
 
 const checkoutArgument = process.argv[2];
 if (!checkoutArgument) {
-  console.error("Usage: node packages/pstack/scripts/sync.ts <cursor/plugins checkout>");
+  console.error("Usage: node packages/pstack/scripts/sync.ts <pstack-t3code checkout>");
   process.exit(1);
 }
 
 const checkout = NodePath.resolve(checkoutArgument);
-const source = NodePath.join(checkout, "pstack");
+const source = NodePath.join(checkout, "plugins/pstack");
 const packageDir = NodeURL.fileURLToPath(new URL("..", import.meta.url));
 const upstream = NodePath.join(packageDir, "upstream");
 const git = (...args: string[]) =>
   NodeChildProcess.execFileSync("git", ["-C", checkout, ...args], { encoding: "utf8" }).trim();
 const commit = git("rev-parse", "HEAD");
-const subtreeHash = git("rev-parse", "HEAD:pstack");
+const subtreeHash = git("rev-parse", "HEAD:plugins/pstack");
 if (
-  git("status", "--porcelain", "--untracked-files=all", "--", "pstack")
+  git("status", "--porcelain", "--untracked-files=all", "--", "plugins/pstack")
     .split("\n")
     .some((line) => line && !line.endsWith("/.DS_Store"))
 ) {
-  throw new Error("Commit changes to the checkout's pstack/ before syncing a pinned snapshot.");
+  throw new Error(
+    "Commit changes to the checkout's plugins/pstack/ before syncing a pinned snapshot.",
+  );
 }
 const plugin: unknown = JSON.parse(
   NodeFS.readFileSync(NodePath.join(source, "plugin.json"), "utf8"),
@@ -36,9 +38,11 @@ if (
   !("version" in plugin) ||
   typeof plugin.version !== "string"
 ) {
-  throw new Error("pstack/plugin.json has no version");
+  throw new Error("plugins/pstack/plugin.json has no version");
 }
-const paths = packFiles(source);
+const paths = git("ls-tree", "-r", "--name-only", "-z", "HEAD:plugins/pstack")
+  .split("\0")
+  .filter((path) => path && NodePath.basename(path) !== ".DS_Store");
 NodeFS.rmSync(upstream, { recursive: true, force: true });
 const files: Record<string, { sha256: string; executable: boolean }> = {};
 for (const path of paths) {
@@ -50,7 +54,7 @@ for (const path of paths) {
   files[path] = fileFingerprint(to);
 }
 const manifest: UpstreamManifest = {
-  repository: "https://github.com/cursor/plugins",
+  repository: "https://github.com/ScriptedAlchemy/pstack-t3code",
   commit,
   subtreeHash,
   version: plugin.version,
