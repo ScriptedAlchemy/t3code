@@ -4,20 +4,20 @@ name: Fork release
 # release.yml needs upstream's Blacksmith runners, signing identities, and
 # deploy secrets, so this reuses only its per-platform packaging
 # (release-desktop.yml) on GitHub-hosted runners.
-#
-# Builds are unsigned and carry a -preview.YYYYMMDD.N version, which ships no
-# update feed (see isDesktopPreviewVersion in scripts/build-desktop-artifact.ts).
-# An install never auto-updates, so it cannot jump to an upstream build; install
-# a newer release to update.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a signed nightly release (leave off to validate packaging only)
+        type: boolean
+        default: false
 
 concurrency:
-  group: fork-release
-  cancel-in-progress: true
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   # release-desktop.yml's Windows job lists this run's artifacts to wait for the
@@ -70,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           base_version="$(node -p "require('./apps/desktop/package.json').version")"
-          version="${base_version}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
+          version="${base_version}-nightly.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
           node scripts/update-release-package-versions.ts "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -119,6 +119,13 @@ jobs:
             arch: arm64
             rust_target: aarch64-apple-darwin
             resource_key: darwin-arm64
+          - label: macOS x64
+            runner: macos-26
+            platform: mac
+            target: dmg
+            arch: x64
+            rust_target: x86_64-apple-darwin
+            resource_key: darwin-x64
           # The Windows job waits for this job's CLI archive by its label.
           - label: Linux x64
             runner: ubuntu-24.04
@@ -141,11 +148,20 @@ jobs:
             arch: x64
             rust_target: x86_64-pc-windows-msvc
             resource_key: win32-x64
+          - label: Windows arm64
+            runner: windows-11-arm
+            platform: win
+            target: nsis
+            arch: arm64
+            rust_target: aarch64-pc-windows-msvc
+            resource_key: win32-arm64
     uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
     with:
       version: ${{ needs.bundle.outputs.version }}
       ref: ${{ github.sha }}
-      release_channel: preview
+      release_channel: nightly
+      require_macos_signing: ${{ github.event_name == 'push' || inputs.publish }}
       relay_client_tracing: false
       clerk_publishable_key: ${{ needs.bundle.outputs.clerk_publishable_key }}
       clerk_jwt_template: ${{ needs.bundle.outputs.clerk_jwt_template }}
@@ -158,16 +174,30 @@ jobs:
       arch: ${{ matrix.arch }}
       rust_target: ${{ matrix.rust_target }}
       resource_key: ${{ matrix.resource_key }}
-      cli_archive: true
+      cli_archive: ${{ matrix.platform != 'mac' || matrix.arch != 'x64' }}
 
   publish:
-    name: Publish GitHub Release
+    name: Prepare and publish GitHub Release
     needs: [bundle, desktop]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
+
+      - uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/scripts...
+
       - name: Download desktop installers
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -182,7 +212,22 @@ jobs:
           path: assets
           merge-multiple: true
 
+      - name: Prepare updater metadata and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/merge-update-manifests.ts --platform mac assets/nightly-mac.yml assets/nightly-mac-x64.yml
+          node scripts/merge-update-manifests.ts --platform win assets/nightly-win-x64.yml assets/nightly-win-arm64.yml assets/nightly.yml
+          cd assets
+          rm nightly-mac-x64.yml nightly-win-x64.yml nightly-win-arm64.yml
+          for manifest in nightly.yml nightly-mac.yml nightly-linux.yml nightly-linux-arm64.yml; do
+            test -s "$manifest"
+          done
+          rm -f builder-debug.yml
+          sha256sum t3-*.tar.gz t3-*.zip > SHA256SUMS
+
       - name: Publish release
+        if: github.event_name == 'push' || inputs.publish
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -193,16 +238,18 @@ jobs:
           cat > notes.md <<EOF
           Built from ${GITHUB_REPOSITORY}@${short_sha}.
 
-          These builds are unsigned and do not update themselves. To update, install a newer release.
+          Desktop updates come from this fork's GitHub Releases. Keep the app's update channel set to Nightly.
 
-          - **macOS (Apple silicon):** open the \`.dmg\` and drag the app to Applications. If macOS says the app is damaged, run \`xattr -dr com.apple.quarantine "/Applications/T3 Code (Beta).app"\`.
-          - **Windows:** run the \`.exe\`. If SmartScreen blocks it, choose **More info**, then **Run anyway**.
-          - **Linux:** \`chmod +x\` the \`.AppImage\`, then run it.
+          - **macOS:** install the signed, notarized app from the \`.dmg\`.
+          - **Windows:** run the \`.exe\` installer.
+          - **Linux:** make the \`.AppImage\` executable, then run it.
           - **CLI / headless server:** extract the \`t3\` archive for your platform.
+
+          Older preview/source builds have no update feed. Install this release once; subsequent nightly releases are available through the app's Update control.
           EOF
-          gh release create "fork-v${VERSION}" assets/* \
+          gh release create "v${VERSION}" assets/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "T3 Code ${VERSION}" \
             --notes-file notes.md \
-            --latest
+            --prerelease

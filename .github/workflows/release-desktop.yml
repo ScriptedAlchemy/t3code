@@ -64,6 +64,10 @@ on:
         required: false
         default: false
         type: boolean
+      require_macos_signing:
+        type: boolean
+        required: false
+        default: false
       # Whether the job opens the packaged app against a seeded database and
       # opens a thread before uploading it. Linux AppImage or macOS DMG.
       launch_check:
@@ -328,7 +332,7 @@ jobs:
           set -euo pipefail
           name="node-v$VERSION-win-${{ inputs.arch }}"
           dir="$RUNNER_TEMP/node-download"
-          dest="${XDG_CACHE_HOME:-$HOME/.cache}/tsdown/node/v$VERSION/win-${{ inputs.arch }}"
+          dest="$(cygpath -u "$LOCALAPPDATA")/tsdown/Caches/node/v$VERSION/win-${{ inputs.arch }}"
           mkdir -p "$dest"
           (cd "$dir" && grep " $name.zip\$" SHASUMS256.txt | sha256sum -c -)
           unzip -p "$dir/$name.zip" "$name/node.exe" > "$dest/node.exe"
@@ -528,6 +532,8 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
+          REQUIRE_MACOS_SIGNING: ${{ inputs.require_macos_signing }}
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
           T3CODE_CLERK_PASSKEY_RP_DOMAINS: ${{ vars.CLERK_PASSKEY_RP_DOMAINS }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -578,6 +584,10 @@ jobs:
               echo "macOS signing enabled."
               args+=(--signed)
             else
+              if [[ "$REQUIRE_MACOS_SIGNING" == "true" ]]; then
+                echo "A macOS update release requires CSC_LINK, CSC_KEY_PASSWORD, APPLE_API_KEY, APPLE_API_KEY_ID, and APPLE_API_ISSUER." >&2
+                exit 1
+              fi
               echo "macOS signing disabled (missing one or more Apple signing secrets)."
             fi
           elif [[ "${{ inputs.platform }}" == "win" ]]; then

@@ -58,6 +58,27 @@ the version.
   - nightly releases are aliased to the `nightly` hosted app channel
 - Signing is optional and auto-detected per platform from secrets.
 
+## Fork desktop releases
+
+`fork-release.yml` packages macOS, Windows, and Linux for x64 and arm64 on
+GitHub-hosted runners. A push to `main` publishes a `v<version>-nightly.<date>.<run>`
+prerelease in the fork. The bundled updater follows that repository's Nightly feed.
+Manual dispatch defaults to packaging only; enable `publish` to publish the selected ref.
+No npm, mobile, relay, or hosted web deployment runs in this workflow.
+
+Publishing requires the macOS signing secrets described below: `CSC_LINK`,
+`CSC_KEY_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, and
+`MACOS_PROVISIONING_PROFILE`, plus the `APPLE_TEAM_ID` repository variable. Use a
+Developer ID Application certificate and a profile belonging to the same team.
+The reusable packaging workflow receives repository secrets and refuses to publish
+an unsigned macOS update. Windows uses Azure Trusted Signing when its existing
+secrets are configured; otherwise its installer is unsigned.
+
+Install the first nightly release manually on machines running old preview or source
+builds: those builds have no update feed. Subsequent releases use the app's Update
+control with the Nightly channel. Switching channels stays within the fork; it does
+not switch to upstream releases.
+
 ## Pull request macOS previews
 
 Labeling a PR `preview:mac` publishes a signed, notarized Apple Silicon DMG with T3 Connect enabled
