@@ -243,7 +243,6 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
       ConnectionDriver.ConnectionDriver,
       ConnectionDriver.ConnectionDriver.of({
         connect,
-        checkRoute: (_entry, route) => checkRoute(route),
         preflight: (_entry, route) =>
           checkRoute(route).pipe(Effect.map((check) => check === "answered")),
         checkHost: (prepared) =>
@@ -902,25 +901,13 @@ describe("EnvironmentSupervisor", () => {
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect.each([
-    { name: "the host does not answer a fresh request", check: "silent", capable: true },
-    {
-      name: "an older host answers probes with its full config",
-      check: "answered",
-      capable: false,
-    },
-  ] as const)("waits out a LAN resume probe when $name", ({ check, capable }) =>
+  it.effect("waits out a LAN resume probe when the host does not answer a fresh request", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({
         prepare: (_attempt, target) => Effect.succeed(preparedFor(target)),
-        initialConfig: () =>
-          Effect.succeed(
-            capable
-              ? PROBE_CAPABLE_CONFIG
-              : ({ environment: { capabilities: {} } } as ServerConfig),
-          ),
+        initialConfig: () => Effect.succeed(PROBE_CAPABLE_CONFIG),
         probe: (attempt) => (attempt === 1 ? Effect.never : Effect.void),
-        checkHost: () => Effect.succeed(check),
+        checkHost: () => Effect.succeed("silent"),
       });
       const supervisor = yield* EnvironmentSupervisor.make(LAN_ENTRY, {
         initiallyDesired: true,
@@ -1194,6 +1181,9 @@ describe("EnvironmentSupervisor", () => {
         createEnvironmentLinkChallenge: unused,
         linkEnvironment: unused,
         unlinkEnvironment: unused,
+        getT3ChatLink: unused,
+        createT3ChatLinkRequest: unused,
+        unlinkT3Chat: unused,
         getEnvironmentStatus: unused,
         connectEnvironment: Effect.fn("TestConnectionHttp.connectEnvironment")(function* () {
           yield* Ref.update(bootstrapCalls, (count) => count + 1);
@@ -1231,7 +1221,7 @@ describe("EnvironmentSupervisor", () => {
             Layer.succeed(ClientCapabilities.RelayDeviceIdentity, {
               deviceId: Effect.succeedNone,
             }),
-            TokenStore.layer({
+            Layer.succeed(TokenStore.RemoteDpopAccessTokenStore, {
               get: () => Ref.get(token),
               put: (value) => Ref.set(token, Option.some(value)),
               remove: () => Ref.set(token, Option.none()),
@@ -1564,6 +1554,41 @@ describe("EnvironmentSupervisor routes", () => {
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       const prepared = Option.getOrThrow(yield* SubscriptionRef.get(supervisor.prepared));
       expect(prepared.target._tag).toBe("BearerConnectionTarget");
+    }),
+  );
+
+  it.effect("reports rejected pairing instead of timeouts on routes sharing that pairing", () =>
+    Effect.gen(function* () {
+      const routes = mergeLearnedRoutes({
+        entry: LAN_ENTRY,
+        activeRoute: LAN_ROUTE,
+        reported: [{ kind: "lan", httpBaseUrl: "http://192.168.234.1:3773" }],
+        allowInsecure: true,
+      })!;
+      const attempted: string[] = [];
+      const harness = yield* makeHarness({
+        checkRoute: () => Effect.succeed("answered"),
+        prepare: (_attempt, target) => {
+          const id = connectionRouteId(target);
+          attempted.push(id);
+          return Effect.fail(
+            id === LAN_TARGET.connectionId
+              ? blocked("The environment credential is invalid. Pair again.")
+              : transient("Thunderbolt address timed out."),
+          );
+        },
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(entryWithRoutes(LAN_ENTRY, routes), {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      const state = yield* awaitState(
+        supervisor.state,
+        (value) => value.phase === "blocked" || value.phase === "backoff",
+      );
+      expect(attempted).toHaveLength(2);
+      expect(state.phase).toBe("blocked");
+      expect(state.lastFailure?.detail).toBe("The environment credential is invalid. Pair again.");
     }),
   );
 

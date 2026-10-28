@@ -100,9 +100,6 @@ function makePoolEntry(
     ...(first.supportedRuntimeModes === undefined
       ? {}
       : { supportedRuntimeModes: first.supportedRuntimeModes }),
-    ...(first.requiresNewThreadForModelChange === undefined
-      ? {}
-      : { requiresNewThreadForModelChange: first.requiresNewThreadForModelChange }),
     ...(first.supportsConversationRollback === undefined
       ? {}
       : { supportsConversationRollback: first.supportsConversationRollback }),
