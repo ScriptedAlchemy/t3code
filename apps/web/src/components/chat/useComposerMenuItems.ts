@@ -91,13 +91,10 @@ export function useComposerMenuItems({
   readonly selectedProviderSlashCommands: ServerProvider["slashCommands"];
   readonly showSkillsInSlashMenu: boolean;
   readonly questionAttachmentTarget: DraftId | null;
-  /** Null when the composer can't switch models, such as while answering an agent's question. */
+  /** Null while the provider catalog is still loading. */
   readonly modelMentions: {
     readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
     readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
-    readonly lockedProvider: ProviderDriverKind | null;
-    readonly lockedContinuationGroupKey: string | null | undefined;
-    readonly isModelDisabled: (instanceId: ProviderInstanceId, model: string) => boolean;
   } | null;
 }) {
   // Thread mentions rank by recency as of when the composer mounted.

@@ -296,11 +296,11 @@ and your next message starts the agent again with the new setup.
 Provider commands must start the message to run. T3 Code commands such as
 `/model` and `/plan`, and skill mentions, work on any line.
 
-Switch models by typing `@` followed by part of a model or provider name, such
-as `@opus` or `@gpt`. Mentions can't contain spaces, so join words with `:`, `/`
-or `-`, for example `@gpt:traex`. Choosing a result switches the model and
-removes the mention from your text. On web and desktop, when you've selected
-several models for a new thread, the mentioned model is added to them.
+Type `@` followed by part of a model or provider name, such as `@opus` or `@gpt`,
+to insert a reference naming that model for the agent. This is useful for
+delegation, for example “delegate this to …”. It does not change the thread's
+model. Mentions can't contain spaces, so join words with `:`, `/` or `-`, for
+example `@gpt:traex`.
 
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it. Web and desktop also offer compaction from the context meter.

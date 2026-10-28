@@ -53,9 +53,6 @@ function match(
   return matchComposerModelItems({
     instanceEntries: [traex, opencode, claude],
     modelOptionsByInstance,
-    lockedProvider: null,
-    lockedContinuationGroupKey: null,
-    isModelDisabled: () => false,
     query,
     ...overrides,
   }).map((item) => `${item.instanceId}:${item.model}`);
@@ -64,15 +61,6 @@ function match(
 describe("matchComposerModelItems", () => {
   it("finds a current model under every provider that serves it, skipping legacy ones", () => {
     expect(match("gpt").toSorted()).toEqual(["opencode:traex/gpt-6.1", "traex:gpt-6.1"]);
-  });
-
-  it("leaves out providers a started thread can't switch to and disabled models", () => {
-    expect(match("opus", { lockedProvider: claude.driverKind })).toEqual([
-      "claudeAgent:claude-opus-5-5",
-    ]);
-    expect(
-      match("opus", { isModelDisabled: (instanceId) => instanceId === claude.instanceId }),
-    ).toEqual(["opencode:anthropic/opus"]);
   });
 
   it("leaves out providers that are not ready", () => {
