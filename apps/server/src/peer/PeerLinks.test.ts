@@ -11,6 +11,8 @@ import { type ExecutionEnvironmentDescriptor, OrchestratorMcpFailure } from "@t3
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -553,7 +555,34 @@ it.live("links a native HTTPS peer from enrolled trust and revokes its transport
         ),
       );
       const b = yield* serveB(box).pipe(Effect.provideContext(server));
-      const a = yield* makeA(laptop);
+      const blockedRead = yield* Deferred.make<void>();
+      const releaseRead = yield* Deferred.make<void>();
+      const pauseReads = yield* Ref.make(false);
+      const gatedSecrets = Layer.effect(
+        ServerSecretStore.ServerSecretStore,
+        Effect.map(ServerSecretStore.make, (store) =>
+          ServerSecretStore.ServerSecretStore.of({
+            ...store,
+            get: (name) =>
+              store
+                .get(name)
+                .pipe(
+                  Effect.tap(() =>
+                    Ref.get(pauseReads).pipe(
+                      Effect.flatMap((paused) =>
+                        paused
+                          ? Deferred.succeed(blockedRead, undefined).pipe(
+                              Effect.andThen(Deferred.await(releaseRead)),
+                            )
+                          : Effect.void,
+                      ),
+                    ),
+                  ),
+                ),
+          }),
+        ),
+      );
+      const a = yield* makeA(laptop, gatedSecrets);
       const origin = b.url.replace("http:", "https:");
       const pairing = yield* b.auth.issuePairingCredential();
       const urlFor = (tls: typeof fixture.tls) =>
@@ -589,7 +618,16 @@ it.live("links a native HTTPS peer from enrolled trust and revokes its transport
       const resolved = yield* a.links.resolve(box.environmentId);
       const fetch = resolved.fetch;
       if (fetch === undefined) return yield* Effect.die("Expected enrolled HTTPS transport");
+      yield* Ref.set(pauseReads, true);
+      const resolving = yield* a.links
+        .resolve(box.environmentId)
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(blockedRead);
       expect(yield* a.links.unlink(box.environmentId)).toBe(true);
+      yield* Deferred.succeed(releaseRead, undefined);
+      const stale = yield* Fiber.join(resolving);
+      expect(stale._tag).toBe("Failure");
+      if (stale._tag === "Failure") expect(stale.failure.reason).toBe("unknown_link");
       yield* Effect.promise(() => expect(fetch(origin)).rejects.toThrow("trust was revoked"));
       expect((yield* a.links.resolve(box.environmentId).pipe(Effect.flip)).reason).toBe(
         "unknown_link",

@@ -20,14 +20,14 @@ const serve = async (
     socket.once("close", () => connections.delete(socket));
   });
   server.listen(0, "127.0.0.1");
-  await NodeEvents.once(server, "listening");
+  await NodeEvents.EventEmitter.once(server, "listening");
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("Expected TCP listener");
   return {
     server,
     url: `https://127.0.0.1:${address.port}`,
     async [Symbol.asyncDispose]() {
-      const closed = NodeEvents.once(server, "close");
+      const closed = NodeEvents.EventEmitter.once(server, "close");
       server.close();
       for (const socket of connections) socket.destroy();
       await closed;
@@ -150,7 +150,7 @@ describe("scoped LAN TLS", () => {
       const redirectedSocket = client.openWebSocket(
         `${host.url.replace("https:", "wss:")}/?token=test-secret`,
       );
-      const [error] = await NodeEvents.once(redirectedSocket, "error");
+      const [error] = await NodeEvents.EventEmitter.once(redirectedSocket, "error");
       expect(error.message).toBe("Unexpected server response: 307");
       expect(leaks).toBe(0);
     } finally {
@@ -168,12 +168,12 @@ describe("scoped LAN TLS", () => {
     ws.on("connection", (socket) => socket.send("verified websocket"));
     const client = createLanTlsClient({ httpBaseUrl: host.url, tls: fixture.tls });
     const socket = client.openWebSocket(host.url.replace("https:", "wss:"));
-    const message = NodeEvents.once(socket, "message");
+    const message = NodeEvents.EventEmitter.once(socket, "message");
     expect(String((await message)[0])).toBe("verified websocket");
     const response = await client.fetch(host.url);
     const reading = response.text();
     const aborted = expect(reading).rejects.toThrow();
-    const closed = NodeEvents.once(socket, "close");
+    const closed = NodeEvents.EventEmitter.once(socket, "close");
     await client.close();
     await aborted;
     await closed;
@@ -206,7 +206,7 @@ describe("scoped LAN TLS", () => {
       controller.abort();
       await read;
       const socket = invalid.openWebSocket(host.url.replace("https:", "wss:"));
-      const [error] = await NodeEvents.once(socket, "error");
+      const [error] = await NodeEvents.EventEmitter.once(socket, "error");
       expect(error.message).toMatch(/certificate|issuer/);
       expect(connections).toBe(0);
     } finally {

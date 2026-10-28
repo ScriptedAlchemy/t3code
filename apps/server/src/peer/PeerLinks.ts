@@ -730,6 +730,14 @@ const make = Effect.gen(function* () {
           message: `${link.label} runs a T3 Code version that cannot keep a linked agent's limits. Update it, then link again.`,
         });
       }
+      const current = yield* readRow(environmentId);
+      if (Option.isNone(current) || current.value.secret_name !== row.value.secret_name) {
+        yield* closeTlsClients(environmentId);
+        return yield* new PeerLinkError({
+          reason: "unknown_link",
+          message: "The peer link changed while connecting. Resolve the link again.",
+        });
+      }
       const fetch = yield* fetchFor(url.value, stored.value);
       return {
         link,
