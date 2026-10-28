@@ -542,6 +542,20 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       ))}
                     </SettingsSection>
                   ) : null}
+                  <SettingsSection title="Agents">
+                    <SettingsSwitchRow
+                      icon="bolt.circle"
+                      label="Let agents use fast mode"
+                      subtitle={
+                        projectSelected
+                          ? "Environment-wide setting. Select All projects to change it."
+                          : "Turn this off to make delegated and agent-started threads run at standard speed."
+                      }
+                      value={uniform("agentFastModeEnabled")}
+                      disabled={disabledFor("agentFastModeEnabled")}
+                      onValueChange={(value) => write({ agentFastModeEnabled: value })}
+                    />
+                  </SettingsSection>
                   <SettingsSection title="Updates">
                     <SettingsSwitchRow
                       icon="arrow.clockwise"

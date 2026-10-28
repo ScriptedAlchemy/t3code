@@ -577,6 +577,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["queue steer running turn send default behavior composer"],
   },
   {
+    id: "agent-fast-mode",
+    title: "Let agents use fast mode",
+    to: "/settings/maintenance",
+    searchTerms: [
+      "delegation delegated child threads standard speed priority service tier codex claude",
+    ],
+    scope: "environment-defaults",
+  },
+  {
     id: "provider-update-checks",
     title: "Provider update checks",
     to: "/settings/maintenance",

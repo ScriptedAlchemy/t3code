@@ -485,6 +485,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.responseStreamingMode !== DEFAULT_UNIFIED_SETTINGS.responseStreamingMode
       ? ["Response streaming"]
       : []),
+    ...(settings.agentFastModeEnabled !== DEFAULT_UNIFIED_SETTINGS.agentFastModeEnabled
+      ? ["Let agents use fast mode"]
+      : []),
     ...(settings.enableProviderUpdateChecks !== DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks
       ? ["Provider update checks"]
       : []),
@@ -608,6 +611,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
       snoozePresets: DEFAULT_UNIFIED_SETTINGS.snoozePresets,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
+      agentFastModeEnabled: DEFAULT_UNIFIED_SETTINGS.agentFastModeEnabled,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       continueThreadsAfterServerUpdate: DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
       backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
@@ -1880,6 +1884,36 @@ export function MaintenanceSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SettingsSection id="agents" title="Agents">
+        <SettingsRow
+          serverScoped
+          settingKeys={["agentFastModeEnabled"]}
+          {...searchableSetting("agent-fast-mode")}
+          description="Turn this off to make delegated and agent-started threads run at standard speed."
+          resetAction={
+            settings.agentFastModeEnabled !== DEFAULT_UNIFIED_SETTINGS.agentFastModeEnabled ? (
+              <SettingResetButton
+                label="agent fast mode"
+                onClick={() =>
+                  updateSettings({
+                    agentFastModeEnabled: DEFAULT_UNIFIED_SETTINGS.agentFastModeEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["agentFastModeEnabled"]}
+              checked={settings.agentFastModeEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ agentFastModeEnabled: Boolean(checked) })
+              }
+              aria-label="Let agents use fast mode"
+            />
+          }
+        />
+      </SettingsSection>
       <SettingsSection id="updates" title="Updates">
         <SettingsRow
           serverScoped

@@ -54,6 +54,9 @@ Then choose what the agent may do:
   threads in every project. A thread it starts or steers cannot run with more
   permissions than the mode you chose.
 
+To keep delegated and agent-started threads at standard speed, turn off **Let agents use fast mode** in **Settings → Maintenance** for the environment.
+Threads you run in fast mode yourself keep their selected speed.
+
 ## Claude Code
 
 ```sh
