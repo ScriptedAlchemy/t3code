@@ -16,7 +16,7 @@ on:
         default: false
 
 concurrency:
-  group: fork-release
+  group: fork-nightly-release
   cancel-in-progress: false
 
 permissions:
