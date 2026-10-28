@@ -208,7 +208,7 @@ export interface CliServerFlags {
   readonly logWebSocketEvents: Option.Option<boolean>;
   readonly tailscaleServeEnabled: Option.Option<boolean>;
   readonly tailscaleServePort: Option.Option<number>;
-  readonly lanHttpsPort?: Option.Option<number>;
+  readonly lanHttpsPort: Option.Option<number>;
 }
 
 export interface CliAuthLocationFlags {
@@ -262,7 +262,7 @@ const loadPersistedObservabilitySettings = Effect.fn(function* (settingsPath: st
 });
 
 export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(function* (
-  flags: CliServerFlags,
+  flags: Omit<CliServerFlags, "lanHttpsPort"> & Partial<Pick<CliServerFlags, "lanHttpsPort">>,
   cliLogLevel: Option.Option<LogLevel.LogLevel>,
   options?: {
     readonly startupPresentation?: ServerConfig.StartupPresentation;
