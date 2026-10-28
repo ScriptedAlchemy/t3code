@@ -1567,6 +1567,41 @@ describe("EnvironmentSupervisor routes", () => {
     }),
   );
 
+  it.effect("reports rejected pairing instead of timeouts on routes sharing that pairing", () =>
+    Effect.gen(function* () {
+      const routes = mergeLearnedRoutes({
+        entry: LAN_ENTRY,
+        activeRoute: LAN_ROUTE,
+        reported: [{ kind: "lan", httpBaseUrl: "http://192.168.234.1:3773" }],
+        allowInsecure: true,
+      })!;
+      const attempted: string[] = [];
+      const harness = yield* makeHarness({
+        checkRoute: () => Effect.succeed("answered"),
+        prepare: (_attempt, target) => {
+          const id = connectionRouteId(target);
+          attempted.push(id);
+          return Effect.fail(
+            id === LAN_TARGET.connectionId
+              ? blocked("The environment credential is invalid. Pair again.")
+              : transient("Thunderbolt address timed out."),
+          );
+        },
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(entryWithRoutes(LAN_ENTRY, routes), {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      const state = yield* awaitState(
+        supervisor.state,
+        (value) => value.phase === "blocked" || value.phase === "backoff",
+      );
+      expect(attempted).toHaveLength(2);
+      expect(state.phase).toBe("blocked");
+      expect(state.lastFailure?.detail).toBe("The environment credential is invalid. Pair again.");
+    }),
+  );
+
   it.effect("keeps retrying when one route is blocked and another failed transiently", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({
