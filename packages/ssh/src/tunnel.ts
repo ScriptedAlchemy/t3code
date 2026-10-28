@@ -438,18 +438,6 @@ if [ -z "$T3_ARCHIVE_VERSION" ]; then
   printf 'No t3 release version was provided for the remote runtime.\\n' >&2
   exit 1
 fi
-T3_INSTALLED="$HOME/.t3/bin/t3"
-T3_RELEASE_VERSION="\${T3_ARCHIVE_VERSION%%-*}"
-if [ -x "$T3_INSTALLED" ]; then
-  T3_INSTALLED_VERSION="$("$T3_INSTALLED" --version 2>/dev/null || true)"
-  case "$T3_INSTALLED_VERSION" in
-    "t3 v$T3_RELEASE_VERSION" | "t3 v$T3_RELEASE_VERSION-"*)
-      if "$T3_INSTALLED" __ssh-helper --help >/dev/null 2>&1; then
-        exec "$T3_INSTALLED" "$@"
-      fi
-      ;;
-  esac
-fi
 # Self-contained release archive: no Node, npm, or compiler on the remote.
 # Unpacked into the pinned-runtime layout so \`t3 service install\` reuses it.
 T3_RELEASE_BASE_URL=@@T3_RELEASE_BASE_URL@@
@@ -457,6 +445,21 @@ T3_RUNTIME_DIR="$HOME/.t3/runtime/versions/$T3_ARCHIVE_VERSION"
 t3_runtime_ready() {
   [ -x "$T3_RUNTIME_DIR/t3" ] && [ "$(cat "$T3_RUNTIME_DIR/.install-complete" 2>/dev/null)" = "$T3_ARCHIVE_VERSION" ]
 }
+# Without the exact runtime, reuse a same-release CLI from install.sh's PATH symlink.
+if ! t3_runtime_ready; then
+  T3_RELEASE_VERSION="\${T3_ARCHIVE_VERSION%%-*}"
+  for T3_INSTALLED in "$(command -v t3 2>/dev/null || true)" "$HOME/.local/bin/t3"; do
+    [ -n "$T3_INSTALLED" ] && [ -x "$T3_INSTALLED" ] || continue
+    T3_INSTALLED_VERSION="$("$T3_INSTALLED" --version 2>/dev/null || true)"
+    case "$T3_INSTALLED_VERSION" in
+      "t3 v$T3_RELEASE_VERSION" | "t3 v$T3_RELEASE_VERSION-"*)
+        if "$T3_INSTALLED" __ssh-helper --help >/dev/null 2>&1; then
+          exec "$T3_INSTALLED" "$@"
+        fi
+        ;;
+    esac
+  done
+fi
 if ! t3_runtime_ready; then
   mkdir -p "$HOME/.t3/runtime/versions"
   T3_LOCK="$HOME/.t3/runtime/versions/.$T3_ARCHIVE_VERSION.install.lock"
@@ -1648,8 +1651,15 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
         localPort: entry.localPort,
         remotePort: entry.remotePort,
       });
+      // Once our ssh exits, another local process may hold the port; only our forward counts.
       const readinessExit = yield* Effect.exit(
-        waitForHttpReady({ baseUrl: entry.httpBaseUrl, timeoutMs: 2_000 }),
+        entry.process.isRunning.pipe(
+          Effect.flatMap((running) =>
+            running
+              ? waitForHttpReady({ baseUrl: entry.httpBaseUrl, timeoutMs: 2_000 })
+              : Effect.fail(new SshReadinessError({ message: "SSH tunnel process exited." })),
+          ),
+        ),
       );
       if (Exit.isSuccess(readinessExit)) {
         yield* Effect.logDebug("ssh.environment.tunnel.reused", {

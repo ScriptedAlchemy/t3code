@@ -86,13 +86,13 @@ const runArchiveRunner = Effect.fn("test.runArchiveRunner")(
   function* (installedVersion: string) {
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectoryScoped();
-    yield* fs.makeDirectory(`${root}/.t3/bin`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/.local/bin`, { recursive: true });
     yield* fs.makeDirectory(`${root}/bin`);
     yield* fs.writeFileString(
-      `${root}/.t3/bin/t3`,
+      `${root}/.local/bin/t3`,
       `#!/bin/sh\ncase "$1" in\n--version) echo 't3 v${installedVersion}';;\n__ssh-helper) exit 0;;\n*) printf 'installed:%s\\n' "$*";;\nesac\n`,
     );
-    yield* fs.chmod(`${root}/.t3/bin/t3`, 0o700);
+    yield* fs.chmod(`${root}/.local/bin/t3`, 0o700);
     yield* fs.writeFileString(`${root}/bin/curl`, '#!/bin/sh\necho "HTTP 404" >&2\nexit 22\n');
     yield* fs.chmod(`${root}/bin/curl`, 0o700);
     yield* fs.writeFileString(`${root}/runner.sh`, SshTunnel.buildRemoteT3RunnerScript(ARCHIVE));
@@ -399,6 +399,45 @@ describe("ssh tunnel scripts", () => {
         assert.isAbove(closed, 0);
         assert.equal(stops, 0);
       }),
+  );
+
+  it.effect("replaces a tunnel whose ssh process exited even if its port still answers", () =>
+    Effect.gen(function* () {
+      let tunnels = 0;
+      let firstTunnelRunning = true;
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.sync(() => {
+          const args = commandArgs(command);
+          if (args.includes("-G")) return makeSuccessfulProcess("");
+          if (args.includes("-N")) {
+            const tunnel = makeRunningProcess(() => undefined);
+            return ++tunnels === 1
+              ? { ...tunnel, isRunning: Effect.sync(() => firstTunnelRunning) }
+              : tunnel;
+          }
+          if (args.some((arg, index) => arg === "-s" && args[index + 1] === "--")) {
+            return makeSuccessfulProcess('{"remotePort":3773}\n');
+          }
+          return makeSuccessfulProcess('{"stopped":true}\n');
+        }),
+      );
+      const layer = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Layer.succeed(HttpClient.HttpClient, testHttpClient),
+        Layer.succeed(NetService.NetService, testNetService),
+        SshAuth.SshPasswordPrompt.disabledLayer,
+        SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* SshTunnel.SshEnvironmentManager;
+        const target = { alias: "devbox", hostname: "devbox", username: null, port: null };
+        yield* manager.ensureEnvironment(target);
+        firstTunnelRunning = false;
+        yield* manager.ensureEnvironment(target);
+      }).pipe(Effect.provide(layer), Effect.scoped);
+      assert.equal(tunnels, 2);
+    }),
   );
 
   it.effect.each(["local tunnel", "remote server"] as const)(

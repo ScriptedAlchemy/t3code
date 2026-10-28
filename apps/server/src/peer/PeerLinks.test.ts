@@ -253,6 +253,9 @@ it.effect("rejects SSH passwords, paths, and arguments before opening a connecti
         "ssh://box?command=id",
         "ssh://-option",
         "ssh://user%20name@box",
+        "ssh://user@$(id).corp.example",
+        "ssh://user@box;id",
+        "ssh://user@box`id`",
       ]) {
         expect(
           (yield* a.links

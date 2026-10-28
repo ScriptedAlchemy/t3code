@@ -136,9 +136,9 @@ const failStorage = (cause: unknown) =>
 const peerOrigin = (url: string) => {
   const parsed = URL.parse(url);
   if (parsed?.protocol === "ssh:") {
+    // ssh config expands %h into ProxyCommand/Match exec shells, so the host must be plain.
     if (
-      !parsed.hostname ||
-      parsed.hostname.startsWith("-") ||
+      !/^(?:[a-zA-Z0-9_](?:[a-zA-Z0-9._-]*)|\[[0-9a-fA-F:.]+\])$/u.test(parsed.hostname) ||
       parsed.password ||
       (parsed.pathname !== "" && parsed.pathname !== "/") ||
       parsed.search ||
@@ -209,7 +209,7 @@ const make = Effect.gen(function* () {
         (cause) =>
           new PeerLinkError({
             reason: "unreachable",
-            message: `Could not open SSH to ${new URL(origin).hostname}. Check SSH key access and the host key from this environment. On macOS, enable Remote Login on the destination and allow T3 Code under Privacy & Security > Local Network on the connecting Mac, then retry.`,
+            message: `Could not open SSH to ${new URL(origin).hostname}: ${cause.message} Check SSH key access and the host key from this environment. On macOS, enable Remote Login on the destination and allow T3 Code under Privacy & Security > Local Network on the connecting Mac, then retry.`,
             cause,
           }),
       ),
