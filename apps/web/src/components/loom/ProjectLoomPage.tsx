@@ -31,7 +31,7 @@ import { isElectron } from "~/env";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { useProject } from "~/state/entities";
-import { useEnvironmentIds } from "~/state/environments";
+import { useEnvironmentIdentities } from "~/state/environments";
 import { projectLoom } from "~/state/projectLoom";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
@@ -139,7 +139,7 @@ interface LoomPage {
 function LoomWorkspace(props: ProjectLoomPageProps) {
   const { search, onSearchChange } = props;
   const navigate = useNavigate();
-  const environmentIds = useEnvironmentIds();
+  const environments = useEnvironmentIdentities();
   const openPrLink = useOpenPrLink();
   const filters = loomFiltersOf(search);
   // Lane pages are ephemeral: a cursor only belongs to the project, window and filters that made
@@ -184,7 +184,8 @@ function LoomWorkspace(props: ProjectLoomPageProps) {
 
   const actions: LoomActions = {
     canOpenThread: (target) =>
-      target.environmentId === props.environmentId || environmentIds.includes(target.environmentId),
+      target.environmentId === props.environmentId ||
+      environments.some(({ environmentId }) => environmentId === target.environmentId),
     openThread: (target) =>
       void navigate({
         to: "/$environmentId/$threadId",
@@ -513,6 +514,7 @@ function LoomFilterControls(props: {
   // The draft follows the URL whenever the URL's title filter changes underneath it.
   const [draft, setDraft] = useState({ source: search.q, text: search.q ?? "" });
   const title = draft.source === search.q ? draft.text : (search.q ?? "");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The debounce timer syncs the URL filter with the draft and cancels pending navigation on URL changes or unmount.
   useEffect(() => {
     const trimmed = title.trim();
     if (trimmed === (search.q ?? "")) return;

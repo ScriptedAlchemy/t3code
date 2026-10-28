@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
   dispatchFailure,
@@ -103,9 +104,11 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       const { task, threadId } = yield* scheduler
         .runNow({ id: input.taskId })
         .pipe(Effect.mapError(unavailable));
+      const { environmentId } = yield* McpInvocationContext.McpInvocationContext;
       return {
         taskId: task.id,
         threadId,
+        ...(threadId === null ? {} : { link: formatThreadLink({ environmentId, threadId }) }),
         lastRunStatus: task.lastRunStatus,
         runCount: task.runCount,
         nextRunAt: task.nextRunAt,
@@ -114,29 +117,25 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   ),
   t3_thread_search: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
-      const { caller, threads } = yield* readCaller();
+      const { caller } = yield* readCaller();
+      const { environmentId } = yield* McpInvocationContext.McpInvocationContext;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
-      const { projectId: requestedProjectId, ...query } = input;
-      const projectId = requestedProjectId ?? caller?.projectId;
-      return yield* threadSearch
+      const projectId = input.projectId ?? caller?.projectId;
+      const { environmentId: _environmentId, projectId: _projectId, ...query } = input;
+      const result = yield* threadSearch
         .search({
           ...query,
           ...(projectId === undefined ? {} : { projectId }),
           includeArchived: input.includeArchived ?? false,
         })
-        .pipe(
-          Effect.flatMap((result) =>
-            Effect.forEach(result.matches, (match) =>
-              threads.getThreadShell(match.threadId).pipe(
-                Effect.map((thread) => ({
-                  ...match,
-                  link: formatThreadLink(match.threadId, thread?.title ?? "Thread"),
-                })),
-              ),
-            ).pipe(Effect.map((matches) => ({ ...result, matches }))),
-          ),
-          Effect.mapError(unavailable),
-        );
+        .pipe(Effect.mapError(unavailable));
+      return {
+        ...result,
+        matches: result.matches.map((match) => ({
+          ...match,
+          link: formatThreadLink({ environmentId, threadId: match.threadId }),
+        })),
+      };
     }),
   ),
   t3_thread_transfer: McpToolAccess.either(

@@ -9,6 +9,7 @@ import {
   AuthPreviewOperateScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
+  AuthTerminalOperateScope,
   type AuthEnvironmentScope,
 } from "./auth.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
@@ -20,6 +21,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.projectCodeFileHistory]: AuthOrchestrationReadScope,
   [WS_METHODS.projectKnowledgeMutate]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
+  // Stopping a server signals its processes, as closing a terminal does.
+  [WS_METHODS.previewStopLocalServer]: AuthTerminalOperateScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,
   [WS_METHODS.serverCheckOtlpEndpoint]: AuthSettingsWriteScope,
   [WS_METHODS.pullRequestsRunAction]: AuthSourceControlWriteScope,
@@ -37,6 +40,10 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.pullRequestsGenerateReviewGuide]: AuthOrchestrationOperateScope,
   [WS_METHODS.sourceControlCloneRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlPublishRepository]: AuthSourceControlWriteScope,
+  // Signing in replaces the server's GitHub credential, as saving a token in Settings does.
+  [WS_METHODS.sourceControlSignInStart]: AuthSettingsWriteScope,
+  [WS_METHODS.sourceControlSignInWait]: AuthSettingsWriteScope,
+  [WS_METHODS.sourceControlSignInCancel]: AuthSettingsWriteScope,
   [WS_METHODS.projectCloneStart]: AuthSourceControlWriteScope,
   [WS_METHODS.projectCloneCancel]: AuthSourceControlWriteScope,
   [WS_METHODS.projectCloneRetry]: AuthSourceControlWriteScope,
@@ -56,6 +63,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.providerAccountExport]: AuthProvidersManageScope,
   [WS_METHODS.providerAccountImport]: AuthProvidersManageScope,
 
+  // Starts an agent session on this environment that can read its logs and database.
+  [WS_METHODS.serverPrepareTriage]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,

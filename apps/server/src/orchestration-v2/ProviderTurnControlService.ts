@@ -11,11 +11,10 @@ import {
   readKnowledgeDeliveryState,
 } from "../project/knowledge/delivery.ts";
 import {
-  attachmentTokenAllowance,
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffBudgetAssumptions,
   handoffTokenCapConfig,
-  historicalMessage,
+  nativeContextHistory,
 } from "@t3tools/provider-core/server/handoffBudget";
 import {
   MessageId,
@@ -494,17 +493,19 @@ export const layer: Layer.Layer<
             );
             const nativeContextEstimate =
               providerThread.contextUsage?.usedTokens === undefined
-                ? (yield* projections.getTurnStartHistory(input.threadId)).reduce((size, item) => {
-                    if (item.providerThreadId !== providerThread.id) return size;
-                    const historical = historicalMessage(item);
-                    return (
-                      size +
-                      (historical === null ? 0 : Buffer.byteLength(historical.text)) +
-                      (item.type === "user_message"
-                        ? attachmentTokenAllowance(item.attachments)
-                        : 0)
+                ? yield* Effect.gen(function* () {
+                    const history = yield* projections.getThreadRecords(input.threadId, [
+                      "runs",
+                      "attempts",
+                      "providerTurns",
+                      "contextHandoffs",
+                    ]);
+                    return nativeContextHistory(history, providerThread).estimate(
+                      (yield* projections.getTurnStartHistory(input.threadId)).filter(
+                        (item) => item.type !== "user_message" || item.messageId !== message.id,
+                      ),
                     );
-                  }, 0)
+                  })
                 : 0;
             yield* knowledgeDelivery.checkBudget(
               handoffBudgetAssumptions({

@@ -20,11 +20,7 @@ import {
 } from "./useScopedSettings";
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import { useSettingsScope } from "./SettingsScopeContext";
-import {
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
-  sortProviderInstanceEntries,
-} from "../../providerInstances";
+import { providerInstanceEntriesFor } from "../../providerInstances";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
@@ -111,12 +107,10 @@ export function SourceControlWritingSettingsSection() {
   const textGenerationProviders = serverProviders.filter((provider) =>
     isProviderTextGenerationCapable(provider),
   );
-  const instanceEntries = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(
-      deriveProviderInstanceEntries(textGenerationProviders),
-      settings,
-      target?.projectId ?? null,
-    ),
+  const instanceEntries = providerInstanceEntriesFor(
+    textGenerationProviders,
+    settings,
+    target?.projectId ?? null,
   );
   const projectEnabledInstanceIds = new Set(
     instanceEntries
@@ -160,6 +154,32 @@ export function SourceControlWritingSettingsSection() {
   const reviewGuideModelDisabledReason = useScopedModelDisabledReason(settings, instanceEntries, [
     "generateReviewGuide",
   ]);
+  const reviewGuideProviders = projectEffectiveTextGenerationProviders.filter((provider) =>
+    isProviderTextGenerationCapable(provider, "generateReviewGuide"),
+  );
+  const initialReviewGuideSelection = (() => {
+    if (reviewGuideProviders.length === 0) return;
+    const preferred = resolveAppModelSelectionState(
+      { ...settings, textGenerationModelSelection: activeSelection },
+      reviewGuideProviders,
+    );
+    if (reviewGuideModelDisabledReason(preferred.instanceId, preferred.model) === null)
+      return preferred;
+    for (const provider of reviewGuideProviders) {
+      const candidate = resolveAppModelSelectionState(settings, [provider]);
+      if (reviewGuideModelDisabledReason(candidate.instanceId, candidate.model) === null)
+        return candidate;
+      for (const model of modelOptionsByInstance.get(provider.instanceId) ?? []) {
+        if (
+          !model.isUnavailable &&
+          reviewGuideModelDisabledReason(provider.instanceId, model.slug) === null
+        )
+          return createModelSelection(provider.instanceId, model.slug);
+      }
+    }
+  })();
+  const canEnableDedicatedReviewGuideModel =
+    canEnableDedicatedModel && initialReviewGuideSelection !== undefined;
   const writerInstanceEntry = instanceEntries.find(
     (entry) => entry.instanceId === activeSelection.instanceId,
   );
@@ -403,15 +423,16 @@ export function SourceControlWritingSettingsSection() {
                   <Switch
                     mixed={mixedReviewGuideModel}
                     checked={mixedReviewGuideModel ? false : usesReviewGuideModel}
-                    disabled={!usesReviewGuideModel && !canEnableDedicatedModel}
+                    disabled={!usesReviewGuideModel && !canEnableDedicatedReviewGuideModel}
                     onCheckedChange={(checked) => {
                       if (!checked) {
                         updateSettings({ reviewGuideModelSelection: null });
                         return;
                       }
-                      const reason = writerModelDisabledReason(
-                        activeSelection.instanceId,
-                        activeSelection.model,
+                      if (initialReviewGuideSelection === undefined) return;
+                      const reason = reviewGuideModelDisabledReason(
+                        initialReviewGuideSelection.instanceId,
+                        initialReviewGuideSelection.model,
                       );
                       if (reason) {
                         toastManager.add({
@@ -423,9 +444,9 @@ export function SourceControlWritingSettingsSection() {
                       }
                       updateSettings({
                         reviewGuideModelSelection: createModelSelection(
-                          activeSelection.instanceId,
-                          activeSelection.model,
-                          activeSelection.options,
+                          initialReviewGuideSelection.instanceId,
+                          initialReviewGuideSelection.model,
+                          initialReviewGuideSelection.options,
                         ),
                       });
                     }}

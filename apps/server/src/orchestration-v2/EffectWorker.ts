@@ -667,7 +667,6 @@ export class OrchestrationEffectWorkerV2 extends Context.Service<
 
 export interface OrchestrationEffectWorkerOptions {
   readonly workerId?: string;
-  readonly leaseDurationMs?: number;
   readonly maxAttempts?: number;
 }
 
@@ -685,7 +684,6 @@ export const layerWithOptions = (
       const executor = yield* OrchestrationEffectExecutorV2;
       const deliveryScrubber = yield* DeliveryScrubRunner;
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
-      const leaseDurationMs = Math.max(1, options.leaseDurationMs ?? 30_000);
       const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
       const wasCancelled = (effectId: string) =>
         outbox.get(effectId).pipe(
@@ -783,7 +781,6 @@ export const layerWithOptions = (
           const claimExit = yield* Effect.exit(
             outbox.claimNext({
               workerId,
-              leaseDurationMs,
               excludeRestartContinuations,
               ...(lane === undefined ? {} : { lane }),
             }),

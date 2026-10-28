@@ -46,7 +46,11 @@ vi.mock(
 vi.mock(import("../../state/entities"), () => ({ useProject: () => null }) as never);
 vi.mock(
   import("../../state/environments"),
-  () => ({ useEnvironmentIds: () => state.environments }) as never,
+  () =>
+    ({
+      useEnvironmentIdentities: () =>
+        state.environments.map((environmentId) => ({ environmentId, label: environmentId })),
+    }) as never,
 );
 vi.mock(
   import("../../lib/openPullRequestLink"),

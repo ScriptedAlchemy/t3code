@@ -5,7 +5,6 @@ import {
   type TerminalAttachStreamEvent,
   type TerminalEvent,
   type TerminalOpenInput,
-  type TerminalRestartInput,
   ProviderDriverKind,
   ProviderInstanceId,
   TerminalProviderInstanceNotFoundError,
@@ -28,8 +27,8 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import { expect, vi } from "vite-plus/test";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "./Manager.ts";
@@ -197,17 +196,6 @@ class GatedPtyAdapter extends FakePtyAdapter {
 }
 
 function openInput(overrides: Partial<TerminalOpenInput> = {}): TerminalOpenInput {
-  return {
-    threadId: "thread-1",
-    terminalId: DEFAULT_TERMINAL_ID,
-    cwd: process.cwd(),
-    cols: 100,
-    rows: 24,
-    ...overrides,
-  };
-}
-
-function restartInput(overrides: Partial<TerminalRestartInput> = {}): TerminalRestartInput {
   return {
     threadId: "thread-1",
     terminalId: DEFAULT_TERMINAL_ID,
@@ -457,6 +445,133 @@ it.layer(
     }),
   );
 
+  // Which client owns the shared PTY size is left open by the issue, so this only asserts
+  // that every attached renderer is told the grid the PTY actually has.
+  it.effect("tells every attached stream the shared PTY size when attaches disagree", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      const wideEvents: TerminalAttachStreamEvent[] = [];
+      const narrowEvents: TerminalAttachStreamEvent[] = [];
+      const stopWide = yield* manager.attachStream(openInput({ cols: 130, rows: 15 }), (event) =>
+        Effect.sync(() => {
+          wideEvents.push(event);
+        }),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(stopWide));
+      const stopNarrow = yield* manager.attachStream(openInput({ cols: 54, rows: 15 }), (event) =>
+        Effect.sync(() => {
+          narrowEvents.push(event);
+        }),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(stopNarrow));
+
+      const spawned = ptyAdapter.spawnInputs[0]!;
+      const ptySize = ptyAdapter.processes[0]!.resizeCalls.at(-1) ?? {
+        cols: spawned.cols,
+        rows: spawned.rows,
+      };
+      const lastReportedSize = (events: ReadonlyArray<TerminalAttachStreamEvent>) => {
+        for (const event of events.toReversed()) {
+          const source: Record<string, unknown> =
+            event.type === "snapshot" ? event.snapshot : event;
+          if (typeof source.cols === "number" && typeof source.rows === "number") {
+            return { cols: source.cols, rows: source.rows };
+          }
+        }
+        return null;
+      };
+
+      expect({
+        wide: lastReportedSize(wideEvents),
+        narrow: lastReportedSize(narrowEvents),
+      }).toEqual({ wide: ptySize, narrow: ptySize });
+    }),
+  );
+
+  it.effect("gives the PTY back to the remaining viewer when the narrowest one detaches", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      const restored = yield* Deferred.make<void>();
+      const stopWide = yield* manager.attachStream(
+        openInput({ cols: 130, rows: 15 }),
+        (event) =>
+          event.type === "activity" && event.cols === 130 && event.rows === 15
+            ? Deferred.succeed(restored, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        undefined,
+        "wide",
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(stopWide));
+      const stopNarrow = yield* manager.attachStream(
+        openInput({ cols: 54, rows: 15 }),
+        () => Effect.void,
+        undefined,
+        "narrow",
+      );
+      const process = ptyAdapter.processes[0]!;
+
+      yield* manager.resize(
+        { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID, cols: 80, rows: 12 },
+        "narrow",
+      );
+      // A resize from a client with no attached stream cannot override attached viewers.
+      yield* manager.resize({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        cols: 200,
+        rows: 50,
+      });
+      expect(process.resizeCalls.at(-1)).toEqual({ cols: 80, rows: 12 });
+
+      stopNarrow();
+      yield* Deferred.await(restored);
+      expect(process.resizeCalls.at(-1)).toEqual({ cols: 130, rows: 15 });
+    }),
+  );
+
+  // Client retries resend the first attach's size, which a later resize may have replaced.
+  it.effect("keeps a viewer's resized grid when the same viewer attaches again", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      const restored = yield* Deferred.make<void>();
+      const stopWide = yield* manager.attachStream(
+        openInput({ cols: 130, rows: 15 }),
+        (event) =>
+          event.type === "activity" && event.cols === 130 && event.rows === 15
+            ? Deferred.succeed(restored, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        undefined,
+        "wide",
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(stopWide));
+      const stopFirst = yield* manager.attachStream(
+        openInput({ cols: 54, rows: 15 }),
+        () => Effect.void,
+        undefined,
+        "phone",
+      );
+      const process = ptyAdapter.processes[0]!;
+      yield* manager.resize(
+        { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID, cols: 100, rows: 15 },
+        "phone",
+      );
+
+      const stopRetry = yield* manager.attachStream(
+        { ...openInput({ cols: 54, rows: 15 }), resume: true },
+        () => Effect.void,
+        undefined,
+        "phone",
+      );
+      expect(process.resizeCalls.at(-1)).toEqual({ cols: 100, rows: 15 });
+
+      stopRetry();
+      stopFirst();
+      yield* Deferred.await(restored);
+      expect(process.resizeCalls.at(-1)).toEqual({ cols: 130, rows: 15 });
+      expect(ptyAdapter.spawnInputs).toHaveLength(1);
+    }),
+  );
+
   it.effect("resumed attaches after close never respawn until the terminal is reopened", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();
@@ -492,14 +607,6 @@ it.layer(
       yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
       expect((yield* Ref.get(attachEvents)).map((event) => event.type)).toEqual(["closed"]);
       expect(ptyAdapter.spawnInputs).toHaveLength(0);
-
-      const restarted = yield* manager.restart(restartInput());
-      expect(restarted.status).toBe("running");
-      expect((yield* Ref.get(attachEvents)).map((event) => event.type)).toEqual([
-        "closed",
-        "restarted",
-      ]);
-      expect(ptyAdapter.spawnInputs).toHaveLength(1);
     }),
   );
 
@@ -1357,7 +1464,8 @@ it.layer(
             }),
         }).pipe(Effect.provide(layerWithHostPlatform(platform)));
         yield* manager.open(openInput({ providerInstanceId }));
-        yield* manager.restart(restartInput({ providerInstanceId }));
+        yield* manager.close({ threadId: "thread-1" });
+        yield* manager.open(openInput({ providerInstanceId }));
         expect(ptyAdapter.spawnInputs).toHaveLength(2);
         for (const { env } of ptyAdapter.spawnInputs) {
           expect(env).toMatchObject({
@@ -1433,7 +1541,7 @@ it.layer(
     ),
   );
 
-  it.effect("restarts with current provider secrets and clears bounded history", () =>
+  it.effect("reopens with current provider secrets and preserves bounded history", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const path = yield* Path.Path;
@@ -1473,7 +1581,7 @@ it.layer(
       yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
 
       yield* updateSecret("first-secret");
-      yield* manager.restart(restartInput(input));
+      yield* manager.open(openInput(input));
       const firstProcess = ptyAdapter.processes[0]!;
       expect(ptyAdapter.spawnInputs[0]?.env.PROVIDER_SECRET).toBe("first-secret");
       firstProcess.emitData("discarded\nold-one\nold-two\n");
@@ -1481,7 +1589,8 @@ it.layer(
       expect((yield* manager.open(openInput(input))).history).toBe("old-two\n");
 
       yield* updateSecret("second-secret");
-      const restarted = yield* manager.restart(restartInput(input));
+      yield* manager.close({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID });
+      const restarted = yield* manager.open(openInput(input));
 
       expect(firstProcess.killed).toBe(true);
       expect(ptyAdapter.spawnInputs).toHaveLength(2);
@@ -1490,12 +1599,12 @@ it.layer(
         CODEX_HOME: homePath,
         CLIENT_FLAG: "1",
       });
-      expect(restarted.history).toBe("");
+      expect(restarted.history).toBe("old-two\n");
       expect(restarted.status).toBe("running");
       expect(restarted).not.toHaveProperty("env");
       expect(restarted).not.toHaveProperty("providerInstanceId");
       const logPath = yield* historyLogPath(logsDir);
-      expect(yield* readFileString(logPath)).toBe("");
+      expect(yield* readFileString(logPath)).toBe("old-two\n");
 
       ptyAdapter.processes[1]!.emitData("discarded again\nnew-one\nnew-two\n");
       yield* manager.close({ threadId: "thread-1" });
@@ -1672,6 +1781,53 @@ it.layer(
       ptyAdapter.processes.at(-1)!.emitData("new session only\n");
       expect(yield* pull).toMatchObject([{ type: "output", data: "new session only\n" }]);
       expect(ptyAdapter.spawnInputs).toHaveLength(4);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { recovered: true, label: "after recovery" },
+    { recovered: false, label: "when cancelled before recovery" },
+  ])("keeps a stalled viewer's size until its attach stream ends ($label)", ({ recovered }) =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      const restored = yield* Deferred.make<void>();
+      const stopWide = yield* manager.attachStream(
+        openInput({ cols: 130, rows: 15 }),
+        (event) =>
+          event.type === "activity" && event.cols === 130 && event.rows === 15
+            ? Deferred.succeed(restored, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        undefined,
+        "wide",
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(stopWide));
+      const process = ptyAdapter.processes[0]!;
+
+      yield* Effect.gen(function* () {
+        const pull = yield* Stream.toPull(
+          manager.attachOutputStream(openInput({ cols: 54, rows: 15 }), "narrow"),
+        );
+        expect(yield* pull).toMatchObject([{ type: "snapshot" }]);
+        expect(process.resizeCalls.at(-1)).toEqual({ cols: 54, rows: 15 });
+        // Overflow releases the inner subscription before any recovery pull.
+        yield* publishPastOutputBudget(manager, process);
+        yield* manager.resize(
+          { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID, cols: 50, rows: 12 },
+          "narrow",
+        );
+        expect(process.resizeCalls.at(-1)).toEqual({ cols: 50, rows: 12 });
+        if (!recovered) return;
+
+        expect(yield* pull).toMatchObject([{ type: "snapshot" }]);
+        yield* manager.resize(
+          { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID, cols: 48, rows: 12 },
+          "narrow",
+        );
+        expect(process.resizeCalls.at(-1)).toEqual({ cols: 48, rows: 12 });
+      }).pipe(Effect.scoped);
+
+      yield* Deferred.await(restored);
+      expect(process.resizeCalls.at(-1)).toEqual({ cols: 130, rows: 15 });
     }).pipe(Effect.scoped),
   );
 

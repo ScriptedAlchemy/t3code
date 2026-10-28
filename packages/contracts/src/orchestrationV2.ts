@@ -1442,10 +1442,6 @@ export const OrchestrationV2ProviderRetry = Schema.Struct({
 });
 export type OrchestrationV2ProviderRetry = typeof OrchestrationV2ProviderRetry.Type;
 
-export const OrchestrationV2ProviderThreadDisposition = Schema.Literals(["reusable", "broken"]);
-export type OrchestrationV2ProviderThreadDisposition =
-  typeof OrchestrationV2ProviderThreadDisposition.Type;
-
 export const OrchestrationV2UserMessageInputIntent = Schema.Literals([
   "turn_start",
   "queued_turn",
@@ -1456,6 +1452,14 @@ export type OrchestrationV2UserMessageInputIntent =
   typeof OrchestrationV2UserMessageInputIntent.Type;
 
 const OrchestrationV2TurnItemBaseFields = {
+  /** Wire-only cursor for collapsed work; persisted items keep their complete history. */
+  deferredWork: Schema.optionalKey(
+    Schema.Struct({
+      cursor: TrimmedNonEmptyString,
+      itemCount: PositiveInt,
+      lastOrdinal: NonNegativeInt,
+    }),
+  ),
   toolNonExecutionKind: Schema.optional(Schema.String),
   toolSurface: Schema.optional(ToolActivitySurface),
   toolIcon: Schema.optional(ToolActivityIcon),
@@ -1800,21 +1804,6 @@ export const OrchestrationV2ProjectedTurnItem = Schema.Struct({
   item: OrchestrationV2TurnItem,
 });
 export type OrchestrationV2ProjectedTurnItem = typeof OrchestrationV2ProjectedTurnItem.Type;
-
-export const OrchestrationV2RawProviderEvent = Schema.Struct({
-  id: RawEventId,
-  driver: ProviderDriverKind,
-  providerInstanceId: ProviderInstanceId,
-  providerSessionId: ProviderSessionId,
-  sequence: PositiveInt,
-  direction: Schema.Literals(["incoming", "outgoing"]),
-  messageKind: Schema.Literals(["request", "response", "notification", "error"]),
-  method: Schema.NullOr(TrimmedNonEmptyString),
-  jsonRpcId: Schema.NullOr(Schema.Union([Schema.String, Schema.Number])),
-  payload: Schema.Unknown,
-  observedAt: Schema.DateTimeUtc,
-});
-export type OrchestrationV2RawProviderEvent = typeof OrchestrationV2RawProviderEvent.Type;
 
 const OrchestrationV2EventBase = Schema.Struct({
   id: EventId,
@@ -2706,14 +2695,6 @@ const OrchestrationV2JsonEventBaseFields = {
   occurredAt: Schema.DateTimeUtcFromString,
 } as const;
 
-export const OrchestrationV2RawProviderEventJson = OrchestrationV2RawProviderEvent.mapFields(
-  (fields) => ({
-    ...fields,
-    observedAt: Schema.DateTimeUtcFromString,
-  }),
-);
-export type OrchestrationV2RawProviderEventJson = typeof OrchestrationV2RawProviderEventJson.Type;
-
 export const OrchestrationV2DomainEventJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
@@ -2859,13 +2840,6 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
   }),
 ]);
 export type OrchestrationV2DomainEventJson = typeof OrchestrationV2DomainEventJson.Type;
-
-export const OrchestrationV2StoredEventJson = Schema.Struct({
-  sequence: NonNegativeInt,
-  commandId: Schema.NullOr(CommandId),
-  event: OrchestrationV2DomainEventJson,
-});
-export type OrchestrationV2StoredEventJson = typeof OrchestrationV2StoredEventJson.Type;
 
 export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
@@ -3550,7 +3524,6 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   stopWorkflow: "orchestration.stopWorkflow",
   getTurnItem: "orchestration.getTurnItem",
   launchThread: "orchestration.launchThread",
-  subscribeArchivedShell: "orchestration.subscribeArchivedShell",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
   subscribeCommandOutput: "orchestration.subscribeCommandOutput",
@@ -3590,25 +3563,6 @@ export const OrchestrationV2ArchivedShellSnapshot = Schema.Struct({
   threads: Schema.Array(OrchestrationV2ThreadShell),
 });
 export type OrchestrationV2ArchivedShellSnapshot = typeof OrchestrationV2ArchivedShellSnapshot.Type;
-
-export const OrchestrationV2ArchivedShellStreamItem = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("snapshot"),
-    snapshot: OrchestrationV2ArchivedShellSnapshot,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("thread.updated"),
-    sequence: NonNegativeInt,
-    thread: OrchestrationV2ThreadShell,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("thread.removed"),
-    sequence: NonNegativeInt,
-    threadId: ThreadId,
-  }),
-]);
-export type OrchestrationV2ArchivedShellStreamItem =
-  typeof OrchestrationV2ArchivedShellStreamItem.Type;
 
 export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
   commandId: CommandId,
@@ -3754,6 +3708,7 @@ export const OrchestrationV2SubscribeThreadInput = Schema.Struct({
   afterSequence: Schema.optionalKey(NonNegativeInt),
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
   acceptBoundedSnapshot: Schema.optionalKey(Schema.Boolean),
+  acceptDeferredWork: Schema.optionalKey(Schema.Boolean),
   acceptCompactTurnItems: Schema.optionalKey(Schema.Boolean),
   /** The client restores `*Omitted` bodies from records it already holds. */
   acceptDedupedBodies: Schema.optionalKey(Schema.Boolean),
@@ -3952,15 +3907,6 @@ export class OrchestrationV2StopWorkflowError extends Schema.TaggedError<Orchest
   }
 }
 
-export const OrchestrationV2RpcError = Schema.Union([
-  OrchestrationV2DispatchCommandError,
-  OrchestrationV2GetThreadProjectionError,
-  OrchestrationV2GetShellSnapshotError,
-  OrchestrationV2ThreadLaunchError,
-  OrchestrationV2StopWorkflowError,
-]);
-export type OrchestrationV2RpcError = typeof OrchestrationV2RpcError.Type;
-
 export const OrchestrationV2GetWorkflowScriptInput = Schema.Struct({
   threadId: ThreadId,
   scriptPath: TrimmedNonEmptyString,
@@ -4158,10 +4104,6 @@ export const OrchestrationV2RpcSchemas = {
   launchThread: {
     input: OrchestrationV2ThreadLaunchInput,
     output: OrchestrationV2ThreadLaunchResult,
-  },
-  subscribeArchivedShell: {
-    input: Schema.Struct({}),
-    output: OrchestrationV2ArchivedShellStreamItem,
   },
   subscribeShell: {
     input: OrchestrationV2SubscribeShellInput,

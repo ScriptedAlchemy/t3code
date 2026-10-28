@@ -45,10 +45,10 @@ import {
   handoffTokenCapConfig,
   handoffBudget,
   handoffBudgetAssumptions,
-  attachmentTokenAllowance,
   contextUsageForHandoff,
   historicalMessage,
   latestNativeContextUsage,
+  nativeContextHistory,
 } from "@t3tools/provider-core/server/handoffBudget";
 import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -102,13 +102,14 @@ const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
 
 /**
  * Claude refuses these before it reads the prompt: replacing a process running background work,
- * launch arguments whose appended system prompt cannot be read, or MCP registration that never
- * answers while the query opens.
+ * launch arguments whose appended system prompt or settings cannot be read, or MCP registration
+ * that never answers while the query opens.
  */
 const PROMPT_REFUSAL_TAGS = [
   "ClaudeBackgroundWorkBlocksQueryReplacementError",
   "ClaudeAppendSystemPromptFileError",
   "ClaudeAppendSystemPromptMissingValueError",
+  "ClaudeSettingsLaunchArgError",
   "ClaudeMcpRegistrationTimeoutError",
 ] as const;
 
@@ -836,83 +837,23 @@ export const layer: Layer.Layer<
           previousUsage,
           knownModelWindow,
         });
-        const settledHandoffs = projection.contextHandoffs.filter(
-          (handoff) =>
-            handoff.toProviderThreadId === providerThread.id &&
-            handoff.delivery?.nativeThreadId === loadedProviderThread.nativeThreadRef?.nativeId &&
-            handoff.delivery?.status !== "pending",
-        );
-        const deliveredItemIds = new Set(
-          settledHandoffs.flatMap((handoff) => handoff.delivery?.itemIds ?? []),
-        );
-        const summarizedItemIds = new Set(
-          settledHandoffs.flatMap((handoff) => handoff.delivery?.summarizedItemIds ?? []),
-        );
-        const coveredItemIds = new Set([
-          ...summarizedItemIds,
-          ...deliveredItemIds,
-          ...settledHandoffs.flatMap((handoff) => handoff.delivery?.omittedItemIds ?? []),
-        ]);
-        const deliveredAttemptIds = new Set(
-          projection.providerTurns.map((turn) => turn.runAttemptId),
-        );
-        const acceptedAttempts = projection.attempts.filter(
-          (source) =>
-            source.providerThreadId === providerThread.id && deliveredAttemptIds.has(source.id),
-        );
-        const nativeInputRunIds = new Set(
-          acceptedAttempts
-            .filter(
-              (source) =>
-                source.nativeThreadId !== undefined &&
-                source.nativeThreadId === loadedProviderThread.nativeThreadRef?.nativeId,
-            )
-            .map((source) => source.runId),
-        );
-        const legacyInputRunIds = new Set(
-          acceptedAttempts
-            .filter((source) => source.nativeThreadId === undefined)
-            .map((source) => source.runId),
-        );
-        const legacyRecoveredRunIds = new Set(
-          projection.runs
-            .filter(
-              (source) =>
-                source.providerThreadId === providerThread.id &&
-                settledHandoffs.some(
-                  (handoff) =>
-                    handoff.strategy === "full_thread_summary" &&
-                    handoff.fromProviderThreadIds.includes(providerThread.id) &&
-                    source.ordinal >= handoff.coveredRunOrdinals.from &&
-                    source.ordinal <= handoff.coveredRunOrdinals.to,
-                ),
-            )
-            .map((source) => source.id),
-        );
-        // Row identity survives recovery; only accepted native input and delivered history occupy the new session.
+        const {
+          deliveredItemIds,
+          summarizedItemIds,
+          coveredItemIds,
+          deliveredAttemptIds,
+          acceptedAttempts,
+          nativeInputRunIds,
+          legacyInputRunIds,
+          estimate,
+        } = nativeContextHistory(projection, { ...loadedProviderThread, id: providerThread.id });
         const nativeContextEstimate = Effect.gen(function* () {
           return sameNativeThread
-            ? (yield* projectionStore.getTurnStartHistory(input.threadId)).reduce((sum, item) => {
-                const acceptedNatively =
-                  item.providerThreadId === providerThread.id &&
-                  item.runId !== null &&
-                  (nativeInputRunIds.has(item.runId) ||
-                    (legacyInputRunIds.has(item.runId) &&
-                      !coveredItemIds.has(item.id) &&
-                      !legacyRecoveredRunIds.has(item.runId)));
-                if (item.runId === run.id || (!acceptedNatively && !deliveredItemIds.has(item.id)))
-                  return sum;
-                const historical = historicalMessage(item);
-                const nativeAttachments =
-                  item.type === "user_message" && acceptedNatively
-                    ? attachmentTokenAllowance(item.attachments)
-                    : 0;
-                return (
-                  sum +
-                  (historical === null ? 0 : Buffer.byteLength(historical.text)) +
-                  nativeAttachments
-                );
-              }, 0)
+            ? estimate(
+                (yield* projectionStore.getTurnStartHistory(input.threadId)).filter(
+                  (item) => item.runId !== run.id,
+                ),
+              )
             : 0;
         });
         const modelContextWindow =

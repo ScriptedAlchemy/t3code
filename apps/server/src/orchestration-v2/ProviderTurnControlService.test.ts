@@ -27,6 +27,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -596,6 +597,8 @@ it.effect.each([
   "uncertain-replaced",
   "uncertain-replaced-legacy",
   "stale-during-history",
+  "recovered-history",
+  "current-history-budget",
 ] as const)(
   "delivers selected knowledge through active steering with %s receipt semantics",
   (mode) =>
@@ -636,6 +639,37 @@ it.effect.each([
         providerTurnId,
         attemptId,
       });
+      const historicalRunId = RunId.make("knowledge-steer-history-run");
+      const historicalAttemptId = RunAttemptId.make("knowledge-steer-history-attempt");
+      const historicalProviderTurnId = ProviderTurnId.make("knowledge-steer-history-turn");
+      const hasLargeHistory = mode === "recovered-history" || mode === "current-history-budget";
+      const history: OrchestrationV2ThreadProjection["turnItems"] = hasLargeHistory
+        ? [
+            {
+              id: TurnItemId.make("knowledge-steer-history-item"),
+              threadId,
+              runId: historicalRunId,
+              nodeId: null,
+              providerThreadId,
+              providerTurnId: historicalProviderTurnId,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 1,
+              status: "completed",
+              title: null,
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              type: "user_message",
+              messageId: MessageId.make("knowledge-steer-history-message"),
+              inputIntent: "turn_start",
+              text: "x".repeat(128_000),
+              attachments: [],
+              createdBy: "user",
+              creationSource: "web",
+            },
+          ]
+        : [];
       const record = {
         version: 1 as const,
         kind: "project-knowledge" as const,
@@ -719,13 +753,38 @@ it.effect.each([
             }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getThread: () => Effect.succeed({ ...projection.thread, projectId }),
+              getThreadRecords: () =>
+                Effect.succeed({
+                  ...projection,
+                  attempts: [
+                    ...projection.attempts,
+                    {
+                      ...projection.attempts[0]!,
+                      id: historicalAttemptId,
+                      runId: historicalRunId,
+                      providerTurnId: historicalProviderTurnId,
+                      nativeThreadId:
+                        mode === "recovered-history"
+                          ? "old-native-thread"
+                          : "knowledge-native-thread",
+                    },
+                  ],
+                  providerTurns: [
+                    ...projection.providerTurns,
+                    {
+                      ...projection.providerTurns[0]!,
+                      id: historicalProviderTurnId,
+                      runAttemptId: historicalAttemptId,
+                    },
+                  ],
+                }),
               getTurnStartHistory: () =>
                 mode === "stale-during-history"
                   ? Deferred.succeed(historyStarted, undefined).pipe(
                       Effect.andThen(Deferred.await(releaseHistory)),
                       Effect.as([]),
                     )
-                  : Effect.succeed([]),
+                  : Effect.succeed(history),
               getProviderControlContext: (_threadId, input) =>
                 Effect.succeed({
                   providerThread: replaced
@@ -843,7 +902,12 @@ it.effect.each([
           assert.lengthOf(received, 1);
           return;
         }
-        if (mode === "sent") {
+        if (mode === "recovered-history") {
+          assert.equal(first._tag, "Success");
+          assert.lengthOf(received, 1);
+          assert.equal(receipts[0]?.status, "sent");
+          assert.include(received[0]!, "Use the project-selected test runner.");
+        } else if (mode === "sent") {
           assert.equal(first._tag, "Success");
           completed = true;
           yield* control.steer(input);

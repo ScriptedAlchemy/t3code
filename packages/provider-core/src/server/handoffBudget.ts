@@ -85,7 +85,96 @@ export function contextUsageForHandoff(input: {
   };
 }
 
-export function attachmentTokenAllowance(attachments: ReadonlyArray<ChatAttachment>): number {
+/** Provider rows survive native recovery; only accepted input and delivered history occupy the current conversation. */
+export function nativeContextHistory(
+  projection: Pick<
+    OrchestrationV2ThreadProjection,
+    "runs" | "attempts" | "providerTurns" | "contextHandoffs"
+  >,
+  providerThread: OrchestrationV2ProviderThread,
+) {
+  const settledHandoffs = projection.contextHandoffs.filter(
+    (handoff) =>
+      handoff.toProviderThreadId === providerThread.id &&
+      handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
+      handoff.delivery?.status !== "pending",
+  );
+  const deliveredItemIds = new Set(
+    settledHandoffs.flatMap((handoff) => handoff.delivery?.itemIds ?? []),
+  );
+  const summarizedItemIds = new Set(
+    settledHandoffs.flatMap((handoff) => handoff.delivery?.summarizedItemIds ?? []),
+  );
+  const coveredItemIds = new Set([
+    ...summarizedItemIds,
+    ...deliveredItemIds,
+    ...settledHandoffs.flatMap((handoff) => handoff.delivery?.omittedItemIds ?? []),
+  ]);
+  const deliveredAttemptIds = new Set(projection.providerTurns.map((turn) => turn.runAttemptId));
+  const acceptedAttempts = projection.attempts.filter(
+    (attempt) =>
+      attempt.providerThreadId === providerThread.id && deliveredAttemptIds.has(attempt.id),
+  );
+  const nativeInputRunIds = new Set(
+    acceptedAttempts
+      .filter(
+        (attempt) =>
+          attempt.nativeThreadId !== undefined &&
+          attempt.nativeThreadId === providerThread.nativeThreadRef?.nativeId,
+      )
+      .map((attempt) => attempt.runId),
+  );
+  const legacyInputRunIds = new Set(
+    acceptedAttempts
+      .filter((attempt) => attempt.nativeThreadId === undefined)
+      .map((attempt) => attempt.runId),
+  );
+  const legacyRecoveredRunIds = new Set(
+    projection.runs
+      .filter(
+        (run) =>
+          run.providerThreadId === providerThread.id &&
+          settledHandoffs.some(
+            (handoff) =>
+              handoff.strategy === "full_thread_summary" &&
+              handoff.fromProviderThreadIds.includes(providerThread.id) &&
+              run.ordinal >= handoff.coveredRunOrdinals.from &&
+              run.ordinal <= handoff.coveredRunOrdinals.to,
+          ),
+      )
+      .map((run) => run.id),
+  );
+  return {
+    deliveredItemIds,
+    summarizedItemIds,
+    coveredItemIds,
+    deliveredAttemptIds,
+    acceptedAttempts,
+    nativeInputRunIds,
+    legacyInputRunIds,
+    estimate: (items: ReadonlyArray<OrchestrationV2TurnItem>) =>
+      items.reduce((size, item) => {
+        const acceptedNatively =
+          item.providerThreadId === providerThread.id &&
+          item.runId !== null &&
+          (nativeInputRunIds.has(item.runId) ||
+            (legacyInputRunIds.has(item.runId) &&
+              !coveredItemIds.has(item.id) &&
+              !legacyRecoveredRunIds.has(item.runId)));
+        if (!acceptedNatively && !deliveredItemIds.has(item.id)) return size;
+        const historical = historicalMessage(item);
+        return (
+          size +
+          (historical === null ? 0 : Buffer.byteLength(historical.text)) +
+          (item.type === "user_message" && acceptedNatively
+            ? attachmentTokenAllowance(item.attachments)
+            : 0)
+        );
+      }, 0),
+  };
+}
+
+function attachmentTokenAllowance(attachments: ReadonlyArray<ChatAttachment>): number {
   // Without image metadata, estimate 8k tokens; original-resolution/custom models may exceed this.
   // https://developers.openai.com/api/docs/guides/image-cost-calculator
   // https://platform.claude.com/docs/en/build-with-claude/vision
@@ -208,14 +297,16 @@ export function renderHistory(
   return [context, ...messages.map(renderHistoricalMessage)].join("\n\n");
 }
 
+const jsonByteLength = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+
 export function historyCost(
   messages: ReadonlyArray<OrchestrationV2HistoricalMessage>,
   context: string,
 ): number {
   return (
     Math.max(
-      Buffer.byteLength(JSON.stringify(historyResponseItems(messages, context))),
-      Buffer.byteLength(JSON.stringify(renderHistory(messages, context))),
+      jsonByteLength(historyResponseItems(messages, context)),
+      jsonByteLength(renderHistory(messages, context)),
     ) + 256
   );
 }
