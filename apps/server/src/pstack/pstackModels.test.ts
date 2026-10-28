@@ -65,7 +65,7 @@ const capableInstanceIds = new Set(providers.map((provider) => provider.instance
 const file =
   "# budget: balanced\narchitect runners: claudeAgent/claude-opus-5-5 effort=xhigh, codex/gpt-6-astra reasoningEffort=high";
 
-it.effect("completes every omitted Opus and Astra option with its advertised current value", () =>
+it.effect("leaves speed to the provider unless the models file sets it", () =>
   Effect.sync(() => {
     const resolved = resolveRoles({
       file: parseModelsFile(file),
@@ -81,20 +81,33 @@ it.effect("completes every omitted Opus and Astra option with its advertised cur
       {
         providerInstanceId: "claudeAgent",
         model: "claude-opus-5-5",
-        options: [
-          { id: "effort", value: "xhigh" },
-          { id: "fastMode", value: false },
-        ],
+        options: [{ id: "effort", value: "xhigh" }],
       },
       {
         providerInstanceId: "codex",
         model: "gpt-6-astra",
-        options: [
-          { id: "reasoningEffort", value: "high" },
-          { id: "serviceTier", value: "default" },
-        ],
+        options: [{ id: "reasoningEffort", value: "high" }],
       },
     ]);
+    const explicit = resolveRoles({
+      file: parseModelsFile(
+        "architect runners: codex/gpt-6-astra reasoningEffort=high serviceTier=priority",
+      ),
+      defaults,
+      providers,
+      capableInstanceIds,
+    });
+    assert.deepEqual(explicit.roles[0]!.seats[0], {
+      kind: "target",
+      target: {
+        providerInstanceId: "codex",
+        model: "gpt-6-astra",
+        options: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "priority" },
+        ],
+      },
+    });
   }),
 );
 
@@ -113,7 +126,7 @@ it.effect("disabled providers fall back visibly without shrinking panels", () =>
     );
   }),
 );
-it.effect("missing models file maps upstream family, effort and fast defaults", () =>
+it.effect("missing models file maps upstream family and effort, ignoring -fast", () =>
   Effect.sync(() => {
     const result = resolveRoles({ file: undefined, defaults, providers, capableInstanceIds });
     assert.deepEqual(result.diagnostics, []);
@@ -123,10 +136,7 @@ it.effect("missing models file maps upstream family, effort and fast defaults", 
       target: {
         providerInstanceId: "codex",
         model: "gpt-6-astra",
-        options: [
-          { id: "reasoningEffort", value: "high" },
-          { id: "serviceTier", value: "priority" },
-        ],
+        options: [{ id: "reasoningEffort", value: "high" }],
       },
     });
   }),
@@ -155,7 +165,7 @@ it.effect("preserves explicit panel cardinality, aliases, comments and model sla
     assert.include(result.diagnostics[0]!, "missing/vendor/model");
   }),
 );
-it.effect("recognizes Pi-style thinking as effort and drops unadvertised fast hints", () =>
+it.effect("recognizes Pi-style thinking as effort", () =>
   Effect.sync(() => {
     const piStyle = provider("custom-codex", "codex", "gpt-6-astra", [effort("thinking")]);
     const result = resolveRoles({
@@ -164,7 +174,7 @@ it.effect("recognizes Pi-style thinking as effort and drops unadvertised fast hi
       providers: [piStyle],
       capableInstanceIds: new Set([piStyle.instanceId]),
     });
-    assert.include(result.diagnostics[0]!, "fast");
+    assert.deepEqual(result.diagnostics, []);
     assert.deepEqual(result.roles[0]!.seats, [
       {
         kind: "target",
@@ -248,13 +258,15 @@ it.effect.each(["claude-opus-5-5", "claude-sonnet-4-6"])(
           .capabilities!.optionDescriptors!;
         assert.deepEqual(
           seat.target.options,
-          descriptors.map((descriptor) => ({
-            id: descriptor.id,
-            value:
-              descriptor.type === "boolean"
-                ? false
-                : descriptor.options.find((option) => option.isDefault)!.id,
-          })),
+          descriptors
+            .filter((descriptor) => descriptor.id !== "fastMode")
+            .map((descriptor) => ({
+              id: descriptor.id,
+              value:
+                descriptor.type === "boolean"
+                  ? false
+                  : descriptor.options.find((option) => option.isDefault)!.id,
+            })),
         );
       }
     }),
@@ -301,7 +313,7 @@ it.effect("default seats skip unhealthy and incapable instances offering the mod
     assert.equal(seat.kind === "target" && seat.target.providerInstanceId, "codex");
   }),
 );
-it.effect("clamps default effort below its budget and accepts the advertised fast tier", () =>
+it.effect("clamps default effort below its budget", () =>
   Effect.sync(() => {
     const codex = provider("codex", "codex", "gpt-6-astra", [
       {
@@ -337,10 +349,7 @@ it.effect("clamps default effort below its budget and accepts the advertised fas
         target: {
           providerInstanceId: "codex",
           model: "gpt-6-astra",
-          options: [
-            { id: "reasoningEffort", value: "high" },
-            { id: "serviceTier", value: "fast" },
-          ],
+          options: [{ id: "reasoningEffort", value: "high" }],
         },
       },
     ]);
