@@ -1,5 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Electron IPC needs synchronous lease identifiers.
-import * as NodeCrypto from "node:crypto";
 import { ipcMain, type BrowserWindow } from "electron";
 import { createLanTlsClient } from "@t3tools/shared/nodeLanTls";
 import type { LanTlsTrust } from "@t3tools/contracts";
@@ -23,6 +21,7 @@ export function installDesktopLanTls(window: BrowserWindow): void {
   const session = contents.session;
   const entries = new Map<string, Entry>();
   const leases = new Map<string, string>();
+  let nextLeaseId = 0;
   const sockets = new Map<string, ReturnType<Client["openWebSocket"]>>();
   const pending = new Map<string, Map<number, number>>();
   let nextSequence = 0;
@@ -81,7 +80,7 @@ export function installDesktopLanTls(window: BrowserWindow): void {
       transport: createLanTlsClient(input),
       leases: new Set<string>(),
     };
-    const id = NodeCrypto.randomUUID();
+    const id = String(nextLeaseId++);
     entry.leases.add(id);
     entries.set(origin, entry);
     leases.set(id, origin);

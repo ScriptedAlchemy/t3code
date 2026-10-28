@@ -4,7 +4,7 @@ export function createDesktopWebSocket(url: string, protocols?: string | string[
   const bridge = typeof window === "undefined" ? undefined : window.desktopBridge;
   if (!bridge || !bridge.isLanTlsOrigin(url)) return new WebSocket(url, protocols);
 
-  // @effect-diagnostics-next-line cryptoRandomUUID:off -- IPC needs an immediate socket identifier.
+  // @effect-diagnostics-next-line cryptoRandomUUID:off -- Delayed IPC events must not collide with sockets after renderer reloads.
   const id = crypto.randomUUID();
   const target = new EventTarget();
   let readyState: number = WebSocket.CONNECTING;
