@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off -- This Node transport boundary validates X.509 certificates and supplies a scoped fetch adapter.
-import { X509Certificate } from "node:crypto";
-import { isIP } from "node:net";
+import * as NodeCrypto from "node:crypto";
+import * as NodeNet from "node:net";
 import type { LanTlsTrust } from "@t3tools/contracts";
 import { Agent, fetch as undiciFetch } from "undici";
-import type { ReadableStream as NodeReadableStream } from "node:stream/web";
+import type * as NodeStreamWeb from "node:stream/web";
 import WebSocket from "ws";
 
 import { isPrivateNetworkHost, normalizeHostname } from "./hostClassification.ts";
@@ -18,7 +18,7 @@ export const createLanTlsClient = (input: {
     origin.protocol !== "https:" ||
     origin.username ||
     origin.password ||
-    (!isIP(hostname) && hostname !== "localhost") ||
+    (!NodeNet.isIP(hostname) && hostname !== "localhost") ||
     !isPrivateNetworkHost(hostname)
   ) {
     throw new Error("LAN TLS trust requires a private HTTPS address.");
@@ -31,7 +31,7 @@ export const createLanTlsClient = (input: {
   ) {
     throw new Error("LAN TLS trust requires one certificate authority.");
   }
-  const authority = new X509Certificate(pem);
+  const authority = new NodeCrypto.X509Certificate(pem);
   const now = Date.now();
   if (
     !authority.ca ||
@@ -67,7 +67,7 @@ export const createLanTlsClient = (input: {
     const response = await undiciFetch(request.url, {
       method: request.method,
       headers: [...request.headers],
-      body: request.body as NodeReadableStream<Uint8Array> | null,
+      body: request.body as NodeStreamWeb.ReadableStream<Uint8Array> | null,
       duplex: "half",
       dispatcher,
       redirect: "manual",
@@ -90,6 +90,7 @@ export const createLanTlsClient = (input: {
       ca: pem,
       rejectUnauthorized: true,
       followRedirects: false,
+      maxPayload: 8 * 1024 * 1024,
     });
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));

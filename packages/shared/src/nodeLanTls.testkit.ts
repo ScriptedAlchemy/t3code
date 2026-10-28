@@ -1,15 +1,24 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off -- Real TLS fixtures use WebCrypto key material and fixed certificate validity dates.
 import "@abraham/reflection";
-import { KeyObject } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import {
   BasicConstraintsExtension,
+  ExtendedKeyUsageExtension,
+  ExtendedKeyUsage,
   SubjectAlternativeNameExtension,
   X509CertificateGenerator,
 } from "@peculiar/x509";
 import { EnvironmentId } from "@t3tools/contracts";
 
 export const makeTlsFixture = async (
-  options: { san?: string; expired?: boolean; expiredAuthority?: boolean } = {},
+  options: {
+    san?: string;
+    expired?: boolean;
+    expiredAuthority?: boolean;
+    clientOnly?: boolean;
+    notYetValid?: boolean;
+    badAuthoritySignature?: boolean;
+  } = {},
 ) => {
   const algorithm = { name: "ECDSA", namedCurve: "P-256", hash: "SHA-256" };
   const authorityKeys = await crypto.subtle.generateKey(algorithm, true, ["sign", "verify"]);
@@ -19,7 +28,9 @@ export const makeTlsFixture = async (
   const expired = new Date("2021-01-01T00:00:00Z");
   const authority = await X509CertificateGenerator.createSelfSigned({
     name: "CN=T3 test authority",
-    keys: authorityKeys,
+    keys: options.badAuthoritySignature
+      ? { publicKey: authorityKeys.publicKey, privateKey: keys.privateKey }
+      : authorityKeys,
     signingAlgorithm: algorithm,
     notBefore: start,
     notAfter: options.expiredAuthority ? expired : end,
@@ -31,15 +42,18 @@ export const makeTlsFixture = async (
     publicKey: keys.publicKey,
     signingKey: authorityKeys.privateKey,
     signingAlgorithm: algorithm,
-    notBefore: start,
+    notBefore: options.notYetValid ? new Date("2099-01-01T00:00:00Z") : start,
     notAfter: options.expired ? expired : end,
     extensions: [
       new BasicConstraintsExtension(false),
+      new ExtendedKeyUsageExtension([
+        options.clientOnly ? ExtendedKeyUsage.clientAuth : ExtendedKeyUsage.serverAuth,
+      ]),
       new SubjectAlternativeNameExtension([{ type: "ip", value: options.san ?? "127.0.0.1" }]),
     ],
   });
   return {
-    key: KeyObject.from(keys.privateKey).export({ type: "pkcs8", format: "pem" }),
+    key: NodeCrypto.KeyObject.from(keys.privateKey).export({ type: "pkcs8", format: "pem" }),
     cert: certificate.toString("pem"),
     tls: {
       environmentId: EnvironmentId.make("test-environment"),

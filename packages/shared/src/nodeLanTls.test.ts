@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- These integration tests run actual HTTPS listeners.
-import { once } from "node:events";
-import { createServer } from "node:https";
-import type { RequestListener } from "node:http";
-import type { Duplex } from "node:stream";
+import * as NodeEvents from "node:events";
+import * as NodeHttps from "node:https";
+import type * as NodeHttp from "node:http";
+import type * as NodeStream from "node:stream";
 import { describe, expect, it } from "vite-plus/test";
 import { WebSocketServer } from "ws";
 
@@ -11,23 +11,23 @@ import { makeTlsFixture } from "./nodeLanTls.testkit.ts";
 
 const serve = async (
   fixture: Awaited<ReturnType<typeof makeTlsFixture>>,
-  handler: RequestListener,
+  handler: NodeHttp.RequestListener,
 ) => {
-  const server = createServer(fixture, handler);
-  const connections = new Set<Duplex>();
+  const server = NodeHttps.createServer(fixture, handler);
+  const connections = new Set<NodeStream.Duplex>();
   server.on("connection", (socket) => {
     connections.add(socket);
     socket.once("close", () => connections.delete(socket));
   });
   server.listen(0, "127.0.0.1");
-  await once(server, "listening");
+  await NodeEvents.once(server, "listening");
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("Expected TCP listener");
   return {
     server,
     url: `https://127.0.0.1:${address.port}`,
     async [Symbol.asyncDispose]() {
-      const closed = once(server, "close");
+      const closed = NodeEvents.once(server, "close");
       server.close();
       for (const socket of connections) socket.destroy();
       await closed;
@@ -63,12 +63,14 @@ describe("scoped LAN TLS", () => {
     }
   });
 
-  it.each(["wrong authority", "wrong SAN", "expired leaf"])(
+  it.each(["wrong authority", "wrong SAN", "expired leaf", "wrong purpose", "future leaf"])(
     "rejects %s before sending credentials",
     async (failure) => {
       const fixture = await makeTlsFixture({
         ...(failure === "wrong SAN" ? { san: "127.0.0.2" } : {}),
         expired: failure === "expired leaf",
+        clientOnly: failure === "wrong purpose",
+        notYetValid: failure === "future leaf",
       });
       let requests = 0;
       await using host = await serve(fixture, (_, response) => {
@@ -91,6 +93,7 @@ describe("scoped LAN TLS", () => {
   it("rejects public origins, non-CA certificates, expired roots and CA bundles", async () => {
     const fixture = await makeTlsFixture();
     const expired = await makeTlsFixture({ expiredAuthority: true });
+    const forged = await makeTlsFixture({ badAuthoritySignature: true });
     for (const url of [
       "https://8.8.8.8",
       "https://example.com",
@@ -104,6 +107,7 @@ describe("scoped LAN TLS", () => {
     for (const certificateAuthority of [
       fixture.cert,
       expired.tls.certificateAuthority,
+      forged.tls.certificateAuthority,
       `${fixture.tls.certificateAuthority}\n${fixture.tls.certificateAuthority}`,
     ]) {
       expect(() =>
@@ -143,6 +147,11 @@ describe("scoped LAN TLS", () => {
       await expect(
         client.fetch(host.url, { method: "POST", body: "pairing-code", redirect: "follow" }),
       ).rejects.toThrow("cannot follow redirects");
+      const redirectedSocket = client.openWebSocket(
+        `${host.url.replace("https:", "wss:")}/?token=test-secret`,
+      );
+      const [error] = await NodeEvents.once(redirectedSocket, "error");
+      expect(error.message).toBe("Unexpected server response: 307");
       expect(leaks).toBe(0);
     } finally {
       await client.close();
@@ -159,12 +168,12 @@ describe("scoped LAN TLS", () => {
     ws.on("connection", (socket) => socket.send("verified websocket"));
     const client = createLanTlsClient({ httpBaseUrl: host.url, tls: fixture.tls });
     const socket = client.openWebSocket(host.url.replace("https:", "wss:"));
-    const message = once(socket, "message");
+    const message = NodeEvents.once(socket, "message");
     expect(String((await message)[0])).toBe("verified websocket");
     const response = await client.fetch(host.url);
     const reading = response.text();
     const aborted = expect(reading).rejects.toThrow();
-    const closed = once(socket, "close");
+    const closed = NodeEvents.once(socket, "close");
     await client.close();
     await aborted;
     await closed;
@@ -197,7 +206,7 @@ describe("scoped LAN TLS", () => {
       controller.abort();
       await read;
       const socket = invalid.openWebSocket(host.url.replace("https:", "wss:"));
-      const [error] = await once(socket, "error");
+      const [error] = await NodeEvents.once(socket, "error");
       expect(error.message).toMatch(/certificate|issuer/);
       expect(connections).toBe(0);
     } finally {
