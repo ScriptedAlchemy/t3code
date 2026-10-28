@@ -39,6 +39,11 @@ describe("scoped LAN TLS", () => {
   it("streams request and response bodies under the enrolled CA", async () => {
     const fixture = await makeTlsFixture();
     await using host = await serve(fixture, (request, response) => {
+      if (request.url === "/unchanged") {
+        response.writeHead(304);
+        response.end();
+        return;
+      }
       response.setHeader("x-seen-authorization", request.headers.authorization ?? "none");
       request.pipe(response);
     });
@@ -58,6 +63,7 @@ describe("scoped LAN TLS", () => {
       const response = await client.fetch(request);
       expect(response.headers.get("x-seen-authorization")).toBe("Bearer test-secret");
       expect(await response.text()).toBe("streamed payload");
+      expect((await client.fetch(`${host.url}/unchanged`)).status).toBe(304);
     } finally {
       await client.close();
     }

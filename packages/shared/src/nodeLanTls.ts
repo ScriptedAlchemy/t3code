@@ -73,7 +73,7 @@ export const createLanTlsClient = (input: {
       redirect: "manual",
       signal: AbortSignal.any([request.signal, lifetime.signal]),
     });
-    if (response.status >= 300 && response.status < 400) {
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
       await response.body?.cancel();
       throw new Error("LAN TLS requests cannot follow redirects.");
     }
