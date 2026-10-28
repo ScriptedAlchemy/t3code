@@ -25,8 +25,8 @@ it.live("renews a LAN certificate under the same authority and rejects damaged s
       remove: () => Effect.void,
       getOrCreateRandom: () => Effect.die("unused"),
     });
-    const load = (names: string[], now: number) =>
-      loadLanCertificates(names, now).pipe(
+    const load = (names: string[], now: number, establishedAuthority?: string) =>
+      loadLanCertificates(names, now, establishedAuthority).pipe(
         Effect.provideService(ServerSecretStore.ServerSecretStore, store),
       );
     const now = yield* Clock.currentTimeMillis;
@@ -85,6 +85,16 @@ it.live("renews a LAN certificate under the same authority and rejects damaged s
     const expired = yield* Effect.exit(load(["127.0.0.1"], now + 3651 * 24 * 60 * 60 * 1000));
     assert.equal(expired._tag, "Failure");
     assert.equal(bytes, beforeExpiry);
+    bytes = undefined;
+    const missing = yield* Effect.exit(load(["127.0.0.1"], now, first.authorityCertificate));
+    assert.equal(missing._tag, "Failure");
+    assert.equal(bytes, undefined);
+    const replacement = yield* load(["127.0.0.1"], now);
+    const replacementBytes = bytes;
+    assert.notEqual(replacement.authorityCertificate, first.authorityCertificate);
+    const changed = yield* Effect.exit(load(["127.0.0.1"], now, first.authorityCertificate));
+    assert.equal(changed._tag, "Failure");
+    assert.equal(bytes, replacementBytes);
     bytes = new TextEncoder().encode("{}");
     const failed = yield* Effect.exit(load(["127.0.0.1"], now));
     assert.equal(failed._tag, "Failure");

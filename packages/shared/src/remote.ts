@@ -149,12 +149,14 @@ export const setPairingTlsTrustOnUrl = (url: URL, trust: LanTlsTrust): URL => {
   return next;
 };
 
+const decodePairingTlsTrust = Schema.decodeSync(Schema.fromJsonString(LanTlsTrust));
+
 const readPairingTlsTrust = (url: URL): LanTlsTrust | undefined => {
   const encoded = readHashParams(url).get(PAIRING_TLS_PARAM);
   if (encoded === null) return undefined;
   if (url.protocol !== "https:") throw new RemotePairingUrlInvalidError({ protocol: url.protocol });
   try {
-    return Schema.decodeSync(Schema.fromJsonString(LanTlsTrust))(encoded);
+    return decodePairingTlsTrust(encoded);
   } catch (cause) {
     throw new RemotePairingUrlInvalidError({ cause });
   }

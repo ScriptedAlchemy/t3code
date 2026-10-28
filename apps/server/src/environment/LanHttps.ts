@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics nodeBuiltinImport:off -- Effect's HTTP adapter accepts a native TLS server and exposes its secure context lifecycle.
 import * as NodeHttps from "node:https";
 import * as NodeOS from "node:os";
 import * as NodeNet from "node:net";
@@ -97,7 +97,7 @@ export const layer = Layer.effect(
       const refresh = Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         const nextNames = names();
-        const next = yield* loadLanCertificates(nextNames, now);
+        const next = yield* loadLanCertificates(nextNames, now, certificates.authorityCertificate);
         yield* Effect.sync(() => raw.setSecureContext({ cert: next.certificate, key: next.key }));
         const current = yield* SubscriptionRef.get(state);
         if (Option.isNone(current) || current.value.addresses.join("\0") !== nextNames.join("\0")) {
