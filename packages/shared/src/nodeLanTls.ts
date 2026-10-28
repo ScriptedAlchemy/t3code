@@ -1,8 +1,9 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalFetch:off -- This Node transport boundary validates X.509 certificates and supplies a scoped fetch adapter.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off -- This Node transport boundary validates X.509 certificates and supplies a scoped fetch adapter.
 import { X509Certificate } from "node:crypto";
 import { isIP } from "node:net";
 import type { LanTlsTrust } from "@t3tools/contracts";
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import WebSocket from "ws";
 
 import { isPrivateNetworkHost, normalizeHostname } from "./hostClassification.ts";
@@ -63,17 +64,24 @@ export const createLanTlsClient = (input: {
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
     checkUrl(request.url, "https:");
-    const options: RequestInit & { dispatcher: Agent } = {
+    const response = await undiciFetch(request.url, {
+      method: request.method,
+      headers: [...request.headers],
+      body: request.body as NodeReadableStream<Uint8Array> | null,
+      duplex: "half",
       dispatcher,
       redirect: "manual",
       signal: AbortSignal.any([request.signal, lifetime.signal]),
-    };
-    const response = await globalThis.fetch(request, options);
+    });
     if (response.status >= 300 && response.status < 400) {
       await response.body?.cancel();
       throw new Error("LAN TLS requests cannot follow redirects.");
     }
-    return response;
+    return new Response(response.body as ReadableStream<Uint8Array> | null, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: [...response.headers],
+    });
   };
 
   const openWebSocket = (url: string | URL, protocols?: string | string[]) => {
