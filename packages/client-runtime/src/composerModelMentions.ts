@@ -37,3 +37,8 @@ export function rankComposerModelMentions<T>(
   }
   return [];
 }
+
+/** Prompt text naming a provider instance and model for the agent. No `@`, which the editor would turn into a file chip. */
+export function formatComposerModelMention(instanceId: string, model: string): string {
+  return `model:${instanceId}/${model}`;
+}
