@@ -57,7 +57,6 @@ export const makeFixture = Effect.fn("PstackPackTest.makeFixture")(function* (
         ["scripts/helper.sh", { sha256: "c".repeat(64), executable: true }],
       ]),
     }),
-    "t3-code.md": "# T3 harness",
     "upstream/.gitignore": "node_modules/\n",
     "upstream/skills/poteto-mode/scripts/bun.lock": "lockfile\n",
     "upstream/skills/architect/SKILL.md":

@@ -4,14 +4,12 @@ import * as NodePath from "node:path";
 import { fileFingerprint, packFiles, readManifest } from "./files.ts";
 import { parsePstackRoleDefaults } from "./roles.ts";
 
-// TERMS copied from cursor/plugins/scripts/generate-pstack-harness-trees.mjs at 99b609a72323b70204eab407c622f436e858e112.
+// Adapted from cursor/plugins at 99b609a72323b70204eab407c622f436e858e112; native personas and aliases remain valid.
 const TERMS = [
   { key: "`Task`", re: /`Task`|\bTask (tool|subagent|call)/ },
   { key: "`AskQuestion`", re: /AskQuestion/ },
   { key: "todolist", re: /\btodo ?list\b/i },
   { key: "generalPurpose", re: /generalPurpose/ },
-  { key: "poteto-agent", re: /poteto-agent/ },
-  { key: "comment-sicko", re: /comment-sicko/ },
   { key: "`readonly: true`", re: /readonly: (true|false)|readonly\/Ask/ },
   { key: '`environment: "cloud"`', re: /environment: "(cloud|local)"/ },
   { key: "cloud_base_branch", re: /cloud_base_branch/ },
@@ -21,7 +19,6 @@ const TERMS = [
   { key: "claude-", re: /\bclaude-[a-z]+-\d/ },
   { key: "grok-", re: /\bgrok-\d/ },
   { key: "gpt-", re: /\bgpt-\d/ },
-  { key: "inherit-parent", re: /inherit-parent/ },
   { key: "pstack-models.mdc", re: /pstack-models\.mdc/ },
   { key: ".cursor/skills/", re: /\.cursor\/skills/ },
   { key: "~/.cursor/plugins/", re: /\.cursor\/plugins|\.cursor-plugin/ },
@@ -41,16 +38,9 @@ const T3_TERMS = [
   { key: "Custom Mode", re: /\bCustom Mode\b/ },
   { key: "create-skill", re: /\bcreate-skill\b/ },
   { key: "cursor-team-kit", re: /\bcursor-team-kit\b/ },
+  { key: "harness adapter", re: /docs\/harness\// },
+  { key: "fast model suffix", re: /-fast\b/ },
 ];
-
-function tableKeys(markdown: string): ReadonlyArray<string> {
-  const lines = markdown.split("\n");
-  return lines.flatMap((line, index) => {
-    const key = line.match(/^\s*\|\s*([^|]+?)\s*\|/)?.[1];
-    if (!key || /^:?-+:?$/.test(key) || /^\s*\|\s*:?-+/.test(lines[index + 1] ?? "")) return [];
-    return [key];
-  });
-}
 
 export function checkPack(packageDir: string): ReadonlyArray<string> {
   const problems: string[] = [];
@@ -109,63 +99,28 @@ export function checkPack(packageDir: string): ReadonlyArray<string> {
   if (new Set(roles.map(({ label }) => label)).size !== roles.length)
     problems.push("Duplicate role default labels");
 
-  const claude = attempt("Claude adapter", () =>
-    NodeFS.readFileSync(NodePath.join(upstream, "docs/harness/claude-code.md"), "utf8"),
-  );
-  const adapter = attempt("T3 adapter", () =>
-    NodeFS.readFileSync(NodePath.join(packageDir, "t3-code.md"), "utf8"),
-  );
-  if (adapter !== undefined) {
-    const keys = tableKeys(adapter);
-    if (claude !== undefined) {
-      for (const key of new Set(tableKeys(claude))) {
-        if (!keys.includes(key)) problems.push(`Missing adapter table key: ${key}`);
-      }
-      const headings = new Set(adapter.match(/^## .+$/gm) ?? []);
-      for (const heading of claude.match(/^## .+$/gm) ?? []) {
-        if (!headings.has(heading)) problems.push(`Missing adapter heading: ${heading}`);
-      }
-    }
-    for (const { key, re } of [...TERMS, ...T3_TERMS]) {
-      const users = skillTexts.filter(({ text }) => re.test(text));
-      if (users.length > 0 && !keys.some((row) => row.includes(key))) {
-        problems.push(
-          `Missing adapter term row: ${key} (used by ${users.map(({ path }) => path).join(", ")})`,
-        );
-      }
-    }
-    const delivered = new Set([...paths, "docs/harness/t3-code.md", "UPSTREAM.json"]);
-    const links = [
-      ...Array.from(
-        adapter.matchAll(/\]\(<?([^\s)>]+)>?(?:\s+["'][^\n]*?["'])?\)/g),
-        (match) => match[1] ?? "",
-      ),
-      ...Array.from(
-        adapter.matchAll(/^\s*\[[^\]]+\]:\s*<?([^\s>]+)>?/gm),
-        (match) => match[1] ?? "",
-      ),
-    ];
-    for (const href of links) {
-      if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(href)) continue;
-      const target = attempt(`Invalid adapter link ${href}`, () =>
-        decodeURIComponent(href.replace(/[?#].*/, "")),
-      );
-      if (target === undefined || !target) continue;
-      const path = NodePath.posix
-        .normalize(NodePath.posix.join("docs/harness", target))
-        .replace(/\/$/, "");
-      if (
-        target.startsWith("/") ||
-        target.includes("\\") ||
-        path === ".." ||
-        path.startsWith("../")
-      ) {
-        problems.push(`Adapter link escapes pack: ${href}`);
-      } else if (
-        !delivered.has(path) &&
-        ![...delivered].some((file) => file.startsWith(`${path}/`))
-      ) {
-        problems.push(`Unresolved adapter link: ${href}`);
+  for (const path of paths) {
+    if (/\.(?:png|jpe?g|gif|ico|woff2?|pdf)$/.test(path)) continue;
+    const text = attempt(path, () => NodeFS.readFileSync(NodePath.join(upstream, path), "utf8"));
+    if (text === undefined) continue;
+    for (const [index, line] of text.split("\n").entries()) {
+      for (const { key, re } of [...TERMS, ...T3_TERMS]) {
+        if (!re.test(line)) continue;
+        if (["claude-", "grok-", "gpt-"].includes(key) && path === "skills/setup-pstack/SKILL.md")
+          continue;
+        // The bundled GitHub reader retains bot protocol names and a status-only verdict helper.
+        if (
+          path.startsWith("skills/poteto-mode/scripts/watch-pr/") &&
+          (key === "watch-pr" ||
+            (key === "Cursor-only features" && !re.test(line.replaceAll("Bugbot", ""))))
+        )
+          continue;
+        if (
+          key === "watch-pr" &&
+          (line.includes("--status-only") || path === "skills/poteto-mode/scripts/package.json")
+        )
+          continue;
+        problems.push(`Non-native term ${key}: ${path}:${index + 1}`);
       }
     }
   }
