@@ -43,7 +43,6 @@ import { PreviewToolkit } from "../../apps/server/src/mcp/toolkits/preview/tools
 import { PreviewControlsToolkit } from "../../apps/server/src/mcp/toolkits/previewControls/tools.ts";
 import { ProjectToolkit } from "../../apps/server/src/mcp/toolkits/project/tools.ts";
 import { ProjectCodeToolkit } from "../../apps/server/src/mcp/toolkits/projectCode/tools.ts";
-import { ProjectLoomToolkit } from "../../apps/server/src/mcp/toolkits/projectLoom/tools.ts";
 import {
   CHILD_PULL_REQUEST_REPORT_NEXT,
   PullRequestsToolkit,
@@ -301,7 +300,6 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   KnowledgeToolkit,
   ConversationSummariesToolkit,
   ProjectCodeToolkit,
-  ProjectLoomToolkit,
   EnvironmentToolkit,
   PreviewControlsToolkit,
   WorktreeToolkit,

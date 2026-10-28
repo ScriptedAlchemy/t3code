@@ -14,7 +14,6 @@ import * as ConversationSummaries from "../../project/conversationSummaries/Conv
 import * as CodeIntelligence from "../../project/knowledge/CodeIntelligence.ts";
 import * as FileHistory from "../../project/knowledge/FileHistory.ts";
 import * as ProjectKnowledge from "../../project/knowledge/ProjectKnowledge.ts";
-import * as ProjectLoom from "../../project/loom/ProjectLoom.ts";
 import * as McpHttpServer from "../McpHttpServer.ts";
 import * as McpInvocationContext from "../McpInvocationContext.ts";
 import * as ConversationSummaryHandlers from "./conversationSummaries/handlers.ts";
@@ -23,8 +22,6 @@ import * as KnowledgeHandlers from "./knowledge/handlers.ts";
 import { KnowledgeToolkit } from "./knowledge/tools.ts";
 import * as ProjectCodeHandlers from "./projectCode/handlers.ts";
 import { ProjectCodeToolkit } from "./projectCode/tools.ts";
-import * as ProjectLoomHandlers from "./projectLoom/handlers.ts";
-import { ProjectLoomToolkit } from "./projectLoom/tools.ts";
 
 const here = EnvironmentId.make("here");
 const there = EnvironmentId.make("there");
@@ -63,7 +60,6 @@ const registration = Layer.mergeAll(
     ConversationSummaryHandlers.layer,
   ),
   McpHttpServer.toolkitRegistration(ProjectCodeToolkit, ProjectCodeHandlers.layer),
-  McpHttpServer.toolkitRegistration(ProjectLoomToolkit, ProjectLoomHandlers.layer),
 ).pipe(Layer.provideMerge(McpServer.McpServer.layer));
 
 const server = (
@@ -77,7 +73,6 @@ const server = (
         Layer.mock(ConversationSummaries.ConversationSummaries)({}),
         Layer.mock(CodeIntelligence.CodeIntelligence)({}),
         Layer.mock(FileHistory.FileHistory)({}),
-        Layer.mock(ProjectLoom.ProjectLoom)({}),
         Layer.mock(ThreadManagement.ThreadManagementService)({}),
       ),
     ),
@@ -140,7 +135,6 @@ it.effect.each([
     { projectId: "project", threadId: "thread", query: { operation: "status" } },
   ],
   ["t3_project_file_history", { projectId: "project", path: "src/cache.ts" }],
-  ["t3_project_loom_read", { projectId: "project" }],
 ] as const)("routes %s to its selected environment before reading local ids", ([tool, input]) =>
   Effect.gen(function* () {
     const forwarded: Array<Forwarded> = [];
