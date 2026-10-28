@@ -280,8 +280,7 @@ const make = Effect.gen(function* () {
 
   /** Signs in to the peer's `/mcp` with a pairing code: register, decide, exchange. */
   const signIn = Effect.fn("PeerLinks.signIn")(
-    function* (route: string, input: PeerLinkCreateInput, clientName: string) {
-      const origin = yield* httpOrigin(route);
+    function* (origin: string, input: PeerLinkCreateInput, clientName: string) {
       const client = yield* clientFor(origin);
       // Only the peer's own refusals are rejections. A dropped connection or
       // an answer this version cannot read is classified below.
@@ -411,7 +410,8 @@ const make = Effect.gen(function* () {
       (url) =>
         Effect.gen(function* () {
           const origin = yield* peerOrigin(url);
-          return { origin, descriptor: yield* describe(origin) };
+          const endpoint = yield* httpOrigin(origin);
+          return { origin, endpoint, descriptor: yield* describe(endpoint) };
         }).pipe(Effect.result),
       { concurrency: "unbounded" },
     );
@@ -419,7 +419,13 @@ const make = Effect.gen(function* () {
       Result.isSuccess(result) &&
       Option.isSome(result.success.descriptor) &&
       result.success.descriptor.value.environmentId === environmentId
-        ? [{ origin: result.success.origin, descriptor: result.success.descriptor.value }]
+        ? [
+            {
+              origin: result.success.origin,
+              endpoint: result.success.endpoint,
+              descriptor: result.success.descriptor.value,
+            },
+          ]
         : [],
     );
     const first = matching[0];
@@ -437,18 +443,19 @@ const make = Effect.gen(function* () {
     }
     // Each address is kept once, even when two spellings share an origin.
     const origins = [...new Set(matching.map((found) => found.origin))];
-    return { primary: first.origin, peer: first.descriptor, origins };
+    return { primary: first.endpoint, peer: first.descriptor, origins };
   });
 
   /** The peer at `url`, with every address checked for credentials first. */
   const answeringAt = Effect.fn("PeerLinks.answeringAt")(function* (urls: ReadonlyArray<string>) {
     const origins = yield* Effect.forEach(urls, peerOrigin);
-    const primary = origins[0]!;
+    const route = origins[0]!;
+    const primary = yield* httpOrigin(route);
     const descriptor = yield* describe(primary);
     if (Option.isNone(descriptor)) {
       return yield* new PeerLinkError({
         reason: "not_a_t3_environment",
-        message: `Nothing at ${primary} answered as a T3 Code environment.`,
+        message: `Nothing at ${route} answered as a T3 Code environment.`,
       });
     }
     return { primary, peer: descriptor.value, origins };
@@ -536,7 +543,10 @@ const make = Effect.gen(function* () {
 
   const describeUrl: PeerLinks["Service"]["describe"] = (url) =>
     peerOrigin(url).pipe(
-      Effect.flatMap(describe),
+      // Link requests probe before approval; SSH bootstrap can install and start a remote CLI.
+      Effect.flatMap((origin: string) =>
+        origin.startsWith("ssh:") ? Effect.succeedNone : describe(origin),
+      ),
       Effect.map(Option.map((peer) => ({ environmentId: peer.environmentId, label: peer.label }))),
       Effect.orElseSucceed(() => Option.none()),
     );
