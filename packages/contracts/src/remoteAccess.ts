@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { LanTlsTrust } from "./lanTls.ts";
 
 export const AdvertisedEndpointProviderKind = Schema.Literals([
   "core",
@@ -64,5 +65,6 @@ export const AdvertisedEndpoint = Schema.Struct({
   status: AdvertisedEndpointStatus,
   isDefault: Schema.optional(Schema.Boolean),
   description: Schema.optional(TrimmedNonEmptyString),
+  tls: Schema.optionalKey(LanTlsTrust),
 });
 export type AdvertisedEndpoint = typeof AdvertisedEndpoint.Type;

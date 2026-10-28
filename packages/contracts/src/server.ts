@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { LanTlsTrust } from "./lanTls.ts";
 import { AcpRegistryUrlAuthAction } from "./acpRegistry.ts";
 import {
   type EnvironmentMachineKind,
@@ -596,6 +597,7 @@ export type ServerDirectEndpointKind = typeof ServerDirectEndpointKind.Type;
 export const ServerDirectEndpoint = Schema.Struct({
   kind: ServerDirectEndpointKind,
   httpBaseUrl: TrimmedNonEmptyString,
+  tls: Schema.optionalKey(LanTlsTrust),
 });
 export type ServerDirectEndpoint = typeof ServerDirectEndpoint.Type;
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { EnvironmentId } from "@t3tools/contracts";
 
 import {
   buildPairingAppLink,
@@ -7,9 +8,37 @@ import {
   RemotePairingTokenMissingError,
   RemotePairingUrlInvalidError,
   resolveRemotePairingTarget,
+  setPairingTlsTrustOnUrl,
+  setPairingTokenOnUrl,
 } from "./remote.ts";
 
 describe("remote", () => {
+  it("preserves LAN trust through app links and replacement pairing codes", () => {
+    const trust = {
+      environmentId: EnvironmentId.make("lan-environment"),
+      certificateAuthority: "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n",
+    };
+    const url = setPairingTokenOnUrl(
+      setPairingTlsTrustOnUrl(new URL("https://192.168.1.10:3774/pair"), trust),
+      "new-code",
+    );
+    const pairingUrl = readPairingAppLink(buildPairingAppLink(url.href))!;
+    expect(resolveRemotePairingTarget({ pairingUrl })).toEqual({
+      credential: "new-code",
+      httpBaseUrl: "https://192.168.1.10:3774/",
+      wsBaseUrl: "wss://192.168.1.10:3774/",
+      tls: trust,
+    });
+  });
+
+  it.each([
+    "https://192.168.1.10/pair#token=code&tls=invalid",
+    "https://192.168.1.10/pair#token=code&tls=%7B%7D",
+    "http://192.168.1.10/pair#token=code&tls=%7B%7D",
+  ])("refuses invalid LAN trust instead of dropping it from %s", (pairingUrl) => {
+    expect(() => resolveRemotePairingTarget({ pairingUrl })).toThrow(RemotePairingUrlInvalidError);
+  });
+
   it("derives backend urls and token from a pairing url", () => {
     expect(
       resolveRemotePairingTarget({

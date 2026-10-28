@@ -1,6 +1,8 @@
 import * as Schema from "effect/Schema";
+import { LanTlsTrust } from "@t3tools/contracts";
 
 const PAIRING_TOKEN_PARAM = "token";
+const PAIRING_TLS_PARAM = "tls";
 const HOSTED_PAIRING_HOST_PARAM = "host";
 const HOSTED_PAIRING_LABEL_PARAM = "label";
 const PAIRING_APP_LINK_PARAM = "pairingUrl";
@@ -135,7 +137,28 @@ export interface ResolvedRemotePairingTarget {
   readonly credential: string;
   readonly httpBaseUrl: string;
   readonly wsBaseUrl: string;
+  readonly tls?: LanTlsTrust;
 }
+
+export const setPairingTlsTrustOnUrl = (url: URL, trust: LanTlsTrust): URL => {
+  if (url.protocol !== "https:") throw new RemotePairingUrlInvalidError({ protocol: url.protocol });
+  const next = new URL(url);
+  const params = readHashParams(next);
+  params.set(PAIRING_TLS_PARAM, JSON.stringify(trust));
+  next.hash = params.toString();
+  return next;
+};
+
+const readPairingTlsTrust = (url: URL): LanTlsTrust | undefined => {
+  const encoded = readHashParams(url).get(PAIRING_TLS_PARAM);
+  if (encoded === null) return undefined;
+  if (url.protocol !== "https:") throw new RemotePairingUrlInvalidError({ protocol: url.protocol });
+  try {
+    return Schema.decodeUnknownSync(Schema.fromJsonString(LanTlsTrust))(encoded);
+  } catch (cause) {
+    throw new RemotePairingUrlInvalidError({ cause });
+  }
+};
 
 export interface HostedPairingRequest {
   readonly host: string;
@@ -167,7 +190,9 @@ export const stripPairingTokenFromUrl = (url: URL): URL => {
 export const setPairingTokenOnUrl = (url: URL, credential: string): URL => {
   const next = new URL(url.toString());
   next.searchParams.delete(PAIRING_TOKEN_PARAM);
-  next.hash = new URLSearchParams([[PAIRING_TOKEN_PARAM, credential]]).toString();
+  const params = readHashParams(next);
+  params.set(PAIRING_TOKEN_PARAM, credential);
+  next.hash = params.toString();
   return next;
 };
 
@@ -235,10 +260,12 @@ export const resolveRemotePairingTarget = (input: {
     if (!credential) {
       throw new RemotePairingTokenMissingError({ host: url.host });
     }
+    const tls = readPairingTlsTrust(url);
     return {
       credential,
       httpBaseUrl: toHttpBaseUrl(url),
       wsBaseUrl: toWsBaseUrl(url),
+      ...(tls === undefined ? {} : { tls }),
     };
   }
 

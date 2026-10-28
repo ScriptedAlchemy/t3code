@@ -5,6 +5,7 @@ import type {
   AdvertisedEndpointReachability,
   AdvertisedEndpointSource,
   AdvertisedEndpointStatus,
+  LanTlsTrust,
 } from "@t3tools/contracts";
 
 export interface CreateAdvertisedEndpointInput {
@@ -18,6 +19,7 @@ export interface CreateAdvertisedEndpointInput {
   readonly status?: AdvertisedEndpointStatus;
   readonly isDefault?: boolean;
   readonly description?: string;
+  readonly tls?: LanTlsTrust;
 }
 
 export function normalizeHttpBaseUrl(rawValue: string): string {
@@ -73,5 +75,6 @@ export function createAdvertisedEndpoint(input: CreateAdvertisedEndpointInput): 
     status: input.status ?? "available",
     ...(input.isDefault === undefined ? {} : { isDefault: input.isDefault }),
     ...(input.description === undefined ? {} : { description: input.description }),
+    ...(input.tls === undefined ? {} : { tls: input.tls }),
   };
 }
