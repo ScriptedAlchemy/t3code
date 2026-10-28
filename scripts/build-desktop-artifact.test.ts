@@ -1355,7 +1355,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
-  it.effect("allows the vendored pstack files within the Windows payload budget", () =>
+  it.effect("allows bundled platform packages and pstack within the Windows payload budget", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -1363,6 +1363,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       yield* fs.copy(
         path.join(import.meta.dirname, "../packages/pstack/upstream"),
         path.join(fixture.packagedAppDir, "resources/pstack/upstream"),
+      );
+      yield* stageSelfContainedPlatformPackages(
+        path.join(import.meta.dirname, "../apps/server/node_modules"),
+        path.join(fixture.packagedAppDir, "resources/node_modules"),
       );
       yield* validateWindowsPackagedPayload({
         stageDistDir: fixture.stageDistDir,

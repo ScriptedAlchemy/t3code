@@ -1064,8 +1064,8 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
   ];
 }
 
-// The external pstack pack contributes about 200 files in addition to the server's native sidecars.
-export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 300;
+// Codegraph requires its unpacked JS and nested dependencies, alongside pstack and native sidecars.
+export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 1800;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
