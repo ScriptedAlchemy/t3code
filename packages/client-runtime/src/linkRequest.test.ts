@@ -4,7 +4,11 @@ import * as Option from "effect/Option";
 import { describe, expect, it } from "vite-plus/test";
 
 import { BearerConnectionProfile } from "./connection/catalog.ts";
-import { BearerConnectionTarget, RelayConnectionTarget } from "./connection/model.ts";
+import {
+  BearerConnectionTarget,
+  PrimaryConnectionTarget,
+  RelayConnectionTarget,
+} from "./connection/model.ts";
 import type { EnvironmentPresentation } from "./connection/presentation.ts";
 import type { RelayDiscoveredEnvironment } from "./relay/discovery.ts";
 import {
@@ -219,6 +223,74 @@ describe("linkableMachines", () => {
         urls: [],
       },
     ]);
+  });
+
+  it("preserves enrolled TLS trust on a reported and saved address", () => {
+    const here = presentation("environment-here", "Here");
+    const box = presentation("environment-box", "Box", {
+      saved: ["https://192.168.1.10:3773"],
+      reported: ["https://192.168.1.10:3773"],
+    });
+    const profile = Option.getOrThrow(box.entry.profile);
+    if (profile._tag !== "BearerConnectionProfile") throw new Error("Expected bearer profile");
+    const tls = {
+      environmentId: box.environmentId,
+      certificateAuthority: "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----",
+    };
+    const trusted = {
+      ...box,
+      entry: {
+        ...box.entry,
+        profile: Option.some(new BearerConnectionProfile({ ...profile, tls })),
+      },
+    };
+    const urls = linkableMachines({
+      environments: [here, trusted],
+      threadEnvironmentId: here.environmentId,
+      links: [],
+      connect: new Map(),
+    })[0]!.urls;
+    expect(urls).toHaveLength(1);
+    expect(new URLSearchParams(new URL(urls[0]!).hash.slice(1)).get("tls")).toBe(
+      JSON.stringify(tls),
+    );
+  });
+
+  it("uses local bridge trust but does not enroll trust reported over plain LAN", () => {
+    const here = presentation("environment-here", "Here");
+    const box = presentation("environment-box", "Box");
+    const tls = {
+      environmentId: box.environmentId,
+      certificateAuthority: "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----",
+    };
+    const config = {
+      environment: { platform: { machine: "laptop" } },
+      directEndpoints: [{ kind: "lan", httpBaseUrl: "https://192.168.1.10:3773", tls }],
+    } as unknown as ServerConfig;
+    const make = (httpBaseUrl: string) => ({
+      ...box,
+      serverConfig: config,
+      entry: {
+        ...box.entry,
+        target: new PrimaryConnectionTarget({
+          environmentId: box.environmentId,
+          label: "Box",
+          httpBaseUrl,
+          wsBaseUrl: httpBaseUrl,
+        }),
+      },
+    });
+    const urls = (httpBaseUrl: string) =>
+      linkableMachines({
+        environments: [here, make(httpBaseUrl)],
+        threadEnvironmentId: here.environmentId,
+        links: [],
+        connect: new Map(),
+      })[0]!.urls;
+    expect(
+      new URLSearchParams(new URL(urls("http://localhost:3773")[0]!).hash.slice(1)).get("tls"),
+    ).toBe(JSON.stringify(tls));
+    expect(urls("http://192.168.1.10:3773")[0]).toBe("https://192.168.1.10:3773");
   });
 
   it("reaches a machine saved only over T3 Connect at its Connect address", () => {

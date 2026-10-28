@@ -216,19 +216,19 @@ const make = Effect.gen(function* () {
     });
   yield* Effect.addFinalizer(() => closeTlsClients());
 
-  const fetchFor = (origin: string, credential?: PeerCredential) =>
+  const fetchFor = (origin: string, credential?: PeerCredential, clients = tlsClients) =>
     Effect.try({
       try: () => {
         if (credential === undefined || !("tls" in credential) || credential.origin !== origin)
           return undefined;
         const key = `${origin} ${credential.tls.environmentId} ${credential.tls.certificateAuthority}`;
-        let entry = tlsClients.get(key);
+        let entry = clients.get(key);
         if (entry === undefined) {
           entry = {
             environmentId: credential.tls.environmentId,
             client: createLanTlsClient({ httpBaseUrl: origin, tls: credential.tls }),
           };
-          tlsClients.set(key, entry);
+          clients.set(key, entry);
         }
         return entry.client.fetch;
       },
@@ -243,8 +243,9 @@ const make = Effect.gen(function* () {
   const clientFor = Effect.fn("PeerLinks.clientFor")(function* (
     origin: string,
     credential?: PeerCredential,
+    clients = tlsClients,
   ) {
-    const fetch = yield* fetchFor(origin, credential);
+    const fetch = yield* fetchFor(origin, credential, clients);
     const client =
       fetch === undefined
         ? peerHttpClient
@@ -271,8 +272,8 @@ const make = Effect.gen(function* () {
     );
 
   /** The environment answering at `origin`, or nothing when it does not answer as T3 Code. */
-  const describe = (origin: string, credential?: PeerCredential) =>
-    clientFor(origin, credential).pipe(
+  const describe = (origin: string, credential?: PeerCredential, clients = tlsClients) =>
+    clientFor(origin, credential, clients).pipe(
       Effect.flatMap((client) => client.metadata.descriptor()),
       Effect.timeout(probeTimeout(origin)),
       Effect.option,
@@ -312,8 +313,9 @@ const make = Effect.gen(function* () {
       input: PeerLinkCreateInput,
       clientName: string,
       credential?: PeerCredential,
+      clients = tlsClients,
     ) {
-      const client = yield* clientFor(origin, credential);
+      const client = yield* clientFor(origin, credential, clients);
       // Only the peer's own refusals are rejections. A dropped connection or
       // an answer this version cannot read is classified below.
       const registered = yield* client.mcpOAuth
@@ -436,14 +438,15 @@ const make = Effect.gen(function* () {
     urls: ReadonlyArray<string>,
     environmentId: EnvironmentId,
     name: string,
-    credential?: PeerCredential,
+    credentials: ReadonlyMap<string, PeerCredential>,
+    clients: typeof tlsClients,
   ) {
     const checked = yield* Effect.forEach(
       urls,
       (url) =>
         Effect.gen(function* () {
           const origin = yield* peerOrigin(url);
-          return { origin, descriptor: yield* describe(origin, credential) };
+          return { origin, descriptor: yield* describe(origin, credentials.get(origin), clients) };
         }).pipe(Effect.result),
       { concurrency: "unbounded" },
     );
@@ -475,11 +478,12 @@ const make = Effect.gen(function* () {
   /** The peer at `url`, with every address checked for credentials first. */
   const answeringAt = Effect.fn("PeerLinks.answeringAt")(function* (
     urls: ReadonlyArray<string>,
-    credential?: PeerCredential,
+    credentials: ReadonlyMap<string, PeerCredential>,
+    clients: typeof tlsClients,
   ) {
     const origins = yield* Effect.forEach(urls, peerOrigin);
     const primary = origins[0]!;
-    const descriptor = yield* describe(primary, credential);
+    const descriptor = yield* describe(primary, credentials.get(primary), clients);
     if (Option.isNone(descriptor)) {
       return yield* new PeerLinkError({
         reason: "not_a_t3_environment",
@@ -493,47 +497,66 @@ const make = Effect.gen(function* () {
     if (!(yield* enabled)) {
       return yield* new PeerLinkError({ reason: "disabled", message: LINKED_ENVIRONMENTS_OFF });
     }
-    const target = yield* Effect.try({
-      try: () => {
-        const url = new URL(readPairingAppLink(input.url) ?? input.url);
-        return resolveRemotePairingTarget({
-          pairingUrl: setPairingTokenOnUrl(url, input.pairingCode).toString(),
+    const clients = yield* Effect.acquireRelease(
+      Effect.sync(() => new Map() as typeof tlsClients),
+      (clients) =>
+        Effect.promise(() =>
+          Promise.all([...clients.values()].map(({ client }) => client.close())).then(
+            () => undefined,
+          ),
+        ),
+    );
+    const targets = yield* Effect.forEach(
+      [input.url, ...(input.alternateUrls ?? [])],
+      (value, index) =>
+        Effect.try({
+          try: () => {
+            const url = new URL(readPairingAppLink(value) ?? value);
+            return resolveRemotePairingTarget({
+              pairingUrl: setPairingTokenOnUrl(url, input.pairingCode).toString(),
+            });
+          },
+          catch: (cause) =>
+            new PeerLinkError({
+              reason: "unreachable",
+              message: "The peer pairing address is invalid.",
+              cause,
+            }),
+        }).pipe(index === 0 ? Effect.map(Option.some) : Effect.option),
+    );
+    const resolved = targets.flatMap(Option.toArray);
+    const credentials = new Map<string, PeerCredential>();
+    for (const target of resolved) {
+      if (target.tls === undefined) continue;
+      if (
+        input.expectedEnvironmentId !== undefined &&
+        target.tls.environmentId !== input.expectedEnvironmentId
+      ) {
+        return yield* new PeerLinkError({
+          reason: "incompatible",
+          message: "The pairing link belongs to a different environment.",
         });
-      },
-      catch: (cause) =>
-        new PeerLinkError({
-          reason: "unreachable",
-          message: "The peer pairing address is invalid.",
-          cause,
-        }),
-    });
-    const credential: PeerCredential | undefined =
-      target.tls === undefined
-        ? undefined
-        : { token: "", origin: new URL(target.httpBaseUrl).origin, tls: target.tls };
-    if (
-      target.tls !== undefined &&
-      input.expectedEnvironmentId !== undefined &&
-      target.tls.environmentId !== input.expectedEnvironmentId
-    ) {
-      return yield* new PeerLinkError({
-        reason: "incompatible",
-        message: "The pairing link belongs to a different environment.",
-      });
+      }
+      const origin = new URL(target.httpBaseUrl).origin;
+      credentials.set(origin, { token: "", origin, tls: target.tls });
     }
-    const urls = [new URL(target.httpBaseUrl).origin, ...(input.alternateUrls ?? [])];
-    // The user picked a machine: link through the addresses that prove to
-    // be it, so a reused LAN address never receives the pairing code.
+    const urls = resolved.map((target) => new URL(target.httpBaseUrl).origin);
     const { primary, peer, origins } =
       input.expectedEnvironmentId === undefined
-        ? yield* answeringAt(urls, credential)
+        ? yield* answeringAt(urls, credentials, clients)
         : yield* answeringAs(
             urls,
             input.expectedEnvironmentId,
             input.expectedLabel ?? input.expectedEnvironmentId,
-            credential,
+            credentials,
+            clients,
           );
-    if (target.tls !== undefined && peer.environmentId !== target.tls.environmentId) {
+    const credential = credentials.get(primary);
+    if (
+      credential !== undefined &&
+      "tls" in credential &&
+      peer.environmentId !== credential.tls.environmentId
+    ) {
       return yield* new PeerLinkError({
         reason: "incompatible",
         message: "The peer does not match the pairing link's environment.",
@@ -552,7 +575,7 @@ const make = Effect.gen(function* () {
         message: `${peer.label} runs a T3 Code version that cannot keep a linked agent's limits. Update it, then link again.`,
       });
     }
-    const issued = yield* signIn(primary, input, `T3 Code · ${self.label}`, credential);
+    const issued = yield* signIn(primary, input, `T3 Code · ${self.label}`, credential, clients);
     const now = yield* DateTime.now;
     const linked: PeerLink = {
       environmentId: peer.environmentId,
@@ -609,7 +632,7 @@ const make = Effect.gen(function* () {
     }
     yield* closeTlsClients(peer.environmentId);
     return linked;
-  });
+  }, Effect.scoped);
 
   const describeUrl: PeerLinks["Service"]["describe"] = (url) =>
     peerOrigin(url).pipe(

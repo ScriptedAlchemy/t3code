@@ -9,6 +9,8 @@ import {
   type ServerConfig,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import { setPairingTlsTrustOnUrl } from "@t3tools/shared/remote";
+import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
 
 import type { EnvironmentPresentation } from "./connection/presentation.ts";
 import { connectionRoutes, routeHttpBaseUrl } from "./connection/routes.ts";
@@ -93,12 +95,50 @@ export function linkableMachines(input: {
   const saved = input.environments
     .filter((environment) => environment.environmentId !== input.threadEnvironmentId)
     .map((environment) => {
-      const reported = (environment.serverConfig?.directEndpoints ?? []).map(
-        (endpoint) => endpoint.httpBaseUrl,
+      const savedRoutes = connectionRoutes(environment.entry);
+      const trustByOrigin = new Map(
+        savedRoutes.flatMap((route) => {
+          const profile = Option.getOrNull(route.profile);
+          const url = routeHttpBaseUrl(route);
+          if (
+            profile?._tag !== "BearerConnectionProfile" ||
+            profile.tls === undefined ||
+            profile.tls.environmentId !== environment.environmentId ||
+            url === null
+          )
+            return [];
+          const parsed = URL.parse(url);
+          return parsed?.protocol === "https:" ? [[parsed.origin, profile.tls] as const] : [];
+        }),
       );
-      const routes = connectionRoutes(environment.entry).flatMap((route) => {
+      if (
+        environment.entry.target._tag === "PrimaryConnectionTarget" &&
+        isLocalLoopbackHost(URL.parse(environment.entry.target.httpBaseUrl)?.hostname ?? "") &&
+        environment.connection.phase === "connected"
+      ) {
+        for (const endpoint of environment.serverConfig?.directEndpoints ?? []) {
+          const url = URL.parse(endpoint.httpBaseUrl);
+          if (
+            url?.protocol === "https:" &&
+            endpoint.tls?.environmentId === environment.environmentId
+          ) {
+            trustByOrigin.set(url.origin, endpoint.tls);
+          }
+        }
+      }
+      const withTrust = (url: string) => {
+        const parsed = URL.parse(url);
+        const trust = parsed === null ? undefined : trustByOrigin.get(parsed.origin);
+        return parsed !== null && trust !== undefined
+          ? setPairingTlsTrustOnUrl(parsed, trust).toString()
+          : url;
+      };
+      const reported = (environment.serverConfig?.directEndpoints ?? []).map((endpoint) =>
+        withTrust(endpoint.httpBaseUrl),
+      );
+      const routes = savedRoutes.flatMap((route) => {
         const url = route.target._tag === "RelayConnectionTarget" ? null : routeHttpBaseUrl(route);
-        return url === null ? [] : [url];
+        return url === null ? [] : [withTrust(url)];
       });
       const connect = input.connect.get(environment.environmentId)?.environment.endpoint;
       return {

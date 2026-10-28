@@ -542,10 +542,14 @@ it.live("links a native HTTPS peer from enrolled trust and revokes its transport
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(() => makeTlsFixture());
       const incorrect = yield* Effect.promise(() => makeTlsFixture());
+      let onSocketClosed: (() => void) | undefined;
       const server = yield* Layer.build(
         NodeHttpServer.layer(
           () => {
             const https = NodeHttps.createServer(fixture);
+            https.on("secureConnection", (socket) => {
+              if (onSocketClosed !== undefined) socket.once("close", onSocketClosed);
+            });
             https.prependListener("request", (request) => {
               request.headers["x-forwarded-proto"] = "https";
             });
@@ -606,9 +610,39 @@ it.live("links a native HTTPS peer from enrolled trust and revokes its transport
         .link({ url: urlFor(fixture.tls), pairingCode: pairing.credential, access: "auto" })
         .pipe(Effect.flip);
       expect(mismatch.reason).toBe("incompatible");
+      const alternateMismatch = yield* a.links
+        .link({
+          url: "https://127.0.0.1:1",
+          alternateUrls: [urlFor(fixture.tls)],
+          expectedEnvironmentId: box.environmentId,
+          pairingCode: pairing.credential,
+          access: "auto",
+        })
+        .pipe(Effect.flip);
+      expect(alternateMismatch.reason).toBe("incompatible");
       expect(yield* linkedSessions(b)).toEqual([]);
+      const socketClosed = new Promise<void>((resolve) => {
+        onSocketClosed = resolve;
+      });
+      const rejected = yield* a.links
+        .link({
+          url: urlFor({ ...fixture.tls, environmentId: box.environmentId }),
+          pairingCode: "wrong-code",
+          access: "auto",
+        })
+        .pipe(Effect.flip);
+      expect(rejected.reason).toBe("pairing_rejected");
+      yield* Effect.promise(() => socketClosed);
+      onSocketClosed = undefined;
       const linked = yield* a.links.link({
-        url: urlFor({ ...fixture.tls, environmentId: box.environmentId }),
+        url: "https://127.0.0.1:1",
+        alternateUrls: [
+          setPairingTlsTrustOnUrl(new URL(origin), {
+            ...fixture.tls,
+            environmentId: box.environmentId,
+          }).toString(),
+        ],
+        expectedEnvironmentId: box.environmentId,
         pairingCode: pairing.credential,
         access: "auto",
       });
