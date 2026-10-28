@@ -151,9 +151,16 @@ const make = Effect.gen(function* () {
     token: string,
     body: unknown,
     headers: Record<string, string>,
+    fetch?: typeof globalThis.fetch,
   ) {
     const encoded = yield* encodeRequest(body).pipe(Effect.orDie);
-    return yield* peerHttpClient.execute(
+    const client =
+      fetch === undefined
+        ? peerHttpClient
+        : HttpClient.transform(peerHttpClient, (response) =>
+            Effect.provideService(response, FetchHttpClient.Fetch, fetch),
+          );
+    return yield* client.execute(
       HttpClientRequest.post(`${url}/mcp`).pipe(
         HttpClientRequest.setHeaders({
           accept: "application/json, text/event-stream",
@@ -169,6 +176,7 @@ const make = Effect.gen(function* () {
     url: string,
     token: string,
     limitHeader: Record<string, string>,
+    fetch?: typeof globalThis.fetch,
   ) {
     const initialized = yield* post(
       url,
@@ -184,6 +192,7 @@ const make = Effect.gen(function* () {
         },
       },
       limitHeader,
+      fetch,
     );
     if (initialized.status === 403) return yield* linkedEnvironmentsOffThere;
     const sessionId = initialized.headers["mcp-session-id"];
@@ -201,6 +210,7 @@ const make = Effect.gen(function* () {
       token,
       { jsonrpc: "2.0", method: "notifications/initialized" },
       { ...limitHeader, "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION },
+      fetch,
     );
     return sessionId;
   });
@@ -226,12 +236,19 @@ const make = Effect.gen(function* () {
             params: { name: input.tool, arguments: input.arguments },
           },
           { ...limitHeader, "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION },
+          resolved.fetch,
         );
       const existing = (yield* Ref.get(sessions)).get(sessionKey);
-      const sessionId = existing ?? (yield* openSession(resolved.url, resolved.token, limitHeader));
+      const sessionId =
+        existing ?? (yield* openSession(resolved.url, resolved.token, limitHeader, resolved.fetch));
       let response = yield* callOnce(sessionId);
       if (response.status === 404) {
-        const renewed = yield* openSession(resolved.url, resolved.token, limitHeader);
+        const renewed = yield* openSession(
+          resolved.url,
+          resolved.token,
+          limitHeader,
+          resolved.fetch,
+        );
         yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey, renewed));
         response = yield* callOnce(renewed);
       } else if (existing === undefined) {

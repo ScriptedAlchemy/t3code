@@ -1,3 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The native LAN trust test uses a real HTTPS listener.
+import * as NodeHttps from "node:https";
+import {
+  buildPairingAppLink,
+  setPairingTlsTrustOnUrl,
+  setPairingTokenOnUrl,
+} from "@t3tools/shared/remote";
+import { makeTlsFixture } from "../../../../packages/shared/src/nodeLanTls.testkit.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import { type ExecutionEnvironmentDescriptor, OrchestratorMcpFailure } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -525,4 +533,67 @@ it.effect("linking a picked machine that answers nowhere names it and links noth
       expect(refused.message).toContain("plain http");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.live("links a native HTTPS peer from enrolled trust and revokes its transport on unlink", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() => makeTlsFixture());
+      const incorrect = yield* Effect.promise(() => makeTlsFixture());
+      const server = yield* Layer.build(
+        NodeHttpServer.layer(
+          () => {
+            const https = NodeHttps.createServer(fixture);
+            https.prependListener("request", (request) => {
+              request.headers["x-forwarded-proto"] = "https";
+            });
+            return https;
+          },
+          { host: "127.0.0.1", port: 0 },
+        ),
+      );
+      const b = yield* serveB(box).pipe(Effect.provideContext(server));
+      const a = yield* makeA(laptop);
+      const origin = b.url.replace("http:", "https:");
+      const pairing = yield* b.auth.issuePairingCredential();
+      const urlFor = (tls: typeof fixture.tls) =>
+        buildPairingAppLink(
+          setPairingTlsTrustOnUrl(
+            setPairingTokenOnUrl(new URL(origin), pairing.credential),
+            tls,
+          ).toString(),
+        );
+      const refused = yield* a.links
+        .link({
+          url: urlFor({ ...incorrect.tls, environmentId: box.environmentId }),
+          pairingCode: pairing.credential,
+          access: "auto",
+        })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("not_a_t3_environment");
+      expect(yield* Ref.get(b.probes)).toBe(0);
+      expect(yield* linkedSessions(b)).toEqual([]);
+      const mismatch = yield* a.links
+        .link({ url: urlFor(fixture.tls), pairingCode: pairing.credential, access: "auto" })
+        .pipe(Effect.flip);
+      expect(mismatch.reason).toBe("incompatible");
+      expect(yield* linkedSessions(b)).toEqual([]);
+      const linked = yield* a.links.link({
+        url: urlFor({ ...fixture.tls, environmentId: box.environmentId }),
+        pairingCode: pairing.credential,
+        access: "auto",
+      });
+      expect(linked.urls).toEqual([origin]);
+      expect((yield* a.links.list).map((entry) => entry.status)).toEqual(["reachable"]);
+      expect(yield* probe(a)).toEqual({ caller: "T3 Code · Laptop", modes: "auto/default" });
+      const resolved = yield* a.links.resolve(box.environmentId);
+      const fetch = resolved.fetch;
+      if (fetch === undefined) return yield* Effect.die("Expected enrolled HTTPS transport");
+      expect(yield* a.links.unlink(box.environmentId)).toBe(true);
+      yield* Effect.promise(() => expect(fetch(origin)).rejects.toThrow("trust was revoked"));
+      expect((yield* a.links.resolve(box.environmentId).pipe(Effect.flip)).reason).toBe(
+        "unknown_link",
+      );
+    }),
+  ),
 );

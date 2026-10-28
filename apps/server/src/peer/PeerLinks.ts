@@ -4,6 +4,7 @@ import {
   AuthMcpTokenError,
   EnvironmentHttpApi,
   EnvironmentId,
+  LanTlsTrust,
   type ExecutionEnvironmentCapabilities,
   MCP_PEER_LINK_SOFTWARE_ID,
   type PeerLink,
@@ -29,6 +30,13 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassification";
 
+import { createLanTlsClient } from "@t3tools/shared/nodeLanTls";
+import {
+  readPairingAppLink,
+  resolveRemotePairingTarget,
+  setPairingTokenOnUrl,
+} from "@t3tools/shared/remote";
+
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -48,6 +56,7 @@ export interface ResolvedPeerLink {
   /** The first address that answered as this peer. */
   readonly url: string;
   readonly token: string;
+  readonly fetch?: typeof globalThis.fetch;
 }
 
 export const LINKED_ENVIRONMENTS_OFF =
@@ -108,6 +117,16 @@ interface PeerLinkRow {
 
 const decodeUrls = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 const encodeUrls = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+const TlsCredential = Schema.Struct({
+  token: Schema.String,
+  origin: Schema.String,
+  tls: LanTlsTrust,
+});
+const decodeTlsCredential = Schema.decodeEffect(Schema.fromJsonString(TlsCredential));
+const encodeTlsCredential = Schema.encodeEffect(Schema.fromJsonString(TlsCredential));
+type TlsCredential = typeof TlsCredential.Type;
+type PeerCredential = { readonly token: string } | TlsCredential;
+
 const decodeAccess = Schema.decodeUnknownEffect(AuthMcpClientAccess);
 
 /** Fails with a fixed storage error that keeps its cause; the log gets the details. */
@@ -130,7 +149,7 @@ const failStorage = (cause: unknown) =>
  * code and then the link's token travel to it, so plain http is accepted only
  * where the network already encrypts: this machine, or a Tailscale address.
  */
-const peerOrigin = (url: string) => {
+const peerOrigin = (url: string): Effect.Effect<string, PeerLinkError> => {
   const parsed = URL.parse(url);
   if (parsed === null || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) {
     return Effect.fail(
@@ -183,14 +202,77 @@ const make = Effect.gen(function* () {
     Effect.provideService(response, FetchHttpClient.RequestInit, { redirect: "manual" }),
   );
 
-  const clientFor = (origin: string) =>
-    HttpApiClient.make(EnvironmentHttpApi, { baseUrl: origin }).pipe(
-      Effect.provideService(HttpClient.HttpClient, peerHttpClient),
+  const tlsClients = new Map<
+    string,
+    { environmentId: EnvironmentId; client: ReturnType<typeof createLanTlsClient> }
+  >();
+  const closeTlsClients = (environmentId?: EnvironmentId) =>
+    Effect.promise(async () => {
+      const closing = [...tlsClients].filter(
+        ([, entry]) => environmentId === undefined || entry.environmentId === environmentId,
+      );
+      for (const [key] of closing) tlsClients.delete(key);
+      await Promise.all(closing.map(([, entry]) => entry.client.close()));
+    });
+  yield* Effect.addFinalizer(() => closeTlsClients());
+
+  const fetchFor = (origin: string, credential?: PeerCredential) =>
+    Effect.try({
+      try: () => {
+        if (credential === undefined || !("tls" in credential) || credential.origin !== origin)
+          return undefined;
+        const key = `${origin} ${credential.tls.environmentId} ${credential.tls.certificateAuthority}`;
+        let entry = tlsClients.get(key);
+        if (entry === undefined) {
+          entry = {
+            environmentId: credential.tls.environmentId,
+            client: createLanTlsClient({ httpBaseUrl: origin, tls: credential.tls }),
+          };
+          tlsClients.set(key, entry);
+        }
+        return entry.client.fetch;
+      },
+      catch: (cause) =>
+        new PeerLinkError({
+          reason: "unreachable",
+          message: "The peer's LAN TLS trust is invalid or expired.",
+          cause,
+        }),
+    });
+
+  const clientFor = Effect.fn("PeerLinks.clientFor")(function* (
+    origin: string,
+    credential?: PeerCredential,
+  ) {
+    const fetch = yield* fetchFor(origin, credential);
+    const client =
+      fetch === undefined
+        ? peerHttpClient
+        : HttpClient.transform(peerHttpClient, (response) =>
+            Effect.provideService(response, FetchHttpClient.Fetch, fetch),
+          );
+    return yield* HttpApiClient.make(EnvironmentHttpApi, { baseUrl: origin }).pipe(
+      Effect.provideService(HttpClient.HttpClient, client),
+    );
+  });
+
+  const readCredential = (row: PeerLinkRow) =>
+    secrets.get(row.secret_name).pipe(
+      Effect.catch(failStorage),
+      Effect.flatMap((stored) => {
+        if (Option.isNone(stored)) return Effect.succeedNone;
+        const text = new TextDecoder().decode(stored.value);
+        return (
+          text.startsWith("{")
+            ? decodeTlsCredential(text).pipe(Effect.catch(failStorage))
+            : Effect.succeed({ token: text })
+        ).pipe(Effect.asSome);
+      }),
     );
 
   /** The environment answering at `origin`, or nothing when it does not answer as T3 Code. */
-  const describe = (origin: string) =>
-    clientFor(origin).pipe(
+  const describe = (origin: string, credential?: PeerCredential) =>
+    clientFor(origin, credential).pipe(
       Effect.flatMap((client) => client.metadata.descriptor()),
       Effect.timeout(probeTimeout(origin)),
       Effect.option,
@@ -225,8 +307,13 @@ const make = Effect.gen(function* () {
 
   /** Signs in to the peer's `/mcp` with a pairing code: register, decide, exchange. */
   const signIn = Effect.fn("PeerLinks.signIn")(
-    function* (origin: string, input: PeerLinkCreateInput, clientName: string) {
-      const client = yield* clientFor(origin);
+    function* (
+      origin: string,
+      input: PeerLinkCreateInput,
+      clientName: string,
+      credential?: PeerCredential,
+    ) {
+      const client = yield* clientFor(origin, credential);
       // Only the peer's own refusals are rejections. A dropped connection or
       // an answer this version cannot read is classified below.
       const registered = yield* client.mcpOAuth
@@ -349,13 +436,14 @@ const make = Effect.gen(function* () {
     urls: ReadonlyArray<string>,
     environmentId: EnvironmentId,
     name: string,
+    credential?: PeerCredential,
   ) {
     const checked = yield* Effect.forEach(
       urls,
       (url) =>
         Effect.gen(function* () {
           const origin = yield* peerOrigin(url);
-          return { origin, descriptor: yield* describe(origin) };
+          return { origin, descriptor: yield* describe(origin, credential) };
         }).pipe(Effect.result),
       { concurrency: "unbounded" },
     );
@@ -385,10 +473,13 @@ const make = Effect.gen(function* () {
   });
 
   /** The peer at `url`, with every address checked for credentials first. */
-  const answeringAt = Effect.fn("PeerLinks.answeringAt")(function* (urls: ReadonlyArray<string>) {
+  const answeringAt = Effect.fn("PeerLinks.answeringAt")(function* (
+    urls: ReadonlyArray<string>,
+    credential?: PeerCredential,
+  ) {
     const origins = yield* Effect.forEach(urls, peerOrigin);
     const primary = origins[0]!;
-    const descriptor = yield* describe(primary);
+    const descriptor = yield* describe(primary, credential);
     if (Option.isNone(descriptor)) {
       return yield* new PeerLinkError({
         reason: "not_a_t3_environment",
@@ -402,17 +493,52 @@ const make = Effect.gen(function* () {
     if (!(yield* enabled)) {
       return yield* new PeerLinkError({ reason: "disabled", message: LINKED_ENVIRONMENTS_OFF });
     }
-    const urls = [input.url, ...(input.alternateUrls ?? [])];
+    const target = yield* Effect.try({
+      try: () => {
+        const url = new URL(readPairingAppLink(input.url) ?? input.url);
+        return resolveRemotePairingTarget({
+          pairingUrl: setPairingTokenOnUrl(url, input.pairingCode).toString(),
+        });
+      },
+      catch: (cause) =>
+        new PeerLinkError({
+          reason: "unreachable",
+          message: "The peer pairing address is invalid.",
+          cause,
+        }),
+    });
+    const credential: PeerCredential | undefined =
+      target.tls === undefined
+        ? undefined
+        : { token: "", origin: new URL(target.httpBaseUrl).origin, tls: target.tls };
+    if (
+      target.tls !== undefined &&
+      input.expectedEnvironmentId !== undefined &&
+      target.tls.environmentId !== input.expectedEnvironmentId
+    ) {
+      return yield* new PeerLinkError({
+        reason: "incompatible",
+        message: "The pairing link belongs to a different environment.",
+      });
+    }
+    const urls = [new URL(target.httpBaseUrl).origin, ...(input.alternateUrls ?? [])];
     // The user picked a machine: link through the addresses that prove to
     // be it, so a reused LAN address never receives the pairing code.
     const { primary, peer, origins } =
       input.expectedEnvironmentId === undefined
-        ? yield* answeringAt(urls)
+        ? yield* answeringAt(urls, credential)
         : yield* answeringAs(
             urls,
             input.expectedEnvironmentId,
             input.expectedLabel ?? input.expectedEnvironmentId,
+            credential,
           );
+    if (target.tls !== undefined && peer.environmentId !== target.tls.environmentId) {
+      return yield* new PeerLinkError({
+        reason: "incompatible",
+        message: "The peer does not match the pairing link's environment.",
+      });
+    }
     const self = yield* environment.getDescriptor;
     if (peer.environmentId === self.environmentId) {
       return yield* new PeerLinkError({
@@ -426,7 +552,7 @@ const make = Effect.gen(function* () {
         message: `${peer.label} runs a T3 Code version that cannot keep a linked agent's limits. Update it, then link again.`,
       });
     }
-    const issued = yield* signIn(primary, input, `T3 Code · ${self.label}`);
+    const issued = yield* signIn(primary, input, `T3 Code · ${self.label}`, credential);
     const now = yield* DateTime.now;
     const linked: PeerLink = {
       environmentId: peer.environmentId,
@@ -441,8 +567,14 @@ const make = Effect.gen(function* () {
     // The token goes under a name of its own before the row points at it,
     // so the row and its token are replaced together.
     const secretName = yield* newSecretName;
+    const secret =
+      credential === undefined || !("tls" in credential)
+        ? issued.access_token
+        : yield* encodeTlsCredential({ ...credential, token: issued.access_token }).pipe(
+            Effect.catch(failStorage),
+          );
     yield* secrets
-      .set(secretName, new TextEncoder().encode(issued.access_token))
+      .set(secretName, new TextEncoder().encode(secret))
       .pipe(Effect.catch(failStorage));
     // A token no row names could never be removed.
     const previous = yield* Effect.gen(function* () {
@@ -475,21 +607,22 @@ const make = Effect.gen(function* () {
     if (Option.isSome(previous) && previous.value.secret_name !== secretName) {
       yield* secrets.remove(previous.value.secret_name).pipe(Effect.ignore);
     }
+    yield* closeTlsClients(peer.environmentId);
     return linked;
   });
 
   const describeUrl: PeerLinks["Service"]["describe"] = (url) =>
     peerOrigin(url).pipe(
-      Effect.flatMap(describe),
+      Effect.flatMap((origin) => describe(origin)),
       Effect.map(Option.map((peer) => ({ environmentId: peer.environmentId, label: peer.label }))),
       Effect.orElseSucceed(() => Option.none()),
     );
 
-  const statusOf = (link: PeerLink, now: DateTime.Utc) =>
+  const statusOf = (link: PeerLink, now: DateTime.Utc, credential?: PeerCredential) =>
     DateTime.isLessThanOrEqualTo(link.expiresAt, now)
       ? Effect.succeed<PeerLinkStatus>("expired")
       : Effect.findFirst(link.urls, (url) =>
-          describe(url).pipe(
+          describe(url, credential).pipe(
             Effect.map(
               (found) => Option.isSome(found) && found.value.environmentId === link.environmentId,
             ),
@@ -501,11 +634,17 @@ const make = Effect.gen(function* () {
         );
 
   const list: PeerLinks["Service"]["list"] = Effect.gen(function* () {
-    const links = yield* Effect.forEach(yield* readRows, toLink);
+    const rows = yield* readRows;
     const now = yield* DateTime.now;
     return yield* Effect.forEach(
-      links,
-      (link) => statusOf(link, now).pipe(Effect.map((status) => ({ ...link, status }))),
+      rows,
+      (row) =>
+        Effect.gen(function* () {
+          const link = yield* toLink(row);
+          const credential = yield* readCredential(row);
+          const status = yield* statusOf(link, now, Option.getOrUndefined(credential));
+          return { ...link, status };
+        }),
       { concurrency: "unbounded" },
     );
   });
@@ -526,6 +665,7 @@ const make = Effect.gen(function* () {
         DELETE FROM peer_environment_links WHERE environment_id = ${environmentId}
         RETURNING secret_name
       `.pipe(Effect.catch(failStorage));
+      yield* closeTlsClients(environmentId);
       for (const row of deleted) {
         yield* secrets.remove(row.secret_name).pipe(Effect.catch(failStorage));
       }
@@ -557,7 +697,7 @@ const make = Effect.gen(function* () {
           message: `The link to ${link.label} was made by an older T3 Code. Link it again with a new pairing code from ${link.label}.`,
         });
       }
-      const stored = yield* secrets.get(row.value.secret_name).pipe(Effect.catch(failStorage));
+      const stored = yield* readCredential(row.value);
       if (Option.isNone(stored)) {
         return yield* new PeerLinkError({
           reason: "unknown_link",
@@ -568,7 +708,7 @@ const make = Effect.gen(function* () {
       // reused LAN address or a moved hostname never receives it.
       let fenced = true;
       const url = yield* Effect.findFirst(link.urls, (candidate) =>
-        describe(candidate).pipe(
+        describe(candidate, stored.value).pipe(
           Effect.map((found) => {
             if (Option.isNone(found) || found.value.environmentId !== environmentId) return false;
             fenced = linkLimitsHold(found.value);
@@ -590,7 +730,13 @@ const make = Effect.gen(function* () {
           message: `${link.label} runs a T3 Code version that cannot keep a linked agent's limits. Update it, then link again.`,
         });
       }
-      return { link, url: url.value, token: new TextDecoder().decode(stored.value) };
+      const fetch = yield* fetchFor(url.value, stored.value);
+      return {
+        link,
+        url: url.value,
+        token: stored.value.token,
+        ...(fetch === undefined ? {} : { fetch }),
+      };
     },
   );
 
