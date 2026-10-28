@@ -2966,6 +2966,131 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
+  it.effect("keeps agent targets and capabilities at standard speed when fast mode is off", () =>
+    Effect.gen(function* () {
+      const inherited = {
+        instanceId: codexInstanceId,
+        model: "gpt-5.4",
+        options: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "priority" },
+        ],
+      };
+      const commands: OrchestrationV2ServerCommand[] = [];
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        origin: "app_owned",
+        childThreadId,
+        providerInstanceId: codexInstanceId,
+        model: inherited.model,
+        status: "running",
+        result: null,
+      };
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          assertProviderInstanceEnabled: () => Effect.void,
+          getThreadRecords: (threadId) =>
+            Effect.succeed(
+              threadId === parentThreadId
+                ? parentProjection(commands.length ? [task] : [], inherited)
+                : childProjection,
+            ),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              commands.push(command);
+              return {
+                sequence: 1,
+                storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+              } as never;
+            }),
+        }),
+        ServerSettings.layerTest({ agentFastModeEnabled: false }),
+        providerRegistryLayer([
+          {
+            ...providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: inherited.model,
+            }),
+            models: [
+              {
+                slug: inherited.model,
+                name: inherited.model,
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "reasoningEffort",
+                      label: "Effort",
+                      type: "select",
+                      options: [{ id: "high", label: "High" }],
+                    },
+                    { id: "fastMode", label: "Fast", type: "boolean" },
+                    {
+                      id: "serviceTier",
+                      label: "Tier",
+                      type: "select",
+                      currentValue: "priority",
+                      options: [
+                        { id: "default", label: "Standard", isDefault: true },
+                        { id: "priority", label: "Priority" },
+                        { id: "fast", label: "Fast" },
+                        { id: "flex", label: "Flex" },
+                      ],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ]),
+        adapterRegistryLayer([codexInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        for (const options of [
+          { serviceTier: "priority" },
+          { serviceTier: "fast" },
+          { fastMode: true },
+        ]) {
+          const error = yield* service
+            .delegateTask(scope, {
+              task: "Review the change.",
+              target: yield* decodeTarget({ options }),
+              mode: "async",
+            })
+            .pipe(Effect.flip);
+          assert.equal(error.code, "invalid_request");
+          assert.include(error.message, "fast mode is turned off for agents in Settings");
+        }
+        assert.deepEqual(commands, []);
+        const capabilities = yield* service.capabilities(scope);
+        assert.deepEqual(capabilities.inheritedOptions, [{ id: "reasoningEffort", value: "high" }]);
+        const descriptors = capabilities.providers[0]!.models[0]!.options!;
+        assert.isFalse(descriptors.some((option) => option.id === "fastMode"));
+        const tier = descriptors.find((option) => option.id === "serviceTier");
+        assert.deepEqual(tier?.values, ["default", "flex"]);
+        yield* service.delegateTask(scope, { task: "Review the change.", mode: "async" });
+        const command = commands[0];
+        assert.equal(command?.type, "delegated_task.request");
+        if (command?.type === "delegated_task.request") {
+          assert.deepEqual(command.modelSelection, {
+            ...inherited,
+            options: [{ id: "reasoningEffort", value: "high" }],
+          });
+        }
+        assert.deepEqual(inherited.options[1], { id: "serviceTier", value: "priority" });
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+    }),
+  );
+
   it.effect(
     "pstack Opus and Astra targets dispatch identically under Claude and Codex parents",
     () =>

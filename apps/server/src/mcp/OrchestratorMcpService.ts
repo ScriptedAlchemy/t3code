@@ -69,7 +69,15 @@ import {
   isOrchestrationV2WorkActive,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
-import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
+import {
+  getProviderOptionCurrentValue,
+  withoutFastProviderOptionDescriptors,
+} from "@t3tools/shared/model";
+import {
+  agentModelOptions,
+  agentModelSelection,
+  assertAgentModelOptions,
+} from "../provider/agentFastMode.ts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -1320,6 +1328,7 @@ const make = Effect.gen(function* () {
     }
 
     const requestedOptions = input.target?.options;
+    yield* assertAgentModelOptions(availability.settings, requestedOptions);
     if (requestedOptions !== undefined) {
       const descriptors = provider.models.find((candidate) => candidate.slug === model)
         ?.capabilities?.optionDescriptors;
@@ -1334,7 +1343,10 @@ const make = Effect.gen(function* () {
 
     const inheritsOptions =
       instanceId === inheritedSelection.instanceId && model === inheritedSelection.model;
-    let options = inheritsOptions ? inheritedSelection.options : undefined;
+    let options = agentModelOptions(
+      availability.settings,
+      inheritsOptions ? inheritedSelection.options : undefined,
+    );
     if (requestedOptions !== undefined) {
       const selections = new Map(
         (requestedOptions.length === 0 ? [] : (options ?? [])).map((selection) => [
@@ -1816,8 +1828,13 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
-      const modelSelection =
-        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
+      const settings = yield* serverSettings.getSettings.pipe(
+        Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
+      );
+      const modelSelection = agentModelSelection(
+        settings,
+        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project)),
+      );
       const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
       const title =
         input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
@@ -2091,7 +2108,7 @@ const make = Effect.gen(function* () {
         parentThreadId: parent?.thread.id ?? null,
         inheritedProviderInstanceId: inherited?.instanceId ?? null,
         inheritedModel: inherited?.model ?? null,
-        inheritedOptions: inherited?.options ?? [],
+        inheritedOptions: agentModelOptions(settings, inherited?.options) ?? [],
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
         providers: providers
@@ -2129,7 +2146,10 @@ const make = Effect.gen(function* () {
               driverKind: provider.driver,
               displayName: provider.displayName ?? null,
               models: listed.map((model) => {
-                const options = model.capabilities?.optionDescriptors ?? [];
+                const descriptors = model.capabilities?.optionDescriptors ?? [];
+                const options = settings.agentFastModeEnabled
+                  ? descriptors
+                  : withoutFastProviderOptionDescriptors(descriptors);
                 return {
                   id: model.slug,
                   ...(model.name.toLowerCase() === model.slug.toLowerCase()

@@ -16,6 +16,7 @@ import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.t
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import { agentModelSelection, assertAgentModelOptions } from "../../../provider/agentFastMode.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
@@ -153,18 +154,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         // A caller outside a thread has nothing to inherit, so it starts with the
         // project's effective defaults, as the composer does. Its mode stays
         // within the ceiling it was approved with.
+        const settings = yield* ServerSettings.ServerSettingsService.pipe(
+          Effect.flatMap((service) => service.getSettings),
+          Effect.mapError(unavailable),
+        );
+        if (!replaying && !(linkOrigin !== undefined && input.modelOptionsInherited === true))
+          yield* assertAgentModelOptions(settings, input.modelSelection?.options);
         const projectDefaults =
           caller === undefined && !replaying
-            ? yield* ServerSettings.ServerSettingsService.pipe(
-                Effect.flatMap((settings) => settings.getSettings),
-                Effect.mapError(unavailable),
-                Effect.flatMap((settings) =>
-                  Effect.map(
-                    readProject,
-                    (project) => resolveProjectSettings(settings, projectId, project).settings,
-                  ),
-                ),
-              )
+            ? resolveProjectSettings(settings, projectId, yield* readProject).settings
             : undefined;
         const modelSelection =
           input.modelSelection ??
@@ -189,7 +187,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           threadId,
           projectId,
           title: input.title,
-          modelSelection,
+          modelSelection: replaying
+            ? modelSelection
+            : agentModelSelection(settings, modelSelection),
           runtimeMode: startedRuntimeMode,
           interactionMode,
           workspaceStrategy: input.workspaceStrategy ?? { type: "root" },

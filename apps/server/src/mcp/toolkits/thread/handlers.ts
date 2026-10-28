@@ -20,6 +20,8 @@ import {
   readThread,
   unavailable,
 } from "../../threadAccess.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
+import { assertAgentModelOptions } from "../../../provider/agentFastMode.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
@@ -213,6 +215,11 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     writesThread((input) =>
       Effect.gen(function* () {
         const modelSelection = yield* required(input.modelSelection, "modelSelection");
+        const settings = yield* ServerSettings.ServerSettingsService.pipe(
+          Effect.flatMap((service) => service.getSettings),
+          Effect.mapError(unavailable),
+        );
+        yield* assertAgentModelOptions(settings, modelSelection.options);
         const {
           threads,
           projection: { thread },

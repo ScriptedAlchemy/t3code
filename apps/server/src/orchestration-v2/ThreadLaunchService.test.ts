@@ -2347,3 +2347,30 @@ it.effect("replays an accepted send after the project disables the instance", ()
     }
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
+
+it.effect("agent launches strip fast selections at execution while user launches keep them", () =>
+  Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    for (const createdBy of ["agent", "user"] as const) {
+      const input = {
+        ...launchInput({ command: `fast-policy-${createdBy}`, thread: `fast-policy-${createdBy}` }),
+        title: "Fast policy",
+        modelSelection: {
+          ...modelSelection,
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "priority" },
+          ],
+        },
+        createdBy,
+      };
+      const launched = yield* launches.launch(input);
+      assert.deepEqual(
+        launched.projection.thread.modelSelection.options,
+        createdBy === "agent"
+          ? [{ id: "reasoningEffort", value: "high" }]
+          : input.modelSelection.options,
+      );
+    }
+  }).pipe(Effect.provide(makeHarness({ serverSettings: { agentFastModeEnabled: false } }).layer)),
+);

@@ -172,6 +172,7 @@ import {
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
+import { agentModelSelection } from "../provider/agentFastMode.ts";
 import { assistedLearningEffects } from "../project/knowledge/assistedLearningSchedule.ts";
 
 const isMessageQuestionAnswer = Schema.is(
@@ -4310,7 +4311,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       threadId: command.targetThreadId,
       providerInstanceId: targetThread.providerInstanceId,
       occurredAt: now,
-      payload: targetThread,
+      payload:
+        command.createdBy === "agent"
+          ? {
+              ...targetThread,
+              modelSelection: agentModelSelection(
+                yield* serverSettings.getSettings.pipe(Effect.orDie),
+                targetThread.modelSelection,
+              ),
+            }
+          : targetThread,
     });
     yield* emitEvent({
       type: "context-transfer.created",

@@ -374,3 +374,71 @@ it.effect.each(["", " ,,", " # comment"])(
       assert.include(result.diagnostics.join("\n"), "empty role architect runners; using defaults");
     }),
 );
+
+it.effect(
+  "drops role fast options and provider fast defaults with a diagnostic when disabled",
+  () =>
+    Effect.sync(() => {
+      for (const file of [
+        undefined,
+        parseModelsFile(
+          "architect runners: claudeAgent/claude-opus-5-5 effort=xhigh fastMode=true, codex/gpt-6-astra reasoningEffort=high serviceTier=priority",
+        ),
+      ]) {
+        const result = resolveRoles({
+          file,
+          defaults,
+          providers,
+          capableInstanceIds,
+          agentFastModeEnabled: false,
+        });
+        assert.deepEqual(
+          result.roles[0]!.seats.map((seat) =>
+            seat.kind === "target" ? seat.target.options : seat,
+          ),
+          [[{ id: "effort", value: "xhigh" }], [{ id: "reasoningEffort", value: "high" }]],
+        );
+        assert.isTrue(
+          result.diagnostics.some((note) =>
+            note.includes("fast mode is turned off for agents in Settings"),
+          ),
+        );
+        assert.isFalse(result.diagnostics.some((note) => note.startsWith("Fallback:")));
+      }
+      const fastDefault = provider("codex", "codex", "gpt-6-astra", [
+        effort("reasoningEffort"),
+        {
+          id: "serviceTier",
+          label: "Tier",
+          type: "select",
+          currentValue: "priority",
+          options: [
+            { id: "default", label: "Default" },
+            { id: "priority", label: "Priority", isDefault: true },
+            { id: "flex", label: "Flex" },
+          ],
+        },
+      ]);
+      const result = resolveRoles({
+        file: parseModelsFile("architect runners: codex/gpt-6-astra"),
+        defaults,
+        providers: [fastDefault],
+        capableInstanceIds,
+        agentFastModeEnabled: false,
+      });
+      assert.deepEqual(result.roles[0]!.seats, [
+        {
+          kind: "target",
+          target: {
+            providerInstanceId: "codex",
+            model: "gpt-6-astra",
+            options: [
+              { id: "reasoningEffort", value: "medium" },
+              { id: "serviceTier", value: "default" },
+            ],
+          },
+        },
+      ]);
+      assert.include(result.diagnostics[0]!, "fast mode is turned off for agents in Settings");
+    }),
+);

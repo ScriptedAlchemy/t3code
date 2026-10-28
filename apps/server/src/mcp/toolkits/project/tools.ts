@@ -132,6 +132,8 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     ),
     title: TrimmedNonEmptyString,
     modelSelection: Schema.optional(ModelSelection),
+    /** Set by a linked delegation when its options came from the parent; ignored otherwise. */
+    modelOptionsInherited: Schema.optional(Schema.Boolean),
     runtimeMode: Schema.optional(RuntimeMode),
     interactionMode: Schema.optional(ProviderInteractionMode),
     workspaceStrategy: Schema.optional(

@@ -297,6 +297,7 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
         packDir,
         modelsPath,
         resolved: resolveRoles({
+          agentFastModeEnabled: currentSettings.agentFastModeEnabled,
           file: file === undefined ? undefined : parseModelsFile(file),
           defaults: pack.defaults,
           ...providers,

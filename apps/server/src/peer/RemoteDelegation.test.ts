@@ -202,14 +202,14 @@ const boxProjects: ReadonlyArray<Project> = [
   },
 ];
 
-const serveBox = (thread: BoxThread, descriptor = box) => {
-  return servePeer(descriptor, boxToolkitLayer(thread));
+const serveBox = (thread: BoxThread, descriptor = box, agentFastModeEnabled = true) => {
+  return servePeer(descriptor, boxToolkitLayer(thread, agentFastModeEnabled));
 };
 
 const boxRunId = RunId.make("run:box");
 const boxLaterRunId = RunId.make("run:box-later");
 
-const boxToolkitLayer = (thread: BoxThread) => {
+const boxToolkitLayer = (thread: BoxThread, agentFastModeEnabled = true) => {
   const runId = boxRunId;
   const interrupts = new Set<string>();
   const shellOf = (threadId: ThreadId) =>
@@ -502,7 +502,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
       }),
     ),
     Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(ServerSettings.layerTest({ agentFastModeEnabled })),
     Layer.provide(NodeServices.layer),
   );
 };
@@ -2108,4 +2108,50 @@ it.effect(
         });
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("the receiving environment rejects explicit fast options and strips inherited ones", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread, box, false);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      yield* a.orchestrator.dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make("parent-fast"),
+        threadId: parentThreadId,
+        modelSelection: { ...modelSelection, options: [{ id: "serviceTier", value: "priority" }] },
+      });
+      const explicit = yield* a.call("delegate_task", {
+        task: "Review",
+        mode: "async",
+        clientRequestId: "explicit-fast",
+        target: {
+          environmentId: box.environmentId,
+          providerInstanceId: instanceId,
+          model: modelSelection.model,
+          options: { serviceTier: "priority" },
+        },
+      });
+      expect(explicit.isError).toBe(true);
+      expect(JSON.stringify(explicit.content)).toContain(
+        "fast mode is turned off for agents in Settings",
+      );
+      expect(yield* Ref.get(thread.launchCount)).toBe(0);
+      yield* delegateToBox(a);
+      expect((yield* Ref.get(thread.launchedWith))?.modelSelection).toEqual({
+        ...modelSelection,
+        options: [],
+      });
+      expect(
+        (yield* a.orchestrator.getThreadShell(parentThreadId))?.modelSelection.options,
+      ).toEqual([{ id: "serviceTier", value: "priority" }]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

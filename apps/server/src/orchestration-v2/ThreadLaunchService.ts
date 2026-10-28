@@ -47,6 +47,7 @@ import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.t
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { agentModelSelection } from "../provider/agentFastMode.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -865,6 +866,15 @@ const make = Effect.gen(function* () {
         if (constraints.length > 0)
           return yield* mapError(input, "create-thread")(constraints.join(" "));
       }
+      const modelSelection =
+        input.createdBy === "agent"
+          ? agentModelSelection(
+              yield* serverSettings.getSettings.pipe(
+                Effect.mapError(mapError(input, "create-thread")),
+              ),
+              input.modelSelection,
+            )
+          : input.modelSelection;
       yield* threads.assertProviderInstanceEnabled({
         projectId: input.projectId,
         commandId: input.commandId,
@@ -939,7 +949,7 @@ const make = Effect.gen(function* () {
                 threadId: candidateThreadId,
                 projectId: input.projectId,
                 title: input.title,
-                modelSelection: input.modelSelection,
+                modelSelection,
                 runtimeMode: input.runtimeMode,
                 interactionMode: input.interactionMode,
                 branch: initialBranch,
@@ -996,7 +1006,7 @@ const make = Effect.gen(function* () {
               attachments: input.initialMessage.attachments,
               ...(input.initialMessage.context ? { context: input.initialMessage.context } : {}),
               ...(input.generateTitle === true ? { titleSeed: input.title } : {}),
-              modelSelection: input.modelSelection,
+              modelSelection,
               dispatchMode: { type: "defer_start", workspaceStrategy },
               createdBy: input.createdBy,
               creationSource: input.creationSource,

@@ -43,6 +43,8 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { agentModelOptions, assertAgentModelOptions } from "../provider/agentFastMode.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
@@ -123,6 +125,7 @@ const make = Effect.gen(function* () {
   const forwarding = yield* PeerForwarding.PeerForwarding;
   const links = yield* PeerLinks.PeerLinks;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const projects = yield* ProjectService.ProjectService;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -277,11 +280,23 @@ const make = Effect.gen(function* () {
         message: "Pass target.model from orchestrator_capabilities with this environmentId.",
       });
     }
-    const options =
-      target.options ??
-      (instanceId === inherited.instanceId && model === inherited.model
-        ? inherited.options
-        : undefined);
+    const settings = yield* serverSettings.getSettings.pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "Unable to read server settings.",
+          }),
+      ),
+    );
+    yield* assertAgentModelOptions(settings, target.options);
+    const inheritedOptions =
+      target.options === undefined &&
+      instanceId === inherited.instanceId &&
+      model === inherited.model
+        ? agentModelOptions(settings, inherited.options)
+        : undefined;
+    const options = target.options ?? inheritedOptions;
     const projectId = yield* resolveRemoteProject(
       scope,
       target.environmentId,
@@ -296,7 +311,12 @@ const make = Effect.gen(function* () {
       {
         projectId,
         title: input.title ?? parent.thread.title,
-        modelSelection: { instanceId, model, ...(options === undefined ? {} : { options }) },
+        modelSelection: {
+          instanceId,
+          model,
+          ...(options === undefined ? {} : { options }),
+        },
+        ...(inheritedOptions === undefined ? {} : { modelOptionsInherited: true }),
         ...(runtimeMode === undefined ? {} : { runtimeMode }),
         ...(interactionMode === undefined ? {} : { interactionMode }),
         message: task,

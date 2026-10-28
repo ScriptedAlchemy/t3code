@@ -3,7 +3,13 @@ import {
   type ProviderOptionSelection,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
+import {
+  getProviderOptionCurrentValue,
+  buildProviderOptionSelectionsFromDescriptors,
+  isFastProviderOptionSelection,
+  withoutFastProviderOptionDescriptors,
+} from "@t3tools/shared/model";
+import { agentModelOptions } from "../provider/agentFastMode.ts";
 import { type PstackRoleDefault } from "@t3tools/pstack";
 import { invalidOptionSelections, providerConstraints } from "../provider/orchestrationTargets.ts";
 
@@ -153,6 +159,7 @@ function defaultSeat(
 }
 
 export function resolveRoles(input: {
+  readonly agentFastModeEnabled?: boolean;
   readonly file: ReturnType<typeof parseModelsFile> | undefined;
   readonly defaults: ReadonlyArray<PstackRoleDefault>;
   readonly providers: ReadonlyArray<ServerProvider>;
@@ -173,12 +180,16 @@ export function resolveRoles(input: {
         );
     const seats = entries.map((seat, index): Seat => {
       if (seat.kind === "inherit") return seat;
-      const entry = seat.entry;
+      const settings = { agentFastModeEnabled: input.agentFastModeEnabled ?? true };
+      const entry = { ...seat.entry, options: agentModelOptions(settings, seat.entry.options)! };
       const provider = input.providers.find(
         (provider) => provider.instanceId === entry.providerInstanceId,
       );
       const model = provider?.models.find((model) => model.slug === entry.model);
-      const descriptors = model?.capabilities?.optionDescriptors ?? [];
+      const advertisedDescriptors = model?.capabilities?.optionDescriptors ?? [];
+      const descriptors = settings.agentFastModeEnabled
+        ? advertisedDescriptors
+        : withoutFastProviderOptionDescriptors(advertisedDescriptors);
       let reason =
         entry.error ??
         (provider === undefined
@@ -187,7 +198,8 @@ export function resolveRoles(input: {
               " ",
             ) || undefined);
       reason ??= model === undefined ? "model is not advertised" : undefined;
-      reason ??= invalidOptionSelections(entry.options, descriptors).join(" ") || undefined;
+      reason ??=
+        invalidOptionSelections(entry.options, advertisedDescriptors).join(" ") || undefined;
       const options: ProviderOptionSelection[] = [];
       for (const descriptor of descriptors) {
         const value =
@@ -204,9 +216,24 @@ export function resolveRoles(input: {
         );
         return { kind: "inherit" };
       }
+      if (
+        !settings.agentFastModeEnabled &&
+        [
+          ...seat.entry.options,
+          ...(buildProviderOptionSelectionsFromDescriptors(advertisedDescriptors) ?? []),
+        ].some(isFastProviderOptionSelection)
+      ) {
+        diagnostics.push(
+          `Role ${role.label} seat ${index + 1}: fast mode is turned off for agents in Settings; ignoring fast options.`,
+        );
+      }
       return {
         kind: "target",
-        target: { providerInstanceId: entry.providerInstanceId, model: entry.model, options },
+        target: {
+          providerInstanceId: entry.providerInstanceId,
+          model: entry.model,
+          options: agentModelOptions(settings, options)!,
+        },
       };
     });
     return { role: role.label, seats };

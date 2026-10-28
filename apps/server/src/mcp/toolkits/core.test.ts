@@ -78,6 +78,7 @@ const decodeMcpAttachmentInput = Schema.decodeUnknownEffect(McpAttachmentInput);
 const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
 
 const layerThreadToolkit = McpHttpServer.layerThreadToolkit.pipe(
+  Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
   Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
@@ -541,6 +542,36 @@ it.effect("a client caller targets any thread within its ceiling and cannot act 
     expect(declaredFailure(aboveCeiling)).toMatchObject({
       code: "runtime_mode_escalation_denied",
     });
+
+    const settings = yield* ServerSettings.ServerSettingsService;
+    yield* settings.updateSettings({ agentFastModeEnabled: false });
+    const fast = yield* call(
+      "t3_thread_configure",
+      {
+        threadId: "other-project-thread",
+        modelSelection: {
+          instanceId: "codex",
+          model: "gpt-5",
+          options: [{ id: "fastMode", value: true }],
+        },
+      },
+      clientScope("auto"),
+    );
+    expect(declaredFailure(fast)).toMatchObject({ code: "invalid_request" });
+    const standard = yield* call(
+      "t3_thread_configure",
+      {
+        threadId: "other-project-thread",
+        modelSelection: {
+          instanceId: "codex",
+          model: "gpt-5",
+          options: [{ id: "fastMode", value: false }],
+        },
+      },
+      clientScope("auto"),
+    );
+    expect(standard.isError).toBe(false);
+    expect(standard.structuredContent).toMatchObject({ sequence: 7 });
 
     const forked = yield* call(
       "t3_thread_transfer",
@@ -1012,6 +1043,7 @@ it.effect("thread search preserves citations and pagination and returns a thread
   }).pipe(
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
+        Layer.provide(ServerSettings.layerTest()),
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(

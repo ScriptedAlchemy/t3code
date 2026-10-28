@@ -52,7 +52,7 @@ const forkCases = (
     { runEffectWorker: false },
   );
 
-  return { driver, status, instanceId, modelSelection, layer };
+  return { driver, status, instanceId, modelSelection, layer, adapter };
 });
 
 it.effect("a persisted fork leaves PR watching with its parent until explicitly opted in", () =>
@@ -606,4 +606,90 @@ it.effect.each([
       ),
     );
   },
+);
+
+it.effect("agent forks drop inherited fast options and user forks retain them", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const now = yield* DateTime.now;
+    const { instanceId } = forkCases[0]!;
+    const selection = {
+      ...forkCases[0]!.modelSelection,
+      options: [{ id: "serviceTier", value: "priority" }],
+    };
+    const sourceThreadId = ThreadId.make("fast-fork-source");
+    const sourceRunId = RunId.make("fast-fork-source-run");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("fast-fork-create"),
+      threadId: sourceThreadId,
+      projectId: ProjectId.make("fast-fork-project"),
+      title: "Source",
+      modelSelection: selection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("fast-fork-run"),
+          type: "run.created",
+          threadId: sourceThreadId,
+          runId: sourceRunId,
+          occurredAt: now,
+          payload: {
+            id: sourceRunId,
+            threadId: sourceThreadId,
+            ordinal: 1,
+            providerInstanceId: instanceId,
+            modelSelection: selection,
+            providerThreadId: null,
+            userMessageId: MessageId.make("fast-fork-message"),
+            rootNodeId: null,
+            activeAttemptId: null,
+            status: "completed",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: now,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        },
+      ],
+    });
+    for (const createdBy of ["agent", "user"] as const) {
+      const targetThreadId = ThreadId.make(`fast-fork-${createdBy}`);
+      yield* orchestrator.dispatch({
+        type: "thread.fork",
+        commandId: CommandId.make(`fast-fork-${createdBy}`),
+        sourceThreadId,
+        targetThreadId,
+        sourcePoint: { type: "run", runId: sourceRunId },
+        createdBy,
+        creationSource: "mcp",
+      });
+      const fork = yield* orchestrator.getThreadShell(targetThreadId);
+      assert.deepEqual(
+        fork?.modelSelection.options,
+        createdBy === "agent" ? [] : selection.options,
+      );
+    }
+    assert.deepEqual(
+      (yield* orchestrator.getThreadShell(sourceThreadId))?.modelSelection,
+      selection,
+    );
+  }).pipe(
+    Effect.provide(
+      ProviderReplayHarness.layerWithRegistry(
+        { name: "fast-fork-policy" },
+        ProviderAdapterRegistry.layerFromAdapters([forkCases[0]!.adapter]),
+        { runEffectWorker: false, settings: { agentFastModeEnabled: false } },
+      ),
+    ),
+  ),
 );

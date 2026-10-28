@@ -34,6 +34,7 @@ import { ProjectToolkit } from "./tools.ts";
 
 const clientLaunchHarness = (input: {
   readonly runtimeModeCeiling: RuntimeMode;
+  readonly agentFastModeEnabled?: boolean;
   readonly defaultRuntimeMode?: RuntimeMode;
   /** Where Settings saves a project's model; the legacy project field stays null. */
   readonly overrideModel?: ModelSelection;
@@ -54,6 +55,7 @@ const clientLaunchHarness = (input: {
   };
   const layerDependencies = Layer.mergeAll(
     ServerSettings.layerTest({
+      agentFastModeEnabled: input.agentFastModeEnabled ?? true,
       ...(input.defaultRuntimeMode === undefined
         ? {}
         : { defaultRuntimeMode: input.defaultRuntimeMode }),
@@ -487,5 +489,52 @@ it.effect("a retried worktree launch replays after its base ref is gone", () =>
       launched[0]?.threadId,
       launched[0]?.threadId,
     ]);
+  }),
+);
+
+it.effect("agent launches reject explicit fast options and strip fast project defaults", () =>
+  Effect.gen(function* () {
+    const inherited = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "priority" },
+      ],
+    };
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      launched,
+      overrideModel: inherited,
+      agentFastModeEnabled: false,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const explicit = yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Review",
+        projectId,
+        modelSelection: inherited,
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(explicit[0]?.result).toMatchObject({ code: "invalid_request" });
+    expect(launched).toHaveLength(0);
+    const result = yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Review",
+        projectId,
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(result[0]?.result).toMatchObject({
+      modelSelection: {
+        ...inherited,
+        options: [{ id: "reasoningEffort", value: "high" }],
+      },
+    });
+    expect(launched[0]?.modelSelection.options).toEqual([{ id: "reasoningEffort", value: "high" }]);
   }),
 );
