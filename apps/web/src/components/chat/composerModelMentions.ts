@@ -1,5 +1,5 @@
 import { rankComposerModelMentions } from "@t3tools/client-runtime/composerModelMentions";
-import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@t3tools/contracts";
 
 import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
@@ -14,7 +14,6 @@ type ComposerModelMentionProvider = Pick<
   | "displayName"
   | "acpRegistryAgentId"
   | "acpRegistryIconUrl"
-  | "continuationGroupKey"
   | "enabled"
   | "isAvailable"
   | "status"
@@ -23,26 +22,14 @@ type ComposerModelMentionProvider = Pick<
 export function matchComposerModelItems(input: {
   readonly instanceEntries: ReadonlyArray<ComposerModelMentionProvider>;
   readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
-  readonly lockedProvider: ProviderDriverKind | null;
-  readonly lockedContinuationGroupKey: string | null | undefined;
-  readonly isModelDisabled: (instanceId: ProviderInstanceId, model: string) => boolean;
   readonly query: string;
 }): ComposerModelItem[] {
   const candidates: Array<{ entry: ComposerModelMentionProvider; option: ModelEsque }> = [];
   for (const entry of input.instanceEntries) {
     if (!isProviderInstancePickerReady(entry)) continue;
-    if (
-      input.lockedProvider !== null &&
-      (entry.driverKind !== input.lockedProvider ||
-        (input.lockedContinuationGroupKey &&
-          entry.continuationGroupKey !== input.lockedContinuationGroupKey))
-    ) {
-      continue;
-    }
     for (const option of input.modelOptionsByInstance.get(entry.instanceId) ?? []) {
       // The picker hides legacy models by default; skip them so they don't fill the result cap.
       if (option.isLegacy || option.isUnavailable) continue;
-      if (input.isModelDisabled(entry.instanceId, option.slug)) continue;
       candidates.push({ entry, option });
     }
   }

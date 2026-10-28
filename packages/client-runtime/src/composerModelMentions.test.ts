@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { rankComposerModelMentions } from "./composerModelMentions.ts";
+import { formatComposerModelMention, rankComposerModelMentions } from "./composerModelMentions.ts";
 
 const models = [
   { id: "traex:gpt", name: "GPT-6.1", driverKind: "codex", providerDisplayName: "Traex" },
@@ -49,5 +49,13 @@ describe("rankComposerModelMentions", () => {
 
   it("does not fuzzy-match words that only resemble a model", () => {
     expect(rank("src")).toEqual([]);
+  });
+});
+
+describe("formatComposerModelMention", () => {
+  it("names the provider instance and the model", () => {
+    expect(formatComposerModelMention("opencode", "anthropic/opus")).toBe(
+      "model:opencode/anthropic/opus",
+    );
   });
 });
