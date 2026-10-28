@@ -28,6 +28,9 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassification";
+import * as NetService from "@t3tools/shared/Net";
+import * as SshAuth from "@t3tools/ssh/auth";
+import * as SshTunnel from "@t3tools/ssh/tunnel";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -132,11 +135,31 @@ const failStorage = (cause: unknown) =>
  */
 const peerOrigin = (url: string) => {
   const parsed = URL.parse(url);
+  if (parsed?.protocol === "ssh:") {
+    if (
+      !parsed.hostname ||
+      parsed.hostname.startsWith("-") ||
+      parsed.password ||
+      (parsed.pathname !== "" && parsed.pathname !== "/") ||
+      parsed.search ||
+      parsed.hash ||
+      !/^[a-zA-Z0-9._-]*$/u.test(parsed.username)
+    ) {
+      return Effect.fail(
+        new PeerLinkError({
+          reason: "unreachable",
+          message:
+            "Use ssh://user@host, optionally with an SSH port. Passwords, paths and query parameters are not supported.",
+        }),
+      );
+    }
+    return Effect.succeed(parsed.href.replace(/\/$/u, ""));
+  }
   if (parsed === null || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) {
     return Effect.fail(
       new PeerLinkError({
         reason: "unreachable",
-        message: `${url} is not an http or https address.`,
+        message: `${url} is not an http, https or ssh address.`,
       }),
     );
   }
@@ -148,7 +171,7 @@ const peerOrigin = (url: string) => {
     return Effect.fail(
       new PeerLinkError({
         reason: "unreachable",
-        message: `${url} is plain http, which would send the link's credentials unencrypted. Use its https address, or its Tailscale address.`,
+        message: `${url} is plain http, which would send the link's credentials unencrypted. Use its https or Tailscale address, or ssh://user@host for an encrypted LAN connection.`,
       }),
     );
   }
@@ -166,6 +189,33 @@ const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const ssh = yield* SshTunnel.SshEnvironmentManager;
+  const sshContext =
+    yield* Effect.context<Effect.Services<ReturnType<typeof ssh.ensureEnvironment>>>();
+  const sshTarget = (origin: string) => {
+    const url = new URL(origin);
+    return {
+      alias: url.hostname,
+      hostname: url.hostname,
+      username: url.username || null,
+      port: url.port ? Number(url.port) : null,
+    };
+  };
+  const httpOrigin = Effect.fn("PeerLinks.httpOrigin")(function* (origin: string) {
+    if (!origin.startsWith("ssh:")) return origin;
+    const connection = yield* ssh.ensureEnvironment(sshTarget(origin)).pipe(
+      Effect.provide(sshContext),
+      Effect.mapError(
+        (cause) =>
+          new PeerLinkError({
+            reason: "unreachable",
+            message: `Could not open SSH to ${new URL(origin).hostname}. Check SSH key access and the host key from this environment. On macOS, enable Remote Login on the destination and allow T3 Code under Privacy & Security > Local Network on the connecting Mac, then retry.`,
+            cause,
+          }),
+      ),
+    );
+    return new URL(connection.httpBaseUrl).origin;
+  });
   const enabled = serverSettings.getSettings.pipe(
     Effect.map((settings) => settings.linkedEnvironmentsEnabled),
     Effect.orElseSucceed(() => false),
@@ -184,16 +234,21 @@ const make = Effect.gen(function* () {
   );
 
   const clientFor = (origin: string) =>
-    HttpApiClient.make(EnvironmentHttpApi, { baseUrl: origin }).pipe(
+    httpOrigin(origin).pipe(
+      Effect.flatMap((baseUrl) => HttpApiClient.make(EnvironmentHttpApi, { baseUrl })),
       Effect.provideService(HttpClient.HttpClient, peerHttpClient),
     );
 
   /** The environment answering at `origin`, or nothing when it does not answer as T3 Code. */
   const describe = (origin: string) =>
-    clientFor(origin).pipe(
-      Effect.flatMap((client) => client.metadata.descriptor()),
-      Effect.timeout(probeTimeout(origin)),
-      Effect.option,
+    httpOrigin(origin).pipe(
+      Effect.flatMap((baseUrl) =>
+        clientFor(baseUrl).pipe(
+          Effect.flatMap((client) => client.metadata.descriptor()),
+          Effect.timeout(probeTimeout(origin)),
+          Effect.option,
+        ),
+      ),
     );
 
   const toLink = Effect.fn("PeerLinks.toLink")(function* (row: PeerLinkRow) {
@@ -225,7 +280,8 @@ const make = Effect.gen(function* () {
 
   /** Signs in to the peer's `/mcp` with a pairing code: register, decide, exchange. */
   const signIn = Effect.fn("PeerLinks.signIn")(
-    function* (origin: string, input: PeerLinkCreateInput, clientName: string) {
+    function* (route: string, input: PeerLinkCreateInput, clientName: string) {
+      const origin = yield* httpOrigin(route);
       const client = yield* clientFor(origin);
       // Only the peer's own refusals are rejections. A dropped connection or
       // an answer this version cannot read is classified below.
@@ -490,6 +546,7 @@ const make = Effect.gen(function* () {
       ? Effect.succeed<PeerLinkStatus>("expired")
       : Effect.findFirst(link.urls, (url) =>
           describe(url).pipe(
+            Effect.orElseSucceed(() => Option.none()),
             Effect.map(
               (found) => Option.isSome(found) && found.value.environmentId === link.environmentId,
             ),
@@ -522,12 +579,22 @@ const make = Effect.gen(function* () {
 
   const unlink: PeerLinks["Service"]["unlink"] = Effect.fn("PeerLinks.unlink")(
     function* (environmentId) {
+      const previous = yield* get(environmentId);
       const deleted = yield* sql<{ secret_name: string }>`
         DELETE FROM peer_environment_links WHERE environment_id = ${environmentId}
         RETURNING secret_name
       `.pipe(Effect.catch(failStorage));
       for (const row of deleted) {
         yield* secrets.remove(row.secret_name).pipe(Effect.catch(failStorage));
+      }
+      if (Option.isSome(previous)) {
+        yield* Effect.forEach(
+          previous.value.urls.filter((url) => url.startsWith("ssh:")),
+          (url) =>
+            ssh
+              .disconnectEnvironment(sshTarget(url))
+              .pipe(Effect.provide(sshContext), Effect.ignore),
+        );
       }
       return deleted.length > 0;
     },
@@ -567,11 +634,17 @@ const make = Effect.gen(function* () {
       // The token goes only to an address that proves it is this peer, so a
       // reused LAN address or a moved hostname never receives it.
       let fenced = true;
+      let resolvedUrl = "";
       const url = yield* Effect.findFirst(link.urls, (candidate) =>
-        describe(candidate).pipe(
-          Effect.map((found) => {
+        httpOrigin(candidate).pipe(
+          Effect.flatMap((origin) =>
+            describe(origin).pipe(Effect.map((found) => ({ origin, found }))),
+          ),
+          Effect.orElseSucceed(() => ({ origin: "", found: Option.none() })),
+          Effect.map(({ origin, found }) => {
             if (Option.isNone(found) || found.value.environmentId !== environmentId) return false;
             fenced = linkLimitsHold(found.value);
+            resolvedUrl = origin;
             return true;
           }),
         ),
@@ -590,7 +663,7 @@ const make = Effect.gen(function* () {
           message: `${link.label} runs a T3 Code version that cannot keep a linked agent's limits. Update it, then link again.`,
         });
       }
-      return { link, url: url.value, token: new TextDecoder().decode(stored.value) };
+      return { link, url: resolvedUrl, token: new TextDecoder().decode(stored.value) };
     },
   );
 
@@ -625,3 +698,17 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(PeerLinks, make);
+
+export const layerSsh = Layer.unwrap(
+  Effect.gen(function* () {
+    const environment = yield* ServerEnvironment.ServerEnvironment;
+    const descriptor = yield* environment.getDescriptor;
+    return SshTunnel.SshEnvironmentManager.layer({
+      resolveCliRunner: Effect.succeed({ archiveVersion: descriptor.serverVersion }),
+      stopRemoteOnDisconnect: false,
+    });
+  }),
+).pipe(
+  Layer.provideMerge(NetService.layer),
+  Layer.provideMerge(SshAuth.SshPasswordPrompt.disabledLayer),
+);
