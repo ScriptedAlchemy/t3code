@@ -9,6 +9,7 @@ export const DesktopBackendBootstrap = Schema.Struct({
   mode: Schema.Literal("desktop"),
   noBrowser: Schema.Boolean,
   port: PortSchema,
+  lanHttpsPort: Schema.optionalKey(PortSchema),
   // Omit in WSL to use the Linux home instead of the mapped Windows directory.
   t3Home: Schema.optional(Schema.String),
   host: Schema.String,

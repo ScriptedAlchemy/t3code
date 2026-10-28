@@ -79,6 +79,11 @@ const tailscaleServeFlag = Flag.Boolean("tailscale-serve").pipe(
   ),
   Flag.optional,
 );
+const lanHttpsPortFlag = Flag.Int("lan-https-port").pipe(
+  Flag.withSchema(PortSchema),
+  Flag.withDescription("Listen for private-network HTTPS on this port."),
+  Flag.optional,
+);
 const tailscaleServePortFlag = Flag.Int("tailscale-serve-port").pipe(
   Flag.withSchema(PortSchema),
   Flag.withDescription("HTTPS port for Tailscale Serve when --tailscale-serve is enabled."),
@@ -160,6 +165,10 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  lanHttpsPort: Config.Port("T3CODE_LAN_HTTPS_PORT").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
   tailscaleServePort: Config.Port("T3CODE_TAILSCALE_SERVE_PORT").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -199,6 +208,7 @@ export interface CliServerFlags {
   readonly logWebSocketEvents: Option.Option<boolean>;
   readonly tailscaleServeEnabled: Option.Option<boolean>;
   readonly tailscaleServePort: Option.Option<number>;
+  readonly lanHttpsPort?: Option.Option<number>;
 }
 
 export interface CliAuthLocationFlags {
@@ -233,6 +243,7 @@ export const sharedServerCommandFlags = {
   logWebSocketEvents: logWebSocketEventsFlag,
   tailscaleServeEnabled: tailscaleServeFlag,
   tailscaleServePort: tailscaleServePortFlag,
+  lanHttpsPort: lanHttpsPortFlag,
 } as const;
 
 const resolveOptionPrecedence = <Value>(
@@ -276,6 +287,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     logWebSocketEvents: flags.logWebSocketEvents ?? Option.none(),
     tailscaleServeEnabled: flags.tailscaleServeEnabled ?? Option.none(),
     tailscaleServePort: flags.tailscaleServePort ?? Option.none(),
+    lanHttpsPort: flags.lanHttpsPort ?? Option.none(),
   } satisfies CliServerFlags;
   const bootstrapFd = Option.getOrUndefined(normalizedFlags.bootstrapFd) ?? env.bootstrapFd;
   const bootstrapEnvelope =
@@ -395,6 +407,13 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ),
     () => false,
   );
+  const lanHttpsPort = Option.getOrUndefined(
+    resolveOptionPrecedence(
+      normalizedFlags.lanHttpsPort,
+      Option.fromUndefinedOr(env.lanHttpsPort),
+      Option.fromUndefinedOr(bootstrap?.lanHttpsPort),
+    ),
+  );
   const tailscaleServePort = Option.getOrElse(
     resolveOptionPrecedence(
       normalizedFlags.tailscaleServePort,
@@ -505,6 +524,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     logWebSocketEvents,
     tailscaleServeEnabled,
     tailscaleServePort,
+    lanHttpsPort,
   };
 
   return config;

@@ -213,6 +213,30 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       }),
   );
 
+  it.effect("resolves the optional LAN HTTPS port with flag precedence", () =>
+    Effect.gen(function* () {
+      const baseDir = yield* FileSystem.FileSystem.pipe(
+        Effect.flatMap((fs) => fs.makeTempDirectoryScoped({ prefix: "t3-cli-lan-https-" })),
+      );
+      const bootstrapFd = yield* openBootstrapFd(makeDesktopBootstrap({ lanHttpsPort: 3774 }));
+      const flags = { ...minimalDesktopFlags(baseDir), bootstrapFd: Option.some(bootstrapFd) };
+      const config = yield* resolveServerConfig(
+        { ...flags, lanHttpsPort: Option.some(4000) },
+        Option.none(),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({ env: { T3CODE_LAN_HTTPS_PORT: "3999" } }),
+            ),
+            NetService.layer,
+          ),
+        ),
+      );
+      expect(config.lanHttpsPort).toBe(4000);
+    }),
+  );
+
   it.effect("enables a trimmed reusable auth token only for web dev mode", () =>
     Effect.gen(function* () {
       const baseDir = yield* FileSystem.FileSystem.pipe(
