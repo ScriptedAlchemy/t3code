@@ -1004,7 +1004,9 @@ it.effect("thread search preserves citations and pagination and returns a thread
     expect(text?.type).toBe("text");
     if (text?.type !== "text") return;
     expect(JSON.parse(text.text)).toEqual({
-      matches: [{ ...match, link: formatThreadLink(threadId, shell.title) }],
+      matches: [
+        { ...match, link: formatThreadLink({ environmentId: scope.environmentId, threadId }) },
+      ],
       nextCursor: null,
     });
   }).pipe(

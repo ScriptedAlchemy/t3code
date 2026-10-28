@@ -67,7 +67,7 @@ describe("project knowledge composer references", () => {
   it("preserves the reference through clipboard reidentification and message serialization", () => {
     const attached = projectKnowledgeComposerReference(knowledge);
     const imported = reidentifyComposerContext(attached.text, [attached.record], () => "copied");
-    const serialized = serializeComposerMessageForServer(imported.text, imported.context, true);
+    const serialized = serializeComposerMessageForServer(imported.text, imported.context);
 
     expect(imported.context.records[0]).toMatchObject({
       kind: "project-knowledge",

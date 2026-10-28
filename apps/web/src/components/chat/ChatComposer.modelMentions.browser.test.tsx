@@ -10,6 +10,7 @@ import { useComposerDraftStore } from "../../composerDraftStore";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import { makeThreadFixture } from "../../test-fixtures";
 import { ChatComposer, type ChatComposerHandle, type ChatComposerProps } from "./ChatComposer";
+import { useComposerSelection } from "./useComposerSelection";
 
 vi.mock("../../state/primaryEnvironment", async () => {
   const { Atom } = await import("effect/reactivity");
@@ -52,7 +53,9 @@ function setup() {
     stickyOptionsByModelByProvider: {},
     stickyActiveProvider: null,
   });
-  const thread = makeThreadFixture();
+  const thread = makeThreadFixture({
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1" },
+  });
   const target = { environmentId: thread.environmentId, threadId: thread.id };
   useComposerDraftStore.getState().setPrompt(target, "before  after");
   const composerRef = createRef<ChatComposerHandle>();
@@ -65,7 +68,10 @@ function setup() {
     status: "ready",
     auth: { status: "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
-    models: [{ slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: {} }],
+    models: [
+      { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: {} },
+      { slug: "gpt-6.1", name: "GPT-6.1", isCustom: false, capabilities: {} },
+    ],
     slashCommands: [],
     skills: [],
   };
@@ -85,17 +91,13 @@ function setup() {
     supportsMultipleModels: false,
     onMultipleModelSelectionsChange: noop,
     activeThreadId: thread.id,
-    activeThreadEnvironmentId: thread.environmentId,
     activeThread: thread,
     activeThreadShell: null,
     promptHistoryMessages: [],
-    isServerThread: true,
-    isLocalDraftThread: false,
     forceExpandedOnMobile: false,
     projectSelectionRequired: false,
     phase: "ready",
     canInterrupt: false,
-    isConnecting: false,
     isSendBusy: false,
     canResume: false,
     sendDisabledReason: null,
@@ -108,6 +110,7 @@ function setup() {
     environmentUnavailable: null,
     activePendingApproval: null,
     pendingApprovals: [],
+    onHeldRequestIdsChange: noop,
     pendingUserInputs: [],
     activePendingProgress: null,
     activePendingResolvedAnswers: null,
@@ -139,14 +142,8 @@ function setup() {
     pullRequestProjectId: null,
     pullRequestRepository: null,
     threadPullRequests: [],
-    restingControlsHost: null,
-    restingControlsHaveLeadingContext: false,
-    onRestingControlsVisibilityChange: noop,
-    getTimelineScrollableNode: () => null,
-    isTimelineAtLogicalEnd: () => true,
-    timelineOverflows: false,
     onComposerOverlayHeightChange: noop,
-    onRestingChange: noop,
+    permissionsShownInStrip: false,
     promptRef: { current: "before  after" },
     composerImagesRef: { current: [] },
     composerFilesRef: { current: [] },
@@ -162,7 +159,6 @@ function setup() {
     onResume: noop,
     onInterrupt: noop,
     onImplementPlanInNewThread: noop,
-    onRespondToApproval: async () => {},
     onSelectActivePendingUserInputOption: noop,
     onAdvanceActivePendingUserInput: noop,
     onDismissActivePendingUserInput: noop,
@@ -183,11 +179,36 @@ function setup() {
   return { props, composerRef };
 }
 
+function ComposerWithSelection({ props }: { props: ChatComposerProps }) {
+  const selection = useComposerSelection({
+    environmentId: props.environmentId,
+    composerDraftTarget: props.composerDraftTarget,
+    draftThread: null,
+    activeThread: props.activeThread,
+    activeRuntime: null,
+    isLocalDraftThread: false,
+    activeProjectSettings: { settings: { newWorktreesStartFromOrigin: false } },
+    settings: props.settings,
+    providerStatuses: props.providerStatuses,
+    lockedProvider: null,
+    supportsProviderSwitchingViaHandoff: false,
+    multipleModelSelections: null,
+    runtimeMode: props.runtimeMode,
+    interactionMode: props.interactionMode,
+    interactionModeEnabled: true,
+    canOverrideServerThreadEnvMode: false,
+    setPendingServerThreadEnvModeEntry: () => {},
+    setPendingServerThreadStartFromOriginByThreadId: () => {},
+    scheduleComposerFocus: props.scheduleComposerFocus,
+  });
+  return <ChatComposer {...props} onProviderModelSelect={selection.onProviderModelSelectStable} />;
+}
+
 it("inserts the picked model as text without switching the thread's model", async () => {
   const { props, composerRef } = setup();
   await using screen = await render(
     <AppAtomRegistryProvider>
-      <ChatComposer {...props} />
+      <ComposerWithSelection props={props} />
     </AppAtomRegistryProvider>,
   );
   const element = screen.container.querySelector<HTMLElement & { editor: Editor }>(".tiptap");
@@ -197,4 +218,11 @@ it("inserts the picked model as text without switching the thread's model", asyn
   expect(props.promptRef.current).toBe("before @gpt after");
   await userEvent.keyboard("{Enter}");
   await expect.poll(() => props.promptRef.current).toBe("before model:codex/gpt-5.4 after");
+  await userEvent.keyboard("X");
+  await expect.element(element).toHaveTextContent("before model:codex/gpt-5.4 Xafter");
+  expect(
+    useComposerDraftStore.getState().getComposerDraft(props.composerDraftTarget)
+      ?.modelSelectionByProvider,
+  ).toEqual({});
+  expect(useComposerDraftStore.getState().stickyActiveProvider).toBeNull();
 });
