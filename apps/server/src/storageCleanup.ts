@@ -505,9 +505,10 @@ const make = Effect.gen(function* () {
       if (result === null) return null;
       if (result.exitCode === 0 || result.exitCode === allowedExitCode) return result;
       const stderr = result.stderr.toLowerCase();
+      // Newer Git reports a dangling .git file as "gitfile does not point to a valid repository".
       if (
         stderr.includes("not a git repository") ||
-        stderr.includes("gitfile does not point to a valid repository")
+        stderr.includes("does not point to a valid repository")
       )
         return null;
       return yield* failure(
