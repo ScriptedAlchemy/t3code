@@ -28,12 +28,14 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
+import * as LanHttps from "./environment/LanHttps.ts";
 import { withUntracedRequests } from "./http.ts";
 import * as ServerHttp from "./http.ts";
 import {
@@ -312,7 +314,7 @@ const layerRelayClient = Layer.unwrap(
 const layerHttpServer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
-    return NodeHttpServer.layer(
+    const primary = NodeHttpServer.layer(
       () => {
         const server = rejectRequestsUntilServing(
           guardHttpResponseWriteErrors(NodeHttp.createServer()),
@@ -337,6 +339,27 @@ const layerHttpServer = Layer.unwrap(
         websocket: { perMessageDeflate: true },
       },
     );
+    const lan = yield* LanHttps.LanHttps;
+    if (Option.isNone(lan.server)) return primary;
+    const secondary = lan.server.value;
+    const combined = Layer.effect(
+      HttpServer.HttpServer,
+      Effect.gen(function* () {
+        const http = yield* HttpServer.HttpServer;
+        const serveHttp = http.serve as Parameters<typeof HttpServer.make>[0]["serve"];
+        const serveHttps = secondary.serve as Parameters<typeof HttpServer.make>[0]["serve"];
+        return HttpServer.make({
+          address: http.address,
+          // @effect-diagnostics-next-line anyUnknownInErrorContext:off
+          serve: (app, middleware) =>
+            // @effect-diagnostics-next-line anyUnknownInErrorContext:off
+            Effect.all([serveHttp(app, middleware), serveHttps(app, middleware)], {
+              discard: true,
+            }),
+        });
+      }),
+    ).pipe(Layer.provide(primary));
+    return Layer.merge(NodeHttpServer.layerHttpServices, combined);
   }),
 );
 
@@ -845,18 +868,32 @@ const layerMakeServer = Layer.unwrap(
         }
 
         const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
-        const state = yield* makePersistedServerRuntimeState({
-          config,
-          port: address.port,
-          serviceManaged: launcher.managed,
-        });
-        yield* ownership
-          .publish(state)
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Failed to persist server runtime state", { cause }),
-            ),
-          );
+        const lan = yield* LanHttps.LanHttps;
+        const endpoints = yield* DirectEndpoints.DirectEndpoints;
+        yield* SubscriptionRef.changes(lan.state).pipe(
+          Stream.runForEach(() =>
+            Effect.gen(function* () {
+              const available = config.lanHttpsPort === undefined ? [] : yield* endpoints.resolve();
+              const lanHttpsEndpoint = available.find(
+                (endpoint) => endpoint.kind === "lan" && endpoint.tls,
+              );
+              const state = yield* makePersistedServerRuntimeState({
+                config,
+                port: address.port,
+                serviceManaged: launcher.managed,
+                ...(lanHttpsEndpoint ? { lanHttpsEndpoint } : {}),
+              });
+              yield* ownership
+                .publish(state)
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Failed to persist server runtime state", { cause }),
+                  ),
+                );
+            }),
+          ),
+          Effect.forkScoped,
+        );
       }),
     );
     const layerTailscaleServe = config.tailscaleServeEnabled
@@ -1134,6 +1171,7 @@ const layerMakeServer = Layer.unwrap(
       Layer.provide(layerActivation),
       Layer.provideMerge(RelayTracing.layerServerRelayBroker),
       Layer.provideMerge(layerHttpServer),
+      Layer.provideMerge(LanHttps.layer),
       Layer.provide(layerApplicationObservability),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(VcsProcess.layer),

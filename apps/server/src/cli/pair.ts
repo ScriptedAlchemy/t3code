@@ -8,7 +8,7 @@ import {
 import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
-import { buildPairingAppLink } from "@t3tools/shared/remote";
+import { buildPairingAppLink, setPairingTlsTrustOnUrl } from "@t3tools/shared/remote";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import {
   buildTailscaleHttpsBaseUrl,
@@ -38,6 +38,7 @@ import {
 } from "../serverRuntimeState.ts";
 import {
   buildPairingUrl,
+  LanHttpsUnavailableError,
   formatHostForUrl,
   isLoopbackHost,
   isWildcardHost,
@@ -501,6 +502,14 @@ export const pairCommand = Command.make("pair", {
 
       const notes: Array<string> = [];
       let pairingBaseUrl: string;
+      const nativeLan =
+        !flags.tailscale &&
+        target.state.lanHttpsEndpoint?.tls?.environmentId === target.descriptor.environmentId
+          ? target.state.lanHttpsEndpoint
+          : undefined;
+      if (!flags.tailscale && target.state.lanHttpsPort !== undefined && !nativeLan) {
+        return yield* new LanHttpsUnavailableError();
+      }
       if (flags.tailscale) {
         const resolved = yield* resolveTailscalePairingBase({
           target,
@@ -509,7 +518,7 @@ export const pairCommand = Command.make("pair", {
         pairingBaseUrl = resolved.baseUrl;
         notes.push(...resolved.notes);
       } else {
-        pairingBaseUrl = resolveDirectPairingBaseUrl(target.state);
+        pairingBaseUrl = nativeLan?.httpBaseUrl ?? resolveDirectPairingBaseUrl(target.state);
         if (isLoopbackHost(new URL(pairingBaseUrl).hostname)) {
           notes.push(
             "This URL is only reachable from this machine. Re-run with --tailscale, or restart the server with a reachable --host.",
@@ -534,12 +543,15 @@ export const pairCommand = Command.make("pair", {
         label: flags.label,
       });
       const pairingUrl = buildPairingUrl(pairingBaseUrl, issued.credential);
+      const fullPairingUrl = nativeLan?.tls
+        ? setPairingTlsTrustOnUrl(new URL(pairingUrl), nativeLan.tls).toString()
+        : pairingUrl;
 
       yield* Console.log(
         formatPairOutput({
           serverLabel: target.descriptor.label,
           origin: target.state.origin,
-          pairingUrl,
+          pairingUrl: fullPairingUrl,
           token: issued.credential,
           expiresAt: issued.expiresAt,
           notes,

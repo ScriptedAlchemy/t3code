@@ -1,3 +1,4 @@
+import { PortSchema, ServerDirectEndpoint } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -22,6 +23,8 @@ export const PersistedServerRuntimeState = Schema.Struct({
   startedAt: Schema.String,
   serviceManaged: Schema.optional(Schema.Boolean),
   serverVersion: Schema.optional(Schema.String),
+  lanHttpsEndpoint: Schema.optionalKey(ServerDirectEndpoint),
+  lanHttpsPort: Schema.optionalKey(PortSchema),
 });
 export type PersistedServerRuntimeState = typeof PersistedServerRuntimeState.Type;
 
@@ -54,10 +57,11 @@ const runtimeOriginForConfig = (
 export const makePersistedServerRuntimeState = (input: {
   readonly config: Pick<
     ServerConfig.ServerConfig["Service"],
-    "host" | "privateNetworkOnly" | "devUrl"
+    "host" | "privateNetworkOnly" | "devUrl" | "lanHttpsPort"
   >;
   readonly port: number;
   readonly serviceManaged?: boolean;
+  readonly lanHttpsEndpoint?: ServerDirectEndpoint;
 }): Effect.Effect<PersistedServerRuntimeState> =>
   Effect.map(DateTime.now, (now) => ({
     version: 1,
@@ -67,8 +71,10 @@ export const makePersistedServerRuntimeState = (input: {
     port: input.port,
     origin: runtimeOriginForConfig(input.config, input.port),
     ...(input.config.devUrl ? { devUrl: input.config.devUrl.toString() } : {}),
+    ...(input.config.lanHttpsPort === undefined ? {} : { lanHttpsPort: input.config.lanHttpsPort }),
     startedAt: DateTime.formatIso(now),
     ...(input.serviceManaged ? { serviceManaged: true } : {}),
+    ...(input.lanHttpsEndpoint ? { lanHttpsEndpoint: input.lanHttpsEndpoint } : {}),
     serverVersion: packageJson.version,
   }));
 

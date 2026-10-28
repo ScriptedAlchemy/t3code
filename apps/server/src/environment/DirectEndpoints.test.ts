@@ -1,3 +1,4 @@
+import { EnvironmentId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
 import type * as NodeOS from "node:os";
@@ -12,7 +13,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import * as DirectEndpoints from "./DirectEndpoints.ts";
-import { resolveBoundEndpoints } from "./DirectEndpoints.ts";
+import { resolveBoundEndpoints, resolveLanHttpsEndpoints } from "./DirectEndpoints.ts";
 
 const INTERFACES: ReturnType<typeof NodeOS.networkInterfaces> = {
   lo0: [
@@ -103,6 +104,16 @@ describe("resolveBoundEndpoints", () => {
       { kind: "lan", httpBaseUrl: "http://192.168.1.10:3773/" },
       { kind: "tailnet", httpBaseUrl: "http://100.101.102.103:3773/" },
     ]);
+  });
+
+  it("advertises LAN HTTPS with trust while retaining independent tailnet routes", () => {
+    const tls = { environmentId: EnvironmentId.make("env-test"), certificateAuthority: "test-ca" };
+    expect(resolveLanHttpsEndpoints({ port: 3774, interfaces: INTERFACES, tls })).toEqual([
+      { kind: "lan", httpBaseUrl: "https://192.168.1.10:3774/", tls },
+    ]);
+    expect(
+      resolveBoundEndpoints({ host: "0.0.0.0", port: 3773, interfaces: INTERFACES }),
+    ).toContainEqual({ kind: "tailnet", httpBaseUrl: "http://100.101.102.103:3773/" });
   });
 
   it("skips container and VM networks, which only this machine reaches", () => {

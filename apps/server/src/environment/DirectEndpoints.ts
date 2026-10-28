@@ -1,4 +1,4 @@
-import type { ServerDirectEndpoint } from "@t3tools/contracts";
+import type { EnvironmentId, ServerDirectEndpoint } from "@t3tools/contracts";
 import {
   buildTailscaleHttpsBaseUrl,
   probeTailscaleHttpsEndpoint,
@@ -9,6 +9,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import { HttpClient } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as NodeNet from "node:net";
@@ -17,6 +18,7 @@ import * as NodeOS from "node:os";
 import { isTailnetHost } from "@t3tools/shared/hostClassification";
 
 import * as ServerConfig from "../config.ts";
+import * as LanHttps from "./LanHttps.ts";
 import {
   formatHostForUrl,
   isLoopbackHost,
@@ -79,6 +81,26 @@ export function resolveBoundEndpoints(input: {
     }));
 }
 
+export function resolveLanHttpsEndpoints(input: {
+  readonly port: number;
+  readonly interfaces: NetworkInterfacesMap;
+  readonly onCloudVm?: boolean;
+  readonly tls: { readonly environmentId: EnvironmentId; readonly certificateAuthority: string };
+}): ReadonlyArray<ServerDirectEndpoint> {
+  return resolveBoundEndpoints({
+    host: "0.0.0.0",
+    port: input.port,
+    interfaces: input.interfaces,
+    ...(input.onCloudVm === undefined ? {} : { onCloudVm: input.onCloudVm }),
+  })
+    .filter((endpoint) => endpoint.kind === "lan")
+    .map((endpoint) => ({
+      ...endpoint,
+      httpBaseUrl: endpoint.httpBaseUrl.replace(/^http:/, "https:"),
+      tls: input.tls,
+    }));
+}
+
 /**
  * AWS, GCP, Azure, DigitalOcean, Hetzner, Linode, Vultr, and Oracle all serve
  * instance metadata at this address. A plain TCP connect skips HTTP proxies,
@@ -111,12 +133,14 @@ export const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
+  const lanHttps = yield* Effect.serviceOption(LanHttps.LanHttps);
   // Only the service default listens on every interface without being asked,
   // so only it checks once whether it runs in a cloud. The check starts now so
   // the first client does not wait for its timeout.
-  const onCloudVm = config.privateNetworkOnly
-    ? yield* Effect.cached(probeCloudMetadata)
-    : Effect.succeed(false);
+  const onCloudVm =
+    config.privateNetworkOnly || config.lanHttpsPort !== undefined
+      ? yield* Effect.cached(probeCloudMetadata)
+      : Effect.succeed(false);
   yield* Effect.forkDetach(onCloudVm);
 
   const resolve = Effect.gen(function* () {
@@ -128,6 +152,24 @@ export const make = Effect.gen(function* () {
         onCloudVm: yield* onCloudVm,
       }),
     ];
+    if (Option.isSome(lanHttps) && config.lanHttpsPort !== undefined) {
+      const current = yield* SubscriptionRef.get(lanHttps.value.state);
+      if (Option.isSome(current)) {
+        const tls = {
+          environmentId: lanHttps.value.environmentId,
+          certificateAuthority: current.value.certificateAuthority,
+        };
+        const names = current.value.addresses;
+        endpoints.push(
+          ...resolveLanHttpsEndpoints({
+            port: config.lanHttpsPort,
+            interfaces: NodeOS.networkInterfaces(),
+            onCloudVm: yield* onCloudVm,
+            tls,
+          }).filter((endpoint) => names.includes(new URL(endpoint.httpBaseUrl).hostname)),
+        );
+      }
+    }
     // Serve setup can fail without stopping startup; advertise only after it answers as this server.
     if (config.tailscaleServeEnabled) {
       const servedUrl = yield* readTailscaleStatus.pipe(

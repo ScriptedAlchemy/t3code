@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { X509Certificate } from "node:crypto";
-import * as Https from "node:https";
-import { once } from "node:events";
+import * as NodeCrypto from "node:crypto";
+import * as NodeHttps from "node:https";
+import * as NodeEvents from "node:events";
 import { assert, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
@@ -34,20 +34,23 @@ it.live("renews a LAN certificate under the same authority and rejects damaged s
     const renewed = yield* load(["127.0.0.1", "192.168.1.3"], now);
     assert.equal(renewed.authorityCertificate, first.authorityCertificate);
     assert.notEqual(renewed.certificate, first.certificate);
-    assert.equal(new X509Certificate(renewed.certificate).checkIP("192.168.1.3"), "192.168.1.3");
+    assert.equal(
+      new NodeCrypto.X509Certificate(renewed.certificate).checkIP("192.168.1.3"),
+      "192.168.1.3",
+    );
     yield* Effect.promise(async () => {
-      const server = Https.createServer(
+      const server = NodeHttps.createServer(
         { key: renewed.key, cert: renewed.certificate },
         (_request, response) => response.end("secure"),
       );
       server.listen(0, "127.0.0.1");
-      await once(server, "listening");
+      await NodeEvents.EventEmitter.once(server, "listening");
       const address = server.address();
       if (address === null || typeof address === "string")
         throw new Error("Missing server address");
       const request = (ca: string, servername?: string) =>
         new Promise<string>((resolve, reject) => {
-          const req = Https.get(
+          const req = NodeHttps.get(
             { host: "127.0.0.1", port: address.port, ca, ...(servername ? { servername } : {}) },
             (response) => {
               let body = "";

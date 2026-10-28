@@ -3,13 +3,25 @@ import * as NodeOS from "node:os";
 
 import { isPrivateNetworkHost, isSharedAddressSpaceHost } from "@t3tools/shared/hostClassification";
 import { QrCode } from "@t3tools/shared/qrCode";
-import { buildPairingAppLink } from "@t3tools/shared/remote";
+import { buildPairingAppLink, setPairingTlsTrustOnUrl } from "@t3tools/shared/remote";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
 
 import * as ServerConfig from "./config.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import * as DirectEndpoints from "./environment/DirectEndpoints.ts";
+
+export class LanHttpsUnavailableError extends Schema.TaggedError<LanHttpsUnavailableError>()(
+  "LanHttpsUnavailableError",
+  {},
+) {
+  override get message(): string {
+    return "LAN HTTPS is enabled but has no available trusted endpoint. Check the server logs or pair with --tailscale.";
+  }
+}
 
 export interface HeadlessServeAccessInfo {
   readonly connectionString: string;
@@ -197,16 +209,28 @@ export const issueHeadlessServeAccessInfo = Effect.fn("issueHeadlessServeAccessI
   const serverConfig = yield* ServerConfig.ServerConfig;
   const httpServer = yield* HttpServer.HttpServer;
   const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
-  const connectionString = resolveHeadlessConnectionString(
+  let connectionString = resolveHeadlessConnectionString(
     serverConfig.host,
     resolveListeningPort(httpServer.address, serverConfig.port),
     { privateNetworkOnly: serverConfig.privateNetworkOnly },
   );
+  let tls: import("@t3tools/contracts").LanTlsTrust | undefined;
+  if (serverConfig.lanHttpsPort !== undefined) {
+    const direct = yield* Effect.serviceOption(DirectEndpoints.DirectEndpoints);
+    if (Option.isNone(direct)) return yield* new LanHttpsUnavailableError();
+    const endpoint = (yield* direct.value.resolve()).find(
+      (item) => item.kind === "lan" && item.tls,
+    );
+    if (!endpoint?.tls) return yield* new LanHttpsUnavailableError();
+    connectionString = endpoint.httpBaseUrl;
+    tls = endpoint.tls;
+  }
   const issued = yield* serverAuth.issueStartupPairingCredential();
+  const pairingUrl = buildPairingUrl(connectionString, issued.credential);
 
   return {
     connectionString,
     token: issued.credential,
-    pairingUrl: buildPairingUrl(connectionString, issued.credential),
+    pairingUrl: tls ? setPairingTlsTrustOnUrl(new URL(pairingUrl), tls).toString() : pairingUrl,
   } satisfies HeadlessServeAccessInfo;
 });

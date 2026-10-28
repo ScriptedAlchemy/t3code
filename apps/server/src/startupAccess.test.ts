@@ -1,9 +1,22 @@
 import type * as NodeOS from "node:os";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { EnvironmentId } from "@t3tools/contracts";
+import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { HttpServer } from "effect/http";
+import * as NetAddress from "effect/net/NetAddress";
+import * as ServerConfig from "./config.ts";
+import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import * as DirectEndpoints from "./environment/DirectEndpoints.ts";
+
 import { describe, expect, it } from "@effect/vitest";
 
 import {
   acceptsPrivateNetworkConnection,
+  issueHeadlessServeAccessInfo,
   resolveHeadlessConnectionString,
 } from "./startupAccess.ts";
 
@@ -73,3 +86,58 @@ describe("acceptsPrivateNetworkConnection", () => {
     expect(accepts(undefined, "192.168.1.31")).toBe(false);
   });
 });
+
+it.effect("prints a trusted LAN link for headless startup", () =>
+  Effect.gen(function* () {
+    const info = yield* issueHeadlessServeAccessInfo();
+    const target = resolveRemotePairingTarget({ pairingUrl: info.pairingUrl });
+    expect(target.httpBaseUrl).toBe("https://192.168.1.42:3774/");
+    expect(target.credential).toBe("PAIRINGCODE");
+    expect(target.tls).toEqual({
+      environmentId: "env-test",
+      certificateAuthority: "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n",
+    });
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.effect(
+          ServerConfig.ServerConfig,
+          Effect.map(ServerConfig.ServerConfig, (config) => ({
+            ...config,
+            host: "127.0.0.1",
+            port: 3773,
+            lanHttpsPort: 3774,
+          })),
+        ).pipe(
+          Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-startup-https-" })),
+          Layer.provide(NodeServices.layer),
+        ),
+        Layer.mock(HttpServer.HttpServer)({
+          address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
+        }),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+          issueStartupPairingCredential: () =>
+            Effect.succeed({
+              id: "test",
+              credential: "PAIRINGCODE",
+              expiresAt: DateTime.makeUnsafe("2030-01-01T00:00:00Z"),
+            }),
+        }),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({
+          resolve: () =>
+            Effect.succeed([
+              {
+                kind: "lan",
+                httpBaseUrl: "https://192.168.1.42:3774/",
+                tls: {
+                  environmentId: EnvironmentId.make("env-test"),
+                  certificateAuthority:
+                    "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n",
+                },
+              },
+            ]),
+        }),
+      ),
+    ),
+  ),
+);

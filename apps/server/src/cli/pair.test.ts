@@ -5,7 +5,11 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { AuthStandardClientScopes, ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
+import {
+  AuthStandardClientScopes,
+  EnvironmentId,
+  ORCHESTRATION_PROTOCOL_VERSION,
+} from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, expect, it } from "@effect/vitest";
@@ -35,7 +39,11 @@ import {
 import { DevServerNotProxiableError, resolveTailscaleLocalTarget } from "./pair.ts";
 
 import packageJson from "../../package.json" with { type: "json" };
-import { buildPairingAppLink } from "@t3tools/shared/remote";
+import {
+  buildPairingAppLink,
+  readPairingAppLink,
+  resolveRemotePairingTarget,
+} from "@t3tools/shared/remote";
 
 const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
@@ -226,6 +234,27 @@ describe("t3 pair", () => {
         assert.equal(credentials.length, 1);
         assert.equal(credentials[0]?.label, "t3 pair");
         assert.deepEqual(credentials[0]?.scopes, AuthStandardClientScopes);
+        const tls = {
+          environmentId: EnvironmentId.make(testDescriptor.environmentId),
+          certificateAuthority: "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n",
+        };
+        yield* persistServerRuntimeState({
+          path: statePath,
+          state: yield* makePersistedServerRuntimeState({
+            config: { host: "127.0.0.1", devUrl: undefined, lanHttpsPort: 3774 },
+            port,
+            lanHttpsEndpoint: { kind: "lan", httpBaseUrl: "https://192.168.1.10:3774/", tls },
+          }),
+        });
+        const secureOutput = yield* captureStdout(runCli(["pair", "--base-dir", baseDir]));
+        const appLink = /App link: (\S+)/.exec(secureOutput)?.[1];
+        assert.isString(appLink);
+        const pairingUrl = readPairingAppLink(appLink!);
+        assert.isString(pairingUrl);
+        const secureTarget = resolveRemotePairingTarget({ pairingUrl: pairingUrl! });
+        assert.equal(secureTarget.httpBaseUrl, "https://192.168.1.10:3774/");
+        assert.deepEqual(secureTarget.tls, tls);
+        assert.match(secureTarget.credential, /^[A-Z2-9]+$/);
       }),
     ).pipe(
       Effect.provide(NodeServices.layer),
