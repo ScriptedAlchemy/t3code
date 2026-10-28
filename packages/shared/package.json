@@ -526,6 +526,10 @@
     "./skillFrontmatter": {
       "types": "./src/skillFrontmatter.ts",
       "import": "./src/skillFrontmatter.ts"
+    },
+    "./nodeLanTls": {
+      "types": "./src/nodeLanTls.ts",
+      "node": "./src/nodeLanTls.ts"
     }
   },
   "scripts": {
@@ -549,14 +553,20 @@
     "remark-math": "6.0.0",
     "remark-parse": "catalog:",
     "remark-rehype": "catalog:",
+    "undici": "catalog:",
     "unified": "catalog:",
+    "ws": "catalog:",
     "yaml": "catalog:"
   },
   "devDependencies": {
+    "@abraham/reflection": "0.13.0",
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
+    "@peculiar/asn1-schema": "3.0.0",
+    "@peculiar/x509": "3.1.0",
     "@types/mdast": "^4.0.4",
     "@types/node": "catalog:",
+    "@types/ws": "catalog:",
     "micromark-util-types": "catalog:",
     "vite-plus": "catalog:"
   }
