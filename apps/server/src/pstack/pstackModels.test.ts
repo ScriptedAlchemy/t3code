@@ -98,6 +98,7 @@ it.effect("leaves speed to the provider unless the models file sets it", () =>
       },
     ]);
     const explicit = resolveRoles({
+      ...availability,
       file: parseModelsFile(
         "architect runners: codex/gpt-6-astra reasoningEffort=high serviceTier=priority",
       ),
