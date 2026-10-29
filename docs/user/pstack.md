@@ -25,6 +25,7 @@ provider. Until you run it, pstack uses its own defaults where this environment 
 Type `$` or `/` in the composer and pick a `pstack:` skill, for example `$pstack:architect design the
 cache layer`. Start rigorous work with `$pstack:poteto-mode`; it picks the other skills as it goes.
 Helper agents appear under the thread as tasks you can open, follow, or stop.
+Use `$pstack:automate-maintainer` or `$pstack:automate-team` to capture a maintainer’s or team’s engineering conventions.
 
 When a role's provider is turned off or no longer offers the model, that helper runs on your thread's
 own model instead, and the reply says `Fallback: …`. Turn the provider back on, or run

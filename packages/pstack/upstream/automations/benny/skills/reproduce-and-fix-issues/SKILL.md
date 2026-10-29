@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 # Reproduce and fix issues
 
+For a permitted child use `delegate_task`, the `swarm workers` role's exact resolved target from `<t3_pstack>`, and the absolute pack/models paths. T3 has no enforced no-write switch and a worktree does not remove MCP tools or credentials. Where the isolation requirements below cannot be enforced, do the work in the coordinator. Never send Slack secrets to a child.
+
 Wait for a trusted triage marker in the source thread. Reproduce the exact symptom through the target app's real UI. Verify an existing fix when one exists. Attempt a bounded fix only after a confirmed repro.
 
 Load the external Benny configuration supplied by the automation. If the config, required actions, control adapter, or completed feature map is missing, fail closed.
@@ -119,7 +121,7 @@ Use the configured plain Unicode status strings. Keep status text short:
 - Draft pull request opened
 - Fix did not land
 
-Prefer configured Cursor Slack actions. Use `BENNY_SLACK_BOT_TOKEN` only when the user configured it for a narrow missing capability such as editing this one status message. Never expose the token to a worker.
+Prefer configured Slack MCP actions. Use `BENNY_SLACK_BOT_TOKEN` only when the user configured it for a narrow missing capability such as editing this one status message. Never expose the token to a worker.
 
 If no operations channel is configured, keep detailed status in the automation run output. Do not substitute a source-channel root message.
 

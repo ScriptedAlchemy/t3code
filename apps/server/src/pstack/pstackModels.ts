@@ -218,10 +218,7 @@ export function formatPstackBlock(input: {
     `pstack skill: ${input.skillNames.join(", ")}`,
     `<pstack>: ${input.packDir}`,
     `<models>: ${input.modelsPath}`,
-    ...input.skillNames.map(
-      (name) =>
-        `Read <pstack>/docs/harness/t3-code.md once, then <pstack>/skills/${name}/SKILL.md, and follow it.`,
-    ),
+    ...input.skillNames.map((name) => `Read <pstack>/skills/${name}/SKILL.md and follow it.`),
     "Resolved roles (exact delegate_task targets; they override any model a skill or <models> names):",
     ...input.resolved.roles.map(
       ({ role, seats }) =>

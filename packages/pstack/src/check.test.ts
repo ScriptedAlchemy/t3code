@@ -24,7 +24,7 @@ function fixture() {
   };
   const seal = () => {
     const manifest: UpstreamManifest = {
-      repository: "https://github.com/cursor/plugins",
+      repository: "https://github.com/ScriptedAlchemy/pstack-t3code",
       commit: "a".repeat(40),
       subtreeHash: "b".repeat(40),
       version: "1.0.0",
@@ -41,16 +41,9 @@ function fixture() {
     "upstream/skills/setup-pstack/SKILL.md",
     `---\nname: setup-pstack\n---\n### 5. Write the rule\n\n\`\`\`\n---\ndescription: roles\nalwaysApply: true\n---\n# budget: large\n${Array.from({ length: 17 }, (_, index) => `role ${index}: inherit-parent`).join("\n")}\n\`\`\`\n### 6. Confirm\n`,
   );
-  write(
-    "upstream/docs/harness/claude-code.md",
-    "## Tools\n\n| Cursor | Claude Code |\n| --- | --- |\n| `Task` | Agent |\n",
-  );
+  write("upstream/README.md", "# Native T3 Code pack\n");
   write("upstream/helper.sh", "#!/bin/sh\nexit 0\n");
   NodeFS.chmodSync(NodePath.join(root, "upstream/helper.sh"), 0o755);
-  write(
-    "t3-code.md",
-    "## Tools\n\n| Cursor | T3 Code |\n| --- | --- |\n| `Task` | delegate_task |\n| inherit-parent | Omit target. |\n\n[Helper](../../helper.sh)\n",
-  );
   seal();
   return {
     root,
@@ -61,7 +54,7 @@ function fixture() {
 }
 
 describe("checkPack", () => {
-  it("checks the shipped snapshot and adapter", () => {
+  it("checks the shipped native snapshot", () => {
     expect(checkPack(packageDir)).toEqual([]);
   });
 
@@ -75,10 +68,10 @@ describe("checkPack", () => {
     pack.write("upstream/helper.sh", "changed\n");
     NodeFS.chmodSync(NodePath.join(pack.root, "upstream/helper.sh"), 0o644);
     pack.write("upstream/extra.md", "extra\n");
-    NodeFS.rmSync(NodePath.join(pack.root, "upstream/docs/harness/claude-code.md"));
+    NodeFS.rmSync(NodePath.join(pack.root, "upstream/README.md"));
     expect(checkPack(pack.root)).toEqual(
       expect.arrayContaining([
-        "Missing upstream file: docs/harness/claude-code.md",
+        "Missing upstream file: README.md",
         "Unrecorded upstream file: extra.md",
         "Hash mismatch: helper.sh",
         "Executable flag mismatch: helper.sh",
@@ -103,13 +96,11 @@ describe("checkPack", () => {
     },
   );
 
-  it("reports missing source and adapter without throwing", () => {
+  it("reports missing source without throwing", () => {
     using pack = fixture();
     NodeFS.rmSync(NodePath.join(pack.root, "upstream"), { recursive: true });
-    NodeFS.rmSync(NodePath.join(pack.root, "t3-code.md"));
     const problems = checkPack(pack.root);
     expect(problems.some((problem) => problem.startsWith("upstream:"))).toBe(true);
-    expect(problems.some((problem) => problem.startsWith("T3 adapter:"))).toBe(true);
     expect(problems).toContain("Expected 17 role defaults, found 0");
   });
 
@@ -122,20 +113,23 @@ describe("checkPack", () => {
     ]);
   });
 
-  it("requires verbatim table keys and headings, not mentions in prose", () => {
-    using pack = fixture();
-    pack.write(
-      "t3-code.md",
-      "## Tools changed\n\n`Task`\n\n| Cursor | T3 Code |\n| --- | --- |\n| inherit-parent | Omit target. |\n",
-    );
-    expect(checkPack(pack.root)).toEqual([
-      "Missing adapter table key: `Task`",
-      "Missing adapter heading: ## Tools",
-    ]);
-  });
-
   it.each([
+    "`Task`",
     "AskQuestion",
+    "todo list",
+    "generalPurpose",
+    "readonly: true",
+    'environment: "cloud"',
+    "cloud_base_branch",
+    "run_in_background",
+    "`resume`",
+    "file_attachments",
+    "pstack-models.mdc",
+    ".cursor/skills/",
+    "~/.cursor/plugins/",
+    ".cursor/rules/",
+    "agent-transcripts",
+    "Bugbot",
     "/loop",
     "update_state",
     "watch-pr",
@@ -143,15 +137,35 @@ describe("checkPack", () => {
     "Custom Mode",
     "create-skill",
     "cursor-team-kit",
-  ])("requires a row for used term %s", (term) => {
+    "docs/harness/t3-code.md",
+    "gpt-6-astra",
+    "grok-4.7",
+    "claude-opus-5-5",
+    "grok-4.7-fast",
+  ])("rejects non-native pack content %s", (term) => {
     using pack = fixture();
-    pack.write("upstream/skills/setup-pstack/guide.md", `Use ${term}.\n`);
+    pack.write("upstream/guide.md", `Use ${term}.\n`);
     pack.seal();
-    expect(checkPack(pack.root)).toEqual([
-      expect.stringContaining(
-        `Missing adapter term row: ${term === "AskQuestion" ? "`AskQuestion`" : term}`,
-      ),
-    ]);
+    expect(checkPack(pack.root)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^Non-native term .+: guide\.md:1$/)]),
+    );
+  });
+
+  it("checks helper source and permits native personas, defaults, and status-only verdicts", () => {
+    using pack = fixture();
+    pack.write(
+      "upstream/README.md",
+      "poteto-agent comment-sicko inherit-parent\nwatch-pr --status-only\n",
+    );
+    pack.write(
+      "upstream/skills/poteto-mode/scripts/watch-pr/github.ts",
+      "function isBugbot() {}\n",
+    );
+    pack.seal();
+    expect(checkPack(pack.root)).toEqual([]);
+    pack.write("upstream/helper.sh", "AskQuestion\n");
+    pack.seal();
+    expect(checkPack(pack.root)).toEqual(["Non-native term `AskQuestion`: helper.sh:1"]);
   });
 
   it("requires 17 distinct role defaults", () => {
@@ -164,30 +178,6 @@ describe("checkPack", () => {
     pack.write(path, original.replace("role 16:", "role 15:"));
     pack.seal();
     expect(checkPack(pack.root)).toEqual(["Duplicate role default labels"]);
-  });
-
-  it.each([
-    ["[missing](missing.md)", "Unresolved adapter link: missing.md"],
-    ["[escape](../../../outside.md)", "Adapter link escapes pack: ../../../outside.md"],
-    ["[escape](/outside.md)", "Adapter link escapes pack: /outside.md"],
-    ["[missing][ref]\n[ref]: missing.md", "Unresolved adapter link: missing.md"],
-    ["[bad](bad%ZZ.md)", "Invalid adapter link bad%ZZ.md: URI malformed"],
-  ])("rejects an invalid pack link %s", (link, problem) => {
-    using pack = fixture();
-    pack.write(
-      "t3-code.md",
-      `${NodeFS.readFileSync(NodePath.join(pack.root, "t3-code.md"), "utf8")}\n${link}\n`,
-    );
-    expect(checkPack(pack.root)).toEqual([problem]);
-  });
-
-  it("accepts pack directories, fragments, external links, and reference links", () => {
-    using pack = fixture();
-    pack.write(
-      "t3-code.md",
-      `${NodeFS.readFileSync(NodePath.join(pack.root, "t3-code.md"), "utf8")}\n[dir](../../skills/) [anchor](#tools) [web](https://example.com)\n[helper]: ../../helper.sh#example\n`,
-    );
-    expect(checkPack(pack.root)).toEqual([]);
   });
 });
 
@@ -210,15 +200,14 @@ describe("pack interface", () => {
     expect(() => pstackPackEntries(pack.root)).not.toThrow();
   });
 
-  it("invalidates the delivery stamp from the layout that included gitignore files", () => {
+  it("invalidates the delivery stamp from the adapter layout", () => {
     using pack = fixture();
-    expect(pstackContentHash(pack.root)).not.toBe(pstackContentHash(pack.root, 1));
+    expect(pstackContentHash(pack.root)).not.toBe(pstackContentHash(pack.root, 2));
   });
 
   it("uses manifest executable flags despite archive modes and keeps T3 files non-executable", () => {
     using pack = fixture();
     NodeFS.chmodSync(NodePath.join(pack.root, "upstream/helper.sh"), 0o644);
-    NodeFS.chmodSync(NodePath.join(pack.root, "t3-code.md"), 0o755);
     NodeFS.chmodSync(NodePath.join(pack.root, "UPSTREAM.json"), 0o755);
     const entries = pstackPackEntries(pack.root);
     expect(entries).toContainEqual({
@@ -227,20 +216,15 @@ describe("pack interface", () => {
       executable: true,
     });
     expect(entries).toContainEqual({
-      packPath: "docs/harness/t3-code.md",
-      sourcePath: NodePath.join(pack.root, "t3-code.md"),
-      executable: false,
-    });
-    expect(entries).toContainEqual({
       packPath: "UPSTREAM.json",
       sourcePath: NodePath.join(pack.root, "UPSTREAM.json"),
       executable: false,
     });
-    expect(entries).toHaveLength(5);
+    expect(entries).toHaveLength(4);
     expect(PSTACK_SKILL_PREFIX).toBe("pstack:");
   });
 
-  it("keys content by the layout version, upstream subtree and adapter bytes", () => {
+  it("keys content by the layout version and native subtree", () => {
     using pack = fixture();
     const hash = pstackContentHash(pack.root);
     expect(hash).toMatch(/^[a-f0-9]{16}$/);
@@ -250,9 +234,6 @@ describe("pack interface", () => {
     pack.write("UPSTREAM.json", manifest.replace("a".repeat(40), "c".repeat(40)));
     expect(pstackContentHash(pack.root)).toBe(hash);
     pack.write("UPSTREAM.json", manifest.replace("b".repeat(40), "d".repeat(40)));
-    expect(pstackContentHash(pack.root)).not.toBe(hash);
-    pack.write("UPSTREAM.json", manifest);
-    pack.write("t3-code.md", "changed adapter");
     expect(pstackContentHash(pack.root)).not.toBe(hash);
   });
 
@@ -265,11 +246,11 @@ describe("pack interface", () => {
     expect(roles).toHaveLength(17);
     expect(roles[0]).toEqual({
       label: "feature, refactoring",
-      defaultValue: "grok-4.7-xhigh-fast",
+      defaultValue: "grok-4.7-xhigh",
     });
     expect(roles.find(({ label }) => label === "architect runners")).toEqual({
       label: "architect runners",
-      defaultValue: "claude-opus-5-5-xhigh, grok-4.7-xhigh-fast",
+      defaultValue: "claude-opus-5-5-xhigh, grok-4.7-xhigh",
     });
     expect(parsePstackRoleDefaults(markdown.replaceAll("\n", "\r\n"))).toEqual(roles);
     expect(parsePstackRoleDefaults("### 4. Other\n```\nignore: value\n```\n")).toEqual([]);
