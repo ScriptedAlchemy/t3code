@@ -279,7 +279,10 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
             records: [],
           };
           const expansion = (yield* pack.expandComposer(input, { createdBy: "user" })).text;
-          assert.include(expansion!, "- architect runners: [1] inherit [2] inherit");
+          assert.include(
+            expansion!,
+            "- architect runners (panel, one child per seat): [1] inherit [2] inherit",
+          );
           assert.include(expansion!, "Fallback: architect runners seat 1");
           assert.equal(
             (yield* pack.expandComposer(
@@ -378,7 +381,7 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
       }).pipe(Effect.provide(fixture.layer));
       assert.include(
         expansion.text,
-        '- architect runners: [1] {"providerInstanceId":"claudeAgent_ready"',
+        '- architect runners (panel, one child per seat): [1] {"providerInstanceId":"claudeAgent_ready"',
       );
       assert.notInclude(expansion.text, "Fallback: architect runners seat 1");
     }),

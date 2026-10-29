@@ -120,20 +120,57 @@ it.effect("leaves speed to the provider unless the models file sets it", () =>
   }),
 );
 
-it.effect("disabled providers fall back visibly without shrinking panels", () =>
+it.effect.each([
+  { label: "arena runners", panel: true },
+  { label: "architect runners", panel: true },
+  { label: "interrogate reviewers", panel: true },
+  { label: "feature, refactoring", panel: false },
+  { label: "arena cross-judge pool", panel: false },
+  { label: "swarm workers", panel: false },
+])("unavailable seats preserve panels but do not pollute pools: $label", ({ label, panel }) =>
   Effect.sync(() => {
+    const roleFile = parseModelsFile(file.replace("architect runners:", `${label}:`));
+    const roleDefaults = [{ ...defaults[0]!, label }];
     const result = resolveRoles({
       ...availability,
-      file: parseModelsFile(file),
-      defaults,
+      file: roleFile,
+      defaults: roleDefaults,
       providers: providers.map((provider) => ({ ...provider, enabled: false })),
       capableInstanceIds,
     });
-    assert.deepEqual(result.roles[0]!.seats, [{ kind: "inherit" }, { kind: "inherit" }]);
-    assert.equal(
-      result.diagnostics[0],
-      "Fallback: architect runners seat 1 claudeAgent/claude-opus-5-5 unavailable (Provider instance is disabled.); runs on the parent model.",
+    assert.deepEqual(
+      result.roles[0]!.seats,
+      panel ? [{ kind: "inherit" }, { kind: "inherit" }] : [{ kind: "inherit" }],
     );
+    assert.equal(result.diagnostics.length, 2);
+    assert.include(
+      result.diagnostics[0]!,
+      `Fallback: ${label} seat 1 claudeAgent/claude-opus-5-5 unavailable (Provider instance is disabled.)`,
+    );
+    const partial = resolveRoles({
+      ...availability,
+      file: roleFile,
+      defaults: roleDefaults,
+      providers: providers.map((provider, index) => ({ ...provider, enabled: index !== 0 })),
+      capableInstanceIds,
+    });
+    assert.deepEqual(
+      partial.roles[0]!.seats.map((seat) => seat.kind),
+      panel ? ["inherit", "target"] : ["target"],
+    );
+    assert.include(partial.diagnostics[0]!, `Fallback: ${label} seat 1`);
+    const aliases = resolveRoles({
+      ...availability,
+      file: parseModelsFile(`${label}: auto, inherit-parent, missing/model`),
+      defaults: roleDefaults,
+      providers,
+      capableInstanceIds,
+    });
+    assert.deepEqual(
+      aliases.roles[0]!.seats,
+      Array.from({ length: panel ? 3 : 2 }, () => ({ kind: "inherit" })),
+    );
+    assert.include(aliases.diagnostics[0]!, `Fallback: ${label} seat 3 missing/model`);
   }),
 );
 it.effect("missing models file maps upstream family and effort, ignoring -fast", () =>
@@ -247,7 +284,11 @@ it.effect("formats the adapter block exactly and omits empty notes", () =>
         packDir: "/pack",
         modelsPath: "/models.md",
         resolved: {
-          roles: [{ role: "architect runners", seats: [{ kind: "inherit" }] }],
+          roles: [
+            { role: "architect runners", seats: [{ kind: "inherit" }] },
+            { role: "interrogate reviewers", seats: [{ kind: "inherit" }, { kind: "inherit" }] },
+            { role: "feature, refactoring", seats: [{ kind: "inherit" }, { kind: "inherit" }] },
+          ],
           diagnostics: [],
         },
       }),
@@ -260,6 +301,8 @@ it.effect("formats the adapter block exactly and omits empty notes", () =>
         "Read <pstack>/skills/arena/SKILL.md and follow it.",
         "Resolved roles (exact delegate_task targets; they override any model a skill or <models> names):",
         "- architect runners: [1] inherit",
+        "- interrogate reviewers (panel, one child per seat): [1] inherit [2] inherit",
+        "- feature, refactoring (pool, pick one per spawn): [1] inherit [2] inherit",
         "</t3_pstack>",
       ].join("\n"),
     );

@@ -26,11 +26,11 @@ Read `<models>`. Preserve its `# budget:` line and current choices. Drop roles a
 
 **(b) Apply it.** Keep family, list, and alias choices on repeat runs. Match default `claude-*` models to enabled `claudeAgent` instances, `gpt-*` to `codex`, and `grok-*` to `grok`, offering the advertised model. If a family is unavailable, ask for a choice; propose another available family for mixed panels rather than inventing a model. Preserve all panel seats.
 
-Find the advertised select option whose values contain at least two of `low`, `medium`, `high`, `xhigh`, `max`. Use its actual ID, including `thinking` or `variant` where advertised. Budgets target `max`, `xhigh`, `high`, or `medium` respectively. Set each real entry, including panel entries, to the requested value or the highest advertised ladder value below it. With none, mark the entry as needing a choice. Aliases, models without an effort option, and explicitly chosen off-ladder settings stay unchanged. Never select off-ladder settings under a budget.
+Find the advertised select option whose values contain at least two of `low`, `medium`, `high`, `xhigh`, `max`. Use its actual ID, including `thinking` or `variant` where advertised. Budgets target `max`, `xhigh`, `high`, or `medium` respectively. Set every concrete entry, in pools and panels, to the requested value or the highest advertised ladder value below it. With none, mark the entry as needing a choice. Aliases, models without an effort option, and explicitly chosen off-ladder settings stay unchanged. Never select off-ladder settings under a budget.
 
 Do not choose a latency or priority option automatically. Write such an option only when the user explicitly selects it. A budget change preserves any explicitly selected non-effort options.
 
-**(c) Show and confirm.** Show all 17 roles with provider instance, model, and chosen options, marking unavailable entries. Offer the detected models plus `inherit-parent` and `auto`, both of which run on the parent model. Ask whether to accept or change roles. Arena runners, architect runners, and interrogate reviewers run one child per seat, aliases included. Arena selects one seat from its cross-judge pool, preferring a different model family. `swarm workers` supplies the worker target unless a race has explicitly resolved arm targets.
+**(c) Show and confirm.** Show all 17 roles with provider instance, model, and chosen options, marking unavailable entries. Let the user choose several models for any role from any detected provider instance, plus `inherit-parent` and `auto` for the parent model. Arena runners, architect runners, and interrogate reviewers are panels that run every seat; all other roles are pools that pick one seat per spawn and spread simultaneous children across seats. Arena cross-judges prefer a different model family. When two or more model families are available, offer a mixed pool for `feature, refactoring`, `bug-fix`, and `swarm workers`; keep the current choices unless accepted. Ask whether to accept or change roles. A swarm model race still needs explicitly resolved arm targets.
 
 ### 4. Validate
 
@@ -60,7 +60,7 @@ architect runners: claude-opus-5-5-xhigh, grok-4.7-xhigh
 interrogate reviewers: claude-opus-5-5-xhigh, grok-4.7-xhigh
 ```
 
-Overwrite `<models>` with no frontmatter: comment lines, `# budget: <label> (<effort>)`, and one `role: value` line per role. Each value is `inherit-parent`, `auto`, or comma-separated `<instanceId>/<model> <optionId>=<value> ...` entries. Split instance from model at the first `/`; model IDs may contain more slashes. Booleans are `true` and `false`. `#` starts a comment. Only write options the user chose; T3 completes omissions from the provider's current defaults. Never write role lines into `AGENTS.md`, `CLAUDE.md`, or a harness rule folder.
+Overwrite `<models>` with no frontmatter: comment lines, `# budget: <label> (<effort>)`, and one `role: value` line per role. Each value is a comma-separated list of entries: `inherit-parent`, `auto`, or `<instanceId>/<model> <optionId>=<value> ...`. Split instance from model at the first `/`; model IDs may contain more slashes. Booleans are `true` and `false`. `#` starts a comment. Only write options the user chose; T3 completes omissions from the provider's current defaults. Never write role lines into `AGENTS.md`, `CLAUDE.md`, or a harness rule folder.
 
 ### 6. Confirm
 

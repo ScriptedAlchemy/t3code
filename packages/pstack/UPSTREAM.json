@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/ScriptedAlchemy/pstack-t3code",
-  "commit": "72ce8cda5f4c2b9ed413d3360378af861187291b",
-  "subtreeHash": "60b40eb3e77fb0832479226e65df66504fead7cb",
-  "version": "0.15.32-t3code.1",
+  "commit": "3fb34e1854572c88259bd4092be1894713ee7994",
+  "subtreeHash": "fd4fec719979e22e33188f8dd92a9a9d0d3a606d",
+  "version": "0.15.32-t3code.2",
   "files": {
     ".gitignore": {
       "sha256": "8ffe9de56bd30c1a95cd945262d6e3ac355ada4111551dde41f67851b9f1fc55",
@@ -149,11 +149,11 @@
       "executable": false
     },
     "plugin.json": {
-      "sha256": "60ba9a8f82249c2a55a07503205096ad343935b593be1389aed038a7144c302d",
+      "sha256": "cd62e4e678d68b28cc47c2351e9b44ee1930378a7374900ad431bc70677f9263",
       "executable": false
     },
     "skills/architect/SKILL.md": {
-      "sha256": "0124cef5ab18becdf9b74ae38b67f09f90f7e93dee4da5858dce62125a9d3aea",
+      "sha256": "af607fce2619de80661d71d63118f73d3aee2ebb80ae6100cfb6fb19afd70c26",
       "executable": false
     },
     "skills/architect/references/design-red-flags.md": {
@@ -169,11 +169,11 @@
       "executable": false
     },
     "skills/arena/SKILL.md": {
-      "sha256": "258a4178aa78bfb0c184cb6c4de50193403e61d20db681ba8da04645bddc5afb",
+      "sha256": "3ef9ed8b9bfb7e46666d807dee9ab7bdb863a43cb8ebec0523dcee7ec71df17a",
       "executable": false
     },
     "skills/automate-maintainer/SKILL.md": {
-      "sha256": "e53ad00ede4e98c000e7708efbb9e5b17c86ec01b6b6e0b364c0be56267bbdfc",
+      "sha256": "95c17880de2b4521d57df49c60274148f9c90710974b5be37e73674611f12feb",
       "executable": false
     },
     "skills/automate-maintainer/references/evaluation.md": {
@@ -193,11 +193,11 @@
       "executable": false
     },
     "skills/automate-me/SKILL.md": {
-      "sha256": "9d51497128df81670b1c6a42cfa56c306816cdb06455322f17e01d62808aad1f",
+      "sha256": "d45c2dfaccdfface448151d2d196b0167d19b7981fdfa7a167964942d0e0f92e",
       "executable": false
     },
     "skills/automate-team/SKILL.md": {
-      "sha256": "9a4f4cb1ea45377e5ca29f4e289b67cc9df42d1e60403c4ac151fb861974c6c7",
+      "sha256": "1c4f25014af5adec96a1c5d68c5d872988248daceb7b9a15df6a5d39f98b7a75",
       "executable": false
     },
     "skills/automate-team/references/roster-discovery.md": {
@@ -241,11 +241,11 @@
       "executable": false
     },
     "skills/figure-it-out/SKILL.md": {
-      "sha256": "576c3f1003faa50497048e2aaad0fb1d8f6adbc598d2b070dfffa872d036d44a",
+      "sha256": "04ff6765a9f29dd9f9c74050fe6c91cfde03bc554d1174f2e645c32b97c9f0bd",
       "executable": false
     },
     "skills/how/SKILL.md": {
-      "sha256": "5efd68277f2243e4785111ccec13778a478eb5df393ced6e13a170100b02c074",
+      "sha256": "7bcb12d931074187e3fe175aa119270290771931f9384aac05cde758c97f5596",
       "executable": false
     },
     "skills/how/references/explainer-prompt.md": {
@@ -261,7 +261,7 @@
       "executable": false
     },
     "skills/interrogate/SKILL.md": {
-      "sha256": "e8c8c69c83e80b3eb81d01eea87219d878104dab581882ed47c1757369b11140",
+      "sha256": "ec27cbedd6e40a60cf17307d5e190bddb1a5556a1c6647494f89c2677b3daa77",
       "executable": false
     },
     "skills/interrogate/references/code-quality-review.md": {
@@ -293,7 +293,7 @@
       "executable": false
     },
     "skills/maintain-verification-skill/SKILL.md": {
-      "sha256": "c55cbc459140ad396b2dd91c95959c7dc597fa1ce55a439772178e8a709401a6",
+      "sha256": "0ac81df9688c0578a6487d7c06a6fba90fe59f23dd274ab38f5771968cbee72b",
       "executable": false
     },
     "skills/make-bot-ui/SKILL.md": {
@@ -301,7 +301,7 @@
       "executable": false
     },
     "skills/no-comments/SKILL.md": {
-      "sha256": "9f338b9ab171a5454b1e5feb5652b0d0d2ad8478d50a641ad1ef7d8b41943b68",
+      "sha256": "d7d633c6c1dca4b4ebde68b92e4a2c1cb675c1ae1c6092af5dc40268e7cc9053",
       "executable": false
     },
     "skills/poteto-help/SKILL.md": {
@@ -317,7 +317,7 @@
       "executable": false
     },
     "skills/poteto-mode/SKILL.md": {
-      "sha256": "d74763f526c1699b31f6907f42f5bf590d5a739b0ee259a722519a8316ada8ca",
+      "sha256": "9668120a717d135e8ce746bb4bd7276388864479a533d62ee0f5a2db12412086",
       "executable": false
     },
     "skills/poteto-mode/playbooks/authoring-a-skill.md": {
@@ -597,11 +597,11 @@
       "executable": false
     },
     "skills/recall/SKILL.md": {
-      "sha256": "8200f570f22d29376b233dc94b22be1364ef95211617e422ab0b16827747881a",
+      "sha256": "2eb3a991d0cdeddb03ce805b1b37006a7c4f140429842ee58be72f94760eb4b6",
       "executable": false
     },
     "skills/reflect/SKILL.md": {
-      "sha256": "e3805f198ef878165bc6188efe42b840e4991395ad126bd2afd1b9da8598d2da",
+      "sha256": "145ce88ba06ff69a5dd007b7e26111406d2749f4f29a1c6d1b19e33736673217",
       "executable": false
     },
     "skills/reflect/references/divergent-reviewer.md": {
@@ -621,7 +621,7 @@
       "executable": false
     },
     "skills/setup-pstack/SKILL.md": {
-      "sha256": "560a8459df37a2bdb6761c833ee6319dba661743007fefcd53f4e6a3c8e535f3",
+      "sha256": "de963997e508ac129b03927ab21f11f3690e9e205c1bf1bdf29a5eed290f8c1e",
       "executable": false
     },
     "skills/sharpen/SKILL.md": {
@@ -629,7 +629,7 @@
       "executable": false
     },
     "skills/show-me-your-work/SKILL.md": {
-      "sha256": "b8feeed9e7548933bcf4986422e087dc2095b2bb88967603ef2f86f6a4e52f2f",
+      "sha256": "dde5838d662842d2d66e38942b2e8d8c693cb0412aca63ebfaa73161f5370a50",
       "executable": false
     },
     "skills/show-me-your-work/references/decision-log-template.tsv": {
@@ -749,7 +749,7 @@
       "executable": false
     },
     "skills/swarm/SKILL.md": {
-      "sha256": "eedffdbb04a5d75f6be28266e1f6ff2edbe868f23dc7fc968b817726597865cc",
+      "sha256": "7d7f9728009f5ccb51dff7584fbf46f5fdcc0c1650f9de4cc420ab3ab6a03e65",
       "executable": false
     },
     "skills/tdd/SKILL.md": {
@@ -777,7 +777,7 @@
       "executable": false
     },
     "skills/why/SKILL.md": {
-      "sha256": "693a375ae6f415da10b88d27cb4c3ca8db39a8ec1860f91a80e78f4550caef3f",
+      "sha256": "4bfc3b9efebbd4fcd80d8476c9b3317858ec691f5ca47ea7d7e87dc7841df71f",
       "executable": false
     },
     "skills/why/references/epistemics.md": {
