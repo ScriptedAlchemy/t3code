@@ -34,6 +34,7 @@ const runWithPeerLinks = Effect.fn("environment.runWithPeerLinks")(function* <A,
     Effect.flatMap(run),
     Effect.provide(
       PeerLinks.layer.pipe(
+        Layer.provide(PeerLinks.layerSsh),
         Layer.provide(
           Layer.mergeAll(
             ServerSecretStore.layer,

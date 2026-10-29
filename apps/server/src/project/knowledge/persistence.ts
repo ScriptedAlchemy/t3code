@@ -100,6 +100,29 @@ const DeliveryRow = Schema.Struct({
   omissions: Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryOmission)),
 });
 const decodeDeliveries = Schema.decodeUnknownEffect(Schema.Array(DeliveryRow));
+export type DeliveryStateInput = Pick<
+  ProjectKnowledgeDelivery,
+  | "projectId"
+  | "threadId"
+  | "messageId"
+  | "attemptId"
+  | "providerInstanceId"
+  | "providerThreadId"
+  | "nativeThreadId"
+> & { readonly scope: "native-conversation" | "attempt" };
+export interface DeliveryState {
+  readonly sent: boolean;
+  readonly sentThisAttempt: boolean;
+  readonly uncertain: boolean;
+}
+const DeliveryCursor = Schema.fromJsonString(
+  Schema.Struct({
+    attemptId: ProjectKnowledgeDelivery.fields.attemptId,
+    messageId: ProjectKnowledgeDelivery.fields.messageId,
+  }),
+);
+const decodeDeliveryCursor = Schema.decodeUnknownEffect(DeliveryCursor);
+const encodeDeliveryCursor = Schema.encodeSync(DeliveryCursor);
 const decodeDeliveryItems = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(ProjectKnowledgeDeliveryItem)),
 );
@@ -453,7 +476,7 @@ export const makeStore = Effect.gen(function* () {
           ${encodeDeliveryItems(items)}, ${encodeDeliveryOmissions(delivery.omissions)},
           ${delivery.createdAt}, ${delivery.updatedAt}, ${delivery.providerThreadId ?? null},
           ${delivery.nativeThreadId ?? null}, ${delivery.budget === undefined ? null : yield* encodeDeliveryBudget(delivery.budget)}
-        ) ON CONFLICT (attempt_id) DO UPDATE SET
+        ) ON CONFLICT (attempt_id, message_id) DO UPDATE SET
           status = excluded.status, updated_at = excluded.updated_at,
           provider_thread_id = excluded.provider_thread_id, native_thread_id = excluded.native_thread_id, budget_json = excluded.budget_json, omissions_json = excluded.omissions_json
           ${
@@ -474,8 +497,12 @@ export const makeStore = Effect.gen(function* () {
     projectId: ProjectId,
     factId: ProjectFactId,
   ) {
-    const rows = yield* sql<{ readonly attemptId: string; readonly items: string }>`
-      SELECT attempt_id AS "attemptId", items_json AS items FROM project_knowledge_deliveries d
+    const rows = yield* sql<{
+      readonly attemptId: string;
+      readonly messageId: string;
+      readonly items: string;
+    }>`
+      SELECT attempt_id AS "attemptId", message_id AS "messageId", items_json AS items FROM project_knowledge_deliveries d
       WHERE project_id = ${projectId} AND EXISTS (
         SELECT 1 FROM json_each(d.items_json) item,
           json_each(item.value, '$.context.selections') selection
@@ -487,7 +514,7 @@ export const makeStore = Effect.gen(function* () {
       const scrubbed = withoutForgotten(items, new Set([factId]));
       if (scrubbed !== items)
         yield* sql`UPDATE project_knowledge_deliveries SET items_json = ${encodeDeliveryItems(scrubbed)}
-          WHERE attempt_id = ${row.attemptId}`;
+          WHERE attempt_id = ${row.attemptId} AND message_id = ${row.messageId}`;
     }
   });
   const replaceDeliveryItems = Effect.fn("ProjectKnowledgeStore.replaceDeliveryItems")(function* (
@@ -496,8 +523,43 @@ export const makeStore = Effect.gen(function* () {
   ) {
     yield* sql`UPDATE project_knowledge_deliveries
       SET items_json = ${encodeDeliveryItems(delivery.items)}, omissions_json = ${encodeDeliveryOmissions(delivery.omissions)}
-      WHERE attempt_id = ${delivery.attemptId} AND project_id = ${delivery.projectId}
+      WHERE attempt_id = ${delivery.attemptId} AND message_id = ${delivery.messageId}
+        AND project_id = ${delivery.projectId}
         AND items_json = ${encodeDeliveryItems(original.items)}`;
+  });
+  // Dispatch safety reads status across every matching attempt, independently of
+  // the inspector's page limit and evidence decoding/source revalidation.
+  const deliveryTargetPredicate = (input: DeliveryStateInput) => sql`
+    project_id = ${input.projectId} AND thread_id = ${input.threadId} AND message_id = ${input.messageId}
+    AND provider_instance_id = ${input.providerInstanceId}
+    AND ${
+      input.scope === "attempt"
+        ? sql`attempt_id = ${input.attemptId} AND (provider_thread_id IS NULL OR provider_thread_id IS ${input.providerThreadId ?? null})`
+        : sql`provider_thread_id IS ${input.providerThreadId ?? null}
+          AND native_thread_id IS ${input.nativeThreadId}
+          AND (${input.nativeThreadId} IS NOT NULL OR attempt_id = ${input.attemptId})`
+    }`;
+  const readDeliveryState = Effect.fn("ProjectKnowledgeStore.readDeliveryState")(function* (
+    input: DeliveryStateInput,
+  ) {
+    const [row] = yield* sql<{ sent: number; sentThisAttempt: number; uncertain: number }>`
+      SELECT COALESCE(MAX(status = 'sent'), 0) AS sent,
+        COALESCE(MAX(status = 'sent' AND attempt_id = ${input.attemptId}), 0) AS "sentThisAttempt",
+        COALESCE(MAX(status IN ('prepared', 'uncertain')), 0) AS uncertain
+      FROM project_knowledge_deliveries
+      WHERE ${deliveryTargetPredicate(input)}`;
+    return {
+      sent: row?.sent === 1,
+      sentThisAttempt: row?.sentThisAttempt === 1,
+      uncertain: row?.uncertain === 1,
+    };
+  });
+  const markDeliveryUncertain = Effect.fn("ProjectKnowledgeStore.markDeliveryUncertain")(function* (
+    input: DeliveryStateInput,
+    updatedAt: string,
+  ) {
+    yield* sql`UPDATE project_knowledge_deliveries SET status = 'uncertain', updated_at = ${updatedAt}
+      WHERE status = 'prepared' AND ${deliveryTargetPredicate(input)}`;
   });
   const deliveries = Effect.fn("ProjectKnowledgeStore.deliveries")(function* (
     projectId: ProjectId,
@@ -524,6 +586,10 @@ export const makeStore = Effect.gen(function* () {
     afterId: string | undefined,
     limit: number,
   ) {
+    // Durable continuations from older builds carry only an attempt id.
+    const cursor = afterId?.startsWith("message:")
+      ? yield* decodeDeliveryCursor(afterId.slice("message:".length))
+      : undefined;
     const rows = yield* sql`
       SELECT attempt_id AS "attemptId", run_id AS "runId", thread_id AS "threadId",
         message_id AS "messageId", project_id AS "projectId",
@@ -531,13 +597,27 @@ export const makeStore = Effect.gen(function* () {
         native_thread_id AS "nativeThreadId", status, items_json AS items,
         budget_json AS budget, omissions_json AS omissions, created_at AS "createdAt", updated_at AS "updatedAt"
       FROM project_knowledge_deliveries
-      WHERE project_id = ${projectId} AND attempt_id > ${afterId ?? ""}
-      ORDER BY attempt_id ASC LIMIT ${limit}`;
-    return (yield* decodeDeliveries(rows)).map(({ providerThreadId, budget, ...row }) => ({
-      ...row,
-      ...(budget == null ? {} : { budget }),
-      ...(providerThreadId == null ? {} : { providerThreadId }),
-    }));
+      WHERE project_id = ${projectId} AND ${
+        cursor === undefined
+          ? sql`attempt_id > ${afterId ?? ""}`
+          : sql`(attempt_id, message_id) > (${cursor.attemptId}, ${cursor.messageId})`
+      }
+      ORDER BY attempt_id ASC, message_id ASC LIMIT ${limit}`;
+    const deliveries = (yield* decodeDeliveries(rows)).map(
+      ({ providerThreadId, budget, ...row }) => ({
+        ...row,
+        ...(budget == null ? {} : { budget }),
+        ...(providerThreadId == null ? {} : { providerThreadId }),
+      }),
+    );
+    const last = deliveries.at(-1);
+    return {
+      deliveries,
+      afterId:
+        last !== undefined && deliveries.length === limit
+          ? `message:${encodeDeliveryCursor({ attemptId: last.attemptId, messageId: last.messageId })}`
+          : null,
+    };
   });
   const sentDeliveries = Effect.fn("ProjectKnowledgeStore.sentDeliveries")(function* (
     projectId: ProjectId,
@@ -615,6 +695,8 @@ export const makeStore = Effect.gen(function* () {
     citedFacts,
     recordRetrieval,
     recordDelivery,
+    readDeliveryState,
+    markDeliveryUncertain,
     scrubDeliveries,
     replaceDeliveryItems,
     deliveries,

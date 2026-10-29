@@ -4,6 +4,7 @@ import type {
   ModelSelection,
   PullRequestReviewGuide,
   TextGenerationError,
+  TextGenerationOperation,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 
@@ -164,4 +165,9 @@ export interface ProviderTextGeneration {
   readonly generateConversationSummary: (
     input: ConversationSummaryGenerationInput,
   ) => Effect.Effect<ConversationSummaryGenerationResult, TextGenerationError>;
+}
+
+/** A provider declares the operations it implements; the application facade validates each call. */
+export interface ProviderTextGenerationRuntime extends ProviderTextGeneration {
+  readonly supportedOperations: ReadonlyArray<TextGenerationOperation>;
 }

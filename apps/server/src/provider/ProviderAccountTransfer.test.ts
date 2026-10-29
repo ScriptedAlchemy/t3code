@@ -11,6 +11,7 @@ import {
   type ProviderAccountExport,
 } from "@t3tools/contracts";
 import { cursorClient } from "@t3tools/provider-cursor/client";
+import { fxClient } from "@t3tools/provider-fx/client";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -44,6 +45,7 @@ const builtIn: ReadonlyArray<Driver> = [
   driver(codex, CodexSettings),
   driver(antigravity, AntigravitySettings),
   driver(cursor, cursorClient.settingsSchema),
+  driver(fxClient.driverKind, fxClient.settingsSchema),
 ];
 
 interface EnvironmentInput {
@@ -105,6 +107,39 @@ const failure = <A, E>(effect: Effect.Effect<A, E>) =>
   );
 
 describe("ProviderAccountTransfer", () => {
+  it.effect("transfers fx configuration while keeping binary paths local", () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("fx_work");
+      const a = yield* makeEnvironment({
+        settings: {
+          providerInstances: {
+            [instanceId]: {
+              driver: fxClient.driverKind,
+              enabled: true,
+              config: {
+                enabled: true,
+                binaryPath: "/a/bin/fx",
+                customModels: ["team-model"],
+              },
+            },
+          },
+        },
+      });
+      const b = yield* makeEnvironment();
+      const exported = yield* a.transfer.exportAccount(instanceId);
+      expect(exported.instance.enabled).toBe(true);
+      expect(exported.instance.config).toEqual({ customModels: ["team-model"] });
+      expect(exported.omitted).toContainEqual({
+        setting: { _tag: "ConfigField", field: "binaryPath" },
+        reason: "machine-local",
+      });
+      yield* b.transfer.importAccount(exported);
+      expect((yield* b.settings.getSettings).providerInstances[instanceId]?.config).toEqual(
+        exported.instance.config,
+      );
+    }),
+  );
+
   it.effect("exports portable settings and secrets and leaves machine-local settings behind", () =>
     Effect.gen(function* () {
       const a = yield* makeEnvironment({ settings: sourceSettings });

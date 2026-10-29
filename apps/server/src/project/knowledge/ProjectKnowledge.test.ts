@@ -1,5 +1,6 @@
 import * as HolographicMemory from "./HolographicMemory.ts";
 import { deliveredKnowledgeForHistory, resolveKnowledgeComposer } from "./composer.ts";
+import { readKnowledgeDeliveryState } from "./delivery.ts";
 import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
 import { assert, it } from "@effect/vitest";
 import {
@@ -1031,6 +1032,137 @@ const composeDelivery = Effect.fn("test.composeDelivery")(function* (
     );
   return { delivery, forget, excerpts };
 });
+
+it.effect("keeps each steering message's receipt and forgets only its own evidence", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("steering-deliveries");
+    yield* createProject(projectId);
+    const first = yield* composeDelivery(projectId, "first-steer");
+    const second = yield* composeDelivery(projectId, "second-steer");
+    const original = first.delivery("shared-attempt", "sent", 1);
+    const followup = {
+      ...second.delivery("shared-attempt", "prepared", 2),
+      threadId: original.threadId,
+      runId: original.runId,
+    };
+    yield* knowledge.recordDelivery(original);
+    yield* knowledge.recordDelivery(followup);
+    yield* knowledge.recordDelivery({ ...followup, status: "sent" });
+    yield* knowledge.recordDelivery({
+      ...followup,
+      items: followup.items.map((item) => ({ ...item, text: "must not replace sent evidence" })),
+    });
+    const readSecond = knowledge.readDeliveries(followup);
+    assert.equal((yield* readSecond).deliveries[0]?.items[0]?.text, followup.items[0]?.text);
+    assert.equal((yield* first.excerpts)[0]?.[1], "sent");
+
+    const evidence = yield* deliveredKnowledgeForHistory({
+      projectId,
+      messages: [original, followup].map((receipt) => ({
+        itemId: TurnItemId.make(`item:${receipt.messageId}`),
+        role: "user" as const,
+        kind: "user_message",
+        text: "Use the attached decision.",
+        threadId: receipt.threadId,
+        runId: receipt.runId,
+        providerThreadId: null,
+        status: "completed",
+      })),
+      userItemId: (id) => `item:${id}`,
+    });
+    assert.equal(evidence.size, 2);
+    yield* first.forget;
+    assert.equal((yield* first.excerpts)[0]?.[2], "");
+    assert.equal((yield* readSecond).deliveries[0]?.items[0]?.text, followup.items[0]?.text);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("checks delivery state beyond the evidence inspector's twenty-receipt page", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("delivery-state-pagination");
+    yield* createProject(projectId);
+    const receipt = {
+      projectId,
+      threadId: ThreadId.make("delivery-state-thread"),
+      messageId: MessageId.make("delivery-state-message"),
+      runId: RunId.make("delivery-state-run"),
+      attemptId: RunAttemptId.make("current-attempt"),
+      providerInstanceId,
+      providerThreadId: ProviderThreadId.make("delivery-state-provider-thread"),
+      nativeThreadId: "original-native",
+      status: "uncertain" as const,
+      items: [],
+      omissions: [],
+      createdAt: DateTime.formatIso(at(30)),
+      updatedAt: DateTime.formatIso(at(30)),
+    };
+    for (let index = 0; index < 25; index++)
+      yield* knowledge.recordDelivery({
+        ...receipt,
+        attemptId: RunAttemptId.make(`older-attempt-${index}`),
+        status: "failed",
+        createdAt: DateTime.formatIso(at(index)),
+        updatedAt: DateTime.formatIso(at(index)),
+      });
+    yield* knowledge.recordDelivery(receipt);
+    assert.lengthOf((yield* knowledge.readDeliveries(receipt)).deliveries, 20);
+    assert.deepEqual(yield* readKnowledgeDeliveryState(receipt), {
+      sent: false,
+      sentThisAttempt: false,
+      uncertain: true,
+    });
+    yield* knowledge.recordDelivery({ ...receipt, status: "sent" });
+    // Receipt safety must not depend on decoding/revalidating evidence bodies.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE project_knowledge_deliveries SET items_json = 'unreadable evidence'
+      WHERE attempt_id = ${receipt.attemptId} AND message_id = ${receipt.messageId}`;
+    assert.deepEqual(yield* readKnowledgeDeliveryState(receipt), {
+      sent: true,
+      sentThisAttempt: true,
+      uncertain: false,
+    });
+    const replacement = { ...receipt, nativeThreadId: "replacement-native" };
+    assert.isFalse((yield* readKnowledgeDeliveryState(replacement)).sent);
+    assert.isTrue((yield* readKnowledgeDeliveryState(replacement, "attempt")).sentThisAttempt);
+    assert.isFalse(
+      (yield* readKnowledgeDeliveryState({
+        ...receipt,
+        messageId: MessageId.make("another-message"),
+      })).sent,
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("pages delivery scrubbing through multiple messages in the same attempt", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("steering-scrub-pages");
+    yield* createProject(projectId);
+    const fixture = yield* composeDelivery(projectId, "scrub-steer");
+    const receipt = fixture.delivery("one-attempt", "sent", 1);
+    yield* Effect.forEach(
+      Array.from({ length: 55 }, (_, index) => index),
+      (index) =>
+        knowledge.recordDelivery({ ...receipt, messageId: MessageId.make(`steer-${index}`) }),
+    );
+    const sql = yield* SqlClient.SqlClient;
+    // Simulate a removal already committed before the durable scrub continuation runs.
+    yield* sql`UPDATE project_knowledge_facts SET status = 'forgotten', content = NULL,
+      forgotten_at = '2026-09-27T00:02:00.000Z', entities_json = '[]', tags_json = '[]', sources_json = '[]'
+      WHERE project_id = ${projectId}`;
+    const afterId = yield* knowledge.scrubDeliveryPage({ projectId });
+    assert.isNotNull(afterId);
+    assert.equal(yield* knowledge.scrubDeliveryPage({ projectId, afterId: afterId! }), null);
+    const [count] = yield* sql<{ total: number; retained: number }>`
+      SELECT COUNT(*) AS total,
+        SUM(CASE WHEN items_json LIKE '%Cache keys include tenant IDs.%' THEN 1 ELSE 0 END) AS retained
+      FROM project_knowledge_deliveries WHERE project_id = ${projectId}`;
+    assert.equal(count?.total, 55);
+    assert.equal(count?.retained, 0);
+  }).pipe(Effect.provide(layerTest)),
+);
 
 it.effect.each(["confirm", "feedback"] as const)(
   "scrubs a delivered %s revision using the citations that supplied its content",

@@ -329,7 +329,15 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  return Effect.succeed(snapshot);
+  if (source.textGenerationOperations === undefined) return Effect.succeed(snapshot);
+  // A runtime `false` (Antigravity with global hooks, unauthenticated) still wins over the static list.
+  const operations =
+    snapshot.supportsTextGeneration === false ? [] : source.textGenerationOperations;
+  return Effect.succeed({
+    ...snapshot,
+    supportsTextGeneration: operations.length > 0,
+    textGenerationOperations: operations,
+  });
 };
 
 const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
@@ -340,6 +348,7 @@ const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
 const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource => ({
   instanceId: instance.instanceId,
   driverKind: instance.driverKind,
+  textGenerationOperations: instance.textGeneration.supportedOperations,
   getSnapshot: instance.snapshot.getSnapshot,
   refresh: instance.snapshot.refresh,
   streamChanges: instance.snapshot.streamChanges,

@@ -1,4 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NetService from "@t3tools/shared/Net";
+import * as SshAuth from "@t3tools/ssh/auth";
+import * as SshTunnel from "@t3tools/ssh/tunnel";
 import {
   EnvironmentHttpApi,
   EnvironmentId,
@@ -155,9 +158,22 @@ export type ServedPeer = Effect.Success<ReturnType<typeof servePeer>>;
 export const layerLinkingEnvironment = (
   descriptor: ExecutionEnvironmentDescriptor,
   secrets: typeof ServerSecretStore.layer = ServerSecretStore.layer,
+  ssh?: SshTunnel.SshEnvironmentManager["Service"],
 ) =>
   PeerMcpClient.layer.pipe(
-    Layer.provideMerge(PeerLinks.layer),
+    Layer.provideMerge(
+      PeerLinks.layer.pipe(
+        Layer.provide(
+          ssh === undefined
+            ? PeerLinks.layerSsh
+            : Layer.mergeAll(
+                Layer.succeed(SshTunnel.SshEnvironmentManager, ssh),
+                NetService.layer,
+                SshAuth.SshPasswordPrompt.disabledLayer,
+              ),
+        ),
+      ),
+    ),
     Layer.provideMerge(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
     Layer.provideMerge(Sqlite.layerMemory),
     Layer.provide(Layer.mergeAll(secrets, FetchHttpClient.layer)),

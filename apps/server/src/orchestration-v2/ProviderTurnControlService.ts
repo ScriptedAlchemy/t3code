@@ -1,7 +1,21 @@
 import * as ServerSettings from "../serverSettings.ts";
 import { hasPstackComposerInvocation } from "../pstack/composer.ts";
 import * as PstackPack from "../pstack/PstackPack.ts";
-import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import {
+  collectComposerContextReferences,
+  projectComposerContextForProvider,
+} from "@t3tools/shared/composerContextReferences";
+import * as ProjectKnowledge from "../project/knowledge/ProjectKnowledge.ts";
+import {
+  prepareKnowledgeDelivery,
+  readKnowledgeDeliveryState,
+} from "../project/knowledge/delivery.ts";
+import {
+  DEFAULT_HANDOFF_TOKEN_CAP,
+  handoffBudgetAssumptions,
+  handoffTokenCapConfig,
+  nativeContextHistory,
+} from "@t3tools/provider-core/server/handoffBudget";
 import {
   MessageId,
   type NodeId,
@@ -90,6 +104,7 @@ export const layer: Layer.Layer<
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
   | PstackPack.PstackPack
+  | ProjectKnowledge.ProjectKnowledge
   | ServerSettings.ServerSettingsService
 > = Layer.effect(
   ProviderTurnControlServiceV2,
@@ -98,6 +113,7 @@ export const layer: Layer.Layer<
     const settings = yield* ServerSettings.ServerSettingsService;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
 
     const load = Effect.fn("ProviderTurnControlService.load")(function* (input: {
       readonly threadId: ThreadId;
@@ -330,6 +346,52 @@ export const layer: Layer.Layer<
       steer: Effect.fn("ProviderTurnControlService.steer")(
         function* (input) {
           const context = yield* projections.getProviderControlContext(input.threadId, input);
+          const hasKnowledge =
+            context.message?.context?.records.some(
+              (record) => record.kind === "project-knowledge",
+            ) === true ||
+            collectComposerContextReferences(context.message?.text ?? "").some(
+              (reference) => reference.kind === "project-knowledge",
+            );
+          const targetAttemptId = context.providerTurn?.runAttemptId;
+          let originalAttempt = context.attempt;
+          // Check receipts before loading a live turn: completion must not turn an uncertain send into a new prompt.
+          if (
+            hasKnowledge &&
+            context.message !== undefined &&
+            context.providerThread !== undefined &&
+            targetAttemptId != null
+          ) {
+            const thread = yield* projections.getThread(input.threadId);
+            originalAttempt ??= (yield* projections.getProviderControlContext(input.threadId, {
+              ...input,
+              attemptId: targetAttemptId,
+            })).attempt;
+            const state = yield* readKnowledgeDeliveryState(
+              {
+                projectId: thread.projectId,
+                threadId: input.threadId,
+                messageId: input.messageId,
+                attemptId: targetAttemptId,
+                providerInstanceId:
+                  originalAttempt?.providerInstanceId ?? context.providerThread.providerInstanceId,
+                providerThreadId: originalAttempt?.providerThreadId ?? context.providerThread.id,
+                nativeThreadId:
+                  originalAttempt?.nativeThreadId ??
+                  context.providerThread.nativeThreadRef?.nativeId ??
+                  null,
+              },
+              "attempt",
+            ).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge));
+            if (state.sentThisAttempt) return;
+            if (state.uncertain)
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                cause: "The provider may already have received this steering message.",
+              });
+          }
           const ownership = context.message?.delegatedCompletion;
           if (ownership !== undefined) {
             const projection = yield* projections.getThreadRecords(input.threadId, ["runs"], {
@@ -372,6 +434,130 @@ export const layer: Layer.Layer<
               message,
             );
           }
+          let text = projectComposerContextForProvider(composer);
+          let knowledgeDelivery:
+            | Effect.Success<ReturnType<typeof prepareKnowledgeDelivery>>
+            | undefined;
+          if (hasKnowledge) {
+            const thread = yield* projections.getThread(input.threadId);
+            const attemptId = loaded.providerTurn.runAttemptId;
+            if (attemptId === null)
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                cause: "The steering target has no recorded run attempt.",
+              });
+            knowledgeDelivery = yield* prepareKnowledgeDelivery({
+              target: {
+                attemptId,
+                runId: run.id,
+                threadId: input.threadId,
+                messageId: message.id,
+                projectId: thread.projectId,
+                providerInstanceId: run.providerInstanceId,
+                providerThreadId: loaded.providerThread.id,
+                nativeThreadId: loaded.providerThread.nativeThreadRef?.nativeId ?? null,
+              },
+              ...composer,
+            }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge));
+            const current = yield* load({ ...input, operation: "steer" });
+            if (
+              current.providerTurn.runAttemptId !== attemptId ||
+              current.context.run?.activeAttemptId !== attemptId
+            ) {
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                cause: "The steering run attempt changed while resolving project knowledge.",
+              });
+            }
+            const providerThread = {
+              ...current.providerThread,
+              ...(current.providerTurn.tokenUsage === undefined
+                ? {}
+                : {
+                    contextUsage: {
+                      ...current.providerThread.contextUsage,
+                      usedTokens: current.providerTurn.tokenUsage.usedTokens,
+                      ...(current.providerTurn.tokenUsage.maxTokens != null &&
+                      current.providerTurn.tokenUsage.maxTokens > 0
+                        ? { maxTokens: current.providerTurn.tokenUsage.maxTokens }
+                        : {}),
+                    },
+                  }),
+            };
+            const tokenCap = yield* handoffTokenCapConfig.pipe(
+              Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
+            );
+            const nativeContextEstimate =
+              providerThread.contextUsage?.usedTokens === undefined
+                ? yield* Effect.gen(function* () {
+                    const history = yield* projections.getThreadRecords(input.threadId, [
+                      "runs",
+                      "attempts",
+                      "providerTurns",
+                      "contextHandoffs",
+                    ]);
+                    return nativeContextHistory(history, providerThread).estimate(
+                      (yield* projections.getTurnStartHistory(input.threadId)).filter(
+                        (item) => item.type !== "user_message" || item.messageId !== message.id,
+                      ),
+                    );
+                  })
+                : 0;
+            yield* knowledgeDelivery.checkBudget(
+              handoffBudgetAssumptions({
+                tokenCap,
+                userText: knowledgeDelivery.composer.baseText,
+                attachments: message.attachments,
+                providerThread,
+                nativeContextEstimate,
+                modelContextWindow: loaded.session.value.getModelContextWindow?.(
+                  run.modelSelection,
+                  thread.worktreePath,
+                ),
+              }),
+            );
+            const state = yield* knowledgeDelivery.readState;
+            if (state.sentThisAttempt) return;
+            if (state.uncertain)
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                cause: "The provider may already have received this steering message.",
+              });
+            text = state.sent
+              ? knowledgeDelivery.composer.baseText
+              : knowledgeDelivery.composer.text;
+            yield* knowledgeDelivery.record("prepared");
+            // Long budget/history reads must finish before the last source check.
+            // Revalidation records a failed receipt itself when the source is stale.
+            yield* knowledgeDelivery.revalidate;
+            const refusedBeforeSend = knowledgeDelivery.settle("failed");
+            const final = yield* load({ ...input, operation: "steer" }).pipe(
+              Effect.tapError(() => refusedBeforeSend),
+            );
+            const nativeThreadId =
+              originalAttempt?.nativeThreadId ??
+              loaded.providerThread.nativeThreadRef?.nativeId ??
+              null;
+            if (
+              final.providerTurn.runAttemptId !== attemptId ||
+              final.context.run?.activeAttemptId !== attemptId ||
+              (final.providerThread.nativeThreadRef?.nativeId ?? null) !== nativeThreadId
+            ) {
+              yield* refusedBeforeSend;
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                cause: "The steering destination changed before the message was delivered.",
+              });
+            }
+          }
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
@@ -380,7 +566,7 @@ export const layer: Layer.Layer<
               providerTurnId: loaded.providerTurn.id,
               message: {
                 messageId: message.id,
-                text: projectComposerContextForProvider(composer),
+                text,
                 attachments: message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,
@@ -395,6 +581,7 @@ export const layer: Layer.Layer<
             .pipe(
               Effect.catch((cause) =>
                 Effect.gen(function* () {
+                  yield* knowledgeDelivery?.settle("uncertain") ?? Effect.void;
                   const current = yield* projections.getProviderControlContext(
                     input.threadId,
                     input,
@@ -403,12 +590,15 @@ export const layer: Layer.Layer<
                     threadId: input.threadId,
                     operation: "steer",
                     providerTurnId: input.providerTurnId,
-                    turnCompleted: current.providerTurn?.status === "completed",
+                    turnCompleted:
+                      knowledgeDelivery === undefined &&
+                      current.providerTurn?.status === "completed",
                     cause,
                   });
                 }),
               ),
             );
+          yield* knowledgeDelivery?.settle("sent") ?? Effect.void;
         },
         (effect, input) =>
           effect.pipe(

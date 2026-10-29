@@ -46,7 +46,13 @@ import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
-import { makeStore, type HistoryRecord, type SearchReceipt } from "./persistence.ts";
+import {
+  makeStore,
+  type DeliveryState,
+  type DeliveryStateInput,
+  type HistoryRecord,
+  type SearchReceipt,
+} from "./persistence.ts";
 import * as HolographicMemory from "./HolographicMemory.ts";
 import { projectMemorySearchTokens } from "./holographicScoring.ts";
 import { conflictHints } from "./knowledgeConflicts.ts";
@@ -100,6 +106,13 @@ export class ProjectKnowledge extends Context.Service<
     readonly readDeliveries: (
       input: ProjectKnowledgeReadDeliveriesInput,
     ) => Effect.Effect<ProjectKnowledgeDeliveries, ProjectKnowledgeError>;
+    /** Original delivery outcomes, independent of source availability and inspector pagination. */
+    readonly readDeliveryState: (
+      input: DeliveryStateInput,
+    ) => Effect.Effect<DeliveryState, ProjectKnowledgeError>;
+    readonly markDeliveryUncertain: (
+      input: DeliveryStateInput,
+    ) => Effect.Effect<void, ProjectKnowledgeError>;
     readonly scrubDeliveryPage: (input: {
       readonly projectId: ProjectId;
       readonly afterId?: string | undefined;
@@ -1209,13 +1222,13 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     // Each continuation releases the maintenance worker instead of walking a whole project.
     const limit = 50;
-    const rows = yield* store
+    const page = yield* store
       .deliveryPage(input.projectId, input.afterId, limit)
       .pipe(Effect.mapError(storageError(input.projectId)));
-    yield* Effect.forEach(rows, revalidateDelivery, { discard: true }).pipe(
+    yield* Effect.forEach(page.deliveries, revalidateDelivery, { discard: true }).pipe(
       Effect.mapError(storageError(input.projectId)),
     );
-    return rows.length === limit ? rows[rows.length - 1]!.attemptId : null;
+    return page.afterId;
   });
   const readSentDeliveries: ProjectKnowledge["Service"]["readSentDeliveries"] = Effect.fn(
     "ProjectKnowledge.readSentDeliveries",
@@ -1226,6 +1239,16 @@ const make = Effect.gen(function* () {
     return yield* Effect.forEach(rows, revalidateDelivery).pipe(
       Effect.mapError(storageError(input.projectId)),
     );
+  });
+  const readDeliveryState: ProjectKnowledge["Service"]["readDeliveryState"] = Effect.fn(
+    "ProjectKnowledge.readDeliveryState",
+  )((input) => store.readDeliveryState(input).pipe(Effect.mapError(storageError(input.projectId))));
+  const markDeliveryUncertain: ProjectKnowledge["Service"]["markDeliveryUncertain"] = Effect.fn(
+    "ProjectKnowledge.markDeliveryUncertain",
+  )(function* (input) {
+    yield* store
+      .markDeliveryUncertain(input, DateTime.formatIso(yield* DateTime.now))
+      .pipe(Effect.mapError(storageError(input.projectId)));
   });
   const readDeliveries: ProjectKnowledge["Service"]["readDeliveries"] = Effect.fn(
     "ProjectKnowledge.readDeliveries",
@@ -1456,6 +1479,8 @@ const make = Effect.gen(function* () {
     resolveForTurn,
     recordDelivery,
     readDeliveries,
+    readDeliveryState,
+    markDeliveryUncertain,
     readSentDeliveries,
     scrubDeliveryPage,
     proposeAssisted,

@@ -110,6 +110,57 @@ const finish =
   };
 
 it.layer(NodeServices.layer)("Muse text generation", (it) => {
+  it.effect("extracts cited knowledge through the isolated structured runner", () =>
+    Effect.gen(function* () {
+      const expected = {
+        candidates: [
+          {
+            kind: "convention",
+            content: "Use Effect services for server behavior.",
+            entities: ["Effect"],
+            citations: ["M1"],
+          },
+        ],
+      };
+      const test = fixture(finish(JSON.stringify(expected)));
+      const service = yield* test.make;
+      expect(
+        yield* service.generateKnowledgeCandidates({
+          cwd: titleInput.cwd,
+          modelSelection,
+          runOutcome: "completed",
+          messages: [{ ref: "M1", role: "user", text: "Use Effect services for server behavior." }],
+        }),
+      ).toEqual(expected);
+      expect(test.createHost).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
+      expect(test.createHost).not.toHaveBeenCalledWith(
+        expect.objectContaining({ cwd: titleInput.cwd }),
+      );
+      expect(test.host.close).toHaveBeenCalledOnce();
+    }),
+  );
+
+  it.effect("summarizes cited conversation messages through the structured runner", () =>
+    Effect.gen(function* () {
+      const expected = {
+        statements: [{ text: "The user requested an auth fix.", citations: ["M1"] }],
+      };
+      const test = fixture(finish(JSON.stringify(expected)));
+      const service = yield* test.make;
+      expect(
+        yield* service.generateConversationSummary({
+          cwd: titleInput.cwd,
+          modelSelection,
+          messages: [{ ref: "M1", role: "user", text: "Fix the login form." }],
+        }),
+      ).toEqual(expected);
+      expect(service.supportedOperations).toContain("generateConversationSummary");
+      expect(service.supportedOperations).toContain("generateKnowledgeCandidates");
+      expect(service.supportedOperations).not.toContain("generateReviewGuide");
+      expect(test.host.close).toHaveBeenCalledOnce();
+    }),
+  );
+
   it.effect("validates the final item once and closes an isolated restrictive host", () =>
     Effect.gen(function* () {
       const test = fixture(finish('{"title":"Fix login form"}'));

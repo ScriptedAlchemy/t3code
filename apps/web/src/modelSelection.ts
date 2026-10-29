@@ -3,6 +3,7 @@ import {
   DEFAULT_TEXT_GENERATION_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
+  isProviderTextGenerationCapable,
   type ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -340,8 +341,8 @@ export function resolveAppModelSelectionState(
     instanceId: DEFAULT_TEXT_GENERATION_INSTANCE_ID,
     model: DEFAULT_TEXT_GENERATION_MODEL,
   };
-  const supportedProviders = providers.filter(
-    (provider) => provider.supportsTextGeneration !== false,
+  const supportedProviders = providers.filter((provider) =>
+    isProviderTextGenerationCapable(provider),
   );
   const entries = deriveProviderInstanceEntries(supportedProviders);
   const selectedEntry = entries.find(

@@ -1,16 +1,29 @@
-import { loomEdgeLabel, loomMarkerLabel } from "@t3tools/client-runtime/projectLoom";
-import type { LoomWindow, RunId, ThreadId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  loomEdgeLabel,
+  loomMarkerLabel,
+  loomMarkerThreadRef,
+} from "@t3tools/client-runtime/projectLoom";
+import type {
+  EnvironmentId,
+  LoomWindow,
+  RunId,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import { XIcon } from "lucide-react";
 import { useState, type MouseEvent, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { formatLoomTime } from "./loomScale";
 import type { LoomSelection } from "./loomSearch";
 import { loomMarkerKey, loomSelectionThread } from "./loomWeave";
 
 export interface LoomActions {
-  readonly openThread: (threadId: ThreadId) => void;
+  readonly canOpenThread: (target: ScopedThreadRef) => boolean;
+  readonly openThread: (target: ScopedThreadRef) => void;
   readonly openDiff: (threadId: ThreadId, runId: RunId) => void;
   readonly openPullRequest: (
     event: MouseEvent<HTMLElement>,
@@ -26,11 +39,16 @@ interface LoomEvent {
   readonly label: string;
   readonly open: (event: MouseEvent<HTMLElement>) => void;
   readonly openLabel: string;
+  readonly unavailable?: string;
 }
 
 const PAGE = 200;
 
-function loomEvents(data: LoomWindow, actions: LoomActions): ReadonlyArray<LoomEvent> {
+function loomEvents(
+  data: LoomWindow,
+  environmentId: EnvironmentId,
+  actions: LoomActions,
+): ReadonlyArray<LoomEvent> {
   const titleOf = new Map(
     [...data.lanes, ...data.ancestors].map((lane) => [lane.threadId as string, lane.title]),
   );
@@ -39,7 +57,7 @@ function loomEvents(data: LoomWindow, actions: LoomActions): ReadonlyArray<LoomE
     threadId: run.threadId,
     at: run.requestedAt,
     label: `Run ${run.ordinal} ${run.status}${run.startedAt === null ? ", start unknown" : ""}`,
-    open: () => actions.openThread(run.threadId),
+    open: () => actions.openThread(scopeThreadRef(environmentId, run.threadId)),
     openLabel: "Open thread",
   }));
   const markers = data.markers.map((marker): LoomEvent => {
@@ -64,7 +82,18 @@ function loomEvents(data: LoomWindow, actions: LoomActions): ReadonlyArray<LoomE
         openLabel: "Open pull request",
       };
     }
-    return { ...base, open: () => actions.openThread(marker.threadId), openLabel: "Open thread" };
+    const target = loomMarkerThreadRef(environmentId, marker);
+    const remoteChild = marker.kind === "subagent_task" ? marker.remoteChild : undefined;
+    return {
+      ...base,
+      open: () => actions.openThread(target),
+      openLabel: remoteChild !== undefined ? "Open remote task" : "Open thread",
+      ...(actions.canOpenThread(target)
+        ? {}
+        : {
+            unavailable: `Connect to ${remoteChild?.label ?? target.environmentId} to open this thread.`,
+          }),
+    };
   });
   const edges = data.edges.map((edge): LoomEvent => ({
     selection: { kind: "edge", id: edge.id },
@@ -74,7 +103,7 @@ function loomEvents(data: LoomWindow, actions: LoomActions): ReadonlyArray<LoomE
       edge.sourceThreadId === edge.targetThreadId
         ? loomEdgeLabel(edge)
         : `${loomEdgeLabel(edge)} from ${titleOf.get(edge.sourceThreadId) ?? "another thread"}`,
-    open: () => actions.openThread(edge.targetThreadId),
+    open: () => actions.openThread(scopeThreadRef(environmentId, edge.targetThreadId)),
     openLabel: "Open thread",
   }));
   return [...runs, ...markers, ...edges].toSorted((left, right) => right.at.localeCompare(left.at));
@@ -89,6 +118,7 @@ const ASIDE_CLASS =
  * selected the panel shows `navigator` instead.
  */
 export function LoomEventPanel(props: {
+  readonly environmentId: EnvironmentId;
   readonly data: LoomWindow;
   readonly selection: LoomSelection | null;
   readonly actions: LoomActions;
@@ -104,10 +134,13 @@ export function LoomEventPanel(props: {
       </aside>
     );
   }
-  const events = loomEvents(data, props.actions);
+  const events = loomEvents(data, props.environmentId, props.actions);
   const laneId = loomSelectionThread(data, selection) as ThreadId | null;
   const lane =
     laneId === null ? null : (data.lanes.find((entry) => entry.threadId === laneId) ?? null);
+  const identity = lane ?? data.ancestors.find((entry) => entry.threadId === laneId);
+  const delegatedFrom = identity?.delegatedFrom;
+  const parentAvailable = delegatedFrom === undefined || props.actions.canOpenThread(delegatedFrom);
   const laneTitles = new Map(data.lanes.map((entry) => [entry.threadId as string, entry.title]));
   const shown = laneId === null ? events : events.filter((event) => event.threadId === laneId);
   const selected =
@@ -122,7 +155,7 @@ export function LoomEventPanel(props: {
       <div className="flex shrink-0 items-start gap-2 border-b border-border/70 px-3 py-2">
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">
-            {lane?.title ?? (laneId === null ? "Selection" : "Lane outside this window")}
+            {identity?.title ?? (laneId === null ? "Selection" : "Lane outside this window")}
           </p>
           {lane === null ? null : (
             <p className="truncate text-xs text-muted-foreground">
@@ -135,14 +168,53 @@ export function LoomEventPanel(props: {
               <span className="text-muted-foreground"> · {formatLoomTime(selected.at)}</span>
             </p>
           )}
+          {delegatedFrom === undefined ? null : (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Delegated from {delegatedFrom.title} on {delegatedFrom.environmentId}
+            </p>
+          )}
+          {selected?.unavailable === undefined ? null : (
+            <p className="mt-1 text-xs text-muted-foreground">{selected.unavailable}</p>
+          )}
+          {parentAvailable || delegatedFrom === undefined ? null : (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Connect to {delegatedFrom.environmentId} to open this parent.
+            </p>
+          )}
           <div className="mt-1.5 flex flex-wrap gap-1">
             {laneId === null ? null : (
-              <Button size="xs" variant="outline" onClick={() => props.actions.openThread(laneId)}>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() =>
+                  props.actions.openThread(scopeThreadRef(props.environmentId, laneId))
+                }
+              >
                 Open thread
               </Button>
             )}
+            {delegatedFrom === undefined ? null : (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={!parentAvailable}
+                aria-label={`Open parent thread ${delegatedFrom.title} on ${delegatedFrom.environmentId}`}
+                onClick={() =>
+                  props.actions.openThread(
+                    scopeThreadRef(delegatedFrom.environmentId, delegatedFrom.threadId),
+                  )
+                }
+              >
+                Open parent thread
+              </Button>
+            )}
             {selected === null || selected.openLabel === "Open thread" ? null : (
-              <Button size="xs" variant="outline" onClick={selected.open}>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={selected.open}
+                disabled={selected.unavailable !== undefined}
+              >
                 {selected.openLabel}
               </Button>
             )}
@@ -164,22 +236,35 @@ export function LoomEventPanel(props: {
           {shown.slice(0, limit).map((event) => {
             const isSelected =
               selection?.kind === event.selection.kind && selection.id === event.selection.id;
+            const button = (
+              <button
+                type="button"
+                className={cn(
+                  "flex w-full flex-col gap-0.5 px-3 py-1.5 text-start text-xs hover:bg-accent",
+                  isSelected && "bg-accent",
+                )}
+                onClick={event.open}
+                disabled={event.unavailable !== undefined}
+              >
+                <span className="line-clamp-2 text-foreground/90">{event.label}</span>
+                <span className="text-2xs text-muted-foreground">
+                  {formatLoomTime(event.at)}
+                  {laneId === null ? ` · ${laneTitles.get(event.threadId) ?? ""}` : ""}
+                </span>
+              </button>
+            );
             return (
               <li key={`${event.selection.kind}:${event.selection.id}`}>
-                <button
-                  type="button"
-                  className={cn(
-                    "flex w-full flex-col gap-0.5 px-3 py-1.5 text-start text-xs hover:bg-accent",
-                    isSelected && "bg-accent",
-                  )}
-                  onClick={event.open}
-                >
-                  <span className="line-clamp-2 text-foreground/90">{event.label}</span>
-                  <span className="text-2xs text-muted-foreground">
-                    {formatLoomTime(event.at)}
-                    {laneId === null ? ` · ${laneTitles.get(event.threadId) ?? ""}` : ""}
-                  </span>
-                </button>
+                {event.unavailable === undefined ? (
+                  button
+                ) : (
+                  <Tooltip>
+                    <TooltipTrigger render={<span className="block" tabIndex={0} />}>
+                      {button}
+                    </TooltipTrigger>
+                    <TooltipPopup>{event.unavailable}</TooltipPopup>
+                  </Tooltip>
+                )}
               </li>
             );
           })}

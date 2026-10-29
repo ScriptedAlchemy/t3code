@@ -78,6 +78,11 @@ If your HTTPS endpoint uses a certificate from your own certificate authority,
 install that CA on Android as a **CA certificate** in its security settings; the
 Android app then trusts it.
 
+On macOS, allow T3 Code in **System Settings → Privacy & Security → Local Network**
+on the connecting Mac. If a connection stops working after a macOS update, check
+that permission again, then return to T3 Code and retry the saved connection.
+Terminal access working does not mean the desktop app has the same permission.
+
 Pairing authorizes that device for future connections. Use a fresh one-time link
 for each new device; you do not need the original token to reconnect. Links
 created in Settings can only be copied from the client that created them while
@@ -306,6 +311,29 @@ app is connected to that machine with a session that manages access there, it
 makes the pairing code itself; otherwise paste one from that machine's
 **Settings → Connections**. From a terminal, use
 `t3 environment link <address> --pairing-code <code> --access <mode>`.
+
+Desktop pairing lets you use another machine's environment in this app. An agent
+link separately lets agents on the selected environment work on the destination.
+Neither grants access in the opposite direction.
+
+For an encrypted LAN agent link without a proxy or Tailscale, enter
+`ssh://user@host` (or `ssh://user@host:2222` for a different SSH port). Enable
+**Remote Login** on the destination Mac and first establish SSH key access and
+verify its host key from the machine whose agents will use the link. That
+machine's SSH configuration and keys are used, even when you configure the link
+from another device. T3 Code manages the tunnel and reconnects it when needed.
+Use a fresh destination pairing code and select the access explicitly:
+
+```sh
+t3 environment link ssh://user@host --pairing-code <code> --access full-access
+```
+
+To add that host to the desktop app as well, use **Add environment → SSH** and
+enter the same host and user. A compatible CLI already installed on the host is
+reused; otherwise the desktop version must have published CLI archives. A missing
+preview archive is a release availability problem, not an SSH password failure.
+Agent links do not send credentials over plain HTTP LAN addresses; use SSH or
+HTTPS instead.
 
 You can also ask an agent to link a machine by name, such as "delegate this to
 my vps". It shows a card in the thread where you pick the machine the same way

@@ -12,7 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PstackPack from "./PstackPack.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { ProjectId } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import { claudeProvider, makeFixture } from "./PstackPack.testkit.ts";
 
 it.layer(NodeServices.layer)("PstackPack", (it) => {
@@ -279,7 +279,10 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
             records: [],
           };
           const expansion = (yield* pack.expandComposer(input, { createdBy: "user" })).text;
-          assert.include(expansion!, "- architect runners: [1] inherit [2] inherit");
+          assert.include(
+            expansion!,
+            "- architect runners (panel, one child per seat): [1] inherit [2] inherit",
+          );
           assert.include(expansion!, "Fallback: architect runners seat 1");
           assert.equal(
             (yield* pack.expandComposer(
@@ -354,6 +357,129 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
         assert.notInclude(allowed!, "Fallback:");
       }).pipe(Effect.provide(Layer.merge(fixture.layer, fixture.settingsLayer)));
     }),
+  );
+  it.effect("default roles skip cooling instances and choose a ready instance", () =>
+    Effect.gen(function* () {
+      const ready = {
+        ...claudeProvider,
+        instanceId: ProviderInstanceId.make("claudeAgent_ready"),
+      };
+      const fixture = yield* makeFixture(
+        [{ ...claudeProvider, limitedUntil: "2099-01-01T00:00:00Z" }, ready],
+        ServerSettings.layerTest({
+          pstackEnabled: true,
+          providerInstances: {
+            [ready.instanceId]: { driver: ready.driver, enabled: true, config: {} },
+          },
+        }),
+      );
+      const expansion = yield* Effect.gen(function* () {
+        return yield* (yield* PstackPack.PstackPack).expandComposer(
+          { text: "$pstack:architect", records: [], projectId: ProjectId.make("pack-test") },
+          { createdBy: "user" },
+        );
+      }).pipe(Effect.provide(fixture.layer));
+      assert.include(
+        expansion.text,
+        '- architect runners (panel, one child per seat): [1] {"providerInstanceId":"claudeAgent_ready"',
+      );
+      assert.notInclude(expansion.text, "Fallback: architect runners seat 1");
+    }),
+  );
+  it.effect("explicit cooling targets fall back to the parent", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture([
+        { ...claudeProvider, limitedUntil: "2099-01-01T00:00:00Z" },
+      ]);
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
+      yield* fs.writeFileString(
+        `${fixture.stateDir}/pstack/models.md`,
+        "architect runners: claudeAgent/claude-opus-5-5",
+      );
+      const expansion = yield* Effect.gen(function* () {
+        return yield* (yield* PstackPack.PstackPack).expandComposer(
+          { text: "$pstack:architect", records: [], projectId: ProjectId.make("pack-test") },
+          { createdBy: "user" },
+        );
+      }).pipe(Effect.provide(fixture.layer));
+      assert.include(expansion.text, "- architect runners: [1] inherit");
+      assert.include(expansion.text, "Provider is rate limited. Retry after its cooldown expires.");
+    }),
+  );
+  it.effect.each(["all cooling", "healthy member disabled", "healthy member available"] as const)(
+    "pool roles use project-aware delegation availability: %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const projectId = ProjectId.make("pack-test");
+        const poolId = ProviderInstanceId.make("pool_claudeAgent");
+        const workId = ProviderInstanceId.make("claudeAgent_work");
+        const members: ServerProvider[] = [claudeProvider.instanceId, workId].map(
+          (instanceId, index) => ({
+            ...claudeProvider,
+            instanceId,
+            pool: { role: "member", poolInstanceId: poolId },
+            ...(index === 0 || scenario === "all cooling"
+              ? { limitedUntil: "2099-01-01T00:00:00Z" }
+              : {}),
+          }),
+        );
+        const fixture = yield* makeFixture(
+          [
+            ...members,
+            {
+              ...claudeProvider,
+              instanceId: poolId,
+              pool: {
+                role: "pool",
+                memberInstanceIds: members.map((member) => member.instanceId),
+                droppedModels: [],
+              },
+            },
+          ],
+          ServerSettings.layerTest({
+            pstackEnabled: true,
+            providerInstances: {
+              [workId]: { driver: claudeProvider.driver, enabled: true, config: {} },
+            },
+            providerPools: {
+              [claudeProvider.driver]: {
+                enabled: true,
+                memberInstanceIds: members.map((member) => member.instanceId),
+              },
+            },
+            projectSettingsOverrides: {
+              [projectId]: {
+                providerInstances: {
+                  [workId]: { enabled: scenario !== "healthy member disabled" },
+                },
+              },
+            },
+          }),
+        );
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
+        yield* fs.writeFileString(
+          `${fixture.stateDir}/pstack/models.md`,
+          "architect runners: pool_claudeAgent/claude-opus-5-5",
+        );
+        const expansion = yield* Effect.gen(function* () {
+          return yield* (yield* PstackPack.PstackPack).expandComposer(
+            { text: "$pstack:architect", records: [], projectId },
+            { createdBy: "user" },
+          );
+        }).pipe(Effect.provide(fixture.layer));
+        if (scenario === "healthy member available") {
+          assert.include(
+            expansion.text,
+            '- architect runners: [1] {"providerInstanceId":"pool_claudeAgent"',
+          );
+          assert.notInclude(expansion.text, "Fallback:");
+        } else {
+          assert.include(expansion.text, "- architect runners: [1] inherit");
+          assert.include(expansion.text, "Every available pool member is rate limited.");
+        }
+      }),
   );
   it.effect("concurrent materializers tolerate a losing rename and keep the stable pack", () =>
     Effect.gen(function* () {

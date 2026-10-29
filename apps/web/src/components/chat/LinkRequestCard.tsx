@@ -2,6 +2,7 @@ import { pipe } from "effect/Function";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type LinkableMachine,
+  linkableMachineUrls,
   linkRequestAnswerInput,
   linkRequestDefaultAccess,
   linkRequestDisplay,
@@ -191,7 +192,10 @@ function resolveTarget(
     kind: "machine",
     environmentId: machine?.environmentId ?? (chosen as EnvironmentId),
     label: machine?.label ?? linkRequestTargetName(item),
-    urls: [...new Set([...(machine?.urls ?? []), ...(item.url === undefined ? [] : [item.url])])],
+    urls: linkableMachineUrls([
+      ...(machine?.urls ?? []),
+      ...(item.url === undefined ? [] : [item.url]),
+    ]),
     linked: machine?.linked ?? false,
   };
 }
@@ -385,7 +389,7 @@ function LinkRequestDialog(props: {
                     {target.kind === "machine" ? (
                       <span className="block text-xs text-muted-foreground">
                         This app has no address for {target.label} that another machine can reach.
-                        Enter its https or Tailscale address.
+                        Enter its HTTPS, Tailscale, or ssh://user@host address.
                       </span>
                     ) : null}
                   </label>
