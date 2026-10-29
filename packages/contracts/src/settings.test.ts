@@ -21,7 +21,6 @@ import {
   resolveProviderInstanceEnabled,
   secretSettingsFields,
   ServerSettings,
-  OnePasswordSecretProviderConfig,
   ServerSettingsPatch,
   withIdleCompaction,
 } from "./settings.ts";
@@ -32,7 +31,7 @@ const encodeClientSettings = Schema.encodeSync(ClientSettingsSchema);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
-const decodeOnePasswordConfig = Schema.decodeUnknownSync(OnePasswordSecretProviderConfig);
+const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
 describe("storage cleanup settings", () => {
@@ -161,13 +160,14 @@ describe("ServerSettings secret providers", () => {
     ).toThrow();
   });
 
-  it("rejects a 1Password account op could misread", () => {
+  it("rejects writes of an unknown kind or an account op could misread", () => {
+    const write = (entry: unknown) => () =>
+      decodeServerSettingsPatch({ secretProviders: { personal: entry } });
     for (const account of ["", "my account", "--help"]) {
-      expect(() => decodeOnePasswordConfig({ account })).toThrow();
+      expect(write(onePassword(account))).toThrow();
     }
-    expect(decodeOnePasswordConfig({ account: "my.1password.com" }).account).toBe(
-      "my.1password.com",
-    );
+    expect(write({ kind: "one_password", label: "Personal" })).toThrow();
+    expect(write({ kind: "openbao", label: "Vault", config: { address: "https://x" } })).toThrow();
   });
 });
 
@@ -377,6 +377,27 @@ it("validates remote device hosts and rejects ambiguous host ids", () => {
     decodeDeviceHostSettings({ deviceHosts: [{ ...host, target: "-oProxyCommand=bad" }] }),
   ).toThrow();
   expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, port: 0 }] })).toThrow();
+});
+
+describe("ServerSettings project overrides across versions", () => {
+  it("sends back an override key from a newer server when an older client edits the entry", () => {
+    const projectId = ProjectId.make("project-a");
+    // As an older client reads a newer server's settings, with one key it does not know.
+    const entry = decodeServerSettings({
+      projectSettingsOverrides: {
+        [projectId]: { defaultAutoPull: true, addedByNewerServer: { mode: "kept" } },
+      },
+    }).projectSettingsOverrides[projectId];
+
+    const sent = encodeServerSettingsPatch({
+      projectSettingsOverrides: { [projectId]: { ...entry, defaultAutoPull: false } },
+    });
+
+    expect(decodeServerSettingsPatch(sent).projectSettingsOverrides?.[projectId]).toEqual({
+      defaultAutoPull: false,
+      addedByNewerServer: { mode: "kept" },
+    });
+  });
 });
 
 describe("resolveProjectProviderInstanceEnabled", () => {

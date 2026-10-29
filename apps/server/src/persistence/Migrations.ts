@@ -86,6 +86,8 @@ import Migration0079 from "./Migrations/079_ThreadMessageSearch.ts";
 import Migration0080 from "./Migrations/080_ProjectIntelligenceAndCrossEnvironment.ts";
 import Migration0081 from "./Migrations/081_ProjectKnowledgeMessageDeliveries.ts";
 
+import Migration0082 from "./Migrations/082_ActiveTurnItemIndexes.ts";
+
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
@@ -169,6 +171,7 @@ const migrationEntries = [
   [79, "ThreadMessageSearch", Migration0079],
   [80, "ProjectIntelligenceAndCrossEnvironment", Migration0080],
   [81, "ProjectKnowledgeMessageDeliveries", Migration0081],
+  [82, "ActiveTurnItemIndexes", Migration0082],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

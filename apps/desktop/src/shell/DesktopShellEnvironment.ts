@@ -501,7 +501,8 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
         }
       }
     }
-    return Boolean(shellEnvironment.PATH);
+
+    return Option.isSome(trimNonEmpty(shellEnvironment.PATH));
   },
 );
 

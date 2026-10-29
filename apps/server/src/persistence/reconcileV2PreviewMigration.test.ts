@@ -61,6 +61,7 @@ describe("V2 preview upgrade", () => {
         [79, "ThreadMessageSearch"],
         [80, "ProjectIntelligenceAndCrossEnvironment"],
         [81, "ProjectKnowledgeMessageDeliveries"],
+        [82, "ActiveTurnItemIndexes"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -165,6 +166,7 @@ describe("V2 preview upgrade", () => {
         [79, "ThreadMessageSearch"],
         [80, "ProjectIntelligenceAndCrossEnvironment"],
         [81, "ProjectKnowledgeMessageDeliveries"],
+        [82, "ActiveTurnItemIndexes"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

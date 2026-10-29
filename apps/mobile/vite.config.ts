@@ -6,6 +6,7 @@ import "vite-plus/test/config";
 const reactTests = [
   "src/features/conversation-summaries/ConversationSummariesRouteScreen.test.tsx",
   "src/components/ProjectKnowledgeEntry.test.tsx",
+  "src/features/threads/git/GitBranchesSheet.occupancy.test.tsx",
   "src/features/files/useFileTreeEntries.test.tsx",
   "src/features/projects/AddProjectScreen.test.ts",
   "src/lib/useMediaVideoPlayback.test.tsx",

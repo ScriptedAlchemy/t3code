@@ -34,7 +34,7 @@ import {
   type LucideIcon,
   MessagesSquareIcon,
   Redo2Icon,
-  Undo2Icon,
+  PencilIcon,
 } from "lucide-react";
 import { Link as LinkIconNode } from "lucide";
 import { Button, InlineButton } from "../ui/button";
@@ -754,7 +754,7 @@ function RevertUserMessageButton({
           />
         }
       >
-        <Undo2Icon className="size-3" />
+        <PencilIcon className="size-3" />
       </TooltipTrigger>
       <TooltipPopup side="top">Edit from here</TooltipPopup>
     </Tooltip>

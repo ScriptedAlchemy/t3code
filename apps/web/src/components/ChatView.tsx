@@ -2651,6 +2651,11 @@ export default function ChatView(props: ChatViewProps) {
   const isThreadFindActive = useThreadFindOpen(activeThreadRef, threadFindEnabled);
   const projectMemoryAvailable = useProjectMemoryAvailable(activeThread?.environmentId ?? null);
   const openProjectMemory = useOpenProjectMemory();
+  const openThreadFindStable = useStableCallback((threadRef: ScopedThreadRef) => {
+    if (threadFindEnabled && scopedThreadKey(threadRef) === activeThreadKey) {
+      openThreadFind(activeThreadKey);
+    }
+  });
 
   useChatShortcuts({
     enabled: activeThreadId !== null && !backgroundThread,
@@ -3260,6 +3265,7 @@ export default function ChatView(props: ChatViewProps) {
             {...(activeDraftLogicalProjectKey
               ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
               : {})}
+            {...(threadFindEnabled ? { onFindInThread: openThreadFindStable } : {})}
           />
         </header>
 
