@@ -2968,7 +2968,7 @@ describe("OrchestratorMcpService provider resolution", () => {
   );
 
   it.effect(
-    "pstack Opus and Astra targets dispatch identically under Claude and Codex parents",
+    "pstack targets set the same effort under any parent and leave speed to inheritance",
     () =>
       Effect.gen(function* () {
         const claudeId = ProviderInstanceId.make("claudeAgent");
@@ -3099,24 +3099,37 @@ describe("OrchestratorMcpService provider resolution", () => {
           }
           results.push(selections);
         }
-        assert.deepEqual(results[0], results[1]);
-        assert.deepEqual(results[0], [
-          {
-            instanceId: claudeId,
-            model: "claude-opus-5-5",
-            options: [
-              { id: "effort", value: "xhigh" },
-              { id: "fastMode", value: false },
-            ],
-          },
-          {
-            instanceId: codexInstanceId,
-            model: "gpt-6-astra",
-            options: [
-              { id: "reasoningEffort", value: "high" },
-              { id: "serviceTier", value: "default" },
-            ],
-          },
+        assert.deepEqual(results, [
+          [
+            {
+              instanceId: claudeId,
+              model: "claude-opus-5-5",
+              options: [
+                { id: "effort", value: "xhigh" },
+                { id: "fastMode", value: true },
+              ],
+            },
+            {
+              instanceId: codexInstanceId,
+              model: "gpt-6-astra",
+              options: [{ id: "reasoningEffort", value: "high" }],
+            },
+          ],
+          [
+            {
+              instanceId: claudeId,
+              model: "claude-opus-5-5",
+              options: [{ id: "effort", value: "xhigh" }],
+            },
+            {
+              instanceId: codexInstanceId,
+              model: "gpt-6-astra",
+              options: [
+                { id: "reasoningEffort", value: "high" },
+                { id: "serviceTier", value: "priority" },
+              ],
+            },
+          ],
         ]);
       }),
   );
