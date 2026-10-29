@@ -406,7 +406,7 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
       Effect.gen(function* () {
         const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
         const pairing = yield* serverAuth.issuePairingCredential({
-          scopes: ["orchestration:read"],
+          scopes: ["orchestration:read", "filesystem:read"],
         });
 
         const rejected = yield* Effect.flip(
