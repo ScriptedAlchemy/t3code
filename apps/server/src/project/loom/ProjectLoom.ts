@@ -130,18 +130,34 @@ interface LaneRow {
   readonly archived_at: string | null;
   readonly parent_thread_id: string | null;
   readonly relationship: string | null;
+  readonly delegated_from_environment_id: string | null;
+  readonly delegated_from_thread_id: string | null;
+  readonly delegated_from_title: string | null;
   readonly model: string | null;
   readonly branch: string | null;
 }
 
-const relationshipOf = (row: Pick<LaneRow, "relationship">) =>
-  row.relationship === "fork" || row.relationship === "subagent" ? row.relationship : "root";
+const relationshipOf = (row: LaneRow) =>
+  row.relationship === "fork" || row.relationship === "subagent"
+    ? row.relationship
+    : row.delegated_from_environment_id !== null && row.delegated_from_thread_id !== null
+      ? "subagent"
+      : "root";
 
 const laneIdentity = (row: LaneRow) => ({
   threadId: row.thread_id,
   title: row.title,
   relationship: relationshipOf(row),
   parentThreadId: row.parent_thread_id,
+  ...(row.delegated_from_environment_id === null || row.delegated_from_thread_id === null
+    ? {}
+    : {
+        delegatedFrom: {
+          environmentId: row.delegated_from_environment_id,
+          threadId: row.delegated_from_thread_id,
+          title: row.delegated_from_title ?? "Untitled thread",
+        },
+      }),
 });
 
 const decodeWindow = Schema.decodeUnknownEffect(LoomWindow);
@@ -156,6 +172,9 @@ const make = Effect.gen(function* () {
     t.default_provider, t.created_at, t.archived_at,
     json_extract(t.payload_json, '$.lineage.parentThreadId') AS parent_thread_id,
     json_extract(t.payload_json, '$.lineage.relationshipToParent') AS relationship,
+    json_extract(t.payload_json, '$.delegatedFrom.environmentId') AS delegated_from_environment_id,
+    json_extract(t.payload_json, '$.delegatedFrom.threadId') AS delegated_from_thread_id,
+    substr(json_extract(t.payload_json, '$.delegatedFrom.title'), 1, ${LABEL_CHARS}) AS delegated_from_title,
     substr(json_extract(t.payload_json, '$.modelSelection.model'), 1, ${LABEL_CHARS}) AS model,
     substr(json_extract(t.payload_json, '$.branch'), 1, ${LABEL_CHARS}) AS branch
   `;
@@ -447,7 +466,7 @@ const make = Effect.gen(function* () {
 
   // Named, because SQLite otherwise reads child_thread_id IS NULL through the child thread
   // index, which holds every other project's native tasks too.
-  const readNativeTasks = (laneIds: ReadonlyArray<string>, window: ResolvedWindow) => sql<{
+  const readTaskMarkers = (laneIds: ReadonlyArray<string>, window: ResolvedWindow) => sql<{
     readonly subagent_id: string;
     readonly thread_id: string;
     readonly run_id: string | null;
@@ -455,9 +474,15 @@ const make = Effect.gen(function* () {
     readonly started_at: string;
     readonly completed_at: string | null;
     readonly title: string | null;
+    readonly remote_environment_id: string | null;
+    readonly remote_thread_id: string | null;
+    readonly remote_label: string | null;
   }>`
     SELECT s.subagent_id, s.thread_id, s.run_id, s.status, s.started_at, s.completed_at,
-      substr(json_extract(s.payload_json, '$.title'), 1, ${LABEL_CHARS}) AS title
+      substr(json_extract(s.payload_json, '$.title'), 1, ${LABEL_CHARS}) AS title,
+      json_extract(s.payload_json, '$.remoteChild.environmentId') AS remote_environment_id,
+      json_extract(s.payload_json, '$.remoteChild.threadId') AS remote_thread_id,
+      substr(json_extract(s.payload_json, '$.remoteChild.label'), 1, ${LABEL_CHARS}) AS remote_label
     FROM orchestration_v2_projection_subagents s
       INDEXED BY orchestration_v2_projection_subagents_thread_idx
     WHERE s.thread_id IN ${laneSet(laneIds)}
@@ -535,7 +560,7 @@ const make = Effect.gen(function* () {
               readPullRequests(laneIds, window),
               readCommands(runIds, window),
               readActivity(runIds, window),
-              readNativeTasks(laneIds, window),
+              readTaskMarkers(laneIds, window),
               countUntimedTasks(laneIds, window),
               readEdges(projectId, laneIds, window),
             ]);
@@ -627,6 +652,15 @@ const make = Effect.gen(function* () {
       completedAt: task.completed_at,
       status: task.status,
       title: task.title,
+      ...(task.remote_environment_id === null || task.remote_thread_id === null
+        ? {}
+        : {
+            remoteChild: {
+              environmentId: task.remote_environment_id,
+              threadId: task.remote_thread_id,
+              label: task.remote_label ?? task.remote_environment_id.slice(0, LABEL_CHARS),
+            },
+          }),
     }));
     const checkpointMarkers = rows.checkpoints.slice(0, LOOM_LIMITS.markers).map((checkpoint) => ({
       kind: "checkpoint" as const,

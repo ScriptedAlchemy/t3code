@@ -5,7 +5,10 @@ import {
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
 import { type PstackRoleDefault } from "@t3tools/pstack";
-import { invalidOptionSelections, providerConstraints } from "../provider/orchestrationTargets.ts";
+import {
+  delegationProviderConstraints,
+  invalidOptionSelections,
+} from "../provider/orchestrationTargets.ts";
 
 interface Entry {
   readonly providerInstanceId: string;
@@ -83,7 +86,7 @@ const speedOptionIds = new Set(["fastMode", "serviceTier"]);
 function defaultSeat(
   slug: string,
   providers: ReadonlyArray<ServerProvider>,
-  capableInstanceIds: ReadonlySet<ProviderInstanceId>,
+  constraintsFor: (provider: ServerProvider) => ReadonlyArray<string>,
 ): ParsedSeat {
   if (slug === "inherit-parent" || slug === "auto") return { kind: "inherit" };
   const withoutFast = slug.replace(/-fast$/, "");
@@ -101,7 +104,7 @@ function defaultSeat(
   const provider = providers.find(
     (candidate) =>
       candidate.driver === driver &&
-      providerConstraints(candidate, capableInstanceIds.has(candidate.instanceId)).length === 0 &&
+      constraintsFor(candidate).length === 0 &&
       candidate.pool?.role !== "member" &&
       candidate.models.some((candidate) => candidate.slug === model),
   );
@@ -134,12 +137,19 @@ function defaultSeat(
   };
 }
 
-export function resolveRoles(input: {
-  readonly file: ReturnType<typeof parseModelsFile> | undefined;
-  readonly defaults: ReadonlyArray<PstackRoleDefault>;
-  readonly providers: ReadonlyArray<ServerProvider>;
-  readonly capableInstanceIds: ReadonlySet<ProviderInstanceId>;
-}) {
+export function resolveRoles(
+  input: {
+    readonly file: ReturnType<typeof parseModelsFile> | undefined;
+    readonly defaults: ReadonlyArray<PstackRoleDefault>;
+    readonly capableInstanceIds: ReadonlySet<ProviderInstanceId>;
+  } & Parameters<typeof delegationProviderConstraints>[2],
+) {
+  const constraintsFor = (provider: ServerProvider) =>
+    delegationProviderConstraints(
+      provider,
+      input.capableInstanceIds.has(provider.instanceId),
+      input,
+    );
   const diagnostics = [...(input.file?.diagnostics ?? [])];
   for (const role of input.file?.lines.keys() ?? []) {
     if (!input.defaults.some((entry) => entry.label === role))
@@ -150,7 +160,7 @@ export function resolveRoles(input: {
       input.file?.lines.get(role.label) ??
       role.defaultValue
         .split(",")
-        .map((slug) => defaultSeat(slug.trim(), input.providers, input.capableInstanceIds));
+        .map((slug) => defaultSeat(slug.trim(), input.providers, constraintsFor));
     const seats = entries.map((seat, index): Seat => {
       if (seat.kind === "inherit") return seat;
       const entry = seat.entry;
@@ -163,9 +173,7 @@ export function resolveRoles(input: {
         entry.error ??
         (provider === undefined
           ? "provider instance is not registered"
-          : providerConstraints(provider, input.capableInstanceIds.has(provider.instanceId)).join(
-              " ",
-            ) || undefined);
+          : constraintsFor(provider).join(" ") || undefined);
       reason ??= model === undefined ? "model is not advertised" : undefined;
       reason ??= invalidOptionSelections(entry.options, descriptors).join(" ") || undefined;
       const options: ProviderOptionSelection[] = [];

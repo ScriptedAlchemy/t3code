@@ -5,9 +5,11 @@ import {
   ConversationSummaryList,
   ConversationSummaryListInput,
   ConversationSummaryRead,
+  OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
+import * as Schema from "effect/Schema";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ConversationSummaries from "../../../project/conversationSummaries/ConversationSummaries.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -27,7 +29,10 @@ export const ConversationSummariesToolkit = Toolkit.make(
     ...shared,
     description:
       "List the generated summaries of a thread's older messages, oldest first, with whether summarizing is on for the project and what the latest background pass did. Use when a handoff mentions a conversation summary or you need the gist of a long thread before reading it with t3_thread_read. A summary whose source messages changed or were removed is stale and returns no text. Paginate with cursor=nextCursor. Does not generate summaries.",
-    parameters: ConversationSummaryListInput,
+    parameters: Schema.Struct({
+      ...ConversationSummaryListInput.fields,
+      environmentId: OrchestratorMcpEnvironmentTarget,
+    }),
     success: ConversationSummaryList,
   })
     .annotate(Tool.Readonly, true)
@@ -36,7 +41,10 @@ export const ConversationSummariesToolkit = Toolkit.make(
     ...shared,
     description:
       "Read one conversation summary: its statements, the message ids each statement cites, and its exact source messages (ids and digests). The text is a model-written summary, not the conversation; check anything you rely on with t3_conversation_summary_expand. Stale summaries return no text.",
-    parameters: ConversationSummaryDescribeInput,
+    parameters: Schema.Struct({
+      ...ConversationSummaryDescribeInput.fields,
+      environmentId: OrchestratorMcpEnvironmentTarget,
+    }),
     success: ConversationSummaryRead,
   })
     .annotate(Tool.Readonly, true)
@@ -45,7 +53,10 @@ export const ConversationSummariesToolkit = Toolkit.make(
     ...shared,
     description:
       "Return the exact original messages a conversation summary was written from, in order, as they are now. A message that changed, was removed, or sits in a deleted or archived thread returns a typed unavailable reason instead of text. Paginate with offset=nextOffset.",
-    parameters: ConversationSummaryExpandInput,
+    parameters: Schema.Struct({
+      ...ConversationSummaryExpandInput.fields,
+      environmentId: OrchestratorMcpEnvironmentTarget,
+    }),
     success: ConversationSummaryExpansion,
   })
     .annotate(Tool.Readonly, true)

@@ -1,8 +1,12 @@
-import { act, useSyncExternalStore, type ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
+import { RegistryContext } from "@effect/atom-react";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import {
+  EnvironmentId,
   MessageId,
+  NodeId,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -14,12 +18,12 @@ import {
 } from "@t3tools/contracts";
 
 const state = vi.hoisted(() => ({
-  listeners: new Set<() => void>(),
   window: null as LoomWindow | null,
-  supported: true,
+  config: null as unknown,
   queries: [] as LoomWindowInput[],
   actions: [] as unknown[],
   urls: [] as string[],
+  environments: [] as string[],
 }));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
@@ -120,27 +124,15 @@ vi.mock("../workspace/ListFilterMenu", () => ({
     </select>
   ),
 }));
-vi.mock("@effect/atom-react", () => ({
-  useAtomValue: () => ({
-    environment: {
-      capabilities: {
-        projectLoom: useSyncExternalStore(
-          (listener) => {
-            state.listeners.add(listener);
-            return () => state.listeners.delete(listener);
-          },
-          () => state.supported,
-        ),
-      },
-    },
-  }),
-}));
 vi.mock("../../state/server", () => ({
   serverEnvironment: {
-    configValueAtom: () => ({ environment: { capabilities: { projectLoom: state.supported } } }),
+    configValueAtom: () => state.config,
   },
 }));
 vi.mock("../../state/entities", () => ({ useProject: () => ({ title: "Project" }) }));
+vi.mock("../../state/environments", () => ({
+  useEnvironments: () => ({ presentationById: new Map(state.environments.map((id) => [id, {}])) }),
+}));
 vi.mock("../../state/projectLoom", () => ({
   projectLoom: {
     window: ({ input }: { input: LoomWindowInput }) => {
@@ -190,13 +182,18 @@ const run = (id: string, thread: string, day: number, hour: number): LoomRun => 
   startedAt: at(day, hour),
   completedAt: at(day, hour + 1),
 });
-function setup() {
-  state.listeners.clear();
-  state.supported = true;
+function setup(
+  prepare: (window: LoomWindow) => LoomWindow = (window) => window,
+  environments: ReadonlyArray<string> = ["remote", "origin", "destination"],
+) {
+  state.environments = [...environments];
+  const config = Atom.make({ environment: { capabilities: { projectLoom: true } } });
+  const registry = AtomRegistry.make();
+  state.config = config;
   state.actions.length = 0;
   state.queries.length = 0;
   state.urls.length = 0;
-  state.window = {
+  state.window = prepare({
     projectId: ProjectId.make("project"),
     asOf: at(23, 12),
     from: at(19, 12),
@@ -246,19 +243,20 @@ function setup() {
       commandsTruncated: true,
     },
     nextCursor: null,
-  };
+  });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");
   const root = createRoot(container);
   const render = () =>
-    act(() => {
-      for (const listener of state.listeners) listener();
+    act(() =>
       root.render(
-        <ProjectLoomRouteScreen
-          route={{ params: { environmentId: "remote", projectId: "project" } }}
-        />,
-      );
-    });
+        <RegistryContext.Provider value={registry}>
+          <ProjectLoomRouteScreen
+            route={{ params: { environmentId: "remote", projectId: "project" } }}
+          />
+        </RegistryContext.Provider>,
+      ),
+    );
   render();
   const press = async (label: string) => {
     const button = [...container.querySelectorAll("button")].find(
@@ -270,9 +268,11 @@ function setup() {
   return {
     container,
     press,
-    render,
+    setSupported: (projectLoom: boolean) =>
+      act(() => registry.set(config, { environment: { capabilities: { projectLoom } } })),
     [Symbol.dispose]: () => {
       act(() => root.unmount());
+      registry.dispose();
       vi.unstubAllGlobals();
     },
   };
@@ -318,9 +318,72 @@ it("groups dates, nests delegated activity, collapses descendants and navigates 
   ]);
   await screen.press("Pull request linked: #1");
   expect(state.urls).toEqual(["https://github.com/t3/t3code/pull/1"]);
-  state.supported = false;
   state.queries.length = 0;
-  screen.render();
+  screen.setSupported(false);
   expect(screen.container.textContent).toContain("Update the server");
   expect(state.queries).toEqual([]);
+});
+
+const withRemoteTasks = (window: LoomWindow): LoomWindow => ({
+  ...window,
+  lanes: window.lanes.map((entry) =>
+    entry.threadId === "root"
+      ? {
+          ...entry,
+          relationship: "subagent",
+          delegatedFrom: {
+            environmentId: EnvironmentId.make("origin"),
+            threadId: ThreadId.make("root"),
+            title: "Remote parent",
+          },
+        }
+      : entry,
+  ),
+  markers: [
+    {
+      kind: "subagent_task",
+      id: NodeId.make("remote-task"),
+      threadId: ThreadId.make("root"),
+      runId: null,
+      at: at(22, 13),
+      completedAt: null,
+      status: "running",
+      title: "Build",
+      remoteChild: {
+        environmentId: EnvironmentId.make("destination"),
+        threadId: ThreadId.make("root"),
+        label: "Build server",
+      },
+    },
+  ],
+});
+
+it("opens remote child and parent links with their own environment even when thread ids collide", async () => {
+  using screen = setup(withRemoteTasks);
+  await screen.press("Agent task on Build server: Build (running)");
+  await screen.press("Open parent thread Remote parent on origin");
+  expect(state.actions).toEqual([
+    { name: "Thread", params: { environmentId: "destination", threadId: "root" } },
+    { name: "Thread", params: { environmentId: "origin", threadId: "root" } },
+  ]);
+});
+
+it("keeps remote links visible but cannot navigate to environments this client has not connected", () => {
+  using screen = setup(withRemoteTasks, ["remote"]);
+  const buttons = [...screen.container.querySelectorAll("button")];
+  expect(
+    buttons.find(
+      (button) =>
+        button.getAttribute("aria-label") === "Agent task on Build server: Build (running)",
+    )?.disabled,
+  ).toBe(true);
+  expect(
+    buttons.find(
+      (button) =>
+        button.getAttribute("aria-label") === "Open parent thread Remote parent on origin",
+    )?.disabled,
+  ).toBe(true);
+  expect(screen.container.textContent).toContain("Connect to Build server to open this thread.");
+  expect(screen.container.textContent).toContain("Connect to origin to open this parent.");
+  expect(state.actions).toEqual([]);
 });

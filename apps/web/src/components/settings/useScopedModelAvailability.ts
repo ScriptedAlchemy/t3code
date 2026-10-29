@@ -1,4 +1,9 @@
-import type { ProviderInstanceId, UnifiedSettings } from "@t3tools/contracts";
+import {
+  isProviderTextGenerationCapable,
+  type ProviderInstanceId,
+  type TextGenerationOperation,
+  type UnifiedSettings,
+} from "@t3tools/contracts";
 
 import { mergeEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
@@ -10,9 +15,20 @@ import {
 import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { useSettingsScope } from "./SettingsScopeContext";
 
+const OPERATION_LABELS: Record<TextGenerationOperation, string> = {
+  generateCommitMessage: "commit messages",
+  generatePrContent: "pull request descriptions",
+  generateBranchName: "branch names",
+  generateThreadTitle: "thread titles",
+  generateReviewGuide: "review guides",
+  generateKnowledgeCandidates: "project knowledge",
+  generateConversationSummary: "conversation summaries",
+};
+
 export function useScopedModelDisabledReason(
   settings: UnifiedSettings,
   entries: readonly ProviderInstanceEntry[],
+  requiredOperations: readonly TextGenerationOperation[] = [],
 ) {
   const { targets } = useSettingsScope();
   const { environments } = useEnvironments();
@@ -41,6 +57,14 @@ export function useScopedModelDisabledReason(
         !options?.some((option) => option.slug === model && !option.isUnavailable)
       ) {
         return `This model is unavailable on ${environment?.label ?? "a selected environment"}. Select that environment to choose its model separately.`;
+      }
+      const provider = providers.find((provider) => provider.instanceId === instanceId);
+      const unsupported = requiredOperations.find(
+        (operation) =>
+          provider !== undefined && !isProviderTextGenerationCapable(provider, operation),
+      );
+      if (unsupported) {
+        return `This provider cannot generate ${OPERATION_LABELS[unsupported]} on ${environment.label}. Choose another provider for this setting.`;
       }
     }
     return null;

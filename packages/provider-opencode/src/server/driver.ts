@@ -18,7 +18,7 @@ import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as OpenCodeAdapterV2 from "./adapter.ts";
 import * as OpenCode2AdapterV2 from "./v2/adapter.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
+import type { ProviderTextGenerationRuntime } from "@t3tools/provider-core/server/textGeneration";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { openCodeUsageReader, type OpenCodeUsageReaderEnv } from "./usage.ts";
 import { readOpenCodeGoUsageLimits } from "./usageLimits.ts";
@@ -122,10 +122,13 @@ function selectOpenCodeRuntimeAdapter(input: {
 
 function selectOpenCodeRuntimeTextGeneration(
   probe: OpenCodeRuntimeProbe,
-  v1: ProviderTextGeneration,
-  v2: ProviderTextGeneration,
-): ProviderTextGeneration {
+  v1: ProviderTextGenerationRuntime,
+  v2: ProviderTextGenerationRuntime,
+): ProviderTextGenerationRuntime {
   return {
+    supportedOperations: v1.supportedOperations.filter((operation) =>
+      v2.supportedOperations.includes(operation),
+    ),
     generateCommitMessage: (input) =>
       byOpenCodeRuntime(probe.get, {
         v1: v1.generateCommitMessage(input),

@@ -1,6 +1,14 @@
 import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ComposerContextId, MessageId, ServerSettingsError } from "@t3tools/contracts";
+import {
+  ComposerContextId,
+  EnvironmentId,
+  MessageId,
+  ProjectFactId,
+  ProjectKnowledgeError,
+  ServerSettingsError,
+  type ProjectKnowledgeDelivery,
+} from "@t3tools/contracts";
 import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
 import { claudeProvider, disabledLayer, makeFixture } from "../pstack/PstackPack.testkit.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -19,10 +27,13 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -30,7 +41,8 @@ import * as Stream from "effect/Stream";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProjectKnowledge from "../project/knowledge/ProjectKnowledge.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 
@@ -290,6 +302,7 @@ it.effect(
         }),
       );
       const layerControl = ProviderTurnControlService.layer.pipe(
+        Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
         Layer.provide(disabledLayer),
         Layer.provide(ServerSettings.layerTest()),
         Layer.provide(Layer.merge(layerProjection, layerSessionManager)),
@@ -433,6 +446,7 @@ it.effect.each([
     const received: string[] = [];
     let threadReads = 0;
     const layers = ProviderTurnControlService.layer.pipe(
+      Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
       Layer.provide(
         Layer.mergeAll(
           fixture.layer,
@@ -570,4 +584,354 @@ it.effect.each([
       if (mode !== "no-mention") assert.include(received[0]!, "pstack:architect");
     }
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  "sent",
+  "stale",
+  "budget",
+  "budget-null-turn-window",
+  "uncertain",
+  "turn-ended",
+  "sent-replaced",
+  "uncertain-replaced",
+  "uncertain-replaced-legacy",
+  "stale-during-history",
+  "recovered-history",
+  "current-history-budget",
+] as const)(
+  "delivers selected knowledge through active steering with %s receipt semantics",
+  (mode) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("knowledge-steer-thread");
+      const projectId = ProjectId.make("knowledge-steer-project");
+      const providerSessionId = ProviderSessionId.make("knowledge-steer-session");
+      const providerThreadId = ProviderThreadId.make("knowledge-steer-provider-thread");
+      const providerTurnId = ProviderTurnId.make("knowledge-steer-turn");
+      const attemptId = RunAttemptId.make("knowledge-steer-attempt");
+      const messageId = MessageId.make("knowledge-steer-message");
+      const runId = RunId.make("knowledge-steer-run");
+      const providerThread: OrchestrationV2ProviderThread = {
+        id: providerThreadId,
+        driver,
+        providerInstanceId,
+        providerSessionId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: { driver, nativeId: "knowledge-native-thread", strength: "strong" },
+        nativeConversationHeadRef: null,
+        status: "active",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        ...(mode.startsWith("budget")
+          ? { contextUsage: { usedTokens: 128_000, maxTokens: 128_000 } }
+          : {}),
+      };
+      const projection = makeProjection({
+        now,
+        threadId,
+        providerThread,
+        providerTurnId,
+        attemptId,
+      });
+      const historicalRunId = RunId.make("knowledge-steer-history-run");
+      const historicalAttemptId = RunAttemptId.make("knowledge-steer-history-attempt");
+      const historicalProviderTurnId = ProviderTurnId.make("knowledge-steer-history-turn");
+      const hasLargeHistory = mode === "recovered-history" || mode === "current-history-budget";
+      const history: OrchestrationV2ThreadProjection["turnItems"] = hasLargeHistory
+        ? [
+            {
+              id: TurnItemId.make("knowledge-steer-history-item"),
+              threadId,
+              runId: historicalRunId,
+              nodeId: null,
+              providerThreadId,
+              providerTurnId: historicalProviderTurnId,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 1,
+              status: "completed",
+              title: null,
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              type: "user_message",
+              messageId: MessageId.make("knowledge-steer-history-message"),
+              inputIntent: "turn_start",
+              text: "x".repeat(128_000),
+              attachments: [],
+              createdBy: "user",
+              creationSource: "web",
+            },
+          ]
+        : [];
+      const record = {
+        version: 1 as const,
+        kind: "project-knowledge" as const,
+        contextId: ComposerContextId.make("knowledge-steer-context"),
+        label: "Testing convention",
+        knowledge: {
+          environmentId: EnvironmentId.make("knowledge-steer-environment"),
+          projectId,
+          selections: [
+            { kind: "fact" as const, factId: ProjectFactId.make("test-runner"), revision: 1 },
+          ],
+          maxBytes: 48000,
+        },
+      };
+      const receipts: ProjectKnowledgeDelivery[] = [];
+      const received: string[] = [];
+      let resolved = 0;
+      let completed = false;
+      let replaced = false;
+      let sourceChanged = false;
+      const historyStarted = yield* Deferred.make<void>();
+      const releaseHistory = yield* Deferred.make<void>();
+      const uncertain = mode.startsWith("uncertain");
+      const layers = ProviderTurnControlService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            disabledLayer,
+            ServerSettings.layerTest(),
+            Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+              resolveForTurn: (context) =>
+                Effect.suspend(() => {
+                  resolved += 1;
+                  if ((resolved > 1 && mode === "stale") || sourceChanged) {
+                    return Effect.fail(
+                      new ProjectKnowledgeError({ reason: "stale_context", projectId }),
+                    );
+                  }
+                  if (resolved > 1 && mode === "turn-ended") completed = true;
+                  return Effect.succeed({
+                    context,
+                    text: "Use the project-selected test runner.",
+                    byteLength: 37,
+                  });
+                }),
+              readDeliveryState: (target) =>
+                Effect.sync(() => {
+                  const matching = receipts.filter(
+                    (receipt) =>
+                      receipt.messageId === target.messageId &&
+                      receipt.providerInstanceId === target.providerInstanceId &&
+                      (target.scope === "attempt"
+                        ? receipt.attemptId === target.attemptId &&
+                          (receipt.providerThreadId === undefined ||
+                            receipt.providerThreadId === target.providerThreadId)
+                        : receipt.providerThreadId === target.providerThreadId &&
+                          receipt.nativeThreadId === target.nativeThreadId &&
+                          (receipt.nativeThreadId != null ||
+                            receipt.attemptId === target.attemptId)),
+                  );
+                  return {
+                    sent: matching.some((receipt) => receipt.status === "sent"),
+                    sentThisAttempt: matching.some(
+                      (receipt) =>
+                        receipt.status === "sent" && receipt.attemptId === target.attemptId,
+                    ),
+                    uncertain: matching.some(
+                      (receipt) => receipt.status === "prepared" || receipt.status === "uncertain",
+                    ),
+                  };
+                }),
+              recordDelivery: (receipt) =>
+                Effect.sync(() => {
+                  const index = receipts.findIndex(
+                    (existing) =>
+                      existing.attemptId === receipt.attemptId &&
+                      existing.messageId === receipt.messageId,
+                  );
+                  if (index < 0) receipts.push(receipt);
+                  else receipts[index] = receipt;
+                }),
+            }),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getThread: () => Effect.succeed({ ...projection.thread, projectId }),
+              getThreadRecords: () =>
+                Effect.succeed({
+                  ...projection,
+                  attempts: [
+                    ...projection.attempts,
+                    {
+                      ...projection.attempts[0]!,
+                      id: historicalAttemptId,
+                      runId: historicalRunId,
+                      providerTurnId: historicalProviderTurnId,
+                      nativeThreadId:
+                        mode === "recovered-history"
+                          ? "old-native-thread"
+                          : "knowledge-native-thread",
+                    },
+                  ],
+                  providerTurns: [
+                    ...projection.providerTurns,
+                    {
+                      ...projection.providerTurns[0]!,
+                      id: historicalProviderTurnId,
+                      runAttemptId: historicalAttemptId,
+                    },
+                  ],
+                }),
+              getTurnStartHistory: () =>
+                mode === "stale-during-history"
+                  ? Deferred.succeed(historyStarted, undefined).pipe(
+                      Effect.andThen(Deferred.await(releaseHistory)),
+                      Effect.as([]),
+                    )
+                  : Effect.succeed(history),
+              getProviderControlContext: (_threadId, input) =>
+                Effect.succeed({
+                  providerThread: replaced
+                    ? {
+                        ...providerThread,
+                        nativeThreadRef: {
+                          driver,
+                          nativeId: "replacement-native-thread",
+                          strength: "strong",
+                        },
+                      }
+                    : providerThread,
+                  providerTurn: {
+                    ...projection.providerTurns[0]!,
+                    status: completed ? "completed" : "running",
+                    ...(mode === "budget-null-turn-window"
+                      ? {
+                          tokenUsage: {
+                            usedTokens: 128_000,
+                            maxTokens: null,
+                            updatedAt: DateTime.formatIso(now),
+                          },
+                        }
+                      : {}),
+                  },
+                  attempt:
+                    input.attemptId === undefined
+                      ? undefined
+                      : {
+                          ...projection.attempts[0]!,
+                          id: attemptId,
+                          runId,
+                          ...(mode === "uncertain-replaced-legacy"
+                            ? {}
+                            : { nativeThreadId: "knowledge-native-thread" }),
+                        },
+                  run: replaced
+                    ? undefined
+                    : {
+                        ...projection.runs[0]!,
+                        id: runId,
+                        activeAttemptId: attemptId,
+                        providerInstanceId,
+                        modelSelection,
+                      },
+                  message: {
+                    id: input.messageId!,
+                    threadId,
+                    runId,
+                    nodeId: null,
+                    role: "user",
+                    streaming: false,
+                    createdAt: now,
+                    updatedAt: now,
+                    text: `Follow this decision: ${formatComposerContextReference(record)}`,
+                    context: { version: 1, records: [record] },
+                    attachments: [],
+                    createdBy: "user",
+                    creationSource: "web",
+                  } satisfies OrchestrationV2ThreadProjection["messages"][number],
+                }),
+            }),
+            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+              get: () =>
+                Effect.succeedSome({
+                  driver,
+                  instanceId: providerInstanceId,
+                  providerSessionId,
+                  steerTurn: (input: ProviderAdapter.ProviderAdapterV2SteerInput) =>
+                    Effect.suspend(() => {
+                      received.push(input.message.text);
+                      if (uncertain) completed = true;
+                      return uncertain
+                        ? Effect.fail(
+                            new ProviderAdapter.ProviderAdapterSteerRunError({
+                              driver,
+                              providerThreadId,
+                              providerTurnId,
+                            }),
+                          )
+                        : Effect.void;
+                    }),
+                } as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+        const input = { threadId, providerSessionId, providerThreadId, providerTurnId, messageId };
+        const first = yield* mode === "stale-during-history"
+          ? Effect.gen(function* () {
+              const sending = yield* control.steer(input).pipe(Effect.result, Effect.forkChild);
+              yield* Deferred.await(historyStarted);
+              sourceChanged = true;
+              yield* Deferred.succeed(releaseHistory, undefined);
+              return yield* Fiber.join(sending);
+            })
+          : control.steer(input).pipe(Effect.result);
+        if (mode.includes("replaced")) {
+          assert.equal(first._tag, uncertain ? "Failure" : "Success");
+          completed = true;
+          replaced = true;
+          if (mode === "uncertain-replaced-legacy") {
+            const { providerThreadId: _destination, ...legacyReceipt } = receipts[0]!;
+            receipts[0] = { ...legacyReceipt, nativeThreadId: null };
+          }
+          const retried = yield* control.steer(input).pipe(Effect.result);
+          if (uncertain) {
+            assert.equal(retried._tag, "Failure");
+            if (retried._tag === "Failure") assert.notEqual(retried.failure.turnCompleted, true);
+          } else {
+            assert.equal(retried._tag, "Success");
+          }
+          assert.lengthOf(received, 1);
+          return;
+        }
+        if (mode === "recovered-history") {
+          assert.equal(first._tag, "Success");
+          assert.lengthOf(received, 1);
+          assert.equal(receipts[0]?.status, "sent");
+          assert.include(received[0]!, "Use the project-selected test runner.");
+        } else if (mode === "sent") {
+          assert.equal(first._tag, "Success");
+          completed = true;
+          yield* control.steer(input);
+          completed = false;
+          yield* control.steer({ ...input, messageId: MessageId.make("knowledge-steer-followup") });
+          assert.lengthOf(received, 2);
+          assert.lengthOf(receipts, 2);
+          assert.isTrue(receipts.every((receipt) => receipt.status === "sent"));
+          assert.isTrue(
+            received.every((text) => text.includes("Use the project-selected test runner.")),
+          );
+          assert.isTrue(
+            received.every((text) => !text.includes("Selected project knowledge is unavailable")),
+          );
+        } else if (mode === "uncertain") {
+          assert.equal(first._tag, "Failure");
+          assert.equal((yield* control.steer(input).pipe(Effect.result))._tag, "Failure");
+          assert.lengthOf(received, 1);
+          assert.equal(receipts[0]?.status, "uncertain");
+        } else {
+          assert.equal(first._tag, "Failure");
+          assert.lengthOf(received, 0);
+          assert.equal(receipts[0]?.status, "failed");
+        }
+      }).pipe(Effect.provide(layers));
+    }),
 );
