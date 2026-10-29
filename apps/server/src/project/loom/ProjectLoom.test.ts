@@ -4,6 +4,7 @@ import {
   CheckpointId,
   CheckpointScopeId,
   ContextTransferId,
+  EnvironmentId,
   EventId,
   LOOM_LIMITS,
   MessageId,
@@ -15,6 +16,8 @@ import {
   TurnItemId,
   type LoomWindowInput,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2DelegatedFrom,
+  type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2RunStatus,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -91,6 +94,7 @@ interface ThreadSpec {
   readonly project?: ProjectId;
   readonly title?: string;
   readonly parent?: { readonly id: string; readonly relationship: "fork" | "subagent" };
+  readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
   readonly branch?: string;
   readonly deleted?: boolean;
   readonly pullRequestLinkedHours?: number;
@@ -126,6 +130,7 @@ const thread = (spec: ThreadSpec) => {
         rootThreadId: parentThreadId ?? threadId,
       },
       forkedFrom: null,
+      ...(spec.delegatedFrom === undefined ? {} : { delegatedFrom: spec.delegatedFrom }),
       ...(spec.pullRequestLinkedHours === undefined
         ? {}
         : {
@@ -317,7 +322,12 @@ const transfer = (spec: {
     },
   });
 
-const nativeTask = (threadId: string, id: string, startedHours: number | null) =>
+const nativeTask = (
+  threadId: string,
+  id: string,
+  startedHours: number | null,
+  remoteChild?: OrchestrationV2RemoteTaskChild,
+) =>
   apply({
     type: "subagent.updated",
     threadId: ThreadId.make(threadId),
@@ -328,12 +338,13 @@ const nativeTask = (threadId: string, id: string, startedHours: number | null) =
       threadId: ThreadId.make(threadId),
       runId: null,
       parentNodeId: NodeId.make(`${threadId}-node`),
-      origin: "provider_native",
+      origin: remoteChild === undefined ? "provider_native" : "app_owned",
       createdBy: "agent",
       driver: "claudeAgent" as never,
       providerInstanceId: instanceId,
       providerThreadId: null,
       childThreadId: null,
+      ...(remoteChild === undefined ? {} : { remoteChild }),
       nativeTaskRef: null,
       prompt: "explore",
       title: "Explore the repo",
@@ -381,6 +392,74 @@ const repeat = <E, R>(count: number, make: (index: number) => Effect.Effect<void
   );
 
 describe("ProjectLoom.readWindow", () => {
+  it.effect("preserves remote task destinations and parent origins without joining local ids", () =>
+    Effect.gen(function* () {
+      yield* seedProjects;
+      const remoteEnvironment = EnvironmentId.make("another-environment");
+      const remoteChild = {
+        environmentId: remoteEnvironment,
+        // A remote id may equal a local id; it must not become a local child lane.
+        threadId: ThreadId.make("parent"),
+        label: "Build server",
+        runId: RunId.make("remote-run"),
+        stoppedThere: true,
+      };
+      const delegatedFrom = {
+        environmentId: remoteEnvironment,
+        threadId: ThreadId.make("parent"),
+        title: "Remote parent",
+      };
+      yield* thread({ id: "parent", createdHours: 0 });
+      yield* thread({ id: "remote-worker", createdHours: 0, delegatedFrom });
+      yield* nativeTask("parent", "remote-task", 6, remoteChild);
+      yield* nativeTask("parent", "native-task", 7);
+
+      const result = yield* read(window);
+      assert.deepInclude(
+        result.lanes.find((lane) => lane.threadId === "remote-worker"),
+        {
+          relationship: "subagent",
+          parentThreadId: null,
+          delegatedFrom,
+        },
+      );
+      assert.deepInclude(
+        result.markers.find((marker) => marker.id === "remote-task"),
+        {
+          kind: "subagent_task",
+          threadId: ThreadId.make("parent"),
+          remoteChild: {
+            environmentId: remoteEnvironment,
+            threadId: ThreadId.make("parent"),
+            label: "Build server",
+          },
+        },
+      );
+      assert.notProperty(
+        result.markers.find((marker) => marker.id === "native-task"),
+        "remoteChild",
+      );
+      assert.notInclude(JSON.stringify(result), "stoppedThere");
+      assert.deepEqual(result.ancestors, []);
+
+      // A paged-out remote child remains an ancestor with its origin intact.
+      yield* thread({
+        id: "local-fork",
+        createdHours: 1,
+        parent: { id: "remote-worker", relationship: "fork" },
+      });
+      const filtered = yield* read({ ...window, filters: { title: "local-fork" } });
+      assert.deepInclude(
+        filtered.ancestors.find((lane) => lane.threadId === "remote-worker"),
+        {
+          relationship: "subagent",
+          parentThreadId: null,
+          delegatedFrom,
+        },
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "maps activity kinds and offsets oldest first without excluded or out-of-window items",
     () =>

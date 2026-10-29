@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ConversationSummary,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
@@ -21,8 +22,10 @@ import {
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { historyCost } from "@t3tools/provider-core/server/handoffBudget";
+import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { McpSchema, McpServer } from "effect/ai";
@@ -62,6 +65,7 @@ const optedIn = {
   projectSettingsOverrides: { [projectId]: { enableConversationSummaries: true } },
 };
 const decodeSettings = Schema.decodeUnknownEffect(ServerSettingsSchema);
+const encodeSummary = Schema.encodeEffect(Schema.fromJsonString(ConversationSummary));
 // 8 exchanges: the first 10 messages are settled, the last 6 are the fresh tail.
 const MESSAGE_COUNT = 16;
 
@@ -198,7 +202,7 @@ const threadPayload = {
   deletedAt: null,
 };
 
-const seed = Effect.gen(function* () {
+const seedThread = Effect.fn("test.seedSummaryThread")(function* (messageCount: number) {
   const projects = yield* ProjectStore.ProjectStoreV2;
   yield* projects.apply({
     sequence: 0,
@@ -237,7 +241,7 @@ const seed = Effect.gen(function* () {
     occurredAt: at,
     payload: threadPayload,
   });
-  for (let index = 0; index < MESSAGE_COUNT; index++) {
+  for (let index = 0; index < messageCount; index++) {
     yield* apply(messageEvent(index, rawText(index)));
     yield* apply({
       id: EventId.make(`item-${index}`),
@@ -248,6 +252,62 @@ const seed = Effect.gen(function* () {
       payload: item(index),
     });
   }
+});
+const seed = seedThread(MESSAGE_COUNT);
+
+const persistSummary = Effect.fn("test.persistSummary")(function* (
+  index: number,
+  sourceIndexes: ReadonlyArray<number>,
+  stale = false,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const crypto = yield* Crypto.Crypto;
+  const sources = yield* Effect.forEach(sourceIndexes, (sourceIndex) =>
+    crypto.digest("SHA-256", new TextEncoder().encode(rawText(sourceIndex))).pipe(
+      Effect.map((digest) => ({
+        kind: "message" as const,
+        threadId,
+        messageId: messageId(sourceIndex),
+        digest: stale ? "0".repeat(64) : Hex.encode(digest),
+      })),
+    ),
+  );
+  const summary: ConversationSummary = {
+    id: `summary:${index.toString(16).padStart(64, "0")}`,
+    ...scope,
+    sources,
+    statements: [{ text: `Summary ${index}`, citations: [sources[0]!.messageId] }],
+    modelSelection: { instanceId, model: "gpt-5" },
+    createdAt: DateTime.formatIso(at),
+  };
+  const payloadJson = yield* encodeSummary(summary);
+  yield* sql`
+    INSERT INTO conversation_summaries (
+      summary_id, project_id, thread_id, first_source_at, created_at, payload_json
+    ) VALUES (
+      ${summary.id}, ${projectId}, ${threadId},
+      ${DateTime.formatIso(DateTime.add(at, { minutes: sourceIndexes[0]! }))},
+      ${summary.createdAt}, ${payloadJson}
+    )
+  `;
+  return summary;
+});
+
+const prepareHandoff = Effect.fn("test.prepareSummaryHandoff")(function* (messageCount: number) {
+  const handoffs = yield* ContextHandoffService.ContextHandoffServiceV2;
+  return yield* handoffs.prepareProviderHandoff({
+    threadId,
+    targetRunId: RunId.make("summary-target-run"),
+    transferId: null,
+    fromProviderThreadIds: [],
+    toProviderThreadId: providerThread.id,
+    fromProviderInstanceId: instanceId,
+    toProviderInstanceId: instanceId,
+    coveredRunOrdinals: { from: 1, to: 1 },
+    strategy: "full_thread_summary",
+    items: Array.from({ length: messageCount }, (_, index) => item(index)),
+    createdAt: at,
+  });
 });
 
 const summarize = Effect.flatMap(ConversationSummaries.ConversationSummaries, (service) =>
@@ -342,6 +402,61 @@ it.effect("records an unavailable model as a failed pass without publishing a su
       reason: "No model",
       waitingMessages: 10,
     });
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
+
+it.effect("continues coverage and handoff lookup beyond the first 500 summaries", () => {
+  const model = citing();
+  return Effect.gen(function* () {
+    // Short closed stretches are valid leaves. Keep enough to cross the SQL page boundary,
+    // followed by ten uncovered settled messages and the six-message verbatim tail.
+    const summaryCount = 501;
+    const coveredMessages = summaryCount * 2;
+    const messageCount = coveredMessages + 10 + 6;
+    yield* seedThread(messageCount);
+    for (let index = 0; index < summaryCount; index++)
+      yield* persistSummary(index, [index * 2, index * 2 + 1]);
+
+    yield* summarize;
+    yield* summarize;
+    assert.equal(model.calls.length, 1);
+    assert.equal(model.calls[0]!.messages[0]!.text, rawText(coveredMessages));
+    assert.deepInclude((yield* list).lastPass, { generated: 0, waitingMessages: 0 });
+
+    const service = yield* ConversationSummaries.ConversationSummaries;
+    const handoff = yield* prepareHandoff(messageCount);
+    const offered = yield* service.forHandoff({
+      projectId,
+      handoffs: [handoff],
+      itemIds: new Set([itemId(coveredMessages - 2), itemId(coveredMessages - 1)]),
+    });
+    assert.deepEqual(
+      offered.map((summary) => summary.coveredItemIds),
+      [[itemId(coveredMessages - 2), itemId(coveredMessages - 1)]],
+    );
+    assert.include(offered[0]!.text, "Summary 500");
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
+
+it.effect("does not spend the handoff candidate limit on stale summaries", () => {
+  const model = citing();
+  return Effect.gen(function* () {
+    yield* seed;
+    const sourceIndexes = Array.from({ length: 10 }, (_, index) => index);
+    for (let index = 0; index < 40; index++) yield* persistSummary(index, sourceIndexes, true);
+    const current = yield* persistSummary(40, sourceIndexes);
+    const service = yield* ConversationSummaries.ConversationSummaries;
+    const handoff = yield* prepareHandoff(MESSAGE_COUNT);
+    const offered = yield* service.forHandoff({
+      projectId,
+      handoffs: [handoff],
+      itemIds: new Set(Array.from({ length: MESSAGE_COUNT }, (_, index) => itemId(index))),
+    });
+    assert.deepEqual(
+      offered.map((summary) => summary.id),
+      [current.id],
+    );
+    assert.equal(model.calls.length, 0);
   }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
 });
 

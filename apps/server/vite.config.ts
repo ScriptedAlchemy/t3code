@@ -6,6 +6,7 @@ import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 import rootPackageJson from "../../package.json" with { type: "json" };
 import packageJson from "./package.json" with { type: "json" };
 import { WeightedShardSequencer } from "./src/testUtils/weightedShardSequencer.ts";
+import { resolveCliExecutableTarget } from "./scripts/cliExecutableTarget.ts";
 
 // NSIS install time tracks file count, not bytes.
 import {
@@ -34,35 +35,16 @@ const packCodeIntelligenceWorker = process.env.T3CODE_PACK_CODE_INTELLIGENCE_WOR
 // "1" builds dist-exe/t3 here; "bundle" stops at bin.mjs for scripts/cli.ts to inject (linux-arm64).
 const packMode = process.env.T3CODE_PACK_EXE;
 const packExecutable = packMode === "1" || packMode === "bundle";
-// TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
-// No linux-arm64: --build-sea output cannot load on 16/64 KiB page kernels, so it builds natively.
-const SEA_TARGETS = {
-  "darwin-arm64": { platform: "darwin", arch: "arm64" },
-  "darwin-x64": { platform: "darwin", arch: "x64" },
-  "linux-x64": { platform: "linux", arch: "x64" },
-  "win-arm64": { platform: "win", arch: "arm64" },
-  "win-x64": { platform: "win", arch: "x64" },
-} as const;
-const packExecutableTarget = process.env.T3CODE_PACK_EXE_TARGET?.trim();
-const cliNodeVersion = rootPackageJson.engines.node;
-if (packExecutable && !packExecutableTarget && process.versions.node !== cliNodeVersion) {
-  throw new Error(
-    `Native CLI executables must be built with Node ${cliNodeVersion}; running ${process.versions.node}.`,
-  );
-}
-if (packExecutableTarget && !Object.hasOwn(SEA_TARGETS, packExecutableTarget)) {
-  throw new Error(
-    `T3CODE_PACK_EXE_TARGET must be one of ${Object.keys(SEA_TARGETS).join(", ")}, got "${packExecutableTarget}".`,
-  );
-}
-const packExecutableTargets = packExecutableTarget
-  ? [
-      {
-        ...SEA_TARGETS[packExecutableTarget as keyof typeof SEA_TARGETS],
-        nodeVersion: cliNodeVersion,
-      },
-    ]
-  : undefined;
+const packExecutableTarget = resolveCliExecutableTarget({
+  enabled: packExecutable,
+  target: process.env.T3CODE_PACK_EXE_TARGET,
+  nodeVersion: rootPackageJson.engines.node,
+  hostNodeVersion: process.versions.node,
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Build config selects the running Node binary, including its emulated architecture, before the Effect runtime exists.
+  hostPlatform: process.platform,
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Build config must match the Node binary's architecture rather than the machine's physical architecture.
+  hostArch: process.arch,
+});
 
 // The root config's `projects` route repo-root runs to package configs,
 // including this one. Inheriting them would make this config a container.
@@ -105,9 +87,8 @@ export default mergeConfig(
       ...(!packCodeIntelligenceWorker && packMode === "1"
         ? {
             exe: {
-              fileName: "t3",
+              ...packExecutableTarget,
               outDir: "dist-exe",
-              ...(packExecutableTargets ? { targets: packExecutableTargets } : {}),
               // SEA code caching breaks import(); liftoff-only prevents tree-sitter WASM Zone OOM.
               // The executable cannot accept Node flags, so set them here at process startup.
               seaConfig: { useCodeCache: false, execArgv: ["--liftoff-only"] },

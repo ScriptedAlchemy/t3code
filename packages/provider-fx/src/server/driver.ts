@@ -31,7 +31,7 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
-import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
+import type { ProviderTextGenerationRuntime } from "@t3tools/provider-core/server/textGeneration";
 import { FX_DRIVER_KIND } from "./acpSupport.ts";
 
 const decodeFxSettings = Schema.decodeSync(FxSettings);
@@ -43,7 +43,7 @@ const MAINTENANCE = makeManualOnlyProviderMaintenanceCapabilities({
 });
 
 // See `supportsTextGeneration` in status.ts.
-const unsupportedTextGeneration: ProviderTextGeneration = (() => {
+const unsupportedTextGeneration: ProviderTextGenerationRuntime = (() => {
   const unsupported = (operation: string) =>
     Effect.fail(
       new TextGenerationError({
@@ -52,6 +52,7 @@ const unsupportedTextGeneration: ProviderTextGeneration = (() => {
       }),
     );
   return {
+    supportedOperations: [],
     generateCommitMessage: () => unsupported("generateCommitMessage"),
     generatePrContent: () => unsupported("generatePrContent"),
     generateBranchName: () => unsupported("generateBranchName"),

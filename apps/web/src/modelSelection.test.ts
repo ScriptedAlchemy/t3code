@@ -629,6 +629,24 @@ describe("instance-scoped model selection", () => {
       ProviderInstanceId.make("codex"),
     );
   });
+  it("preserves a selected provider with partial operations so unsupported tasks need an explicit choice", () => {
+    const partial = {
+      ...provider({
+        provider: ProviderDriverKind.make("muse"),
+        instanceId: "muse",
+        models: ["chosen"],
+      }),
+      textGenerationOperations: ["generateThreadTitle"] as const,
+    };
+    const selected = createModelSelection(partial.instanceId, "chosen");
+    const settings = { ...settingsWithProviderInstances(), textGenerationModelSelection: selected };
+    expect(
+      resolveAppModelSelectionState(settings, [
+        partial,
+        provider({ instanceId: "codex", models: ["gpt-5.6-luna"] }),
+      ]),
+    ).toEqual(selected);
+  });
   it("falls back to the text generation default, not the chat default, for a removed model", () => {
     const codex = provider({ instanceId: "codex", models: ["gpt-6-astra", "gpt-6-luna"] });
     const providers = [

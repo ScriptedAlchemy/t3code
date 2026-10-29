@@ -37,6 +37,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -729,6 +730,30 @@ function makeLocalCommandHarness(input: {
     }),
   );
   const knowledgeDeliveries: Array<ProjectKnowledgeDelivery> = [...(input.initialDeliveries ?? [])];
+  const matchingKnowledgeDeliveries = (target: KnowledgePersistence.DeliveryStateInput) => {
+    const latest = [
+      ...new Map(
+        knowledgeDeliveries.map((receipt) => [
+          JSON.stringify([receipt.attemptId, receipt.messageId]),
+          receipt,
+        ]),
+      ).values(),
+    ];
+    return latest.filter(
+      (receipt) =>
+        receipt.projectId === target.projectId &&
+        receipt.threadId === target.threadId &&
+        receipt.messageId === target.messageId &&
+        receipt.providerInstanceId === target.providerInstanceId &&
+        (target.scope === "attempt"
+          ? receipt.attemptId === target.attemptId &&
+            (receipt.providerThreadId === undefined ||
+              receipt.providerThreadId === target.providerThreadId)
+          : receipt.providerThreadId === target.providerThreadId &&
+            receipt.nativeThreadId === target.nativeThreadId &&
+            (receipt.nativeThreadId != null || receipt.attemptId === target.attemptId)),
+    );
+  };
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       input.pstack ? Layer.succeed(PstackPack.PstackPack, input.pstack) : disabledLayer,
@@ -738,6 +763,34 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProjectKnowledge.ProjectKnowledge)({
           ...(input.resolveKnowledge ? { resolveForTurn: input.resolveKnowledge } : {}),
           ...(input.readSentDeliveries ? { readSentDeliveries: input.readSentDeliveries } : {}),
+          markDeliveryUncertain: (target) =>
+            Effect.gen(function* () {
+              const updatedAt = DateTime.formatIso(yield* DateTime.now);
+              if (input.knowledgeStore)
+                return yield* input.knowledgeStore
+                  .markDeliveryUncertain(target, updatedAt)
+                  .pipe(Effect.orDie);
+              for (const receipt of matchingKnowledgeDeliveries(target)) {
+                if (receipt.status === "prepared")
+                  knowledgeDeliveries.push({ ...receipt, status: "uncertain", updatedAt });
+              }
+            }),
+          readDeliveryState: (target) =>
+            input.knowledgeStore
+              ? input.knowledgeStore.readDeliveryState(target).pipe(Effect.orDie)
+              : Effect.sync(() => {
+                  const matching = matchingKnowledgeDeliveries(target);
+                  return {
+                    sent: matching.some((receipt) => receipt.status === "sent"),
+                    sentThisAttempt: matching.some(
+                      (receipt) =>
+                        receipt.status === "sent" && receipt.attemptId === target.attemptId,
+                    ),
+                    uncertain: matching.some(
+                      (receipt) => receipt.status === "prepared" || receipt.status === "uncertain",
+                    ),
+                  };
+                }),
           readDeliveries: (request) =>
             input.knowledgeStore
               ? input.knowledgeStore
@@ -1847,6 +1900,57 @@ effectIt.effect.each(["prepared", "uncertain"] as const)(
       expect(recovery.knowledgeDeliveries[0]?.nativeThreadId).toBe("existing-native-conversation");
       expect(recovery.knowledgeDeliveries.at(-1)?.nativeThreadId).toBe("fresh-native-conversation");
     }),
+);
+
+effectIt.effect.each(["current", "legacy"] as const)(
+  "recovers a %s prepared native delivery omitted by the inspector receipt page",
+  (identity) =>
+    Effect.gen(function* () {
+      const old = knowledgeRetryHarness();
+      yield* old.start;
+      yield* dispatchKnowledge(old.startRootRun.mock.calls[0]![0]);
+      const original = old.knowledgeDeliveries.at(-1)!;
+      const { providerThreadId: _destination, ...legacy } = original;
+      const receipt = identity === "legacy" ? { ...legacy, nativeThreadId: null } : original;
+      const store = yield* KnowledgePersistence.makeStore;
+      for (let index = 0; index < 25; index++)
+        yield* store.recordDelivery({
+          ...receipt,
+          attemptId: RunAttemptId.make(`older-delivery-${index}`),
+          status: "failed",
+          createdAt: "1900-01-01T00:00:00.000Z",
+          updatedAt: "1900-01-01T00:00:00.000Z",
+        });
+      yield* store.recordDelivery({ ...receipt, status: "prepared" });
+      const page = yield* store.deliveries(receipt.projectId, receipt.threadId, receipt.messageId);
+      expect(page).toHaveLength(20);
+      expect(page.every((row) => row.status === "failed")).toBe(true);
+      const recovery = knowledgeRetryHarness({
+        knowledgeStore: store,
+        recoveryNativeId: "fresh-after-paged-receipts",
+      });
+      yield* recovery.start;
+      expect(recovery.events.some((event) => event.type === "context-handoff.updated")).toBe(true);
+      const sql = yield* SqlClient.SqlClient;
+      const [recovered] = yield* sql<{
+        status: string;
+      }>`SELECT status FROM project_knowledge_deliveries
+      WHERE attempt_id = ${receipt.attemptId} AND message_id = ${receipt.messageId}`;
+      expect(recovered?.status).toBe("uncertain");
+      const start = recovery.startRootRun.mock.calls[0]![0];
+      yield* dispatchKnowledge(start);
+      yield* dispatchKnowledge(start);
+      expect(recovery.nativeStart).toHaveBeenCalledOnce();
+      expect(
+        (yield* store.readDeliveryState({
+          ...original,
+          nativeThreadId: "fresh-after-paged-receipts",
+          scope: "native-conversation",
+        })).sentThisAttempt,
+      ).toBe(true);
+    }).pipe(
+      Effect.provide(SqlitePersistence.layerMemory.pipe(Layer.provideMerge(NodeServices.layer))),
+    ),
 );
 
 effectIt.effect(

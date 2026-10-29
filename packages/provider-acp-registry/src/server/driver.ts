@@ -23,7 +23,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { AcpRegistryAdapterV2Driver, type AcpRegistryAdapterV2DriverEnv } from "./adapter.ts";
-import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
+import type { ProviderTextGenerationRuntime } from "@t3tools/provider-core/server/textGeneration";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
@@ -67,7 +67,7 @@ const MAINTENANCE = makeManualOnlyProviderMaintenanceCapabilities({
   packageName: null,
 });
 
-const makeUnsupportedTextGeneration = (): ProviderTextGeneration => {
+const makeUnsupportedTextGeneration = (): ProviderTextGenerationRuntime => {
   const unsupported = (operation: string) =>
     Effect.fail(
       new TextGenerationError({
@@ -76,6 +76,7 @@ const makeUnsupportedTextGeneration = (): ProviderTextGeneration => {
       }),
     );
   return {
+    supportedOperations: [],
     generateCommitMessage: () => unsupported("generateCommitMessage"),
     generatePrContent: () => unsupported("generatePrContent"),
     generateBranchName: () => unsupported("generateBranchName"),
