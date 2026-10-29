@@ -19,6 +19,7 @@ const AUTH_RANK: Record<ServerProvider["auth"]["status"], number> = {
 };
 
 const healthRank = (provider: ServerProvider): number =>
+  (provider.enabled ? 0 : 1000) +
   (provider.installed ? 0 : 100) +
   STATUS_RANK[provider.status] * 10 +
   AUTH_RANK[provider.auth.status];
@@ -125,9 +126,8 @@ function makePoolEntry(
 
 /**
  * The published provider list: every real instance, plus one virtual entry per
- * active pool, with each member stamped as belonging to it. Pools need two
- * enabled, existing members of the driver; anything less publishes nothing
- * and stamps nothing, so a pool never half-exists.
+ * configured pool, including disabled accounts so saved member selections still route
+ * through the pool. Eligibility is checked at dispatch.
  */
 export function withProviderPools(input: {
   readonly providers: ReadonlyArray<ServerProvider>;

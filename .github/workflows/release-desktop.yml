@@ -151,6 +151,49 @@ jobs:
           git sparse-checkout set --no-cone '/*' '!/.repos/'
           git -c checkout.workers=0 checkout --detach FETCH_HEAD
 
+      - name: Validate and import macOS signing certificate
+        if: inputs.platform == 'mac' && (inputs.cli_archive || inputs.require_macos_signing)
+        shell: bash
+        env:
+          REQUIRE_MACOS_SIGNING: ${{ inputs.require_macos_signing }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
+            if [[ "$REQUIRE_MACOS_SIGNING" == "true" ]]; then
+              echo "::error::Set CSC_LINK to a base64-encoded Developer ID .p12 and CSC_KEY_PASSWORD to its export password."
+              exit 1
+            fi
+            echo "macOS CLI signing disabled (missing CSC_LINK); the archive is signed ad hoc."
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/t3-cli-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 16)"
+          cert_path="$RUNNER_TEMP/t3-cli-signing.p12"
+          printf '%s' "$CSC_LINK" | base64 --decode > "$cert_path"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          if ! security import "$cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign; then
+            if openssl pkcs12 -in "$cert_path" -passin env:CSC_KEY_PASSWORD -noout >/dev/null 2>&1; then
+              echo "::error::The .p12 password is valid, but macOS rejected its encoding. Re-export the Developer ID certificate and private key in a macOS-compatible PKCS12 format."
+            else
+              echo "::error::Cannot decode CSC_LINK with CSC_KEY_PASSWORD. Replace both Actions secrets with the base64-encoded Developer ID .p12 and its matching export password."
+            fi
+            exit 1
+          fi
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)"
+          if [[ -z "$identity" ]]; then
+            echo "No Developer ID Application identity found in CSC_LINK." >&2
+            exit 1
+          fi
+          echo "::add-mask::$keychain_password"
+          echo "T3CODE_CLI_MAC_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+          echo "macOS CLI signing enabled."
+
       # pnpm checks the lockfile and policy before reusing this result. A missing
       # artifact leaves the cache empty, so installation runs the checks again.
       - name: Download dependency verification
@@ -352,37 +395,6 @@ jobs:
           # as release.yml's JS bundle.
           T3CODE_TELEMETRY_CHANNEL: ${{ github.repository == 'pingdotgg/t3code' && inputs.release_channel || 'dev' }}
         run: node apps/server/scripts/cli.ts build-exe --verbose ${{ inputs.platform == 'win' && format('--target win-{0}', inputs.arch) || '' }}
-
-      - name: Import macOS signing certificate for the CLI archive
-        if: inputs.cli_archive && inputs.platform == 'mac'
-        shell: bash
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
-            echo "macOS CLI signing disabled (missing CSC_LINK); the archive is signed ad hoc."
-            exit 0
-          fi
-          keychain="$RUNNER_TEMP/t3-cli-signing.keychain-db"
-          keychain_password="$(openssl rand -hex 16)"
-          cert_path="$RUNNER_TEMP/t3-cli-signing.p12"
-          printf '%s' "$CSC_LINK" | base64 --decode > "$cert_path"
-          security create-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)"
-          if [[ -z "$identity" ]]; then
-            echo "No Developer ID Application identity found in CSC_LINK." >&2
-            exit 1
-          fi
-          echo "::add-mask::$keychain_password"
-          echo "T3CODE_CLI_MAC_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
-          echo "macOS CLI signing enabled."
 
       - name: Stage resource monitor for the CLI archive
         if: inputs.cli_archive

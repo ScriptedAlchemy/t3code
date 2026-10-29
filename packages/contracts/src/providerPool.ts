@@ -85,11 +85,10 @@ export function resolveActiveProviderPools(input: {
     if (!config.enabled || !isPoolableDriver(driver)) return [];
     const memberInstanceIds = [...new Set(config.memberInstanceIds)].filter((memberId) =>
       input.instances.some(
-        (instance) =>
-          instance.instanceId === memberId && instance.driver === driver && instance.enabled,
+        (instance) => instance.instanceId === memberId && instance.driver === driver,
       ),
     );
-    return memberInstanceIds.length >= 2
+    return memberInstanceIds.length > 0
       ? [{ driver, instanceId: providerPoolInstanceId(driver), memberInstanceIds }]
       : [];
   });

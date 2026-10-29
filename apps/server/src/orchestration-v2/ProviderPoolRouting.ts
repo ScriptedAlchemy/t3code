@@ -1,5 +1,4 @@
 import {
-  defaultInstanceIdForDriver,
   findProviderPool,
   isProviderAvailable,
   providerLimitedUntilMs,
@@ -70,13 +69,14 @@ const isCooling = (member: PoolMemberHealth, nowMs: number): boolean =>
  * member that cools moves only its own threads.
  */
 export function choosePoolMember(input: PoolRoutingInput): PoolRoutingDecision {
+  const active = input.members.find((member) => member.instanceId === input.current?.instanceId);
+  if (active !== undefined && input.current?.busy && !input.excluded.has(active.instanceId)) {
+    return { type: "member", instanceId: active.instanceId, reason: "busy" };
+  }
   const candidates = input.members.filter(
     (member) => member.eligible && !input.excluded.has(member.instanceId),
   );
   const current = candidates.find((member) => member.instanceId === input.current?.instanceId);
-  if (current !== undefined && input.current?.busy) {
-    return { type: "member", instanceId: current.instanceId, reason: "busy" };
-  }
   const healthy = candidates.filter((member) => !isCooling(member, input.nowMs));
   if (current !== undefined && !isCooling(current, input.nowMs)) {
     return { type: "member", instanceId: current.instanceId, reason: "affinity" };
@@ -134,7 +134,7 @@ const isMemberHealthy = (provider: ServerProvider): boolean =>
   isProviderAvailable(provider) &&
   provider.status !== "error" &&
   provider.status !== "disabled" &&
-  provider.auth.status !== "unauthenticated";
+  provider.auth.status === "authenticated";
 
 const sharesLogin = (a: ServerProvider, b: ServerProvider): boolean => {
   const aFingerprint = a.usageLimits?.credentialFingerprint;
@@ -157,7 +157,19 @@ export function poolMemberHealth(input: {
       (candidate) => candidate === member || sharesLogin(member, candidate),
     );
     const limitedUntilMs = sharing.reduce<number | null>((latest, candidate) => {
-      const untilMs = providerLimitedUntilMs(candidate, input.nowMs);
+      const exhaustedWindows =
+        candidate.usageLimits?.windows.filter((window) => window.usedPercent >= 100) ?? [];
+      const untilMs = exhaustedWindows.reduce<number | null>(
+        (until, window) => {
+          const reset = window.resetsAt === undefined ? Number.NaN : Date.parse(window.resetsAt);
+          // Without a reset, keep a fresh exhausted reading out of rotation until its next probe.
+          const cooldown = Number.isFinite(reset)
+            ? reset
+            : Date.parse(candidate.usageLimits?.checkedAt ?? "") + 15 * 60_000;
+          return cooldown > input.nowMs ? Math.max(until ?? 0, cooldown) : until;
+        },
+        providerLimitedUntilMs(candidate, input.nowMs),
+      );
       return untilMs === null || (latest !== null && latest >= untilMs) ? latest : untilMs;
     }, null);
     const usedPercent = sharing
@@ -184,11 +196,13 @@ export type RoutedSelection =
       readonly pool: ServerProvider;
       readonly decision: Exclude<PoolRoutingDecision, { readonly type: "no_eligible_member" }>;
     }
-  | { readonly type: "no_eligible_member"; readonly pool: ServerProvider };
+  | {
+      readonly type: "no_eligible_member";
+      readonly pool: Pick<ServerProvider, "driver" | "displayName">;
+    };
 
 /**
- * Pool members are interchangeable. Missing pools fall back to the current same-driver instance
- * or the driver default so saved drafts and scheduled tasks retain a usable target.
+ * Saved pool selections still require a healthy account after a pool is removed.
  */
 export function routeModelSelection(input: {
   readonly selection: ModelSelection;
@@ -204,14 +218,23 @@ export function routeModelSelection(input: {
   if (owner === null) {
     const driver = providerPoolDriver(input.selection.instanceId);
     if (driver === null) return { type: "unrouted", selection: input.selection };
-    const currentProvider = input.providers.find(
-      (provider) => provider.instanceId === input.current?.instanceId,
-    );
-    const instanceId =
-      currentProvider?.driver === driver
-        ? currentProvider.instanceId
-        : defaultInstanceIdForDriver(driver);
-    return { type: "unrouted", selection: { ...input.selection, instanceId } };
+    const decision = choosePoolMember({
+      members: poolMemberHealth({
+        members: input.providers.filter(
+          (provider) => provider.driver === driver && provider.pool?.role !== "pool",
+        ),
+        settings: input.settings,
+        projectId: input.projectId,
+        nowMs: input.nowMs,
+      }),
+      threadId: input.threadId,
+      current: input.current,
+      excluded: input.excluded ?? new Set(),
+      nowMs: input.nowMs,
+    });
+    if (decision.type === "no_eligible_member")
+      return { type: "no_eligible_member", pool: { driver } };
+    return { type: "unrouted", selection: { ...input.selection, instanceId: decision.instanceId } };
   }
   const decision = choosePoolMember({
     members: poolMemberHealth({

@@ -117,13 +117,15 @@ describe("withProviderPools", () => {
     assert.equal(pool?.checkedAt, "2026-10-19T00:00:02.000Z");
   });
 
-  it("publishes nothing and stamps nobody when fewer than two members are usable", () => {
+  it("keeps the pool and member identities when only one account remains enabled", () => {
     const providers = [personal, provider("claudeAgent_work", claude, { enabled: false })];
     const published = withProviderPools({
       providers,
       providerPools: pools({ claudeAgent: ["claudeAgent", "claudeAgent_work", "missing"] }),
     });
-    assert.strictEqual(published, providers);
+    assert.equal(published.at(-1)?.instanceId, "pool_claudeAgent");
+    assert.equal(published.at(-1)?.status, "ready");
+    assert.equal(published[1]?.pool?.role, "member");
   });
 
   it("leaves a turned-off pool unpublished", () => {

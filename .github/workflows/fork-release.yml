@@ -17,7 +17,7 @@ on:
 
 concurrency:
   group: fork-nightly-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   # release-desktop.yml's Windows job lists this run's artifacts to wait for the
@@ -69,8 +69,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base_version="$(node -p "require('./apps/desktop/package.json').version")"
-          version="${base_version}-nightly.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
+          version="$(node scripts/resolve-nightly-release.ts \
+            --date "$(date -u +%Y%m%d)" \
+            --run-number "$GITHUB_RUN_NUMBER" \
+            --sha "$GITHUB_SHA" | sed -n 's/^version=//p')"
           node scripts/update-release-package-versions.ts "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 

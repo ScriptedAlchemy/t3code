@@ -9,6 +9,8 @@ import {
   type ServerSettings,
 } from "@t3tools/contracts";
 
+import { withProviderPools } from "../provider/providerPoolSnapshot.ts";
+
 import {
   choosePoolMember,
   earliestPoolResetAtMs,
@@ -58,6 +60,11 @@ describe("choosePoolMember", () => {
 
   it("ranks busy, then affinity, then a shared continuation, then spread", () => {
     const cooling = { limitedUntilMs: later(10) };
+    assert.deepEqual(choose([{ ...a, eligible: false }, b], { instanceId: "a", busy: true }), {
+      type: "member",
+      instanceId: id("a"),
+      reason: "busy",
+    });
     assert.deepEqual(choose([{ ...a, ...cooling }, b], { instanceId: "a", busy: true }), {
       type: "member",
       instanceId: id("a"),
@@ -233,6 +240,54 @@ describe("routeModelSelection", () => {
           : { instanceId: id(current.instanceId), busy: current.busy ?? false },
       nowMs,
     });
+
+  it("routes pool and disabled-member selections to the remaining signed-in account", () => {
+    const providers = withProviderPools({
+      providers: [
+        provider("claudeAgent", { enabled: false, auth: { status: "unauthenticated" } }),
+        provider("claudeAgent_work"),
+      ],
+      providerPools: settings.providerPools,
+    });
+    for (const selected of ["pool_claudeAgent", "claudeAgent"]) {
+      const routed = route(selected, providers);
+      assert.equal(routed.type, "routed");
+      if (routed.type === "routed") assert.equal(routed.selection.instanceId, "claudeAgent_work");
+    }
+  });
+
+  it.each([
+    { usedPercent: 100, resetsAt: "2026-10-19T12:30:00.000Z", exhausted: true },
+    { usedPercent: 100, resetsAt: "2026-10-19T11:59:00.000Z", exhausted: false },
+    { usedPercent: 100, resetsAt: undefined, exhausted: true },
+    { usedPercent: 99, resetsAt: "2026-10-19T12:30:00.000Z", exhausted: false },
+  ])(
+    "respects reported quota before a failed turn: $usedPercent $resetsAt",
+    ({ usedPercent, resetsAt, exhausted }) => {
+      const providers = [
+        stamped("claudeAgent", {
+          usageLimits: {
+            checkedAt: "2026-10-19T12:00:00.000Z",
+            windows: [
+              {
+                id: "weekly",
+                kind: "weekly",
+                label: "Weekly",
+                usedPercent,
+                ...(resetsAt === undefined ? {} : { resetsAt }),
+              },
+            ],
+          },
+        }),
+        stamped("claudeAgent_work"),
+        pool,
+      ];
+      const routed = route("pool_claudeAgent", providers, { instanceId: "claudeAgent" });
+      assert.equal(routed.type, "routed");
+      if (routed.type === "routed")
+        assert.equal(routed.selection.instanceId, exhausted ? "claudeAgent_work" : "claudeAgent");
+    },
+  );
 
   it("routes a selection naming the pool or a member to a concrete member", () => {
     const providers = [stamped("claudeAgent"), stamped("claudeAgent_work"), pool];
@@ -444,6 +499,19 @@ describe("routeModelSelection", () => {
     );
   });
 
+  it.each(["unknown", "unauthenticated"] as const)(
+    "does not dispatch to an account with %s authentication",
+    (status) => {
+      const routed = route(
+        "pool_claudeAgent",
+        [stamped("claudeAgent", { auth: { status } }), stamped("claudeAgent_work"), pool],
+        { instanceId: "claudeAgent" },
+      );
+      assert.equal(routed.type, "routed");
+      if (routed.type === "routed") assert.equal(routed.selection.instanceId, "claudeAgent_work");
+    },
+  );
+
   it("reports no eligible member when the project turned every member off", () => {
     const routed = route(
       "pool_claudeAgent",
@@ -477,6 +545,17 @@ describe("routeModelSelection", () => {
     });
     assert.equal(unrouted.type, "unrouted");
     if (unrouted.type === "unrouted") assert.strictEqual(unrouted.selection, selection);
+
+    const remaining = [
+      provider("claudeAgent", { enabled: false, auth: { status: "unauthenticated" } }),
+      provider("claudeAgent_work"),
+      codex,
+    ];
+    assert.deepEqual(route("pool_claudeAgent", remaining), {
+      type: "unrouted",
+      selection: { instanceId: id("claudeAgent_work"), model: "opus" },
+    });
+    assert.equal(route("pool_claudeAgent", [remaining[0]!, codex]).type, "no_eligible_member");
 
     const unpooled = [provider("claudeAgent"), provider("claudeAgent_work"), codex];
     assert.deepEqual(route("pool_claudeAgent", unpooled, { instanceId: "claudeAgent_work" }), {

@@ -78,7 +78,7 @@ describe("resolveActiveProviderPools", () => {
     ]);
   });
 
-  it("ignores disabled, unknown, wrong-driver, and repeated members", () => {
+  it("ignores unknown, wrong-driver, and repeated members", () => {
     expect(
       resolve({
         claudeAgent: {
@@ -96,16 +96,25 @@ describe("resolveActiveProviderPools", () => {
       {
         driver: claude,
         instanceId: "pool_claudeAgent",
-        memberInstanceIds: ["claudeAgent", "claudeAgent_icloud"],
+        memberInstanceIds: ["claudeAgent", "claudeAgent_off", "claudeAgent_icloud"],
       },
     ]);
   });
 
-  it("leaves a pool inactive with fewer than two usable members", () => {
+  it("retains a configured pool when accounts are disabled or removed", () => {
     expect(
       resolve({ claudeAgent: { memberInstanceIds: ["claudeAgent", "claudeAgent_off"] } }),
-    ).toEqual([]);
-    expect(resolve({ codex: { memberInstanceIds: ["codex"] } })).toEqual([]);
+    ).toEqual([
+      {
+        driver: claude,
+        instanceId: "pool_claudeAgent",
+        memberInstanceIds: ["claudeAgent", "claudeAgent_off"],
+      },
+    ]);
+    expect(resolve({ codex: { memberInstanceIds: ["codex", "removed"] } })).toEqual([
+      { driver: codex, instanceId: "pool_codex", memberInstanceIds: ["codex"] },
+    ]);
+    expect(resolve({ codex: { memberInstanceIds: ["removed"] } })).toEqual([]);
   });
 
   it("leaves a turned-off pool inactive", () => {
