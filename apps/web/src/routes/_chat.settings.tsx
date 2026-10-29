@@ -153,7 +153,9 @@ function SettingsRouteLayout() {
     <SettingsScopeProvider
       search={rawSearch}
       singleEnvironment={
-        pathname === "/settings/providers" || pathname === "/settings/account-pools"
+        pathname === "/settings/providers" ||
+        pathname === "/settings/account-pools" ||
+        pathname === "/settings/secrets"
       }
       onChange={(next) => {
         // Send every axis so retain middleware recognizes "all" as an explicit target.
