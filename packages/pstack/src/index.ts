@@ -3,7 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 import { readManifest } from "./files.ts";
 
-export { parsePstackRoleDefaults, type PstackRoleDefault } from "./roles.ts";
+export { parsePstackRoleDefaults, PSTACK_PANEL_ROLES, type PstackRoleDefault } from "./roles.ts";
 
 export const PSTACK_SKILL_PREFIX = "pstack:";
 export const PSTACK_LAYOUT_VERSION = 3;

@@ -4,7 +4,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
-import { type PstackRoleDefault } from "@t3tools/pstack";
+import { PSTACK_PANEL_ROLES, type PstackRoleDefault } from "@t3tools/pstack";
 import { invalidOptionSelections, providerConstraints } from "../provider/orchestrationTargets.ts";
 
 interface Entry {
@@ -171,7 +171,8 @@ export function resolveRoles(input: {
         .map((slug) =>
           defaultSeat(slug.trim(), input.providers, input.capableInstanceIds, diagnostics),
         );
-    const seats = entries.map((seat, index): Seat => {
+    const panel = PSTACK_PANEL_ROLES.has(role.label);
+    const seats = entries.map((seat, index): Seat | undefined => {
       if (seat.kind === "inherit") return seat;
       const entry = seat.entry;
       const provider = input.providers.find(
@@ -200,16 +201,20 @@ export function resolveRoles(input: {
       reason ??= invalidOptionSelections(options, descriptors).join(" ") || undefined;
       if (reason !== undefined) {
         diagnostics.push(
-          `Fallback: ${role.label} seat ${index + 1} ${entry.providerInstanceId}/${entry.model} unavailable (${reason}); runs on the parent model.`,
+          `Fallback: ${role.label} seat ${index + 1} ${entry.providerInstanceId}/${entry.model} unavailable (${reason}); ${panel ? "runs on the parent model." : "excluded from pool; uses the parent model if no seats remain."}`,
         );
-        return { kind: "inherit" };
+        return panel ? { kind: "inherit" } : undefined;
       }
       return {
         kind: "target",
         target: { providerInstanceId: entry.providerInstanceId, model: entry.model, options },
       };
     });
-    return { role: role.label, seats };
+    const available = seats.filter((seat) => seat !== undefined);
+    return {
+      role: role.label,
+      seats: available.length > 0 ? available : [{ kind: "inherit" } as const],
+    };
   });
   return { roles, diagnostics };
 }
@@ -227,10 +232,15 @@ export function formatPstackBlock(input: {
     `<models>: ${input.modelsPath}`,
     ...input.skillNames.map((name) => `Read <pstack>/skills/${name}/SKILL.md and follow it.`),
     "Resolved roles (exact delegate_task targets; they override any model a skill or <models> names):",
-    ...input.resolved.roles.map(
-      ({ role, seats }) =>
-        `- ${role}: ${seats.map((seat, index) => `[${index + 1}] ${seat.kind === "inherit" ? "inherit" : JSON.stringify(seat.target)}`).join(" ")}`,
-    ),
+    ...input.resolved.roles.map(({ role, seats }) => {
+      const rule =
+        seats.length > 1
+          ? PSTACK_PANEL_ROLES.has(role)
+            ? " (panel, one child per seat)"
+            : " (pool, pick one per spawn)"
+          : "";
+      return `- ${role}${rule}: ${seats.map((seat, index) => `[${index + 1}] ${seat.kind === "inherit" ? "inherit" : JSON.stringify(seat.target)}`).join(" ")}`;
+    }),
     ...(input.resolved.diagnostics.length === 0
       ? []
       : ["Notes:", ...input.resolved.diagnostics.map((note) => `- ${note}`)]),
