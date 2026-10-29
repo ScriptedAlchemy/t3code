@@ -292,3 +292,19 @@ export function resolvePoolMemberLabel(
     : memberFullName;
   return { poolName, memberName: shortName.length > 0 ? shortName : memberFullName };
 }
+
+export function resolveProjectDefaultProviderModelSelection(
+  providers: ReadonlyArray<ServerProvider>,
+  settings: ProviderInstanceSettings,
+  projectId: ProjectId | null,
+): ModelSelection | null {
+  const entries = deriveComposerProviderInstanceEntries(providers, settings, projectId);
+  // Matches resolveComposerProviderSelection: the first driver group wins before any other.
+  const entry =
+    resolveSelectableProviderInstanceEntry(
+      entries.filter((candidate) => candidate.driverKind === entries[0]?.driverKind),
+      undefined,
+    ) ?? resolveSelectableProviderInstanceEntry(entries, undefined);
+  const model = entry ? getDefaultProviderInstanceModel(providers, entry.instanceId) : undefined;
+  return entry && model ? { instanceId: entry.instanceId, model } : null;
+}

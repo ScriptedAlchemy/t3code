@@ -1,7 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off
 // Runs CI's fast checks for this branch's changes: format and lint of the
 // changed files, knip, generated GraphQL operations, typecheck of the affected
-// packages and their dependents, and the test files beside the changed files.
+// packages and their dependents, the test files beside the changed files, and
+// the cross-file checks those miss (agent context budget, React Compiler
+// coverage of the changed client files).
 // A dependency change also gets the unused-patch install check below. CI still
 // runs the full test suites and the jobs listed in the summary.
 //
@@ -145,6 +147,52 @@ for (const file of code) {
     }
   }
 }
+// It reads files other than the ones beside it, so no changed file selects it.
+if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
+
+// React Compiler coverage compiles every client source file, so run only the
+// changed files' cases, in one extra step: a -t filter in the main test step
+// would drop every other test. An app is skipped when the main step already
+// runs its coverage file unfiltered. File filters mirror each coverage test.
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const compilerApps = [
+  {
+    test: "apps/web/src/reactCompilerCoverage.test.ts",
+    root: "apps/web/src/",
+    // Test names keep the repo-relative path.
+    name: (file: string) => file,
+    compiled: (file: string) =>
+      /\.tsx?$/.test(file) && !/\.(test|browser)\.tsx?$/.test(file) && !file.endsWith(".gen.ts"),
+    // Web has only per-file cases.
+    always: [],
+  },
+  {
+    test: "apps/mobile/src/reactCompilerCoverage.test.ts",
+    root: "apps/mobile/src/",
+    name: (file: string) => file.slice("apps/mobile/".length),
+    compiled: (file: string) => /\.tsx?$/.test(file) && !/\.(test\.tsx?|d\.ts)$/.test(file),
+    // The Metro, cache, and stale-allowlist cases check more than one file, deletions included.
+    always: ["^(?!.*compiles )"],
+  },
+].flatMap(({ test, root: appRoot, name, compiled, always }) => {
+  const changed = files.filter((file) => file.startsWith(appRoot) && compiled(file));
+  if (changed.length === 0 || tests.has(test)) return [];
+  const names = changed
+    .filter((file) => present.includes(file))
+    .map((file) => `compiles ${escapeRegExp(name(file))}$`);
+  const pattern = [...names, ...always];
+  return pattern.length > 0 ? [{ test, names, pattern }] : [];
+});
+const compilerCoverage = compilerApps.length > 0 && {
+  name: `react compiler (${compilerApps.reduce((count, app) => count + app.names.length, 0)} files)`,
+  args: [
+    "test",
+    "run",
+    ...compilerApps.map((app) => app.test),
+    "-t",
+    compilerApps.flatMap((app) => app.pattern).join("|"),
+  ],
+};
 
 // knip:check cannot be scoped to a package. Any code change can leave a file,
 // export, or dependency unused (removing the last import of a helper does), so
@@ -267,6 +315,7 @@ const steps = [
     name: `test (${tests.size} files)`,
     args: ["test", "run", "--passWithNoTests", ...tests],
   },
+  compilerCoverage,
 ].filter((step) => step !== false);
 
 // Output is piped, so keep the colors a terminal would get.
@@ -335,13 +384,23 @@ const runPreparedStep = async (step: (typeof steps)[number]) => {
   }
   return runStep(step);
 };
+// Vitest processes share a cache and must not race its rebuild after an install.
+let previousVitest: Promise<unknown> = Promise.resolve();
 const results = serial
   ? await (async () => {
       const results = memoryBuild ? [await memoryBuild] : [];
       for (const step of steps) results.push(await runPreparedStep(step));
       return results;
     })()
-  : await Promise.all([...(memoryBuild ? [memoryBuild] : []), ...steps.map(runPreparedStep)]);
+  : await Promise.all([
+      ...(memoryBuild ? [memoryBuild] : []),
+      ...steps.map((step) => {
+        if (!("args" in step) || step.args[0] !== "test") return runPreparedStep(step);
+        const result = previousVitest.then(() => runPreparedStep(step));
+        previousVitest = result;
+        return result;
+      }),
+    ]);
 
 const summary = ["check:changed summary"];
 for (const result of results) {

@@ -15,6 +15,7 @@ import {
   isProviderInstancePickerReady,
   resolveDefaultProviderModelSelection,
   resolvePoolMemberLabel,
+  resolveProjectDefaultProviderModelSelection,
   resolveSelectableProviderInstance,
   shouldShowInstanceBadge,
   sortProviderInstanceEntries,
@@ -609,6 +610,13 @@ describe("account pools in the composer catalog", () => {
     const entries = deriveComposerProviderInstanceEntries(pooledProviders, settings, null);
     expect(ids(entries)).toEqual(["codex", "pool_claudeAgent"]);
     expect(entries.find((entry) => entry.instanceId === poolId)?.enabled).toBe(true);
+    expect(
+      resolveProjectDefaultProviderModelSelection(
+        pooledProviders.filter((entry) => entry.driver === claude),
+        settings,
+        null,
+      ),
+    ).toEqual({ instanceId: poolId, model: DEFAULT_MODEL_BY_PROVIDER[claude] });
   });
 
   it("lists the pool ahead of a third account that is not pooled", () => {

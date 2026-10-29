@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer";
 import { vi } from "vite-plus/test";
 
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 
@@ -33,11 +34,12 @@ const make = (textGeneration: ProviderInstance["textGeneration"]) => {
     getInstance,
     service: TextGeneration.make.pipe(
       Effect.provide(
-        Layer.merge(
+        Layer.mergeAll(
           Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({ getInstance }),
           Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
             resolveLink: () => undefined,
           }),
+          ServerSettings.layerTest({}),
         ),
       ),
     ),
