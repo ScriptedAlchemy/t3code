@@ -51,8 +51,8 @@ const MAX_LEAVES_PER_PASS = 3;
 const MAX_STATEMENTS = 8;
 const MAX_STATEMENT_CHARS = 600;
 const MAX_CITATIONS = 8;
-// Rows read when matching a thread's summaries against a handoff or computing coverage.
-const THREAD_SUMMARY_LIMIT = 500;
+// Bound each read, not the thread's total coverage. Long threads must keep making progress.
+const THREAD_SUMMARY_PAGE_SIZE = 500;
 const HANDOFF_CANDIDATE_LIMIT = 40;
 const CLEANUP_LIMIT = 100;
 
@@ -74,7 +74,11 @@ export class ConversationSummaries extends Context.Service<
 >()("t3/project/conversationSummaries/ConversationSummaries") {}
 
 const decodeSummary = Schema.decodeUnknownEffect(Schema.fromJsonString(ConversationSummary));
+const decodeSources = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ConversationSummary.fields.sources),
+);
 const encodeSummary = Schema.encodeSync(Schema.fromJsonString(ConversationSummary));
+const encodeIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 const decodePass = Schema.decodeUnknownEffect(Schema.fromJsonString(ConversationSummaryPass));
 const encodePass = Schema.encodeSync(Schema.fromJsonString(ConversationSummaryPass));
 const isConversationSummaryError = Schema.is(ConversationSummaryError);
@@ -82,6 +86,7 @@ const isConversationSummaryError = Schema.is(ConversationSummaryError);
 type FinalizedMessage = OrchestrationV2ConversationMessage & {
   readonly role: "user" | "assistant";
 };
+type SummarySources = Pick<ConversationSummary, "id" | "sources">;
 
 const byConversationOrder = (left: FinalizedMessage, right: FinalizedMessage) =>
   DateTime.toEpochMillis(left.createdAt) - DateTime.toEpochMillis(right.createdAt) ||
@@ -158,18 +163,56 @@ const make = Effect.gen(function* () {
     return project.value;
   });
 
-  const threadSummaries = Effect.fn("ConversationSummaries.threadSummaries")(function* (
-    projectId: ProjectId,
-    threadId: ThreadId,
-  ) {
-    const rows = yield* sql<{ readonly payload_json: string }>`
-      SELECT payload_json FROM conversation_summaries
-      WHERE project_id = ${projectId} AND thread_id = ${threadId}
-      ORDER BY first_source_at, summary_id
-      LIMIT ${THREAD_SUMMARY_LIMIT}
-    `;
-    return yield* Effect.forEach(rows, (row) => decodeSummary(row.payload_json));
-  });
+  const scanThreadSummarySources = Effect.fn("ConversationSummaries.scanThreadSummarySources")(
+    function* <E, R>(
+      projectId: ProjectId,
+      threadId: ThreadId,
+      // Return false when the caller has enough results; true continues through every page.
+      visit: (page: ReadonlyArray<SummarySources>) => Effect.Effect<boolean, E, R>,
+      messageIds?: ReadonlyArray<string>,
+    ) {
+      const selectedMessages = messageIds === undefined ? undefined : encodeIds(messageIds);
+      let after: { readonly first_source_at: string; readonly summary_id: string } | undefined;
+      while (true) {
+        const rows = yield* sql<{
+          readonly first_source_at: string;
+          readonly summary_id: string;
+          readonly sources_json: string;
+        }>`
+          SELECT first_source_at, summary_id,
+            json_extract(payload_json, '$.sources') AS sources_json
+          FROM conversation_summaries
+          WHERE project_id = ${projectId} AND thread_id = ${threadId}
+          ${
+            after === undefined
+              ? sql``
+              : sql`AND (first_source_at > ${after.first_source_at}
+                  OR (first_source_at = ${after.first_source_at} AND summary_id > ${after.summary_id}))`
+          }
+          ${
+            selectedMessages === undefined
+              ? sql``
+              : sql`AND NOT EXISTS (
+                  SELECT 1 FROM json_each(payload_json, '$.sources') AS source
+                  WHERE json_extract(source.value, '$.messageId') NOT IN (
+                    SELECT value FROM json_each(${selectedMessages})
+                  )
+                )`
+          }
+          ORDER BY first_source_at, summary_id
+          LIMIT ${THREAD_SUMMARY_PAGE_SIZE}
+        `;
+        if (rows.length === 0) return;
+        const page = yield* Effect.forEach(rows, (row) =>
+          decodeSources(row.sources_json).pipe(
+            Effect.map((sources) => ({ id: row.summary_id, sources })),
+          ),
+        );
+        if (!(yield* visit(page)) || rows.length < THREAD_SUMMARY_PAGE_SIZE) return;
+        after = rows.at(-1)!;
+      }
+    },
+  );
 
   const findSummary = Effect.fn("ConversationSummaries.findSummary")(function* (
     input: ConversationSummaryDescribeInput,
@@ -350,51 +393,41 @@ const make = Effect.gen(function* () {
   const cleanupSuperseded = Effect.fn("ConversationSummaries.cleanupSuperseded")(function* (
     projectId: ProjectId,
     threadId: ThreadId,
+    digests: ReadonlyMap<string, string>,
+    covered: ReadonlySet<string>,
   ) {
-    const summaries = yield* threadSummaries(projectId, threadId);
-    if (summaries.length === 0) return;
-    // One canonical read for the bounded thread range, rather than reloading the whole
-    // conversation once per summary. Different digests of one message remain distinct.
-    const refs = [
-      ...new Map(
-        summaries.flatMap((summary) =>
-          summary.sources.map(
-            (source) => [source.messageId + ":" + source.digest, source] as const,
-          ),
-        ),
-      ).values(),
-    ];
-    const results = yield* knowledge.readSources({ projectId, threadId, sources: refs });
-    const available = new Set(
-      refs.flatMap((ref, index) =>
-        results[index]?.state === "available" ? [ref.messageId + ":" + ref.digest] : [],
-      ),
+    // Reuse the pass's validated coverage. Re-reading every source here would hash the whole
+    // history again on every completed turn, even when no summary needs replacing.
+    if (covered.size === 0) return;
+    let deleted = 0;
+    yield* scanThreadSummarySources(
+      projectId,
+      threadId,
+      Effect.fnUntraced(function* (summaries) {
+        const replaced = summaries.filter(
+          (summary) =>
+            summary.sources.every((source) => covered.has(source.messageId)) &&
+            summary.sources.some((source) => digests.get(source.messageId) !== source.digest),
+        );
+        if (replaced.length > 0) {
+          const removed = yield* sql<{ readonly summary_id: string }>`
+            DELETE FROM conversation_summaries
+            WHERE summary_id IN (
+              SELECT summary_id FROM conversation_summaries
+              WHERE ${sql.in(
+                "summary_id",
+                replaced.map((summary) => summary.id),
+              )}
+                AND ${unreferenced}
+              ORDER BY summary_id LIMIT ${CLEANUP_LIMIT - deleted}
+            ) AND ${unreferenced}
+            RETURNING summary_id
+          `;
+          deleted += removed.length;
+        }
+        return deleted < CLEANUP_LIMIT;
+      }),
     );
-    const fresh = summaries.map((summary) =>
-      summary.sources.every((source) => available.has(source.messageId + ":" + source.digest)),
-    );
-    const freshCoverage = new Set(
-      summaries.flatMap((summary, index) =>
-        fresh[index] ? summary.sources.map((source) => source.messageId) : [],
-      ),
-    );
-    const replaced = summaries.filter(
-      (summary, index) =>
-        !fresh[index] && summary.sources.every((source) => freshCoverage.has(source.messageId)),
-    );
-    if (replaced.length === 0) return;
-    yield* sql`
-      DELETE FROM conversation_summaries
-      WHERE summary_id IN (
-        SELECT summary_id FROM conversation_summaries
-        WHERE ${sql.in(
-          "summary_id",
-          replaced.map((summary) => summary.id),
-        )}
-          AND ${unreferenced}
-        ORDER BY summary_id LIMIT ${CLEANUP_LIMIT}
-      ) AND ${unreferenced}
-    `;
   });
 
   const summarizeThread: ConversationSummaries["Service"]["summarizeThread"] = Effect.fn(
@@ -407,13 +440,19 @@ const make = Effect.gen(function* () {
         .pipe(Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }));
       if (records === null) return;
       const projectId = records.thread.projectId;
+      const digests = new Map<string, string>();
+      const covered = new Set<string>();
+      let hasStaleSummaries = false;
       const finish = (
         result: ConversationSummaryPass["result"],
         reason: string | null,
         generated: number,
         waitingMessages: number,
       ) =>
-        cleanupSuperseded(projectId, threadId).pipe(
+        (hasStaleSummaries
+          ? cleanupSuperseded(projectId, threadId, digests, covered)
+          : Effect.void
+        ).pipe(
           Effect.andThen(DateTime.now),
           Effect.flatMap((now) =>
             recordPass(projectId, threadId, {
@@ -441,23 +480,41 @@ const make = Effect.gen(function* () {
       if (Option.isNone(project) || project.value.deletedAt !== null) return;
       const cwd = records.thread.worktreePath ?? project.value.workspaceRoot;
 
+      // Match canonical source eligibility without reloading and rehashing each summary's
+      // sources. Deleted/archived threads and non-final messages are excluded above/below.
+      const rolledBack = yield* sql<{ readonly message_id: string }>`
+        SELECT message.message_id
+        FROM orchestration_v2_projection_messages AS message
+        JOIN orchestration_v2_projection_runs AS run ON run.run_id = message.run_id
+        WHERE message.thread_id = ${threadId} AND run.status = 'rolled_back'
+      `;
+      const excluded = new Set(rolledBack.map((row) => row.message_id));
       const finalized = records.messages
         .filter(
           (message): message is FinalizedMessage =>
             (message.role === "user" || message.role === "assistant") &&
+            !excluded.has(message.id) &&
             !message.streaming &&
             message.text.trim() !== "",
         )
         .toSorted(byConversationOrder);
-      const digests = new Map<string, string>();
       for (const message of finalized) digests.set(message.id, yield* digest(message.text));
       // Only summaries whose every source is unchanged count as coverage; a stale range is
       // summarized again from the messages as they are now.
-      const covered = new Set<string>();
-      for (const summary of yield* threadSummaries(projectId, threadId)) {
-        if (summary.sources.every((source) => digests.get(source.messageId) === source.digest))
-          for (const source of summary.sources) covered.add(source.messageId);
-      }
+      yield* scanThreadSummarySources(projectId, threadId, (summaries) =>
+        Effect.sync(() => {
+          for (const summary of summaries) {
+            if (
+              summary.sources.every((source) => digests.get(source.messageId) === source.digest)
+            ) {
+              for (const source of summary.sources) covered.add(source.messageId);
+            } else {
+              hasStaleSummaries = true;
+            }
+          }
+          return true;
+        }),
+      );
       const settled = finalized.slice(0, Math.max(0, finalized.length - FRESH_TAIL_MESSAGES));
       const waiting = () => settled.filter((message) => !covered.has(message.id)).length;
 
@@ -584,33 +641,48 @@ const make = Effect.gen(function* () {
         threadIds.add(handoff.threadId);
         for (const message of handoff.history?.messages ?? []) threadIds.add(message.threadId);
       }
-      const found: Array<{
-        readonly summary: ConversationSummary;
-        readonly items: Array<TurnItemId>;
-      }> = [];
-      for (const threadId of threadIds) {
-        const summaries = yield* threadSummaries(projectId, threadId);
-        if (summaries.length === 0) continue;
-        const itemByMessage = new Map<string, TurnItemId>();
-        for (const item of yield* projections.getTurnStartHistory(threadId)) {
-          if (
-            (item.type === "user_message" || item.type === "assistant_message") &&
-            itemIds.has(item.id)
-          )
-            itemByMessage.set(item.messageId, item.id);
-        }
-        for (const summary of summaries) {
-          if (found.length >= HANDOFF_CANDIDATE_LIMIT) break;
-          const items = summary.sources.flatMap(
-            (source) => itemByMessage.get(source.messageId) ?? [],
-          );
-          if (items.length === summary.sources.length) found.push({ summary, items });
-        }
-      }
       const offered: Array<HandoffSummary> = [];
-      for (const { summary, items } of found) {
-        if ((yield* read(summary)).state !== "available") continue;
-        offered.push({ id: summary.id, text: renderForHandoff(summary), coveredItemIds: items });
+      const requestedItems = encodeIds([...itemIds]);
+      for (const threadId of threadIds) {
+        if (offered.length >= HANDOFF_CANDIDATE_LIMIT) break;
+        // Look up only the requested item identities, not every command and message body in
+        // the thread. json_each avoids SQLite's bind limit for a long omitted-history range.
+        const items = yield* sql<{
+          readonly turn_item_id: TurnItemId;
+          readonly message_id: MessageId;
+        }>`
+          SELECT item.turn_item_id, json_extract(item.payload_json, '$.messageId') AS message_id
+          FROM json_each(${requestedItems}) AS requested
+          JOIN orchestration_v2_projection_turn_items AS item ON item.turn_item_id = requested.value
+          WHERE item.thread_id = ${threadId} AND item.type IN ('user_message', 'assistant_message')
+        `;
+        const itemByMessage = new Map(items.map((item) => [item.message_id, item.turn_item_id]));
+        if (itemByMessage.size === 0) continue;
+        yield* scanThreadSummarySources(
+          projectId,
+          threadId,
+          Effect.fnUntraced(function* (summaries) {
+            for (const metadata of summaries) {
+              const items = metadata.sources.flatMap(
+                (source) => itemByMessage.get(source.messageId) ?? [],
+              );
+              if (items.length !== metadata.sources.length) continue;
+              // Decode statement bodies only for summaries covering the handoff's requested
+              // messages; source validation still runs immediately before offering any text.
+              const summary = yield* findSummary({ projectId, threadId, summaryId: metadata.id });
+              // Stale rows must not consume the offer limit and hide later usable summaries.
+              if ((yield* read(summary)).state !== "available") continue;
+              offered.push({
+                id: summary.id,
+                text: renderForHandoff(summary),
+                coveredItemIds: items,
+              });
+              if (offered.length >= HANDOFF_CANDIDATE_LIMIT) return false;
+            }
+            return true;
+          }),
+          [...itemByMessage.keys()],
+        );
       }
       return offered;
     },

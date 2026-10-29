@@ -1064,8 +1064,8 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
   ];
 }
 
-// The external pstack pack contributes about 200 files in addition to the server's native sidecars.
-export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 300;
+// Codegraph requires its unpacked JS and nested dependencies, alongside pstack and native sidecars.
+export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 1800;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
@@ -1299,7 +1299,7 @@ export function resolveMacPasskeySigningConfiguration(
   }
 
   return {
-    appId: DESKTOP_APP_ID,
+    appId: env.T3CODE_MACOS_APP_ID?.trim() || DESKTOP_APP_ID,
     teamId,
     rpDomains: uniqueRpDomains,
     provisioningProfilePath,
@@ -2798,8 +2798,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
 ) {
+  const macAppId = yield* Config.String("T3CODE_MACOS_APP_ID").pipe(Config.option);
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
+    appId:
+      platform === "mac"
+        ? Option.getOrUndefined(macAppId)?.trim() || DESKTOP_APP_ID
+        : DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],

@@ -16,19 +16,23 @@ and keeps your model choices.
 ## Choose models once
 
 Run `$pstack:setup-pstack` in any thread. It reads the providers and models this environment offers,
-asks for a reasoning budget, shows every pstack role with its model, and saves your choices for every
+asks for a reasoning budget, shows every pstack role with its models, and saves your choices for every
 provider's threads on this machine. Run it again to change them, or after you enable or add a
 provider. Until you run it, pstack uses its own defaults where this environment offers those models.
+
+List several models on a role to give pstack a pool that picks one per spawn. Arena runners,
+architect runners, and interrogate reviewers are panels that run every model listed.
 
 ## Run a workflow
 
 Type `$` or `/` in the composer and pick a `pstack:` skill, for example `$pstack:architect design the
 cache layer`. Start rigorous work with `$pstack:poteto-mode`; it picks the other skills as it goes.
 Helper agents appear under the thread as tasks you can open, follow, or stop.
+Use `$pstack:automate-maintainer` or `$pstack:automate-team` to capture a maintainer’s or team’s engineering conventions.
 
-When a role's provider is turned off or no longer offers the model, that helper runs on your thread's
-own model instead, and the reply says `Fallback: …`. Turn the provider back on, or run
-`$pstack:setup-pstack` to choose another model.
+When a model becomes unavailable, pools use their remaining choices; if none remain, they use your
+thread’s model. Panels keep every seat, using your thread’s model for unavailable entries. The reply
+explains each unavailable choice with `Fallback: …`; run `$pstack:setup-pstack` to change it.
 
 ## Good to know
 

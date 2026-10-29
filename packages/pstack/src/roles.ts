@@ -1,3 +1,9 @@
+export const PSTACK_PANEL_ROLES: ReadonlySet<string> = new Set([
+  "arena runners",
+  "architect runners",
+  "interrogate reviewers",
+]);
+
 export interface PstackRoleDefault {
   readonly label: string;
   readonly defaultValue: string;

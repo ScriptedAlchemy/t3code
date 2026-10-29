@@ -353,10 +353,7 @@ const ProjectKnowledgeContextSchema = Schema.Struct({
   maxBytes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 48000 })),
 });
 export type ProjectKnowledgeContext = typeof ProjectKnowledgeContextSchema.Type;
-export const ProjectKnowledgeContext: Schema.Codec<
-  ProjectKnowledgeContext,
-  typeof ProjectKnowledgeContextSchema.Encoded
-> = ProjectKnowledgeContextSchema;
+export const ProjectKnowledgeContext = ProjectKnowledgeContextSchema;
 const ProjectKnowledgePreparedContextSchema = Schema.Struct({
   context: ProjectKnowledgeContext,
   text: Schema.String,

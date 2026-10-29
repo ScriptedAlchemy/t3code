@@ -12,9 +12,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PstackPack from "./PstackPack.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { ProjectId } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import { claudeProvider, makeFixture } from "./PstackPack.testkit.ts";
-import { BUILT_IN_DRIVERS } from "../provider/builtInDrivers.ts";
 
 it.layer(NodeServices.layer)("PstackPack", (it) => {
   it.effect("resolves the development source beside the monorepo packages", () =>
@@ -76,6 +75,7 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
         assert.lengthOf(catalog!, 2);
         const packDir = `${fixture.stateDir}/pstack/pack`;
         assert.isFalse(yield* fs.exists(`${packDir}/.gitignore`));
+        assert.isFalse(yield* fs.exists(`${packDir}/docs/harness/t3-code.md`));
         assert.equal(
           yield* fs.readFileString(`${packDir}/skills/poteto-mode/scripts/bun.lock`),
           "lockfile\n",
@@ -114,17 +114,25 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
           return `${fixture.stateDir}/pstack/pack`;
         }).pipe(Effect.provide(fixture.layer));
         assert.equal(first, second);
-        yield* fs.writeFileString(`${fixture.sourceRoot}/t3-code.md`, "Changed adapter");
+        yield* fs.makeDirectory(`${first}/docs/harness`, { recursive: true });
+        yield* fs.writeFileString(`${first}/docs/harness/t3-code.md`, "Legacy adapter");
+        yield* fs.writeFileString(
+          `${fixture.sourceRoot}/upstream/scripts/helper.sh`,
+          "Changed helper",
+        );
+        const manifest = yield* fs.readFileString(`${fixture.sourceRoot}/UPSTREAM.json`);
+        yield* fs.writeFileString(
+          `${fixture.sourceRoot}/UPSTREAM.json`,
+          manifest.replace("b".repeat(40), "d".repeat(40)),
+        );
         const changed = yield* Effect.gen(function* () {
           yield* (yield* PstackPack.PstackPack).catalog;
           return `${fixture.stateDir}/pstack/pack`;
         }).pipe(Effect.provide(fixture.layer));
         assert.equal(changed, first);
         assert.equal(changed, `${fixture.stateDir}/pstack/pack`);
-        assert.equal(
-          yield* fs.readFileString(`${changed}/docs/harness/t3-code.md`),
-          "Changed adapter",
-        );
+        assert.equal(yield* fs.readFileString(`${changed}/scripts/helper.sh`), "Changed helper");
+        assert.isFalse(yield* fs.exists(`${changed}/docs/harness/t3-code.md`));
       }),
   );
   it.effect("materializes archive-backed bytes with manifest executable flags", () =>
@@ -157,7 +165,7 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
       yield* Effect.gen(function* () {
         const pack = yield* PstackPack.PstackPack;
         const first = yield* pack.catalog;
-        yield* fs.remove(`${fixture.sourceRoot}/t3-code.md`);
+        yield* fs.remove(`${fixture.sourceRoot}/UPSTREAM.json`);
         assert.deepEqual(yield* pack.catalog, first);
         assert.lengthOf((yield* pack.catalog)!, 2);
       }).pipe(Effect.provide(fixture.layer));
@@ -271,7 +279,10 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
             records: [],
           };
           const expansion = (yield* pack.expandComposer(input, { createdBy: "user" })).text;
-          assert.include(expansion!, "- architect runners: [1] inherit [2] inherit");
+          assert.include(
+            expansion!,
+            "- architect runners (panel, one child per seat): [1] inherit [2] inherit",
+          );
           assert.include(expansion!, "Fallback: architect runners seat 1");
           assert.equal(
             (yield* pack.expandComposer(
@@ -307,12 +318,12 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
     Effect.gen(function* () {
       const fixture = yield* makeFixture();
       const fs = yield* FileSystem.FileSystem;
-      const adapter = yield* fs.readFileString(`${fixture.sourceRoot}/t3-code.md`);
-      yield* fs.remove(`${fixture.sourceRoot}/t3-code.md`);
+      const manifest = yield* fs.readFileString(`${fixture.sourceRoot}/UPSTREAM.json`);
+      yield* fs.remove(`${fixture.sourceRoot}/UPSTREAM.json`);
       yield* Effect.gen(function* () {
         const pack = yield* PstackPack.PstackPack;
         assert.equal(yield* pack.catalog, undefined);
-        yield* fs.writeFileString(`${fixture.sourceRoot}/t3-code.md`, adapter);
+        yield* fs.writeFileString(`${fixture.sourceRoot}/UPSTREAM.json`, manifest);
         assert.lengthOf((yield* pack.catalog)!, 2);
       }).pipe(Effect.provide(fixture.layer));
     }),
@@ -346,6 +357,129 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
         assert.notInclude(allowed!, "Fallback:");
       }).pipe(Effect.provide(Layer.merge(fixture.layer, fixture.settingsLayer)));
     }),
+  );
+  it.effect("default roles skip cooling instances and choose a ready instance", () =>
+    Effect.gen(function* () {
+      const ready = {
+        ...claudeProvider,
+        instanceId: ProviderInstanceId.make("claudeAgent_ready"),
+      };
+      const fixture = yield* makeFixture(
+        [{ ...claudeProvider, limitedUntil: "2099-01-01T00:00:00Z" }, ready],
+        ServerSettings.layerTest({
+          pstackEnabled: true,
+          providerInstances: {
+            [ready.instanceId]: { driver: ready.driver, enabled: true, config: {} },
+          },
+        }),
+      );
+      const expansion = yield* Effect.gen(function* () {
+        return yield* (yield* PstackPack.PstackPack).expandComposer(
+          { text: "$pstack:architect", records: [], projectId: ProjectId.make("pack-test") },
+          { createdBy: "user" },
+        );
+      }).pipe(Effect.provide(fixture.layer));
+      assert.include(
+        expansion.text,
+        '- architect runners (panel, one child per seat): [1] {"providerInstanceId":"claudeAgent_ready"',
+      );
+      assert.notInclude(expansion.text, "Fallback: architect runners seat 1");
+    }),
+  );
+  it.effect("explicit cooling targets fall back to the parent", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture([
+        { ...claudeProvider, limitedUntil: "2099-01-01T00:00:00Z" },
+      ]);
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
+      yield* fs.writeFileString(
+        `${fixture.stateDir}/pstack/models.md`,
+        "architect runners: claudeAgent/claude-opus-5-5",
+      );
+      const expansion = yield* Effect.gen(function* () {
+        return yield* (yield* PstackPack.PstackPack).expandComposer(
+          { text: "$pstack:architect", records: [], projectId: ProjectId.make("pack-test") },
+          { createdBy: "user" },
+        );
+      }).pipe(Effect.provide(fixture.layer));
+      assert.include(expansion.text, "- architect runners: [1] inherit");
+      assert.include(expansion.text, "Provider is rate limited. Retry after its cooldown expires.");
+    }),
+  );
+  it.effect.each(["all cooling", "healthy member disabled", "healthy member available"] as const)(
+    "pool roles use project-aware delegation availability: %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const projectId = ProjectId.make("pack-test");
+        const poolId = ProviderInstanceId.make("pool_claudeAgent");
+        const workId = ProviderInstanceId.make("claudeAgent_work");
+        const members: ServerProvider[] = [claudeProvider.instanceId, workId].map(
+          (instanceId, index) => ({
+            ...claudeProvider,
+            instanceId,
+            pool: { role: "member", poolInstanceId: poolId },
+            ...(index === 0 || scenario === "all cooling"
+              ? { limitedUntil: "2099-01-01T00:00:00Z" }
+              : {}),
+          }),
+        );
+        const fixture = yield* makeFixture(
+          [
+            ...members,
+            {
+              ...claudeProvider,
+              instanceId: poolId,
+              pool: {
+                role: "pool",
+                memberInstanceIds: members.map((member) => member.instanceId),
+                droppedModels: [],
+              },
+            },
+          ],
+          ServerSettings.layerTest({
+            pstackEnabled: true,
+            providerInstances: {
+              [workId]: { driver: claudeProvider.driver, enabled: true, config: {} },
+            },
+            providerPools: {
+              [claudeProvider.driver]: {
+                enabled: true,
+                memberInstanceIds: members.map((member) => member.instanceId),
+              },
+            },
+            projectSettingsOverrides: {
+              [projectId]: {
+                providerInstances: {
+                  [workId]: { enabled: scenario !== "healthy member disabled" },
+                },
+              },
+            },
+          }),
+        );
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
+        yield* fs.writeFileString(
+          `${fixture.stateDir}/pstack/models.md`,
+          "architect runners: pool_claudeAgent/claude-opus-5-5",
+        );
+        const expansion = yield* Effect.gen(function* () {
+          return yield* (yield* PstackPack.PstackPack).expandComposer(
+            { text: "$pstack:architect", records: [], projectId },
+            { createdBy: "user" },
+          );
+        }).pipe(Effect.provide(fixture.layer));
+        if (scenario === "healthy member available") {
+          assert.include(
+            expansion.text,
+            '- architect runners: [1] {"providerInstanceId":"pool_claudeAgent"',
+          );
+          assert.notInclude(expansion.text, "Fallback:");
+        } else {
+          assert.include(expansion.text, "- architect runners: [1] inherit");
+          assert.include(expansion.text, "Every available pool member is rate limited.");
+        }
+      }),
   );
   it.effect("concurrent materializers tolerate a losing rename and keep the stable pack", () =>
     Effect.gen(function* () {
@@ -448,7 +582,15 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
         assert.lengthOf((yield* read.pipe(Effect.provide(fixture.layer)))!, 2);
         const packDir = `${fixture.stateDir}/pstack/pack`;
         const oldStamp = yield* fs.readFileString(`${packDir}/.t3-pstack-hash`);
-        yield* fs.writeFileString(`${fixture.sourceRoot}/t3-code.md`, "Next version");
+        yield* fs.writeFileString(
+          `${fixture.sourceRoot}/upstream/scripts/helper.sh`,
+          "Next version",
+        );
+        const manifest = yield* fs.readFileString(`${fixture.sourceRoot}/UPSTREAM.json`);
+        yield* fs.writeFileString(
+          `${fixture.sourceRoot}/UPSTREAM.json`,
+          manifest.replace("b".repeat(40), "d".repeat(40)),
+        );
         let blocked = true;
         const result = yield* Effect.gen(function* () {
           const pack = yield* PstackPack.PstackPack;
@@ -456,8 +598,8 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
           assert.lengthOf(stale!, 2);
           assert.equal(yield* fs.readFileString(`${packDir}/.t3-pstack-hash`), oldStamp);
           assert.equal(
-            yield* fs.readFileString(`${packDir}/docs/harness/t3-code.md`),
-            "# T3 harness",
+            yield* fs.readFileString(`${packDir}/scripts/helper.sh`),
+            "#!/bin/sh\nexit 0\n",
           );
           blocked = false;
           const fresh = yield* pack.catalog;
@@ -491,26 +633,8 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
           yield* fs.readFileString(`${packDir}/.t3-pstack-hash`),
           pstackContentHash(fixture.sourceRoot),
         );
-        assert.equal(
-          yield* fs.readFileString(`${packDir}/docs/harness/t3-code.md`),
-          "Next version",
-        );
+        assert.equal(yield* fs.readFileString(`${packDir}/scripts/helper.sh`), "Next version");
         assert.deepEqual(yield* fs.readDirectory(`${fixture.stateDir}/pstack`), ["pack"]);
       }),
-  );
-  it.effect("adapter Harnesses rows cover every built-in driver kind", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const adapter = path.resolve(
-        import.meta.dirname,
-        "../../../..",
-        "packages/pstack/t3-code.md",
-      );
-      const text = yield* fs.readFileString(adapter);
-      const table = text.split(/^## Harnesses\s*$/m)[1]?.split(/^## /m)[0] ?? "";
-      const kinds = [...table.matchAll(/^\|\s*`([^`]+)`\s*\|/gm)].map((match) => match[1]).sort();
-      assert.deepEqual(kinds, BUILT_IN_DRIVERS.map((driver) => driver.driverKind).sort());
-    }),
   );
 });

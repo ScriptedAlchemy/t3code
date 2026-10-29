@@ -10,6 +10,7 @@ import type { RelayDiscoveredEnvironment } from "./relay/discovery.ts";
 import {
   linkableMachines,
   linkedEnvironmentNames,
+  linkableMachineUrls,
   linkRequestAnswerInput,
   linkRequestDisplay,
   linkRequestFailureMessage,
@@ -185,6 +186,33 @@ const discovered = (
 });
 
 describe("linkableMachines", () => {
+  it("keeps secure machine addresses when merging an agent's LAN address hint", () => {
+    expect(
+      linkableMachineUrls([
+        "ssh://user@box.local",
+        "https://box.example.com",
+        "http://box.ts.net:3773",
+        "http://192.168.0.10:3773",
+        "http://127.0.0.1:3773",
+        "https://localhost:3773",
+        "ssh://user@box.local",
+      ]),
+    ).toEqual(["ssh://user@box.local", "https://box.example.com", "http://box.ts.net:3773"]);
+  });
+  it("asks for a secure address when a saved machine only has plaintext LAN routes", () => {
+    const lan = presentation("environment-lan", "LAN", {
+      saved: ["http://192.168.0.10:3773"],
+      reported: ["http://192.168.0.10:3773", "http://127.0.0.1:3773"],
+    });
+    const [machine] = linkableMachines({
+      environments: [lan],
+      threadEnvironmentId: EnvironmentId.make("here"),
+      links: [],
+      connect: new Map(),
+    });
+    expect(machine?.urls).toEqual([]);
+  });
+
   it("lists the other machines with reported addresses before saved ones, once each", () => {
     const here = presentation("environment-here", "Here", { saved: ["http://localhost:3773"] });
     const vps = presentation("environment-vps", "VPS", {
@@ -254,11 +282,7 @@ describe("linkableMachines", () => {
       links: [],
       connect: new Map([[vps.environmentId, discovered(vps.environmentId, "VPS")]]),
     });
-    expect(listed?.urls).toEqual([
-      "https://vps.ts.net",
-      "http://192.168.1.20:3773",
-      "https://environment-vps.t3.example",
-    ]);
+    expect(listed?.urls).toEqual(["https://vps.ts.net", "https://environment-vps.t3.example"]);
   });
 
   it("no longer counts a machine as linked once its link expired", () => {

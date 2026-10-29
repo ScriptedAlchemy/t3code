@@ -1670,7 +1670,6 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__t3_conversation_summary_list",
   "mcp__t3-code__t3_conversation_summary_describe",
   "mcp__t3-code__t3_conversation_summary_expand",
-  "mcp__t3-code__t3_project_loom_read",
   "mcp__t3-code__t3_project_code_query",
   "mcp__t3-code__t3_project_file_history",
   "mcp__t3-code__t3_preview_list",

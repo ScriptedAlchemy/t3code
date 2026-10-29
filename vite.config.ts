@@ -154,7 +154,6 @@ export default defineConfig({
   },
   fmt: {
     ignorePatterns: [
-      "packages/pstack/t3-code.md",
       "packages/pstack/upstream/**",
       ".repos/**",
       "infra/task-cache/vendor/**",

@@ -2,6 +2,7 @@ import { pipe } from "effect/Function";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type LinkableMachine,
+  linkableMachineUrls,
   linkRequestAnswerInput,
   linkRequestDefaultAccess,
   linkRequestDisplay,
@@ -219,7 +220,10 @@ function resolveTarget(
     kind: "machine",
     environmentId: machine?.environmentId ?? (chosen as EnvironmentId),
     label: machine?.label ?? linkRequestTargetName(item),
-    urls: [...new Set([...(machine?.urls ?? []), ...(item.url === undefined ? [] : [item.url])])],
+    urls: linkableMachineUrls([
+      ...(machine?.urls ?? []),
+      ...(item.url === undefined ? [] : [item.url]),
+    ]),
     linked: machine?.linked ?? false,
   };
 }
@@ -361,7 +365,7 @@ function LinkRequestSheet(props: {
             ))}
             <SettingsChoiceRow
               label="Another address…"
-              description="Link a machine this app does not know, by its https or Tailscale address."
+              description="Link a machine this app does not know, by its HTTPS, Tailscale, or ssh://user@host address."
               selected={selected === ANOTHER_ADDRESS}
               separated={machines.length > 0}
               disabled={busy}
@@ -388,7 +392,7 @@ function LinkRequestSheet(props: {
             {target.kind === "machine" ? (
               <Text className="font-sans text-xs text-foreground-muted">
                 This app has no address for {target.label} that another machine can reach. Enter its
-                https or Tailscale address.
+                HTTPS, Tailscale, or ssh://user@host address.
               </Text>
             ) : null}
           </View>

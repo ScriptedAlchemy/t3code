@@ -1,9 +1,13 @@
 import { NodeHttpServer } from "@effect/platform-node";
 import { type ExecutionEnvironmentDescriptor, OrchestratorMcpFailure } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import type * as SshTunnel from "@t3tools/ssh/tunnel";
+import { SshReadinessError } from "@t3tools/ssh/errors";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -78,8 +82,9 @@ const serveB = (descriptor: ExecutionEnvironmentDescriptor) =>
 const makeA = (
   descriptor: ExecutionEnvironmentDescriptor,
   secrets?: typeof ServerSecretStore.layer,
+  ssh?: SshTunnel.SshEnvironmentManager["Service"],
 ) =>
-  layerLinkingEnvironment(descriptor, secrets).pipe(
+  layerLinkingEnvironment(descriptor, secrets, ssh).pipe(
     Layer.build,
     Effect.map((context) => ({
       links: Context.get(context, PeerLinks.PeerLinks),
@@ -106,11 +111,207 @@ const probe = (
 
 const linkedSessions = (b: ServedPeer) => b.linkedSessions;
 
+it.effect("reports SSH setup failures without misidentifying the peer", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const a = yield* makeA(laptop, undefined, {
+        ensureEnvironment: () =>
+          Effect.fail(new SshReadinessError({ message: "refused", cause: null })),
+        disconnectEnvironment: () => Effect.void,
+      });
+      const error = yield* a.links
+        .link({
+          url: "ssh://user@box.local",
+          pairingCode: "unused",
+          access: "read-only",
+        })
+        .pipe(Effect.flip);
+      expect(error.reason).toBe("unreachable");
+      expect(error.message).toContain("Remote Login");
+      expect(error.message).toContain("Local Network");
+    }),
+  ),
+);
+
+it.effect("does not bootstrap SSH while describing an unapproved link", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const a = yield* makeA(laptop, undefined, {
+        ensureEnvironment: () => Effect.die("SSH bootstrap requires an approved link"),
+        disconnectEnvironment: () => Effect.void,
+      });
+      expect(yield* a.links.describe("ssh://user@box.local")).toEqual(Option.none());
+    }),
+  ),
+);
+
+it.effect("allows SSH bootstrap to finish before starting the descriptor deadline", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* serveB(box);
+      const started = yield* Deferred.make<void>();
+      const ready = yield* Deferred.make<void>();
+      const a = yield* makeA(laptop, undefined, {
+        ensureEnvironment: (target) =>
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(ready)),
+            Effect.as({
+              target,
+              httpBaseUrl: b.url,
+              wsBaseUrl: b.url.replace("http:", "ws:"),
+              pairingToken: null,
+              remotePort: 3773,
+            }),
+          ),
+        disconnectEnvironment: () => Effect.void,
+      });
+      const pairing = yield* b.auth.issuePairingCredential();
+      const linking = yield* Effect.forkChild(
+        a.links.link({
+          url: "ssh://user@box.local",
+          pairingCode: pairing.credential,
+          access: "read-only",
+        }),
+      );
+      yield* Deferred.await(started);
+      yield* TestClock.adjust(Duration.seconds(11));
+      yield* Deferred.succeed(ready, undefined);
+      expect(yield* Fiber.join(linking)).toMatchObject({
+        environmentId: box.environmentId,
+        label: box.label,
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "keeps SSH routes durable, enforces agent limits, and refuses a different peer after reconnect",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* serveB(box);
+        const disconnected: string[] = [];
+        const a = yield* makeA(laptop, undefined, {
+          ensureEnvironment: (target) =>
+            Effect.succeed({
+              target,
+              httpBaseUrl: b.url,
+              wsBaseUrl: b.url.replace("http:", "ws:"),
+              pairingToken: null,
+              remotePort: 3773,
+            }),
+          disconnectEnvironment: (target) =>
+            Effect.sync(() => {
+              disconnected.push(target.hostname);
+            }),
+        });
+        const pairing = yield* b.auth.issuePairingCredential();
+        const linked = yield* a.links.link({
+          url: "ssh://user@box.local:2222",
+          pairingCode: pairing.credential,
+          access: "read-only",
+        });
+        expect(linked.urls).toEqual(["ssh://user@box.local:2222"]);
+        expect((yield* a.links.resolve(box.environmentId)).url).toBe(b.url);
+        expect((yield* probe(a)).modes).toBe("approval-required/default");
+        const [session] = yield* linkedSessions(b);
+        yield* b.auth.revokeSession(session!.sessionId);
+        expect((yield* probe(a).pipe(Effect.flip)).code).toBe("capability_denied");
+        yield* a.links.link({
+          url: "ssh://user@box.local:2222",
+          pairingCode: (yield* b.auth.issuePairingCredential()).credential,
+          access: "full-access",
+        });
+        expect((yield* probe(a)).modes).toBe("full-access/default");
+        yield* Ref.set(b.descriptor, descriptorOf("different-environment", "Different"));
+        const before = yield* Ref.get(b.bearers);
+        expect((yield* a.links.resolve(box.environmentId).pipe(Effect.flip)).reason).toBe(
+          "unreachable",
+        );
+        expect(yield* Ref.get(b.bearers)).toEqual(before);
+        expect(yield* a.links.unlink(box.environmentId)).toBe(true);
+        expect(disconnected).toEqual(["box.local"]);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("rejects SSH passwords, paths, and arguments before opening a connection", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let opened = false;
+      const a = yield* makeA(laptop, undefined, {
+        ensureEnvironment: () =>
+          Effect.sync(() => {
+            opened = true;
+            throw new Error("must not connect");
+          }),
+        disconnectEnvironment: () => Effect.void,
+      });
+      for (const url of [
+        "ssh://user:secret@box",
+        "ssh://box/path",
+        "ssh://box?command=id",
+        "ssh://-option",
+        "ssh://user%20name@box",
+        "ssh://user@$(id).corp.example",
+        "ssh://user@box;id",
+        "ssh://user@box`id`",
+      ]) {
+        expect(
+          (yield* a.links
+            .link({ url, pairingCode: "unused", access: "full-access" })
+            .pipe(Effect.flip)).reason,
+        ).toBe("unreachable");
+      }
+      expect(opened).toBe(false);
+      expect(yield* a.links.list).toEqual([]);
+    }),
+  ),
+);
+
 /** Another environment on a socket of its own, answering as `descriptor`. */
 const serveApart = (descriptor: ExecutionEnvironmentDescriptor) =>
   Layer.build(Layer.fresh(NodeHttpServer.layerTest)).pipe(
     Effect.flatMap((server) => serveB(descriptor).pipe(Effect.provideContext(server))),
   );
+
+it.effect.each(["address", "machine"] as const)(
+  "signs in through the verified SSH endpoint when linking by %s",
+  (selection) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* serveB(box);
+        const other = yield* serveApart(descriptorOf("environment-other", "Other"));
+        let connections = 0;
+        const a = yield* makeA(laptop, undefined, {
+          ensureEnvironment: (target) =>
+            Effect.sync(() => {
+              connections += 1;
+              const url = connections === 1 ? b.url : other.url;
+              return {
+                target,
+                httpBaseUrl: url,
+                wsBaseUrl: url.replace("http:", "ws:"),
+                pairingToken: null,
+                remotePort: 3773,
+              };
+            }),
+          disconnectEnvironment: () => Effect.void,
+        });
+        const pairing = yield* b.auth.issuePairingCredential();
+        const linked = yield* a.links.link({
+          url: "ssh://user@box.local",
+          pairingCode: pairing.credential,
+          access: "read-only",
+          ...(selection === "machine" ? { expectedEnvironmentId: box.environmentId } : {}),
+        });
+        expect(linked.environmentId).toBe(box.environmentId);
+        expect(linked.urls).toEqual(["ssh://user@box.local"]);
+        expect(yield* linkedSessions(b)).toHaveLength(1);
+        expect(yield* linkedSessions(other)).toEqual([]);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
 
 it.effect("links with a pairing code, and the peer holds its agents to the limits they carry", () =>
   Effect.scoped(

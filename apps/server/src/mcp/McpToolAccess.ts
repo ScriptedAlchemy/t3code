@@ -124,6 +124,22 @@ export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>)
     () => Effect.void,
   );
 
+/** Checks here before forwarding, then again there: a peer credential cannot add caller access. */
+export const readsWithCapability = <P, A, E, R>(
+  access: { readonly capability: McpInvocationContext.McpCapability; readonly denied: string },
+  handle: (params: P) => Effect.Effect<A, E, R>,
+) => {
+  const check = McpInvocationContext.requireMcpCapability(access.capability).pipe(
+    Effect.mapError(
+      () => new OrchestratorMcpFailure({ code: "capability_denied", message: access.denied }),
+    ),
+  );
+  return declare(
+    (params: P) => check.pipe(Effect.flatMap(() => handle(params))),
+    () => check,
+  );
+};
+
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
 
