@@ -260,17 +260,29 @@ describe("routeModelSelection", () => {
     { usedPercent: 100, resetsAt: "2026-10-19T12:30:00.000Z", exhausted: true },
     { usedPercent: 100, resetsAt: "2026-10-19T11:59:00.000Z", exhausted: false },
     { usedPercent: 100, resetsAt: undefined, exhausted: true },
+    {
+      windowId: "seven_day_sonnet",
+      usedPercent: 100,
+      resetsAt: "2026-10-19T12:30:00.000Z",
+      exhausted: false,
+    },
+    {
+      windowId: "monthly_spend",
+      usedPercent: 100,
+      resetsAt: "2026-10-19T12:30:00.000Z",
+      exhausted: false,
+    },
     { usedPercent: 99, resetsAt: "2026-10-19T12:30:00.000Z", exhausted: false },
   ])(
     "respects reported quota before a failed turn: $usedPercent $resetsAt",
-    ({ usedPercent, resetsAt, exhausted }) => {
+    ({ usedPercent, resetsAt, exhausted, windowId }) => {
       const providers = [
         stamped("claudeAgent", {
           usageLimits: {
             checkedAt: "2026-10-19T12:00:00.000Z",
             windows: [
               {
-                id: "weekly",
+                id: windowId ?? "weekly",
                 kind: "weekly",
                 label: "Weekly",
                 usedPercent,

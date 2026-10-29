@@ -158,7 +158,15 @@ export function poolMemberHealth(input: {
     );
     const limitedUntilMs = sharing.reduce<number | null>((latest, candidate) => {
       const exhaustedWindows =
-        candidate.usageLimits?.windows.filter((window) => window.usedPercent >= 100) ?? [];
+        candidate.usageLimits?.windows.filter(
+          (window) =>
+            window.usedPercent >= 100 &&
+            // Claude's model buckets and optional spend budget do not exhaust the whole account.
+            (candidate.driver !== "claudeAgent" ||
+              (!window.id.startsWith("seven_day_") &&
+                window.id !== "monthly_spend" &&
+                window.id !== "overage")),
+        ) ?? [];
       const untilMs = exhaustedWindows.reduce<number | null>(
         (until, window) => {
           const reset = window.resetsAt === undefined ? Number.NaN : Date.parse(window.resetsAt);

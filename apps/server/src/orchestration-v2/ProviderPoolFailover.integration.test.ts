@@ -647,7 +647,7 @@ it.live("routes a selection naming a cooling account to its healthy sibling", ()
   ),
 );
 
-it.live("starts a queued run on its pinned account when no pool member is eligible", () =>
+it.live("holds queued work when every pooled account becomes signed out", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace("pool-failover-queued-exhausted");
@@ -675,11 +675,16 @@ it.live("starts a queued run on its pinned account when no pool member is eligib
         yield* Ref.update(providers, (members) =>
           members.map((member) => ({ ...member, auth: { status: "unauthenticated" as const } })),
         );
+        const queuedDisposition = yield* awaitEvent(
+          threadId,
+          (event) =>
+            event.type === "run.updated" &&
+            (event.payload.queueHeld === true || event.payload.status === "starting"),
+        );
         yield* Deferred.succeed(hold, undefined);
         yield* Fiber.join(firstCompleted);
-        const queuedCompleted = yield* awaitRunStatus(threadId, "completed");
         yield* Ref.update(state, (current) => ({ ...current, holdTurn: null }));
-        yield* Fiber.join(queuedCompleted);
+        yield* Fiber.join(queuedDisposition);
         yield* worker.drain();
         return yield* orchestrator.getThreadProjection(threadId);
       }).pipe(
@@ -693,7 +698,9 @@ it.live("starts a queued run on its pinned account when no pool member is eligib
       );
 
       const [firstRun, queuedRun] = projection.runs;
-      assert.equal(queuedRun?.status, "completed");
+      assert.equal(queuedRun?.status, "queued");
+      assert.equal(queuedRun?.queueHeld, true);
+      assert.lengthOf((yield* Ref.get(state)).started, 1);
       assert.equal(queuedRun?.providerInstanceId, firstRun?.providerInstanceId);
     }),
   ),

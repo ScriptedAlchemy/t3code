@@ -1565,7 +1565,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       threadId,
       projectId: projection.thread.projectId,
     });
-    if (routed.type !== "routed") return null;
+    if (routed.type === "no_eligible_member") return "unavailable" as const;
     const instanceId = routed.selection.instanceId;
     if (instanceId === queuedRun.providerInstanceId) return null;
     const attempt = projection.attempts.find(
@@ -1689,10 +1689,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerInstanceId: modelSelection.instanceId,
       };
       const repinnedRun = yield* repinQueuedRun({ projection, queuedRun: pinnedRun });
-      if (repinnedRun !== null) {
+      const poolUnavailable = repinnedRun === "unavailable";
+      if (repinnedRun !== null && repinnedRun !== "unavailable") {
         projection = yield* readCommandProjection(threadId);
       }
-      const queuedRun = repinnedRun ?? pinnedRun;
+      const queuedRun = repinnedRun === "unavailable" ? pinnedRun : (repinnedRun ?? pinnedRun);
       // A limited provider would fail and consume every waiting message.
       if (usageLimitHoldsQueue(projection, queuedRun.providerInstanceId)) {
         return;
@@ -1723,6 +1724,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? !projectOverride
           : machineInstance !== undefined && !resolveProviderInstanceEnabled(machineInstance);
       if (
+        poolUnavailable ||
         worktreeMissing ||
         instanceDisabledForProject ||
         (failureClass !== undefined &&

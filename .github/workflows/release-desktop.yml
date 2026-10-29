@@ -168,6 +168,7 @@ jobs:
             echo "macOS CLI signing disabled (missing CSC_LINK); the archive is signed ad hoc."
             exit 0
           fi
+          umask 077
           keychain="$RUNNER_TEMP/t3-cli-signing.keychain-db"
           keychain_password="$(openssl rand -hex 16)"
           cert_path="$RUNNER_TEMP/t3-cli-signing.p12"
@@ -176,12 +177,21 @@ jobs:
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
           if ! security import "$cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign; then
-            if openssl pkcs12 -in "$cert_path" -passin env:CSC_KEY_PASSWORD -noout >/dev/null 2>&1; then
-              echo "::error::The .p12 password is valid, but macOS rejected its encoding. Re-export the Developer ID certificate and private key in a macOS-compatible PKCS12 format."
-            else
+            if ! openssl pkcs12 -in "$cert_path" -passin env:CSC_KEY_PASSWORD -noout >/dev/null 2>&1; then
               echo "::error::Cannot decode CSC_LINK with CSC_KEY_PASSWORD. Replace both Actions secrets with the base64-encoded Developer ID .p12 and its matching export password."
+              exit 1
             fi
-            exit 1
+            # macOS rejects some OpenSSL 3 PKCS12 encodings even with the correct password.
+            compatible_cert_path="$RUNNER_TEMP/t3-signing-compatible.p12"
+            encrypted_pem_path="$RUNNER_TEMP/t3-signing-encrypted.pem"
+            openssl pkcs12 -in "$cert_path" -out "$encrypted_pem_path" \
+              -passin env:CSC_KEY_PASSWORD -passout env:CSC_KEY_PASSWORD
+            openssl pkcs12 -export -in "$encrypted_pem_path" -passin env:CSC_KEY_PASSWORD \
+              -out "$compatible_cert_path" -passout env:CSC_KEY_PASSWORD \
+              -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
+            rm "$encrypted_pem_path"
+            security import "$compatible_cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
+            cert_path="$compatible_cert_path"
           fi
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
@@ -191,6 +201,7 @@ jobs:
             exit 1
           fi
           echo "::add-mask::$keychain_password"
+          echo "T3CODE_MACOS_SIGNING_CERTIFICATE=$cert_path" >> "$GITHUB_ENV"
           echo "T3CODE_CLI_MAC_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
           echo "macOS CLI signing enabled."
 
@@ -588,6 +599,7 @@ jobs:
           }
 
           if [[ "${{ inputs.platform }}" == "mac" ]]; then
+            CSC_LINK="${T3CODE_MACOS_SIGNING_CERTIFICATE:-$CSC_LINK}"
             if has_all "$CSC_LINK" "$CSC_KEY_PASSWORD" "$APPLE_API_KEY" "$APPLE_API_KEY_ID" "$APPLE_API_ISSUER"; then
               if ! has_all "$APPLE_TEAM_ID" "$MACOS_PROVISIONING_PROFILE"; then
                 echo "macOS signing is configured, but APPLE_TEAM_ID or MACOS_PROVISIONING_PROFILE is missing." >&2
