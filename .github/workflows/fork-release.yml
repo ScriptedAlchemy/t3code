@@ -249,7 +249,13 @@ jobs:
 
           Older preview/source builds have no update feed. Install this release once; subsequent nightly releases are available through the app's Update control.
           EOF
-          gh release create "v${VERSION}" assets/* \
+          release_assets=()
+          for asset in assets/*; do
+            if [[ -f "$asset" ]]; then
+              release_assets+=("$asset")
+            fi
+          done
+          gh release create "v${VERSION}" "${release_assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "T3 Code ${VERSION}" \
