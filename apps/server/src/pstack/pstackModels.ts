@@ -80,16 +80,16 @@ export function parseModelsFile(text: string) {
 }
 
 const effortLadder = ["low", "medium", "high", "xhigh", "max"];
+// Speed stays with the provider's own default unless the models file sets it.
+const speedOptionIds = new Set(["fastMode", "serviceTier"]);
 
 function defaultSeat(
   slug: string,
   providers: ReadonlyArray<ServerProvider>,
   constraintsFor: (provider: ServerProvider) => ReadonlyArray<string>,
-  diagnostics: string[],
 ): ParsedSeat {
   if (slug === "inherit-parent" || slug === "auto") return { kind: "inherit" };
-  const fast = slug.endsWith("-fast");
-  const withoutFast = fast ? slug.slice(0, -5) : slug;
+  const withoutFast = slug.replace(/-fast$/, "");
   const effortMatch = /-(low|medium|high|xhigh|max)$/.exec(withoutFast);
   const model = effortMatch ? withoutFast.slice(0, effortMatch.index) : withoutFast;
   const driver = model.startsWith("claude-")
@@ -123,24 +123,6 @@ function defaultSeat(
       .slice(0, effortLadder.indexOf(effort) + 1)
       .findLast((value) => descriptor.options.some((option) => option.id === value));
     options.push({ id: descriptor.id, value: clamped ?? effort });
-  }
-  if (fast) {
-    const fastMode = descriptors.find(
-      (candidate) => candidate.id === "fastMode" && candidate.type === "boolean",
-    );
-    const serviceTier = descriptors.find(
-      (candidate) =>
-        candidate.id === "serviceTier" &&
-        candidate.type === "select" &&
-        candidate.options.some((option) => option.id === "priority" || option.id === "fast"),
-    );
-    if (fastMode) options.push({ id: fastMode.id, value: true });
-    else if (serviceTier?.type === "select")
-      options.push({
-        id: serviceTier.id,
-        value: serviceTier.options.some((option) => option.id === "priority") ? "priority" : "fast",
-      });
-    else diagnostics.push(`Default ${slug}: fast mode is not advertised; ignoring -fast.`);
   }
   return {
     kind: "entry",
@@ -178,7 +160,7 @@ export function resolveRoles(
       input.file?.lines.get(role.label) ??
       role.defaultValue
         .split(",")
-        .map((slug) => defaultSeat(slug.trim(), input.providers, constraintsFor, diagnostics));
+        .map((slug) => defaultSeat(slug.trim(), input.providers, constraintsFor));
     const panel = PSTACK_PANEL_ROLES.has(role.label);
     const seats = entries.map((seat, index): Seat | undefined => {
       if (seat.kind === "inherit") return seat;
@@ -197,6 +179,11 @@ export function resolveRoles(
       reason ??= invalidOptionSelections(entry.options, descriptors).join(" ") || undefined;
       const options: ProviderOptionSelection[] = [];
       for (const descriptor of descriptors) {
+        if (
+          speedOptionIds.has(descriptor.id) &&
+          !entry.options.some((option) => option.id === descriptor.id)
+        )
+          continue;
         const value =
           entry.options.find((option) => option.id === descriptor.id)?.value ??
           getProviderOptionCurrentValue(descriptor) ??
