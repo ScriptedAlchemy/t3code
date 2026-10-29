@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import {
   CheckpointId,
   ContextTransferId,
+  EnvironmentId,
   IsoDateTime,
   MessageId,
   NodeId,
@@ -77,6 +78,14 @@ const LaneIdentity = {
   relationship: LoomLaneRelationship,
   /** Null for roots. A parent outside the project or deleted is reported here but never loaded. */
   parentThreadId: Schema.NullOr(ThreadId),
+  /** A parent in another environment is an explicit link, never a local parentThreadId. */
+  delegatedFrom: Schema.optionalKey(
+    Schema.Struct({
+      environmentId: EnvironmentId,
+      threadId: ThreadId,
+      title: Schema.String,
+    }),
+  ),
 };
 
 export const LoomLane = Schema.Struct({
@@ -152,7 +161,7 @@ export const LoomMarker = Schema.Union([
     command: Schema.String.check(Schema.isMaxLength(LOOM_COMMAND_PREVIEW_CHARS)),
     exitCode: Schema.NullOr(Schema.Int),
   }),
-  /** A provider-native task with no child thread to give it a lane. */
+  /** A task with no local child lane: provider-native, or delegated to another environment. */
   Schema.Struct({
     ...MarkerBase,
     kind: Schema.Literal("subagent_task"),
@@ -160,6 +169,14 @@ export const LoomMarker = Schema.Union([
     completedAt: Schema.NullOr(IsoDateTime),
     status: OrchestrationV2Subagent.fields.status,
     title: Schema.NullOr(Schema.String),
+    /** The remote thread owns the task's activity; threadId above still names the local lane. */
+    remoteChild: Schema.optionalKey(
+      Schema.Struct({
+        environmentId: EnvironmentId,
+        threadId: ThreadId,
+        label: Schema.String,
+      }),
+    ),
   }),
 ]);
 export type LoomMarker = typeof LoomMarker.Type;

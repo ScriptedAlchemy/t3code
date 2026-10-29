@@ -2416,6 +2416,8 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         yield* runtime.startTurn(turnInput(thread));
         assert.equal((yield* Fiber.join(terminal))?.status, "completed");
       }
+      // A transient registration failure changes availability, not the adapter's supported features.
+      assert.isTrue(runtime.providerSession.capabilities.tools.supportsMcpTools);
     }).pipe(Effect.scoped),
   );
 

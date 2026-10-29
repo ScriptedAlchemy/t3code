@@ -9,6 +9,7 @@ import {
   type ServerConfig,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassification";
 
 import type { EnvironmentPresentation } from "./connection/presentation.ts";
 import { connectionRoutes, routeHttpBaseUrl } from "./connection/routes.ts";
@@ -73,6 +74,18 @@ export interface LinkableMachine {
   readonly urls: ReadonlyArray<string>;
 }
 
+export const linkableMachineUrls = (addresses: ReadonlyArray<string>): ReadonlyArray<string> =>
+  [...new Set(addresses)].filter((address) => {
+    const url = URL.parse(address);
+    return (
+      url !== null &&
+      !isLocalLoopbackHost(url.hostname) &&
+      (url.protocol === "https:" ||
+        url.protocol === "ssh:" ||
+        (url.protocol === "http:" && isTailnetHost(url.hostname)))
+    );
+  });
+
 /**
  * The catalog's machines other than the thread's own, in catalog order, then those only T3
  * Connect knows. `links` are the thread environment's; an expired one no longer counts as
@@ -108,13 +121,11 @@ export function linkableMachines(input: {
         connected: environment.connection.phase === "connected",
         connectOnly: false,
         linked: linkedIds.has(environment.environmentId),
-        urls: [
-          ...new Set([
-            ...reported,
-            ...routes,
-            ...(connect === undefined ? [] : [connect.httpBaseUrl]),
-          ]),
-        ],
+        urls: linkableMachineUrls([
+          ...reported,
+          ...routes,
+          ...(connect === undefined ? [] : [connect.httpBaseUrl]),
+        ]),
       };
     });
   const savedIds = new Set<string>(saved.map((machine) => machine.environmentId));

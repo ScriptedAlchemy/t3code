@@ -1,7 +1,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type { ProviderInstanceId } from "@t3tools/contracts";
+import type { ProviderInstanceId, TextGenerationOperation } from "@t3tools/contracts";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { TextGenerationError } from "@t3tools/contracts";
 
@@ -31,32 +31,26 @@ export class TextGeneration extends Context.Service<TextGeneration, ProviderText
   "t3/textGeneration/TextGeneration",
 ) {}
 
-type TextGenerationOp =
-  | "generateCommitMessage"
-  | "generatePrContent"
-  | "generateBranchName"
-  | "generateThreadTitle"
-  | "generateReviewGuide"
-  | "generateKnowledgeCandidates"
-  | "generateConversationSummary";
-
-const resolveInstance = (
+const resolveInstance = Effect.fn("TextGeneration.resolveInstance")(function* (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
-  operation: TextGenerationOp,
+  operation: TextGenerationOperation,
   instanceId: ProviderInstanceId,
-): Effect.Effect<ProviderInstance["textGeneration"], TextGenerationError> =>
-  registry.getInstance(instanceId).pipe(
-    Effect.flatMap((instance) =>
-      instance
-        ? Effect.succeed(instance.textGeneration)
-        : Effect.fail(
-            new TextGenerationError({
-              operation,
-              detail: `No provider instance registered for id '${instanceId}'.`,
-            }),
-          ),
-    ),
-  );
+): Effect.fn.Return<ProviderInstance["textGeneration"], TextGenerationError> {
+  const instance = yield* registry.getInstance(instanceId);
+  if (!instance) {
+    return yield* new TextGenerationError({
+      operation,
+      detail: `No provider instance registered for id '${instanceId}'.`,
+    });
+  }
+  if (!instance.textGeneration.supportedOperations.includes(operation)) {
+    return yield* new TextGenerationError({
+      operation,
+      detail: `Provider '${instanceId}' does not support this text generation operation. Choose a model from a provider that supports it.`,
+    });
+  }
+  return instance.textGeneration;
+});
 
 /** @public */
 export const make = Effect.gen(function* () {

@@ -33,7 +33,8 @@ italics. A lane whose parent was deleted shows a broken-link icon.
 - **Pull requests.** Squares, placed when the pull request was linked to the thread.
 - **Test commands.** Triangles for commands that look like test runs. Red means the command
   exited with an error. The Loom does not count passed or failed tests.
-- **Agent tasks.** Circles for provider tasks that have no thread of their own.
+- **Agent tasks.** Circles for provider tasks without a local thread, including tasks delegated
+  to another environment. Remote tasks name their destination.
 - **Transfers.** Curves connect forks, handoffs, and subagent results between threads. A provider
   handoff within one thread is a small chevron on its lane.
 
@@ -46,6 +47,11 @@ Filter lanes by title, run status, provider, model, or branch. **Search lanes** 
 shown without reloading. Select a mark to see it in the event list beside the timeline. The event
 list holds the same activity in time order; select an entry to open its thread, its checkpoint
 diff, or its pull request.
+
+Open a remote task to read its thread in the destination environment. A remotely delegated
+thread also links back to its parent in the origin environment. These links become available
+when this client is connected to that environment. Each project's Loom shows the activity
+stored in its own environment; open the remote thread to see the work performed there.
 
 Very busy windows are limited in size. When that happens, a note says what was left out, such as
 older runs, and **Older lanes** shows the next set of threads. The **As of** time shows when the

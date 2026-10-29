@@ -321,7 +321,7 @@ function LinkEnvironmentAction({ environmentId }: { readonly environmentId: Envi
                 {machine !== null ? (
                   <span className="block text-xs text-muted-foreground">
                     This app has no address for {machine.label} that another machine can reach.
-                    Enter its https or Tailscale address.
+                    Enter its HTTPS, Tailscale, or ssh://user@host address.
                   </span>
                 ) : null}
               </label>

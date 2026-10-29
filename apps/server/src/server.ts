@@ -801,7 +801,7 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(
     PeerForwarding.layer.pipe(
       Layer.provideMerge(PeerMcpClient.layer),
-      Layer.provideMerge(PeerLinks.layer),
+      Layer.provideMerge(PeerLinks.layer.pipe(Layer.provide(PeerLinks.layerSsh))),
     ),
   ),
   Layer.provide(PreviewAutomationBroker.layer),

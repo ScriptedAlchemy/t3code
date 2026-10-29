@@ -31,6 +31,7 @@ import { isElectron } from "~/env";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { useProject } from "~/state/entities";
+import { useEnvironmentIdentities } from "~/state/environments";
 import { projectLoom } from "~/state/projectLoom";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
@@ -138,6 +139,7 @@ interface LoomPage {
 function LoomWorkspace(props: ProjectLoomPageProps) {
   const { search, onSearchChange } = props;
   const navigate = useNavigate();
+  const environments = useEnvironmentIdentities();
   const openPrLink = useOpenPrLink();
   const filters = loomFiltersOf(search);
   // Lane pages are ephemeral: a cursor only belongs to the project, window and filters that made
@@ -181,10 +183,13 @@ function LoomWorkspace(props: ProjectLoomPageProps) {
   );
 
   const actions: LoomActions = {
-    openThread: (threadId: ThreadId) =>
+    canOpenThread: (target) =>
+      target.environmentId === props.environmentId ||
+      environments.some(({ environmentId }) => environmentId === target.environmentId),
+    openThread: (target) =>
       void navigate({
         to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),
+        params: buildThreadRouteParams(target),
       }),
     openDiff: (threadId: ThreadId, runId: RunId) => {
       const threadRef = scopeThreadRef(props.environmentId, threadId);
@@ -275,6 +280,7 @@ function LoomWorkspace(props: ProjectLoomPageProps) {
       ) : (
         <LoomLoaded
           key={`${data.from}|${data.to}`}
+          environmentId={props.environmentId}
           data={data}
           stale={query.error !== null}
           search={search}
@@ -295,6 +301,7 @@ function LoomWorkspace(props: ProjectLoomPageProps) {
 }
 
 function LoomLoaded(props: {
+  readonly environmentId: EnvironmentId;
   readonly data: LoomWindow;
   readonly stale: boolean;
   readonly search: LoomSearch;
@@ -481,6 +488,7 @@ function LoomLoaded(props: {
         )}
       </div>
       <LoomEventPanel
+        environmentId={props.environmentId}
         data={data}
         selection={selection}
         actions={props.actions}
@@ -506,6 +514,7 @@ function LoomFilterControls(props: {
   // The draft follows the URL whenever the URL's title filter changes underneath it.
   const [draft, setDraft] = useState({ source: search.q, text: search.q ?? "" });
   const title = draft.source === search.q ? draft.text : (search.q ?? "");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The debounce timer syncs the URL filter with the draft and cancels pending navigation on URL changes or unmount.
   useEffect(() => {
     const trimmed = title.trim();
     if (trimmed === (search.q ?? "")) return;

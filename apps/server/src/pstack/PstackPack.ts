@@ -13,6 +13,7 @@ import {
 } from "@t3tools/pstack";
 import { parseSkillFrontmatter } from "@t3tools/shared/skillFrontmatter";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -299,6 +300,9 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
         resolved: resolveRoles({
           file: file === undefined ? undefined : parseModelsFile(file),
           defaults: pack.defaults,
+          settings: currentSettings,
+          projectId: input.projectId,
+          nowMs: yield* Clock.currentTimeMillis,
           ...providers,
           providers: providers.providers.map((provider) => ({
             ...provider,

@@ -44,8 +44,13 @@ runs:
       if: steps.vp_cache.outputs.cache-hit == 'true'
       shell: bash
       run: |
-        echo "$HOME/.vite-plus/bin" >> "$GITHUB_PATH"
-        "$HOME/.vite-plus/bin/vp" env use "${{ steps.vp.outputs.node }}"
+        vp_bin="$HOME/.vite-plus/bin"
+        if [[ "$RUNNER_OS" == "Windows" ]]; then
+          cygpath -w "$vp_bin" >> "$GITHUB_PATH"
+        else
+          echo "$vp_bin" >> "$GITHUB_PATH"
+        fi
+        "$vp_bin/vp" env use "${{ steps.vp.outputs.node }}"
 
     # vp gives each Node.js download attempt 10 minutes by default, so one
     # stalled stream holds the job that long. It retries 3 times and resumes

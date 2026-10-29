@@ -9,6 +9,38 @@ import { migrationManifest, runMigrations } from "./Migrations.ts";
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
 const consolidatedMigration = [80, "ProjectIntelligenceAndCrossEnvironment"] as const;
+const messageDeliveryMigration = [81, "ProjectKnowledgeMessageDeliveries"] as const;
+
+it.effect("upgrades attempt receipts atomically and preserves distinct steering messages", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: 80 });
+    yield* seedDelivery;
+    yield* sql`CREATE VIEW project_knowledge_deliveries_project_cursor AS SELECT 1`;
+    const before = yield* sql`SELECT * FROM project_knowledge_deliveries`;
+    const schema = yield* sql`SELECT name, sql FROM sqlite_master ORDER BY name`;
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+    assert.deepStrictEqual(yield* sql`SELECT * FROM project_knowledge_deliveries`, before);
+    assert.deepStrictEqual(yield* sql`SELECT name, sql FROM sqlite_master ORDER BY name`, schema);
+
+    yield* sql`DROP VIEW project_knowledge_deliveries_project_cursor`;
+    assert.deepStrictEqual(yield* runMigrations(), [messageDeliveryMigration]);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM project_knowledge_deliveries`, before);
+    yield* sql`INSERT INTO project_knowledge_deliveries (
+      attempt_id, run_id, thread_id, message_id, project_id, provider_instance_id,
+      status, items_json, omissions_json, created_at, updated_at
+    ) SELECT attempt_id, run_id, thread_id, 'followup', project_id, provider_instance_id,
+      'prepared', '[]', '[]', created_at, updated_at FROM project_knowledge_deliveries`;
+    assert.deepStrictEqual(
+      yield* sql`SELECT message_id, status FROM project_knowledge_deliveries ORDER BY message_id`,
+      [
+        { message_id: "followup", status: "prepared" },
+        { message_id: "message", status: "sent" },
+      ],
+    );
+    assert.deepStrictEqual(yield* runMigrations(), []);
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
 
 const previewNativeColumns = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -228,6 +260,7 @@ describe("runMigrations", () => {
         [78, "ShellStopRequestIndex"],
         [79, "ThreadMessageSearch"],
         consolidatedMigration,
+        messageDeliveryMigration,
       ]);
       assert.deepStrictEqual((yield* history).slice(0, before.length), before);
       const indexes = yield* sql`
@@ -291,7 +324,7 @@ describe("runMigrations", () => {
         );
         assert.deepStrictEqual(
           (yield* history).filter(([id]) => id >= 80),
-          [consolidatedMigration],
+          [consolidatedMigration, messageDeliveryMigration],
         );
         yield* assertConsolidatedSchema;
         assert.deepStrictEqual(yield* runMigrations(), []);
@@ -314,15 +347,18 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("adds one migration to the current main schema", () =>
+  it.effect("adds intelligence migrations to the upstream schema", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 79 });
       assert.deepStrictEqual(
         migrationManifest.filter(([id]) => id >= 80),
-        [consolidatedMigration],
+        [consolidatedMigration, messageDeliveryMigration],
       );
-      assert.deepStrictEqual(yield* runMigrations(), [consolidatedMigration]);
+      assert.deepStrictEqual(yield* runMigrations(), [
+        consolidatedMigration,
+        messageDeliveryMigration,
+      ]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE name = 'cross_environment_launches'`,
@@ -347,11 +383,11 @@ describe("runMigrations", () => {
         const beforeRoutes = yield* sql`SELECT * FROM cross_environment_launches`;
         const beforeDeliveries = yield* sql`SELECT * FROM project_knowledge_deliveries`;
 
-        assert.deepStrictEqual(yield* runMigrations(), []);
+        assert.deepStrictEqual(yield* runMigrations(), [messageDeliveryMigration]);
 
         yield* assertConsolidatedSchema;
         assert.deepStrictEqual(
-          yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+          yield* sql`SELECT * FROM effect_sql_migrations WHERE migration_id <= 80 ORDER BY migration_id`,
           beforeHistory,
         );
         assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, beforeRoutes);
@@ -442,7 +478,7 @@ describe("runMigrations", () => {
       assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, beforeRoutes);
 
       yield* sql`DROP VIEW orchestration_v2_projection_turn_items_waiting_link_idx`;
-      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* runMigrations(), [messageDeliveryMigration]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(yield* sql`SELECT secret_name, fenced FROM peer_environment_links`, [
         { secret_name: "peer-secret-name", fenced: 0 },
@@ -485,7 +521,10 @@ describe("runMigrations", () => {
           `;
         }
 
-        assert.deepStrictEqual(yield* runMigrations(), [consolidatedMigration]);
+        assert.deepStrictEqual(yield* runMigrations(), [
+          consolidatedMigration,
+          messageDeliveryMigration,
+        ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(
           yield* sql`SELECT provider_thread_id, native_thread_id, budget_json FROM project_knowledge_deliveries`,
@@ -533,7 +572,10 @@ describe("runMigrations", () => {
         VALUES (83, 'CrossEnvironmentLaunches', '2026-10-25 01:00:00')
       `;
         const routes = yield* sql`SELECT * FROM cross_environment_launches`;
-        assert.deepStrictEqual(yield* runMigrations(), [consolidatedMigration]);
+        assert.deepStrictEqual(yield* runMigrations(), [
+          consolidatedMigration,
+          messageDeliveryMigration,
+        ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, routes);
         yield* assertConsolidatedSchema;
