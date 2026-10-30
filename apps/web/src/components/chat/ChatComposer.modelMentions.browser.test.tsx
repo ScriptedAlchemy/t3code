@@ -17,6 +17,33 @@ vi.mock("../../state/primaryEnvironment", async () => {
   return { primaryEnvironmentIdAtom: Atom.make(null) };
 });
 
+// Model chips resolve against the environment's server config.
+vi.mock(import("../../state/server"), async (original) => {
+  const actual = await original();
+  const { Atom } = await import("effect/reactivity");
+  const noConfig = Atom.make(null);
+  const testConfig = Atom.make({
+    availableEditors: [],
+    settings: { providerInstances: {} },
+    providers: [
+      {
+        instanceId: "codex",
+        driver: "codex",
+        displayName: "Codex",
+        models: [{ slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: {} }],
+      },
+    ],
+  });
+  return {
+    ...actual,
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      configValueAtom: ((environmentId: string) =>
+        environmentId === "environment-test" ? testConfig : noConfig) as never,
+    },
+  };
+});
+
 vi.mock("./ComposerCommandMenuLayer", () => ({
   ComposerCommandMenuLayer: ({ children }: { children: ReactNode }) => children,
 }));
@@ -204,7 +231,7 @@ function ComposerWithSelection({ props }: { props: ChatComposerProps }) {
   return <ChatComposer {...props} onProviderModelSelect={selection.onProviderModelSelectStable} />;
 }
 
-it("inserts the picked model as text without switching the thread's model", async () => {
+it("inserts the picked model as a chip without switching the thread's model", async () => {
   const { props, composerRef } = setup();
   await using screen = await render(
     <AppAtomRegistryProvider>
@@ -218,11 +245,14 @@ it("inserts the picked model as text without switching the thread's model", asyn
   expect(props.promptRef.current).toBe("before @gpt after");
   await userEvent.keyboard("{Enter}");
   await expect.poll(() => props.promptRef.current).toBe("before model:codex/gpt-5.4 after");
+  await expect
+    .element(screen.getByRole("button", { name: "Model GPT-5.4. Show details" }))
+    .toBeVisible();
+  expect(element).not.toHaveTextContent("model:");
   await userEvent.keyboard("X");
-  await expect.element(element).toHaveTextContent("before model:codex/gpt-5.4 Xafter");
-  expect(
-    useComposerDraftStore.getState().getComposerDraft(props.composerDraftTarget)
-      ?.modelSelectionByProvider,
-  ).toEqual({});
+  await expect.element(element).toHaveTextContent("before GPT-5.4 Xafter");
+  const draft = useComposerDraftStore.getState().getComposerDraft(props.composerDraftTarget);
+  expect(draft?.prompt).toBe("before model:codex/gpt-5.4 Xafter");
+  expect(draft?.modelSelectionByProvider).toEqual({});
   expect(useComposerDraftStore.getState().stickyActiveProvider).toBeNull();
 });

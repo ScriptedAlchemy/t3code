@@ -55,6 +55,28 @@ const modelMentionPresentationAtom = Atom.family((key: string) =>
   }).pipe(Atom.withLabel("model-mention-presentation")),
 );
 
+export function modelMentionKey(instanceId: string, model: string): string {
+  return `${instanceId}\u0000${model}`;
+}
+
+// Keeps its identity until the environment's models change, so status pushes don't reconcile the composer.
+export const modelMentionKeysAtom = Atom.family((environmentId: string) =>
+  Atom.make((get): ReadonlySet<string> => {
+    const config = environmentId
+      ? get(serverEnvironment.configValueAtom(environmentId as EnvironmentId))
+      : null;
+    const next = new Set(
+      config?.providers.flatMap((provider) =>
+        provider.models.map((option) => modelMentionKey(provider.instanceId, option.slug)),
+      ),
+    );
+    const previous = Option.getOrNull(get.self<ReadonlySet<string>>());
+    return previous && previous.size === next.size && [...next].every((key) => previous.has(key))
+      ? previous
+      : next;
+  }).pipe(Atom.withLabel("model-mention-keys")),
+);
+
 export function ModelMentionChip(props: {
   environmentId: EnvironmentId | null;
   instanceId: string;
