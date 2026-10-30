@@ -79,6 +79,18 @@ describe("collectComposerModelMentions", () => {
     ]);
   });
 
+  it.each([
+    ["(model:codex/gpt-6.1).", ["codex/gpt-6.1"]],
+    ['"model:codex/gpt-6.1"', ["codex/gpt-6.1"]],
+    ["model:codex/gpt-6.1,model:claudeAgent/sonnet", ["codex/gpt-6.1", "claudeAgent/sonnet"]],
+    ["model:codex/gpt-6.1's output", ["codex/gpt-6.1"]],
+    ["model:opencode/foo(bar)", ["opencode/foo(bar)"]],
+  ])("bounds the reference in %s", (text, expected) => {
+    expect(
+      collectComposerModelMentions(text).map(({ instanceId, model }) => `${instanceId}/${model}`),
+    ).toEqual(expected);
+  });
+
   it.each(["remodel:codex/gpt", "model:codex", "model:/gpt", "model:codex/.", "model:1x/gpt"])(
     "ignores %s",
     (text) => {
