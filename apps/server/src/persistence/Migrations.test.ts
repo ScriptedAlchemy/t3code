@@ -14,6 +14,7 @@ const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
 const consolidatedMigration = [80, "ProjectIntelligenceAndCrossEnvironment"] as const;
 const messageDeliveryMigration = [81, "ProjectKnowledgeMessageDeliveries"] as const;
 const activeTurnItemMigration = [82, "ActiveTurnItemIndexes"] as const;
+const attachmentPlaceholderMigration = [83, "ExcludeAttachmentPlaceholdersFromSearch"] as const;
 
 it.effect("upgrades attempt receipts atomically and preserves distinct steering messages", () =>
   Effect.gen(function* () {
@@ -31,6 +32,7 @@ it.effect("upgrades attempt receipts atomically and preserves distinct steering 
     assert.deepStrictEqual(yield* runMigrations(), [
       messageDeliveryMigration,
       activeTurnItemMigration,
+      attachmentPlaceholderMigration,
     ]);
     assert.deepStrictEqual(yield* sql`SELECT * FROM project_knowledge_deliveries`, before);
     yield* sql`INSERT INTO project_knowledge_deliveries (
@@ -269,6 +271,7 @@ describe("runMigrations", () => {
         consolidatedMigration,
         messageDeliveryMigration,
         activeTurnItemMigration,
+        attachmentPlaceholderMigration,
       ]);
       assert.deepStrictEqual((yield* history).slice(0, before.length), before);
       const indexes = yield* sql`
@@ -332,7 +335,12 @@ describe("runMigrations", () => {
         );
         assert.deepStrictEqual(
           (yield* history).filter(([id]) => id >= 80),
-          [consolidatedMigration, messageDeliveryMigration, activeTurnItemMigration],
+          [
+            consolidatedMigration,
+            messageDeliveryMigration,
+            activeTurnItemMigration,
+            attachmentPlaceholderMigration,
+          ],
         );
         yield* assertConsolidatedSchema;
         assert.deepStrictEqual(yield* runMigrations(), []);
@@ -361,12 +369,18 @@ describe("runMigrations", () => {
       yield* runMigrations({ toMigrationInclusive: 79 });
       assert.deepStrictEqual(
         migrationManifest.filter(([id]) => id >= 80),
-        [consolidatedMigration, messageDeliveryMigration, activeTurnItemMigration],
+        [
+          consolidatedMigration,
+          messageDeliveryMigration,
+          activeTurnItemMigration,
+          attachmentPlaceholderMigration,
+        ],
       );
       assert.deepStrictEqual(yield* runMigrations(), [
         consolidatedMigration,
         messageDeliveryMigration,
         activeTurnItemMigration,
+        attachmentPlaceholderMigration,
       ]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(
@@ -395,6 +409,7 @@ describe("runMigrations", () => {
         assert.deepStrictEqual(yield* runMigrations(), [
           messageDeliveryMigration,
           activeTurnItemMigration,
+          attachmentPlaceholderMigration,
         ]);
 
         yield* assertConsolidatedSchema;
@@ -493,6 +508,7 @@ describe("runMigrations", () => {
       assert.deepStrictEqual(yield* runMigrations(), [
         messageDeliveryMigration,
         activeTurnItemMigration,
+        attachmentPlaceholderMigration,
       ]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(yield* sql`SELECT secret_name, fenced FROM peer_environment_links`, [
@@ -540,6 +556,7 @@ describe("runMigrations", () => {
           consolidatedMigration,
           messageDeliveryMigration,
           activeTurnItemMigration,
+          attachmentPlaceholderMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(
@@ -592,6 +609,7 @@ describe("runMigrations", () => {
           consolidatedMigration,
           messageDeliveryMigration,
           activeTurnItemMigration,
+          attachmentPlaceholderMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, routes);
