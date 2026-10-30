@@ -139,6 +139,139 @@ it.layer(NodeServices.layer)("materializeHomeOverlay", (it) => {
     );
   });
 
+  describe("directory adoption", () => {
+    const policy: OverlayPolicy = {
+      ...allowListPolicy,
+      shared: () => [
+        { name: "settings.json", adopt: { _tag: "Conflict" } },
+        {
+          name: "plugins",
+          ensureDirectory: true,
+          adopt: {
+            _tag: "FoldDirectory",
+            children: (name) =>
+              name === "synced"
+                ? {
+                    _tag: "FoldDirectory",
+                    children: (child) => ({
+                      _tag: "Move",
+                      kind: child.startsWith(".bucket-") ? "file" : "directory",
+                    }),
+                  }
+                : name === "plugin-directory-cache-v2.json"
+                  ? { _tag: "Drop" }
+                  : { _tag: "Conflict" },
+          },
+        },
+      ],
+    };
+
+    it.effect.skipIf(!symlinksSupported)(
+      "folds buckets and markers and converges after a published file",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const homes = yield* makeHomes();
+          const local = path.join(homes.accountDir, "plugins");
+          const shared = path.join(homes.sharedRoot, "plugins");
+          yield* fs.makeDirectory(path.join(local, "synced", "org_account"), { recursive: true });
+          yield* fs.makeDirectory(path.join(shared, "synced"), { recursive: true });
+          yield* fs.writeFileString(path.join(local, "synced", "org_account", "skill.md"), "skill");
+          yield* fs.writeFileString(path.join(local, "synced", ".bucket-org_account"), "marker");
+          yield* fs.link(
+            path.join(local, "synced", ".bucket-org_account"),
+            path.join(shared, "synced", ".bucket-org_account"),
+          );
+          yield* fs.writeFileString(path.join(local, "plugin-directory-cache-v2.json"), "cache");
+          const overlay = { ...homes, policy, active: true };
+          yield* materializeHomeOverlay(overlay);
+          yield* materializeHomeOverlay(overlay);
+          expect(yield* fs.readLink(local)).toBe(shared);
+          expect(
+            yield* fs.readFileString(path.join(shared, "synced", "org_account", "skill.md")),
+          ).toBe("skill");
+          expect(yield* fs.readFileString(path.join(shared, "synced", ".bucket-org_account"))).toBe(
+            "marker",
+          );
+          expect(yield* fs.exists(path.join(shared, "plugin-directory-cache-v2.json"))).toBe(false);
+        }),
+    );
+
+    for (const peer of ["file", "symlink"]) {
+      it.effect.skipIf(!symlinksSupported)(
+        `does not overwrite a marker ${peer} published by a peer`,
+        () =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const homes = yield* makeHomes();
+            const source = path.join(homes.accountDir, "plugins", "synced", ".bucket-org_account");
+            const target = path.join(homes.sharedRoot, "plugins", "synced", ".bucket-org_account");
+            yield* fs.makeDirectory(path.dirname(source), { recursive: true });
+            yield* fs.writeFileString(source, "account");
+            const racing: FileSystem.FileSystem = {
+              ...fs,
+              link: (from, to) =>
+                (peer === "file" ? fs.writeFileString(to, "peer") : fs.symlink(from, to)).pipe(
+                  Effect.andThen(fs.link(from, to)),
+                ),
+            };
+            const error = yield* materializeHomeOverlay({ ...homes, policy, active: true }).pipe(
+              Effect.provideService(FileSystem.FileSystem, racing),
+              Effect.flip,
+            );
+            expect(error).toMatchObject({
+              _tag: "HomeOverlayEntryConflictError",
+              linkPath: source,
+            });
+            expect(yield* fs.readFileString(source)).toBe("account");
+            if (peer === "file") expect(yield* fs.readFileString(target)).toBe("peer");
+            else expect(yield* fs.readLink(target)).toBe(source);
+          }),
+      );
+    }
+
+    for (const entry of [
+      "settings.json",
+      "plugins/installed_plugins.json",
+      "plugins/synced/.bucket-org_account",
+      "plugins/synced/org_account",
+    ]) {
+      it.effect.skipIf(!symlinksSupported)(
+        `preserves conflicting ${entry} without overwriting shared content`,
+        () =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const homes = yield* makeHomes();
+            const source = path.join(homes.accountDir, entry);
+            const target = path.join(homes.sharedRoot, entry);
+            yield* fs.makeDirectory(path.dirname(source), { recursive: true });
+            yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+            const directory = entry.endsWith("/org_account");
+            if (directory) {
+              yield* fs.makeDirectory(source);
+              yield* fs.makeDirectory(target);
+            }
+            const sourceFile = directory ? path.join(source, "skill.md") : source;
+            const targetFile = directory ? path.join(target, "skill.md") : target;
+            yield* fs.writeFileString(sourceFile, "account");
+            yield* fs.writeFileString(targetFile, "shared");
+            const error = yield* materializeHomeOverlay({ ...homes, policy, active: true }).pipe(
+              Effect.flip,
+            );
+            expect(error).toMatchObject({
+              _tag: "HomeOverlayEntryConflictError",
+              linkPath: source,
+            });
+            expect(yield* fs.readFileString(sourceFile)).toBe("account");
+            expect(yield* fs.readFileString(targetFile)).toBe("shared");
+          }),
+      );
+    }
+  });
+
   describe("inactive overlay", () => {
     it.effect.skipIf(!symlinksSupported)("retires only links into the shared root", () =>
       Effect.gen(function* () {

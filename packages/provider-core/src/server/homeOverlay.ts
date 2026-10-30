@@ -1,14 +1,20 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- FileSystem has no lstat or nonrecursive directory removal.
+import * as NodeFSP from "node:fs/promises";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
-/**
- * What to do when a real entry already sits where a shared link belongs.
- * `Replace` removes it (recursively) and links; `defer` keeps it while a live holder may use it.
- */
+export type OverlayFold =
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "Drop" }
+  | { readonly _tag: "Move"; readonly kind: "file" | "directory" }
+  | { readonly _tag: "FoldDirectory"; readonly children: (name: string) => OverlayFold };
+
 export type OverlayAdopt =
+  | Extract<OverlayFold, { readonly _tag: "FoldDirectory" }>
   | { readonly _tag: "Conflict" }
   | {
       readonly _tag: "Replace";
@@ -52,7 +58,16 @@ export class HomeOverlayFileSystemError extends Schema.TaggedError<HomeOverlayFi
   "HomeOverlayFileSystemError",
   {
     ...HomeOverlayContext,
-    operation: Schema.Literals(["readLink", "makeDirectory", "readDirectory", "remove", "symlink"]),
+    operation: Schema.Literals([
+      "readLink",
+      "makeDirectory",
+      "readDirectory",
+      "remove",
+      "symlink",
+      "stat",
+      "link",
+      "rename",
+    ]),
     path: Schema.String,
     targetPath: Schema.optional(Schema.String),
     entryName: Schema.optional(Schema.String),
@@ -193,6 +208,128 @@ export const materializeHomeOverlay = Effect.fn("materializeHomeOverlay")(functi
     return yield* new HomeOverlayPathConflictError({ sharedRoot, accountDir });
   }
 
+  const fold = Effect.fn("materializeHomeOverlay.fold")(function* (
+    source: string,
+    target: string,
+    rule: OverlayFold,
+  ): Effect.fn.Return<void, HomeOverlayError> {
+    const entryName = path.relative(accountDir, source);
+    const conflict = new HomeOverlayEntryConflictError({
+      sharedRoot,
+      accountDir,
+      entryName,
+      linkPath: source,
+      targetPath: target,
+    });
+    const sourceState = yield* readLinkState(entryName, source);
+    if (sourceState._tag === "Missing") return;
+    if (sourceState._tag === "Symlink" || rule._tag === "Conflict") return yield* conflict;
+    const info = yield* fileSystem
+      .stat(source)
+      .pipe(Effect.mapError(fileSystemError("stat", source)));
+    if (rule._tag === "Drop") {
+      if (info.type !== "File") return yield* conflict;
+      return yield* remove(entryName, source);
+    }
+    const targetState = yield* readLinkState(entryName, target);
+    if (rule._tag === "Move") {
+      if (info.type !== (rule.kind === "directory" ? "Directory" : "File")) return yield* conflict;
+      if (info.type === "Directory") {
+        if (targetState._tag !== "Missing") return yield* conflict;
+        const missing = yield* Effect.tryPromise({
+          try: () =>
+            NodeFSP.lstat(target).then(
+              () => false,
+              (cause: NodeJS.ErrnoException) => {
+                if (cause.code === "ENOENT") return true;
+                throw cause;
+              },
+            ),
+          catch: (cause) =>
+            new HomeOverlayFileSystemError({
+              sharedRoot,
+              accountDir,
+              operation: "stat",
+              path: target,
+              cause,
+            }),
+        });
+        if (!missing) return yield* conflict;
+        return yield* fileSystem.rename(source, target).pipe(
+          Effect.catchTags({
+            PlatformError: (cause) =>
+              cause.reason._tag === "AlreadyExists"
+                ? Effect.fail(conflict)
+                : Effect.fail(fileSystemError("rename", source, { targetPath: target })(cause)),
+          }),
+        );
+      }
+      if (info.type !== "File" || targetState._tag === "Symlink") return yield* conflict;
+      const sameFile = Effect.tryPromise({
+        try: () => NodeFSP.lstat(target, { bigint: true }),
+        catch: (cause) =>
+          new HomeOverlayFileSystemError({
+            sharedRoot,
+            accountDir,
+            operation: "stat",
+            path: target,
+            cause,
+          }),
+      }).pipe(
+        Effect.map(
+          (destination) =>
+            destination.isFile() &&
+            info.dev === destination.dev &&
+            Option.isSome(info.ino) &&
+            info.ino.value === destination.ino,
+        ),
+      );
+      if (targetState._tag !== "Missing") {
+        if (!(yield* sameFile)) return yield* conflict;
+      } else {
+        yield* fileSystem.link(source, target).pipe(
+          Effect.catchTags({
+            PlatformError: Effect.fn("materializeHomeOverlay.acceptPublishedFile")(
+              function* (cause) {
+                if (cause.reason._tag === "AlreadyExists") {
+                  if (yield* sameFile) return;
+                  return yield* conflict;
+                }
+                return yield* fileSystemError("link", source, { targetPath: target })(cause);
+              },
+            ),
+          }),
+        );
+      }
+      return yield* remove(entryName, source);
+    }
+    if (info.type !== "Directory" || targetState._tag === "Symlink") return yield* conflict;
+    if (targetState._tag === "NotSymlink") {
+      const destination = yield* fileSystem
+        .stat(target)
+        .pipe(Effect.mapError(fileSystemError("stat", target)));
+      if (destination.type !== "Directory") return yield* conflict;
+    }
+    yield* makeDirectory(target);
+    const children = yield* fileSystem
+      .readDirectory(source)
+      .pipe(Effect.mapError(fileSystemError("readDirectory", source)));
+    for (const name of children) {
+      yield* fold(path.join(source, name), path.join(target, name), rule.children(name));
+    }
+    yield* Effect.tryPromise({
+      try: () => NodeFSP.rmdir(source),
+      catch: (cause) =>
+        new HomeOverlayFileSystemError({
+          sharedRoot,
+          accountDir,
+          operation: "remove",
+          path: source,
+          cause,
+        }),
+    });
+  });
+
   const ensureLink = Effect.fn("materializeHomeOverlay.ensureLink")(function* (
     entry: OverlayEntry,
   ) {
@@ -233,6 +370,10 @@ export const materializeHomeOverlay = Effect.fn("materializeHomeOverlay")(functi
         linkPath: link,
         targetPath: target,
       });
+    }
+    if (entry.adopt._tag === "FoldDirectory") {
+      yield* fold(link, target, entry.adopt);
+      return yield* createLink;
     }
     const defer = entry.adopt.defer;
     if (defer) {

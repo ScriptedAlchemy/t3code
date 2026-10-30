@@ -59,6 +59,7 @@ import {
 } from "@t3tools/provider-core/server/snapshotSettings";
 import {
   makeClaudeCapabilitiesCacheKey,
+  materializeClaudeHome,
   makeClaudeContinuationGroupKey,
   resolveClaudeRuntime,
 } from "./ClaudeHome.ts";
@@ -151,6 +152,22 @@ export const ClaudeDriver: ProviderDriver<
       stateDir,
     });
     const { config: effectiveConfig, environment: processEnv, configDir } = runtime;
+    yield* materializeClaudeHome(runtime).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail:
+              cause._tag === "PlatformError"
+                ? `Could not create Claude account directory '${configDir}'. Check its permissions, or turn off Use your Claude profile.`
+                : cause._tag === "HomeOverlayFileSystemError"
+                  ? `${cause.message} Check filesystem permissions and symlink support, or turn off Use your Claude profile for this account.`
+                  : `${cause.message} Move the conflicting entry away, or turn off Use your Claude profile for this account.`,
+            cause,
+          }),
+      ),
+    );
     const auth =
       runtime.mode === "cli" ? yield* makeClaudeCliAuth({ instanceId, runtime }) : undefined;
     const withAccess = <A, E, R>(task: Effect.Effect<A, E, R>) =>
@@ -192,6 +209,10 @@ export const ClaudeDriver: ProviderDriver<
                 ...draft.setup,
                 canAuthenticate: true,
                 canInstall: draft.setup?.canInstall ?? false,
+              },
+              runtimePaths: {
+                homePath: runtime.mode === "cli" ? runtime.overlay.sharedRoot : configDir,
+                shadowHomePath: configDir,
               },
               ...(draft.auth.status === "unauthenticated"
                 ? { message: "Sign in with Claude Code in provider settings." }

@@ -42,19 +42,17 @@ describe("ProviderSettingsForm helpers", () => {
   });
 
   it("stores false boolean fields when true is the default", () => {
-    const next = nextProviderConfigWithFieldValue(
-      undefined,
-      {
-        key: "experimental",
-        control: "switch",
-        label: "Experimental",
-        clearWhenEmpty: "omit",
-        defaultBooleanValue: true,
-      },
-      false,
-    );
-
-    expect(next).toEqual({ experimental: false });
+    const claude = providerClients.get(ProviderDriverKind.make("claudeAgent"))!;
+    const cliFields = deriveProviderSettingsFields(claude, { setupMode: "cli" });
+    const shareProfile = cliFields.find((field) => field.key === "shareProfile")!;
+    expect(shareProfile.defaultBooleanValue).toBe(true);
+    expect(cliFields.some((field) => field.key === "homePath")).toBe(false);
+    const existingFields = deriveProviderSettingsFields(claude);
+    expect(existingFields.some((field) => field.key === "shareProfile")).toBe(false);
+    expect(existingFields.some((field) => field.key === "homePath")).toBe(true);
+    expect(nextProviderConfigWithFieldValue(undefined, shareProfile, false)).toEqual({
+      shareProfile: false,
+    });
   });
 });
 

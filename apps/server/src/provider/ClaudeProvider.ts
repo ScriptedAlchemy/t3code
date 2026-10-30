@@ -39,6 +39,7 @@ import {
 import { resolveClaudeSdkExecutablePath } from "./Drivers/ClaudeExecutable.ts";
 import {
   claudeAccountSettings,
+  parseClaudeAccountDir,
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
 } from "./Drivers/ClaudeHome.ts";
@@ -223,12 +224,18 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
     // SessionStart hooks would run on every health check.
     settings: {
       disableAllHooks: true,
-      ...(input.config ? claudeAccountSettings(input.config) : {}),
+      ...(input.config?.setupMode === "cli"
+        ? claudeAccountSettings(parseClaudeAccountDir(input.config.homePath))
+        : {}),
     },
     ...(input.config?.setupMode === "cli"
       ? {
           spawnClaudeCodeProcess: (options: Parameters<typeof spawnClaudeProcess>[0]) =>
-            spawnClaudeProcess(options, input.platform, input.config!.homePath),
+            spawnClaudeProcess(
+              options,
+              input.platform,
+              parseClaudeAccountDir(input.config!.homePath),
+            ),
         }
       : {}),
     allowedTools: [],

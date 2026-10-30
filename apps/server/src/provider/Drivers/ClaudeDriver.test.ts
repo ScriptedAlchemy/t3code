@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as ClaudeSdk from "@anthropic-ai/claude-agent-sdk";
+import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -126,8 +127,16 @@ it.effect(
         instanceId,
         enabled: true,
         displayName: "Private",
-        environment: [{ name: "T3_TEST_EMAIL", value: "after@example.test", sensitive: false }],
-        config: { ...ClaudeDriver.defaultConfig(), setupMode: "cli", binaryPath },
+        environment: [
+          { name: "T3_TEST_EMAIL", value: "after@example.test", sensitive: false },
+          { name: "CLAUDE_CONFIG_DIR", value: path.join(root, "shared"), sensitive: false },
+        ],
+        config: {
+          ...ClaudeDriver.defaultConfig(),
+          setupMode: "cli",
+          binaryPath,
+          shareProfile: false,
+        },
       });
       expect((yield* instance.snapshot.refresh).auth.email).toBe("before@example.test");
       expect((yield* instance.snapshot.refresh).auth.email).toBe("before@example.test");
@@ -161,3 +170,51 @@ it.effect(
       expect(query.mock.calls).toHaveLength(2);
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
 );
+
+for (const conflict of [false, true]) {
+  it.effect.skipIf(!symlinksSupported)(
+    `materializes the profile at create with conflict=${conflict}`,
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-driver-overlay-" });
+        const shared = path.join(root, "shared");
+        const instanceId = ProviderInstanceId.make("overlay");
+        const account = path.join(stateDir, "providers", "claude", instanceId, "cli");
+        yield* fs.makeDirectory(shared);
+        if (conflict) {
+          yield* fs.makeDirectory(account, { recursive: true });
+          yield* fs.writeFileString(path.join(account, "settings.json"), "account");
+        }
+        const create = ClaudeDriver.create({
+          instanceId,
+          enabled: false,
+          displayName: "Overlay",
+          environment: [{ name: "CLAUDE_CONFIG_DIR", value: shared, sensitive: false }],
+          config: { ...ClaudeDriver.defaultConfig(), setupMode: "cli" },
+        });
+        if (conflict) {
+          const error = yield* create.pipe(Effect.flip);
+          expect(error).toMatchObject({ _tag: "ProviderDriverError" });
+          expect(error.detail).toContain(path.join(account, "settings.json"));
+          expect(error.detail).toContain(
+            "Move the conflicting entry away, or turn off Use your Claude profile",
+          );
+          expect(yield* fs.readFileString(path.join(account, "settings.json"))).toBe("account");
+        } else {
+          const instance = yield* create;
+          expect(yield* fs.readLink(path.join(account, "settings.json"))).toBe(
+            path.join(shared, "settings.json"),
+          );
+          expect((yield* instance.snapshot.getSnapshot).runtimePaths).toEqual({
+            homePath: shared,
+            shadowHomePath: account,
+          });
+          expect(instance.continuationIdentity.continuationKey).toBe(`claude:home:${account}`);
+          expect(instance.auth?.credentialBinding).toEqual({ owner: "provider", key: account });
+        }
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+}

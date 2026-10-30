@@ -225,6 +225,13 @@ function isInsideDirectory(path: Path.Path, directory: string, candidate: string
   return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
+function rebaseClaudePluginPath(path: Path.Path, pluginsPath: string, installPath: string) {
+  const match = installPath
+    .replaceAll("\\", "/")
+    .match(/(?:^|\/)plugins\/(cache|marketplaces)\/(.+)$/);
+  return match ? path.join(pluginsPath, match[1]!, match[2]!) : installPath;
+}
+
 const discoverPluginSkillRoots = Effect.fn("discoverPluginSkillRoots")(function* (
   configDirPath: string,
   cwd: string | undefined,
@@ -257,7 +264,12 @@ const discoverPluginSkillRoots = Effect.fn("discoverPluginSkillRoots")(function*
   for (const [key, entries] of Object.entries(installed.plugins).sort()) {
     if (enabledPlugins.get(key) !== true) continue;
     const applicable = yield* Effect.filter(
-      entries.flatMap((entry) => Option.toArray(decodeInstalledPlugin(entry))),
+      entries
+        .flatMap((entry) => Option.toArray(decodeInstalledPlugin(entry)))
+        .map((record) => ({
+          ...record,
+          installPath: rebaseClaudePluginPath(path, pluginsPath, record.installPath),
+        })),
       (record) =>
         Effect.gen(function* () {
           if (record.scope === "user" || record.scope === "managed") return true;

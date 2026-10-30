@@ -5,7 +5,7 @@ import type {
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- the SDK takes a Node ChildProcess for the CLI.
 import * as NodeChildProcess from "node:child_process";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
-import { claudeCliEnvironment } from "./ClaudeHome.ts";
+import { claudeCliEnvironment, type ClaudeAccountDir } from "./ClaudeHome.ts";
 
 const CLAUDE_GROUP_WATCH_SCRIPT = [
   "{ trap '' TERM; read -r _ <&3; kill -TERM 0; sleep 5; kill -KILL 0; } </dev/null >/dev/null 2>&1 &",
@@ -16,7 +16,7 @@ const CLAUDE_GROUP_WATCH_SCRIPT = [
 export function spawnClaudeProcess(
   options: ClaudeSpawnOptions,
   platform: NodeJS.Platform,
-  configDir?: string,
+  configDir?: ClaudeAccountDir,
   onExit?: () => void,
   onStderr?: (chunk: string) => void,
 ): ClaudeSpawnedProcess {

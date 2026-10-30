@@ -12,9 +12,11 @@ code from Claude into T3 Code. You can sign in from another device when the
 T3 Code environment runs remotely. To sign out, open that account's provider
 settings.
 
-Each account has its own Claude configuration and conversation history. T3 Code
-does not copy global settings, skills, or plugins from your existing Claude
-installation. The account can still use project instructions and project skills.
+New accounts share your Claude profile in `~/.claude`, including settings, skills,
+plugins, agents, and `CLAUDE.md`. Changes from any account, such as enabling a plugin
+or allowing a tool, apply to all accounts. Each account keeps its own login, trust
+decisions, MCP servers, and conversation history. Turn off **Use your Claude
+profile** in an account's provider settings to give it a profile of its own.
 
 To reuse an installed CLI account, choose **Use existing Claude Code**. Leave
 **CLAUDE_CONFIG_DIR path** empty to use the CLI's default configuration. For a

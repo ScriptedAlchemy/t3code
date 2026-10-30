@@ -150,6 +150,7 @@ import { spawnClaudeProcess } from "../../provider/Drivers/ClaudeProcess.ts";
 import {
   claudeSignedOutMessage,
   claudeAccountSettings,
+  parseClaudeAccountDir,
   resolveClaudeHomePath,
   type ClaudeRuntime,
 } from "../../provider/Drivers/ClaudeHome.ts";
@@ -1484,7 +1485,10 @@ export function makeClaudeQueryOptions(input: {
           ...(typeof querySettings === "object" && querySettings !== null ? querySettings : {}),
           autoCompactWindow: Number(input.settings.autoCompactWindow),
         } as ClaudeSdkSettings);
-  const accountSettings = input.settings ? claudeAccountSettings(input.settings) : undefined;
+  const accountSettings =
+    input.settings?.setupMode === "cli"
+      ? claudeAccountSettings(parseClaudeAccountDir(input.settings.homePath))
+      : undefined;
   // A settings file path cannot take extra keys, so it goes through unchanged.
   const effectiveQuerySettings =
     input.toolSearchOverride === undefined || typeof compactQuerySettings === "string"
@@ -1543,7 +1547,11 @@ export function makeClaudeQueryOptions(input: {
             },
           },
           spawnClaudeCodeProcess: (options) =>
-            spawnClaudeProcess(options, input.platform, input.settings!.homePath),
+            spawnClaudeProcess(
+              options,
+              input.platform,
+              parseClaudeAccountDir(input.settings!.homePath),
+            ),
         }),
     ...(input.onUserDialog === undefined ? {} : { onUserDialog: input.onUserDialog }),
     ...(input.supportedDialogKinds === undefined
@@ -11237,8 +11245,6 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     const queryRunner = yield* ClaudeAgentSdkQueryRunner;
     const serverConfig = yield* ServerConfig.ServerConfig;
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
-    if (runtime.mode === "cli")
-      yield* fileSystem.makeDirectory(runtime.configDir, { recursive: true, mode: 0o700 });
     const path = yield* Path.Path;
     const crypto = yield* Crypto.Crypto;
     const binaryPath = yield* resolveClaudeSdkExecutablePath(
