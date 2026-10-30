@@ -218,7 +218,7 @@ export function projectEnvironmentConnectionSummary(
 }
 
 /** A disconnected environment counts as offline only after retrying this long, so restarts and blips keep its threads listed. */
-export const OFFLINE_ENVIRONMENT_GRACE_MS = 30_000;
+export const OFFLINE_ENVIRONMENT_GRACE_MS = 60_000;
 
 export function createEnvironmentSummaryAtoms(input: {
   readonly catalogValueAtom: Atom.Atom<EnvironmentCatalogState>;
