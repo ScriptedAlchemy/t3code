@@ -228,6 +228,25 @@ export const hostCredentialSettingsFields = {
 export const HostCredentialSettings = Schema.Struct(hostCredentialSettingsFields);
 export type HostCredentialSettings = typeof HostCredentialSettings.Type;
 
+export type ForgeReadIntent = "status" | "failures" | "feedback";
+
+/** The change request a command names, as far as its argv says. Empty means the current one. */
+export interface ForgeCommandTarget {
+  readonly url?: string;
+  readonly repository?: string;
+  readonly number?: number;
+}
+
+/**
+ * What one of this host's CLI commands does. A `read` carries an intent only when T3's pull
+ * request tool of that name answers the exact request; a `poll` waits on the host itself.
+ */
+export type ForgeCommand =
+  | { readonly kind: "read"; readonly intent: ForgeReadIntent; readonly target: ForgeCommandTarget }
+  | { readonly kind: "write" }
+  | { readonly kind: "poll" }
+  | { readonly kind: "other" };
+
 /**
  * What the server and every client know about a forge. It is plain data and pure functions so
  * one copy serves both sides; a lint rule keeps UI runtimes out of `shared/`.
@@ -276,6 +295,11 @@ export interface SourceControlDefinition {
    * on a line of its own. Absent for a host with no such CLI.
    */
   readonly changeRequestCreateCommand?: RegExp;
+  /**
+   * Sorts one shell command, split into words with the program first, into what it does on this
+   * host. Null when the program is not this host's CLI. Absent for a host with no such CLI.
+   */
+  readonly classifyCommand?: (words: ReadonlyArray<string>) => ForgeCommand | null;
   readonly authorProfileUrl: (login: string, repositoryUrl: string) => string | null;
   /**
    * The references this host's own renderer links in plain text, such as `#12` or a commit SHA,

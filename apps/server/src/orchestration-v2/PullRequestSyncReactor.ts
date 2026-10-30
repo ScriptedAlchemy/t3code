@@ -2,6 +2,7 @@ import {
   CommandId,
   isOrchestrationV2WorkActive,
   type OrchestrationV2TurnItem,
+  type ProviderDriverKind,
   type PullRequestSummary,
   type ThreadId,
   type ThreadPullRequestKey,
@@ -18,6 +19,7 @@ import {
 } from "../sourceControl/threadPullRequests.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import {
+  classifyAgentShellCommands,
   COMMAND_SEPARATOR,
   COMMAND_START,
   shellCode,
@@ -38,6 +40,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import * as Metrics from "../observability/Metrics.ts";
 import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -552,6 +555,32 @@ export const make = Effect.gen(function* () {
 
   // Threads that ran a close command this run, with the commands already read for.
   const closeCommands = new Map<ThreadId, Set<string>>();
+  // Forge commands already counted this run, so a command settles into the metric once.
+  const countedCommands = new Map<ThreadId, Set<string>>();
+  const countForgeCommands = (
+    event: { readonly threadId: ThreadId; readonly driver?: ProviderDriverKind | undefined },
+    item: CommandExecution,
+  ) =>
+    Effect.suspend(() => {
+      const commands = classifyAgentShellCommands(item.input);
+      if (commands.length === 0) return Effect.void;
+      const counted = countedCommands.get(event.threadId) ?? new Set<string>();
+      countedCommands.set(event.threadId, counted);
+      if (counted.has(item.id)) return Effect.void;
+      counted.add(item.id);
+      return Effect.forEach(
+        commands,
+        ({ forge, command, bypass }) =>
+          Metrics.increment(Metrics.agentForgeCommandsTotal, {
+            forge,
+            kind: command.kind,
+            intent: command.kind === "read" ? command.intent : undefined,
+            provider: event.driver ?? "unknown",
+            bypass,
+          }),
+        { discard: true },
+      );
+    });
   const refreshOpenLinks = (threadId: ThreadId) =>
     projections.getThreadsWithPullRequests(threadId).pipe(
       Effect.flatMap((threads) =>
@@ -571,7 +600,6 @@ export const make = Effect.gen(function* () {
   // An agent that opens a pull request from a shell gets it linked as link_pull_request would.
   const linkCreatedChangeRequests = Effect.fn("PullRequestSyncReactor.linkCreatedChangeRequests")(
     function* (threadId: ThreadId, item: CommandExecution) {
-      if (isOrchestrationV2WorkActive(item.status)) return;
       yield* Effect.forEach(
         changeRequestsCreatedBy(item.input, item.output ?? ""),
         (created) =>
@@ -629,7 +657,12 @@ export const make = Effect.gen(function* () {
           case "turn-item.updated": {
             const item = event.payload;
             if (item.type !== "command_execution") return Effect.void;
-            const linked = linkCreatedChangeRequests(event.threadId, item);
+            const linked = isOrchestrationV2WorkActive(item.status)
+              ? Effect.void
+              : Effect.andThen(
+                  countForgeCommands(event, item),
+                  linkCreatedChangeRequests(event.threadId, item),
+                );
             if (!isChangeRequestCloseCommand(item.input)) return linked;
             const ended = closeCommands.get(event.threadId) ?? new Set<string>();
             closeCommands.set(event.threadId, ended);
@@ -638,7 +671,9 @@ export const make = Effect.gen(function* () {
             return Effect.andThen(linked, refreshOpenLinks(event.threadId));
           }
           case "run.updated":
-            return isTerminalRunStatus(event.payload.status) && closeCommands.delete(event.threadId)
+            if (!isTerminalRunStatus(event.payload.status)) return Effect.void;
+            countedCommands.delete(event.threadId);
+            return closeCommands.delete(event.threadId)
               ? refreshOpenLinks(event.threadId)
               : Effect.void;
           default:

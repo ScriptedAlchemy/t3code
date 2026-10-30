@@ -1,6 +1,6 @@
 import * as NodeV8 from "node:v8";
 
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { ProviderDriverKind, SourceControlProviderKind } from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
 import {
   EventId,
@@ -31,6 +31,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Metric from "effect/Metric";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import { TestClock } from "effect/testing";
@@ -1689,6 +1690,49 @@ describe("PullRequestSyncReactor", () => {
           assert.deepStrictEqual(
             links.map((command) => [command.threadId, command.number, command.source]),
             linked.map((number) => [child, number, "created"]),
+          );
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("counts a forge command once per settled command, labelled by provider", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const fixture = yield* makeHarness({ snapshot: mergingSnapshot() });
+
+        yield* Effect.gen(function* () {
+          const reactor = yield* startAndSweep(fixture);
+          const child = ThreadId.make("counted-child");
+          const ran = {
+            ...commandRan(child, "gh pr checks 4497 --json bucket", "[]", "checks"),
+            driver: ProviderDriverKind.make("counted-driver"),
+          };
+          yield* linksFrom(fixture, reactor, [ran, ran]);
+
+          const counted = (yield* Metric.snapshot).filter(
+            (snapshot) =>
+              snapshot.id === "t3_agent_forge_commands_total" &&
+              snapshot.attributes?.["provider"] === "counted-driver",
+          );
+          assert.deepStrictEqual(
+            counted.map((snapshot) => [
+              snapshot.attributes,
+              (snapshot.state as Metric.CounterState<number>).count,
+            ]),
+            [
+              [
+                {
+                  forge: "github",
+                  kind: "read",
+                  intent: "status",
+                  provider: "counted-driver",
+                  bypass: "false",
+                },
+                1,
+              ],
+            ],
           );
         }).pipe(Effect.provide(fixture.layer));
       }),
