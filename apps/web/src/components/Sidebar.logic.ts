@@ -1,5 +1,5 @@
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
@@ -585,6 +585,12 @@ export function resolveSidebarRowThreadRef(
   }
 }
 
+/** Offline environments the sidebar hides, and the open thread's row it lists anyway. */
+export interface SidebarHiddenEnvironments {
+  readonly environmentIds: ReadonlySet<EnvironmentId>;
+  readonly keptThreadKey: string | null;
+}
+
 /**
  * `delegatedUnderParent` holds the tasks linked environments run for a thread
  * the sidebar lists, by thread key; they show under that thread, as subagents do.
@@ -597,10 +603,15 @@ export function filterSidebarV2VisibleThreads<
   threads: readonly T[],
   scopedProjectKeys: ReadonlySet<string> | null,
   delegatedUnderParent: ReadonlySet<string>,
+  hidden: SidebarHiddenEnvironments | null,
 ): T[] {
   return threads.filter(
     (thread) =>
       thread.archivedAt === null &&
+      (hidden === null ||
+        !hidden.environmentIds.has(thread.environmentId) ||
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) ===
+          hidden.keptThreadKey) &&
       !isShownUnderParent(
         { environmentId: thread.environmentId, threadId: thread.id },
         thread.lineage,
@@ -608,6 +619,49 @@ export function filterSidebarV2VisibleThreads<
       ) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
+  );
+}
+
+/** A task whose parent's environment is hidden lists on its own, as under an archived parent. */
+export function withoutHiddenDelegationParents(
+  delegatedUnderParent: ReadonlySet<string>,
+  threads: readonly Pick<SidebarThreadSummary, "delegatedFrom" | "environmentId" | "id">[],
+  hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null,
+): ReadonlySet<string> {
+  if (hiddenEnvironmentIds === null) return delegatedUnderParent;
+  const orphanKeys = threads.flatMap((thread) => {
+    const parentEnvironmentId = thread.delegatedFrom?.environmentId;
+    return parentEnvironmentId !== undefined && hiddenEnvironmentIds.has(parentEnvironmentId)
+      ? [threadKey({ environmentId: thread.environmentId, threadId: thread.id })]
+      : [];
+  });
+  if (!orphanKeys.some((key) => delegatedUnderParent.has(key))) return delegatedUnderParent;
+  const next = new Set(delegatedUnderParent);
+  for (const key of orphanKeys) next.delete(key);
+  return next;
+}
+
+/** Whether hiding offline environments removes a row the sidebar would otherwise list. */
+export function sidebarHidesOfflineThreads<
+  T extends Pick<SidebarThreadSummary, "archivedAt" | "environmentId" | "id" | "lineage"> & {
+    projectId: string;
+  },
+>(
+  threads: readonly T[],
+  scopedProjectKeys: ReadonlySet<string> | null,
+  delegatedUnderParent: ReadonlySet<string>,
+  hidden: SidebarHiddenEnvironments | null,
+): boolean {
+  return (
+    hidden !== null &&
+    threads.some(
+      (thread) =>
+        hidden.environmentIds.has(thread.environmentId) &&
+        filterSidebarV2VisibleThreads([thread], scopedProjectKeys, delegatedUnderParent, null)
+          .length === 1 &&
+        filterSidebarV2VisibleThreads([thread], scopedProjectKeys, delegatedUnderParent, hidden)
+          .length === 0,
+    )
   );
 }
 
@@ -939,7 +993,8 @@ export function sidebarFolderExpansionKeys(group: {
 
 /**
  * Boring sidebar folders. Folders follow `groups` order and threads keep their
- * input order. A project with no threads gets a folder only with `keepEmpty`.
+ * input order. A project with no threads gets a folder only with `keepEmpty`
+ * and a member environment `hidden` leaves listed.
  * A thread whose project is in no group has no folder and is left out.
  */
 export function groupSidebarThreadsByProject<
@@ -954,6 +1009,7 @@ export function groupSidebarThreadsByProject<
   groups: readonly TGroup[],
   threads: readonly TThread[],
   keepEmpty: boolean,
+  hidden: SidebarHiddenEnvironments | null,
 ): Array<{ group: TGroup; threads: TThread[] }> {
   const folders = groups.map((group) => ({ group, threads: [] as TThread[] }));
   const folderByProject = new Map<string, (typeof folders)[number]>();
@@ -965,7 +1021,15 @@ export function groupSidebarThreadsByProject<
   for (const thread of threads) {
     folderByProject.get(`${thread.environmentId}:${thread.projectId}`)?.threads.push(thread);
   }
-  return keepEmpty ? folders : folders.filter((folder) => folder.threads.length > 0);
+  return folders.filter(
+    (folder) =>
+      folder.threads.length > 0 ||
+      (keepEmpty &&
+        (hidden === null ||
+          folder.group.memberProjectRefs.some(
+            (ref) => !hidden.environmentIds.has(ref.environmentId),
+          ))),
+  );
 }
 
 export type SidebarV2TopStatusKind =
@@ -1353,7 +1417,7 @@ export function sortSidebarV2ProjectGroups<
 ): TProject[] {
   return sortLogicalProjectsForSidebar(
     projects,
-    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent),
+    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent, null),
     sortOrder,
   );
 }

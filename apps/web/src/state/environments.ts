@@ -103,6 +103,10 @@ export function useEnvironmentMachines() {
   return useAtomValue(environmentSummaries.machineByIdAtom);
 }
 
+export function useOfflineEnvironmentIds() {
+  return useAtomValue(environmentSummaries.offlineEnvironmentIdsAtom);
+}
+
 export function useConnectedEnvironmentIds() {
   return useAtomValue(environmentSummaries.connectedEnvironmentIdsAtom);
 }

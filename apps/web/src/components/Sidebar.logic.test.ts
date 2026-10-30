@@ -1,5 +1,6 @@
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { isThreadWorking as isSidebarThreadWorking } from "@t3tools/client-runtime/state/thread-inbox";
 import * as DateTime from "effect/DateTime";
 import { deriveActiveWorkStartedAt } from "../session-logic.ts";
@@ -34,6 +35,10 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   resolveSidebarDropVerb,
+  sidebarHidesOfflineThreads,
+  withoutHiddenDelegationParents,
+  type SidebarHiddenEnvironments,
+  filterSidebarV2VisibleThreads,
   groupSidebarThreadsByProject,
   resolveSidebarFolderDot,
   sidebarFolderExpansionKeys,
@@ -905,6 +910,88 @@ describe("sortScopedProjectsForSidebar", () => {
   });
 });
 
+describe("filterSidebarV2VisibleThreads", () => {
+  it("hides threads of hidden environments alongside the project scope", () => {
+    const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+    const project = ProjectId.make("project-a");
+    const other = ProjectId.make("project-b");
+    const local = makeThreadFixture({ id: ThreadId.make("local"), projectId: project });
+    const remote = makeThreadFixture({
+      id: ThreadId.make("remote"),
+      environmentId: remoteEnvironmentId,
+      projectId: project,
+    });
+    const localOther = makeThreadFixture({ id: ThreadId.make("local-other"), projectId: other });
+    const threads = [local, remote, localOther];
+    const localScope = new Set([`${local.environmentId}:${project}`]);
+    const remoteScope = new Set([`${remoteEnvironmentId}:${project}`]);
+    const hidden = (keptThreadKey: string | null = null) => ({
+      environmentIds: new Set([remoteEnvironmentId]),
+      keptThreadKey,
+    });
+    const remoteKey = scopedThreadKey(scopeThreadRef(remote.environmentId, remote.id));
+    const visibleIds = (
+      scope: ReadonlySet<string> | null,
+      hiddenEnvironments: SidebarHiddenEnvironments | null,
+    ) =>
+      filterSidebarV2VisibleThreads(threads, scope, new Set(), hiddenEnvironments).map(
+        (thread) => thread.id,
+      );
+    const hidesOffline = (
+      scope: ReadonlySet<string> | null,
+      hiddenEnvironments: SidebarHiddenEnvironments | null,
+    ) => sidebarHidesOfflineThreads(threads, scope, new Set(), hiddenEnvironments);
+
+    expect(visibleIds(null, null)).toEqual(["local", "remote", "local-other"]);
+    expect(visibleIds(null, hidden())).toEqual(["local", "local-other"]);
+    expect(visibleIds(localScope, hidden())).toEqual(["local"]);
+    expect(visibleIds(remoteScope, hidden())).toEqual([]);
+    // The open thread's row stays listed, but only within the project scope.
+    expect(visibleIds(null, hidden(remoteKey))).toEqual(["local", "remote", "local-other"]);
+    expect(visibleIds(localScope, hidden(remoteKey))).toEqual(["local"]);
+
+    expect(hidesOffline(null, null)).toBe(false);
+    expect(hidesOffline(null, hidden())).toBe(true);
+    expect(hidesOffline(localScope, hidden())).toBe(false);
+    expect(hidesOffline(null, hidden(remoteKey))).toBe(false);
+  });
+
+  it("lists a task on its own when its parent's environment is hidden", () => {
+    const parentEnvironmentId = EnvironmentId.make("environment-parent");
+    const taskEnvironmentId = EnvironmentId.make("environment-task");
+    const parent = makeThreadFixture({
+      id: ThreadId.make("thread-parent"),
+      environmentId: parentEnvironmentId,
+    });
+    const task = makeThreadFixture({
+      id: ThreadId.make("thread-task"),
+      environmentId: taskEnvironmentId,
+      delegatedFrom: {
+        environmentId: parentEnvironmentId,
+        threadId: parent.id,
+        title: parent.title,
+      },
+    });
+    const threads = [parent, task];
+    const delegated = new Set([
+      threadKey({ environmentId: task.environmentId, threadId: task.id }),
+    ]);
+    const visibleIds = (hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null) =>
+      filterSidebarV2VisibleThreads(
+        threads,
+        null,
+        withoutHiddenDelegationParents(delegated, threads, hiddenEnvironmentIds),
+        hiddenEnvironmentIds === null
+          ? null
+          : { environmentIds: hiddenEnvironmentIds, keptThreadKey: null },
+      ).map((thread) => thread.id);
+
+    expect(visibleIds(null)).toEqual(["thread-parent"]);
+    expect(visibleIds(new Set([parentEnvironmentId]))).toEqual(["thread-task"]);
+    expect(visibleIds(new Set([taskEnvironmentId]))).toEqual(["thread-parent"]);
+  });
+});
+
 describe("sortSidebarV2ProjectGroups", () => {
   it("does not let a hidden subagent thread reorder projects", () => {
     const olderProjectId = ProjectId.make("project-older");
@@ -1531,8 +1618,18 @@ describe("groupSidebarThreadsByProject", () => {
       thread("orphan", localEnvironmentId, ProjectId.make("deleted")),
       thread("b", remoteEnvironmentId, t3codeRemote),
     ];
-    const summarize = (keepEmpty: boolean) =>
-      groupSidebarThreadsByProject(groups, threads, keepEmpty).map((folder) => ({
+    const summarize = (
+      keepEmpty: boolean,
+      hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null = null,
+    ) =>
+      groupSidebarThreadsByProject(
+        groups,
+        threads,
+        keepEmpty,
+        hiddenEnvironmentIds === null
+          ? null
+          : { environmentIds: hiddenEnvironmentIds, keptThreadKey: null },
+      ).map((folder) => ({
         projectKey: folder.group.projectKey,
         threads: folder.threads.map((entry) => entry.id),
       }));
@@ -1542,6 +1639,14 @@ describe("groupSidebarThreadsByProject", () => {
       { projectKey: "fleet", threads: [] },
     ]);
     expect(summarize(false)).toEqual([{ projectKey: "t3code", threads: ["a", "b"] }]);
+    // fleet lives only in the hidden environment, so it cannot start a thread; t3code spans two.
+    expect(summarize(true, new Set([localEnvironmentId]))).toEqual([
+      { projectKey: "t3code", threads: ["a", "b"] },
+    ]);
+    expect(summarize(true, new Set([remoteEnvironmentId]))).toEqual([
+      { projectKey: "t3code", threads: ["a", "b"] },
+      { projectKey: "fleet", threads: [] },
+    ]);
   });
 });
 
