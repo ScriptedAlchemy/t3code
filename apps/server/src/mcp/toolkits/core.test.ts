@@ -58,6 +58,7 @@ import * as McpToolAccessTestkit from "../McpToolAccess.testkit.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { dispatchFailure } from "../threadAccess.ts";
 import * as EnvironmentHandlers from "./environment/handlers.ts";
+import { EnvironmentToolkit } from "./environment/tools.ts";
 import * as AttachmentHandlers from "./attachment/handlers.ts";
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../peer/PeerLinkRequests.ts";
@@ -490,6 +491,7 @@ it.effect("keeps unexpected handler defects private through the production regis
 it("keeps MCP preference output allowlisted and Unicode-bounded", () => {
   const settings = {
     ...DEFAULT_SERVER_SETTINGS,
+    skillsLibraryEnabled: true,
     privateCredential: "must-not-escape",
     sourceControlWritingStyle: {
       ...DEFAULT_SERVER_SETTINGS.sourceControlWritingStyle,
@@ -499,10 +501,15 @@ it("keeps MCP preference output allowlisted and Unicode-bounded", () => {
   const result = EnvironmentHandlers.preferences(settings);
   expect(result).not.toHaveProperty("privateCredential");
   expect(result).not.toHaveProperty("providers");
+  expect(result.skillsLibraryEnabled).toBe(true);
   expect(result.sourceControlWritingStyle).toMatchObject({
     customInstructions: "🙂".repeat(4000),
     truncated: true,
   });
+  const update = Schema.decodeUnknownSync(
+    EnvironmentToolkit.tools.t3_environment_preferences_update.parametersSchema,
+  );
+  expect(update({ skillsLibraryEnabled: true })).toMatchObject({ skillsLibraryEnabled: true });
 });
 
 it.effect("resolves reused attachment references from stored metadata", () =>
