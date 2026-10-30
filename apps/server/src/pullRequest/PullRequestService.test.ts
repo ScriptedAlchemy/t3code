@@ -2995,7 +2995,8 @@ it.effect(
         ],
         providers: [
           fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-            getChangeRequest: () => Effect.succeed(hostedChangeRequest("Description")),
+            getChangeRequest: () =>
+              Effect.succeed({ ...hostedChangeRequest("Description"), headSha: "abc123" }),
             getChangeRequestChecks: () =>
               Effect.sync(() => {
                 reads += 1;
@@ -3008,6 +3009,7 @@ it.effect(
       const detail = yield* service.detail(reference);
       expect(yield* service.checks(reference)).toEqual({
         state: detail.state,
+        headSha: detail.headSha,
         checks: detail.checks,
         observedAt: detail.observedAt,
       });

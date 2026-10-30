@@ -314,6 +314,8 @@ describe("pull request detail decoding", () => {
         }
       : {
           __typename: "CheckRun",
+          databaseId: null,
+          title: null,
           name: "",
           status: "COMPLETED",
           conclusion: null,
@@ -326,7 +328,7 @@ describe("pull request detail decoding", () => {
   const inWorkflow = ({ workflowName, ...fields }: Record<string, unknown>) =>
     check({
       ...fields,
-      checkSuite: { workflowRun: { workflow: { name: workflowName } } },
+      checkSuite: { workflowRun: { runAttempt: 1, workflow: { name: workflowName } } },
     });
 
   const coreJson = (
@@ -418,6 +420,25 @@ describe("pull request detail decoding", () => {
       expect(detail.canEditMaintainerEdits).toBe(allowed);
     },
   );
+
+  it("preserves check handles, output titles and unknown required status", () => {
+    const detail = detailOf([
+      inWorkflow({
+        name: "lint",
+        databaseId: 123,
+        title: "Two errors",
+        workflowName: "CI",
+        conclusion: "FAILURE",
+      }),
+      check({ __typename: "StatusContext", context: "external", state: "SUCCESS" }),
+    ]);
+    expect(detail.checks).toMatchObject([
+      { name: "lint", handle: "github-check:123:1", summary: "Two errors" },
+      { name: "external" },
+    ]);
+    expect(detail.checks[0]).not.toHaveProperty("required");
+    expect(detail.checks[1]).not.toHaveProperty("handle");
+  });
 
   const detailJson = JSON.stringify({
     comments: [{ id: "c1", body: "second", createdAt: "2026-07-04T00:00:00Z" }],

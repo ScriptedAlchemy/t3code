@@ -105,6 +105,8 @@ export type PullRequestCheckStatus = typeof PullRequestCheckStatus.Type;
 
 export const PullRequestCheck = Schema.Struct({
   name: TrimmedNonEmptyString,
+  summary: Schema.optional(Schema.String),
+  handle: Schema.optional(TrimmedNonEmptyString),
   status: PullRequestCheckStatus,
   description: Schema.NullOr(Schema.String),
   url: Schema.NullOr(Schema.String),
@@ -596,6 +598,7 @@ export const PullRequestDetail = Schema.Struct({
 export type PullRequestDetail = typeof PullRequestDetail.Type;
 
 export const PullRequestChecks = Schema.Struct({
+  headSha: Schema.optional(TrimmedNonEmptyString),
   observedAt: Schema.optional(Schema.Finite),
   state: PullRequestState,
   checks: Schema.Array(PullRequestCheck),

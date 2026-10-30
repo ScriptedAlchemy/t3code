@@ -3067,6 +3067,7 @@ export const make = Effect.gen(function* () {
               !(yield* Cache.has(checksCache, key))
             ) {
               yield* Cache.set(checksCache, key, {
+                ...(value.headSha === null ? {} : { headSha: value.headSha }),
                 state: value.state,
                 checks: value.checks,
                 observedAt: value.observedAt,

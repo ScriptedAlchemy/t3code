@@ -120,6 +120,9 @@ interface LatestReviewFields {
 
 /** Check runs use status/conclusion; commit statuses use a single state. */
 interface CheckFields {
+  readonly databaseId?: number | null | undefined;
+  readonly title?: string | null | undefined;
+  readonly runAttempt?: number | null | undefined;
   readonly name?: string | null | undefined;
   readonly context?: string | null | undefined;
   readonly status?: string | null | undefined;
@@ -585,6 +588,10 @@ function toCheckEntries(raw: ReadonlyArray<CheckFields> | null | undefined): Rea
         check: {
           name,
           status,
+          ...(check.databaseId == null
+            ? {}
+            : { handle: `github-check:${check.databaseId}:${check.runAttempt ?? 0}` }),
+          ...(check.title == null ? {} : { summary: check.title }),
           description: trimmed(check.description),
           url: trimmed(check.detailsUrl) ?? trimmed(check.targetUrl),
           ...(typeof check.isRequired === "boolean" ? { required: check.isRequired } : {}),
@@ -1155,7 +1162,11 @@ export type GitHubCheckContext = CheckFields;
 function toCheckContexts(nodes: ReadonlyArray<CheckContext>): ReadonlyArray<GitHubCheckContext> {
   return nodes.map((check) =>
     check.__typename === "CheckRun"
-      ? { ...check, workflowName: check.checkSuite.workflowRun?.workflow.name ?? null }
+      ? {
+          ...check,
+          runAttempt: check.checkSuite.workflowRun?.runAttempt,
+          workflowName: check.checkSuite.workflowRun?.workflow.name ?? null,
+        }
       : check,
   );
 }

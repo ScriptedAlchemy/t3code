@@ -536,6 +536,8 @@ const subjectScope = (subjectId: string, pullRequestId: string) => ({
 });
 
 const checkRun = (fields: Record<string, unknown>) => ({
+  databaseId: null,
+  title: null,
   __typename: "CheckRun",
   name: "",
   status: "COMPLETED",
@@ -3335,13 +3337,17 @@ layer("GitHubPullRequestApi.layer", (it) => {
                                 name: "build",
                                 status: "COMPLETED",
                                 conclusion: "SUCCESS",
-                                checkSuite: { workflowRun: { workflow: { name: "linux" } } },
+                                checkSuite: {
+                                  workflowRun: { runAttempt: 1, workflow: { name: "linux" } },
+                                },
                               }),
                               checkRun({
                                 name: "build",
                                 status: "COMPLETED",
                                 conclusion: "FAILURE",
-                                checkSuite: { workflowRun: { workflow: { name: "windows" } } },
+                                checkSuite: {
+                                  workflowRun: { runAttempt: 1, workflow: { name: "windows" } },
+                                },
                               }),
                             ],
                             pageInfo: { hasNextPage: false },

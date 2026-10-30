@@ -329,7 +329,11 @@ export const make = Effect.gen(function* () {
     getChangeRequestChecks: Effect.fn("ForgejoPullRequestProvider.getChangeRequestChecks")(
       function* (input) {
         const pr = yield* getPull(input);
-        return { state: forgejoChangeRequest(pr).state, checks: yield* readChecks(input, pr) };
+        return {
+          state: forgejoChangeRequest(pr).state,
+          headSha: pr.head.sha,
+          checks: yield* readChecks(input, pr),
+        };
       },
     ),
     getChangeRequest: Effect.fn("ForgejoPullRequestProvider.getChangeRequest")(function* (input) {

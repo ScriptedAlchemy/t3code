@@ -1,4 +1,4 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { SourceControlProviderKind, type PullRequestChecks } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -17,6 +17,7 @@ import * as TestSourceControlHost from "@t3tools/source-control-testing/TestSour
 import * as ForgejoCli from "./ForgejoCli.ts";
 import * as ForgejoPullRequestProvider from "./ForgejoPullRequestProvider.ts";
 import * as ForgejoSourceControlProvider from "./ForgejoSourceControlProvider.ts";
+import type { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import { markRequiredForgejoChecks } from "./forgejoRequiredChecks.ts";
 
 const processOutput = TestSourceControlHost.processOutput;
@@ -313,7 +314,11 @@ it.effect.each([
     const readChecks = provider.getChangeRequestChecks;
     if (readChecks === undefined) return yield* Effect.die("checks read missing");
     for (const read of [readChecks, provider.getChangeRequest]) {
-      const error = yield* read(requiredChecksInput).pipe(Effect.flip);
+      const result: Effect.Effect<
+        Pick<PullRequestChecks, "state" | "checks">,
+        PullRequestProviderError
+      > = read(requiredChecksInput);
+      const error = yield* Effect.flip(result);
       assert.strictEqual(error.reason, reason);
       assert.strictEqual(error.cause, cause);
     }
