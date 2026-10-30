@@ -1,4 +1,5 @@
 import * as Dialog from "../../components/ui/Dialog";
+import { requestProjectMemory } from "../../components/ProjectKnowledgeEntry";
 import { useRememberThreadProject } from "./useRememberThreadProject";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
@@ -428,6 +429,17 @@ function ThreadRouteContent(
       threadId: summaryThreadId,
     });
   }, [navigation, summaryEnvironmentId, summaryProjectId, summaryThreadId]);
+  const memoryDraftKey = composer.composerDraftKey;
+  const openProjectMemory = useCallback(() => {
+    if (!summaryEnvironmentId || !summaryProjectId || !summaryThreadId) return;
+    requestProjectMemory({
+      environmentId: summaryEnvironmentId,
+      projectId: summaryProjectId,
+      // ThreadComposer falls back to the thread's own key the same way.
+      draftKey: memoryDraftKey ?? scopedThreadKey(summaryEnvironmentId, summaryThreadId),
+      message: null,
+    });
+  }, [summaryEnvironmentId, summaryProjectId, summaryThreadId, memoryDraftKey]);
   const selectDetail = useSelectWorkspaceDetail();
   const openPullRequest = useOpenPullRequest();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack, "merge thread back");
@@ -992,6 +1004,11 @@ function ThreadRouteContent(
                 onOpenConversationSummaries={
                   serverConfig?.environment.capabilities.conversationSummaries === true
                     ? openConversationSummaries
+                    : undefined
+                }
+                onOpenProjectMemory={
+                  serverConfig?.environment.capabilities.projectKnowledge === true
+                    ? openProjectMemory
                     : undefined
                 }
                 title={selectedThread.title}
