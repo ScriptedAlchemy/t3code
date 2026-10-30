@@ -29,6 +29,7 @@ vi.mock(import("../state/server"), async (original) => {
   const noConfig = Atom.make(null);
   const modelsConfig = Atom.make({
     availableEditors: [],
+    settings: { providerInstances: {} },
     providers: [
       {
         instanceId: "codex",

@@ -64,32 +64,34 @@ export function isProviderInstancePickerVisible(entry: ProviderInstanceEntry): b
   return entry.enabled;
 }
 
+export function deriveProviderInstanceEntry(snapshot: ServerProvider): ProviderInstanceEntry {
+  const instanceId = snapshot.instanceId;
+  const driverKind = snapshot.driver;
+  const defaultId = defaultInstanceIdForDriver(driverKind);
+  const isDefault = instanceId === defaultId;
+  return {
+    instanceId,
+    driverKind,
+    displayName: resolveProviderInstanceDisplayName(snapshot),
+    accentColor: normalizeProviderAccentColor(snapshot.accentColor),
+    ...(driverKind === "acpRegistry" && snapshot.iconUrl
+      ? { acpRegistryIconUrl: snapshot.iconUrl }
+      : {}),
+    continuationGroupKey: snapshot.continuation?.groupKey,
+    enabled: snapshot.enabled,
+    installed: snapshot.installed,
+    status: snapshot.status,
+    isDefault,
+    isAvailable: snapshot.availability !== "unavailable",
+    snapshot,
+    models: snapshot.models,
+  } satisfies ProviderInstanceEntry;
+}
+
 export function deriveProviderInstanceEntries(
   providers: ReadonlyArray<ServerProvider>,
 ): ReadonlyArray<ProviderInstanceEntry> {
-  return providers.map((snapshot) => {
-    const instanceId = snapshot.instanceId;
-    const driverKind = snapshot.driver;
-    const defaultId = defaultInstanceIdForDriver(driverKind);
-    const isDefault = instanceId === defaultId;
-    return {
-      instanceId,
-      driverKind,
-      displayName: resolveProviderInstanceDisplayName(snapshot),
-      accentColor: normalizeProviderAccentColor(snapshot.accentColor),
-      ...(driverKind === "acpRegistry" && snapshot.iconUrl
-        ? { acpRegistryIconUrl: snapshot.iconUrl }
-        : {}),
-      continuationGroupKey: snapshot.continuation?.groupKey,
-      enabled: snapshot.enabled,
-      installed: snapshot.installed,
-      status: snapshot.status,
-      isDefault,
-      isAvailable: snapshot.availability !== "unavailable",
-      snapshot,
-      models: snapshot.models,
-    } satisfies ProviderInstanceEntry;
-  });
+  return providers.map(deriveProviderInstanceEntry);
 }
 
 /** Instance ids repeat across environments; lookups must stay scoped. */
@@ -128,7 +130,7 @@ export function applyProviderInstanceSettings(
   });
 }
 
-function applyProviderInstanceBranding(
+export function applyProviderInstanceBranding(
   entry: ProviderInstanceEntry,
   settings: Pick<ServerSettings, "providerInstances">,
 ): ProviderInstanceEntry {
