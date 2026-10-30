@@ -195,6 +195,7 @@ function makeRegistry(
       markLimited: () => Effect.void,
       refresh: () => Ref.get(providersRef),
       refreshInstance: () => Ref.get(providersRef),
+      reloadSecretsAndRefresh: () => Ref.get(providersRef),
       refreshAfterUpdate: () => Ref.get(providersRef),
       refreshWorkspaceSnapshot: () => Ref.get(providersRef),
       getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>

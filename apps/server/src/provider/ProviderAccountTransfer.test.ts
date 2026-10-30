@@ -8,6 +8,7 @@ import {
   ProviderAccountExport as ProviderAccountExportSchema,
   ProviderDriverKind,
   ProviderInstanceId,
+  SecretProviderId,
   type ProviderAccountExport,
 } from "@t3tools/contracts";
 import { cursorClient } from "@t3tools/provider-cursor/client";
@@ -97,6 +98,11 @@ const sourceCodex = {
   ],
 };
 const sourceSettings = { providerInstances: { [workCodex]: sourceCodex } };
+const secretBacked = (reference: string) => ({
+  name: "OPENAI_ORG_TOKEN",
+  value: { provider: SecretProviderId.make("onepassword"), reference },
+  sensitive: true,
+});
 
 const failure = <A, E>(effect: Effect.Effect<A, E>) =>
   effect.pipe(
@@ -142,7 +148,16 @@ describe("ProviderAccountTransfer", () => {
 
   it.effect("exports portable settings and secrets and leaves machine-local settings behind", () =>
     Effect.gen(function* () {
-      const a = yield* makeEnvironment({ settings: sourceSettings });
+      const a = yield* makeEnvironment({
+        settings: {
+          providerInstances: {
+            [workCodex]: {
+              ...sourceCodex,
+              environment: [...sourceCodex.environment, secretBacked("op://work/org")],
+            },
+          },
+        },
+      });
       const exported = yield* a.transfer.exportAccount(workCodex);
       expect(exported.instance).toEqual({
         driver: codex,
@@ -160,6 +175,10 @@ describe("ProviderAccountTransfer", () => {
         { setting: { _tag: "EnvironmentVariable", name: "CODEX_HOME" }, reason: "machine-local" },
         {
           setting: { _tag: "EnvironmentVariable", name: "GOOGLE_APPLICATION_CREDENTIALS" },
+          reason: "machine-local",
+        },
+        {
+          setting: { _tag: "EnvironmentVariable", name: "OPENAI_ORG_TOKEN" },
           reason: "machine-local",
         },
       ]);
@@ -220,6 +239,7 @@ describe("ProviderAccountTransfer", () => {
                 { name: "CODEX_HOME", value: "/b/.codex-work", sensitive: false },
                 { name: "OPENAI_API_KEY", value: "sk-old", sensitive: true },
                 { name: "ONLY_ON_B", value: "mirrored-away", sensitive: true },
+                secretBacked("op://b/org"),
               ],
             },
           },
@@ -239,6 +259,7 @@ describe("ProviderAccountTransfer", () => {
         },
         environment: [
           { name: "CODEX_HOME", value: "/b/.codex-work", sensitive: false },
+          secretBacked("op://b/org"),
           { name: "OPENAI_BASE_URL", value: "https://proxy.example.test", sensitive: false },
           { name: "OPENAI_API_KEY", value: "sk-source", sensitive: true },
         ],
