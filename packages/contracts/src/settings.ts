@@ -760,6 +760,16 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         providerSettingsForm: { placeholder: "~/.claude", clearWhenEmpty: "omit" },
       }),
     ),
+    shareProfile: Schema.Boolean.pipe(
+      machineLocalSetting,
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({
+        title: "Use your Claude profile",
+        description:
+          "Shares settings, plugins, skills, agents, commands and CLAUDE.md from ~/.claude. Changes made from this account apply to all accounts. Login, trust decisions, MCP servers and conversation history stay with this account.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
     customModels: Schema.Array(CustomModelSetting).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
@@ -804,7 +814,14 @@ export const ClaudeSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "idleCompaction", "launchArgs"],
+    order: [
+      "binaryPath",
+      "homePath",
+      "shareProfile",
+      "autoCompactWindow",
+      "idleCompaction",
+      "launchArgs",
+    ],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -1276,6 +1293,8 @@ export const ServerSettings = Schema.Struct({
   enableAgentDeviceAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Offer the bundled pstack skills in every provider composer. */
   pstackEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Off by default: turning it on moves skill folders out of the user's Claude and Codex homes. */
+  skillsLibraryEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Off by default: each settled run in an opted-in project costs a text generation call. */
   enableAssistedLearning: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Off by default: summarizing older history costs text generation calls. */
@@ -1680,6 +1699,7 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   pstackEnabled: Schema.optionalKey(Schema.Boolean),
+  skillsLibraryEnabled: Schema.optionalKey(Schema.Boolean),
   enableAssistedLearning: Schema.optionalKey(Schema.Boolean),
   enableConversationSummaries: Schema.optionalKey(Schema.Boolean),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),

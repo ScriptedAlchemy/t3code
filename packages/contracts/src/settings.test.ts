@@ -46,6 +46,15 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+describe("skills library setting", () => {
+  it("stays off for existing installations and patches like any server setting", () => {
+    expect(decodeServerSettings({}).skillsLibraryEnabled).toBe(false);
+    expect(decodeServerSettingsPatch({ skillsLibraryEnabled: true })).toEqual({
+      skillsLibraryEnabled: true,
+    });
+  });
+});
+
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();
@@ -581,7 +590,13 @@ describe("machine-local provider settings", () => {
   });
 
   it("marks home and binary paths on Claude", () => {
-    expect(machineLocalSettingsFields(ClaudeSettings)).toEqual(["binaryPath", "homePath"]);
+    expect(machineLocalSettingsFields(ClaudeSettings)).toEqual([
+      "binaryPath",
+      "homePath",
+      "shareProfile",
+    ]);
+    expect(decodeClaudeSettings({ setupMode: "cli" }).shareProfile).toBe(true);
+    expect(decodeClaudeSettings({ shareProfile: false }).shareProfile).toBe(false);
   });
 
   it("keeps secret and machine-local classifications apart", () => {

@@ -1516,7 +1516,10 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
         environment: resolved,
         stateDir: input.stateDir,
       }).pipe(Effect.provideService(Path.Path, input.path));
-      resolved = { ...runtime.environment, ...claudeAccountSettings(runtime.config)?.env };
+      resolved = {
+        ...runtime.environment,
+        ...claudeAccountSettings(runtime.mode === "cli" ? runtime.configDir : undefined)?.env,
+      };
     }
   }
 

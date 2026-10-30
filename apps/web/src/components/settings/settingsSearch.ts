@@ -858,6 +858,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     macProviderSettingsOnly: true,
   },
   {
+    id: "skills-library",
+    title: "Skills library",
+    to: "/settings/providers",
+    scope: "environment-defaults",
+    searchTerms: [
+      "shared skills folder agents .agents/skills link claude codex antigravity cursor opencode one set",
+    ],
+  },
+  {
     id: "provider-health-check-interval",
     title: "Health check interval",
     to: "/settings/providers",

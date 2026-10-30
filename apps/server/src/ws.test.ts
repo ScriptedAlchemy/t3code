@@ -1,4 +1,5 @@
 import * as PstackPack from "./pstack/PstackPack.ts";
+import * as SkillsLibrary from "./skills/SkillsLibrary.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
 import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
@@ -609,6 +610,7 @@ it.effect(
           // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
           resolveFileManagerRevealKind: () => Effect.succeed(undefined),
         }),
+        Layer.mock(SkillsLibrary.SkillsLibrary)({}),
         Layer.mock(PstackPack.PstackPack)({
           catalog: settings.getSettings.pipe(
             Effect.map((settings) =>
@@ -831,6 +833,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
       }),
       Layer.mock(DirectEndpoints.DirectEndpoints)({ resolve: () => Effect.succeed([]) }),
       Layer.mock(PstackPack.PstackPack)({ catalog: Effect.sync(() => undefined) }),
+      Layer.mock(SkillsLibrary.SkillsLibrary)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         scratchRoot: Effect.succeedNone,
         namedProjectsRoot: process.cwd(),

@@ -1603,6 +1603,15 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:check-otlp-endpoint",
       tag: WS_METHODS.serverCheckOtlpEndpoint,
     }),
+    skillsLibraryStatus: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:skills-library-status",
+      tag: WS_METHODS.serverGetSkillsLibraryStatus,
+    }),
+    refreshSkillsLibrary: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:refresh-skills-library",
+      tag: WS_METHODS.serverRefreshSkillsLibrary,
+      concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
+    }),
     retryResourceTelemetry: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:retry-resource-telemetry",
       tag: WS_METHODS.serverRetryResourceTelemetry,
