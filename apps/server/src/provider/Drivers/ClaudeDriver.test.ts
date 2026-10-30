@@ -205,10 +205,6 @@ for (const conflict of [false, true]) {
           expect(yield* fs.readLink(path.join(account, "settings.json"))).toBe(
             path.join(shared, "settings.json"),
           );
-          expect((yield* instance.snapshot.getSnapshot).runtimePaths).toEqual({
-            homePath: shared,
-            shadowHomePath: account,
-          });
           expect(instance.continuationIdentity.continuationKey).toBe(`claude:home:${account}`);
           expect(instance.auth?.credentialBinding).toEqual({ owner: "provider", key: account });
         }

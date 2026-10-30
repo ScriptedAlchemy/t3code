@@ -210,10 +210,6 @@ export const ClaudeDriver: ProviderDriver<
                 canAuthenticate: true,
                 canInstall: draft.setup?.canInstall ?? false,
               },
-              runtimePaths: {
-                homePath: runtime.mode === "cli" ? runtime.overlay.sharedRoot : configDir,
-                shadowHomePath: configDir,
-              },
               ...(draft.auth.status === "unauthenticated"
                 ? { message: "Sign in with Claude Code in provider settings." }
                 : {}),

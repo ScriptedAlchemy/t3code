@@ -106,12 +106,17 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
                 "marker",
               );
             }
+            // Only a profile directory that exists gets a link; agents stays absent.
+            for (const name of ["commands", "output-styles", "rules", "hooks"]) {
+              yield* fs.makeDirectory(path.join(shared, name), { recursive: true });
+            }
             yield* materializeClaudeHome(runtime);
             if (shareProfile) {
+              expect(yield* fs.exists(path.join(accountDir, "agents"))).toBe(false);
+              expect(yield* fs.exists(path.join(shared, "agents"))).toBe(false);
               for (const name of [
                 "plugins",
                 "skills",
-                "agents",
                 "commands",
                 "output-styles",
                 "rules",

@@ -60,14 +60,15 @@ const SYNCED_BUCKETS: OverlayFold = {
       ? { _tag: "Move", kind: name.startsWith(".bucket-") ? "file" : "directory" }
       : { _tag: "Conflict" },
 };
+const CLAUDE_PROFILE_FILES = ["settings.json", "CLAUDE.md", "keybindings.json"];
+// The CLI writes into plugins and skills, so those exist before linking; the rest link once present.
+const CLAUDE_PROFILE_WRITABLE_DIRECTORIES = ["plugins", "skills"];
+const CLAUDE_PROFILE_DIRECTORIES = ["agents", "commands", "output-styles", "rules", "hooks"];
 const CLAUDE_PROFILE_ENTRIES: ReturnType<OverlayPolicy["shared"]> = [
-  ...["settings.json", "CLAUDE.md", "keybindings.json"].map((name) => ({
+  ...CLAUDE_PROFILE_FILES.map((name) => ({ name, adopt: { _tag: "Conflict" as const } })),
+  ...[...CLAUDE_PROFILE_WRITABLE_DIRECTORIES, ...CLAUDE_PROFILE_DIRECTORIES].map((name) => ({
     name,
-    adopt: { _tag: "Conflict" as const },
-  })),
-  ...["plugins", "skills", "agents", "commands", "output-styles", "rules", "hooks"].map((name) => ({
-    name,
-    ensureDirectory: true,
+    ensureDirectory: CLAUDE_PROFILE_WRITABLE_DIRECTORIES.includes(name),
     adopt:
       name === "plugins" || name === "skills"
         ? {
@@ -87,7 +88,13 @@ const CLAUDE_PROFILE_ENTRIES: ReturnType<OverlayPolicy["shared"]> = [
 ];
 
 const CLAUDE_OVERLAY_POLICY: OverlayPolicy = {
-  shared: () => CLAUDE_PROFILE_ENTRIES,
+  shared: (sharedNames) =>
+    CLAUDE_PROFILE_ENTRIES.filter(
+      (entry) =>
+        entry.ensureDirectory ||
+        !CLAUDE_PROFILE_DIRECTORIES.includes(entry.name) ||
+        sharedNames.includes(entry.name),
+    ),
   mustBeReal: [".claude.json", ".credentials.json", "sessions", "session-env", "backups"],
   healIfLinked: [],
   retired: CLAUDE_PROFILE_ENTRIES.map((entry) => entry.name),

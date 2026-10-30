@@ -24,7 +24,7 @@ export type OverlayAdopt =
       };
     };
 
-export interface OverlayEntry {
+interface OverlayEntry {
   readonly name: string;
   readonly adopt: OverlayAdopt;
   /** Created in the shared root first so the link never dangles. */
