@@ -65,10 +65,10 @@ export const makeGitHubCheckFailureReader = Effect.gen(function* () {
     const unavailable = (
       reason: Extract<PullRequestCheckFailure["log"], { _tag: "unavailable" }>["reason"],
     ): PullRequestCheckFailure => ({ ...base, log: { _tag: "unavailable", reason } });
-    const handle = /^github-check:([1-9]\d*):(\d+)$/.exec(input.check.handle ?? "");
+    // The handle's attempt is the run's latest; job ids are unique per attempt, so it is not checked.
+    const handle = /^github-check:([1-9]\d*):\d+$/.exec(input.check.handle ?? "");
     if (handle === null) return unavailable("not-actions");
     const id = handle[1]!;
-    const attempt = Number(handle[2]);
     const root = `repos/${input.repository}`;
     const context = { host: input.host, operation: "checkFailure", allowReserve: false };
     const jobResponse = yield* api
@@ -89,8 +89,7 @@ export const makeGitHubCheckFailureReader = Effect.gen(function* () {
       String(job.id) !== id ||
       job.check_run_url.toLowerCase() !== `${apiRoot}/check-runs/${id}` ||
       job.url.toLowerCase() !== `${apiRoot}/actions/jobs/${id}` ||
-      job.run_url.toLowerCase() !== `${apiRoot}/actions/runs/${job.run_id}` ||
-      (attempt !== 0 && attempt !== job.run_attempt)
+      job.run_url.toLowerCase() !== `${apiRoot}/actions/runs/${job.run_id}`
     ) {
       return unavailable("not-actions");
     }
@@ -162,7 +161,7 @@ export const makeGitHubCheckFailureReader = Effect.gen(function* () {
     return {
       ...base,
       status: JOB_CONCLUSIONS[job.conclusion ?? ""] ?? "neutral",
-      ...(attempt === 0 ? {} : { attempt: job.run_attempt }),
+      attempt: job.run_attempt,
       failedSteps: failedSteps.slice(0, 20).map((name) => name.slice(0, 300)),
       annotations: annotations.slice(0, 20).map((annotation) => ({
         path: annotation.path.slice(0, 1024),

@@ -395,6 +395,27 @@ describe("GitHub check failures", () => {
     }).pipe(Effect.provide(layer), Effect.provideService(FetchHttpClient.Fetch, fetch));
   });
 
+  it.effect("reads an untouched job from an earlier attempt after a rerun", () => {
+    const { layer } = harness((request) =>
+      request.url.includes("/annotations")
+        ? json([])
+        : request.url.endsWith("/logs")
+          ? new Response("##[error]bad code\n")
+          : json(job),
+    );
+    return Effect.gen(function* () {
+      const read = yield* makeGitHubCheckFailureReader;
+      const result = yield* read({
+        ...input,
+        check: { ...input.check, handle: "github-check:123:2" },
+      });
+      expect(result).toMatchObject({
+        attempt: 1,
+        log: { _tag: "excerpt", text: "##[error]bad code" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect.each([
     {
       name: "running",
@@ -413,13 +434,6 @@ describe("GitHub check failures", () => {
     {
       name: "wrong repository",
       job: { ...job, run_url: "https://api.github.com/repos/other/web/actions/runs/456" },
-      logStatus: 200,
-      reason: "not-actions",
-      requests: 1,
-    },
-    {
-      name: "wrong attempt",
-      job: { ...job, run_attempt: 2 },
       logStatus: 200,
       reason: "not-actions",
       requests: 1,
