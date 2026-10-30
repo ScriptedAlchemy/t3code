@@ -14,6 +14,7 @@ import {
   type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
+import { fakePullRequestProvider } from "@t3tools/source-control-testing/fakeSourceControlDriver";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -22,6 +23,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import { v2PullRequestThread } from "../orchestration-v2/testkit/pullRequestFixtures.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as PullRequestOracle from "./PullRequestOracle.ts";
+import * as PullRequestProviderRegistry from "./PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./PullRequestService.ts";
 
 const PROJECT_ID = ProjectId.make("project-1");
@@ -170,7 +172,9 @@ const failureOf = (handle: string): PullRequestCheckFailure => ({
 });
 
 interface Harness {
+  readonly publicReads?: boolean;
   readonly threads?: ReadonlyArray<OrchestrationV2ThreadShell>;
+  readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
   readonly service?: Partial<PullRequestService.PullRequestService["Service"]>;
 }
 
@@ -182,6 +186,14 @@ const makeOracle = Effect.fn("makeOracle")(function* (options: Harness = {}) {
   const layer = PullRequestOracle.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.succeed(
+          PullRequestProviderRegistry.PullRequestProviderRegistry,
+          PullRequestProviderRegistry.fromProviders([
+            fakePullRequestProvider("github", {
+              readsPublicHostWithoutCheckout: options.publicReads ?? false,
+            }),
+          ]),
+        ),
         Layer.mock(PullRequestService.PullRequestService)({
           summary: (ref) => record("summary", ref).pipe(Effect.as(summaryOf(ref))),
           checks: (ref) =>
@@ -205,7 +217,7 @@ const makeOracle = Effect.fn("makeOracle")(function* (options: Harness = {}) {
             Effect.succeed(threads.find((candidate) => candidate.id === id) ?? null),
         }),
         Layer.mock(ProjectService.ProjectService)({
-          listShells: () => Effect.succeed(PROJECTS),
+          listShells: () => Effect.succeed(options.projects ?? PROJECTS),
         }),
       ),
     ),
@@ -335,7 +347,7 @@ describe("PullRequestOracle named targets", () => {
           caller,
           pullRequests: [
             { url: "https://github.com/acme/docs/pull/4" },
-            { repository: "acme/app", number: 5 },
+            { number: 5 },
             { url: "https://example.com/not-a-pr" },
             { repository: "acme/unknown", number: 6 },
           ],
@@ -363,6 +375,42 @@ describe("PullRequestOracle named targets", () => {
         );
         assert.include(yield* reads, "summary acme/docs#4");
       }),
+  );
+
+  it.effect("reads fork PRs through the checkout origin", () =>
+    Effect.gen(function* () {
+      const upstream = project(PROJECT_ID, "pingdotgg", "t3code");
+      const fork = {
+        ...upstream,
+        repositoryIdentity: {
+          ...upstream.repositoryIdentity!,
+          origin: { canonicalKey: "github.com/scriptedalchemy/t3code" },
+        },
+      };
+      const { oracle, caller } = yield* makeOracle({
+        threads: [thread(THREAD_ID)],
+        projects: [fork],
+      });
+      const report = yield* oracle.status({
+        caller,
+        pullRequests: [{ url: "https://github.com/ScriptedAlchemy/t3code/pull/24" }],
+      });
+      assert.equal(report.pullRequests[0]?._tag, "Status");
+    }),
+  );
+
+  it.effect("reads a public repository through the caller's same-host checkout", () =>
+    Effect.gen(function* () {
+      const { oracle, caller } = yield* makeOracle({
+        threads: [thread(THREAD_ID)],
+        publicReads: true,
+      });
+      const report = yield* oracle.status({
+        caller,
+        pullRequests: [{ url: "https://github.com/elsewhere/app/pull/24" }],
+      });
+      assert.equal(report.pullRequests[0]?._tag, "Status");
+    }),
   );
 
   it.effect("fails a single read with the typed target error", () =>

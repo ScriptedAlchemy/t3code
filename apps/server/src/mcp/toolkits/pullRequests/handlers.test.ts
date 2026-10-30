@@ -270,6 +270,27 @@ describe("pull request toolkit handlers", () => {
     }),
   );
 
+  it.effect("links a bare number against the caller project and accepts its fork URL", () =>
+    Effect.gen(function* () {
+      const project = makeProject();
+      const harness = yield* makeHarness({
+        project: {
+          ...project,
+          repositoryIdentity: {
+            ...project.repositoryIdentity!,
+            origin: { canonicalKey: "github.com/scriptedalchemy/t3code" },
+          },
+        },
+      });
+      const result = yield* harness.call("link_pull_request", { number: 123 });
+      expect(result).toMatchObject({ repository: "t3tools/t3code", number: 123 });
+      const fork = yield* harness.call("link_pull_request", {
+        url: "https://github.com/ScriptedAlchemy/t3code/pull/24",
+      });
+      expect(fork).toMatchObject({ repository: "scriptedalchemy/t3code", number: 24 });
+    }),
+  );
+
   it.effect("watching an unlinked pull request links it first", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();

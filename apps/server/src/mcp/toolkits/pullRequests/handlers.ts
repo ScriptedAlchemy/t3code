@@ -138,8 +138,8 @@ const make = Effect.gen(function* () {
       | typeof PullRequestUnlinkFailedError
       | typeof PullRequestWatchFailedError,
   ) =>
-    projects.getShell(thread.projectId).pipe(
-      Effect.map(Option.getOrUndefined),
+    projects.listShells({ projectIds: [thread.projectId], resolveRepositoryIdentity: true }).pipe(
+      Effect.map((shells) => shells.find((project) => project.id === thread.projectId)),
       Effect.mapError((cause) => new Failure({ cause })),
     );
 
@@ -216,7 +216,7 @@ const make = Effect.gen(function* () {
             Effect.map((shell) => shell ?? undefined),
           );
     const known = yield* projects
-      .listShells()
+      .listShells({ resolveRepositoryIdentity: true })
       .pipe(Effect.mapError((cause) => new PullRequestListFailedError({ cause })));
     const callerProject = known.find((project) => project.id === callerThread?.projectId);
     return yield* locatePullRequestTargets(targets, known, callerProject);

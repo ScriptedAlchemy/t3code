@@ -786,7 +786,7 @@ const layerMakeRoutes = Layer.mergeAll(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
   ),
   // Agents' pull request reads from /mcp, over the same PullRequestService the UI shares.
-  Layer.provide(PullRequestOracle.layer),
+  Layer.provide(PullRequestOracle.layer.pipe(Layer.provide(PullRequestProviderRegistry.layer))),
   // delegate_task to a linked environment, from /mcp and the follower above.
   Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.

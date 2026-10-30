@@ -27,6 +27,7 @@ import {
   threadPullRequestsOf,
   visibleThreadPullRequests,
 } from "../sourceControl/threadPullRequests.ts";
+import * as PullRequestProviderRegistry from "./PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./PullRequestService.ts";
 import {
   feedbackOf,
@@ -137,6 +138,7 @@ const make = Effect.gen(function* () {
   const service = yield* PullRequestService.PullRequestService;
   const engine = yield* Orchestrator.OrchestratorV2;
   const projects = yield* ProjectService.ProjectService;
+  const providers = yield* PullRequestProviderRegistry.PullRequestProviderRegistry;
 
   const threadOf = (threadId: ThreadId | null) =>
     threadId === null
@@ -150,7 +152,9 @@ const make = Effect.gen(function* () {
     caller: PullRequestOracleCaller,
   ) {
     const thread = yield* threadOf(caller.threadId);
-    const known = yield* projects.listShells().pipe(Effect.orDie);
+    const known = yield* projects
+      .listShells({ resolveRepositoryIdentity: true })
+      .pipe(Effect.orDie);
     const callerProject = known.find((project) => project.id === thread?.projectId);
     return { thread, known, callerProject };
   });
@@ -168,7 +172,17 @@ const make = Effect.gen(function* () {
     },
     resolvedVia: PullRequestResolvedVia,
   ): Located | Unlocated => {
-    const project = projectForPullRequest(context.known, target, context.callerProject);
+    const publicHost = sourceControlDefinitions.findByPublicHost(target.host);
+    const callerIdentity = context.callerProject?.repositoryIdentity;
+    const canReadFromCaller =
+      publicHost !== undefined &&
+      providers.get(publicHost.kind)?.readsPublicHostWithoutCheckout === true &&
+      callerIdentity != null &&
+      sourceControlDefinitions.changeRequestHost(callerIdentity, callerIdentity.provider) ===
+        target.host;
+    const project =
+      projectForPullRequest(context.known, target, context.callerProject) ??
+      (canReadFromCaller ? context.callerProject : undefined);
     if (project === undefined) {
       return {
         url: target.url,

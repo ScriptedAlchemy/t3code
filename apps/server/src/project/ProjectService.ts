@@ -148,6 +148,7 @@ export class ProjectService extends Context.Service<
     ) => Effect.Effect<Option.Option<OrchestrationProjectShell>, ProjectOperationError>;
     readonly listShells: (options?: {
       readonly projectIds?: ReadonlyArray<ProjectId>;
+      readonly resolveRepositoryIdentity?: boolean;
     }) => Effect.Effect<ReadonlyArray<OrchestrationProjectShell>, ProjectOperationError>;
   }
 >()("t3/project/ProjectService") {}
@@ -548,7 +549,20 @@ export const make = Effect.gen(function* () {
           (cause) => new ProjectOperationError({ operation: "list-projects", cause }),
         ),
       );
-    return yield* Effect.forEach(shells, enrichShell, { concurrency: 16 });
+    return yield* Effect.forEach(
+      shells,
+      (shell) =>
+        enrichShell(shell).pipe(
+          Effect.flatMap((project) =>
+            options?.resolveRepositoryIdentity && project.repositoryIdentity == null
+              ? projectEnrichment
+                  .readRepositoryIdentity(project.workspaceRoot)
+                  .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity })))
+              : Effect.succeed(project),
+          ),
+        ),
+      { concurrency: 8 },
+    );
   });
 
   const snapshot = Effect.gen(function* () {

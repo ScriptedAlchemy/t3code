@@ -97,7 +97,12 @@ export const resolvePullRequestTarget = Effect.fn("PullRequestTargets.resolve")(
       url: canonicalizeGitCafePullRequestUrl(input.url),
     } satisfies ResolvedPullRequestTarget;
   }
-  if (input.repository === undefined || input.number === undefined) {
+  const repository =
+    input.repository?.toLowerCase() ??
+    (project?.repositoryIdentity == null
+      ? undefined
+      : sourceControlDefinitions.repositorySelector(project.repositoryIdentity)?.toLowerCase());
+  if (repository === undefined || input.number === undefined) {
     return yield* new PullRequestTargetIncompleteError({});
   }
   const projectHost = projectHostAndProvider(project);
@@ -105,7 +110,6 @@ export const resolvePullRequestTarget = Effect.fn("PullRequestTargets.resolve")(
   if (host === undefined) {
     return yield* new PullRequestHostRequiredError({});
   }
-  const repository = input.repository.toLowerCase();
   // Without a URL, a public forge host says what shape its change request URLs take;
   // any other host is taken to run the project's own forge.
   const recognizedKind = sourceControlDefinitions.recognizeRemote(`https://${host}`)?.kind;
@@ -154,6 +158,14 @@ export function projectForPullRequest(
             },
             project.repositoryIdentity,
           );
+    const origin = project.repositoryIdentity?.origin;
+    if (
+      origin !== undefined &&
+      own !== null &&
+      sourceControlDefinitions.canonicalRepositoryKey(origin.canonicalKey) ===
+        sourceControlDefinitions.canonicalRepositoryKey(`${own.host}/${own.repository}`)
+    )
+      return true;
     return (
       own !== null &&
       projectKey !== null &&
