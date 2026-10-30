@@ -3344,6 +3344,7 @@ layer("GitHubPullRequestApi.layer", (it) => {
                                 },
                               }),
                               checkRun({
+                                databaseId: 123135166838,
                                 name: "build",
                                 status: "COMPLETED",
                                 conclusion: "FAILURE",
@@ -3384,6 +3385,9 @@ layer("GitHubPullRequestApi.layer", (it) => {
       ]);
       expect(detail.labels).toEqual([{ name: "bug", color: "ff0000" }]);
       expect(detail.checks).toHaveLength(2);
+      expect(detail.checks.find((check) => check.status === "failure")?.handle).toBe(
+        "github-check:123135166838:1",
+      );
       expect(detail.checksState).toBe("failing");
     }),
   );
