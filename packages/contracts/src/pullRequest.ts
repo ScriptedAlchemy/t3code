@@ -114,6 +114,36 @@ export const PullRequestCheck = Schema.Struct({
 });
 export type PullRequestCheck = typeof PullRequestCheck.Type;
 
+export const PullRequestCheckFailure = Schema.Struct({
+  check: TrimmedNonEmptyString,
+  status: PullRequestCheckStatus,
+  required: Schema.optional(Schema.Boolean),
+  url: Schema.NullOr(Schema.String),
+  attempt: Schema.optional(PositiveInt),
+  failedSteps: Schema.Array(Schema.String.check(Schema.isMaxLength(300))).check(
+    Schema.isMaxLength(20),
+  ),
+  annotations: Schema.Array(
+    Schema.Struct({
+      path: Schema.String.check(Schema.isMaxLength(1024)),
+      startLine: PositiveInt,
+      level: Schema.Literals(["failure", "warning", "notice"]),
+      message: Schema.String.check(Schema.isMaxLength(300)),
+    }),
+  ).check(Schema.isMaxLength(20)),
+  log: Schema.Union([
+    Schema.TaggedStruct("excerpt", {
+      text: Schema.String.check(Schema.isMaxLength(8192)),
+      totalLines: NonNegativeInt,
+      truncated: Schema.Boolean,
+    }),
+    Schema.TaggedStruct("unavailable", {
+      reason: Schema.Literals(["still-running", "expired", "no-access", "not-actions"]),
+    }),
+  ]),
+});
+export type PullRequestCheckFailure = typeof PullRequestCheckFailure.Type;
+
 export const PullRequestReactionContent = Schema.Literals([
   "thumbs-up",
   "thumbs-down",

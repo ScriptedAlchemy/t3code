@@ -4520,3 +4520,107 @@ it.effect.each(["expiry", "commit expiry", "cache hit", "commit cache hit", "ref
       assert.strictEqual(diffReads, 2);
     }),
 );
+
+it.effect("coalesces completed check failures and separates credentials and attempts", () =>
+  Effect.gen(function* () {
+    let credential = "first";
+    let attempt = 1;
+    let calls = 0;
+    let running = false;
+    let refuse = false;
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const ref = {
+      projectId: "p1" as ProjectId,
+      repository: "acme/web",
+      host: "github.com",
+      number: 1,
+    };
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          withVerifiedCredential: (_, use) =>
+            Effect.suspend(() =>
+              use({ accountId: "101", viewer: "octocat", credentialFingerprint: credential }),
+            ),
+          getChangeRequestChecks: () =>
+            Effect.sync(() => ({
+              state: "open" as const,
+              checks: [
+                {
+                  name: "lint",
+                  status: "failure" as const,
+                  description: null,
+                  url: null,
+                  handle: `job:123:${attempt}`,
+                },
+              ],
+            })),
+          getChangeRequestCheckFailure: () =>
+            Effect.gen(function* () {
+              calls++;
+              if (refuse)
+                return yield* new PullRequestProviderError({
+                  provider: SourceControlProviderKind.make("github"),
+                  operation: "getChangeRequestCheckFailure",
+                  reason: "rate-limited",
+                  retryAt: 1_000_000,
+                  detail: "Quota exhausted",
+                });
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+              return {
+                check: "lint",
+                status: "failure" as const,
+                url: null,
+                attempt,
+                failedSteps: [],
+                annotations: [],
+                log: running
+                  ? { _tag: "unavailable" as const, reason: "still-running" as const }
+                  : { _tag: "excerpt" as const, text: credential, totalLines: 1, truncated: false },
+              };
+            }),
+        }),
+      ],
+    });
+    const input = { ...ref, handle: "job:123:1" };
+    const first = yield* Effect.forkChild(service.checkFailures(input));
+    yield* Deferred.await(entered);
+    const second = yield* Effect.forkChild(service.checkFailures(input));
+    yield* Deferred.succeed(release, undefined);
+    const [a, b] = yield* Effect.all([Fiber.join(first), Fiber.join(second)]);
+    expect(a).toEqual(b);
+    expect(calls).toBe(1);
+    yield* service.checkFailures(input);
+    expect(calls).toBe(1);
+    credential = "second";
+    expect((yield* service.checkFailures(input)).log).toMatchObject({ text: "second" });
+    expect(calls).toBe(2);
+    attempt = 2;
+    yield* TestClock.adjust("16 seconds");
+    yield* service.checkFailures({ ...ref, handle: "job:123:2" });
+    expect(calls).toBe(3);
+    attempt = 3;
+    running = true;
+    yield* TestClock.adjust("16 seconds");
+    yield* service.checkFailures({ ...ref, handle: "job:123:3" });
+    yield* service.checkFailures({ ...ref, handle: "job:123:3" });
+    expect(calls).toBe(5);
+    running = false;
+    yield* service.checkFailures({ ...ref, handle: "job:123:3" });
+    yield* service.checkFailures({ ...ref, handle: "job:123:3" });
+    expect(calls).toBe(6);
+    expect(
+      (yield* Effect.flip(service.checkFailures({ ...input, expectedAccountId: "other" })))._tag,
+    ).toBe("PullRequestOperationError");
+    expect(calls).toBe(6);
+    refuse = true;
+    attempt = 4;
+    yield* TestClock.adjust("16 seconds");
+    yield* Effect.flip(service.checkFailures({ ...ref, handle: "job:123:4" }));
+    yield* Effect.flip(service.checkFailures(input));
+    expect(calls).toBe(7);
+  }),
+);

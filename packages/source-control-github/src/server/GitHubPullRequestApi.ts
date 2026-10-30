@@ -1,3 +1,4 @@
+import { makeGitHubCheckFailureReader } from "./gitHubCheckFailures.ts";
 import { isCommitSha, normalizeHost } from "@t3tools/source-control-core/server/pullRequestUtils";
 import { removeAgentCredits } from "@t3tools/source-control-core/server/mergeMessage";
 import { KnownWorkflowRuns, makeChecksRevalidator } from "./gitHubConditionalChecks.ts";
@@ -474,6 +475,7 @@ export class GitHubPullRequestApi extends Context.Service<
       readonly number: number;
     }) => Effect.Effect<GitHubPullRequestWatchFingerprint | null, GitHubPullRequestApiError>;
 
+    readonly getCheckFailure: Effect.Success<typeof makeGitHubCheckFailureReader>;
     readonly revalidateChecks: Effect.Success<typeof makeChecksRevalidator>;
 
     readonly getPullRequestDetail: (input: {
@@ -894,6 +896,7 @@ export const make = Effect.gen(function* () {
   const sourceControlHost = yield* SourceControlHost.SourceControlHost;
   const fileSystem = yield* FileSystem.FileSystem;
   const revalidateChecks = yield* makeChecksRevalidator;
+  const getCheckFailure = yield* makeGitHubCheckFailureReader;
   const client = yield* GraphQLClient.make(PullRequestGraphQLGroup).pipe(
     Effect.provide(GitHubGraphQlClient.layer),
   );
@@ -1693,6 +1696,7 @@ export const make = Effect.gen(function* () {
   return GitHubPullRequestApi.of({
     withVerifiedCredential,
     revalidateChecks,
+    getCheckFailure,
     getRoutingIdentity,
     getViewerLogin: Effect.fn("GitHubPullRequestApi.getViewerLogin")(function (input) {
       return getRoutingIdentity(input).pipe(Effect.map((identity) => identity.viewer));

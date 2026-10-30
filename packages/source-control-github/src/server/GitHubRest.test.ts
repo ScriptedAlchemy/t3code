@@ -1,3 +1,5 @@
+import { makeGitHubCheckFailureReader } from "./gitHubCheckFailures.ts";
+import * as Metric from "effect/Metric";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Effect from "effect/Effect";
@@ -184,6 +186,11 @@ describe("GitHubRest", () => {
     return Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const api = yield* GitHubRest.GitHubRest;
+      const counter = Metric.withAttributes(GitHubRequestPolicy.gitHubRequestsTotal, {
+        resource: "core",
+        status: "304",
+      });
+      const before = yield* Metric.value(counter);
       const notModified = yield* api.rest({
         host: "github.com",
         operation: "checks",
@@ -191,6 +198,7 @@ describe("GitHubRest", () => {
         ifNoneMatch: '"abc"',
       });
       expect(notModified.status).toBe(304);
+      expect((yield* Metric.value(counter)).count - before.count).toBe(1);
       const error = yield* Effect.flip(
         api.rest({ host: "github.com", operation: "checks", path: "repos/acme/web/pulls/7" }),
       );
@@ -300,5 +308,145 @@ describe("GitHubCredentials", () => {
         ),
       ),
     ),
+  );
+});
+
+describe("GitHub check failures", () => {
+  const input = {
+    cwd: "/repo",
+    host: "github.com",
+    repository: "acme/web",
+    check: {
+      name: "lint",
+      status: "failure" as const,
+      description: null,
+      url: null,
+      handle: "github-check:123:1",
+    },
+  };
+  const job = {
+    id: 123,
+    run_id: 456,
+    run_attempt: 1,
+    status: "completed",
+    conclusion: "failure",
+    url: "https://api.github.com/repos/acme/web/actions/jobs/123",
+    run_url: "https://api.github.com/repos/acme/web/actions/runs/456",
+    check_run_url: "https://api.github.com/repos/acme/web/check-runs/123",
+    steps: [{ name: "Run lint", conclusion: "failure" }],
+  };
+
+  it.effect(
+    "follows the signed log redirect without Authorization and preserves bounded evidence",
+    () => {
+      const { layer, requests } = harness((request) => {
+        if (request.url.includes("/annotations"))
+          return json([
+            { path: "a.ts", start_line: 4, annotation_level: "failure", message: "bad code" },
+          ]);
+        if (request.url.endsWith("/logs"))
+          return new Response(null, {
+            status: 302,
+            headers: { location: "https://blob.example/log?signature=secret" },
+          });
+        if (request.url.startsWith("https://blob.example/"))
+          return new Response("2026-10-30T12:00:00Z ##[error]bad code\n");
+        return json(job);
+      });
+      return Effect.gen(function* () {
+        const read = yield* makeGitHubCheckFailureReader;
+        const result = yield* read(input);
+        expect(result).toMatchObject({
+          attempt: 1,
+          failedSteps: ["Run lint"],
+          annotations: [{ path: "a.ts", startLine: 4, message: "bad code" }],
+          log: { _tag: "excerpt", text: "##[error]bad code", totalLines: 1, truncated: false },
+        });
+        expect(result).not.toHaveProperty("required");
+        expect(requests).toHaveLength(4);
+        expect(requests[0]?.headers.authorization).toBe("Bearer first");
+        expect(requests[3]?.headers).not.toHaveProperty("authorization");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect.each([
+    {
+      name: "running",
+      job: { ...job, status: "in_progress" },
+      logStatus: 200,
+      reason: "still-running",
+      requests: 1,
+    },
+    {
+      name: "wrong check",
+      job: { ...job, check_run_url: "https://api.github.com/repos/acme/web/check-runs/999" },
+      logStatus: 200,
+      reason: "not-actions",
+      requests: 1,
+    },
+    {
+      name: "wrong repository",
+      job: { ...job, run_url: "https://api.github.com/repos/other/web/actions/runs/456" },
+      logStatus: 200,
+      reason: "not-actions",
+      requests: 1,
+    },
+    {
+      name: "wrong attempt",
+      job: { ...job, run_attempt: 2 },
+      logStatus: 200,
+      reason: "not-actions",
+      requests: 1,
+    },
+    { name: "expired", job, logStatus: 404, reason: "expired", requests: 3 },
+    { name: "gone", job, logStatus: 410, reason: "expired", requests: 3 },
+    { name: "forbidden", job, logStatus: 403, reason: "no-access", requests: 3 },
+  ])("returns $reason for $name without extra reads", (test) => {
+    const { layer, requests } = harness((request) =>
+      request.url.includes("/annotations")
+        ? json([])
+        : request.url.endsWith("/logs")
+          ? json({ message: "Unavailable" }, { status: test.logStatus })
+          : json(test.job),
+    );
+    return Effect.gen(function* () {
+      const read = yield* makeGitHubCheckFailureReader;
+      expect((yield* read(input)).log).toEqual({ _tag: "unavailable", reason: test.reason });
+      expect(requests).toHaveLength(test.requests);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps quota refusals typed and pauses subsequent reads", () => {
+    const { layer, requests } = harness((request) =>
+      request.url.includes("/annotations")
+        ? json([])
+        : request.url.endsWith("/logs")
+          ? json(
+              { message: "API rate limit exceeded" },
+              { status: 403, headers: { "x-ratelimit-remaining": "0", "retry-after": "60" } },
+            )
+          : json(job),
+    );
+    return Effect.gen(function* () {
+      const read = yield* makeGitHubCheckFailureReader;
+      expect((yield* Effect.flip(read(input)))._tag).toBe("GitHubApiRateLimitError");
+      expect((yield* Effect.flip(read(input)))._tag).toBe("SourceControlRateLimitPausedError");
+      expect(requests).toHaveLength(3);
+    }).pipe(Effect.provide(layer));
+  });
+  it.effect.each([403, 404])(
+    "reports an unavailable job (%s) without requesting its logs",
+    (status) => {
+      const { layer, requests } = harness(() => json({ message: "Unavailable" }, { status }));
+      return Effect.gen(function* () {
+        const read = yield* makeGitHubCheckFailureReader;
+        expect((yield* read(input)).log).toEqual({
+          _tag: "unavailable",
+          reason: status === 403 ? "no-access" : "not-actions",
+        });
+        expect(requests).toHaveLength(1);
+      }).pipe(Effect.provide(layer));
+    },
   );
 });

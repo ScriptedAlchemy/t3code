@@ -1,7 +1,7 @@
 import type { PullRequestCheck, PullRequestCheckStatus } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { dedupeChecks } from "./pullRequestChecks.ts";
+import { CHECK_LOG_EXCERPT_BUDGET, dedupeChecks, excerptCheckLog } from "./pullRequestChecks.ts";
 
 function entry(
   name: string,
@@ -176,5 +176,66 @@ describe("dedupeChecks", () => {
     ]);
 
     expect(checks.map((check) => check.name)).toEqual(["CI / build", "build"]);
+  });
+});
+
+describe("check log excerpts", () => {
+  it.each([
+    { chunks: [""], text: "", lines: 0 },
+    {
+      chunks: ["2026-10-30T12:00:00.1234567Z \u001b[31merror\u001b[0m\n"],
+      text: "error",
+      lines: 1,
+    },
+    { chunks: ["one\ntw", "o\nthree"], text: "one\ntwo\nthree", lines: 3 },
+  ])("strips formatting and counts lines across chunks %#", ({ chunks, text, lines }) => {
+    expect(excerptCheckLog(chunks)).toEqual({
+      _tag: "excerpt",
+      text,
+      totalLines: lines,
+      truncated: false,
+    });
+  });
+
+  it("keeps error context, its Run header and the tail within both budgets", () => {
+    const lines = [
+      "##[group]Run vp test",
+      ...Array.from({ length: 100 }, (_, i) => `line ${i}`),
+      "before",
+      "##[error]Assertion failed",
+      "after",
+      ...Array.from({ length: 100 }, (_, i) => `cleanup ${i}`),
+    ];
+    const result = excerptCheckLog([lines.join("\n")]);
+    expect(result.text).toContain("##[group]Run vp test");
+    expect(result.text).toContain("before\n##[error]Assertion failed\nafter");
+    expect(result.text).toContain("cleanup 99");
+    expect(result.totalLines).toBe(lines.length);
+    expect(result.truncated).toBe(true);
+    expect(result.text.split("\n").length).toBeLessThanOrEqual(CHECK_LOG_EXCERPT_BUDGET.maxLines);
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(CHECK_LOG_EXCERPT_BUDGET.maxBytes);
+  });
+
+  it("keeps a failed section's tail instead of later successful step output", () => {
+    const result = excerptCheckLog(
+      ["##[group]Run lint\nbroken rule\nexit 1\n##[group]Run cleanup\ncleanup output\n"],
+      ["Run lint"],
+    );
+    expect(result.text).toBe("##[group]Run lint\nbroken rule\nexit 1");
+    expect(result.totalLines).toBe(5);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("bounds huge Unicode lines and retains the end of a long stream", () => {
+    function* chunks() {
+      yield "🔥".repeat(20_000);
+      yield "\n";
+      for (let i = 0; i < 100_000; i++) yield `row ${i}\n`;
+    }
+    const result = excerptCheckLog(chunks());
+    expect(result.totalLines).toBe(100_001);
+    expect(result.text).toContain("row 99999");
+    expect(result.truncated).toBe(true);
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(CHECK_LOG_EXCERPT_BUDGET.maxBytes);
   });
 });

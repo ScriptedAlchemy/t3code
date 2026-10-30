@@ -29,6 +29,7 @@ import {
   type PullRequestDetail,
   type PullRequestPreview,
   type PullRequestChecks,
+  type PullRequestCheckFailure,
   type PullRequestDiffFileContentsInput,
   type PullRequestDiffFileContentsResult,
   type PullRequestDiffStat,
@@ -163,6 +164,10 @@ const VIEWER_CACHE_CAPACITY = 32;
 
 export type PullRequestError = PullRequestUnavailableError | PullRequestOperationError;
 
+const checkFailureKey = Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String]));
+const encodeCheckFailureKey = Schema.encodeSync(checkFailureKey);
+const decodeCheckFailureKey = Schema.decodeSync(checkFailureKey);
+
 const routingCredential = Context.Reference<{
   readonly credentialFingerprint: string;
   readonly viewer: string;
@@ -222,6 +227,9 @@ export class PullRequestService extends Context.Service<
     readonly checks: (
       input: PullRequestRef,
     ) => Effect.Effect<PullRequestChecks | null, PullRequestError>;
+    readonly checkFailures: (
+      input: PullRequestRef & { readonly handle: string },
+    ) => Effect.Effect<PullRequestCheckFailure, PullRequestError>;
     readonly watchFingerprint: (
       input: PullRequestRef,
     ) => Effect.Effect<ProviderChangeRequestWatchFingerprint | null, PullRequestError>;
@@ -537,6 +545,14 @@ function withRateLimitBackoff(
     ...(api.getChangeRequestChecks === undefined
       ? {}
       : { getChangeRequestChecks: wrap("getChangeRequestChecks", api.getChangeRequestChecks) }),
+    ...(api.getChangeRequestCheckFailure === undefined
+      ? {}
+      : {
+          getChangeRequestCheckFailure: wrap(
+            "getChangeRequestCheckFailure",
+            api.getChangeRequestCheckFailure,
+          ),
+        }),
     ...(api.getChangeRequestSummary === undefined
       ? {}
       : {
@@ -3030,6 +3046,112 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const checkFailureCache = yield* Cache.makeWith(
+    Effect.fn("PullRequestService.readCheckFailure")(function* (key: string) {
+      const [refKey, handle] = decodeCheckFailureKey(key);
+      const input = refOfCacheKey(refKey);
+      const project = yield* requireProject(input);
+      if (project.api.getChangeRequestCheckFailure === undefined) {
+        return yield* new PullRequestUnavailableError({ reason: "provider-unsupported" });
+      }
+      const checks = yield* Cache.get(checksCache, refKey);
+      const check = checks?.checks.find((check) => check.handle === handle);
+      if (check === undefined) {
+        return yield* new PullRequestOperationError({
+          operation: "checkFailures",
+          detail: "The check is not on this pull request's current checks list.",
+          reason: "not-found",
+        });
+      }
+      return yield* project.api
+        .getChangeRequestCheckFailure({
+          cwd: project.project.workspaceRoot,
+          repository: project.repository,
+          host: project.host,
+          check,
+        })
+        .pipe(Effect.mapError(toPullRequestError("checkFailures")));
+    }),
+    {
+      capacity: DETAIL_CACHE_CAPACITY,
+      timeToLive: (exit) =>
+        Exit.isSuccess(exit) &&
+        exit.value.attempt !== undefined &&
+        !(exit.value.log._tag === "unavailable" && exit.value.log.reason === "still-running")
+          ? Duration.hours(6)
+          : Duration.zero,
+    },
+  );
+
+  const checkFailures: PullRequestService["Service"]["checkFailures"] = Effect.fn(
+    "PullRequestService.checkFailures",
+  )(
+    function* (input) {
+      const ref = yield* canonicalRef(input);
+      const project = yield* requireProject(ref);
+      if (
+        project.api.getChangeRequestCheckFailure === undefined ||
+        project.api.withVerifiedCredential === undefined
+      ) {
+        return yield* new PullRequestUnavailableError({ reason: "provider-unsupported" });
+      }
+      return yield* project.api
+        .withVerifiedCredential(
+          {
+            cwd: project.project.workspaceRoot,
+            repository: project.repository,
+            host: project.host,
+          },
+          (identity) =>
+            Effect.gen(function* () {
+              if (
+                input.expectedAccountId !== undefined &&
+                identity.accountId !== input.expectedAccountId
+              ) {
+                return yield* new PullRequestOperationError({
+                  operation: "routeIdentity",
+                  detail: "The signed-in account does not match the requested account.",
+                });
+              }
+              yield* rateLimits.check({ provider: project.api.kind, host: project.host }).pipe(
+                Effect.mapError((cause) =>
+                  toPullRequestError("checkFailures")(
+                    new PullRequestProviderError({
+                      provider: project.api.kind,
+                      operation: "checkFailures",
+                      reason: "rate-limited",
+                      retryAt: cause.retryAt,
+                      detail: cause.detail,
+                      cause,
+                    }),
+                  ),
+                ),
+              );
+              const key = refCacheKey({
+                ...ref,
+                [credentialNamespace]: identity.credentialFingerprint,
+              });
+              return yield* Cache.get(
+                checkFailureCache,
+                encodeCheckFailureKey([key, input.handle]),
+              );
+            }).pipe(
+              Effect.provideService(
+                SourceControlRateLimit.CredentialScope,
+                identity.credentialFingerprint,
+              ),
+            ),
+        )
+        .pipe(
+          Effect.catchTags({
+            PullRequestProviderError: (error) =>
+              Effect.fail(toPullRequestError("checkFailures")(error)),
+          }),
+        );
+    },
+    Effect.provideService(SourceControlRateLimit.Interactive, false),
+  );
+
   const watchFingerprintCache = yield* Cache.makeWith(
     (key: string) => {
       const input = refOfCacheKey(key);
@@ -3688,6 +3810,7 @@ export const make = Effect.gen(function* () {
     refreshAfterTurn,
     detail: credentialCached(detail),
     checks: credentialCached((input) => Cache.get(checksCache, refCacheKey(input))),
+    checkFailures,
     watchFingerprint: credentialCached((input) =>
       Cache.get(watchFingerprintCache, refCacheKey(input)),
     ),

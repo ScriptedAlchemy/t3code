@@ -5,7 +5,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
+import {
+  HttpClient,
+  HttpClientRequest,
+  type HttpClientResponse,
+  type HttpClientError,
+} from "effect/http";
 
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import * as GitHubAppSignIn from "./GitHubAppSignIn.ts";
@@ -19,12 +24,35 @@ const { gitHubApiUrls } = GitHubRequestPolicy;
 type GitHubApiError = GitHubRequestPolicy.GitHubApiError;
 
 export interface GitHubRestResponse {
+  readonly totalLines?: number;
   readonly status: number;
   readonly headers: Readonly<Record<string, string | undefined>>;
   readonly body: string;
   readonly truncated: boolean;
   /** Invalid UTF-8 indicates a binary raw file. */
   readonly invalidUtf8: boolean;
+}
+
+interface RestBody {
+  readonly text: string;
+  readonly truncated: boolean;
+  readonly invalidUtf8: boolean;
+  readonly totalLines?: number;
+}
+
+function readResponseBody(
+  input: {
+    readonly readBody?: GitHubRestInput["readBody"] | undefined;
+    readonly maxResponseBytes?: number | undefined;
+  },
+  response: HttpClientResponse.HttpClientResponse,
+): Effect.Effect<RestBody, HttpClientError.HttpClientError> {
+  return input.readBody !== undefined && response.status >= 200 && response.status < 300
+    ? input.readBody(response)
+    : collectUint8StreamText({
+        stream: response.stream,
+        maxBytes: input.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+      });
 }
 
 export interface GitHubRestInput {
@@ -43,6 +71,10 @@ export interface GitHubRestInput {
   readonly timeout?: Duration.Input;
   /** Overrides `SourceControlRateLimit.Interactive` for this one request. */
   readonly allowReserve?: boolean;
+  readonly followRedirect?: "unauthenticated";
+  readonly readBody?: (
+    response: HttpClientResponse.HttpClientResponse,
+  ) => Effect.Effect<RestBody, HttpClientError.HttpClientError>;
 }
 
 export class GitHubRest extends Context.Service<
@@ -97,6 +129,7 @@ function restErrorMessages(body: string): ReadonlyArray<string> | undefined {
 function classify(input: {
   readonly answer: GitHubRestResponse;
   readonly acceptNotModified: boolean;
+  readonly acceptRedirect?: boolean;
 }): GitHubRequestPolicy.GitHubAnswer<GitHubRestResponse> {
   const { status, headers, body } = input.answer;
   const meta = { status, headers };
@@ -105,7 +138,11 @@ function classify(input: {
   }
   if (status === 401) return { _tag: "Unauthorized", ...meta };
   if (status === 404) return { _tag: "NotFound", ...meta };
-  if ((status >= 200 && status < 300) || (status === 304 && input.acceptNotModified)) {
+  if (
+    (status >= 200 && status < 300) ||
+    (status === 304 && input.acceptNotModified) ||
+    (status === 302 && input.acceptRedirect)
+  ) {
     return { _tag: "Ok", value: input.answer, ...meta };
   }
   return { _tag: "Failed", messages: restErrorMessages(body), ...meta };
@@ -124,6 +161,8 @@ export const make = Effect.gen(function* () {
     readonly timeout?: Duration.Input | undefined;
     readonly allowReserve: boolean;
     readonly acceptNotModified: boolean;
+    readonly followRedirect?: "unauthenticated" | undefined;
+    readonly readBody?: GitHubRestInput["readBody"] | undefined;
   }) {
     const host = normalizeHost(input.host);
     // Query strings can expose SHAs or branches in traces.
@@ -149,13 +188,10 @@ export const make = Effect.gen(function* () {
               // Client spans expose SHAs and branches through url.full/url.query.
               Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
             );
-          const collected = yield* collectUint8StreamText({
-            stream: response.stream,
-            maxBytes: input.maxResponseBytes,
-          }).pipe(
+          const collected = yield* readResponseBody(input, response).pipe(
             Effect.catchIf(
               (error) => error.reason._tag === "EmptyBodyError",
-              () => Effect.succeed({ text: "", truncated: false, invalidUtf8: false }),
+              () => Effect.succeed<RestBody>({ text: "", truncated: false, invalidUtf8: false }),
             ),
           );
           const { status, headers: responseHeaders } = response;
@@ -165,8 +201,13 @@ export const make = Effect.gen(function* () {
             body: collected.text,
             truncated: collected.truncated,
             invalidUtf8: collected.invalidUtf8,
+            ...(collected.totalLines === undefined ? {} : { totalLines: collected.totalLines }),
           };
-          return classify({ answer, acceptNotModified: input.acceptNotModified });
+          return classify({
+            answer,
+            acceptNotModified: input.acceptNotModified,
+            acceptRedirect: input.followRedirect !== undefined,
+          });
         }).pipe(
           Effect.mapError(
             (cause) =>
@@ -203,7 +244,73 @@ export const make = Effect.gen(function* () {
           timeout: input.timeout,
           allowReserve: input.allowReserve ?? interactive,
           acceptNotModified: input.ifNoneMatch !== undefined,
+          followRedirect: input.followRedirect,
+          readBody: input.readBody,
         }),
+      ),
+      Effect.flatMap(
+        Effect.fn("GitHubRest.redirect")(
+          function* (answer: GitHubRestResponse) {
+            if (answer.status !== 302 || input.followRedirect !== "unauthenticated") return answer;
+            const location = answer.headers.location;
+            const target = location === undefined ? null : URL.parse(location);
+            if (target?.protocol !== "https:" || target.username || target.password) {
+              return yield* new GitHubRequestPolicy.GitHubApiResponseError({
+                host: input.host,
+                operation: input.operation,
+                status: 302,
+              });
+            }
+            // A signed blob URL is a separate authority and must never receive GitHub credentials.
+            const response = yield* httpClient.execute(HttpClientRequest.get(target.href)).pipe(
+              Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
+              Effect.mapError(
+                (cause) =>
+                  new GitHubRequestPolicy.GitHubApiRequestError({
+                    host: input.host,
+                    operation: input.operation,
+                    cause,
+                  }),
+              ),
+            );
+            if (response.status < 200 || response.status >= 300) {
+              return yield* new GitHubRequestPolicy.GitHubApiResponseError({
+                host: input.host,
+                operation: input.operation,
+                status: response.status,
+              });
+            }
+            const collected = yield* readResponseBody(input, response).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new GitHubRequestPolicy.GitHubApiRequestError({
+                    host: input.host,
+                    operation: input.operation,
+                    cause,
+                  }),
+              ),
+            );
+            return {
+              status: response.status,
+              headers: response.headers,
+              body: collected.text,
+              truncated: collected.truncated,
+              invalidUtf8: collected.invalidUtf8,
+              ...(collected.totalLines === undefined ? {} : { totalLines: collected.totalLines }),
+            };
+          },
+          Effect.timeoutOrElse({
+            duration: input.timeout ?? "30 seconds",
+            orElse: () =>
+              Effect.fail(
+                new GitHubRequestPolicy.GitHubApiRequestError({
+                  host: input.host,
+                  operation: input.operation,
+                  cause: new Error("Log download timed out"),
+                }),
+              ),
+          }),
+        ),
       ),
     );
   };
