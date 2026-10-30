@@ -45,4 +45,16 @@ describe("buildRuntimeInstructions", () => {
     assert.include(instructions, "Omitting mode on an existing watch keeps its mode.");
     assert.include(instructions, "call unwatch_pull_request");
   });
+
+  it("sends PR reads through T3's tools and keeps gh for writes and gaps", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+
+    assert.include(instructions, "Read pull requests through T3.");
+    assert.include(
+      instructions,
+      "pull_request_status returns head, checks, reviews and mergeability",
+    );
+    assert.include(instructions, "gh spends the same GitHub rate limit");
+    assert.include(instructions, "stop all GitHub reads, gh included, until the time it names");
+  });
 });

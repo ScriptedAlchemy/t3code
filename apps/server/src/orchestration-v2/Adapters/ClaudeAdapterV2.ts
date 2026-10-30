@@ -23,6 +23,10 @@ import {
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsage.ts";
 import {
+  decideGitHubCommand,
+  type GitHubCommandDecision,
+} from "../../sourceControl/agentGitHubReads.ts";
+import {
   type CanUseTool,
   forkSession as forkClaudeSession,
   type EffortLevel,
@@ -175,7 +179,10 @@ import {
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
-import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import {
+  GITHUB_READS_INSTRUCTIONS,
+  buildRuntimeInstructions,
+} from "@t3tools/provider-core/server/runtimeInstructions";
 import {
   mcpToolPresentation,
   normalizeMcpText,
@@ -1403,13 +1410,39 @@ To wait for a background command or Monitor you started (tests, a build), call \
 `;
 
 // Native subagents start from their task, not this session's system prompt.
-const subagentDeviceInstructions: HookCallback = () =>
-  Promise.resolve({
-    hookSpecificOutput: {
-      hookEventName: "SubagentStart",
-      additionalContext: T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
-    },
-  });
+const subagentInstructions =
+  (deviceInstructions: boolean): HookCallback =>
+  () =>
+    Promise.resolve({
+      hookSpecificOutput: {
+        hookEventName: "SubagentStart",
+        additionalContext: [
+          GITHUB_READS_INSTRUCTIONS,
+          ...(deviceInstructions ? [T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH] : []),
+        ].join("\n\n"),
+      },
+    });
+
+// Native subagents' Bash calls run through the parent's hooks, so one gate covers both.
+const gitHubReadGate: HookCallback = (input) => {
+  const command =
+    input.hook_event_name === "PreToolUse" && input.tool_name === "Bash"
+      ? (input.tool_input as { readonly command?: unknown }).command
+      : undefined;
+  const decision: GitHubCommandDecision =
+    typeof command === "string" ? decideGitHubCommand(command) : { allow: true };
+  return Promise.resolve(
+    decision.allow
+      ? {}
+      : {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: decision.reason,
+          },
+        },
+  );
+};
 
 export function makeClaudeQueryOptions(input: {
   readonly platform: NodeJS.Platform;
@@ -1569,9 +1602,14 @@ export function makeClaudeQueryOptions(input: {
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
-    ...(deviceInstructions
-      ? { hooks: { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] } }
-      : {}),
+    ...(input.mcpServers === undefined
+      ? {}
+      : {
+          hooks: {
+            PreToolUse: [{ matcher: "Bash", hooks: [gitHubReadGate] }],
+            SubagentStart: [{ hooks: [subagentInstructions(deviceInstructions)] }],
+          },
+        }),
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
   };
   const additionalDirectories = [

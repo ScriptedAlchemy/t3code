@@ -183,7 +183,7 @@ export function agentShellCommands(input: string): ReadonlyArray<AgentShellComma
   return commands;
 }
 
-const GH_DIRECT_ENV = "T3_GH_DIRECT";
+export const GH_DIRECT_ENV = "T3_GH_DIRECT";
 
 export interface AgentForgeCommand {
   readonly forge: SourceControlProviderKind;
