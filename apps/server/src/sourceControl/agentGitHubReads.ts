@@ -46,13 +46,17 @@ export function decideGitHubCommand(command: string): GitHubCommandDecision {
     if (forgeCommand.kind !== "read" || bypass) continue;
     const tool = PULL_REQUEST_READ_TOOLS[forgeCommand.intent];
     const args = JSON.stringify(pullRequestReadArguments(forgeCommand.target));
+    const introduction =
+      forgeCommand.intent === "failures"
+        ? "Read PR check failures through T3."
+        : "T3 already reads this.";
     const scope =
       forgeCommand.intent === "failures"
-        ? `This tool answers the failing checks of the thread's or a named PR${forgeCommand.target.repository === undefined ? "" : ` in ${forgeCommand.target.repository}`}. If this run or job is not one of those, rerun with the bypass.`
+        ? `This tool answers the failing checks of the thread's or a named PR.${forgeCommand.target.repository === undefined ? "" : ` The requested repository is ${forgeCommand.target.repository}.`} If this run or job is not one of those, rerun with the bypass.`
         : "If it can't answer what you need, rerun with the bypass.";
     return {
       allow: false,
-      reason: `T3 already reads this. Call ${tool} with ${args} (load it with ToolSearch if it is deferred). ${scope} Rerun as \`${bypassCommand.trim()}\`.`,
+      reason: `${introduction} Call ${tool} with ${args} (load it with ToolSearch if it is deferred). ${scope} Rerun as \`${bypassCommand.trim()}\`.`,
     };
   }
   return { allow: true };

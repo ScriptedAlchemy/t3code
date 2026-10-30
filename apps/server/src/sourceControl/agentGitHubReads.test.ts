@@ -105,6 +105,7 @@ describe("gate regression hints", () => {
       const decision = decideGitHubCommand(command);
       assert.isFalse(decision.allow);
       if (decision.allow) return;
+      assert.notInclude(decision.reason, "T3 already reads this");
       assert.include(decision.reason, "failing checks of");
       assert.include(decision.reason, "run or job");
       assert.include(decision.reason, "T3_GH_DIRECT=1");
