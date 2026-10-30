@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { formatComposerModelMention, rankComposerModelMentions } from "./composerModelMentions.ts";
+import {
+  collectComposerModelMentions,
+  formatComposerModelMention,
+  rankComposerModelMentions,
+} from "./composerModelMentions.ts";
 
 const models = [
   { id: "traex:gpt", name: "GPT-6.1", driverKind: "codex", providerDisplayName: "Traex" },
@@ -58,4 +62,39 @@ describe("formatComposerModelMention", () => {
       "model:opencode/anthropic/opus",
     );
   });
+});
+
+describe("collectComposerModelMentions", () => {
+  it("reads back what formatComposerModelMention writes, inside prose", () => {
+    const text = `use ${formatComposerModelMention("opencode", "anthropic/opus")}, then model:codex/gpt-5.4.`;
+    expect(collectComposerModelMentions(text)).toEqual([
+      {
+        instanceId: "opencode",
+        model: "anthropic/opus",
+        source: "model:opencode/anthropic/opus",
+        start: 4,
+        end: 33,
+      },
+      { instanceId: "codex", model: "gpt-5.4", source: "model:codex/gpt-5.4", start: 40, end: 59 },
+    ]);
+  });
+
+  it.each([
+    ["(model:codex/gpt-6.1).", ["codex/gpt-6.1"]],
+    ['"model:codex/gpt-6.1"', ["codex/gpt-6.1"]],
+    ["model:codex/gpt-6.1,model:claudeAgent/sonnet", ["codex/gpt-6.1", "claudeAgent/sonnet"]],
+    ["model:codex/gpt-6.1's output", ["codex/gpt-6.1"]],
+    ["model:opencode/foo(bar)", ["opencode/foo(bar)"]],
+  ])("bounds the reference in %s", (text, expected) => {
+    expect(
+      collectComposerModelMentions(text).map(({ instanceId, model }) => `${instanceId}/${model}`),
+    ).toEqual(expected);
+  });
+
+  it.each(["remodel:codex/gpt", "model:codex", "model:/gpt", "model:codex/.", "model:1x/gpt"])(
+    "ignores %s",
+    (text) => {
+      expect(collectComposerModelMentions(text)).toEqual([]);
+    },
+  );
 });
