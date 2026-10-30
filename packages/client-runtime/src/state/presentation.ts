@@ -11,6 +11,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { AVAILABLE_CONNECTION_STATE, type SupervisorConnectionState } from "../connection/model.ts";
 import {
   connectionCatalogDisplayUrl,
+  isEnvironmentOffline,
   presentConnectionState,
   type EnvironmentConnectionPhase,
   type EnvironmentConnectionPresentation,
@@ -295,6 +296,18 @@ export function createEnvironmentSummaryAtoms(input: {
       ? previous
       : next;
   });
+  const offlineEnvironmentIdsAtom = Atom.make((get) => {
+    const next = get(environmentIdsAtom).filter((id) => {
+      const connectionState = get(environmentAtom(id))?.connectionState;
+      return connectionState !== undefined && isEnvironmentOffline(connectionState);
+    });
+    const previous = Option.getOrNull(get.self<ReadonlyArray<EnvironmentId>>());
+    return previous !== null &&
+      previous.length === next.length &&
+      next.every((id, index) => id === previous[index])
+      ? previous
+      : next;
+  });
   const machineByIdAtom = Atom.make((get) => {
     const next = new Map(
       get(environmentIdsAtom).map(
@@ -321,6 +334,7 @@ export function createEnvironmentSummaryAtoms(input: {
   return {
     environmentIdsAtom,
     connectedEnvironmentIdsAtom,
+    offlineEnvironmentIdsAtom,
     identitiesAtom,
     environmentsAtom,
     machineByIdAtom,

@@ -92,6 +92,28 @@ describe("environment summary subscriptions", () => {
   });
 });
 
+describe("offline environments", () => {
+  it("lists environments whose connection is neither connected nor first-attempt connecting", () => {
+    const h = harness();
+    const stop = h.registry.subscribe(h.offlineEnvironmentIdsAtom, () => {});
+    const supervisor = (phase: "connected" | "connecting" | "backoff") =>
+      AsyncResult.success({ ...AVAILABLE_CONNECTION_STATE, phase, attempt: 1 });
+    try {
+      expect(h.registry.get(h.offlineEnvironmentIdsAtom)).toEqual([]);
+      h.registry.set(h.state, supervisor("backoff"));
+      expect(h.registry.get(h.offlineEnvironmentIdsAtom)).toEqual([FIRST, SECOND]);
+      h.registry.set(h.state, supervisor("connecting"));
+      expect(h.registry.get(h.offlineEnvironmentIdsAtom)).toEqual([]);
+      h.registry.set(h.state, supervisor("backoff"));
+      h.registry.set(h.state, supervisor("connected"));
+      expect(h.registry.get(h.offlineEnvironmentIdsAtom)).toEqual([]);
+    } finally {
+      stop();
+      h.registry.dispose();
+    }
+  });
+});
+
 describe("presentations with providers", () => {
   it("leaves out disabled connections until they are re-enabled", () => {
     const h = harness();

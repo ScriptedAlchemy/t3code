@@ -64,6 +64,14 @@ export function presentConnectionState(
   }
 }
 
+/**
+ * "connecting" counts as online so a first attempt at startup does not hide rows that return
+ * moments later; "reconnecting" counts as offline so retries do not flicker them.
+ */
+export function isEnvironmentOffline(phase: EnvironmentConnectionPhase): boolean {
+  return phase !== "connected" && phase !== "connecting";
+}
+
 export function connectionStatusText(connection: EnvironmentConnectionPresentation): string {
   switch (connection.phase) {
     case "available":
