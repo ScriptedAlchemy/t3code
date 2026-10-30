@@ -88,6 +88,13 @@ blocked work. It records the activity timestamp for stable
 sorting and detaches idle provider sessions. Clients render the persisted result; they do not
 derive settlement from their own clocks or PR caches.
 
+Agents' pull request reads go through
+[`PullRequestOracle`](../../apps/server/src/pullRequest/PullRequestOracle.ts), which composes
+`PullRequestService` reads and so shares their caches, rate-limit pause, and quota reserve with
+the UI and the reactors. The Claude `PreToolUse` gate that refuses `gh` reads T3 answers is
+stateless and never rewrites a command: `PullRequestSyncReactor` parses agents' `gh pr create`
+and merge commands as typed, so a rewritten command would break auto-linking.
+
 ## Waiting for asynchronous work
 
 Tests use [drainable workers](../../packages/shared/src/DrainableWorker.ts) to wait until both the
