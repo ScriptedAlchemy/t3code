@@ -21,7 +21,7 @@ const writeSkill = Effect.fn(function* (
 });
 
 it.layer(NodeServices.layer)("discoverClaudeSkills", (it) => {
-  it.effect.each(["current", "other-cache", "other-marketplaces"])(
+  it.effect.each(["current", "other-cache", "other-marketplaces", "other-existing"])(
     "discovers enabled plugin skills with manifest names from %s and ignores skill overrides",
     (location) =>
       Effect.gen(function* () {
@@ -30,9 +30,18 @@ it.layer(NodeServices.layer)("discoverClaudeSkills", (it) => {
         const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-skills-" });
         const configDir = path.join(tempDir, "claude-home");
         const branch = location === "other-marketplaces" ? "marketplaces" : "cache";
-        const plugin = path.join(configDir, "plugins", branch, "shop", "plugin", "1.0.0");
+        // A plugins/cache segment inside the home path must not confuse the rebase.
+        const otherAccount = path.join(tempDir, "plugins", "cache", "other-account");
+        const plugin = path.join(
+          location === "other-existing" ? otherAccount : configDir,
+          "plugins",
+          branch,
+          "shop",
+          "plugin",
+          "1.0.0",
+        );
         const recorded =
-          location === "current"
+          location === "current" || location === "other-existing"
             ? plugin
             : path.join(tempDir, "deleted-account", "plugins", branch, "shop", "plugin", "1.0.0");
         const disabled = path.join(configDir, "plugins", "disabled");

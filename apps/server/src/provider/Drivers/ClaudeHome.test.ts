@@ -92,9 +92,13 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
               accountDir,
               active: shareProfile,
             });
-            const bucket =
-              "11111111-1111-1111-1111-111111111111_22222222-2222-2222-2222-222222222222";
-            for (const name of ["plugins", "skills"]) {
+            // Skills bind to an account; plugins can sync before the account is bound.
+            const buckets = {
+              skills: "11111111-1111-1111-1111-111111111111_22222222-2222-2222-2222-222222222222",
+              plugins: "11111111-1111-1111-1111-111111111111_unbound",
+            } as const;
+            for (const name of ["plugins", "skills"] as const) {
+              const bucket = buckets[name];
               yield* fs.makeDirectory(path.join(accountDir, name, "synced", bucket), {
                 recursive: true,
               });
@@ -126,7 +130,8 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
                 );
               }
               expect(yield* fs.exists(path.join(shared, "settings.json"))).toBe(false);
-              for (const name of ["plugins", "skills"]) {
+              for (const name of ["plugins", "skills"] as const) {
+                const bucket = buckets[name];
                 expect(
                   yield* fs.readFileString(path.join(shared, name, "synced", bucket, "skill.md")),
                 ).toBe("skill");

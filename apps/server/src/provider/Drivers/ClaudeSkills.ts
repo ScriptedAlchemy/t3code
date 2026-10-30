@@ -225,11 +225,15 @@ function isInsideDirectory(path: Path.Path, directory: string, candidate: string
   return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
+// An install made from another account records its own plugins root; the native loader
+// falls back to the same path under this root when the recorded one is gone.
 function rebaseClaudePluginPath(path: Path.Path, pluginsPath: string, installPath: string) {
   const match = installPath
     .replaceAll("\\", "/")
-    .match(/(?:^|\/)plugins\/(cache|marketplaces)\/(.+)$/);
-  return match ? path.join(pluginsPath, match[1]!, match[2]!) : installPath;
+    .match(/^(?:.*\/)?plugins\/(cache|marketplaces)\/(.+)$/);
+  if (!match) return undefined;
+  const rebased = path.join(pluginsPath, match[1]!, match[2]!);
+  return rebased === path.resolve(installPath) ? undefined : rebased;
 }
 
 const discoverPluginSkillRoots = Effect.fn("discoverPluginSkillRoots")(function* (
@@ -266,10 +270,10 @@ const discoverPluginSkillRoots = Effect.fn("discoverPluginSkillRoots")(function*
     const applicable = yield* Effect.filter(
       entries
         .flatMap((entry) => Option.toArray(decodeInstalledPlugin(entry)))
-        .map((record) => ({
-          ...record,
-          installPath: rebaseClaudePluginPath(path, pluginsPath, record.installPath),
-        })),
+        .flatMap((record) => {
+          const rebased = rebaseClaudePluginPath(path, pluginsPath, record.installPath);
+          return rebased === undefined ? [record] : [record, { ...record, installPath: rebased }];
+        }),
       (record) =>
         Effect.gen(function* () {
           if (record.scope === "user" || record.scope === "managed") return true;

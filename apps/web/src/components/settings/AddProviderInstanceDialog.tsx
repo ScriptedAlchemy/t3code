@@ -170,7 +170,8 @@ const CONNECTION_OPTIONS = {
     {
       value: "cli",
       label: "Sign in with Claude Code",
-      description: "Add an account with its own Claude settings and history.",
+      description:
+        "Add an account with its own login and history that shares your Claude settings, skills, and plugins.",
       icon: TerminalIcon,
     },
     {

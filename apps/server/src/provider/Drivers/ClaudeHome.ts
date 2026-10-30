@@ -52,7 +52,7 @@ export const ClaudeAccountDir = Schema.NonEmptyString.check(
 export type ClaudeAccountDir = typeof ClaudeAccountDir.Type;
 export const parseClaudeAccountDir = Schema.decodeSync(ClaudeAccountDir);
 
-const SYNC_BUCKET = /^(?:\.bucket-)?[0-9a-f-]{36}_[0-9a-f-]{36}$/i;
+const SYNC_BUCKET = /^(?:\.bucket-)?[0-9a-f-]{36}_(?:[0-9a-f-]{36}|unbound)$/i;
 const SYNCED_BUCKETS: OverlayFold = {
   _tag: "FoldDirectory",
   children: (name) =>
