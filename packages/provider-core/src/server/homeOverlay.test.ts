@@ -322,6 +322,38 @@ it.layer(NodeServices.layer)("materializeHomeOverlay", (it) => {
           expect(yield* fs.readFileString(path.join(homes.sharedRoot, "differs", "SKILL.md"))).toBe(
             "shared",
           );
+
+          // Equal bytes where only one copy runs; equal link text that lands on different files.
+          yield* write(homes.accountDir, "mode", "same");
+          yield* write(homes.sharedRoot, "mode", "same");
+          yield* fs.chmod(path.join(homes.accountDir, "mode", "SKILL.md"), 0o755);
+          for (const root of [homes.accountDir, homes.sharedRoot]) {
+            yield* write(root, "escapes", "same");
+            yield* fs.writeFileString(path.join(root, "outside.md"), root);
+            yield* fs.symlink("../outside.md", path.join(root, "escapes", "linked.md"));
+          }
+          for (const name of ["mode", "escapes"]) {
+            const differs = yield* materializeHomeOverlay(overlay([name])).pipe(Effect.flip);
+            expect(differs).toMatchObject({ _tag: "HomeOverlayEntryConflictError" });
+            expect(yield* linkTarget(path.join(homes.accountDir, name))).toBeUndefined();
+          }
+
+          // The discard path is the user's unless it holds what an earlier discard left.
+          yield* write(homes.accountDir, "kept", "equal");
+          yield* write(homes.sharedRoot, "kept", "equal");
+          yield* write(homes.accountDir, ".kept.t3-discard", "mine");
+          const occupied = yield* materializeHomeOverlay(overlay(["kept"])).pipe(Effect.flip);
+          expect(occupied).toMatchObject({ _tag: "HomeOverlayEntryConflictError" });
+          expect(
+            yield* fs.readFileString(path.join(homes.accountDir, ".kept.t3-discard", "SKILL.md")),
+          ).toBe("mine");
+          expect(yield* linkTarget(path.join(homes.accountDir, "kept"))).toBeUndefined();
+          yield* write(homes.accountDir, ".kept.t3-discard", "equal");
+          yield* materializeHomeOverlay(overlay(["kept"]));
+          expect(yield* linkTarget(path.join(homes.accountDir, "kept"))).toBe(
+            path.join(homes.sharedRoot, "kept"),
+          );
+          expect(yield* fs.exists(path.join(homes.accountDir, ".kept.t3-discard"))).toBe(false);
         }),
     );
   });

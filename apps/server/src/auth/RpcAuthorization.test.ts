@@ -78,6 +78,15 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("lets read-only clients see skills library status but not move skill folders", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverGetSkillsLibraryStatus)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverRefreshSkillsLibrary)).toBe(
+      AuthSettingsWriteScope,
+    );
+  });
+
   it("treats the project Loom as a thread read", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.projectReadLoomWindow)).toBe(
       AuthOrchestrationReadScope,

@@ -693,7 +693,12 @@ export const SkillsLibraryStatus = Schema.Struct({
   libraryPath: Schema.String,
   linked: Schema.Array(Schema.Struct({ driver: ProviderDriverKind, name: Schema.String })),
   conflicts: Schema.Array(
-    Schema.Struct({ name: Schema.String, paths: Schema.Tuple([Schema.String, Schema.String]) }),
+    Schema.Struct({
+      name: Schema.String,
+      paths: Schema.Tuple([Schema.String, Schema.String]),
+      /** The second path is a link inside the skill whose target lies outside it. */
+      reason: Schema.optionalKey(Schema.Literal("outsideLink")),
+    }),
   ),
   nameMismatches: Schema.Array(
     Schema.Struct({ name: Schema.String, frontmatterName: Schema.String }),

@@ -130,28 +130,40 @@ type LinkState =
 // Finder writes .DS_Store into any folder it shows, so it never makes two copies differ.
 const IGNORED_CONTENT_NAMES = new Set([".DS_Store"]);
 
-/** True when both paths hold the same tree: equal names, file bytes, and link targets. */
+/** Where a directory Move parks an equal source while deleting it. */
+export const discardPath = (path: Path.Path, source: string) =>
+  path.join(path.dirname(source), `.${path.basename(source)}.t3-discard`);
+
+/** True when both paths hold the same tree: equal names, bytes, executable bits, and link targets. */
 export async function sameContent(path: Path.Path, left: string, right: string): Promise<boolean> {
-  const [a, b] = await Promise.all([NodeFSP.lstat(left), NodeFSP.lstat(right)]);
-  if (a.isSymbolicLink() || b.isSymbolicLink()) {
-    if (!a.isSymbolicLink() || !b.isSymbolicLink()) return false;
-    const [x, y] = await Promise.all([NodeFSP.readlink(left), NodeFSP.readlink(right)]);
-    return x === y;
-  }
-  if (a.isFile() && b.isFile()) {
-    if (a.size !== b.size) return false;
-    const [x, y] = await Promise.all([NodeFSP.readFile(left), NodeFSP.readFile(right)]);
-    return x.equals(y);
-  }
-  if (!a.isDirectory() || !b.isDirectory()) return false;
-  const list = async (directory: string) =>
-    (await NodeFSP.readdir(directory)).filter((name) => !IGNORED_CONTENT_NAMES.has(name)).sort();
-  const [x, y] = await Promise.all([list(left), list(right)]);
-  if (x.length !== y.length || x.some((name, index) => name !== y[index])) return false;
-  for (const name of x) {
-    if (!(await sameContent(path, path.join(left, name), path.join(right, name)))) return false;
-  }
-  return true;
+  const inside = (root: string, target: string) =>
+    target === root || target.startsWith(`${root}${path.sep}`);
+  const compare = async (x: string, y: string): Promise<boolean> => {
+    const [a, b] = await Promise.all([NodeFSP.lstat(x), NodeFSP.lstat(y)]);
+    if (a.isSymbolicLink() || b.isSymbolicLink()) {
+      if (!a.isSymbolicLink() || !b.isSymbolicLink()) return false;
+      const [p, q] = await Promise.all([NodeFSP.readlink(x), NodeFSP.readlink(y)]);
+      if (p !== q) return false;
+      // Equal relative text names different files once it leaves the tree.
+      const [from, to] = [path.resolve(path.dirname(x), p), path.resolve(path.dirname(y), q)];
+      return from === to || (inside(left, from) && inside(right, to));
+    }
+    if (a.isFile() && b.isFile()) {
+      if (a.size !== b.size || (a.mode & 0o111) !== (b.mode & 0o111)) return false;
+      const [p, q] = await Promise.all([NodeFSP.readFile(x), NodeFSP.readFile(y)]);
+      return p.equals(q);
+    }
+    if (!a.isDirectory() || !b.isDirectory()) return false;
+    const list = async (directory: string) =>
+      (await NodeFSP.readdir(directory)).filter((name) => !IGNORED_CONTENT_NAMES.has(name)).sort();
+    const [p, q] = await Promise.all([list(x), list(y)]);
+    if (p.length !== q.length || p.some((name, index) => name !== q[index])) return false;
+    for (const name of p) {
+      if (!(await compare(path.join(x, name), path.join(y, name)))) return false;
+    }
+    return true;
+  };
+  return compare(left, right);
 }
 
 function isNotSymlinkError(error: PlatformError.PlatformError): boolean {
@@ -276,12 +288,22 @@ export const materializeHomeOverlay = Effect.fn("materializeHomeOverlay")(functi
           });
           if (!equal) return yield* conflict;
           // Renamed aside first so a crash mid-delete leaves the entry missing, not half-removed.
-          const discarded = path.join(path.dirname(source), `.${path.basename(source)}.t3-discard`);
-          yield* Effect.tryPromise({
+          const discarded = discardPath(path, source);
+          const parked = yield* Effect.tryPromise({
             try: async () => {
+              const stale = await NodeFSP.lstat(discarded).then(
+                () => true,
+                (cause: NodeJS.ErrnoException) => {
+                  if (cause.code === "ENOENT") return false;
+                  throw cause;
+                },
+              );
+              // Only an earlier discard, which equals the shared copy, is ours to delete.
+              if (stale && !(await sameContent(path, discarded, target))) return false;
               await NodeFSP.rm(discarded, { recursive: true, force: true });
               await NodeFSP.rename(source, discarded);
               await NodeFSP.rm(discarded, { recursive: true, force: true });
+              return true;
             },
             catch: (cause) =>
               new HomeOverlayFileSystemError({
@@ -292,6 +314,15 @@ export const materializeHomeOverlay = Effect.fn("materializeHomeOverlay")(functi
                 cause,
               }),
           });
+          if (!parked) {
+            return yield* new HomeOverlayEntryConflictError({
+              sharedRoot,
+              accountDir,
+              entryName,
+              linkPath: discarded,
+              targetPath: target,
+            });
+          }
           return;
         }
         if (targetState._tag !== "Missing") return yield* conflict;

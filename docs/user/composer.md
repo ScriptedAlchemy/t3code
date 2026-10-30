@@ -305,7 +305,9 @@ account-synced skills and Codex's bundled skills stay where they are.
 
 A skill found in two places with identical contents is kept once. When the contents
 differ, nothing is moved for that skill and the setting lists both paths; delete or
-rename one copy, then select **Refresh**. A skill you add to `~/.agents/skills` by hand
+rename one copy, then select **Refresh**. The same holds for two skills whose names differ
+only in case, and for a skill folder that links to a file outside itself, since moving it
+would break the link. A skill you add to `~/.agents/skills` by hand
 reaches Claude at the next refresh, server start, or new account.
 
 Turning it off copies each linked skill back into Claude's and Antigravity's folders and

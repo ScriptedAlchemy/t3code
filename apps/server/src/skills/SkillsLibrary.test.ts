@@ -6,8 +6,11 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
 
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SkillsLibrary from "./SkillsLibrary.ts";
 
@@ -111,10 +114,22 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
       "moves neither copy of a skill whose copies differ and reports both paths",
       () =>
         Effect.gen(function* () {
-          const { path, claude, codex, library, service, skill, read, link } = yield* setup();
+          const { fs, path, home, claude, codex, library, service, skill, read, link } =
+            yield* setup();
           yield* skill(claude, "review", "claude version");
           yield* skill(codex, "review", "codex version");
           yield* skill(codex, "other", "other");
+          // One folder on a case-insensitive disk, two on a case-sensitive one.
+          yield* skill(claude, "Deploy", "same");
+          yield* skill(codex, "deploy", "same");
+          // Moving it would break a link that climbs out of the skill.
+          yield* fs.makeDirectory(path.join(claude, "linked-out"));
+          yield* fs.writeFileString(path.join(home, ".claude", "shared.md"), "shared");
+          yield* fs.symlink("../../shared.md", path.join(claude, "linked-out", "SKILL.md"));
+          // Codex's equal copy would be parked at a path the user already uses.
+          yield* skill(claude, "dup", "same");
+          yield* skill(codex, "dup", "same");
+          yield* skill(codex, ".dup.t3-discard", "mine");
 
           yield* service.apply;
 
@@ -122,8 +137,29 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
           expect(yield* read(codex, "review")).toContain("codex version");
           expect(yield* link(claude, "review")).toBeUndefined();
           expect(yield* link(claude, "other")).toBe(path.join(library, "other"));
+          for (const [root, name] of [
+            [claude, "Deploy"],
+            [codex, "deploy"],
+            [claude, "linked-out"],
+            [claude, "dup"],
+            [codex, "dup"],
+          ] as const) {
+            expect(yield* link(root, name)).toBeUndefined();
+          }
+          expect(yield* read(claude, "linked-out")).toBe("shared");
+          expect(yield* read(codex, ".dup.t3-discard")).toContain("mine");
           expect((yield* service.status).conflicts).toEqual([
+            { name: "Deploy", paths: [path.join(claude, "Deploy"), path.join(codex, "deploy")] },
             { name: "review", paths: [path.join(claude, "review"), path.join(codex, "review")] },
+            {
+              name: "linked-out",
+              paths: [path.join(claude, "linked-out"), path.join(claude, "linked-out", "SKILL.md")],
+              reason: "outsideLink",
+            },
+            {
+              name: "dup",
+              paths: [path.join(codex, ".dup.t3-discard"), path.join(claude, "dup")],
+            },
           ]);
         }),
     );
@@ -151,11 +187,16 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
           const { fs, path, home, claude, codex, library, service, skill, read, link } =
             yield* setup();
           yield* skill(claude, "hello", "hello");
+          yield* skill(claude, "kept", "kept");
           yield* skill(codex, "codex-only", "codex");
           yield* service.apply;
           const elsewhere = path.join(home, "dev", "skills");
           yield* skill(elsewhere, "mine", "mine");
           yield* fs.symlink(path.join(elsewhere, "mine"), path.join(claude, "mine"));
+          // Points into the library under another name, so it is the user's link.
+          yield* fs.symlink(path.join(library, "hello"), path.join(claude, "alias"));
+          // A folder at the staging path that is not a copy of what it would restore.
+          yield* skill(claude, ".kept.t3-restore", "mine");
           // A crash after unlinking, before the rename, leaves only the staged copy.
           yield* fs.remove(path.join(claude, "codex-only"));
           yield* fs.copy(
@@ -171,11 +212,62 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
             expect(yield* read(claude, name)).toBe(yield* read(library, name));
           }
           expect(yield* link(claude, "mine")).toBe(path.join(elsewhere, "mine"));
-          expect((yield* fs.readDirectory(claude)).sort()).toEqual(["codex-only", "hello", "mine"]);
+          expect(yield* link(claude, "alias")).toBe(path.join(library, "hello"));
+          expect(yield* link(claude, "kept")).toBe(path.join(library, "kept"));
+          expect(yield* read(claude, ".kept.t3-restore")).toContain("mine");
+          expect((yield* fs.readDirectory(claude)).sort()).toEqual([
+            ".kept.t3-restore",
+            "alias",
+            "codex-only",
+            "hello",
+            "kept",
+            "mine",
+          ]);
           // Codex reads the library itself, so it gets no second copy.
           expect(yield* fs.readDirectory(codex)).toEqual([]);
-          expect((yield* fs.readDirectory(library)).sort()).toEqual(["codex-only", "hello"]);
-          expect((yield* service.status).linked).toEqual([]);
+          expect((yield* fs.readDirectory(library)).sort()).toEqual([
+            "codex-only",
+            "hello",
+            "kept",
+          ]);
+          const status = yield* service.status;
+          expect(status.linked).toEqual([{ driver: "claudeAgent", name: "kept" }]);
+          expect(status.conflicts).toEqual([
+            {
+              name: "kept",
+              paths: [path.join(claude, ".kept.t3-restore"), path.join(claude, "kept")],
+            },
+          ]);
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "finishes at startup a detach a restart interrupted while the switch is off",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, claude, library, service, skill, read, link } = yield* setup();
+          yield* skill(claude, "hello", "hello");
+          yield* service.apply;
+          yield* fs.remove(path.join(claude, "hello"));
+          yield* fs.copy(path.join(library, "hello"), path.join(claude, ".hello.t3-restore"));
+
+          yield* Layer.build(SkillsLibrary.layer).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                ServerSettings.ServerSettingsService.layerTest(),
+                Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+                  listInstances: Effect.succeed([]),
+                  subscribeChanges: PubSub.unbounded<void>().pipe(Effect.flatMap(PubSub.subscribe)),
+                }),
+              ),
+            ),
+            Effect.provideService(HostProcess.HomeDirectory, home),
+            Effect.provideService(HostProcess.Environment, { HOME: home }),
+          );
+
+          expect(yield* link(claude, "hello")).toBeUndefined();
+          expect(yield* read(claude, "hello")).toBe(yield* read(library, "hello"));
+          expect(yield* fs.readDirectory(claude)).toEqual(["hello"]);
         }),
     );
   });

@@ -64,8 +64,18 @@ function ScopedSkillsLibraryRow({ environmentId }: { readonly environmentId: Env
           <ul className="space-y-1">
             {conflicts.map((conflict) => (
               <li key={conflict.name}>
-                <span className="font-medium text-foreground">{conflict.name}</span> differs between{" "}
-                {conflict.paths[0]} and {conflict.paths[1]}. Keep one copy to link it.
+                <span className="font-medium text-foreground">{conflict.name}</span>{" "}
+                {conflict.reason === "outsideLink" ? (
+                  <>
+                    in {conflict.paths[0]} has a link outside the skill at {conflict.paths[1]},
+                    which moving it would break. Replace the link with the file to link it.
+                  </>
+                ) : (
+                  <>
+                    differs between {conflict.paths[0]} and {conflict.paths[1]}. Keep one copy to
+                    link it.
+                  </>
+                )}
               </li>
             ))}
             {mismatches.map((mismatch) => (
