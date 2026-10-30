@@ -52,8 +52,26 @@ export interface ComposerModelMentionOccurrence {
 }
 
 // Instance ids match ProviderInstanceId; model slugs may contain `/`, as in `opencode/anthropic/opus`.
-const MODEL_MENTION_PATTERN = /(^|\s)model:([a-zA-Z][a-zA-Z0-9_-]*)\/(\S+)/gu;
-const TRAILING_PUNCTUATION = /[.,;:!?)]+$/u;
+const MODEL_MENTION_PATTERN = /(?<![^\s,(["'])model:([a-zA-Z][a-zA-Z0-9_-]*)\/([^\s,"']+)/gu;
+const SENTENCE_PUNCTUATION = ".;:!?";
+const CLOSING_BRACKETS: Readonly<Record<string, string>> = { ")": "(", "]": "[" };
+
+function countOf(text: string, char: string): number {
+  return text.split(char).length - 1;
+}
+
+// Slugs like `foo(bar)` or `GPT-6.1-Sol[1m]` keep balanced brackets; prose wrapping them does not.
+function trimModelSlug(slug: string): string {
+  let trimmed = slug;
+  while (trimmed.length > 0) {
+    const last = trimmed.at(-1)!;
+    const opening = CLOSING_BRACKETS[last];
+    const unbalanced = opening !== undefined && countOf(trimmed, opening) < countOf(trimmed, last);
+    if (!SENTENCE_PUNCTUATION.includes(last) && !unbalanced) break;
+    trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed;
+}
 
 /** Finds the `model:<instance>/<model>` references that `formatComposerModelMention` writes. */
 export function collectComposerModelMentions(
@@ -62,11 +80,12 @@ export function collectComposerModelMentions(
   if (!text.includes("model:")) return [];
   const occurrences: ComposerModelMentionOccurrence[] = [];
   for (const match of text.matchAll(MODEL_MENTION_PATTERN)) {
-    const model = match[3]!.replace(TRAILING_PUNCTUATION, "");
+    const instanceId = match[1]!;
+    const model = trimModelSlug(match[2]!);
     if (model.length === 0) continue;
-    const start = match.index + match[1]!.length;
-    const source = `model:${match[2]!}/${model}`;
-    occurrences.push({ instanceId: match[2]!, model, source, start, end: start + source.length });
+    const start = match.index;
+    const end = start + "model:".length + instanceId.length + 1 + model.length;
+    occurrences.push({ instanceId, model, source: text.slice(start, end), start, end });
   }
   return occurrences;
 }

@@ -1,5 +1,5 @@
 import { collectComposerModelMentions } from "@t3tools/client-runtime/composerModelMentions";
-import type { ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import { Children, cloneElement, isValidElement, type ReactNode } from "react";
 import { matchInlineSkills } from "@t3tools/shared/inlineSkills";
@@ -14,6 +14,7 @@ function SkillInlineText(props: {
   text: string;
   skills: ReadonlyArray<ServerProviderSkill>;
   threadRef: ScopedThreadRef | undefined;
+  environmentId: EnvironmentId | null;
 }) {
   const chips: Array<{ start: number; end: number; node: ReactNode }> = [];
   for (const { start, end, skill, rawText } of matchInlineSkills(props.text, props.skills)) {
@@ -37,8 +38,8 @@ function SkillInlineText(props: {
       end: mention.end,
       node: (
         <ModelMentionChip
-          key={`${mention.start}:${mention.source}`}
-          environmentId={props.threadRef?.environmentId}
+          key={`${mention.start}:model`}
+          environmentId={props.environmentId}
           instanceId={mention.instanceId}
           model={mention.model}
           source={mention.source}
@@ -66,14 +67,22 @@ function SkillInlineText(props: {
   return <>{nodes}</>;
 }
 
-export function renderSkillInlineMarkdownChildren(
+export function renderInlineChipMarkdownChildren(
   children: ReactNode,
   skills: ReadonlyArray<ServerProviderSkill>,
   threadRef: ScopedThreadRef | undefined,
+  environmentId: EnvironmentId | null,
 ): ReactNode {
   return Children.map(children, (child) => {
     if (typeof child === "string") {
-      return <SkillInlineText text={child} skills={skills} threadRef={threadRef} />;
+      return (
+        <SkillInlineText
+          text={child}
+          skills={skills}
+          threadRef={threadRef}
+          environmentId={environmentId}
+        />
+      );
     }
     if (!isValidElement<{ children?: ReactNode; node?: { tagName?: string } }>(child)) {
       return child;
@@ -89,7 +98,7 @@ export function renderSkillInlineMarkdownChildren(
     return cloneElement(
       child,
       undefined,
-      renderSkillInlineMarkdownChildren(child.props.children, skills, threadRef),
+      renderInlineChipMarkdownChildren(child.props.children, skills, threadRef, environmentId),
     );
   });
 }
