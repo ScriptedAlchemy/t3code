@@ -47,6 +47,10 @@ export function sortChecks(
   );
 }
 
+/**
+ * Rollups repeat checks during reruns or overlapping runs, each with its own handle.
+ * Identify checks by workflow plus name because different workflows may share job names.
+ */
 export function dedupeChecks(
   entries: ReadonlyArray<{
     readonly check: PullRequestCheck;
