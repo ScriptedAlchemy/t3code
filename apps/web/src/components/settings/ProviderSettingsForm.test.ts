@@ -41,7 +41,7 @@ describe("ProviderSettingsForm helpers", () => {
     expect(next).toEqual({ forkOwned: 1 });
   });
 
-  it("stores false boolean fields when true is the default", () => {
+  it("shows the profile switch only to signed-in Claude accounts and stores it off", () => {
     const claude = providerClients.get(ProviderDriverKind.make("claudeAgent"))!;
     const cliFields = deriveProviderSettingsFields(claude, { setupMode: "cli" });
     const shareProfile = cliFields.find((field) => field.key === "shareProfile")!;

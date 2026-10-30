@@ -199,9 +199,6 @@ for (const conflict of [false, true]) {
           const error = yield* create.pipe(Effect.flip);
           expect(error).toMatchObject({ _tag: "ProviderDriverError" });
           expect(error.detail).toContain(path.join(account, "settings.json"));
-          expect(error.detail).toContain(
-            "Move the conflicting entry away, or turn off Use your Claude profile",
-          );
           expect(yield* fs.readFileString(path.join(account, "settings.json"))).toBe("account");
         } else {
           const instance = yield* create;

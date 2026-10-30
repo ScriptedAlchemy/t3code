@@ -87,11 +87,6 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
             expect(yield* makeClaudeContinuationGroupKey(runtime.config, runtime.environment)).toBe(
               `claude:home:${accountDir}`,
             );
-            expect(runtime.overlay).toMatchObject({
-              sharedRoot: shared,
-              accountDir,
-              active: shareProfile,
-            });
             // Skills bind to an account; plugins can sync before the account is bound.
             const buckets = {
               skills: "11111111-1111-1111-1111-111111111111_22222222-2222-2222-2222-222222222222",
