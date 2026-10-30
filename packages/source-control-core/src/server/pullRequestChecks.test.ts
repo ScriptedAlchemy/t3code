@@ -236,6 +236,25 @@ describe("check log excerpts", () => {
     expect(result.truncated).toBe(true);
   });
 
+  it.each([
+    { name: "short", tailLineBytes: 16, oldestTailKept: true },
+    { name: "long", tailLineBytes: 1024, oldestTailKept: false },
+  ])("keeps the error window ahead of $name tail lines", ({ tailLineBytes, oldestTailKept }) => {
+    const lines = [
+      "##[group]Run vp test",
+      "##[error]Assertion failed",
+      "after",
+      ...Array.from({ length: 30 }, (_, i) => `filler ${i}`),
+      ...Array.from({ length: 20 }, (_, i) => `tail ${i} `.padEnd(tailLineBytes, "x")),
+    ];
+    const result = excerptCheckLog([lines.join("\n")]);
+    expect(result.text).toContain("##[group]Run vp test\n##[error]Assertion failed\nafter");
+    expect(result.text).toContain("tail 19 ");
+    expect(result.text.includes("tail 0 ")).toBe(oldestTailKept);
+    expect(result.text.split("\n").length).toBeLessThanOrEqual(CHECK_LOG_EXCERPT_BUDGET.maxLines);
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(CHECK_LOG_EXCERPT_BUDGET.maxBytes);
+  });
+
   it("bounds huge Unicode lines and retains the end of a long stream", () => {
     function* chunks() {
       yield "🔥".repeat(20_000);

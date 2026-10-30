@@ -154,17 +154,13 @@ export class CheckLogExcerpt {
       this.line(this.pending);
       this.pending = "";
     }
-    const selected = new Map(this.selected);
     const tail = this.failedSection || this.failedTail.length === 0 ? this.tail : this.failedTail;
-    for (const line of tail) selected.set(line.index, line);
-    const lines = [...selected.values()]
-      .sort((a, b) => a.index - b.index)
-      .slice(-CHECK_LOG_EXCERPT_BUDGET.maxLines);
-    const kept: string[] = [];
+    const kept = new Map<number, string>();
     let bytes = 0;
-    for (const line of lines.toReversed()) {
-      const room = CHECK_LOG_EXCERPT_BUDGET.maxBytes - bytes - (kept.length > 0 ? 1 : 0);
-      if (room <= 0) break;
+    const keep = (line: Line): boolean => {
+      if (kept.has(line.index)) return true;
+      const room = CHECK_LOG_EXCERPT_BUDGET.maxBytes - bytes - (kept.size > 0 ? 1 : 0);
+      if (kept.size >= CHECK_LOG_EXCERPT_BUDGET.maxLines || room <= 0) return false;
       let text = line.text;
       if (Buffer.byteLength(text) > room) {
         text = new TextDecoder("utf-8", { fatal: false }).decode(
@@ -173,14 +169,20 @@ export class CheckLogExcerpt {
         while (Buffer.byteLength(text) > room) text = text.slice(0, -1);
         this.clipped = true;
       }
-      bytes += Buffer.byteLength(text) + (kept.length > 0 ? 1 : 0);
-      kept.push(text);
-    }
+      bytes += Buffer.byteLength(text) + (kept.size > 0 ? 1 : 0);
+      kept.set(line.index, text);
+      return true;
+    };
+    // Error windows explain the failure; the tail only shows where it stopped.
+    const windows = [...this.selected.values()].sort((a, b) => b.index - a.index);
+    for (const line of windows) if (!keep(line)) break;
+    for (const line of tail.toReversed()) if (!keep(line)) break;
+    const lines = [...kept].sort(([a], [b]) => a - b).map(([, text]) => text);
     return {
       _tag: "excerpt",
-      text: kept.reverse().join("\n"),
+      text: lines.join("\n"),
       totalLines: this.totalLines,
-      truncated: this.clipped || kept.length < this.totalLines,
+      truncated: this.clipped || lines.length < this.totalLines,
     };
   }
 }
