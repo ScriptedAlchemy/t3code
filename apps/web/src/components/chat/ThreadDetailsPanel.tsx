@@ -152,6 +152,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
           environment: density === "full" && visible.environment,
           openIn: density !== "essential" && visible.openIn && props.showOpenInPicker,
           scripts: visible.scripts && props.activeProjectScripts !== undefined,
+          memory: visible.memory,
           branch: props.gitCwd !== null && props.isGitRepo && visible.branch,
           git:
             props.gitCwd !== null &&
@@ -162,7 +163,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
         return (
           <>
             <div className="group/details-items">
-              {show.environment || show.openIn || show.scripts || showIndexRows ? (
+              {show.environment || show.openIn || show.scripts || show.memory || showIndexRows ? (
                 <ThreadDetailsSection
                   headingId="thread-details-workspace-heading"
                   title="Workspace"
@@ -224,6 +225,13 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                         threadId={props.threadId}
                       />
                     ) : null}
+
+                    {show.memory ? (
+                      <ProjectMemoryPanel
+                        environmentId={props.environmentId}
+                        projectId={props.projectId}
+                      />
+                    ) : null}
                   </div>
                 </ThreadDetailsSection>
               ) : null}
@@ -253,8 +261,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   </div>
                 </ThreadDetailsSection>
               ) : null}
-
-              <ProjectMemoryPanel environmentId={props.environmentId} projectId={props.projectId} />
 
               {density === "full" && !props.draftId && visible.servers ? (
                 <ThreadServersPanel environmentId={props.environmentId} threadId={props.threadId} />
