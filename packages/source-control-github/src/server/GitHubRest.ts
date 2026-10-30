@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import {
+  FetchHttpClient,
   HttpClient,
   HttpClientRequest,
   type HttpClientResponse,
@@ -20,6 +21,8 @@ import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+// fetch would otherwise follow the redirect itself, hiding it from the credential checks below.
+const MANUAL_REDIRECT: RequestInit = { redirect: "manual" };
 const { gitHubApiUrls } = GitHubRequestPolicy;
 type GitHubApiError = GitHubRequestPolicy.GitHubApiError;
 
@@ -182,12 +185,16 @@ export const make = Effect.gen(function* () {
       },
       (headers) =>
         Effect.gen(function* () {
-          const response: HttpClientResponse.HttpClientResponse = yield* httpClient
+          const execute = httpClient
             .execute(input.request.pipe(HttpClientRequest.setHeaders(headers)))
             .pipe(
               // Client spans expose SHAs and branches through url.full/url.query.
               Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
             );
+          const response: HttpClientResponse.HttpClientResponse = yield* input.followRedirect ===
+          undefined
+            ? execute
+            : Effect.provideService(execute, FetchHttpClient.RequestInit, MANUAL_REDIRECT);
           const collected = yield* readResponseBody(input, response).pipe(
             Effect.catchIf(
               (error) => error.reason._tag === "EmptyBodyError",

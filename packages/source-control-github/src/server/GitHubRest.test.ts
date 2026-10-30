@@ -9,7 +9,12 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 import { ChildProcessSpawner } from "effect/process";
 import { VcsProcessTimeoutError } from "@t3tools/contracts";
-import { HttpClient, HttpClientResponse, type HttpClientRequest } from "effect/http";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientResponse,
+  type HttpClientRequest,
+} from "effect/http";
 
 import * as GitHubRest from "./GitHubRest.ts";
 import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
@@ -30,6 +35,28 @@ const NOW = Date.parse("2026-10-05T12:00:00.000Z");
 
 function harness(respond: (request: HttpClientRequest.HttpClientRequest) => Response) {
   const requests: Array<HttpClientRequest.HttpClientRequest> = [];
+  const http = Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make((request) => {
+      requests.push(request);
+      return Effect.succeed(HttpClientResponse.fromWeb(request, respond(request)));
+    }),
+  );
+  return { ...harnessWith(http), requests };
+}
+
+/** The production transport: fetch decides what a redirect looks like to T3. */
+function fetchHarness(respond: (url: string) => Response) {
+  const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+  const fetch: typeof globalThis.fetch = (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init: init ?? {} });
+    return Promise.resolve(respond(url));
+  };
+  return { ...harnessWith(FetchHttpClient.layer), calls, fetch };
+}
+
+function harnessWith(http: Layer.Layer<HttpClient.HttpClient>) {
   let tokens = ["first", "second"];
   let invalidations = 0;
   let credentialReads = 0;
@@ -55,13 +82,6 @@ function harness(respond: (request: HttpClientRequest.HttpClientRequest) => Resp
         }),
     }),
   );
-  const http = Layer.succeed(
-    HttpClient.HttpClient,
-    HttpClient.make((request) => {
-      requests.push(request);
-      return Effect.succeed(HttpClientResponse.fromWeb(request, respond(request)));
-    }),
-  );
   const layer = GitHubRest.layer.pipe(
     Layer.provide(Layer.mergeAll(credentials, http, appSignedOut)),
     Layer.provideMerge(GitHubQuota.layer),
@@ -69,7 +89,6 @@ function harness(respond: (request: HttpClientRequest.HttpClientRequest) => Resp
   );
   return {
     layer,
-    requests,
     invalidations: () => invalidations,
     credentialReads: () => credentialReads,
   };
@@ -336,39 +355,45 @@ describe("GitHub check failures", () => {
     steps: [{ name: "Run lint", conclusion: "failure" }],
   };
 
-  it.effect(
-    "follows the signed log redirect without Authorization and preserves bounded evidence",
-    () => {
-      const { layer, requests } = harness((request) => {
-        if (request.url.includes("/annotations"))
-          return json([
-            { path: "a.ts", start_line: 4, annotation_level: "failure", message: "bad code" },
-          ]);
-        if (request.url.endsWith("/logs"))
-          return new Response(null, {
-            status: 302,
-            headers: { location: "https://blob.example/log?signature=secret" },
-          });
-        if (request.url.startsWith("https://blob.example/"))
-          return new Response("2026-10-30T12:00:00Z ##[error]bad code\n");
-        return json(job);
-      });
-      return Effect.gen(function* () {
-        const read = yield* makeGitHubCheckFailureReader;
-        const result = yield* read(input);
-        expect(result).toMatchObject({
-          attempt: 1,
-          failedSteps: ["Run lint"],
-          annotations: [{ path: "a.ts", startLine: 4, message: "bad code" }],
-          log: { _tag: "excerpt", text: "##[error]bad code", totalLines: 1, truncated: false },
+  it.effect("sees the signed log redirect itself and follows it without Authorization", () => {
+    const { layer, calls, fetch } = fetchHarness((url) => {
+      if (url.includes("/annotations"))
+        return json([
+          { path: "a.ts", start_line: 4, annotation_level: "failure", message: "bad code" },
+        ]);
+      if (url.endsWith("/logs"))
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://blob.example/log?signature=secret" },
         });
-        expect(result).not.toHaveProperty("required");
-        expect(requests).toHaveLength(4);
-        expect(requests[0]?.headers.authorization).toBe("Bearer first");
-        expect(requests[3]?.headers).not.toHaveProperty("authorization");
-      }).pipe(Effect.provide(layer));
-    },
-  );
+      if (url.startsWith("https://blob.example/"))
+        return new Response("2026-10-30T12:00:00Z ##[error]bad code\n");
+      return json(job);
+    });
+    return Effect.gen(function* () {
+      const read = yield* makeGitHubCheckFailureReader;
+      const result = yield* read(input);
+      expect(result).toMatchObject({
+        attempt: 1,
+        failedSteps: ["Run lint"],
+        annotations: [{ path: "a.ts", startLine: 4, message: "bad code" }],
+        log: { _tag: "excerpt", text: "##[error]bad code", totalLines: 1, truncated: false },
+      });
+      expect(result).not.toHaveProperty("required");
+      const authorization = (call: (typeof calls)[number]) =>
+        (call.init.headers as Record<string, string>).authorization;
+      expect(calls.map((call) => [call.url, call.init.redirect, authorization(call)])).toEqual([
+        ["https://api.github.com/repos/acme/web/actions/jobs/123", undefined, "Bearer first"],
+        [
+          "https://api.github.com/repos/acme/web/check-runs/123/annotations?per_page=20",
+          undefined,
+          "Bearer first",
+        ],
+        ["https://api.github.com/repos/acme/web/actions/jobs/123/logs", "manual", "Bearer first"],
+        ["https://blob.example/log?signature=secret", undefined, undefined],
+      ]);
+    }).pipe(Effect.provide(layer), Effect.provideService(FetchHttpClient.Fetch, fetch));
+  });
 
   it.effect.each([
     {
