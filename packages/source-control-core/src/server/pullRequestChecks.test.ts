@@ -216,13 +216,23 @@ describe("check log excerpts", () => {
     expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(CHECK_LOG_EXCERPT_BUDGET.maxBytes);
   });
 
-  it("keeps a failed section's tail instead of later successful step output", () => {
-    const result = excerptCheckLog(
-      ["##[group]Run lint\nbroken rule\nexit 1\n##[group]Run cleanup\ncleanup output\n"],
-      ["Run lint"],
+  it("keeps the failed section's tail over a later same-named step that passed", () => {
+    const result = excerptCheckLog([
+      [
+        "##[group]Run vp test",
+        "##[error]Assertion failed",
+        "exit 1",
+        "##[group]Run vp test",
+        "all green",
+        "more output",
+        "still more",
+        "done",
+      ].join("\n"),
+    ]);
+    expect(result.text).toBe(
+      "##[group]Run vp test\n##[error]Assertion failed\nexit 1\n##[group]Run vp test\nall green",
     );
-    expect(result.text).toBe("##[group]Run lint\nbroken rule\nexit 1");
-    expect(result.totalLines).toBe(5);
+    expect(result.totalLines).toBe(8);
     expect(result.truncated).toBe(true);
   });
 

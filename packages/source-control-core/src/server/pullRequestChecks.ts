@@ -102,12 +102,6 @@ export class CheckLogExcerpt {
   private failedSection = false;
   private selected = new Map<number, Line>();
 
-  private readonly failedSteps: ReadonlyArray<string>;
-
-  constructor(failedSteps: ReadonlyArray<string> = []) {
-    this.failedSteps = failedSteps;
-  }
-
   write(chunk: string): void {
     let start = 0;
     while (start < chunk.length) {
@@ -130,12 +124,12 @@ export class CheckLogExcerpt {
         .replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s?/, "")
         .replace(/\r$/, ""),
     };
+    // Step names do not appear in the log; a section failed when it carries ##[error].
     if (line.text.startsWith("##[group]Run ")) {
       if (this.failedSection) this.failedTail = this.tail;
       this.tail = [];
       this.header = line;
-      this.failedSection = this.failedSteps.includes(line.text.slice("##[group]".length));
-      if (this.failedSection) this.selected.set(line.index, line);
+      this.failedSection = false;
     }
     if (line.text.includes("##[error]")) {
       this.failedSection = true;
@@ -191,8 +185,8 @@ export class CheckLogExcerpt {
   }
 }
 
-export function excerptCheckLog(chunks: Iterable<string>, failedSteps: ReadonlyArray<string> = []) {
-  const excerpt = new CheckLogExcerpt(failedSteps);
+export function excerptCheckLog(chunks: Iterable<string>) {
+  const excerpt = new CheckLogExcerpt();
   for (const chunk of chunks) excerpt.write(chunk);
   return excerpt.finish();
 }

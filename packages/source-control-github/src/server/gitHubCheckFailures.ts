@@ -131,7 +131,7 @@ export const makeGitHubCheckFailureReader = Effect.gen(function* () {
         readBody: Effect.fn("GitHubCheckFailures.readLog")(function* (
           response: HttpClientResponse.HttpClientResponse,
         ) {
-          const excerpt = new CheckLogExcerpt(failedSteps);
+          const excerpt = new CheckLogExcerpt();
           const decoder = new TextDecoder();
           yield* Stream.runForEach(response.stream, (chunk) =>
             Effect.sync(() => excerpt.write(decoder.decode(chunk, { stream: true }))),
