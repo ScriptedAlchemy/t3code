@@ -893,7 +893,12 @@ export function NewTaskDraftScreen(props: {
       <ThreadScreenBinding
         environmentId={selectedProject.environmentId}
         header={
-          <DraftThreadHeader thread={thread} project={selectedProject} cwd={composerWorkspaceCwd} />
+          <DraftThreadHeader
+            thread={thread}
+            project={selectedProject}
+            cwd={composerWorkspaceCwd}
+            draftKey={flow.draftKey}
+          />
         }
         draftMode={{
           content: heroViewport,

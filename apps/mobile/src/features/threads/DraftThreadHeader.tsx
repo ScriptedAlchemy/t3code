@@ -15,12 +15,15 @@ import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vcsActionManager, vcsEnvironment } from "../../state/vcs";
 import { useVcsActionState } from "../../state/use-vcs-action-state";
+import { scopedThreadKey } from "../../lib/scopedEntities";
+import { useOpenProjectMemory } from "../../components/ProjectKnowledgeEntry";
 import { ThreadHeader } from "./ThreadHeader";
 
 export function DraftThreadHeader(props: {
   readonly thread: EnvironmentThreadShell;
   readonly project: EnvironmentProject;
   readonly cwd: string | null;
+  readonly draftKey: string | null | undefined;
 }) {
   const navigation = useNavigation();
   const { themeVariables } = useAppearancePreferences();
@@ -44,6 +47,12 @@ export function DraftThreadHeader(props: {
       projectName: props.project.title,
     });
   };
+  const openProjectMemory = useOpenProjectMemory(
+    environmentId,
+    props.project.id,
+    // ThreadComposer falls back to the thread's own key the same way.
+    props.draftKey ?? scopedThreadKey(environmentId, props.thread.id),
+  );
   const requiresThread = () =>
     Dialog.alert("Available after the first message", "This action needs a saved thread.");
   return (
@@ -60,6 +69,7 @@ export function DraftThreadHeader(props: {
       onToggleInspector={openFiles}
       onOpenFilesInspector={openFiles}
       onOpenGitInspector={requiresThread}
+      onOpenProjectMemory={openProjectMemory}
       gitControls={{
         environmentId,
         threadId: props.thread.id,
