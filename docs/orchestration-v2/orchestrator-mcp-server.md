@@ -212,8 +212,10 @@ of models, and every call lands in the agent's context. Each provider lists
 custom, favorite, and the caller's own models, plus all current (non-legacy)
 models for Codex, Claude, Muse, and Grok, or the first 8 current models in the
 user's model order for other providers. `omittedModels` counts the rest, and the
-`search` input finds them, legacy models included. `delegate_task` still accepts
-any catalog model.
+`search` input finds them, legacy models included. `allModels` lists every model
+with no cap, for callers such as setup-pstack that need the whole catalog once.
+Models hidden in Settings stay out of every listing. `delegate_task` still
+accepts any catalog model.
 
 ### `delegate_task`
 

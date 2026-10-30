@@ -1352,10 +1352,13 @@ describe("OrchestratorMcpService provider resolution", () => {
       },
     ];
 
-    const capabilitiesWith = (search?: string) =>
+    const capabilitiesWith = (search?: string, allModels?: boolean) =>
       Effect.gen(function* () {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        return yield* service.capabilities(scope, search === undefined ? {} : { search });
+        return yield* service.capabilities(scope, {
+          ...(search === undefined ? {} : { search }),
+          ...(allModels === undefined ? {} : { allModels }),
+        });
       }).pipe(
         Effect.provide(
           layerOrchestratorService.pipe(
@@ -1452,6 +1455,24 @@ describe("OrchestratorMcpService provider resolution", () => {
           models: ["gpt-5"],
           omitted: 0,
         });
+        // allModels lifts the cap and keeps legacy models; hidden oc/m02 stays out.
+        assert.deepEqual(listing(yield* capabilitiesWith("oc/m", true))[1]?.models.length, 11);
+        assert.deepEqual(listing(yield* capabilitiesWith(undefined, true)), [
+          {
+            id: codexInstanceId,
+            models: ["gpt-6", "gpt-5", "gpt-4", "gpt-3", "my-alpha"],
+            omitted: 0,
+          },
+          {
+            id: opencodeInstanceId,
+            models: [
+              "oc/m12",
+              ...opencodeSlugs.filter((slug) => slug !== "oc/m02" && slug !== "oc/m12"),
+              "oc-custom",
+            ],
+            omitted: 0,
+          },
+        ]);
       }),
     );
 

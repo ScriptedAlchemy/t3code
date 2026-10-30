@@ -569,6 +569,12 @@ export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
       description: "Match model ids and labels. Replaces the short list.",
     }),
   ),
+  allModels: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "List every advertised model, legacy included, with no cap. Models hidden in Settings stay out.",
+    }),
+  ),
 });
 export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
 

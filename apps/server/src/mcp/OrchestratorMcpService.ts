@@ -292,10 +292,9 @@ const FULL_CATALOG_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeAgent
 const LISTED_MODEL_LIMIT = 8;
 
 /**
- * Picks the models orchestrator_capabilities shows for one provider. Hidden models never
- * appear. Search words naming the provider are dropped; other words list matches. With no
- * words left, lists pinned models (custom, favorite, the caller's own) plus non-legacy
- * models, or only the first few in the user's model order for large catalogs.
+ * Picks the models orchestrator_capabilities shows for one provider; hidden models never appear.
+ * Words naming the provider are dropped, others list matches. Otherwise lists pinned plus
+ * non-legacy models, only the first few for large catalogs. `allModels` lifts every cap.
  */
 function listCapabilityModels(input: {
   readonly provider: ServerProvider;
@@ -304,6 +303,7 @@ function listCapabilityModels(input: {
     | undefined;
   readonly isPinned: (model: ServerProviderModel) => boolean;
   readonly searchTerms: ReadonlyArray<string>;
+  readonly allModels: boolean;
 }) {
   const rank = new Map(input.preferences?.modelOrder.map((slug, index) => [slug, index]));
   const visible = input.provider.models
@@ -317,9 +317,10 @@ function listCapabilityModels(input: {
       const text = `${model.slug} ${model.name} ${model.subProvider ?? ""}`.toLowerCase();
       return modelTerms.every((term) => text.includes(term));
     });
-    const listed = matches.slice(0, LISTED_MODEL_LIMIT);
+    const listed = input.allModels ? matches : matches.slice(0, LISTED_MODEL_LIMIT);
     return { listed, omitted: matches.length - listed.length };
   }
+  if (input.allModels) return { listed: visible, omitted: 0 };
   const current = visible.filter((model) => !model.isLegacy);
   const shown = new Set(
     FULL_CATALOG_DRIVERS.has(input.provider.driver)
@@ -2116,6 +2117,7 @@ const make = Effect.gen(function* () {
               provider,
               preferences: settings.providerModelPreferences?.[provider.instanceId],
               searchTerms,
+              allModels: input.allModels === true,
               isPinned: (model) =>
                 model.isCustom ||
                 (inherited?.instanceId === provider.instanceId && inherited.model === model.slug) ||

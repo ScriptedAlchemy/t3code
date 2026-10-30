@@ -7,30 +7,53 @@ description: Configure pstack's per-role models and reasoning budget for this T3
 
 Write the models file at the absolute `<models>` path from `<t3_pstack>`. T3 resolves that file against this environment's providers and appends exact role targets to the next pstack invocation. Skills use those targets directly.
 
-### 1. Detect available models
+### 1. Inventory every provider and model
 
-Call `orchestrator_capabilities`. Use enabled instances with `canRunChildTask: true` and no `constraints`. The initial model list is short; use its `search` parameter for missing families or models named by defaults or the current file. Never write a disabled instance, unadvertised model, option ID, or option value. If the tools remain unavailable after the harness's documented fallback, say `pstack needs the t3-code tools, which this session does not expose.` and stop. `inherit-parent` and `auto` always remain valid.
+Call `orchestrator_capabilities` with `allModels: true`. It lists every usable instance, and a provider pool appears once under its pool instance ID with its members hidden. Use the pool ID as the instance, never a member. If a provider still returns `omittedModels`, its server predates `allModels`: list the rest with `search` on each family name. Models hidden in Settings never appear; when the user names a missing model, say it is hidden or not advertised, not unavailable. Record each model's ID, label, and advertised options. Never write a disabled instance, unadvertised model, option ID, or option value. If the tools remain unavailable after the harness's documented fallback, say `pstack needs the t3-code tools, which this session does not expose.` and stop. `inherit-parent` and `auto` always remain valid.
 
-### 2. Load current state
+### 2. Load state and ask for a budget
 
 Read `<models>`. Preserve its `# budget:` line and current choices. Drop roles absent from step 5, and report them. If the file is missing, start from the defaults below. A native harness's existing model sheet may seed a proposal only when the user identifies it; validate every choice against this environment's catalog.
 
-### 3. Budget, map, and confirm
-
-**(a) Ask for a budget.** Use the harness question tool if available; otherwise ask in plain text and end the turn. Name the recorded budget, or say that `large` matches the defaults. Offer these exact labels:
+Ask for a budget. Use the harness question tool if available; otherwise ask in plain text and end the turn. Name the recorded budget, or say that `large` matches the defaults. Offer these exact labels:
 
 - `unlimited — max reasoning`
 - `large — xhigh reasoning`
 - `medium — high reasoning`
 - `small — medium reasoning`
 
-**(b) Apply it.** Keep family, list, and alias choices on repeat runs. Match default `claude-*` models to enabled `claudeAgent` instances, `gpt-*` to `codex`, and `grok-*` to `grok`, offering the advertised model. If a family is unavailable, ask for a choice; propose another available family for mixed panels rather than inventing a model. Preserve all panel seats.
+A budget-only request keeps every current seat, applies the effort rule in step 3, and goes to step 4.
+
+### 3. Research, assign, and confirm
+
+**(a) Research the models.** Profiles live in `model-profiles.md` beside `<models>`, one section per model ID, shared by every instance that offers it. Reuse a profile younger than 30 days. Each profile records:
+
+- family: the maker, read from the ID and label.
+- tier, from the maker's own positioning: flagship line `frontier`, mid line `strong`, small, mini, or flash line `fast`. Use `unknown` when the maker gives none.
+- tool use: `reliable` only when the maker documents native tool calling for the model, `unreliable` when it documents none, otherwise `unproven`.
+- cost: `free` when the label or instance says so, otherwise `unknown`. Never infer billing.
+- context size, strengths, and weaknesses the maker states, each with its source URL, and the research date.
+
+Group the unprofiled models by family and research them with `delegate_task`, `role: "research"`, at most 25 models per child and at most 6 children at a time, spread across the `how explorer` seats in `<t3_pstack>` (omit `target` when the role is missing). Each brief lists its model IDs and labels, asks for the fields above from maker documentation only, says "Record unknown rather than guess", and says "Do not edit files, commit, or push." Each completion wakes you. Write the returned profiles, list any model with no profile as `unknown`, and continue once every child has returned.
+
+**(b) Assign seats across providers.** Fill every role from the profiles:
+
+- Judgment roles (`judgment and prose`, `hardest tasks`, `how explainer`, `why synthesizer`, `reflect judgment, divergent, synthesizer`) take `frontier` models.
+- Code roles (`feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb`) take `frontier` or `strong` models with `reliable` tool use.
+- Exploration roles (`how explorer`, `why investigators`, `reflect tooling`, `swarm workers`) take `strong` or `fast` models, and may add `unproven` or `free` seats to widen coverage, never as a role's only seat.
+- Panels (`arena runners`, `architect runners`, `interrogate reviewers`) take the strongest model of each family, one seat per family, highest tier first, at most four seats.
+- `arena cross-judge pool` takes `frontier` models, preferring families the runners do not use, otherwise the runner families' strongest.
+- Every pool gets seats from at least two families when two qualify, best seat first.
+- Every instance with a qualifying model holds at least one seat somewhere. Name any instance left out and why.
+- `unreliable` and `unknown`-tier models never hold a seat.
+
+On a repeat run, keep every working seat. Propose only additions, for a qualifying family or instance with no seat, and replacements for unavailable seats. Show each change beside the old value.
 
 Find the advertised select option whose values contain at least two of `low`, `medium`, `high`, `xhigh`, `max`. Use its actual ID, including `thinking` or `variant` where advertised. Budgets target `max`, `xhigh`, `high`, or `medium` respectively. Set every concrete entry, in pools and panels, to the requested value or the highest advertised ladder value below it. With none, mark the entry as needing a choice. Aliases, models without an effort option, and explicitly chosen off-ladder settings stay unchanged. Never select off-ladder settings under a budget.
 
-Do not choose a latency or priority option automatically. Write such an option only when the user explicitly selects it. A budget change preserves any explicitly selected non-effort options.
+Do not choose a latency or priority option automatically. Write such an option only when the user explicitly selects it. Kept seats and budget changes preserve explicitly selected non-effort options; a new seat starts with none.
 
-**(c) Show and confirm.** Show all 17 roles with provider instance, model, and chosen options, marking unavailable entries. Let the user choose several models for any role from any detected provider instance, plus `inherit-parent` and `auto` for the parent model. Arena runners, architect runners, and interrogate reviewers are panels that run every seat; all other roles are pools that pick one seat per spawn and spread simultaneous children across seats. Arena cross-judges prefer a different model family. When two or more model families are available, offer a mixed pool for `feature, refactoring`, `bug-fix`, and `swarm workers`; keep the current choices unless accepted. Ask whether to accept or change roles. A swarm model race still needs explicitly resolved arm targets.
+**(c) Show and confirm.** Show each family with its instances, tier, and tool-use rating, which instances hold seats, and all 17 roles with their seats and chosen options, marking unavailable entries and every change. Full profiles stay in the file. Let the user change any role to several models from any detected provider instance, plus `inherit-parent` and `auto` for the parent model. Arena runners, architect runners, and interrogate reviewers are panels that run every seat; all other roles are pools that pick one seat per spawn and spread simultaneous children across seats. A swarm model race still needs explicitly resolved arm targets.
 
 ### 4. Validate
 
