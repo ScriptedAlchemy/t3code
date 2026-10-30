@@ -239,7 +239,7 @@ export function classifyGhCommand(words: ReadonlyArray<string>): ForgeCommand | 
     case "workflow":
       return WORKFLOW_WRITES.has(subcommand) ? WRITE : OTHER;
     case "api":
-      return classifyApi(subcommand === "" ? rest : [subcommand, ...rest]);
+      return classifyApi([...words.slice(1, start), ...words.slice(start + 1)]);
     default:
       return OTHER;
   }

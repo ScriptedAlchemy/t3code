@@ -96,6 +96,10 @@ describe("classifyGhCommand", () => {
       { kind: "read", intent: "feedback", target: { repository: "acme/app", number: 4 } },
     ],
     ["gh -R acme/app pr checks 123 --watch", { kind: "poll" }],
+    [
+      "gh --hostname github.com api --method GET repos/acme/app/pulls/4/reviews",
+      { kind: "read", intent: "feedback", target: { repository: "acme/app", number: 4 } },
+    ],
     // Polls.
     ["gh pr checks 4497 --watch", { kind: "poll" }],
     ["gh run watch 39810344331", { kind: "poll" }],

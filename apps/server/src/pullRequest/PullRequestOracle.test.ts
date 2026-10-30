@@ -410,6 +410,35 @@ describe("PullRequestOracle named targets", () => {
         pullRequests: [{ url: "https://github.com/elsewhere/app/pull/24" }],
       });
       assert.equal(report.pullRequests[0]?._tag, "Status");
+      const withoutCaller = yield* oracle.status({
+        caller: { threadId: null },
+        pullRequests: [{ url: "https://github.com/elsewhere/app/pull/24" }],
+      });
+      assert.equal(withoutCaller.pullRequests[0]?._tag, "Unavailable");
+      const enterprise = project(PROJECT_ID, "acme", "app");
+      const onAnotherHost = yield* makeOracle({
+        threads: [thread(THREAD_ID)],
+        publicReads: true,
+        projects: [
+          {
+            ...enterprise,
+            repositoryIdentity: {
+              ...enterprise.repositoryIdentity!,
+              canonicalKey: "github.company/acme/app",
+              locator: {
+                source: "git-remote",
+                remoteName: "origin",
+                remoteUrl: "https://github.company/acme/app.git",
+              },
+            },
+          },
+        ],
+      });
+      const crossHost = yield* onAnotherHost.oracle.status({
+        caller,
+        pullRequests: [{ url: "https://github.com/elsewhere/app/pull/24" }],
+      });
+      assert.equal(crossHost.pullRequests[0]?._tag, "Unavailable");
     }),
   );
 
@@ -420,6 +449,10 @@ describe("PullRequestOracle named targets", () => {
         .failures({ caller, pullRequests: [{ repository: "acme/app" }] })
         .pipe(Effect.flip);
       assert.equal(error._tag, "PullRequestTargetIncompleteError");
+      const noProject = yield* oracle
+        .failures({ caller: { threadId: null }, pullRequests: [{ number: 123 }] })
+        .pipe(Effect.flip);
+      assert.equal(noProject._tag, "PullRequestTargetIncompleteError");
     }),
   );
 });

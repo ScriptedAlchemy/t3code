@@ -553,12 +553,12 @@ export const make = Effect.gen(function* () {
       shells,
       (shell) =>
         enrichShell(shell).pipe(
-          Effect.flatMap((project) =>
-            options?.resolveRepositoryIdentity && project.repositoryIdentity == null
-              ? projectEnrichment
-                  .readRepositoryIdentity(project.workspaceRoot)
-                  .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity })))
-              : Effect.succeed(project),
+          Effect.filterOrElse(
+            (project) => !options?.resolveRepositoryIdentity || project.repositoryIdentity != null,
+            (project) =>
+              projectEnrichment
+                .readRepositoryIdentity(project.workspaceRoot)
+                .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
           ),
         ),
       { concurrency: 8 },
