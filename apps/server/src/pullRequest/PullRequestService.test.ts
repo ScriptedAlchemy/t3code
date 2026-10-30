@@ -18,7 +18,7 @@ import type {
   PullRequestReviewerCapabilities,
 } from "@t3tools/contracts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
-import type { ServerSettings } from "@t3tools/contracts";
+import type { PullRequestCheckFailure, ServerSettings } from "@t3tools/contracts";
 import * as ServerSettingsService from "../serverSettings.ts";
 import { PullRequestOperationError } from "@t3tools/contracts";
 
@@ -4530,7 +4530,7 @@ it.effect("coalesces completed check failures and separates credentials and atte
     let attempt = 1;
     let calls = 0;
     let checksReads = 0;
-    let running = false;
+    let log: Extract<PullRequestCheckFailure["log"], { _tag: "unavailable" }> | null = null;
     let refuse = false;
     const entered = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
@@ -4577,17 +4577,27 @@ it.effect("coalesces completed check failures and separates credentials and atte
                 });
               yield* Deferred.succeed(entered, undefined);
               yield* Deferred.await(release);
-              return {
+              const base = {
                 check: "lint",
                 status: "failure" as const,
                 url: null,
-                attempt,
                 failedSteps: [],
                 annotations: [],
-                log: running
-                  ? { _tag: "unavailable" as const, reason: "still-running" as const }
-                  : { _tag: "excerpt" as const, text: credential, totalLines: 1, truncated: false },
               };
+              if (log === null) {
+                return {
+                  ...base,
+                  attempt,
+                  log: {
+                    _tag: "excerpt" as const,
+                    text: credential,
+                    totalLines: 1,
+                    truncated: false,
+                  },
+                };
+              }
+              // A check that is not an Actions job has no attempt.
+              return log.reason === "not-actions" ? { ...base, log } : { ...base, attempt, log };
             }),
         }),
       ],
@@ -4611,25 +4621,37 @@ it.effect("coalesces completed check failures and separates credentials and atte
     yield* TestClock.adjust("16 seconds");
     yield* service.checkFailures({ ...ref, handle: "job:123:2" });
     expect(calls).toBe(3);
+    const readsForTwoCalls = Effect.fn(function* (handle: string) {
+      const before = calls;
+      yield* service.checkFailures({ ...ref, handle });
+      yield* service.checkFailures({ ...ref, handle });
+      return calls - before;
+    });
     attempt = 3;
-    running = true;
+    log = { _tag: "unavailable", reason: "still-running" };
     yield* TestClock.adjust("16 seconds");
-    yield* service.checkFailures({ ...ref, handle: "job:123:3" });
-    yield* service.checkFailures({ ...ref, handle: "job:123:3" });
-    expect(calls).toBe(5);
-    running = false;
-    yield* service.checkFailures({ ...ref, handle: "job:123:3" });
-    yield* service.checkFailures({ ...ref, handle: "job:123:3" });
-    expect(calls).toBe(6);
+    expect(yield* readsForTwoCalls("job:123:3")).toBe(2);
+    log = { _tag: "unavailable", reason: "no-access" };
+    expect(yield* readsForTwoCalls("job:123:3")).toBe(2);
+    log = null;
+    expect(yield* readsForTwoCalls("job:123:3")).toBe(1);
+    attempt = 4;
+    log = { _tag: "unavailable", reason: "expired" };
+    yield* TestClock.adjust("16 seconds");
+    expect(yield* readsForTwoCalls("job:123:4")).toBe(1);
+    attempt = 5;
+    log = { _tag: "unavailable", reason: "not-actions" };
+    yield* TestClock.adjust("16 seconds");
+    expect(yield* readsForTwoCalls("job:123:5")).toBe(1);
     expect(
       (yield* Effect.flip(service.checkFailures({ ...input, expectedAccountId: "other" })))._tag,
     ).toBe("PullRequestOperationError");
-    expect(calls).toBe(6);
+    const settled = calls;
     refuse = true;
-    attempt = 4;
+    attempt = 6;
     yield* TestClock.adjust("16 seconds");
-    yield* Effect.flip(service.checkFailures({ ...ref, handle: "job:123:4" }));
+    yield* Effect.flip(service.checkFailures({ ...ref, handle: "job:123:6" }));
     yield* Effect.flip(service.checkFailures(input));
-    expect(calls).toBe(7);
+    expect(calls).toBe(settled + 1);
   }),
 );

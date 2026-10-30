@@ -164,6 +164,11 @@ const VIEWER_CACHE_CAPACITY = 32;
 
 export type PullRequestError = PullRequestUnavailableError | PullRequestOperationError;
 
+/** A refusal or a running job can change; an excerpt or a gone log cannot. */
+const isSettledCheckFailure = (failure: PullRequestCheckFailure) =>
+  failure.log._tag === "excerpt" ||
+  failure.log.reason === "expired" ||
+  failure.log.reason === "not-actions";
 const checkFailureKey = Schema.fromJsonString(
   Schema.Tuple([Schema.String, Schema.String, Schema.String]),
 );
@@ -3098,9 +3103,7 @@ export const make = Effect.gen(function* () {
     {
       capacity: DETAIL_CACHE_CAPACITY,
       timeToLive: (exit) =>
-        Exit.isSuccess(exit) &&
-        exit.value.attempt !== undefined &&
-        !(exit.value.log._tag === "unavailable" && exit.value.log.reason === "still-running")
+        Exit.isSuccess(exit) && isSettledCheckFailure(exit.value)
           ? Duration.hours(6)
           : Duration.zero,
     },
