@@ -46,18 +46,12 @@ export function decideGitHubCommand(command: string): GitHubCommandDecision {
     if (forgeCommand.kind !== "read" || bypass) continue;
     const tool = PULL_REQUEST_READ_TOOLS[forgeCommand.intent];
     const args = JSON.stringify(pullRequestReadArguments(forgeCommand.target));
-    const introduction =
+    const bypassHint = `rerun as \`${bypassCommand.trim()}\`.`;
+    const reason =
       forgeCommand.intent === "failures"
-        ? "Read PR check failures through T3."
-        : "T3 already reads this.";
-    const scope =
-      forgeCommand.intent === "failures"
-        ? `This tool answers the failing checks of the thread's or a named PR.${forgeCommand.target.repository === undefined ? "" : ` The requested repository is ${forgeCommand.target.repository}.`} If this run or job is not one of those, rerun with the bypass.`
-        : "If it can't answer what you need, rerun with the bypass.";
-    return {
-      allow: false,
-      reason: `${introduction} Call ${tool} with ${args} (load it with ToolSearch if it is deferred). ${scope} Rerun as \`${bypassCommand.trim()}\`.`,
-    };
+        ? `T3 reads why a PR's checks failed. Call ${tool} with ${args} (load it with ToolSearch if it is deferred). It answers the failing checks of this thread's PR or the PR you name.${forgeCommand.target.repository === undefined ? "" : ` Your command reads ${forgeCommand.target.repository}.`} If this run or job belongs to another PR, ${bypassHint}`
+        : `T3 already reads this. Call ${tool} with ${args} (load it with ToolSearch if it is deferred). If it can't answer what you need, ${bypassHint}`;
+    return { allow: false, reason };
   }
   return { allow: true };
 }

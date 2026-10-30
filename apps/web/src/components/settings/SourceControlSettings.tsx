@@ -380,7 +380,7 @@ function AgentGitHubReadGateSetting() {
       serverScoped
       settingKeys={["enableAgentGitHubReadGate"]}
       {...searchableSetting("agent-github-reads")}
-      description="Claude agents are stopped from running gh reads T3 already answers. Turn off to let them run gh freely. Applies when the agent session next starts."
+      description="T3 stops Claude agents from running gh reads it already answers. Turn this off to let them run gh freely. The change applies when an agent session next starts."
       resetAction={
         settings.enableAgentGitHubReadGate !== DEFAULT_SERVER_SETTINGS.enableAgentGitHubReadGate ? (
           <SettingResetButton

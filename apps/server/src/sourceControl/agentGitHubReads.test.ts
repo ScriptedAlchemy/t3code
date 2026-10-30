@@ -16,7 +16,7 @@ import {
 } from "./agentGitHubReads.ts";
 
 const redirect = (tool: keyof typeof PULL_REQUEST_READ_TOOLS, args: string, command: string) =>
-  `T3 already reads this. Call ${PULL_REQUEST_READ_TOOLS[tool]} with ${args} (load it with ToolSearch if it is deferred). If it can't answer what you need, rerun with the bypass. Rerun as \`T3_GH_DIRECT=1 ${command}\`.`;
+  `T3 already reads this. Call ${PULL_REQUEST_READ_TOOLS[tool]} with ${args} (load it with ToolSearch if it is deferred). If it can't answer what you need, rerun as \`T3_GH_DIRECT=1 ${command}\`.`;
 
 describe("decideGitHubCommand", () => {
   it.each([
