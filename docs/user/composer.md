@@ -294,6 +294,24 @@ After you add or change skills, plugins, or MCP servers, use **Restart agent
 session** in the command palette on web and desktop. The conversation continues,
 and your next message starts the agent again with the new setup.
 
+### One skills library for every provider
+
+Turn on **Settings → Providers → Skills library**, under Advanced, to keep one set of
+skills for every provider and account on that environment. T3 Code moves each skill
+folder from `~/.claude/skills` and `~/.codex/skills` into `~/.agents/skills` and links it
+back, and links every skill there into Claude's and Antigravity's skill folders. Codex,
+Cursor, OpenCode, and other agents that read `~/.agents/skills` see the same set. Claude's
+account-synced skills and Codex's bundled skills stay where they are.
+
+A skill found in two places with identical contents is kept once. When the contents
+differ, nothing is moved for that skill and the setting lists both paths; delete or
+rename one copy, then select **Refresh**. A skill you add to `~/.agents/skills` by hand
+reaches Claude at the next refresh, server start, or new account.
+
+Turning it off copies each linked skill back into Claude's and Antigravity's folders and
+removes the links. Codex keeps reading `~/.agents/skills` directly. Each environment has
+its own library, so turn it on for every machine you want it on.
+
 Provider commands must start the message to run. T3 Code commands such as
 `/model` and `/plan`, and skill mentions, work on any line.
 

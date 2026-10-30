@@ -14,7 +14,7 @@ export type OverlayFold =
   | { readonly _tag: "FoldDirectory"; readonly children: (name: string) => OverlayFold };
 
 export type OverlayAdopt =
-  | Extract<OverlayFold, { readonly _tag: "FoldDirectory" }>
+  | Extract<OverlayFold, { readonly _tag: "FoldDirectory" | "Move" }>
   | { readonly _tag: "Conflict" }
   | {
       readonly _tag: "Replace";
@@ -127,6 +127,33 @@ type LinkState =
   | { readonly _tag: "NotSymlink" }
   | { readonly _tag: "Symlink"; readonly target: string };
 
+// Finder writes .DS_Store into any folder it shows, so it never makes two copies differ.
+const IGNORED_CONTENT_NAMES = new Set([".DS_Store"]);
+
+/** True when both paths hold the same tree: equal names, file bytes, and link targets. */
+export async function sameContent(path: Path.Path, left: string, right: string): Promise<boolean> {
+  const [a, b] = await Promise.all([NodeFSP.lstat(left), NodeFSP.lstat(right)]);
+  if (a.isSymbolicLink() || b.isSymbolicLink()) {
+    if (!a.isSymbolicLink() || !b.isSymbolicLink()) return false;
+    const [x, y] = await Promise.all([NodeFSP.readlink(left), NodeFSP.readlink(right)]);
+    return x === y;
+  }
+  if (a.isFile() && b.isFile()) {
+    if (a.size !== b.size) return false;
+    const [x, y] = await Promise.all([NodeFSP.readFile(left), NodeFSP.readFile(right)]);
+    return x.equals(y);
+  }
+  if (!a.isDirectory() || !b.isDirectory()) return false;
+  const list = async (directory: string) =>
+    (await NodeFSP.readdir(directory)).filter((name) => !IGNORED_CONTENT_NAMES.has(name)).sort();
+  const [x, y] = await Promise.all([list(left), list(right)]);
+  if (x.length !== y.length || x.some((name, index) => name !== y[index])) return false;
+  for (const name of x) {
+    if (!(await sameContent(path, path.join(left, name), path.join(right, name)))) return false;
+  }
+  return true;
+}
+
 function isNotSymlinkError(error: PlatformError.PlatformError): boolean {
   const cause = error.reason.cause;
   return (
@@ -235,6 +262,38 @@ export const materializeHomeOverlay = Effect.fn("materializeHomeOverlay")(functi
     if (rule._tag === "Move") {
       if (info.type !== (rule.kind === "directory" ? "Directory" : "File")) return yield* conflict;
       if (info.type === "Directory") {
+        if (targetState._tag === "NotSymlink") {
+          const equal = yield* Effect.tryPromise({
+            try: () => sameContent(path, source, target),
+            catch: (cause) =>
+              new HomeOverlayFileSystemError({
+                sharedRoot,
+                accountDir,
+                operation: "stat",
+                path: target,
+                cause,
+              }),
+          });
+          if (!equal) return yield* conflict;
+          // Renamed aside first so a crash mid-delete leaves the entry missing, not half-removed.
+          const discarded = path.join(path.dirname(source), `.${path.basename(source)}.t3-discard`);
+          yield* Effect.tryPromise({
+            try: async () => {
+              await NodeFSP.rm(discarded, { recursive: true, force: true });
+              await NodeFSP.rename(source, discarded);
+              await NodeFSP.rm(discarded, { recursive: true, force: true });
+            },
+            catch: (cause) =>
+              new HomeOverlayFileSystemError({
+                sharedRoot,
+                accountDir,
+                operation: "remove",
+                path: source,
+                cause,
+              }),
+          });
+          return;
+        }
         if (targetState._tag !== "Missing") return yield* conflict;
         const missing = yield* Effect.tryPromise({
           try: () =>
@@ -371,7 +430,7 @@ export const materializeHomeOverlay = Effect.fn("materializeHomeOverlay")(functi
         targetPath: target,
       });
     }
-    if (entry.adopt._tag === "FoldDirectory") {
+    if (entry.adopt._tag === "FoldDirectory" || entry.adopt._tag === "Move") {
       yield* fold(link, target, entry.adopt);
       return yield* createLink;
     }

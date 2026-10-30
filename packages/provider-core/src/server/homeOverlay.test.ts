@@ -270,6 +270,60 @@ it.layer(NodeServices.layer)("materializeHomeOverlay", (it) => {
           }),
       );
     }
+    it.effect.skipIf(!symlinksSupported)(
+      "moves an entry once, keeps one of two equal copies, and refuses different ones",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const homes = yield* makeHomes();
+          const write = (root: string, name: string, contents: string) =>
+            fs
+              .makeDirectory(path.join(root, name), { recursive: true })
+              .pipe(
+                Effect.andThen(fs.writeFileString(path.join(root, name, "SKILL.md"), contents)),
+              );
+          yield* write(homes.accountDir, "only-here", "one");
+          yield* write(homes.accountDir, "same", "equal");
+          yield* write(homes.sharedRoot, "same", "equal");
+          yield* fs.writeFileString(path.join(homes.sharedRoot, "same", ".DS_Store"), "finder");
+          const move = { _tag: "Move", kind: "directory" } as const;
+          const overlay = (names: ReadonlyArray<string>) => ({
+            ...homes,
+            active: true,
+            policy: {
+              shared: () => names.map((name) => ({ name, adopt: move })),
+              mustBeReal: [],
+              healIfLinked: [],
+              retired: [],
+            },
+          });
+
+          yield* materializeHomeOverlay(overlay(["only-here", "same"]));
+          yield* materializeHomeOverlay(overlay(["only-here", "same"]));
+
+          for (const name of ["only-here", "same"]) {
+            expect(yield* linkTarget(path.join(homes.accountDir, name))).toBe(
+              path.join(homes.sharedRoot, name),
+            );
+          }
+          expect(
+            yield* fs.readFileString(path.join(homes.sharedRoot, "only-here", "SKILL.md")),
+          ).toBe("one");
+          expect(yield* fs.readDirectory(homes.accountDir)).toHaveLength(2);
+
+          yield* write(homes.accountDir, "differs", "account");
+          yield* write(homes.sharedRoot, "differs", "shared");
+          const error = yield* materializeHomeOverlay(overlay(["differs"])).pipe(Effect.flip);
+          expect(error).toMatchObject({ _tag: "HomeOverlayEntryConflictError" });
+          expect(yield* fs.readFileString(path.join(homes.accountDir, "differs", "SKILL.md"))).toBe(
+            "account",
+          );
+          expect(yield* fs.readFileString(path.join(homes.sharedRoot, "differs", "SKILL.md"))).toBe(
+            "shared",
+          );
+        }),
+    );
   });
 
   describe("inactive overlay", () => {

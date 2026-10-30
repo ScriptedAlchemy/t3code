@@ -689,6 +689,31 @@ export const ServerConfig = Schema.Struct({
 });
 export type ServerConfig = typeof ServerConfig.Type;
 
+export const SkillsLibraryStatus = Schema.Struct({
+  libraryPath: Schema.String,
+  linked: Schema.Array(Schema.Struct({ driver: ProviderDriverKind, name: Schema.String })),
+  conflicts: Schema.Array(
+    Schema.Struct({ name: Schema.String, paths: Schema.Tuple([Schema.String, Schema.String]) }),
+  ),
+  nameMismatches: Schema.Array(
+    Schema.Struct({ name: Schema.String, frontmatterName: Schema.String }),
+  ),
+});
+export type SkillsLibraryStatus = typeof SkillsLibraryStatus.Type;
+
+export class SkillsLibraryError extends Schema.TaggedError<SkillsLibraryError>()(
+  "SkillsLibraryError",
+  {
+    operation: Schema.Literals(["scan", "apply", "detach"]),
+    path: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Could not ${this.operation} the skills library at '${this.path}'.`;
+  }
+}
+
 export function resolveEnvironmentMachineKind(
   config: {
     readonly environment: Pick<ExecutionEnvironmentDescriptor, "platform">;

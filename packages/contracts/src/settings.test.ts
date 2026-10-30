@@ -46,6 +46,15 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+describe("skills library setting", () => {
+  it("stays off for existing installations and patches like any server setting", () => {
+    expect(decodeServerSettings({}).skillsLibraryEnabled).toBe(false);
+    expect(decodeServerSettingsPatch({ skillsLibraryEnabled: true })).toEqual({
+      skillsLibraryEnabled: true,
+    });
+  });
+});
+
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();

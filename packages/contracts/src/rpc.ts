@@ -358,6 +358,8 @@ import {
   DesktopUpdateCommitInput,
   OtlpEndpointCheckInput,
   ServerPrepareTriageError,
+  SkillsLibraryError,
+  SkillsLibraryStatus,
   ServerPrepareTriageInput,
   ServerPrepareTriageResult,
   OtlpEndpointCheckResult,
@@ -592,6 +594,8 @@ export const WS_METHODS = {
   serverGetResourceTelemetryHistory: "server.getResourceTelemetryHistory",
   serverRetryResourceTelemetry: "server.retryResourceTelemetry",
   serverCheckOtlpEndpoint: "server.checkOtlpEndpoint",
+  serverGetSkillsLibraryStatus: "server.getSkillsLibraryStatus",
+  serverRefreshSkillsLibrary: "server.refreshSkillsLibrary",
   serverPrepareTriage: "server.prepareTriage",
   serverSignalProcess: "server.signalProcess",
   serverReportClientActivity: "server.reportClientActivity",
@@ -1018,6 +1022,19 @@ const WsServerCheckOtlpEndpointRpc = Rpc.make(WS_METHODS.serverCheckOtlpEndpoint
   payload: OtlpEndpointCheckInput,
   success: OtlpEndpointCheckResult,
   error: EnvironmentAuthorizationError,
+});
+
+const WsServerGetSkillsLibraryStatusRpc = Rpc.make(WS_METHODS.serverGetSkillsLibraryStatus, {
+  payload: Schema.Struct({}),
+  success: SkillsLibraryStatus,
+  error: Schema.Union([SkillsLibraryError, EnvironmentAuthorizationError]),
+});
+
+/** Brings the harness skill folders in line with `skillsLibraryEnabled`, then reports status. */
+const WsServerRefreshSkillsLibraryRpc = Rpc.make(WS_METHODS.serverRefreshSkillsLibrary, {
+  payload: Schema.Struct({}),
+  success: SkillsLibraryStatus,
+  error: Schema.Union([SkillsLibraryError, EnvironmentAuthorizationError]),
 });
 
 const WsServerPrepareTriageRpc = Rpc.make(WS_METHODS.serverPrepareTriage, {
@@ -2188,6 +2205,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetResourceTelemetryHistoryRpc,
   WsServerRetryResourceTelemetryRpc,
   WsServerCheckOtlpEndpointRpc,
+  WsServerGetSkillsLibraryStatusRpc,
+  WsServerRefreshSkillsLibraryRpc,
   WsServerPrepareTriageRpc,
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,
