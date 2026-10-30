@@ -109,8 +109,8 @@ export function deriveProviderSettingsFields(
       if (formAnnotation.hidden) return [];
       if (
         definition.driverKind === "claudeAgent" &&
-        readProviderConfigString(value, "setupMode") === "cli" &&
-        key === "homePath"
+        ((readProviderConfigString(value, "setupMode") === "cli" && key === "homePath") ||
+          (readProviderConfigString(value, "setupMode") !== "cli" && key === "shareProfile"))
       )
         return [];
       if (isLocalAcp && key !== "source" && key !== "commandPath") return [];

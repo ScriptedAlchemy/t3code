@@ -31,6 +31,7 @@ import {
 } from "../provider/ClaudeModelCatalog.ts";
 import {
   claudeAccountSettings,
+  parseClaudeAccountDir,
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
 } from "../provider/Drivers/ClaudeHome.ts";
@@ -175,7 +176,11 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
       ...(ultracode ? { ultracode: true } : {}),
-      ...claudeAccountSettings(claudeSettings),
+      ...claudeAccountSettings(
+        claudeSettings.setupMode === "cli"
+          ? parseClaudeAccountDir(claudeSettings.homePath)
+          : undefined,
+      ),
     };
     const settingsJson = yield* encodeJsonForOperation(
       operation,

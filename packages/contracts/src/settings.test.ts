@@ -581,7 +581,13 @@ describe("machine-local provider settings", () => {
   });
 
   it("marks home and binary paths on Claude", () => {
-    expect(machineLocalSettingsFields(ClaudeSettings)).toEqual(["binaryPath", "homePath"]);
+    expect(machineLocalSettingsFields(ClaudeSettings)).toEqual([
+      "binaryPath",
+      "homePath",
+      "shareProfile",
+    ]);
+    expect(decodeClaudeSettings({ setupMode: "cli" }).shareProfile).toBe(true);
+    expect(decodeClaudeSettings({ shareProfile: false }).shareProfile).toBe(false);
   });
 
   it("keeps secret and machine-local classifications apart", () => {
