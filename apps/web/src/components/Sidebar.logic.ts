@@ -1,5 +1,5 @@
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
@@ -588,6 +588,7 @@ export function resolveSidebarRowThreadRef(
 /**
  * `delegatedUnderParent` holds the tasks linked environments run for a thread
  * the sidebar lists, by thread key; they show under that thread, as subagents do.
+ * `hiddenEnvironmentIds` hides every thread of those environments; null hides none.
  */
 export function filterSidebarV2VisibleThreads<
   T extends Pick<SidebarThreadSummary, "archivedAt" | "environmentId" | "id" | "lineage"> & {
@@ -597,10 +598,12 @@ export function filterSidebarV2VisibleThreads<
   threads: readonly T[],
   scopedProjectKeys: ReadonlySet<string> | null,
   delegatedUnderParent: ReadonlySet<string>,
+  hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null,
 ): T[] {
   return threads.filter(
     (thread) =>
       thread.archivedAt === null &&
+      (hiddenEnvironmentIds === null || !hiddenEnvironmentIds.has(thread.environmentId)) &&
       !isShownUnderParent(
         { environmentId: thread.environmentId, threadId: thread.id },
         thread.lineage,
@@ -609,6 +612,43 @@ export function filterSidebarV2VisibleThreads<
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );
+}
+
+/** Like the filter above, but the open thread's row stays listed when only its environment is hidden. */
+export function filterSidebarV2ListedThreads<
+  T extends Pick<SidebarThreadSummary, "archivedAt" | "environmentId" | "id" | "lineage"> & {
+    projectId: string;
+  },
+>(
+  threads: readonly T[],
+  scopedProjectKeys: ReadonlySet<string> | null,
+  delegatedUnderParent: ReadonlySet<string>,
+  hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null,
+  routeRowThreadKey: string | null,
+): T[] {
+  const listed = filterSidebarV2VisibleThreads(
+    threads,
+    scopedProjectKeys,
+    delegatedUnderParent,
+    hiddenEnvironmentIds,
+  );
+  if (hiddenEnvironmentIds === null || routeRowThreadKey === null) return listed;
+  const routeThread = threads.find(
+    (thread) =>
+      hiddenEnvironmentIds.has(thread.environmentId) &&
+      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === routeRowThreadKey,
+  );
+  if (routeThread !== undefined) {
+    listed.push(
+      ...filterSidebarV2VisibleThreads(
+        [routeThread],
+        scopedProjectKeys,
+        delegatedUnderParent,
+        null,
+      ),
+    );
+  }
+  return listed;
 }
 
 export function buildBulkTitleRegenerationContextMenuItem(input: {
@@ -939,7 +979,8 @@ export function sidebarFolderExpansionKeys(group: {
 
 /**
  * Boring sidebar folders. Folders follow `groups` order and threads keep their
- * input order. A project with no threads gets a folder only with `keepEmpty`.
+ * input order. A project with no threads gets a folder only with `keepEmpty`
+ * and a member environment outside `hiddenEnvironmentIds`.
  * A thread whose project is in no group has no folder and is left out.
  */
 export function groupSidebarThreadsByProject<
@@ -954,6 +995,7 @@ export function groupSidebarThreadsByProject<
   groups: readonly TGroup[],
   threads: readonly TThread[],
   keepEmpty: boolean,
+  hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null,
 ): Array<{ group: TGroup; threads: TThread[] }> {
   const folders = groups.map((group) => ({ group, threads: [] as TThread[] }));
   const folderByProject = new Map<string, (typeof folders)[number]>();
@@ -965,7 +1007,15 @@ export function groupSidebarThreadsByProject<
   for (const thread of threads) {
     folderByProject.get(`${thread.environmentId}:${thread.projectId}`)?.threads.push(thread);
   }
-  return keepEmpty ? folders : folders.filter((folder) => folder.threads.length > 0);
+  return folders.filter(
+    (folder) =>
+      folder.threads.length > 0 ||
+      (keepEmpty &&
+        (hiddenEnvironmentIds === null ||
+          folder.group.memberProjectRefs.some(
+            (ref) => !hiddenEnvironmentIds.has(ref.environmentId),
+          ))),
+  );
 }
 
 export type SidebarV2TopStatusKind =
@@ -1353,7 +1403,7 @@ export function sortSidebarV2ProjectGroups<
 ): TProject[] {
   return sortLogicalProjectsForSidebar(
     projects,
-    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent),
+    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent, null),
     sortOrder,
   );
 }

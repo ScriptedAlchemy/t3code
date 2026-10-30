@@ -44,6 +44,7 @@ export function useActiveRowReveal(reveal: SidebarRouteReveal, routeKey: string 
 
 type RevealableThread = Parameters<typeof filterSidebarV2VisibleThreads>[0][number];
 
+// Environments hidden as offline never widen the scope: the open row is kept in place instead.
 // Render records the route before deciding, so the first render of a new route
 // already widens the scope. Only a route reveal widens: the once-per-mount
 // scroll never changes a scope the user chose.
@@ -63,7 +64,8 @@ export function resolveSidebarRouteReveal<T extends RevealableThread>(input: {
   const widensScope =
     thread !== undefined &&
     scopedProjectKeys !== null &&
-    filterSidebarV2VisibleThreads([thread], scopedProjectKeys, delegatedUnderParent).length === 0 &&
-    filterSidebarV2VisibleThreads([thread], null, delegatedUnderParent).length === 1;
+    filterSidebarV2VisibleThreads([thread], scopedProjectKeys, delegatedUnderParent, null)
+      .length === 0 &&
+    filterSidebarV2VisibleThreads([thread], null, delegatedUnderParent, null).length === 1;
   return { pendingKey, widensScope };
 }

@@ -134,6 +134,7 @@ import { useNowMinute } from "../hooks/useNowMinute";
 import {
   useEnvironmentIdentities,
   useConnectedEnvironmentIds,
+  useOfflineEnvironmentIds,
   useEnvironmentMachines,
   usePrimaryEnvironmentId,
 } from "../state/environments";
@@ -172,7 +173,7 @@ import {
 } from "./threadActionMenu.logic";
 import {
   applySidebarThreadDrop,
-  filterSidebarV2VisibleThreads,
+  filterSidebarV2ListedThreads,
   groupSidebarThreadsByProject,
   sidebarFolderExpansionKeys,
   buildBulkTitleRegenerationContextMenuItem,
@@ -231,6 +232,7 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { copyThreadReference } from "../lib/copyThreadReference";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import { Button } from "./ui/button";
+import { Switch } from "./ui/switch";
 import {
   Combobox,
   ComboboxEmpty,
@@ -338,6 +340,9 @@ type SidebarOptimisticDrop = {
 interface SidebarThreadPartitionInput {
   readonly threads: readonly EnvironmentThreadShell[];
   readonly scopedProjectKeys: ReadonlySet<string> | null;
+  readonly hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null;
+  /** The open thread's row stays listed even when its environment is hidden. */
+  readonly routeRowThreadKey: string | null;
   /** Tasks linked environments run for a listed thread; they show under it. */
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
@@ -400,6 +405,7 @@ function routeThreadOnly(
 function useSidebarThreads(input: {
   readonly projectScopeKey: string | null;
   readonly scopedProjectKeys: ReadonlySet<string> | null;
+  readonly hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
   readonly optimisticDrop: SidebarOptimisticDrop | null;
   readonly threads: readonly EnvironmentThreadShell[];
@@ -413,6 +419,7 @@ function useSidebarThreads(input: {
   const {
     projectScopeKey,
     scopedProjectKeys,
+    hiddenEnvironmentIds,
     serverConfigs,
     optimisticDrop,
     threads,
@@ -462,6 +469,8 @@ function useSidebarThreads(input: {
   const partition = partitionSidebarThreads({
     threads,
     scopedProjectKeys,
+    hiddenEnvironmentIds,
+    routeRowThreadKey,
     delegatedUnderParent,
     serverConfigs,
     optimisticDrop,
@@ -507,7 +516,12 @@ function useSidebarThreads(input: {
   const projectFolders =
     folderGroups === null
       ? null
-      : groupSidebarThreadsByProject(folderGroups, activeThreads, keepEmpty).map((folder) => {
+      : groupSidebarThreadsByProject(
+          folderGroups,
+          activeThreads,
+          keepEmpty,
+          hiddenEnvironmentIds,
+        ).map((folder) => {
           const collapsed = !resolveProjectExpanded(
             projectExpandedById,
             sidebarFolderExpansionKeys(folder.group),
@@ -597,6 +611,8 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   const {
     threads,
     scopedProjectKeys,
+    hiddenEnvironmentIds,
+    routeRowThreadKey,
     delegatedUnderParent,
     serverConfigs,
     optimisticDrop,
@@ -604,7 +620,13 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     sortActiveBySend,
   } = input;
   const preciseNow = new Date().toISOString();
-  const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
+  const visible = filterSidebarV2ListedThreads(
+    threads,
+    scopedProjectKeys,
+    delegatedUnderParent,
+    hiddenEnvironmentIds,
+    routeRowThreadKey,
+  );
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -987,6 +1009,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const projectGroupsRef = useRef(projectGroups);
   const persistedProjectScopeKeys = useUiStateStore((store) => store.sidebarProjectScopeKeys);
   const setPersistedProjectScopeKeys = useUiStateStore((store) => store.setSidebarProjectScopeKeys);
+  const hideOfflineEnvironments = useUiStateStore((store) => store.sidebarHideOfflineEnvironments);
+  const setHideOfflineEnvironments = useUiStateStore(
+    (store) => store.setSidebarHideOfflineEnvironments,
+  );
+  const offlineEnvironmentIds = useOfflineEnvironmentIds();
+  const hiddenEnvironmentIds = hideOfflineEnvironments ? new Set(offlineEnvironmentIds) : null;
   const [projectScopeMenuState, dispatchProjectScopeMenu] = useReducer(
     reduceSidebarProjectScopeMenuState,
     { open: false, query: "" },
@@ -1313,6 +1341,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   } = useSidebarThreads({
     projectScopeKey,
     scopedProjectKeys,
+    hiddenEnvironmentIds,
     serverConfigs,
     optimisticDrop,
     threads,
@@ -2977,11 +3006,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                   <ComboboxTrigger
                     render={
                       <SidebarHeaderIconButton
-                        label={
+                        label={`${
                           scopedProjectGroups.length > 0
                             ? `Filter threads by project: ${scopedProjectGroups.map((project) => project.displayName).join(", ")}`
                             : "Filter threads by project"
-                        }
+                        }${hideOfflineEnvironments ? ", hiding offline environments" : ""}`}
                       />
                     }
                   >
@@ -3002,6 +3031,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     ) : (
                       <ListFilterIcon className="size-4" />
                     )}
+                    {hiddenEnvironmentIds !== null && hiddenEnvironmentIds.size > 0 ? (
+                      <span
+                        aria-hidden
+                        className="absolute right-1 top-1 size-1.5 rounded-full bg-muted-foreground"
+                      />
+                    ) : null}
                   </ComboboxTrigger>
                   <ComboboxPopup
                     align="start"
@@ -3113,6 +3148,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         );
                       }}
                     </ComboboxList>
+                    {showProjectEnvironments || hideOfflineEnvironments ? (
+                      <label className="flex cursor-pointer items-center justify-between gap-3 border-t border-border/60 px-3 py-2 text-xs">
+                        <span className="truncate font-medium text-muted-foreground">
+                          Hide offline environments
+                        </span>
+                        <Switch
+                          size="sm"
+                          checked={hideOfflineEnvironments}
+                          onCheckedChange={(checked) => {
+                            clearSelection();
+                            setHideOfflineEnvironments(checked);
+                          }}
+                        />
+                      </label>
+                    ) : null}
                   </ComboboxPopup>
                 </Combobox>
               }
