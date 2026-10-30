@@ -360,6 +360,7 @@ describe("GitHub check failures", () => {
       if (url.includes("/annotations"))
         return json([
           { path: "a.ts", start_line: 4, annotation_level: "failure", message: "bad code" },
+          { path: "budget.json", start_line: 0, annotation_level: "failure", message: "grew" },
         ]);
       if (url.endsWith("/logs"))
         return new Response(null, {
@@ -376,7 +377,10 @@ describe("GitHub check failures", () => {
       expect(result).toMatchObject({
         attempt: 1,
         failedSteps: ["Run lint"],
-        annotations: [{ path: "a.ts", startLine: 4, message: "bad code" }],
+        annotations: [
+          { path: "a.ts", startLine: 4, message: "bad code" },
+          { path: "budget.json", startLine: 0, message: "grew" },
+        ],
         log: { _tag: "excerpt", text: "##[error]bad code", totalLines: 1, truncated: false },
       });
       expect(result).not.toHaveProperty("required");

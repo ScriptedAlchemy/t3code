@@ -1,4 +1,5 @@
 import {
+  NonNegativeInt,
   PositiveInt,
   type PullRequestCheck,
   type PullRequestCheckFailure,
@@ -29,7 +30,8 @@ const Job = Schema.Struct({
 const Annotations = Schema.Array(
   Schema.Struct({
     path: Schema.String,
-    start_line: PositiveInt,
+    // 0 marks a file-level annotation.
+    start_line: NonNegativeInt,
     annotation_level: Schema.Literals(["failure", "warning", "notice"]),
     message: Schema.String,
   }),

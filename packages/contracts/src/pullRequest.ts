@@ -126,7 +126,8 @@ export const PullRequestCheckFailure = Schema.Struct({
   annotations: Schema.Array(
     Schema.Struct({
       path: Schema.String.check(Schema.isMaxLength(1024)),
-      startLine: PositiveInt,
+      /** 0 for an annotation on the whole file. */
+      startLine: NonNegativeInt,
       level: Schema.Literals(["failure", "warning", "notice"]),
       message: Schema.String.check(Schema.isMaxLength(300)),
     }),
