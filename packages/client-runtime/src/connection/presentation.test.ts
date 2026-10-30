@@ -13,12 +13,7 @@ import {
   RelayConnectionTarget,
   type SupervisorConnectionState,
 } from "./model.ts";
-import {
-  type EnvironmentConnectionPhase,
-  environmentMcpUrl,
-  isEnvironmentOffline,
-  presentConnectionState,
-} from "./presentation.ts";
+import { environmentMcpUrl, presentConnectionState } from "./presentation.ts";
 
 const TARGET = new BearerConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -110,18 +105,6 @@ describe("connection presentation", () => {
         relayHttpBaseUrl: "https://tunnel.example.test",
       }),
     ).toBe("https://tunnel.example.test/mcp");
-  });
-
-  it.each<[EnvironmentConnectionPhase, boolean]>([
-    ["connected", false],
-    ["connecting", false],
-    ["reconnecting", true],
-    ["offline", true],
-    ["available", true],
-    ["error", true],
-    ["unsupported", true],
-  ])("treats %s as offline: %s", (phase, offline) => {
-    expect(isEnvironmentOffline(phase)).toBe(offline);
   });
 
   it("distinguishes initial connection, reconnect, and retry errors", () => {

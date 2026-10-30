@@ -11,7 +11,6 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { AVAILABLE_CONNECTION_STATE, type SupervisorConnectionState } from "../connection/model.ts";
 import {
   connectionCatalogDisplayUrl,
-  isEnvironmentOffline,
   presentConnectionState,
   type EnvironmentConnectionPhase,
   type EnvironmentConnectionPresentation,
@@ -218,6 +217,9 @@ export function projectEnvironmentConnectionSummary(
   };
 }
 
+/** A disconnected environment counts as offline only after retrying this long, so restarts and blips keep its threads listed. */
+export const OFFLINE_ENVIRONMENT_GRACE_MS = 30_000;
+
 export function createEnvironmentSummaryAtoms(input: {
   readonly catalogValueAtom: Atom.Atom<EnvironmentCatalogState>;
   readonly presentationAtom: (
@@ -296,11 +298,29 @@ export function createEnvironmentSummaryAtoms(input: {
       ? previous
       : next;
   });
-  const offlineEnvironmentIdsAtom = Atom.make((get) => {
-    const next = get(environmentIdsAtom).filter((id) => {
-      const connectionState = get(environmentAtom(id))?.connectionState;
-      return connectionState !== undefined && isEnvironmentOffline(connectionState);
+  const offlineEnvironmentAtom = Atom.family((environmentId: EnvironmentId) => {
+    let disconnectedSince: number | null = null;
+    return Atom.make((get) => {
+      const connectionState = get(environmentAtom(environmentId))?.connectionState;
+      if (connectionState === undefined || connectionState === "connected") {
+        disconnectedSince = null;
+        return false;
+      }
+      // Retrying cannot fix a blocked connection, so it skips the grace period.
+      if (connectionState === "error" || connectionState === "unsupported") return true;
+      // @effect-diagnostics-next-line globalDate:off - Atoms run outside an Effect runtime.
+      const now = Date.now();
+      disconnectedSince ??= now;
+      const remainingMs = disconnectedSince + OFFLINE_ENVIRONMENT_GRACE_MS - now;
+      if (remainingMs <= 0) return true;
+      // @effect-diagnostics-next-line globalTimers:off - Mirrors `Atom.withRefresh`, outside an Effect runtime.
+      const handle = setTimeout(() => get.refreshSelf(), remainingMs);
+      get.addFinalizer(() => clearTimeout(handle));
+      return false;
     });
+  });
+  const offlineEnvironmentIdsAtom = Atom.make((get) => {
+    const next = get(environmentIdsAtom).filter((id) => get(offlineEnvironmentAtom(id)));
     const previous = Option.getOrNull(get.self<ReadonlyArray<EnvironmentId>>());
     return previous !== null &&
       previous.length === next.length &&

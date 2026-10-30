@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
 import { EnvironmentId, type ServerConfig } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
@@ -8,6 +8,7 @@ import { AVAILABLE_CONNECTION_STATE, PrimaryConnectionTarget } from "../connecti
 import {
   createEnvironmentPresentationAtoms,
   createEnvironmentSummaryAtoms,
+  OFFLINE_ENVIRONMENT_GRACE_MS,
 } from "./presentation.ts";
 import type { EnvironmentCatalogState } from "./connections.ts";
 
@@ -93,23 +94,34 @@ describe("environment summary subscriptions", () => {
 });
 
 describe("offline environments", () => {
-  it("lists environments whose connection is neither connected nor first-attempt connecting", () => {
+  it("lists an environment once it stays disconnected past the grace period", () => {
+    vi.useFakeTimers();
     const h = harness();
     const stop = h.registry.subscribe(h.offlineEnvironmentIdsAtom, () => {});
-    const supervisor = (phase: "connected" | "connecting" | "backoff") =>
-      AsyncResult.success({ ...AVAILABLE_CONNECTION_STATE, phase, attempt: 1 });
+    const offlineAfter = (phase: "connected" | "connecting" | "backoff" | "blocked") => {
+      h.registry.set(
+        h.state,
+        AsyncResult.success({ ...AVAILABLE_CONNECTION_STATE, phase, attempt: 1 }),
+      );
+      return h.registry.get(h.offlineEnvironmentIdsAtom);
+    };
     try {
+      expect(offlineAfter("connected")).toEqual([]);
+      expect(offlineAfter("backoff")).toEqual([]);
+      vi.advanceTimersByTime(OFFLINE_ENVIRONMENT_GRACE_MS - 1);
       expect(h.registry.get(h.offlineEnvironmentIdsAtom)).toEqual([]);
-      h.registry.set(h.state, supervisor("backoff"));
+      vi.advanceTimersByTime(1);
       expect(h.registry.get(h.offlineEnvironmentIdsAtom)).toEqual([FIRST, SECOND]);
-      h.registry.set(h.state, supervisor("connecting"));
-      expect(h.registry.get(h.offlineEnvironmentIdsAtom)).toEqual([]);
-      h.registry.set(h.state, supervisor("backoff"));
-      h.registry.set(h.state, supervisor("connected"));
-      expect(h.registry.get(h.offlineEnvironmentIdsAtom)).toEqual([]);
+      // A retry does not restart the grace period; only a connection does.
+      expect(offlineAfter("connecting")).toEqual([FIRST, SECOND]);
+      expect(offlineAfter("connected")).toEqual([]);
+      expect(offlineAfter("backoff")).toEqual([]);
+      // Retrying cannot fix a blocked connection, so it is offline at once.
+      expect(offlineAfter("blocked")).toEqual([FIRST, SECOND]);
     } finally {
       stop();
       h.registry.dispose();
+      vi.useRealTimers();
     }
   });
 });
