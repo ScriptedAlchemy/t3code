@@ -307,6 +307,21 @@ describe("ChatMarkdown skill chips", () => {
 
     expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "/skills/review/SKILL.md");
   });
+
+  it("shows a model mention as a chip next to a skill", async () => {
+    setup();
+    await using screen = await renderText("Run $review with model:codex/gpt-6.1.", {
+      skills: [{ name: "review", displayName: "Review", path: "/r/SKILL.md", enabled: true }],
+    });
+
+    await expect
+      .element(screen.getByRole("button", { name: "Skill Review. Show details" }))
+      .toBeVisible();
+    await expect
+      .element(screen.getByRole("button", { name: "Model gpt-6.1. Show details" }))
+      .toBeVisible();
+    expect(screen.container.textContent).not.toContain("model:");
+  });
 });
 
 describe("ChatMarkdown headings", () => {

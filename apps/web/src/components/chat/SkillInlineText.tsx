@@ -1,3 +1,4 @@
+import { collectComposerModelMentions } from "@t3tools/client-runtime/composerModelMentions";
 import type { ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import { Children, cloneElement, isValidElement, type ReactNode } from "react";
@@ -7,33 +8,57 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { SKILL_CHIP_ICON_SVG } from "../composerInlineChip";
 import { ContextChipPopover } from "../contextChipParts";
 import { Button } from "../ui/button";
+import { ModelMentionChip } from "./ModelMentionChip";
 
 function SkillInlineText(props: {
   text: string;
   skills: ReadonlyArray<ServerProviderSkill>;
   threadRef: ScopedThreadRef | undefined;
 }) {
-  const nodes: ReactNode[] = [];
-  let cursor = 0;
-
+  const chips: Array<{ start: number; end: number; node: ReactNode }> = [];
   for (const { start, end, skill, rawText } of matchInlineSkills(props.text, props.skills)) {
-    if (start > cursor) {
-      nodes.push(props.text.slice(cursor, start));
-    }
-    nodes.push(
-      <SkillChipPopover
-        key={`${start}:${skill.name}`}
-        label={formatProviderSkillDisplayName(skill)}
-        description={skillPopoverDescription(skill)}
-        copyMarkdown={rawText}
-        onViewInstructions={skillInstructionsOpener(props.threadRef, skill)}
-      />,
-    );
-    cursor = end;
+    chips.push({
+      start,
+      end,
+      node: (
+        <SkillChipPopover
+          key={`${start}:${skill.name}`}
+          label={formatProviderSkillDisplayName(skill)}
+          description={skillPopoverDescription(skill)}
+          copyMarkdown={rawText}
+          onViewInstructions={skillInstructionsOpener(props.threadRef, skill)}
+        />
+      ),
+    });
+  }
+  for (const mention of collectComposerModelMentions(props.text)) {
+    chips.push({
+      start: mention.start,
+      end: mention.end,
+      node: (
+        <ModelMentionChip
+          key={`${mention.start}:${mention.source}`}
+          environmentId={props.threadRef?.environmentId}
+          instanceId={mention.instanceId}
+          model={mention.model}
+          source={mention.source}
+        />
+      ),
+    });
+  }
+  if (chips.length === 0) {
+    return <>{props.text}</>;
   }
 
-  if (cursor === 0) {
-    return <>{props.text}</>;
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  for (const chip of chips.toSorted((left, right) => left.start - right.start)) {
+    if (chip.start < cursor) continue;
+    if (chip.start > cursor) {
+      nodes.push(props.text.slice(cursor, chip.start));
+    }
+    nodes.push(chip.node);
+    cursor = chip.end;
   }
   if (cursor < props.text.length) {
     nodes.push(props.text.slice(cursor));
