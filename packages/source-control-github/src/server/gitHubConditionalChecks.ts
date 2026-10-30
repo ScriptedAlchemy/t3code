@@ -187,6 +187,7 @@ export const makeChecksRevalidator = Effect.gen(function* () {
               : null;
           const fresh = yield* read.pipe(Effect.provideService(KnownWorkflowRuns, known));
           const value = {
+            ...(fresh.headSha == null ? {} : { headSha: fresh.headSha }),
             state: fresh.state,
             checks: fresh.checks,
           };

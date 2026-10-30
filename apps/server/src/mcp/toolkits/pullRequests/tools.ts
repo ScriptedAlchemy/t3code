@@ -3,9 +3,18 @@ import {
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
   PositiveInt,
+  PullRequestFailureReport,
+  PullRequestFailuresInput,
+  PullRequestFeedbackReport,
+  PullRequestOperationError,
+  PullRequestRateLimited,
+  PullRequestReadInput,
   PullRequestReviewGuide,
   PullRequestReviewGuideRun,
   PullRequestState,
+  PullRequestStatusInput,
+  PullRequestStatusReport,
+  PullRequestUnavailableError,
   ThreadPullRequestLinkSource,
   ThreadPullRequestWatchMode,
   TrimmedNonEmptyString,
@@ -20,7 +29,15 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as PullRequestOracle from "../../../pullRequest/PullRequestOracle.ts";
 import * as PullRequestReviewGuideService from "../../../pullRequest/PullRequestReviewGuideService.ts";
+import {
+  PullRequestHostRequiredError,
+  PullRequestProjectNotFoundError,
+  PullRequestTargetIncompleteError,
+  PullRequestUrlInvalidError,
+  PullRequestUrlUnavailableError,
+} from "../../../pullRequest/pullRequestTargets.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -32,6 +49,11 @@ const dependencies = [
 const guideDependencies = [
   ...dependencies,
   PullRequestReviewGuideService.PullRequestReviewGuideService,
+];
+
+const readDependencies = [
+  McpInvocationContext.McpInvocationContext,
+  PullRequestOracle.PullRequestOracle,
 ];
 
 export const PullRequestTargetInput = Schema.Struct({
@@ -59,42 +81,6 @@ export const PullRequestTargetInput = Schema.Struct({
   ),
 });
 export type PullRequestTargetInput = typeof PullRequestTargetInput.Type;
-
-export class PullRequestUrlInvalidError extends Schema.TaggedError<PullRequestUrlInvalidError>()(
-  "PullRequestUrlInvalidError",
-  {},
-) {
-  override get message(): string {
-    return "This is not a recognised pull request URL. Pass repository and number instead.";
-  }
-}
-
-export class PullRequestTargetIncompleteError extends Schema.TaggedError<PullRequestTargetIncompleteError>()(
-  "PullRequestTargetIncompleteError",
-  {},
-) {
-  override get message(): string {
-    return "Pass either url, or both repository and number.";
-  }
-}
-
-export class PullRequestHostRequiredError extends Schema.TaggedError<PullRequestHostRequiredError>()(
-  "PullRequestHostRequiredError",
-  {},
-) {
-  override get message(): string {
-    return "This thread's project has no recognised remote. Pass host or url.";
-  }
-}
-
-export class PullRequestUrlUnavailableError extends Schema.TaggedError<PullRequestUrlUnavailableError>()(
-  "PullRequestUrlUnavailableError",
-  {},
-) {
-  override get message(): string {
-    return "This thread's project is on a host with no known pull request URL shape. Pass url.";
-  }
-}
 
 export class PullRequestThreadRequiredError extends Schema.TaggedError<PullRequestThreadRequiredError>()(
   "PullRequestThreadRequiredError",
@@ -168,15 +154,6 @@ export class PullRequestListFailedError extends Schema.TaggedError<PullRequestLi
   }
 }
 
-export class PullRequestProjectNotFoundError extends Schema.TaggedError<PullRequestProjectNotFoundError>()(
-  "PullRequestProjectNotFoundError",
-  { repository: Schema.String },
-) {
-  override get message(): string {
-    return `No project in this environment is a checkout of ${this.repository}, so its pull requests cannot be read here. Add one with t3_project_create.`;
-  }
-}
-
 export class PullRequestGuideFailedError extends Schema.TaggedError<PullRequestGuideFailedError>()(
   "PullRequestGuideFailedError",
   { detail: Schema.String, cause: Schema.optional(Schema.Defect()) },
@@ -203,6 +180,10 @@ export const PullRequestToolError = Schema.Union([
   PullRequestWatchFromSubagentError,
   PullRequestProjectNotFoundError,
   PullRequestGuideFailedError,
+  PullRequestOracle.PullRequestOracleNoTargetError,
+  PullRequestOracle.PullRequestOracleAmbiguousTargetError,
+  PullRequestUnavailableError,
+  PullRequestOperationError,
 ]);
 export type PullRequestToolError = typeof PullRequestToolError.Type;
 
@@ -215,7 +196,7 @@ const PullRequestIdentity = {
 
 /** A delegated child's report is how its parent learns the PR, so the link result asks for it. */
 export const CHILD_PULL_REQUEST_REPORT_NEXT =
-  "End your reply with: PR <full URL>, head <SHA>, checks and reviews <state>.";
+  "End your reply with the `report` line from pull_request_status.";
 
 export const LinkPullRequestResult = Schema.Struct({
   ...PullRequestIdentity,
@@ -423,6 +404,57 @@ const ReadPullRequestGuideTool = Tool.make("read_pull_request_guide", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true);
 
+const PullRequestStatusTool = Tool.make("pull_request_status", {
+  description:
+    "A PR's head, checks (failing and waiting by name), review decision, and mergeability from T3's shared cache. Use instead of gh pr view, gh pr checks, or gh run view for status. Ends with a `report` line to quote. Read once per decision: never poll it. Parents watch with watch_pull_request; subagents report the state they read.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    ...PullRequestStatusInput.fields,
+  }),
+  success: PullRequestStatusReport,
+  failure: PullRequestToolError,
+  dependencies: readDependencies,
+})
+  .annotate(Tool.Title, "Pull request status")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+const PullRequestFailuresTool = Tool.make("pull_request_failures", {
+  description:
+    "Why a PR's CI failed: each failing check's failed steps, annotations, and a bounded log excerpt around the errors. Use instead of gh run view --log-failed or gh api .../jobs/<id>/logs.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    ...PullRequestFailuresInput.fields,
+  }),
+  success: Schema.Union([PullRequestFailureReport, PullRequestRateLimited]),
+  failure: PullRequestToolError,
+  dependencies: readDependencies,
+})
+  .annotate(Tool.Title, "Pull request CI failures")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+const PullRequestFeedbackTool = Tool.make("pull_request_feedback", {
+  description:
+    "Unresolved review threads, review verdicts, and comments on a PR, bot findings included, newest first. Use instead of gh api .../reviews, .../comments, or reviewThreads GraphQL.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    ...PullRequestReadInput.fields,
+  }),
+  success: Schema.Union([PullRequestFeedbackReport, PullRequestRateLimited]),
+  failure: PullRequestToolError,
+  dependencies: readDependencies,
+})
+  .annotate(Tool.Title, "Pull request feedback")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
 export const PullRequestsToolkit = Toolkit.make(
   LinkPullRequestTool,
   UnlinkPullRequestTool,
@@ -431,4 +463,7 @@ export const PullRequestsToolkit = Toolkit.make(
   UnwatchPullRequestTool,
   WritePullRequestGuidesTool,
   ReadPullRequestGuideTool,
+  PullRequestStatusTool,
+  PullRequestFailuresTool,
+  PullRequestFeedbackTool,
 );

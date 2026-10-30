@@ -63,6 +63,7 @@ import {
 } from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { proxyConfig } from "../shared/proxy.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
+import { decideGitHubCommand } from "../../apps/server/src/sourceControl/agentGitHubReads.ts";
 import { DeviceExpect, gradeDevice } from "./device-grading.ts";
 import {
   AGENT_DEVICE_SHELL,
@@ -1216,13 +1217,19 @@ type Config = {
 };
 
 /**
- * Output for a command that needs no simulator: a matching shell mock, else, for a plain command
- * on a launcher T3 returned, agent-device's help or its error for a session not yet started.
+ * Claude's real GitHub gate precedes shell mocks, as PreToolUse precedes command execution.
  */
-export const cannedOutput = (sample: Sample, command: string) =>
-  mockOutput(sample, command) ??
-  launcherHelp(sample.devices?.launchers ?? [], command) ??
-  sample.devices?.sessionError(sample.shell, command);
+export const cannedOutput = (sample: Sample, command: string) => {
+  if (!sample.base.codex) {
+    const decision = decideGitHubCommand(command);
+    if (!decision.allow) return `<tool_use_error>${decision.reason}</tool_use_error>`;
+  }
+  return (
+    mockOutput(sample, command) ??
+    launcherHelp(sample.devices?.launchers ?? [], command) ??
+    sample.devices?.sessionError(sample.shell, command)
+  );
+};
 
 /** Output for a shell, file, or web tool: canned output, else the shell simulator. */
 const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (

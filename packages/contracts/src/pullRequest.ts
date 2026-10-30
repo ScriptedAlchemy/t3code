@@ -105,12 +105,45 @@ export type PullRequestCheckStatus = typeof PullRequestCheckStatus.Type;
 
 export const PullRequestCheck = Schema.Struct({
   name: TrimmedNonEmptyString,
+  summary: Schema.optional(Schema.String),
+  handle: Schema.optional(TrimmedNonEmptyString),
   status: PullRequestCheckStatus,
   description: Schema.NullOr(Schema.String),
   url: Schema.NullOr(Schema.String),
   required: Schema.optional(Schema.Boolean),
 });
 export type PullRequestCheck = typeof PullRequestCheck.Type;
+
+export const PullRequestCheckFailure = Schema.Struct({
+  check: TrimmedNonEmptyString,
+  status: PullRequestCheckStatus,
+  required: Schema.optional(Schema.Boolean),
+  url: Schema.NullOr(Schema.String),
+  attempt: Schema.optional(PositiveInt),
+  failedSteps: Schema.Array(Schema.String.check(Schema.isMaxLength(300))).check(
+    Schema.isMaxLength(20),
+  ),
+  annotations: Schema.Array(
+    Schema.Struct({
+      path: Schema.String.check(Schema.isMaxLength(1024)),
+      /** 0 for an annotation on the whole file. */
+      startLine: NonNegativeInt,
+      level: Schema.Literals(["failure", "warning", "notice"]),
+      message: Schema.String.check(Schema.isMaxLength(300)),
+    }),
+  ).check(Schema.isMaxLength(20)),
+  log: Schema.Union([
+    Schema.TaggedStruct("excerpt", {
+      text: Schema.String.check(Schema.isMaxLength(8192)),
+      totalLines: NonNegativeInt,
+      truncated: Schema.Boolean,
+    }),
+    Schema.TaggedStruct("unavailable", {
+      reason: Schema.Literals(["still-running", "expired", "no-access", "not-actions"]),
+    }),
+  ]),
+});
+export type PullRequestCheckFailure = typeof PullRequestCheckFailure.Type;
 
 export const PullRequestReactionContent = Schema.Literals([
   "thumbs-up",
@@ -460,6 +493,7 @@ export const PullRequestSummary = Schema.Struct({
   url: TrimmedNonEmptyString,
   state: PullRequestState,
   isDraft: Schema.optional(Schema.Boolean),
+  headSha: Schema.optional(TrimmedNonEmptyString),
   headBranch: TrimmedNonEmptyString,
   baseBranch: TrimmedNonEmptyString,
   closedAt: Schema.optional(Schema.NullOr(Schema.String)),
@@ -596,6 +630,7 @@ export const PullRequestDetail = Schema.Struct({
 export type PullRequestDetail = typeof PullRequestDetail.Type;
 
 export const PullRequestChecks = Schema.Struct({
+  headSha: Schema.optional(TrimmedNonEmptyString),
   observedAt: Schema.optional(Schema.Finite),
   state: PullRequestState,
   checks: Schema.Array(PullRequestCheck),

@@ -322,6 +322,13 @@ after ten consecutive updates containing only comments. Unsettle the thread befo
 another watch. Watching again remembers previously reported check and conflict news; a CI watch
 still reports its final result. Subagents report to their parent thread, which owns monitoring.
 
+Agents read a pull request's status, failed checks, and review feedback through T3. T3 shares one
+cached read with the app, so these reads do not spend your host's rate limit on `gh` calls. T3
+stops Claude agents from running `gh` reads it can answer. A command that starts with
+`T3_GH_DIRECT=1` runs anyway. To let Claude agents run every `gh` command, turn off **Send agents'
+GitHub reads through T3** in **Settings → Source control**. The change applies when an agent
+session next starts.
+
 Cross-repository links use a project on the same host. Azure DevOps reviews require a project checked
 out from the matching organization and repository.
 

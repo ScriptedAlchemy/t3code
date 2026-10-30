@@ -1,4 +1,5 @@
-import type { PullRequestCheck } from "@t3tools/contracts";
+import * as NodeUtil from "node:util";
+import type { PullRequestCheck, PullRequestCheckFailure } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
@@ -36,6 +37,10 @@ function isAtLeastAsNew(candidate: string | null, kept: string | null): boolean 
   );
 }
 
+/** action-required is a finished check needing human input. */
+export const isFailedCheck = (check: Pick<PullRequestCheck, "status">) =>
+  check.status === "failure" || check.status === "cancelled" || check.status === "action-required";
+
 export function sortChecks(
   checks: ReadonlyArray<PullRequestCheck>,
 ): ReadonlyArray<PullRequestCheck> {
@@ -47,7 +52,7 @@ export function sortChecks(
 }
 
 /**
- * Rollups repeat checks during reruns or overlapping runs, and checks carry no ids.
+ * Rollups repeat checks during reruns or overlapping runs, each with its own handle.
  * Identify checks by workflow plus name because different workflows may share job names.
  */
 export function dedupeChecks(
@@ -76,4 +81,114 @@ export function dedupeChecks(
         : entry.check;
     }),
   );
+}
+
+export const CHECK_LOG_EXCERPT_BUDGET = {
+  maxLines: 80,
+  maxBytes: 8192,
+  context: 3,
+  tail: 20,
+} as const;
+type Line = { index: number; text: string };
+
+export class CheckLogExcerpt {
+  private pending = "";
+  private totalLines = 0;
+  private clipped = false;
+  private afterError = 0;
+  private header: Line | undefined;
+  private tail: Line[] = [];
+  private failedTail: Line[] = [];
+  private failedSection = false;
+  private selected = new Map<number, Line>();
+
+  write(chunk: string): void {
+    let start = 0;
+    while (start < chunk.length) {
+      const end = chunk.indexOf("\n", start);
+      const part = chunk.slice(start, end < 0 ? undefined : end);
+      const room = CHECK_LOG_EXCERPT_BUDGET.maxBytes - this.pending.length;
+      this.pending += part.slice(0, room);
+      if (part.length > room) this.clipped = true;
+      if (end < 0) break;
+      this.line(this.pending);
+      this.pending = "";
+      start = end + 1;
+    }
+  }
+
+  private line(raw: string): void {
+    const line = {
+      index: this.totalLines++,
+      text: NodeUtil.stripVTControlCharacters(raw)
+        .replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s?/, "")
+        .replace(/\r$/, ""),
+    };
+    // Step names do not appear in the log; a section failed when it carries ##[error].
+    if (line.text.startsWith("##[group]Run ")) {
+      if (this.failedSection) this.failedTail = this.tail;
+      this.tail = [];
+      this.header = line;
+      this.failedSection = false;
+    }
+    if (line.text.includes("##[error]")) {
+      this.failedSection = true;
+      if (this.header) this.selected.set(this.header.index, this.header);
+      for (const prior of this.tail.slice(-CHECK_LOG_EXCERPT_BUDGET.context))
+        this.selected.set(prior.index, prior);
+      this.afterError = CHECK_LOG_EXCERPT_BUDGET.context + 1;
+    }
+    if (this.afterError > 0) {
+      this.selected.set(line.index, line);
+      this.afterError--;
+    }
+    while (this.selected.size > CHECK_LOG_EXCERPT_BUDGET.maxLines) {
+      this.selected.delete(this.selected.keys().next().value!);
+    }
+    this.tail.push(line);
+    if (this.tail.length > CHECK_LOG_EXCERPT_BUDGET.tail) this.tail.shift();
+  }
+
+  finish(): Extract<PullRequestCheckFailure["log"], { _tag: "excerpt" }> {
+    if (this.pending.length > 0) {
+      this.line(this.pending);
+      this.pending = "";
+    }
+    const tail = this.failedSection || this.failedTail.length === 0 ? this.tail : this.failedTail;
+    const kept = new Map<number, string>();
+    let bytes = 0;
+    const keep = (line: Line): boolean => {
+      if (kept.has(line.index)) return true;
+      const room = CHECK_LOG_EXCERPT_BUDGET.maxBytes - bytes - (kept.size > 0 ? 1 : 0);
+      if (kept.size >= CHECK_LOG_EXCERPT_BUDGET.maxLines || room <= 0) return false;
+      let text = line.text;
+      if (Buffer.byteLength(text) > room) {
+        text = new TextDecoder("utf-8", { fatal: false }).decode(
+          Buffer.from(text).subarray(0, room),
+        );
+        while (Buffer.byteLength(text) > room) text = text.slice(0, -1);
+        this.clipped = true;
+      }
+      bytes += Buffer.byteLength(text) + (kept.size > 0 ? 1 : 0);
+      kept.set(line.index, text);
+      return true;
+    };
+    // Error windows explain the failure; the tail only shows where it stopped.
+    const windows = [...this.selected.values()].sort((a, b) => b.index - a.index);
+    for (const line of windows) if (!keep(line)) break;
+    for (const line of tail.toReversed()) if (!keep(line)) break;
+    const lines = [...kept].sort(([a], [b]) => a - b).map(([, text]) => text);
+    return {
+      _tag: "excerpt",
+      text: lines.join("\n"),
+      totalLines: this.totalLines,
+      truncated: this.clipped || lines.length < this.totalLines,
+    };
+  }
+}
+
+export function excerptCheckLog(chunks: Iterable<string>) {
+  const excerpt = new CheckLogExcerpt();
+  for (const chunk of chunks) excerpt.write(chunk);
+  return excerpt.finish();
 }

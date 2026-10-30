@@ -18,6 +18,7 @@ query PullRequestSummary($owner: String!, $name: String!, $number: Int!, $stacks
       updatedAt
       mergedAt
       closedAt
+      headRefOid
       headRefName
       baseRefName
       author {

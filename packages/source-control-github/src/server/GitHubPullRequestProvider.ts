@@ -443,9 +443,16 @@ export const make = Effect.gen(function* () {
     getChangeRequestPreview: (input) =>
       cli.getPullRequestPreview(input).pipe(Effect.mapError(fail("getChangeRequestPreview"))),
 
+    getChangeRequestCheckFailure: (input) =>
+      cli.getCheckFailure(input).pipe(Effect.mapError(fail("getChangeRequestCheckFailure"))),
+
     getChangeRequestChecks: (input) =>
       cli.revalidateChecks(input, readChecks(input)).pipe(
-        Effect.map(({ state, checks }) => ({ state, checks })),
+        Effect.map(({ state, checks, headSha }) => ({
+          state,
+          checks,
+          ...(headSha == null ? {} : { headSha }),
+        })),
         Effect.mapError(fail("getChangeRequestChecks")),
       ),
 

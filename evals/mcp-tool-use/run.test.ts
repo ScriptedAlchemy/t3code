@@ -4,12 +4,21 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { assert, expect, it } from "@effect/vitest";
-import { ComposerContextId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  ComposerContextId,
+  EnvironmentId,
+  PullRequestFailureReport,
+  PullRequestFeedbackReport,
+  PullRequestRateLimited,
+  PullRequestStatusReport,
+  ThreadId,
+} from "@t3tools/contracts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 
 import {
   buildBase,
   buildMessages,
+  cannedOutput,
   failedEarly,
   executeCodex,
   gradeSample,
@@ -377,6 +386,77 @@ it("answers simple mocked commands itself and gives the simulator the sample's h
     history?.text,
     '<call>Bash {"command":"git push"}</call>\n<output>\npushed\n</output>\n\nNew call:\n<call>Bash {"command":"git push && gh pr create --fill"}</call>',
   );
+});
+
+it("applies the Claude GitHub gate before shell mocks without gating Codex", () => {
+  const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+  const testCase = {
+    ...childCase,
+    setup: {
+      ...childCase.setup,
+      shellMocks: [{ match: "gh", output: "command executed" }],
+    },
+  };
+  const claude = makeSample(testCase, base);
+  const codex = makeSample(testCase, {
+    ...base,
+    codex: { input: [], reasoning: { effort: "high" } },
+  });
+  for (const command of [
+    "gh pr checks 123",
+    "git status && gh pr view 123 --json headRefOid,statusCheckRollup",
+  ]) {
+    assert.match(cannedOutput(claude, command) ?? "", /^<tool_use_error>.*pull_request_status/s);
+    assert.equal(cannedOutput(codex, command), mockOutput(codex, command));
+  }
+  assert.match(
+    cannedOutput(claude, "T3_GH_DIRECT=1 gh pr checks 123 --watch") ?? "",
+    /Do not poll GitHub/,
+  );
+  for (const command of [
+    "T3_GH_DIRECT=1 gh pr checks 123",
+    "gh pr create --fill",
+    "gh run rerun 9001 --failed",
+    "gh issue view 77 --repo acme/app",
+  ]) {
+    assert.equal(cannedOutput(claude, command), "command executed");
+  }
+  assert.isUndefined(cannedOutput(claude, "git status"));
+});
+
+it("validates PR case regexes and decodes read mocks against product result schemas", () => {
+  const decoders = {
+    pull_request_status: Schema.decodeUnknownSync(PullRequestStatusReport),
+    pull_request_failures: Schema.decodeUnknownSync(
+      Schema.Union([PullRequestFailureReport, PullRequestRateLimited]),
+    ),
+    pull_request_feedback: Schema.decodeUnknownSync(
+      Schema.Union([PullRequestFeedbackReport, PullRequestRateLimited]),
+    ),
+  };
+  const decode = Schema.decodeSync(Schema.fromJsonString(McpToolUseCase));
+  const cases = NodeFS.readFileSync(
+    new URL("./cases/pull-requests.ndjson", import.meta.url),
+    "utf8",
+  )
+    .trim()
+    .split("\n")
+    .map((line) => decode(line));
+  for (const testCase of cases) {
+    for (const pattern of [
+      ...(testCase.setup.shellMocks ?? []).map((mock) => mock.match),
+      ...(testCase.expect.shellMustNot ?? []),
+      ...(testCase.expect.textMust ?? []),
+      ...(testCase.expect.textMustNot ?? []),
+    ]) {
+      expect(() => new RegExp(pattern), `${testCase.id}: ${pattern}`).not.toThrow();
+    }
+    for (const [tool, decodeResult] of Object.entries(decoders)) {
+      const mock = testCase.setup.mocks?.[tool];
+      if (mock === undefined || mock === "default") continue;
+      expect(() => decodeResult(mock), `${testCase.id}: ${tool}`).not.toThrow();
+    }
+  }
 });
 
 it("links a PR a shell command created, as T3 does, but not one it only read", () => {
@@ -776,6 +856,10 @@ it("gives native children hook context while excluding the parent's T3 append an
   if (subagentContext) assert.include(shown, subagentContext);
   else assert.notInclude(shown, "SubagentStart hook additional context:");
   assert.include(shown, testCase.prompt);
+  const withoutDevices = await t3SubagentContext("claude-sonnet-5-5", false);
+  assert.include(withoutDevices, "<github_reads>");
+  assert.include(withoutDevices, "pull_request_status");
+  assert.notInclude(withoutDevices, "## T3 Code devices");
 });
 
 // Round-5 adversarial review counterexamples.

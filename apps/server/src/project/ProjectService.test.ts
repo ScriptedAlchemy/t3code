@@ -738,3 +738,33 @@ it.effect("rejects an update that waited on the lock while its project was delet
     );
   }).pipe(Effect.provide(layerProjectServiceDependencies)),
 );
+
+it.effect("resolves cold repository identities when listing shells for PR lookup", () =>
+  Effect.gen(function* () {
+    const enrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
+    const service = yield* ProjectService.make.pipe(
+      Effect.provideService(ProjectEnrichmentService.ProjectEnrichmentService, {
+        ...enrichment,
+        getAvailable: () =>
+          Effect.succeed({
+            repositoryIdentity: null,
+            faviconPath: null,
+            repositoryIdentityResolved: false,
+          }),
+      }),
+    );
+    const projectId = ProjectId.make("project:cold");
+    yield* service.create({
+      commandId: CommandId.make("command:cold:create"),
+      projectId,
+      title: "Cold",
+      workspaceRoot: "/work/cold",
+    });
+    assert.isNull((yield* service.listShells({ projectIds: [projectId] }))[0]?.repositoryIdentity);
+    const shells = yield* service.listShells({
+      projectIds: [projectId],
+      resolveRepositoryIdentity: true,
+    });
+    assert.equal(shells[0]?.repositoryIdentity?.canonicalKey, "github.com/t3tools/cold");
+  }).pipe(Effect.provide(layerProjectServiceDependencies)),
+);

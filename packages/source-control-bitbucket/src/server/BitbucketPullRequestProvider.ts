@@ -178,7 +178,11 @@ export const make = Effect.gen(function* () {
 
     getChangeRequestChecks: (input) =>
       Effect.all([api.getPullRequest(input), api.listChecks(input)], { concurrency: 2 }).pipe(
-        Effect.map(([pullRequest, checks]) => ({ state: pullRequest.state, checks })),
+        Effect.map(([pullRequest, checks]) => ({
+          state: pullRequest.state,
+          checks,
+          ...(pullRequest.headSha == null ? {} : { headSha: pullRequest.headSha }),
+        })),
         Effect.mapError(fail("getChangeRequestChecks")),
       ),
 

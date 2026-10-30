@@ -536,6 +536,8 @@ const subjectScope = (subjectId: string, pullRequestId: string) => ({
 });
 
 const checkRun = (fields: Record<string, unknown>) => ({
+  databaseId: null,
+  title: null,
   __typename: "CheckRun",
   name: "",
   status: "COMPLETED",
@@ -933,6 +935,7 @@ layer("GitHubPullRequestApi.layer", (it) => {
         },
         baseRefName: "main",
         headRefName: `feat/${number}`,
+        headRefOid: `head-${number}`,
         state: "OPEN",
         isDraft: false,
         mergeable: "MERGEABLE",
@@ -1031,6 +1034,7 @@ layer("GitHubPullRequestApi.layer", (it) => {
                       author: null,
                       baseRefName: "main",
                       headRefName: "feat/eight",
+                      headRefOid: "head-8",
                       state: "OPEN",
                       isDraft: false,
                       mergeable: "MERGEABLE",
@@ -3335,13 +3339,18 @@ layer("GitHubPullRequestApi.layer", (it) => {
                                 name: "build",
                                 status: "COMPLETED",
                                 conclusion: "SUCCESS",
-                                checkSuite: { workflowRun: { workflow: { name: "linux" } } },
+                                checkSuite: {
+                                  workflowRun: { runAttempt: 1, workflow: { name: "linux" } },
+                                },
                               }),
                               checkRun({
+                                databaseId: 123135166838,
                                 name: "build",
                                 status: "COMPLETED",
                                 conclusion: "FAILURE",
-                                checkSuite: { workflowRun: { workflow: { name: "windows" } } },
+                                checkSuite: {
+                                  workflowRun: { runAttempt: 1, workflow: { name: "windows" } },
+                                },
                               }),
                             ],
                             pageInfo: { hasNextPage: false },
@@ -3376,6 +3385,9 @@ layer("GitHubPullRequestApi.layer", (it) => {
       ]);
       expect(detail.labels).toEqual([{ name: "bug", color: "ff0000" }]);
       expect(detail.checks).toHaveLength(2);
+      expect(detail.checks.find((check) => check.status === "failure")?.handle).toBe(
+        "github-check:123135166838:1",
+      );
       expect(detail.checksState).toBe("failing");
     }),
   );

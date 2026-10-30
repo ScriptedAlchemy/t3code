@@ -82,6 +82,7 @@ import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH } from "@t3tools/provider-core/server/orchestrationInstructions";
+import { GITHUB_READS_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { PreviewControlsToolkit } from "../../mcp/toolkits/previewControls/tools.ts";
 import { HtmlToolkit } from "../../mcp/toolkits/html/tools.ts";
@@ -93,6 +94,7 @@ import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
 import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
+import { PullRequestsToolkit } from "../../mcp/toolkits/pullRequests/tools.ts";
 import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -605,6 +607,7 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
       ...Object.values(EnvironmentToolkit.tools),
       ...Object.values(PreviewControlsToolkit.tools),
       ...Object.values(HtmlToolkit.tools),
+      ...Object.values(PullRequestsToolkit.tools),
     ]
       .filter((tool) => Context.get(tool.annotations, Tool.Readonly))
       .map((tool) => `mcp__t3-code__${tool.name}`)
@@ -694,7 +697,11 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
 });
 
 describe("ClaudeAdapterV2 device instructions", () => {
-  const options = (input: { readonly mcp: boolean; readonly deviceToolsAvailable: boolean }) =>
+  const options = (input: {
+    readonly mcp: boolean;
+    readonly deviceToolsAvailable: boolean;
+    readonly gitHubReadGate?: boolean;
+  }) =>
     ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -708,6 +715,7 @@ describe("ClaudeAdapterV2 device instructions", () => {
         ? { mcpServers: { "t3-code": { type: "http" as const, url: "http://127.0.0.1/mcp" } } }
         : {}),
       deviceToolsAvailable: input.deviceToolsAvailable,
+      ...(input.gitHubReadGate === undefined ? {} : { gitHubReadGate: input.gitHubReadGate }),
       environment: {},
     });
   const append = (input: { readonly mcp: boolean; readonly deviceToolsAvailable: boolean }) =>
@@ -724,7 +732,7 @@ describe("ClaudeAdapterV2 device instructions", () => {
     assert.notInclude(append({ mcp: false, deviceToolsAvailable: true }), "## T3 Code devices");
   });
 
-  it("gives native subagents the device block only in a session with device access", async () => {
+  it("gives native subagents the GitHub reads block, plus the device block with device access", async () => {
     // Subagents start from their task prompt, not the parent's system prompt.
     const subagentContext = (input: {
       readonly mcp: boolean;
@@ -752,12 +760,65 @@ describe("ClaudeAdapterV2 device instructions", () => {
       {
         hookSpecificOutput: {
           hookEventName: "SubagentStart",
-          additionalContext: T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
+          additionalContext: `${GITHUB_READS_INSTRUCTIONS}\n\n${T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH}`,
         },
       },
     ]);
-    assert.deepEqual(await subagentContext({ mcp: true, deviceToolsAvailable: false }), []);
+    assert.deepEqual(await subagentContext({ mcp: true, deviceToolsAvailable: false }), [
+      {
+        hookSpecificOutput: {
+          hookEventName: "SubagentStart",
+          additionalContext: GITHUB_READS_INSTRUCTIONS,
+        },
+      },
+    ]);
     assert.deepEqual(await subagentContext({ mcp: false, deviceToolsAvailable: true }), []);
+  });
+
+  it("gates Bash gh reads only in a session with T3 tools and the gate setting on", async () => {
+    const bash = (
+      input: { readonly mcp: boolean; readonly gitHubReadGate?: boolean },
+      command: string,
+    ) =>
+      Promise.all(
+        (options({ ...input, deviceToolsAvailable: false }).hooks?.PreToolUse ?? []).flatMap(
+          (matcher) =>
+            matcher.hooks.map((hook) =>
+              hook(
+                {
+                  hook_event_name: "PreToolUse",
+                  tool_name: "Bash",
+                  tool_input: { command },
+                  tool_use_id: "tool-1",
+                  session_id: "native-thread-claude-devices",
+                  transcript_path: "/transcript.jsonl",
+                  cwd: "/workspace",
+                },
+                "tool-1",
+                { signal: new AbortController().signal },
+              ),
+            ),
+        ),
+      );
+    assert.deepEqual(
+      options({ mcp: true, deviceToolsAvailable: false }).hooks?.PreToolUse?.map(
+        (matcher) => matcher.matcher,
+      ),
+      ["Bash"],
+    );
+    const [denied] = await bash({ mcp: true }, "gh pr checks 123");
+    const output = (denied as { hookSpecificOutput?: Record<string, unknown> }).hookSpecificOutput;
+    assert.strictEqual(output?.["permissionDecision"], "deny");
+    assert.include(
+      String(output?.["permissionDecisionReason"]),
+      'Call pull_request_status with {"pullRequests":[{"number":123}]}',
+    );
+    assert.deepEqual(await bash({ mcp: true }, "gh pr merge 123 --squash"), [{}]);
+    assert.deepEqual(await bash({ mcp: false }, "gh pr checks 123"), []);
+    assert.deepEqual(await bash({ mcp: true, gitHubReadGate: false }, "gh pr checks 123"), []);
+    const gateOff = options({ mcp: true, deviceToolsAvailable: false, gitHubReadGate: false });
+    assert.isUndefined(gateOff.hooks?.PreToolUse);
+    assert.lengthOf(gateOff.hooks?.SubagentStart ?? [], 1);
   });
 });
 

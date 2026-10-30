@@ -9,6 +9,7 @@ import type {
   PullRequestCapabilities,
   PullRequestChecksState,
   PullRequestCheck,
+  PullRequestCheckFailure,
   PullRequestChecks,
   PullRequestComment,
   PullRequestFileViewed,
@@ -102,6 +103,7 @@ export interface ProviderChangeRequest {
 }
 
 export interface ProviderChangeRequestSummary {
+  readonly headSha?: string | null;
   readonly number: number;
   readonly title: string;
   readonly url: string;
@@ -351,9 +353,16 @@ export interface PullRequestProviderApi {
     }>;
   }) => Effect.Effect<ReadonlyArray<ProviderChangeRequestStat>, PullRequestProviderError>;
 
+  readonly getChangeRequestCheckFailure?: (
+    input: ProviderRepositoryRef & { readonly check: PullRequestCheck },
+  ) => Effect.Effect<PullRequestCheckFailure, PullRequestProviderError>;
+
   readonly getChangeRequestChecks?: (
     input: ProviderRepositoryRef & { readonly number: number },
-  ) => Effect.Effect<Pick<PullRequestChecks, "state" | "checks">, PullRequestProviderError>;
+  ) => Effect.Effect<
+    Pick<PullRequestChecks, "state" | "checks" | "headSha">,
+    PullRequestProviderError
+  >;
 
   readonly getChangeRequest: (
     input: ProviderRepositoryRef & { readonly number: number },

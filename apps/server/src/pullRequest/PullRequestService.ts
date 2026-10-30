@@ -29,6 +29,7 @@ import {
   type PullRequestDetail,
   type PullRequestPreview,
   type PullRequestChecks,
+  type PullRequestCheckFailure,
   type PullRequestDiffFileContentsInput,
   type PullRequestDiffFileContentsResult,
   type PullRequestDiffStat,
@@ -163,6 +164,17 @@ const VIEWER_CACHE_CAPACITY = 32;
 
 export type PullRequestError = PullRequestUnavailableError | PullRequestOperationError;
 
+/** A refusal or a running job can change; an excerpt or a gone log cannot. */
+const isSettledCheckFailure = (failure: PullRequestCheckFailure) =>
+  failure.log._tag === "excerpt" ||
+  failure.log.reason === "expired" ||
+  failure.log.reason === "not-actions";
+const checkFailureKey = Schema.fromJsonString(
+  Schema.Tuple([Schema.String, Schema.String, Schema.String]),
+);
+const encodeCheckFailureKey = Schema.encodeSync(checkFailureKey);
+const decodeCheckFailureKey = Schema.decodeSync(checkFailureKey);
+
 const routingCredential = Context.Reference<{
   readonly credentialFingerprint: string;
   readonly viewer: string;
@@ -222,6 +234,9 @@ export class PullRequestService extends Context.Service<
     readonly checks: (
       input: PullRequestRef,
     ) => Effect.Effect<PullRequestChecks | null, PullRequestError>;
+    readonly checkFailures: (
+      input: PullRequestRef & { readonly handle: string },
+    ) => Effect.Effect<PullRequestCheckFailure, PullRequestError>;
     readonly watchFingerprint: (
       input: PullRequestRef,
     ) => Effect.Effect<ProviderChangeRequestWatchFingerprint | null, PullRequestError>;
@@ -537,6 +552,14 @@ function withRateLimitBackoff(
     ...(api.getChangeRequestChecks === undefined
       ? {}
       : { getChangeRequestChecks: wrap("getChangeRequestChecks", api.getChangeRequestChecks) }),
+    ...(api.getChangeRequestCheckFailure === undefined
+      ? {}
+      : {
+          getChangeRequestCheckFailure: wrap(
+            "getChangeRequestCheckFailure",
+            api.getChangeRequestCheckFailure,
+          ),
+        }),
     ...(api.getChangeRequestSummary === undefined
       ? {}
       : {
@@ -1634,6 +1657,7 @@ export const make = Effect.gen(function* () {
             title: changeRequest.title,
             url: changeRequest.url,
             state: changeRequest.state,
+            ...(changeRequest.headSha == null ? {} : { headSha: changeRequest.headSha }),
             headBranch: changeRequest.headBranch,
             baseBranch: changeRequest.baseBranch,
             closedAt: changeRequest.closedAt ?? null,
@@ -2989,6 +3013,22 @@ export const make = Effect.gen(function* () {
     );
   };
 
+  const credentialCached =
+    <I extends PullRequestRef, Args extends ReadonlyArray<unknown>, A, E>(
+      read: (input: I, ...args: Args) => Effect.Effect<A, E>,
+    ) =>
+    (input: I, ...args: Args) =>
+      Effect.gen(function* () {
+        const ref = yield* canonicalRef(input);
+        const credential = yield* routingCredential;
+        return yield* read(
+          credential === null
+            ? ref
+            : { ...ref, [credentialNamespace]: credential.credentialFingerprint },
+          ...args,
+        );
+      });
+
   const checksCache = yield* Cache.makeWith(
     (key: string) => {
       const input = refOfCacheKey(key);
@@ -3030,6 +3070,114 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const checks: PullRequestService["Service"]["checks"] = credentialCached((input) =>
+    Cache.get(checksCache, refCacheKey(input)),
+  );
+
+  const checkFailureCache = yield* Cache.makeWith(
+    Effect.fn("PullRequestService.readCheckFailure")(function* (key: string) {
+      const [refKey, , handle] = decodeCheckFailureKey(key);
+      const input = refOfCacheKey(refKey);
+      const project = yield* requireProject(input);
+      if (project.api.getChangeRequestCheckFailure === undefined) {
+        return yield* new PullRequestUnavailableError({ reason: "provider-unsupported" });
+      }
+      // The caller already read this list through `checks`; look it up the same way.
+      const check = (yield* checks(input))?.checks.find((check) => check.handle === handle);
+      if (check === undefined) {
+        return yield* new PullRequestOperationError({
+          operation: "checkFailures",
+          detail: "The check is not on this pull request's current checks list.",
+          reason: "not-found",
+        });
+      }
+      return yield* project.api
+        .getChangeRequestCheckFailure({
+          cwd: project.project.workspaceRoot,
+          repository: project.repository,
+          host: project.host,
+          check,
+        })
+        .pipe(Effect.mapError(toPullRequestError("checkFailures")));
+    }),
+    {
+      capacity: DETAIL_CACHE_CAPACITY,
+      timeToLive: (exit) =>
+        Exit.isSuccess(exit) && isSettledCheckFailure(exit.value)
+          ? Duration.hours(6)
+          : Duration.zero,
+    },
+  );
+
+  const checkFailures: PullRequestService["Service"]["checkFailures"] = Effect.fn(
+    "PullRequestService.checkFailures",
+  )(
+    function* (input) {
+      const ref = yield* canonicalRef(input);
+      const project = yield* requireProject(ref);
+      if (
+        project.api.getChangeRequestCheckFailure === undefined ||
+        project.api.withVerifiedCredential === undefined
+      ) {
+        return yield* new PullRequestUnavailableError({ reason: "provider-unsupported" });
+      }
+      return yield* project.api
+        .withVerifiedCredential(
+          {
+            cwd: project.project.workspaceRoot,
+            repository: project.repository,
+            host: project.host,
+          },
+          (identity) =>
+            Effect.gen(function* () {
+              if (
+                input.expectedAccountId !== undefined &&
+                identity.accountId !== input.expectedAccountId
+              ) {
+                return yield* new PullRequestOperationError({
+                  operation: "routeIdentity",
+                  detail: "The signed-in account does not match the requested account.",
+                });
+              }
+              yield* rateLimits.check({ provider: project.api.kind, host: project.host }).pipe(
+                Effect.mapError((cause) =>
+                  toPullRequestError("checkFailures")(
+                    new PullRequestProviderError({
+                      provider: project.api.kind,
+                      operation: "checkFailures",
+                      reason: "rate-limited",
+                      retryAt: cause.retryAt,
+                      detail: cause.detail,
+                      cause,
+                    }),
+                  ),
+                ),
+              );
+              return yield* Cache.get(
+                checkFailureCache,
+                encodeCheckFailureKey([
+                  refCacheKey(ref),
+                  identity.credentialFingerprint,
+                  input.handle,
+                ]),
+              );
+            }).pipe(
+              Effect.provideService(
+                SourceControlRateLimit.CredentialScope,
+                identity.credentialFingerprint,
+              ),
+            ),
+        )
+        .pipe(
+          Effect.catchTags({
+            PullRequestProviderError: (error) =>
+              Effect.fail(toPullRequestError("checkFailures")(error)),
+          }),
+        );
+    },
+    Effect.provideService(SourceControlRateLimit.Interactive, false),
+  );
+
   const watchFingerprintCache = yield* Cache.makeWith(
     (key: string) => {
       const input = refOfCacheKey(key);
@@ -3067,6 +3215,7 @@ export const make = Effect.gen(function* () {
               !(yield* Cache.has(checksCache, key))
             ) {
               yield* Cache.set(checksCache, key, {
+                ...(value.headSha === null ? {} : { headSha: value.headSha }),
                 state: value.state,
                 checks: value.checks,
                 observedAt: value.observedAt,
@@ -3112,6 +3261,7 @@ export const make = Effect.gen(function* () {
     deletions: detail.deletions,
     changedFiles: detail.changedFiles,
     mergeability: detail.mergeability,
+    ...(detail.headSha == null ? {} : { headSha: detail.headSha }),
     headBranch: detail.headBranch,
     baseBranch: detail.baseBranch,
     closedAt: detail.closedAt,
@@ -3543,22 +3693,6 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  const credentialCached =
-    <I extends PullRequestRef, Args extends ReadonlyArray<unknown>, A, E>(
-      read: (input: I, ...args: Args) => Effect.Effect<A, E>,
-    ) =>
-    (input: I, ...args: Args) =>
-      Effect.gen(function* () {
-        const ref = yield* canonicalRef(input);
-        const credential = yield* routingCredential;
-        return yield* read(
-          credential === null
-            ? ref
-            : { ...ref, [credentialNamespace]: credential.credentialFingerprint },
-          ...args,
-        );
-      });
-
   // Cache small filename lists even when patches exceed limits, avoiding diff refetches on file expansion.
   const diffFiles = (() => {
     const held = new Map<
@@ -3686,7 +3820,8 @@ export const make = Effect.gen(function* () {
     ),
     refreshAfterTurn,
     detail: credentialCached(detail),
-    checks: credentialCached((input) => Cache.get(checksCache, refCacheKey(input))),
+    checks,
+    checkFailures,
     watchFingerprint: credentialCached((input) =>
       Cache.get(watchFingerprintCache, refCacheKey(input)),
     ),

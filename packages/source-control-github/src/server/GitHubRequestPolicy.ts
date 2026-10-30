@@ -6,6 +6,7 @@ import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Metric from "effect/Metric";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -17,6 +18,10 @@ import * as Result from "effect/Result";
 import * as GitHubAppSignIn from "./GitHubAppSignIn.ts";
 import * as GitHubCredentials from "./GitHubCredentials.ts";
 import * as GitHubQuota from "./GitHubQuota.ts";
+
+export const gitHubRequestsTotal = Metric.counter("t3_github_requests_total", {
+  description: "Actual GitHub HTTP requests by quota resource and response status",
+});
 
 const DEFAULT_TIMEOUT = Duration.seconds(30);
 /** GitHub's secondary limits penalize concurrent bursts. */
@@ -422,6 +427,22 @@ export const make = Effect.gen(function* () {
                     new GitHubApiRequestError({ ...context, cause: new Cause.TimeoutError() }),
                   ),
               }),
+              Effect.tapError(() =>
+                Metric.update(
+                  Metric.withAttributes(gitHubRequestsTotal, {
+                    resource: input.resource,
+                    status: "0",
+                  }),
+                  1,
+                ),
+              ),
+            );
+            yield* Metric.update(
+              Metric.withAttributes(gitHubRequestsTotal, {
+                resource: input.resource,
+                status: String(answer.status ?? 0),
+              }),
+              1,
             );
             if (held.fromApp && refusedToApp(answer)) {
               const personal = yield* Effect.option(personalCredential(host));
