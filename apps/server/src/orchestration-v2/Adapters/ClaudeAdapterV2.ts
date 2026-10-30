@@ -1724,6 +1724,11 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__t3_environment_links",
   "mcp__t3-code__html_preview",
   "mcp__t3-code__html_render",
+  "mcp__t3-code__list_thread_pull_requests",
+  "mcp__t3-code__read_pull_request_guide",
+  "mcp__t3-code__pull_request_status",
+  "mcp__t3-code__pull_request_failures",
+  "mcp__t3-code__pull_request_feedback",
 ];
 
 // T3 waits can block for an hour; exceed Claude's default 60 s timeout.

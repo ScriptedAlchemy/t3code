@@ -1,5 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
+import {
+  PullRequestFailuresInput,
+  PullRequestReadInput,
+  PullRequestStatusInput,
+} from "@t3tools/contracts";
+import type { ForgeCommandTarget } from "@t3tools/source-control-core/shared/definition";
+import * as Schema from "effect/Schema";
 
+import { PullRequestsToolkit } from "../mcp/toolkits/pullRequests/tools.ts";
 import {
   decideGitHubCommand,
   POLL_DENIED_REASON,
@@ -100,5 +108,25 @@ describe("pullRequestReadArguments", () => {
       pullRequestReadArguments({ url: "https://github.com/acme/app/pull/12", number: 12 }),
       { pullRequests: [{ url: "https://github.com/acme/app/pull/12" }] },
     );
+  });
+});
+
+describe("the tools the gate names", () => {
+  it("exist in the pull request toolkit", () => {
+    for (const name of Object.values(PULL_REQUEST_READ_TOOLS)) {
+      assert.property(PullRequestsToolkit.tools, name);
+    }
+  });
+
+  it.each<{ readonly name: string; readonly target: ForgeCommandTarget }>([
+    { name: "the current branch", target: {} },
+    { name: "a number", target: { number: 12 } },
+    { name: "a repository and number", target: { repository: "acme/app", number: 12 } },
+    { name: "a URL", target: { url: "https://github.com/acme/app/pull/12" } },
+  ])("decode with every read tool's input schema for $name", ({ target }) => {
+    const args = pullRequestReadArguments(target);
+    for (const input of [PullRequestStatusInput, PullRequestReadInput, PullRequestFailuresInput]) {
+      assert.deepStrictEqual(Schema.decodeSync(input)(args), args);
+    }
   });
 });

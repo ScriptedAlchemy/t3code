@@ -131,7 +131,7 @@ export const resolvePullRequestTarget = Effect.fn("PullRequestTargets.resolve")(
 });
 
 /** The project whose checkout and credentials read this pull request, the caller's when it fits. */
-function projectForPullRequest(
+export function projectForPullRequest(
   projects: ReadonlyArray<OrchestrationProjectShell>,
   target: { readonly host: string; readonly repository: string },
   preferred: OrchestrationProjectShell | undefined,
@@ -167,7 +167,7 @@ function projectForPullRequest(
 
 /**
  * Named targets, each resolved and placed in the project that reads it. A target that cannot be
- * resolved keeps its failure so a batch answers the others. A `host` without a `url` builds the
+ * resolved keeps its typed failure so a batch answers the others. A `host` without a `url` builds the
  * URL through the project that holds that repository, which need not be the caller's.
  */
 export const locatePullRequestTargets = Effect.fn("PullRequestTargets.locate")(function* (
@@ -191,8 +191,8 @@ export const locatePullRequestTargets = Effect.fn("PullRequestTargets.locate")(f
         project: projectForPullRequest(projects, target, callerProject),
         failure: null,
       })),
-      Effect.catch((error) =>
-        Effect.succeed({ input, target: null, project: undefined, failure: error.message }),
+      Effect.catch((failure) =>
+        Effect.succeed({ input, target: null, project: undefined, failure }),
       ),
     ),
   );

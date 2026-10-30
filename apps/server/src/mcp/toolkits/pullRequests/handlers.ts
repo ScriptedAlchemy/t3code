@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as PullRequestOracle from "../../../pullRequest/PullRequestOracle.ts";
 import * as PullRequestReviewGuideService from "../../../pullRequest/PullRequestReviewGuideService.ts";
 import {
   locatePullRequestTargets,
@@ -96,6 +97,7 @@ export function listThreadPullRequests(
 const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
   const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
+  const oracle = yield* PullRequestOracle.PullRequestOracle;
 
   const projects = yield* ProjectService.ProjectService;
   const crypto = yield* Crypto.Crypto;
@@ -233,6 +235,10 @@ const make = Effect.gen(function* () {
   const guideFailureDetail = (error: { readonly message: string }) =>
     "detail" in error && typeof error.detail === "string" ? error.detail : error.message;
 
+  const caller = McpInvocationContext.requireMcpCapability("pull-requests").pipe(
+    Effect.map((scope) => ({ threadId: scope.thread?.threadId ?? null })),
+  );
+
   const writesThread = <P extends { readonly threadId?: ThreadId | undefined }, A, E, R>(
     handle: (params: P) => Effect.Effect<A, E, R>,
   ) => McpToolAccess.writesThreads((params: P) => [params.threadId], handle);
@@ -326,7 +332,7 @@ const make = Effect.gen(function* () {
                   number: entry.input.number ?? 0,
                   url: entry.input.url ?? "",
                   outcome: "failed" as const,
-                  detail: entry.failure,
+                  detail: entry.failure.message,
                 };
               }
               const identity = {
@@ -368,7 +374,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const [entry] = yield* locateAll([input]);
         if (entry !== undefined && entry.target === null) {
-          return yield* new PullRequestGuideFailedError({ detail: entry.failure ?? "" });
+          return yield* new PullRequestGuideFailedError({ detail: entry.failure.message });
         }
         if (entry === undefined || entry.target === null || entry.project === undefined) {
           return yield* new PullRequestProjectNotFoundError({
@@ -398,6 +404,23 @@ const make = Effect.gen(function* () {
             result.guide.headSha !== result.currentHeadSha,
         };
       }),
+    ),
+    pull_request_status: McpToolAccess.reads((input) =>
+      caller.pipe(
+        Effect.flatMap((caller) => oracle.status({ caller, pullRequests: input.pullRequests })),
+      ),
+    ),
+    pull_request_failures: McpToolAccess.reads((input) =>
+      caller.pipe(
+        Effect.flatMap((caller) =>
+          oracle.failures({ caller, pullRequests: input.pullRequests, checks: input.checks }),
+        ),
+      ),
+    ),
+    pull_request_feedback: McpToolAccess.reads((input) =>
+      caller.pipe(
+        Effect.flatMap((caller) => oracle.feedback({ caller, pullRequests: input.pullRequests })),
+      ),
     ),
   } satisfies McpToolAccess.Handlers<typeof PullRequestsToolkit.tools>;
 });

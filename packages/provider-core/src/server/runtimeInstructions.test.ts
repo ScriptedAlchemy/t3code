@@ -33,7 +33,7 @@ describe("buildRuntimeInstructions", () => {
     assert.include(instructions, "never watch, even if the brief says babysit");
     assert.include(
       instructions,
-      "After PR work, a child's last line is: PR <full URL>, head <SHA>, checks and reviews <state>.",
+      "After PR work, a child's last line is the `report` line from pull_request_status.",
     );
     assert.include(instructions, "Never wait with sleep");
     assert.include(instructions, 'New watches default to mode "checks"');

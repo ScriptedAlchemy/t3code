@@ -37,6 +37,10 @@ function isAtLeastAsNew(candidate: string | null, kept: string | null): boolean 
   );
 }
 
+/** action-required is a finished check needing human input. */
+export const isFailedCheck = (check: Pick<PullRequestCheck, "status">) =>
+  check.status === "failure" || check.status === "cancelled" || check.status === "action-required";
+
 export function sortChecks(
   checks: ReadonlyArray<PullRequestCheck>,
 ): ReadonlyArray<PullRequestCheck> {

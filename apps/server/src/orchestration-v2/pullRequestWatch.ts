@@ -5,6 +5,7 @@ import type {
   PullRequestDetail,
   ThreadPullRequestWatch,
 } from "@t3tools/contracts";
+import { isFailedCheck } from "@t3tools/source-control-core/server/pullRequestChecks";
 import * as DateTime from "effect/DateTime";
 
 /** Bounds consecutive comment-only wakes to stop bot reply loops; check, conflict, or push news resets it. */
@@ -13,6 +14,7 @@ export const PULL_REQUEST_WATCH_WAKE_LIMIT = 10;
 const PULL_REQUEST_WATCH_NO_CHECKS_MS = 15 * 60_000;
 const LISTED_ITEMS = 10;
 const SNIPPET_LENGTH = 200;
+const READ_FAILURES = "  Read why with pull_request_failures.";
 
 export type PullRequestWatchChange =
   | {
@@ -32,10 +34,6 @@ export interface PullRequestWatchReport {
   readonly exhausted: boolean;
   readonly completed: boolean;
 }
-
-// action-required is a finished check needing human input.
-const isFailedCheck = (check: PullRequestCheck) =>
-  check.status === "failure" || check.status === "cancelled" || check.status === "action-required";
 
 export function evaluatePullRequestWatch(
   watch: ThreadPullRequestWatch,
@@ -197,6 +195,7 @@ function changeLines(
           change.failed,
           (check) => `  - ${check.name} (${check.status})${check.url ? ` ${check.url}` : ""}`,
         ),
+        ...(change.failed.length > 0 ? [READ_FAILURES] : []),
       ];
     case "checks-failed":
       return [
@@ -206,6 +205,7 @@ function changeLines(
           (check) =>
             `  - ${check.name}${check.status === "failure" ? "" : ` (${check.status})`}${check.url ? ` ${check.url}` : ""}`,
         ),
+        READ_FAILURES,
       ];
     case "checks-passed":
       return [
