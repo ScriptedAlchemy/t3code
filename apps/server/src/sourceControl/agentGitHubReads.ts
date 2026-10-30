@@ -3,7 +3,7 @@ import type {
   ForgeReadIntent,
 } from "@t3tools/source-control-core/shared/definition";
 
-import { classifyAgentShellCommands, GH_DIRECT_ENV } from "./agentShellCommands.ts";
+import { classifyAgentShellCommands } from "./agentShellCommands.ts";
 
 /** The T3 MCP tool that answers each read intent; a new intent without a tool fails to compile. */
 export const PULL_REQUEST_READ_TOOLS = {
@@ -42,13 +42,17 @@ export function decideGitHubCommand(command: string): GitHubCommandDecision {
   if (commands.some(({ command: { kind } }) => kind === "poll")) {
     return { allow: false, reason: POLL_DENIED_REASON };
   }
-  for (const { command: forgeCommand, bypass } of commands) {
+  for (const { command: forgeCommand, bypass, bypassCommand } of commands) {
     if (forgeCommand.kind !== "read" || bypass) continue;
     const tool = PULL_REQUEST_READ_TOOLS[forgeCommand.intent];
     const args = JSON.stringify(pullRequestReadArguments(forgeCommand.target));
+    const scope =
+      forgeCommand.intent === "failures"
+        ? `This tool answers the failing checks of the thread's or a named PR${forgeCommand.target.repository === undefined ? "" : ` in ${forgeCommand.target.repository}`}. If this run or job is not one of those, rerun with the bypass.`
+        : "If it can't answer what you need, rerun with the bypass.";
     return {
       allow: false,
-      reason: `T3 already reads this. Call ${tool} with ${args} (load it with ToolSearch if it is deferred). If it can't answer what you need, rerun as \`${GH_DIRECT_ENV}=1 ${command.trim()}\`.`,
+      reason: `T3 already reads this. Call ${tool} with ${args} (load it with ToolSearch if it is deferred). ${scope} Rerun as \`${bypassCommand.trim()}\`.`,
     };
   }
   return { allow: true };

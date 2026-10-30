@@ -16,7 +16,7 @@ import {
 } from "./agentGitHubReads.ts";
 
 const redirect = (tool: keyof typeof PULL_REQUEST_READ_TOOLS, args: string, command: string) =>
-  `T3 already reads this. Call ${PULL_REQUEST_READ_TOOLS[tool]} with ${args} (load it with ToolSearch if it is deferred). If it can't answer what you need, rerun as \`T3_GH_DIRECT=1 ${command}\`.`;
+  `T3 already reads this. Call ${PULL_REQUEST_READ_TOOLS[tool]} with ${args} (load it with ToolSearch if it is deferred). If it can't answer what you need, rerun with the bypass. Rerun as \`T3_GH_DIRECT=1 ${command}\`.`;
 
 describe("decideGitHubCommand", () => {
   it.each([
@@ -34,14 +34,6 @@ describe("decideGitHubCommand", () => {
       decision: {
         allow: false,
         reason: redirect("status", "{}", "gh pr checks --json bucket"),
-      },
-    },
-    {
-      name: "a job log read, to the failures tool with the repository",
-      command: "gh api repos/acme/app/actions/jobs/119542773959/logs",
-      decision: {
-        allow: false,
-        reason: redirect("failures", "{}", "gh api repos/acme/app/actions/jobs/119542773959/logs"),
       },
     },
     {
@@ -92,6 +84,33 @@ describe("decideGitHubCommand", () => {
   ])("decides $name", ({ command, decision }) => {
     assert.deepStrictEqual<unknown>(decideGitHubCommand(command), decision);
   });
+});
+
+describe("gate regression hints", () => {
+  it.each(["cd /work/app && gh pr checks 123", "sleep 60 && gh pr checks 12"])(
+    "offers a usable bypass for %s",
+    (command) => {
+      const decision = decideGitHubCommand(command);
+      assert.isFalse(decision.allow);
+      if (decision.allow) return;
+      const suggested = /`([^`]+)`/u.exec(decision.reason)?.[1];
+      assert.isDefined(suggested);
+      assert.deepStrictEqual(decideGitHubCommand(suggested!), { allow: true });
+      assert.include(suggested!, command.split("gh")[0]!);
+    },
+  );
+  it.each(["gh run view 123 --log-failed", "gh api repos/acme/app/actions/jobs/123/logs"])(
+    "explains the PR scope for %s",
+    (command) => {
+      const decision = decideGitHubCommand(command);
+      assert.isFalse(decision.allow);
+      if (decision.allow) return;
+      assert.include(decision.reason, "failing checks of");
+      assert.include(decision.reason, "run or job");
+      assert.include(decision.reason, "T3_GH_DIRECT=1");
+      if (command.includes("acme/app")) assert.include(decision.reason, "acme/app");
+    },
+  );
 });
 
 describe("pullRequestReadArguments", () => {

@@ -110,15 +110,16 @@ export interface AgentShellCommand {
   readonly words: ReadonlyArray<string>;
   /** `NAME=value` assignments that prefixed the command, including those after `env`. */
   readonly assignments: ReadonlyMap<string, string>;
-  /** Runs more than once: under `watch`, inside an `until`/`while` loop, or in a script that sleeps. */
+  /** Runs more than once: under `watch`, inside an `until`/`while` loop, or a `for` loop. */
   readonly repeats: boolean;
+  readonly bypassCommand: string;
 }
 
 const ASSIGNMENT = /^([A-Za-z_]\w*)=([\s\S]*)$/u;
 const REDIRECTION = /^\d*(?:>>?|<<?|&>)(?:&\d+|\S*)$/u;
 const REDIRECTION_OPERATOR = /^\d*(?:>>?|<|&>)$/u;
-const LOOP_KEYWORDS = new Set(["until", "while"]);
-const DROPPED_KEYWORDS = new Set(["do", "then", "else", "if", "elif", "for", "!", "{", "}"]);
+const LOOP_KEYWORDS = new Set(["until", "while", "for"]);
+const DROPPED_KEYWORDS = new Set(["do", "then", "else", "if", "elif", "!", "{", "}"]);
 const PLAIN_WRAPPERS = new Set(["env", "time", "nohup", "exec", "command", "builtin"]);
 
 function stripRedirections(words: ReadonlyArray<string>): Array<string> {
@@ -134,16 +135,14 @@ function stripRedirections(words: ReadonlyArray<string>): Array<string> {
 /** The commands a shell input runs, in order. Text inside quotes and heredocs is not a command. */
 export function agentShellCommands(input: string): ReadonlyArray<AgentShellCommand> {
   const script = shellScript(input).replace(HEREDOC_BODY, "<<");
-  const segments = splitShell(script, true).map((segment) =>
-    stripRedirections(shellWords(segment)),
-  );
-  const sleeps = segments.some(
-    (words) =>
-      words.find((word) => !DROPPED_KEYWORDS.has(word) && !LOOP_KEYWORDS.has(word)) === "sleep",
-  );
+  const segments = splitShell(script, true);
   const commands: Array<AgentShellCommand> = [];
   let loopDepth = 0;
-  for (const segment of segments) {
+  let offset = 0;
+  for (const source of segments) {
+    const start = script.indexOf(source, offset);
+    offset = start + source.length;
+    const segment = stripRedirections(shellWords(source));
     const assignments = new Map<string, string>();
     let watches = false;
     let index = 0;
@@ -177,7 +176,8 @@ export function agentShellCommands(input: string): ReadonlyArray<AgentShellComma
     commands.push({
       words: [program.slice(program.lastIndexOf("/") + 1), ...words.slice(1)],
       assignments,
-      repeats: watches || loopDepth > 0 || sleeps,
+      repeats: watches || loopDepth > 0,
+      bypassCommand: `${script.slice(0, start)}${source.replace(/^(\s*(?:(?:if|elif|then|else|do|!)\s+)*)/u, `$1${GH_DIRECT_ENV}=1 `)}${script.slice(offset)}`,
     });
   }
   return commands;
@@ -190,6 +190,7 @@ export interface AgentForgeCommand {
   readonly command: ForgeCommand;
   /** Prefixed `T3_GH_DIRECT=1`, which asks T3 to let the command run as typed. */
   readonly bypass: boolean;
+  readonly bypassCommand: string;
 }
 
 /** The forge CLI commands a shell input runs. A read that repeats is a poll. */
@@ -203,6 +204,7 @@ export function classifyAgentShellCommands(input: string): ReadonlyArray<AgentFo
           forge: definition.kind,
           command: command.kind === "read" && shellCommand.repeats ? { kind: "poll" } : command,
           bypass: shellCommand.assignments.get(GH_DIRECT_ENV) === "1",
+          bypassCommand: shellCommand.bypassCommand,
         },
       ];
     }

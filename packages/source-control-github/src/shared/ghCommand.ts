@@ -120,6 +120,8 @@ function parseArgs(words: ReadonlyArray<string>, valueFlags: ReadonlySet<string>
     const equals = word.startsWith("--") ? word.indexOf("=") : -1;
     if (equals !== -1) {
       add(word.slice(0, equals), word.slice(equals + 1));
+    } else if (!word.startsWith("--") && word.length > 2 && valueFlags.has(word.slice(0, 2))) {
+      add(word.slice(0, 2), word.slice(2).replace(/^=/u, ""));
     } else if (valueFlags.has(word)) {
       add(word, words[++index] ?? "");
     } else {
@@ -141,13 +143,13 @@ function repositoryOf(args: ParsedArgs): ForgeCommandTarget {
   return match === null || repo?.includes("{") ? {} : { repository: match[1]!.toLowerCase() };
 }
 
-function pullRequestTarget(args: ParsedArgs): ForgeCommandTarget {
+function pullRequestTarget(args: ParsedArgs): ForgeCommandTarget | null {
   const target = repositoryOf(args);
   const selector = args.positionals[0];
   if (selector === undefined) return target;
   if (NUMBER.test(selector)) return { ...target, number: Number(selector) };
   // A branch name selects by head ref; only a number or URL names the pull request itself.
-  return URL.test(selector) ? { url: selector } : target;
+  return URL.test(selector) ? { url: selector } : null;
 }
 
 const read = (intent: ForgeReadIntent, target: ForgeCommandTarget): ForgeCommand => ({
@@ -162,19 +164,18 @@ const OTHER: ForgeCommand = { kind: "other" };
 function classifyPullRequest(subcommand: string, rest: ReadonlyArray<string>): ForgeCommand {
   if (PR_WRITES.has(subcommand)) return WRITE;
   const args = parseArgs(rest, VALUE_FLAGS);
-  if (subcommand === "checks") {
-    return has(args, "--watch") ? POLL : read("status", pullRequestTarget(args));
-  }
+  if (subcommand === "checks" && has(args, "--watch")) return POLL;
+  const target = pullRequestTarget(args);
+  if (target === null) return OTHER;
+  if (subcommand === "checks") return read("status", target);
   if (subcommand !== "view" || has(args, "--web", "-w")) return OTHER;
-  if (has(args, "--comments", "-c")) return read("feedback", pullRequestTarget(args));
+  if (has(args, "--comments", "-c")) return read("feedback", target);
   const fields = (args.flags.get("--json") ?? []).flatMap((list) => list.split(","));
   if (fields.length === 0) return OTHER;
   if (fields.every((field) => STATUS_FIELDS.has(field))) {
-    return read("status", pullRequestTarget(args));
+    return read("status", target);
   }
-  return fields.every((field) => FEEDBACK_FIELDS.has(field))
-    ? read("feedback", pullRequestTarget(args))
-    : OTHER;
+  return fields.every((field) => FEEDBACK_FIELDS.has(field)) ? read("feedback", target) : OTHER;
 }
 
 function classifyRun(subcommand: string, rest: ReadonlyArray<string>): ForgeCommand {
@@ -220,8 +221,16 @@ function classifyApi(rest: ReadonlyArray<string>): ForgeCommand {
 
 /** What a `gh` command does, or null when the words run another program. */
 export function classifyGhCommand(words: ReadonlyArray<string>): ForgeCommand | null {
-  const [program, group = "", subcommand = "", ...rest] = words;
-  if (program !== "gh") return null;
+  if (words[0] !== "gh") return null;
+  let start = 1;
+  while (start < words.length) {
+    const flag = words[start] ?? "";
+    if (flag === "-R" || flag === "--repo" || flag === "--hostname") start += 2;
+    else if (/^(?:-R.|--(?:repo|hostname)=)/u.test(flag)) start++;
+    else break;
+  }
+  const [group = "", subcommand = "", ...tail] = words.slice(start);
+  const rest = [...words.slice(1, start), ...tail];
   switch (group) {
     case "pr":
       return classifyPullRequest(subcommand, rest);

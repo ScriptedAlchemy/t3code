@@ -11,6 +11,17 @@ const poll = { forge: "github", command: { kind: "poll" }, bypass: false };
 
 describe("classifyAgentShellCommands", () => {
   it.each([
+    {
+      name: "a read after sleep",
+      input: "sleep 60 && gh pr checks 12",
+      expected: [status({ number: 12 })],
+    },
+    {
+      name: "a bypass after sleep",
+      input: "sleep 1; T3_GH_DIRECT=1 gh pr checks 123",
+      expected: [status({ number: 123 }, true)],
+    },
+    { name: "a for loop", input: "for i in 1 2; do gh pr checks 12; done", expected: [poll] },
     { name: "a plain read", input: "gh pr checks 4497", expected: [status({ number: 4497 })] },
     {
       name: "a Codex shell wrapper with a pipeline",
@@ -31,7 +42,7 @@ describe("classifyAgentShellCommands", () => {
       name: "an until loop that sleeps",
       input:
         "until gh pr checks 4497 --json bucket 2>/dev/null | jq -e 'all(.bucket!=\"pending\")' >/dev/null; do sleep 60; done; gh pr checks 4497 2>&1 | awk -F'\\t' '{print $2}'",
-      expected: [poll, poll],
+      expected: [poll, status({ number: 4497 })],
     },
     {
       name: "a while loop",
@@ -69,7 +80,12 @@ describe("classifyAgentShellCommands", () => {
     },
     { name: "no forge command", input: "git status && vp test run", expected: [] },
   ])("classifies $name", ({ input, expected }) => {
-    assert.deepStrictEqual<unknown>(classifyAgentShellCommands(input), expected);
+    assert.deepStrictEqual<unknown>(
+      classifyAgentShellCommands(input).map(
+        ({ bypassCommand: _bypassCommand, ...command }) => command,
+      ),
+      expected,
+    );
   });
 });
 
@@ -84,6 +100,7 @@ describe("agentShellCommands", () => {
           words: ["gh", "api", "repos/acme/app/pulls/$n/comments", "--jq", ".[] | .body"],
           assignments: new Map(),
           repeats: false,
+          bypassCommand: `T3_GH_DIRECT=1 gh api 'repos/acme/app/pulls/$n/comments' --jq ".[] | .body" > out.json 2>&1`,
         },
       ],
     );

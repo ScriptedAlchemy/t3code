@@ -17,7 +17,8 @@ describe("classifyGhCommand", () => {
       { kind: "read", intent: "status", target: { repository: "acme/app", number: 4503 } },
     ],
     ["gh pr checks", { kind: "read", intent: "status", target: {} }],
-    ["gh pr checks feature-branch", { kind: "read", intent: "status", target: {} }],
+    ["gh pr checks feature-branch", { kind: "other" }],
+    ["gh pr view feature-branch --comments", { kind: "other" }],
     [
       "gh pr checks https://github.com/acme/app/pull/12",
       { kind: "read", intent: "status", target: { url: "https://github.com/acme/app/pull/12" } },
@@ -78,6 +79,23 @@ describe("classifyGhCommand", () => {
       "gh api -X GET -f per_page=100 repos/acme/app/actions/jobs/1/logs",
       { kind: "read", intent: "failures", target: { repository: "acme/app" } },
     ],
+    [
+      "gh -R acme/app pr checks 123",
+      { kind: "read", intent: "status", target: { repository: "acme/app", number: 123 } },
+    ],
+    [
+      "gh --repo=acme/app pr checks 123",
+      { kind: "read", intent: "status", target: { repository: "acme/app", number: 123 } },
+    ],
+    [
+      "gh -R=acme/app pr checks 123",
+      { kind: "read", intent: "status", target: { repository: "acme/app", number: 123 } },
+    ],
+    [
+      "gh --hostname=github.com api repos/acme/app/pulls/4/reviews",
+      { kind: "read", intent: "feedback", target: { repository: "acme/app", number: 4 } },
+    ],
+    ["gh -R acme/app pr checks 123 --watch", { kind: "poll" }],
     // Polls.
     ["gh pr checks 4497 --watch", { kind: "poll" }],
     ["gh run watch 39810344331", { kind: "poll" }],
@@ -94,6 +112,9 @@ describe("classifyGhCommand", () => {
     ["gh api repos/acme/app/pulls/4/reviews -f event=APPROVE", { kind: "write" }],
     ["gh api graphql --input -", { kind: "write" }],
     ["gh api graphql -f query=query{viewer{login}}", { kind: "write" }],
+    ["gh api repos/acme/app/pulls/4/reviews -fevent=APPROVE", { kind: "write" }],
+    ["gh api repos/acme/app/pulls/4/reviews -Fevent=APPROVE", { kind: "write" }],
+    ["gh api repos/acme/app/pulls/4/reviews -XPOST", { kind: "write" }],
     // Nothing a tool answers exactly.
     ["gh pr view 4393", { kind: "other" }],
     ["gh pr view 4393 --json headRefOid,files", { kind: "other" }],
