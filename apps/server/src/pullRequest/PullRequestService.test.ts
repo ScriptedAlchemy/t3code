@@ -4529,6 +4529,7 @@ it.effect("coalesces completed check failures and separates credentials and atte
     let credential = "first";
     let attempt = 1;
     let calls = 0;
+    let checksReads = 0;
     let running = false;
     let refuse = false;
     const entered = yield* Deferred.make<void>();
@@ -4548,18 +4549,21 @@ it.effect("coalesces completed check failures and separates credentials and atte
               use({ accountId: "101", viewer: "octocat", credentialFingerprint: credential }),
             ),
           getChangeRequestChecks: () =>
-            Effect.sync(() => ({
-              state: "open" as const,
-              checks: [
-                {
-                  name: "lint",
-                  status: "failure" as const,
-                  description: null,
-                  url: null,
-                  handle: `job:123:${attempt}`,
-                },
-              ],
-            })),
+            Effect.sync(() => {
+              checksReads++;
+              return {
+                state: "open" as const,
+                checks: [
+                  {
+                    name: "lint",
+                    status: "failure" as const,
+                    description: null,
+                    url: null,
+                    handle: `job:123:${attempt}`,
+                  },
+                ],
+              };
+            }),
           getChangeRequestCheckFailure: () =>
             Effect.gen(function* () {
               calls++;
@@ -4589,6 +4593,7 @@ it.effect("coalesces completed check failures and separates credentials and atte
       ],
     });
     const input = { ...ref, handle: "job:123:1" };
+    yield* service.checks(ref);
     const first = yield* Effect.forkChild(service.checkFailures(input));
     yield* Deferred.await(entered);
     const second = yield* Effect.forkChild(service.checkFailures(input));
@@ -4596,6 +4601,7 @@ it.effect("coalesces completed check failures and separates credentials and atte
     const [a, b] = yield* Effect.all([Fiber.join(first), Fiber.join(second)]);
     expect(a).toEqual(b);
     expect(calls).toBe(1);
+    expect(checksReads).toBe(1);
     yield* service.checkFailures(input);
     expect(calls).toBe(1);
     credential = "second";

@@ -164,7 +164,9 @@ const VIEWER_CACHE_CAPACITY = 32;
 
 export type PullRequestError = PullRequestUnavailableError | PullRequestOperationError;
 
-const checkFailureKey = Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String]));
+const checkFailureKey = Schema.fromJsonString(
+  Schema.Tuple([Schema.String, Schema.String, Schema.String]),
+);
 const encodeCheckFailureKey = Schema.encodeSync(checkFailureKey);
 const decodeCheckFailureKey = Schema.decodeSync(checkFailureKey);
 
@@ -3006,6 +3008,22 @@ export const make = Effect.gen(function* () {
     );
   };
 
+  const credentialCached =
+    <I extends PullRequestRef, Args extends ReadonlyArray<unknown>, A, E>(
+      read: (input: I, ...args: Args) => Effect.Effect<A, E>,
+    ) =>
+    (input: I, ...args: Args) =>
+      Effect.gen(function* () {
+        const ref = yield* canonicalRef(input);
+        const credential = yield* routingCredential;
+        return yield* read(
+          credential === null
+            ? ref
+            : { ...ref, [credentialNamespace]: credential.credentialFingerprint },
+          ...args,
+        );
+      });
+
   const checksCache = yield* Cache.makeWith(
     (key: string) => {
       const input = refOfCacheKey(key);
@@ -3047,16 +3065,20 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const checks: PullRequestService["Service"]["checks"] = credentialCached((input) =>
+    Cache.get(checksCache, refCacheKey(input)),
+  );
+
   const checkFailureCache = yield* Cache.makeWith(
     Effect.fn("PullRequestService.readCheckFailure")(function* (key: string) {
-      const [refKey, handle] = decodeCheckFailureKey(key);
+      const [refKey, , handle] = decodeCheckFailureKey(key);
       const input = refOfCacheKey(refKey);
       const project = yield* requireProject(input);
       if (project.api.getChangeRequestCheckFailure === undefined) {
         return yield* new PullRequestUnavailableError({ reason: "provider-unsupported" });
       }
-      const checks = yield* Cache.get(checksCache, refKey);
-      const check = checks?.checks.find((check) => check.handle === handle);
+      // The caller already read this list through `checks`; look it up the same way.
+      const check = (yield* checks(input))?.checks.find((check) => check.handle === handle);
       if (check === undefined) {
         return yield* new PullRequestOperationError({
           operation: "checkFailures",
@@ -3128,13 +3150,13 @@ export const make = Effect.gen(function* () {
                   ),
                 ),
               );
-              const key = refCacheKey({
-                ...ref,
-                [credentialNamespace]: identity.credentialFingerprint,
-              });
               return yield* Cache.get(
                 checkFailureCache,
-                encodeCheckFailureKey([key, input.handle]),
+                encodeCheckFailureKey([
+                  refCacheKey(ref),
+                  identity.credentialFingerprint,
+                  input.handle,
+                ]),
               );
             }).pipe(
               Effect.provideService(
@@ -3668,22 +3690,6 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  const credentialCached =
-    <I extends PullRequestRef, Args extends ReadonlyArray<unknown>, A, E>(
-      read: (input: I, ...args: Args) => Effect.Effect<A, E>,
-    ) =>
-    (input: I, ...args: Args) =>
-      Effect.gen(function* () {
-        const ref = yield* canonicalRef(input);
-        const credential = yield* routingCredential;
-        return yield* read(
-          credential === null
-            ? ref
-            : { ...ref, [credentialNamespace]: credential.credentialFingerprint },
-          ...args,
-        );
-      });
-
   // Cache small filename lists even when patches exceed limits, avoiding diff refetches on file expansion.
   const diffFiles = (() => {
     const held = new Map<
@@ -3811,7 +3817,7 @@ export const make = Effect.gen(function* () {
     ),
     refreshAfterTurn,
     detail: credentialCached(detail),
-    checks: credentialCached((input) => Cache.get(checksCache, refCacheKey(input))),
+    checks,
     checkFailures,
     watchFingerprint: credentialCached((input) =>
       Cache.get(watchFingerprintCache, refCacheKey(input)),
