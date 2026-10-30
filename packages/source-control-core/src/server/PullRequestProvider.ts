@@ -103,6 +103,7 @@ export interface ProviderChangeRequest {
 }
 
 export interface ProviderChangeRequestSummary {
+  readonly headSha?: string | null;
   readonly number: number;
   readonly title: string;
   readonly url: string;

@@ -14,6 +14,7 @@ import {
   toLabelCandidates,
   toPullRequestActivityPage,
   toPullRequestCore,
+  toPullRequestSummary,
   toPullRequestFilesViewedPage,
   toPullRequestRows,
   toReviewerCandidates,
@@ -22,7 +23,7 @@ import {
   toReviewThreadPage,
   toViewerPermissions,
 } from "./gitHubPullRequestJson.ts";
-import { PullRequestWatchFingerprint } from "./pullRequestBatches.graphql.ts";
+import { PullRequestSummary, PullRequestWatchFingerprint } from "./pullRequestBatches.graphql.ts";
 import {
   LabelCandidates,
   PullRequestActivity,
@@ -1705,5 +1706,25 @@ describe("pull request watch fingerprints", () => {
     expect(summaryEdited.remarks).not.toBe(before.remarks);
     expect(summaryEdited.status).toBe(before.status);
     expect(replied.remarks).not.toBe(before.remarks);
+  });
+});
+
+const decodeSummary = Schema.decodeUnknownSync(PullRequestSummary.result);
+
+describe("toPullRequestSummary", () => {
+  it("keeps the head commit selected by the summary query", () => {
+    const decoded = decodeSummary({
+      repository: {
+        pullRequest: row({
+          headRefOid: "new-head",
+          closedAt: null,
+          additions: 1,
+          deletions: 0,
+          changedFiles: 1,
+          commits: { nodes: [] },
+        }),
+      },
+    });
+    expect(toPullRequestSummary(decoded.repository!.pullRequest!).headSha).toBe("new-head");
   });
 });

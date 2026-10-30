@@ -492,6 +492,7 @@ export const PullRequestSummary = Schema.Struct({
   url: TrimmedNonEmptyString,
   state: PullRequestState,
   isDraft: Schema.optional(Schema.Boolean),
+  headSha: Schema.optional(TrimmedNonEmptyString),
   headBranch: TrimmedNonEmptyString,
   baseBranch: TrimmedNonEmptyString,
   closedAt: Schema.optional(Schema.NullOr(Schema.String)),

@@ -896,6 +896,7 @@ export function pullRequestLookup(changeRequest: {
 }
 
 export interface GitHubPullRequestSummary {
+  readonly headSha: string;
   readonly number: number;
   readonly title: string;
   readonly url: string;
@@ -922,6 +923,7 @@ export function toPullRequestSummary(pr: SummarizedPullRequest): GitHubPullReque
     number: pr.number,
     title: pr.title,
     url: pr.url,
+    headSha: pr.headRefOid,
     headBranch: pr.headRefName,
     baseBranch: pr.baseRefName,
     state: toState(pr),

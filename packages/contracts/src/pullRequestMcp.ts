@@ -71,6 +71,7 @@ export type PullRequestCheckRequired = typeof PullRequestCheckRequired.Type;
 
 export const PullRequestChecksVerdict = Schema.Literals([
   "passing",
+  "stale-head",
   "failing",
   "pending",
   "none",

@@ -99,6 +99,7 @@ function checksPhrase(checks: PullRequestChecksStatus): string {
       return `checks pending (${pending})`;
     case "passing":
       return `checks passing (${checks.passed} passed)`;
+    case "stale-head":
     case "none":
     case "unknown":
       return `checks ${checks.verdict}`;
@@ -123,7 +124,22 @@ export function statusEntryOf(input: {
   readonly summary: PullRequestSummary;
   readonly checks: PullRequestChecks | null;
 }): PullRequestStatusEntry {
-  const checks = checksStatusOf(input.checks);
+  const checkStatus = checksStatusOf(input.checks);
+  const summaryHead = input.summary.headSha;
+  const checksAreNewer =
+    input.checks?.observedAt !== undefined &&
+    input.summary.observedAt !== undefined &&
+    input.checks.observedAt > input.summary.observedAt;
+  const headSha = checksAreNewer
+    ? (checkStatus.headSha ?? summaryHead)
+    : (summaryHead ?? checkStatus.headSha);
+  const checks: PullRequestChecksStatus =
+    summaryHead !== undefined &&
+    checkStatus.headSha !== undefined &&
+    summaryHead !== checkStatus.headSha &&
+    !checksAreNewer
+      ? { ...checkStatus, verdict: "stale-head" }
+      : checkStatus;
   const entry = {
     url: input.url,
     number: input.summary.number,
@@ -132,7 +148,7 @@ export function statusEntryOf(input: {
     isDraft: input.summary.isDraft === true,
     headBranch: input.summary.headBranch,
     baseBranch: input.summary.baseBranch,
-    ...(checks.headSha === undefined ? {} : { headSha: checks.headSha }),
+    ...(headSha === undefined ? {} : { headSha }),
     mergeability: input.summary.mergeability ?? "unknown",
     reviewDecision: input.summary.reviewDecision ?? null,
     checks,

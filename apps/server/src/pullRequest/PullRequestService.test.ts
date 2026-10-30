@@ -2888,12 +2888,14 @@ it.effect(
               Effect.succeed({
                 ...changeRequest(1, "2026-07-02T00:00:00Z"),
                 isDraft: true,
+                headSha: "summary-head",
                 reviewDecision: "approved",
                 checksState: "passing",
               }),
             getChangeRequest: () =>
               Effect.succeed({
                 ...hostedChangeRequest("body", 14),
+                headSha: "detail-head",
                 deletions: 3,
                 changedFiles: 5,
                 mergeability: "conflicting",
@@ -2901,9 +2903,10 @@ it.effect(
           }),
         ],
       });
-      yield* service.summary(reference);
+      assert.strictEqual((yield* service.summary(reference)).headSha, "summary-head");
       const detail = yield* service.detail(reference);
       const summary = yield* service.summary(reference);
+      assert.strictEqual(summary.headSha, "detail-head");
       assert.strictEqual(summary.isDraft, false);
       assert.deepStrictEqual(summary.author, detail.author);
       assert.strictEqual(summary.additions, 14);

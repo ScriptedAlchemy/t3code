@@ -124,6 +124,59 @@ describe("checksStatusOf", () => {
 describe("statusEntryOf", () => {
   it.each([
     {
+      name: "older successful checks",
+      summaryHead: "newhead",
+      checksHead: "oldhead",
+      summaryAt: 20,
+      checksAt: 10,
+      head: "newhead",
+      verdict: "stale-head",
+    },
+    {
+      name: "newer successful checks",
+      summaryHead: "oldhead",
+      checksHead: "newhead",
+      summaryAt: 10,
+      checksAt: 20,
+      head: "newhead",
+      verdict: "passing",
+    },
+    {
+      name: "matching heads",
+      summaryHead: "newhead",
+      checksHead: "newhead",
+      summaryAt: 20,
+      checksAt: 10,
+      head: "newhead",
+      verdict: "passing",
+    },
+    {
+      name: "unknown ordering",
+      summaryHead: "newhead",
+      checksHead: "oldhead",
+      summaryAt: undefined,
+      checksAt: undefined,
+      head: "newhead",
+      verdict: "stale-head",
+    },
+  ])(
+    "keeps head coherence for $name",
+    ({ summaryHead, checksHead, summaryAt, checksAt, head, verdict }) => {
+      const entry = statusEntryOf({
+        url: URL,
+        resolvedVia: "named",
+        summary: summary({ headSha: summaryHead, observedAt: summaryAt, checksState: "pending" }),
+        checks: { ...checks([check("build", "success")], checksHead), observedAt: checksAt },
+      });
+      assert.equal(entry.headSha, head);
+      assert.equal(entry.checks.headSha, checksHead);
+      assert.equal(entry.checks.verdict, verdict);
+      if (verdict === "stale-head") assert.notInclude(entry.report, "checks passing");
+    },
+  );
+
+  it.each([
+    {
       name: "failing checks with one pending",
       summary: summary(),
       checks: checks([
