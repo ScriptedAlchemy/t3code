@@ -260,9 +260,7 @@ export function feedbackOf(input: {
 }
 
 export interface ForgeWords {
-  /** As "GitHub". */
   readonly label: string;
-  /** As "gh". */
   readonly cli: string;
 }
 
