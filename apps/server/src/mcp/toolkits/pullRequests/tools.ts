@@ -21,6 +21,13 @@ import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as PullRequestReviewGuideService from "../../../pullRequest/PullRequestReviewGuideService.ts";
+import {
+  PullRequestHostRequiredError,
+  PullRequestProjectNotFoundError,
+  PullRequestTargetIncompleteError,
+  PullRequestUrlInvalidError,
+  PullRequestUrlUnavailableError,
+} from "../../../pullRequest/pullRequestTargets.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -59,42 +66,6 @@ export const PullRequestTargetInput = Schema.Struct({
   ),
 });
 export type PullRequestTargetInput = typeof PullRequestTargetInput.Type;
-
-export class PullRequestUrlInvalidError extends Schema.TaggedError<PullRequestUrlInvalidError>()(
-  "PullRequestUrlInvalidError",
-  {},
-) {
-  override get message(): string {
-    return "This is not a recognised pull request URL. Pass repository and number instead.";
-  }
-}
-
-export class PullRequestTargetIncompleteError extends Schema.TaggedError<PullRequestTargetIncompleteError>()(
-  "PullRequestTargetIncompleteError",
-  {},
-) {
-  override get message(): string {
-    return "Pass either url, or both repository and number.";
-  }
-}
-
-export class PullRequestHostRequiredError extends Schema.TaggedError<PullRequestHostRequiredError>()(
-  "PullRequestHostRequiredError",
-  {},
-) {
-  override get message(): string {
-    return "This thread's project has no recognised remote. Pass host or url.";
-  }
-}
-
-export class PullRequestUrlUnavailableError extends Schema.TaggedError<PullRequestUrlUnavailableError>()(
-  "PullRequestUrlUnavailableError",
-  {},
-) {
-  override get message(): string {
-    return "This thread's project is on a host with no known pull request URL shape. Pass url.";
-  }
-}
 
 export class PullRequestThreadRequiredError extends Schema.TaggedError<PullRequestThreadRequiredError>()(
   "PullRequestThreadRequiredError",
@@ -165,15 +136,6 @@ export class PullRequestListFailedError extends Schema.TaggedError<PullRequestLi
 ) {
   override get message(): string {
     return "Could not list the pull request.";
-  }
-}
-
-export class PullRequestProjectNotFoundError extends Schema.TaggedError<PullRequestProjectNotFoundError>()(
-  "PullRequestProjectNotFoundError",
-  { repository: Schema.String },
-) {
-  override get message(): string {
-    return `No project in this environment is a checkout of ${this.repository}, so its pull requests cannot be read here. Add one with t3_project_create.`;
   }
 }
 
