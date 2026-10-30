@@ -325,7 +325,8 @@ still reports its final result. Subagents report to their parent thread, which o
 Agents read a pull request's status, failed checks, and review feedback through T3, which shares
 one cached read with the app instead of spending your host's rate limit on `gh` calls. Claude
 agents are stopped from running `gh` reads T3 can answer; a command prefixed with `T3_GH_DIRECT=1`
-runs anyway.
+runs anyway. Turn off **Send agents' GitHub reads through T3** in **Settings → Source control** to
+let Claude agents run every `gh` command; it applies when the agent session next starts.
 
 Cross-repository links use a project on the same host. Azure DevOps reviews require a project checked
 out from the matching organization and repository.

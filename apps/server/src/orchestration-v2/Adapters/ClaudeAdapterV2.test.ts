@@ -697,7 +697,11 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
 });
 
 describe("ClaudeAdapterV2 device instructions", () => {
-  const options = (input: { readonly mcp: boolean; readonly deviceToolsAvailable: boolean }) =>
+  const options = (input: {
+    readonly mcp: boolean;
+    readonly deviceToolsAvailable: boolean;
+    readonly gitHubReadGate?: boolean;
+  }) =>
     ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -711,6 +715,7 @@ describe("ClaudeAdapterV2 device instructions", () => {
         ? { mcpServers: { "t3-code": { type: "http" as const, url: "http://127.0.0.1/mcp" } } }
         : {}),
       deviceToolsAvailable: input.deviceToolsAvailable,
+      ...(input.gitHubReadGate === undefined ? {} : { gitHubReadGate: input.gitHubReadGate }),
       environment: {},
     });
   const append = (input: { readonly mcp: boolean; readonly deviceToolsAvailable: boolean }) =>
@@ -770,8 +775,11 @@ describe("ClaudeAdapterV2 device instructions", () => {
     assert.deepEqual(await subagentContext({ mcp: false, deviceToolsAvailable: true }), []);
   });
 
-  it("gates Bash gh reads only in a session with T3 tools", async () => {
-    const bash = (input: { readonly mcp: boolean }, command: string) =>
+  it("gates Bash gh reads only in a session with T3 tools and the gate setting on", async () => {
+    const bash = (
+      input: { readonly mcp: boolean; readonly gitHubReadGate?: boolean },
+      command: string,
+    ) =>
       Promise.all(
         (options({ ...input, deviceToolsAvailable: false }).hooks?.PreToolUse ?? []).flatMap(
           (matcher) =>
@@ -807,6 +815,10 @@ describe("ClaudeAdapterV2 device instructions", () => {
     );
     assert.deepEqual(await bash({ mcp: true }, "gh pr merge 123 --squash"), [{}]);
     assert.deepEqual(await bash({ mcp: false }, "gh pr checks 123"), []);
+    assert.deepEqual(await bash({ mcp: true, gitHubReadGate: false }, "gh pr checks 123"), []);
+    const gateOff = options({ mcp: true, deviceToolsAvailable: false, gitHubReadGate: false });
+    assert.isUndefined(gateOff.hooks?.PreToolUse);
+    assert.lengthOf(gateOff.hooks?.SubagentStart ?? [], 1);
   });
 });
 

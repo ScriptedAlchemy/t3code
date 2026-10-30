@@ -1458,6 +1458,8 @@ export function makeClaudeQueryOptions(input: {
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
   /** The thread's T3 MCP session holds the `device` capability. */
   readonly deviceToolsAvailable?: boolean;
+  /** `enableAgentGitHubReadGate`; off lets Bash run every `gh` read. */
+  readonly gitHubReadGate?: boolean;
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
@@ -1606,7 +1608,9 @@ export function makeClaudeQueryOptions(input: {
       ? {}
       : {
           hooks: {
-            PreToolUse: [{ matcher: "Bash", hooks: [gitHubReadGate] }],
+            ...(input.gitHubReadGate === false
+              ? {}
+              : { PreToolUse: [{ matcher: "Bash", hooks: [gitHubReadGate] }] }),
             SubagentStart: [{ hooks: [subagentInstructions(deviceInstructions)] }],
           },
         }),
@@ -9988,6 +9992,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.runtimePolicy.cwd,
             launchArgSettings,
           );
+          const gitHubReadGate = Option.isSome(serverSettings)
+            ? yield* serverSettings.value.getSettings.pipe(
+                Effect.map((settings) => settings.enableAgentGitHubReadGate),
+                Effect.orElseSucceed(() => true),
+              )
+            : true;
           const queryOptions = makeClaudeQueryOptions({
             platform,
             modelSelection: turnInput.modelSelection,
@@ -10013,6 +10023,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { mcpServers: mcpOverrides.mcpServers }),
             deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
+            gitHubReadGate,
             permissionMode: queryPolicy.permissionMode,
             ...(queryPolicy.allowDangerouslySkipPermissions === undefined
               ? {}
