@@ -281,6 +281,32 @@ export function rateLimitedOf(
   if (cause === null) return null;
   const until = isoOf(cause.retryAt ?? now + RATE_LIMIT_FALLBACK_MS);
   const time = `${until.slice(11, 16)} UTC`;
+  const resource =
+    cause.resource === "core"
+      ? "REST"
+      : cause.resource === "graphql"
+        ? "GraphQL"
+        : cause.resource === "search"
+          ? "search"
+          : "API";
+  if (cause.pauseReason === "reserve-protected") {
+    const remaining =
+      cause.remaining !== undefined && cause.limit !== undefined
+        ? ` (${cause.remaining} of ${cause.limit} remaining)`
+        : "";
+    return {
+      _tag: "RateLimited",
+      until,
+      message: `T3 is protecting this account's ${forge.label} ${resource} reserve until ${time}${remaining}. Background refreshes are paused; use T3's cached reads or watch instead of polling with ${forge.cli}.`,
+    };
+  }
+  if (cause.pauseReason === "quota-exhausted") {
+    return {
+      _tag: "RateLimited",
+      until,
+      message: `This account's ${forge.label} ${resource} quota is exhausted until ${time}. Your ${forge.cli} shares that quota; pause new ${resource} requests until then. T3 can still serve cached data.`,
+    };
+  }
   return {
     _tag: "RateLimited",
     until,

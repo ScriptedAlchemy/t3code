@@ -156,7 +156,7 @@ describe("GitHubRest", () => {
     }).pipe(Effect.provide(layer), Effect.withTracer(tracer));
   });
 
-  it.effect("lets an interactive request through a pause a background read recorded", () => {
+  it.effect("honors an exhausted quota for interactive requests until its reset", () => {
     const reset = Math.floor(NOW / 1000) + 600;
     let call = 0;
     const { layer, requests } = harness(() =>
@@ -176,7 +176,7 @@ describe("GitHubRest", () => {
       const read = { host: "github.com", operation: "sweep", path: "repos/acme/web/pulls" };
       yield* Effect.flip(api.rest(read));
       expect((yield* Effect.flip(api.rest(read)))._tag).toBe("SourceControlRateLimitPausedError");
-      const merged = yield* api
+      const merge = api
         .rest({
           host: "github.com",
           operation: "merge",
@@ -184,6 +184,15 @@ describe("GitHubRest", () => {
           path: "repos/acme/web/pulls/7/merge",
         })
         .pipe(Effect.provideService(SourceControlRateLimit.Interactive, true));
+      expect(yield* Effect.flip(merge)).toMatchObject({
+        _tag: "SourceControlRateLimitPausedError",
+        pauseReason: "quota-exhausted",
+        resource: "core",
+        retryAt: reset * 1_000,
+      });
+      expect(requests).toHaveLength(1);
+      yield* TestClock.setTime(reset * 1_000);
+      const merged = yield* merge;
       expect(merged.status).toBe(200);
       expect(requests).toHaveLength(2);
     }).pipe(Effect.provide(layer));

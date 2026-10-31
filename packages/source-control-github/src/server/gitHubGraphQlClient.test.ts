@@ -146,7 +146,7 @@ describe("GitHubGraphQlAuth", () => {
     },
   );
 
-  it.effect("pauses the host on a RATE_LIMITED answer sent with HTTP 200", () => {
+  it.effect("pauses only GraphQL on a primary RATE_LIMITED answer sent with HTTP 200", () => {
     const reset = Math.floor(NOW / 1000) + 600;
     const { layer, requests } = harness(() =>
       json(
@@ -158,12 +158,23 @@ describe("GitHubGraphQlAuth", () => {
       yield* TestClock.setTime(NOW);
       const first = yield* Effect.flip(readStats("github.com"));
       expect(first).toMatchObject({ _tag: "GitHubApiRateLimitError", retryAt: reset * 1000 });
+      expect(yield* Effect.flip(readStats("github.com", 8))).toMatchObject({
+        _tag: "SourceControlRateLimitPausedError",
+        resource: "graphql",
+        pauseReason: "quota-exhausted",
+      });
       const api = yield* GitHubRest.GitHubRest;
-      const rest = yield* Effect.flip(
-        api.rest({ host: "github.com", operation: "stack", path: "repos/acme/web/stacks" }),
-      );
-      expect(rest).toMatchObject({ _tag: "SourceControlRateLimitPausedError" });
-      expect(requests).toHaveLength(1);
+      const rest = yield* api.rest({
+        host: "github.com",
+        operation: "stack",
+        path: "repos/acme/web/stacks",
+      });
+      expect(rest.status).toBe(200);
+      expect(yield* Effect.flip(readStats("github.com", 9))).toMatchObject({
+        _tag: "SourceControlRateLimitPausedError",
+        resource: "graphql",
+      });
+      expect(requests).toHaveLength(2);
     }).pipe(Effect.provide(layer));
   });
 
@@ -219,19 +230,67 @@ describe("GitHubGraphQlAuth", () => {
     }).pipe(Effect.provide(layer), Effect.withTracer(tracer));
   });
 
-  it.effect("reads a 403 secondary limit as a rate limit, and a 401 as a refused token", () => {
-    const answers = [
-      json({ message: "You have exceeded a secondary rate limit." }, { status: 403 }),
-      json({ message: "Bad credentials" }, { status: 401 }),
-    ];
-    const { layer, invalidations } = harness(() => answers.shift()!);
+  it.effect.each([
+    { status: 403, remaining: "282" },
+    { status: 200, remaining: "282" },
+    { status: 200, remaining: "0" },
+  ])(
+    "reads a $status secondary limit with $remaining remaining, and a refused token",
+    ({ status, remaining }) => {
+      const answers = [
+        json(
+          status === 200
+            ? { data: null, errors: [{ message: "You have exceeded a secondary rate limit." }] }
+            : { message: "You have exceeded a secondary rate limit." },
+          {
+            status,
+            headers: {
+              "x-ratelimit-resource": "graphql",
+              "x-ratelimit-limit": "5000",
+              "x-ratelimit-remaining": remaining,
+              "x-ratelimit-reset": String(NOW / 1_000 + 3_600),
+            },
+          },
+        ),
+        json({ message: "Bad credentials" }, { status: 401 }),
+      ];
+      const { layer, requests, invalidations } = harness(() => answers.shift()!);
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        expect((yield* Effect.flip(readStats("github.com")))._tag).toBe("GitHubApiRateLimitError");
+        expect(yield* Effect.flip(readStats("github.com", 8))).toMatchObject({
+          _tag: "SourceControlRateLimitPausedError",
+          pauseReason: "rate-limited",
+          retryAt: NOW + 60_000,
+        });
+        const api = yield* GitHubRest.GitHubRest;
+        expect(
+          yield* Effect.flip(
+            api.rest({ host: "github.com", operation: "user", path: "user", allowReserve: true }),
+          ),
+        ).toMatchObject({
+          _tag: "SourceControlRateLimitPausedError",
+          pauseReason: "rate-limited",
+          retryAt: NOW + 60_000,
+        });
+        expect(requests).toHaveLength(1);
+        expect((yield* Effect.flip(readStats("github.example")))._tag).toBe(
+          "GitHubApiAuthenticationError",
+        );
+        expect(invalidations()).toBe(1);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("accepts the last successful GraphQL answer with an empty errors list", () => {
+    const { layer } = harness(() =>
+      json(
+        { data: { _0_repository: { pullRequest: stats } }, errors: [] },
+        { headers: { "x-ratelimit-remaining": "0" } },
+      ),
+    );
     return Effect.gen(function* () {
-      yield* TestClock.setTime(NOW);
-      expect((yield* Effect.flip(readStats("github.com")))._tag).toBe("GitHubApiRateLimitError");
-      expect((yield* Effect.flip(readStats("github.example")))._tag).toBe(
-        "GitHubApiAuthenticationError",
-      );
-      expect(invalidations()).toBe(1);
+      expect(yield* readStats("github.com")).toEqual({ repository: { pullRequest: stats } });
     }).pipe(Effect.provide(layer));
   });
 

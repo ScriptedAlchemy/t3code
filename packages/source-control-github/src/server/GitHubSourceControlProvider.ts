@@ -346,11 +346,12 @@ function fromGitHubApiError(
         error,
       );
     case "GitHubApiRateLimitError":
-    case "SourceControlRateLimitPausedError":
       return failure(
         "GitHub API rate limit exceeded. Requests resume when the limit resets.",
         error,
       );
+    case "SourceControlRateLimitPausedError":
+      return failure(error.message, error);
     case "GitHubApiNotFoundError":
       return failure(notFound, error);
     case "GitHubCliFailedError":

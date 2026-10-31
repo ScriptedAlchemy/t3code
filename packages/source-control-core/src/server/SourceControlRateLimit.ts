@@ -13,6 +13,12 @@ import {
 const FALLBACK_COOLDOWN = Duration.seconds(30);
 const MAX_FALLBACK_COOLDOWN = Duration.minutes(15);
 
+export const SourceControlPauseReason = Schema.Literals([
+  "reserve-protected",
+  "quota-exhausted",
+  "rate-limited",
+]);
+
 export const CredentialScope = Context.Reference<string>(
   "@t3tools/source-control-core/server/SourceControlRateLimit/CredentialScope",
   {
@@ -20,7 +26,7 @@ export const CredentialScope = Context.Reference<string>(
   },
 );
 
-/** Interactive requests may use reserved quota and bypass pauses caused by background reads. */
+/** Interactive requests may use reserved quota; providers still enforce server cooldowns. */
 export const Interactive = Context.Reference<boolean>(
   "@t3tools/source-control-core/server/SourceControlRateLimit/Interactive",
   { defaultValue: () => false },
@@ -29,6 +35,7 @@ export const Interactive = Context.Reference<boolean>(
 interface RateLimitKey {
   readonly provider: SourceControlProviderKind;
   readonly host: string;
+  readonly resource?: string | undefined;
 }
 
 interface RateLimitLease extends RateLimitKey {
@@ -47,9 +54,19 @@ export class SourceControlRateLimitPausedError extends Schema.TaggedError<Source
     provider: SourceControlProviderKindSchema,
     host: Schema.String,
     retryAt: Schema.Number,
+    pauseReason: Schema.optional(SourceControlPauseReason),
+    resource: Schema.optional(Schema.String),
+    remaining: Schema.optional(Schema.Finite),
+    limit: Schema.optional(Schema.Finite),
   },
 ) {
   get detail(): string {
+    if (this.pauseReason === "reserve-protected") {
+      return `T3 paused background ${this.resource ?? "API"} reads to ${this.host} to protect the remaining quota${this.remaining === undefined ? "" : ` (${this.remaining}${this.limit === undefined ? "" : ` of ${this.limit}`} remaining)`}. Interactive actions can use the reserve.`;
+    }
+    if (this.pauseReason === "quota-exhausted") {
+      return `${this.provider} ${this.resource ?? "API"} quota for ${this.host} is exhausted. Requests resume when that quota resets.`;
+    }
     return `${this.provider} requests to ${this.host} are paused until the rate limit resets.`;
   }
 
@@ -66,19 +83,25 @@ export class SourceControlRateLimit extends Context.Service<
       options?: { readonly allowPaused: boolean },
     ) => Effect.Effect<number, SourceControlRateLimitPausedError>;
     readonly recordRateLimit: (
-      input: RateLimitLease & { readonly retryAt?: number | undefined },
+      input: RateLimitLease & {
+        readonly retryAt?: number | undefined;
+        readonly minimumCooldownMs?: number | undefined;
+      },
     ) => Effect.Effect<void>;
     readonly recordSuccess: (input: RateLimitLease) => Effect.Effect<void>;
   }
 >()("@t3tools/source-control-core/server/SourceControlRateLimit") {}
 
 function normalizedKey(key: RateLimitKey, scope: string): string {
-  return `${key.provider}\0${key.host.trim().toLowerCase()}\0${scope}`;
+  return `${key.provider}\0${key.host.trim().toLowerCase()}\0${scope}\0${key.resource ?? ""}`;
 }
 
-function fallbackCooldownMs(attempt: number): number {
+function fallbackCooldownMs(
+  attempt: number,
+  minimum = Duration.toMillis(FALLBACK_COOLDOWN),
+): number {
   return Math.min(
-    Duration.toMillis(FALLBACK_COOLDOWN) * 2 ** Math.max(0, attempt - 1),
+    Math.max(Duration.toMillis(FALLBACK_COOLDOWN), minimum) * 2 ** Math.max(0, attempt - 1),
     Duration.toMillis(MAX_FALLBACK_COOLDOWN),
   );
 }
@@ -110,6 +133,8 @@ export const make = Effect.gen(function* () {
         provider: input.provider,
         host: input.host.trim().toLowerCase(),
         retryAt: entry.retryAt,
+        pauseReason: input.resource === undefined ? "rate-limited" : "quota-exhausted",
+        ...(input.resource === undefined ? {} : { resource: input.resource }),
       });
     }
     return entry?.generation ?? 0;
@@ -140,7 +165,7 @@ export const make = Effect.gen(function* () {
       const proposedRetryAt =
         input.retryAt !== undefined && input.retryAt > now
           ? input.retryAt
-          : now + fallbackCooldownMs(attempt);
+          : now + fallbackCooldownMs(attempt, input.minimumCooldownMs);
       const retryAt =
         previous !== undefined && previous.retryAt > now
           ? Math.max(previous.retryAt, proposedRetryAt)

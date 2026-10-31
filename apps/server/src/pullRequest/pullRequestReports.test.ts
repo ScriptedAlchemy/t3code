@@ -429,7 +429,7 @@ describe("feedbackOf", () => {
 });
 
 describe("rateLimitedOf", () => {
-  const paused = (retryAt?: number) =>
+  const paused = (retryAt?: number, quota: Partial<PullRequestProviderError> = {}) =>
     new PullRequestOperationError({
       operation: "summary",
       detail: "paused",
@@ -439,15 +439,34 @@ describe("rateLimitedOf", () => {
         reason: "rate-limited",
         detail: "paused",
         ...(retryAt === undefined ? {} : { retryAt }),
+        ...quota,
       }),
     });
 
-  it("names the time and tells the agent its CLI shares the limit", () => {
-    assert.deepEqual(rateLimitedOf(paused(Date.UTC(2026, 9, 30, 20, 5)), GITHUB, 0), {
-      _tag: "RateLimited",
-      until: "2026-10-30T20:05:00.000Z",
+  it.each([
+    {
+      name: "a host throttle with no quota metadata",
+      quota: {},
       message:
         "GitHub is rate limited for this account until 20:05 UTC. Your gh shares that limit; stop GitHub reads until then.",
+    },
+    {
+      name: "a protected REST reserve",
+      quota: { pauseReason: "reserve-protected", resource: "core", remaining: 282, limit: 5000 },
+      message:
+        "T3 is protecting this account's GitHub REST reserve until 20:05 UTC (282 of 5000 remaining). Background refreshes are paused; use T3's cached reads or watch instead of polling with gh.",
+    },
+    {
+      name: "an exhausted GraphQL quota",
+      quota: { pauseReason: "quota-exhausted", resource: "graphql", remaining: 0, limit: 5000 },
+      message:
+        "This account's GitHub GraphQL quota is exhausted until 20:05 UTC. Your gh shares that quota; pause new GraphQL requests until then. T3 can still serve cached data.",
+    },
+  ] as const)("reports $name accurately", ({ quota, message }) => {
+    assert.deepEqual(rateLimitedOf(paused(Date.UTC(2026, 9, 30, 20, 5), quota), GITHUB, 0), {
+      _tag: "RateLimited",
+      until: "2026-10-30T20:05:00.000Z",
+      message,
     });
   });
 

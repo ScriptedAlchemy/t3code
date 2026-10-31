@@ -478,6 +478,19 @@ export class GitHubPullRequestApi extends Context.Service<
     readonly getCheckFailure: Effect.Success<typeof makeGitHubCheckFailureReader>;
     readonly revalidateChecks: Effect.Success<typeof makeChecksRevalidator>;
 
+    readonly getPullRequestChecks: (input: {
+      readonly cwd: string;
+      readonly repository: string;
+      readonly host: string;
+      readonly number: number;
+    }) => Effect.Effect<
+      Pick<
+        GitHubPullRequestCore,
+        "state" | "checks" | "headSha" | "headBranch" | "headRepositoryOwner" | "isCrossRepository"
+      >,
+      GitHubPullRequestApiError
+    >;
+
     readonly getPullRequestDetail: (input: {
       readonly cwd: string;
       readonly repository: string;
@@ -949,6 +962,22 @@ export const make = Effect.gen(function* () {
               const cached = routingIdentities.get(key);
               if (cached !== undefined && now - cached.at < 10 * 60_000)
                 return { ...credential, ...cached.value };
+              const viewerIdentity = client.RoutingIdentityViewer({}).pipe(
+                GitHubGraphQlClient.call({
+                  host,
+                  operation: "getRoutingIdentity",
+                  allowReserve: true,
+                }),
+                Effect.catchTags({
+                  GraphQLClientError: () => Effect.fail(unavailable()),
+                }),
+                Effect.flatMap(({ viewer }) =>
+                  decodeViewerIdentity({
+                    id: viewer.databaseId,
+                    login: viewer.login,
+                  }).pipe(Effect.mapError(unavailable)),
+                ),
+              );
               // Pin verification so an auth switch cannot poison its cache entry.
               const identity = yield* api
                 .rest({ host, operation: "getRoutingIdentity", path: "user", allowReserve: true })
@@ -957,24 +986,16 @@ export const make = Effect.gen(function* () {
                     decodeRoutingIdentity(response.body).pipe(Effect.mapError(unavailable)),
                   ),
                   Effect.catchTags({
-                    // The enclosing operation owns the span for this inline handler.
-                    GitHubApiResponseError: Effect.fnUntraced(function* (error) {
-                      if (error.status !== 403) return yield* error;
-                      const { viewer } = yield* client.RoutingIdentityViewer({}).pipe(
-                        GitHubGraphQlClient.call({
-                          host,
-                          operation: "getRoutingIdentity",
-                          allowReserve: true,
-                        }),
-                        Effect.catchTags({
-                          GraphQLClientError: () => Effect.fail(unavailable()),
-                        }),
-                      );
-                      return yield* decodeViewerIdentity({
-                        id: viewer.databaseId,
-                        login: viewer.login,
-                      }).pipe(Effect.mapError(unavailable));
-                    }),
+                    GitHubApiResponseError: (error) =>
+                      error.status === 403 ? viewerIdentity : Effect.fail(error),
+                    GitHubApiRateLimitError: (error) =>
+                      error.resource === "core" ? viewerIdentity : Effect.fail(error),
+                    SourceControlRateLimitPausedError: (error) =>
+                      error.resource === "core" &&
+                      (error.pauseReason === "quota-exhausted" ||
+                        error.pauseReason === "reserve-protected")
+                        ? viewerIdentity
+                        : Effect.fail(error),
                   }),
                   Effect.provideService(GitHubRequestPolicy.PinnedGitHubCredential, credential),
                   Effect.provideService(SourceControlRateLimit.CredentialScope, key),
@@ -1381,9 +1402,10 @@ export const make = Effect.gen(function* () {
   const readAllCheckContexts = Effect.fn("GitHubPullRequestApi.readAllCheckContexts")(function* (
     input: Parameters<GitHubPullRequestApi["Service"]["getPullRequestDetail"]>[0],
     allowReserve: boolean,
+    operation = "getPullRequestDetail",
   ) {
     const { owner, name } = parseRepositorySelector(input.repository);
-    const target = { ...input, operation: "getPullRequestDetail", allowReserve };
+    const target = { ...input, operation, allowReserve };
     let headSha: string | null = null;
     const { pages, truncated } = yield* readPages(
       GraphQLClient.pages(client.PullRequestCheckContexts, {
@@ -1405,7 +1427,7 @@ export const make = Effect.gen(function* () {
             ? Effect.fail(
                 readError(
                   input.cwd,
-                  "getPullRequestDetail",
+                  operation,
                   new Error("Pull request head changed while reading checks."),
                 ),
               )
@@ -1418,10 +1440,40 @@ export const make = Effect.gen(function* () {
         hasNextPage: (page) => page.nextCursor !== null,
       },
     ).pipe(graphql(target));
+    const first = yield* found(target)(pages[0] ?? null);
     return {
-      headSha: pages[0]?.headSha ?? null,
+      headSha: first.headSha,
+      headBranch: first.headBranch,
+      headRepositoryOwner: first.headRepositoryOwner,
+      isCrossRepository: first.isCrossRepository,
+      state: first.state,
       contexts: pages.flatMap((page) => page.contexts),
       truncated,
+    };
+  });
+
+  const getPullRequestChecks: GitHubPullRequestApi["Service"]["getPullRequestChecks"] = Effect.fn(
+    "GitHubPullRequestApi.getPullRequestChecks",
+  )(function* (input) {
+    const all = yield* readAllCheckContexts(
+      input,
+      yield* SourceControlRateLimit.Interactive,
+      "getPullRequestChecks",
+    );
+    if (all.truncated) {
+      return yield* readError(
+        input.cwd,
+        "getPullRequestChecks",
+        new Error("Pull request checks were truncated."),
+      );
+    }
+    return {
+      state: all.state,
+      headSha: all.headSha,
+      headBranch: all.headBranch,
+      headRepositoryOwner: all.headRepositoryOwner,
+      isCrossRepository: all.isCrossRepository,
+      checks: pullRequestChecksFromContexts(all.contexts).checks,
     };
   });
 
@@ -1979,6 +2031,7 @@ export const make = Effect.gen(function* () {
     getPullRequestSummary,
     getPullRequestWatchFingerprint,
 
+    getPullRequestChecks,
     getPullRequestDetail,
     getPullRequestPreview: Effect.fn("GitHubPullRequestApi.getPullRequestPreview")(
       function (input) {

@@ -86,7 +86,15 @@ export class GitHubGraphQlAuth extends GraphQLMiddleware.Service<
                     (error) => error["type"] === "NOT_FOUND" || error["type"] === "FORBIDDEN",
                   );
                   return rateLimited
-                    ? { _tag: "RateLimited" as const, status, headers: responseHeaders }
+                    ? {
+                        _tag: "RateLimited" as const,
+                        status,
+                        headers: responseHeaders,
+                        secondary: GitHubRequestPolicy.isSecondaryRateLimited({
+                          headers: responseHeaders,
+                          ...(answer.errors === undefined ? {} : { graphqlErrors: answer.errors }),
+                        }),
+                      }
                     : {
                         _tag: "Ok" as const,
                         // The source is local; never trust one GitHub's answer carries.
@@ -151,7 +159,16 @@ const refused = Effect.fn("gitHubGraphQlClient.refused")(function* (
       : status === 404
         ? "NotFound"
         : "Failed";
-  return { _tag: tag, status: status ?? 200, headers } as const;
+  return {
+    _tag: tag,
+    status: status ?? 200,
+    headers,
+    secondary: GitHubRequestPolicy.isSecondaryRateLimited({
+      headers,
+      body,
+      ...(reason._tag === "ResponseError" ? { graphqlErrors: reason.errors } : {}),
+    }),
+  } as const;
 });
 
 /**

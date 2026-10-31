@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 
 import { PullRequestsToolkit } from "../mcp/toolkits/pullRequests/tools.ts";
 import {
+  decideGitHubArguments,
   decideGitHubCommand,
   POLL_DENIED_REASON,
   PULL_REQUEST_READ_TOOLS,
@@ -17,6 +18,41 @@ import {
 
 const redirect = (tool: keyof typeof PULL_REQUEST_READ_TOOLS, args: string, command: string) =>
   `T3 already reads this. Call ${PULL_REQUEST_READ_TOOLS[tool]} with ${args} (load it with ToolSearch if it is deferred). If it can't answer what you need, rerun as \`T3_GH_DIRECT=1 ${command}\`.`;
+
+describe("decideGitHubArguments", () => {
+  it("classifies actual argv without interpreting quoted text as shell commands", () => {
+    assert.deepEqual(
+      decideGitHubArguments(["pr", "view", "feature; gh pr checks 4", "--comments"]),
+      { allow: true },
+    );
+    assert.deepEqual(
+      decideGitHubArguments(["pr", "checks", "12"]),
+      decideGitHubCommand("gh pr checks 12"),
+    );
+    assert.deepEqual(
+      decideGitHubArguments(["api", "repos/acme/app/pulls/12/reviews", "--jq", ".[] | .body"]),
+      decideGitHubCommand("gh api repos/acme/app/pulls/12/reviews --jq '.[] | .body'"),
+    );
+  });
+
+  it("preserves environment-selected repositories and the explicit read bypass", () => {
+    for (const environment of [
+      { T3_GH_DIRECT: "1" },
+      { GH_HOST: "enterprise.example" },
+      { GH_REPO: "other/repo" },
+    ]) {
+      assert.deepEqual(decideGitHubArguments(["pr", "checks", "12"], environment), { allow: true });
+    }
+    assert.deepEqual(
+      decideGitHubArguments(["pr", "checks", "12", "--watch"], { T3_GH_DIRECT: "1" }),
+      { allow: false, reason: POLL_DENIED_REASON },
+    );
+    assert.deepEqual(decideGitHubCommand("GH_HOST=enterprise.example gh pr checks 12"), {
+      allow: true,
+    });
+    assert.deepEqual(decideGitHubCommand("GH_REPO=other/repo gh pr checks 12"), { allow: true });
+  });
+});
 
 describe("decideGitHubCommand", () => {
   it.each([

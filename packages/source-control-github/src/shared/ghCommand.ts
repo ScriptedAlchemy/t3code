@@ -74,6 +74,8 @@ const VALUE_FLAGS = new Set([
 ]);
 // `gh api` reads `-i` as `--include` and `-H` as a header; both still take or skip a value as listed.
 const API_VALUE_FLAGS = new Set([
+  "-R",
+  "--repo",
   "--hostname",
   "-X",
   "--method",
@@ -94,7 +96,7 @@ const API_VALUE_FLAGS = new Set([
 ]);
 const API_BODY_FLAGS = new Set(["-f", "--raw-field", "-F", "--field", "--input"]);
 
-const REPOSITORY = /([^/\s]+\/[^/\s]+)\/?$/u;
+const REPOSITORY = /^([^/\s]+\/[^/\s]+)\/?$/u;
 const NUMBER = /^\d+$/u;
 const URL = /^https?:\/\//u;
 
@@ -136,10 +138,16 @@ const has = (args: ParsedArgs, ...flags: ReadonlyArray<string>) =>
 const value = (args: ParsedArgs, ...flags: ReadonlyArray<string>) =>
   flags.flatMap((flag) => args.flags.get(flag) ?? []).at(-1);
 
-/** `-R acme/app`, `-R github.com/acme/app` or a repository URL, as `owner/repo`. */
+/** Explicit hosts and headers cannot be represented by a hostless owner/repo tool input. */
+function hasExplicitHost(args: ParsedArgs): boolean {
+  const repository = value(args, "-R", "--repo");
+  return has(args, "--hostname") || (repository !== undefined && !REPOSITORY.test(repository));
+}
+
+/** A bare `-R acme/app`, as `owner/repo`. */
 function repositoryOf(args: ParsedArgs): ForgeCommandTarget {
   const repo = value(args, "-R", "--repo");
-  const match = repo === undefined ? null : REPOSITORY.exec(repo.replace(/^https?:\/\//u, ""));
+  const match = repo === undefined ? null : REPOSITORY.exec(repo);
   return match === null || repo?.includes("{") ? {} : { repository: match[1]!.toLowerCase() };
 }
 
@@ -164,6 +172,7 @@ const OTHER: ForgeCommand = { kind: "other" };
 function classifyPullRequest(subcommand: string, rest: ReadonlyArray<string>): ForgeCommand {
   if (PR_WRITES.has(subcommand)) return WRITE;
   const args = parseArgs(rest, VALUE_FLAGS);
+  if (hasExplicitHost(args)) return OTHER;
   if (subcommand === "checks" && has(args, "--watch")) return POLL;
   const target = pullRequestTarget(args);
   if (target === null) return OTHER;
@@ -179,10 +188,11 @@ function classifyPullRequest(subcommand: string, rest: ReadonlyArray<string>): F
 }
 
 function classifyRun(subcommand: string, rest: ReadonlyArray<string>): ForgeCommand {
-  if (subcommand === "watch") return POLL;
   if (RUN_WRITES.has(subcommand)) return WRITE;
-  if (subcommand !== "view") return OTHER;
   const args = parseArgs(rest, VALUE_FLAGS);
+  if (hasExplicitHost(args)) return OTHER;
+  if (subcommand === "watch") return POLL;
+  if (subcommand !== "view") return OTHER;
   return has(args, "--log", "--log-failed") ? read("failures", repositoryOf(args)) : OTHER;
 }
 
@@ -207,10 +217,10 @@ function classifyApi(rest: ReadonlyArray<string>): ForgeCommand {
     // gh api turns a body flag into a POST unless the method says otherwise.
     (has(args, ...API_BODY_FLAGS) ? "POST" : "GET");
   if (method !== "GET") return WRITE;
-  const path = (args.positionals[0] ?? "")
-    .replace(/^https?:\/\/[^/]+\//u, "")
-    .replace(/^\/+/u, "")
-    .replace(/[?#][\s\S]*$/u, "");
+  if (hasExplicitHost(args) || has(args, "-H", "--header") || URL.test(args.positionals[0] ?? "")) {
+    return OTHER;
+  }
+  const path = (args.positionals[0] ?? "").replace(/^\/+/u, "").replace(/[?#][\s\S]*$/u, "");
   const job = JOB_ROUTE.exec(path) ?? ANNOTATIONS_ROUTE.exec(path);
   if (job !== null) return read("failures", routeTarget(job[1]!));
   const feedback = FEEDBACK_ROUTE.exec(path);
