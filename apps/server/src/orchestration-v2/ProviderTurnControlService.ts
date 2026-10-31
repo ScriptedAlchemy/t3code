@@ -447,7 +447,14 @@ export const layer: Layer.Layer<
           ) {
             const thread = yield* projections.getThread(input.threadId);
             composer = yield* pstack.expandComposer(
-              { ...composer, projectId: thread.projectId },
+              {
+                ...composer,
+                projectId: thread.projectId,
+                parentModelSelection: thread.modelSelection,
+                supportsOrchestrationTools:
+                  loaded.session.value.supportsT3Tools ??
+                  loaded.session.value.providerSession.capabilities.tools.supportsMcpTools,
+              },
               message,
             );
           }

@@ -44,13 +44,20 @@ export function planPstackComposer(
   >,
 ) {
   if (!hasPstackComposerInvocation(input, message)) return undefined;
-  const tokenText = input.text.replace(
-    /^(\s*)\/(?=pstack:)/,
-    (_match, prefix: string) => `${prefix}$`,
-  );
-  const mentions = [...tokenText.matchAll(SKILL_MENTION_PATTERN)].filter((match) =>
-    match[2]?.startsWith(PSTACK_SKILL_PREFIX),
-  );
+  const mentions = [...input.text.matchAll(SKILL_MENTION_PATTERN)]
+    .filter((match) => match[2]?.startsWith(PSTACK_SKILL_PREFIX))
+    .map((match) => ({
+      name: match[2]!,
+      start: match.index + (match[1]?.length ?? 0),
+      end: match.index + match[0].length,
+    }));
+  const leading = /^(\s*)\/?(pstack:[a-zA-Z0-9:_-]+)(?=\s|$)/.exec(input.text);
+  if (leading)
+    mentions.unshift({
+      name: leading[2]!,
+      start: leading[1]!.length,
+      end: leading[0].length,
+    });
   const referenced = new Set(
     collectComposerContextReferences(input.text).map((ref) => ref.contextId),
   );
@@ -67,7 +74,7 @@ export function planPstackComposer(
     ),
   );
   const skillNames = [
-    ...new Set([...mentions.map((mention) => mention[2]!), ...recordsById.values()]),
+    ...new Set([...mentions.map((mention) => mention.name), ...recordsById.values()]),
   ];
   if (skillNames.length === 0) return undefined;
   return {
@@ -75,10 +82,9 @@ export function planPstackComposer(
     apply(names: ReadonlySet<string>, expansion: string) {
       let text = input.text;
       for (const mention of mentions.toReversed()) {
-        const name = mention[2]!;
+        const { name, start, end } = mention;
         if (!names.has(name)) continue;
-        const start = mention.index + (mention[1]?.length ?? 0);
-        text = `${text.slice(0, start)}${name}${text.slice(mention.index + mention[0].length)}`;
+        text = `${text.slice(0, start)}${name}${text.slice(end)}`;
       }
       const consumedIds = new Map([...recordsById].filter(([, name]) => names.has(name)));
       text = replaceComposerContextReferences(

@@ -277,11 +277,12 @@ const makeCatalog = (
 const makeRegistry = (
   keys: { readonly first: string; readonly second: string },
   state: Ref.Ref<PoolAdapterState>,
+  missingInstanceId?: ProviderInstanceId,
 ) => {
   const instances = [
     makeInstance(makePoolAdapter(first, state), keys.first),
     makeInstance(makePoolAdapter(second, state), keys.second),
-  ];
+  ].filter((instance) => instance.instanceId !== missingInstanceId);
   return ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
@@ -601,50 +602,67 @@ it.live("fails the run with the pool's earliest reset when every account is cool
   ),
 );
 
-it.live("routes a selection naming a cooling account to its healthy sibling", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const cwd = yield* checkpointWorkspace("pool-failover-cooling-member");
-      const threadId = ThreadId.make("thread:pool-failover-cooling-member");
-      const state = yield* Ref.make<PoolAdapterState>({
-        failNextStart: null,
-        holdTurn: null,
-        started: [],
-      });
-      const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
-        makeProvider(
-          first,
-          "Claude",
-          "claude:home:first",
-          DateTime.formatIso(
-            DateTime.makeUnsafe(DateTime.toEpochMillis(yield* DateTime.now) + minutes(10)),
+it.live.each(["cooling", "unregistered"] as const)(
+  "routes a selection naming a %s account to its healthy sibling",
+  (scenario) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cwd = yield* checkpointWorkspace("pool-failover-cooling-member");
+        const threadId = ThreadId.make("thread:pool-failover-cooling-member");
+        const state = yield* Ref.make<PoolAdapterState>({
+          failNextStart: null,
+          holdTurn: null,
+          started: [],
+        });
+        const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+          makeProvider(
+            first,
+            "Claude",
+            "claude:home:first",
+            scenario === "cooling"
+              ? DateTime.formatIso(
+                  DateTime.makeUnsafe(DateTime.toEpochMillis(yield* DateTime.now) + minutes(10)),
+                )
+              : undefined,
           ),
-        ),
-        makeProvider(second, "Claude - Work", "claude:home:second"),
-      ]);
-      const projection = yield* Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        yield* createThread(threadId, cwd, first);
-        const completed = yield* awaitRunStatus(threadId, "completed");
-        yield* sendMessage(threadId, "hello", first);
-        yield* Fiber.join(completed);
-        yield* worker.drain();
-        return yield* orchestrator.getThreadProjection(threadId);
-      }).pipe(
-        Effect.provide(
-          ProviderReplayHarness.layerWithRegistry(
-            { name: "pool-failover-cooling-member" },
-            makeRegistry({ first: "claude:home:first", second: "claude:home:second" }, state),
-            { settings, poolCatalog: makeCatalog(providers) },
+          {
+            ...makeProvider(second, "Claude - Work", "claude:home:second"),
+            usageLimits: {
+              checkedAt: "2026-10-01T00:00:00.000Z",
+              windows: [{ id: "session", label: "Session", usedPercent: 50 }],
+            },
+          },
+        ]);
+        const projection = yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          yield* createThread(threadId, cwd, first);
+          assert.equal(
+            (yield* orchestrator.getThreadProjection(threadId)).thread.providerInstanceId,
+            second,
+          );
+          const completed = yield* awaitRunStatus(threadId, "completed");
+          yield* sendMessage(threadId, "hello", first);
+          yield* Fiber.join(completed);
+          yield* worker.drain();
+          return yield* orchestrator.getThreadProjection(threadId);
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry(
+              { name: "pool-failover-cooling-member" },
+              makeRegistry(
+                { first: "claude:home:first", second: "claude:home:second" },
+                state,
+                scenario === "unregistered" ? first : undefined,
+              ),
+              { settings, poolCatalog: makeCatalog(providers) },
+            ),
           ),
-        ),
-      );
-      assert.equal(projection.thread.providerInstanceId, second);
-      assert.equal(projection.runs[0]?.providerInstanceId, second);
-      assert.equal(projection.runs[0]?.status, "completed");
-    }),
-  ),
+        );
+        assert.equal(projection.runs[0]?.providerInstanceId, second);
+        assert.equal(projection.runs[0]?.status, "completed");
+      }),
+    ),
 );
 
 it.live("holds queued work when every pooled account becomes signed out", () =>

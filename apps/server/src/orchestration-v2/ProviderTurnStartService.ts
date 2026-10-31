@@ -1505,6 +1505,9 @@ export const layer: Layer.Layer<
       const pstackComposer = yield* pstack.expandComposer(
         {
           projectId: projection.thread.projectId,
+          parentModelSelection: projection.thread.modelSelection,
+          supportsOrchestrationTools:
+            session.supportsT3Tools ?? session.providerSession.capabilities.tools.supportsMcpTools,
           text: message.text,
           records: message.context?.records ?? [],
         },

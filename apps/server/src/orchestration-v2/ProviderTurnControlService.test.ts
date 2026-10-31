@@ -452,6 +452,36 @@ it.effect.each([
     };
     const received: string[] = [];
     let threadReads = 0;
+    const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+      instanceId: providerInstanceId,
+      driver,
+      providerSessionId,
+      providerSession: {
+        id: providerSessionId,
+        driver,
+        providerInstanceId,
+        status: "running",
+        cwd: "/workspace",
+        model: modelSelection.model,
+        capabilities: CodexProviderCapabilitiesV2,
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+      },
+      events: Stream.empty,
+      ensureThread: () => Effect.die("unused ensureThread"),
+      resumeThread: () => Effect.die("unused resumeThread"),
+      startTurn: () => Effect.die("unused startTurn"),
+      steerTurn: (input) =>
+        Effect.sync(() => {
+          received.push(input.message.text);
+        }),
+      interruptTurn: () => Effect.die("unused interruptTurn"),
+      respondToRuntimeRequest: () => Effect.die("unused respondToRuntimeRequest"),
+      readThreadSnapshot: () => Effect.die("unused readThreadSnapshot"),
+      rollbackThread: () => Effect.die("unused rollbackThread"),
+      forkThread: () => Effect.die("unused forkThread"),
+    };
     const layers = ProviderTurnControlService.layer.pipe(
       Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
       Layer.provide(
@@ -536,17 +566,7 @@ it.effect.each([
               }),
           }),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-            get: () =>
-              Effect.succeedSome({
-                steerTurn: (
-                  input: Parameters<
-                    ProviderAdapter.ProviderAdapterV2SessionRuntime["steerTurn"]
-                  >[0],
-                ) =>
-                  Effect.sync(() => {
-                    received.push(input.message.text);
-                  }),
-              } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+            get: () => Effect.succeedSome(runtime),
           }),
         ),
       ),
