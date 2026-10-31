@@ -15,6 +15,7 @@ import * as Semaphore from "effect/Semaphore";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { CLI_RELEASE_REPOSITORY } from "@t3tools/shared/cliRelease";
 import { ServerConfig } from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { hasValidClaudeManifestAdapters } from "./ClaudeModelManifest.ts";
@@ -22,8 +23,7 @@ import bundledManifestJson from "./model-manifest.json" with { type: "json" };
 import { ProviderCompatibilityPolicy } from "./providerCompatibility.ts";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 
-const MODEL_MANIFEST_URL =
-  "https://raw.githubusercontent.com/pingdotgg/t3code/main/apps/server/src/provider/model-manifest.json";
+const MODEL_MANIFEST_URL = `https://raw.githubusercontent.com/${CLI_RELEASE_REPOSITORY}/main/apps/server/src/provider/model-manifest.json`;
 
 const MANIFEST_TTL_MS = 60 * 60 * 1000;
 
@@ -196,7 +196,10 @@ export const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
   const serviceScope = yield* Effect.scope;
 
-  const cachePath = path.join(config.stateDir, "model-manifest.json");
+  const cachePath = path.join(
+    config.stateDir,
+    `model-manifest-${CLI_RELEASE_REPOSITORY.replaceAll("/", "-")}.json`,
+  );
   let manifest = BUNDLED_MODEL_MANIFEST;
   let fetchedAtMs: number | null = null;
   let lastAttemptMs: number | null = null;

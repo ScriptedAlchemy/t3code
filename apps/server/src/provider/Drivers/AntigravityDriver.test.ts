@@ -6,10 +6,13 @@ import {
   type AntigravitySettings,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Scheduler from "effect/Scheduler";
 import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { HttpClient } from "effect/http";
@@ -61,6 +64,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
   const nodePath = yield* HostProcess.ExecutablePath;
   const baseEnv = yield* HostProcess.Environment;
   const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-antigravity-driver-" });
+  const userHome = path.join(root, "home");
   const instanceId = ProviderInstanceId.make(path.basename(root));
   const mockAgentPath = yield* path.fromFileUrl(
     new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
@@ -106,7 +110,12 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
   const first = yield* makeExecutable("runtime 'one");
   const second = yield* makeExecutable("runtime two");
   const signedOut = yield* makeExecutable("runtime signed-out", true);
-  const controls = { selected: first, failResolution: false, beforeAcquire: Effect.void };
+  const controls = {
+    selected: first,
+    failResolution: false,
+    beforeAcquire: Effect.void,
+    beforeProfilePreparation: Effect.void,
+  };
   const acquisitions: Array<{ binaryPath: string | undefined; path: string | undefined }> = [];
   const releases: Array<string | null> = [];
   const launches: Array<{
@@ -158,6 +167,8 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     Effect.gen(function* () {
       if (command._tag !== "StandardCommand")
         return yield* Effect.die("Unexpected process pipeline.");
+      if (command.options.env?.ANTIGRAVITY_HARNESS_PATH === undefined)
+        yield* controls.beforeProfilePreparation;
       const handle = yield* spawner.spawn(command);
       const environment = command.options.env ?? {};
       launches.push({
@@ -186,6 +197,8 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     config: { ...AntigravityDriver.defaultConfig(), ...options.config },
     environment: [
       { name: "PATH", value: instancePath },
+      { name: "HOME", value: userHome },
+      { name: "USERPROFILE", value: userHome },
       { name: "T3_ACP_ANTIGRAVITY", value: "1" },
       { name: "T3_ACP_REQUEST_LOG_PATH", value: requestLog },
       { name: "GEMINI_API_KEY", value: "must-not-be-used" },
@@ -223,6 +236,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     fs,
     path,
     profileDirectory,
+    userHome,
     directories,
     instancePath,
     first,
@@ -269,6 +283,58 @@ const layerTest = ProviderHostLive.layer.pipe(
 );
 
 it.layer(layerTest)("AntigravityDriver", (it) => {
+  it.effect.skipIf(windowsHost)("serializes preparation of a shared instance profile", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const skill = h.path.join(h.userHome, ".agents", "skills", "review");
+      const nativeRoot = h.path.join(h.userHome, ".gemini", "config", "skills");
+      yield* h.fs.makeDirectory(skill, { recursive: true });
+      yield* h.fs.makeDirectory(nativeRoot, { recursive: true });
+      yield* h.fs.writeFileString(h.path.join(skill, "SKILL.md"), "Shared review instructions");
+      yield* h.fs.symlink(skill, h.path.join(nativeRoot, "review"));
+      const firstStarted = yield* Deferred.make<void>();
+      const secondAcquired = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let preparations = 0;
+      h.controls.beforeProfilePreparation = Effect.gen(function* () {
+        preparations += 1;
+        yield* Deferred.succeed(firstStarted, undefined);
+        yield* Deferred.await(release);
+      });
+      const first = yield* h.refresh().pipe(Effect.forkScoped);
+      yield* Deferred.await(firstStarted);
+      h.controls.beforeAcquire = Deferred.succeed(secondAcquired, undefined).pipe(Effect.asVoid);
+      const second = yield* h
+        .refresh()
+        .pipe(
+          Effect.provideService(Scheduler.MaxOpsBeforeYield, Number.POSITIVE_INFINITY),
+          Effect.forkScoped,
+        );
+      yield* Deferred.await(secondAcquired);
+      yield* Effect.yieldNow;
+      expect(preparations).toBe(1);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(first);
+      yield* Fiber.join(second);
+      expect(preparations).toBe(2);
+      expect(h.launches.filter((launch) => launch.harnessPath !== undefined)).toHaveLength(2);
+      const readableSkill = h.path.join(
+        h.profileDirectory,
+        "config",
+        "skills",
+        "review",
+        "SKILL.md",
+      );
+      expect(yield* h.fs.readFileString(readableSkill)).toBe("Shared review instructions");
+      expect(yield* h.fs.realPath(readableSkill)).toContain(`${h.profileDirectory}${h.path.sep}`);
+      yield* h.assertClosed;
+    }).pipe(
+      // Avoid Linux CA discovery I/O between runtime acquisition and the controlled profile barrier.
+      Effect.provideService(HostProcess.Platform, "darwin"),
+      Effect.scoped,
+    ),
+  );
+
   it.effect.skipIf(windowsHost)(
     "refreshes through the selected executable and personal Google ACP",
     () =>

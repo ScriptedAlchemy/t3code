@@ -157,14 +157,14 @@ const withInstructions = (
         "skill.list",
       ].includes(String(entry.frame.type)),
   );
-  const after = entries.findIndex(
+  const after = entries.findLastIndex(
     (entry, index) =>
       index < first &&
       entry.type === "emit_inbound" &&
       typeof entry.frame === "object" &&
       entry.frame !== null &&
       "operation" in entry.frame &&
-      entry.frame.operation === "mcp.add",
+      ["mcp.add", "mcp.list", "mcp.connect"].includes(String(entry.frame.operation)),
   );
   const at = after < 0 ? first : after + 1;
   return first < 0
@@ -2412,71 +2412,160 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("re-registers T3 MCP each turn and drops its instructions when adding fails", () =>
-    Effect.gen(function* () {
-      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
-      yield* mcpSessions.set({
-        environmentId: EnvironmentId.make("environment:opencode2-adapter"),
-        threadId,
-        providerSessionId: "mcp:opencode2-adapter",
-        providerInstanceId: instanceId,
-        endpoint: "http://127.0.0.1:3773/mcp",
-        authorizationHeader: "Bearer thread-credential",
-        browserToolsAvailable: false,
-      });
-      yield* Effect.addFinalizer(() => mcpSessions.clear(threadId));
-      const server = "t3-code-thread_opencode2-adapter";
-      const add = out("mcp.add", {
-        server,
-        "location[directory]": WORK,
-        config: {
-          type: "remote",
-          url: "http://127.0.0.1:3773/mcp",
-          headers: { Authorization: "Bearer thread-credential" },
-          oauth: false,
-        },
-      });
-      const turn = [
-        out("session.prompt", { sessionID: SESSION, text: "<any>" }),
-        promptAccepted,
-        event("session.execution.succeeded", { sessionID: SESSION }),
-      ];
-      // Idle Location eviction drops OpenCode's runtime MCP servers without a reconnect.
-      const instructions: unknown[] = [];
-      const { runtime, thread } = yield* resumed(
-        [
-          add,
-          reply("mcp.add", null),
-          ...turn,
-          add,
-          reply("mcp.add", { status: 500, body: { message: "MCP unavailable" } }),
+  it.effect(
+    "checks native MCP status, reconnects failed servers, and removes unavailable guidance",
+    () =>
+      Effect.gen(function* () {
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        yield* mcpSessions.set({
+          environmentId: EnvironmentId.make("environment:opencode2-adapter"),
+          threadId,
+          providerSessionId: "mcp:opencode2-adapter",
+          providerInstanceId: instanceId,
+          endpoint: "http://127.0.0.1:3773/mcp",
+          authorizationHeader: "Bearer thread-credential",
+          browserToolsAvailable: false,
+        });
+        yield* Effect.addFinalizer(() => mcpSessions.clear(threadId));
+        const server = "t3-code-thread_opencode2-adapter";
+        const add = out("mcp.add", {
+          server,
+          "location[directory]": WORK,
+          config: {
+            type: "remote",
+            url: "http://127.0.0.1:3773/mcp",
+            headers: { Authorization: "Bearer thread-credential" },
+            oauth: false,
+          },
+        });
+        const turn = [
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event("session.execution.succeeded", { sessionID: SESSION }),
+        ];
+        const status = (state: "connected" | "failed" | "pending") => [
+          out("mcp.list", { "location[directory]": WORK }),
+          reply("mcp.list", {
+            location: { directory: WORK },
+            data: [
+              {
+                name: server,
+                status: { status: state, ...(state === "failed" ? { error: "Offline" } : {}) },
+              },
+            ],
+          }),
+        ];
+        const instructionsWithoutMcp = [
           out("session.instructions.entry.put", {
             sessionID: SESSION,
             key: "t3-code",
             value: buildRuntimeInstructions({ harness: "OpenCode", model: bigPickle.model }),
           }),
           reply("session.instructions.entry.put", null),
-          ...turn,
-          out("mcp.remove", { server, "location[directory]": WORK }),
-          reply("mcp.remove", null),
-        ],
-        { onInstructions: (input) => instructions.push(input) },
-      );
-      for (let index = 0; index < 2; index++) {
+        ];
+        // Idle Location eviction drops OpenCode's runtime MCP servers without a reconnect.
+        const instructions: unknown[] = [];
+        const { runtime, thread } = yield* resumed(
+          [
+            add,
+            reply("mcp.add", null),
+            ...status("pending"),
+            out("mcp.connect", { server, "location[directory]": WORK }),
+            reply("mcp.connect", null),
+            ...status("connected"),
+            ...turn,
+            // Native add returns 204 even when its handshake fails; the same config is a no-op.
+            add,
+            reply("mcp.add", null),
+            ...status("failed"),
+            out("mcp.connect", { server, "location[directory]": WORK }),
+            reply("mcp.connect", null),
+            ...status("failed"),
+            ...instructionsWithoutMcp,
+            ...turn,
+            add,
+            reply("mcp.add", null),
+            ...status("failed"),
+            out("mcp.connect", { server, "location[directory]": WORK }),
+            reply("mcp.connect", null),
+            ...status("connected"),
+            out("session.instructions.entry.put", {
+              sessionID: SESSION,
+              key: "t3-code",
+              value: "<any>",
+            }),
+            reply("session.instructions.entry.put", null),
+            ...turn,
+            add,
+            reply("mcp.add", { status: 500, body: { message: "MCP unavailable" } }),
+            ...instructionsWithoutMcp,
+            ...turn,
+            out("mcp.remove", { server, "location[directory]": WORK }),
+            reply("mcp.remove", null),
+          ],
+          { onInstructions: (input) => instructions.push(input) },
+        );
+        for (let index = 0; index < 4; index++) {
+          const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+          yield* runtime.startTurn(turnInput(thread));
+          assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+        }
+        const firstInstructions = instructions[0] as { value: string };
+        assert.include(
+          firstInstructions.value,
+          "Use `delegate_task` for child work using project memory",
+        );
+        assert.include(firstInstructions.value, "native OpenCode subagents do not inherit");
+        assert.lengthOf(instructions, 4);
+        assert.deepEqual(instructions[2], instructions[0]);
+        // A transient registration failure changes availability, not the adapter's supported features.
+        assert.isTrue(runtime.providerSession.capabilities.tools.supportsMcpTools);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { status: "failed", error: "Offline" },
+    { status: "needs_auth", error: "Unauthorized" },
+    { status: "disabled" },
+  ])(
+    "withholds MCP guidance for an initial $status connection and cleans up its registration",
+    (status) =>
+      Effect.gen(function* () {
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        yield* mcpSessions.set({
+          environmentId: EnvironmentId.make("environment:opencode2-adapter"),
+          threadId,
+          providerSessionId: "mcp:opencode2-adapter",
+          providerInstanceId: instanceId,
+          endpoint: "http://127.0.0.1:3773/mcp",
+          authorizationHeader: "Bearer thread-credential",
+          browserToolsAvailable: false,
+        });
+        yield* Effect.addFinalizer(() => mcpSessions.clear(threadId));
+        const server = "t3-code-thread_opencode2-adapter";
+        const instructions: Array<{ value: string }> = [];
+        const { runtime, thread } = yield* resumed(
+          [
+            out("mcp.add", { server, "location[directory]": WORK, config: "<any>" }),
+            reply("mcp.add", null),
+            out("mcp.list", { "location[directory]": WORK }),
+            reply("mcp.list", { location: { directory: WORK }, data: [{ name: server, status }] }),
+            out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+            promptAccepted,
+            event("session.execution.succeeded", { sessionID: SESSION }),
+            out("mcp.remove", { server, "location[directory]": WORK }),
+            reply("mcp.remove", null),
+          ],
+          { onInstructions: (input) => instructions.push(input as { value: string }) },
+        );
         const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
         yield* runtime.startTurn(turnInput(thread));
         assert.equal((yield* Fiber.join(terminal))?.status, "completed");
-      }
-      const firstInstructions = instructions[0] as { value: string };
-      assert.include(
-        firstInstructions.value,
-        "Use `delegate_task` for child work using project memory",
-      );
-      assert.include(firstInstructions.value, "native OpenCode 2 subagents do not inherit");
-      assert.lengthOf(instructions, 2);
-      // A transient registration failure changes availability, not the adapter's supported features.
-      assert.isTrue(runtime.providerSession.capabilities.tools.supportsMcpTools);
-    }).pipe(Effect.scoped),
+        assert.deepEqual(
+          instructions.map((entry) => entry.value),
+          [buildRuntimeInstructions({ harness: "OpenCode", model: bigPickle.model })],
+        );
+      }).pipe(Effect.scoped),
   );
 
   it.effect("registers a long thread id's MCP server under a name OpenCode accepts", () =>
@@ -2521,6 +2610,11 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           },
         }),
         reply("mcp.add", null),
+        out("mcp.list", { "location[directory]": WORK }),
+        reply("mcp.list", {
+          location: { directory: WORK },
+          data: [{ name: server, status: { status: "connected" } }],
+        }),
         out("session.prompt", { sessionID: SESSION, text: "<any>" }),
         promptAccepted,
         event("session.execution.succeeded", { sessionID: SESSION }),

@@ -43,7 +43,7 @@ interface HarnessSkillRoot {
   readonly readsLibrary: boolean;
 }
 
-/** Each harness's user skill folder. A root is used only while its harness home exists. */
+/** Each harness's user skill folder, used when its home exists or an instance is enabled. */
 const HARNESS_SKILL_ROOTS: ReadonlyArray<HarnessSkillRoot> = [
   {
     driver: CLAUDE,
@@ -123,6 +123,7 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const home = yield* HostProcess.HomeDirectory;
   const environment = yield* HostProcess.Environment;
   const lock = yield* Semaphore.make(1);
@@ -211,10 +212,15 @@ export const make = Effect.gen(function* () {
   const resolveRoots = Effect.fn("SkillsLibrary.resolveRoots")(function* () {
     const libraryPath = path.join(home, ".agents", "skills");
     const libraryReal = yield* realPath(libraryPath);
+    const configuredDrivers = new Set(
+      (yield* registry.listInstances)
+        .filter((instance) => instance.enabled)
+        .map((instance) => instance.driverKind),
+    );
     const roots: Array<{ readonly root: HarnessSkillRoot; readonly directory: string }> = [];
     for (const root of HARNESS_SKILL_ROOTS) {
       const harnessHome = yield* root.home(environment, home);
-      if (!(yield* exists(harnessHome))) continue;
+      if (!configuredDrivers.has(root.driver) && !(yield* exists(harnessHome))) continue;
       const directory = path.join(harnessHome, "skills");
       // Treating the library itself as a root would delete its copies as duplicates of themselves.
       if ((yield* realPath(directory)) === libraryReal) continue;
@@ -490,12 +496,18 @@ export const layer = Layer.effect(
       Effect.orElseSucceed(() => false),
     );
     const instanceIds = (
-      instances: ReadonlyArray<{ instanceId: string; driverKind: ProviderDriverKind }>,
+      instances: ReadonlyArray<{
+        instanceId: string;
+        driverKind: ProviderDriverKind;
+        enabled: boolean;
+      }>,
     ) =>
       new Set(
         instances
-          .filter((instance) =>
-            HARNESS_SKILL_ROOTS.some((root) => root.driver === instance.driverKind),
+          .filter(
+            (instance) =>
+              instance.enabled &&
+              HARNESS_SKILL_ROOTS.some((root) => root.driver === instance.driverKind),
           )
           .map((instance) => instance.instanceId),
       );

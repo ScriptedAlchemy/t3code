@@ -606,6 +606,7 @@ it.effect.each([
   "stale-during-history",
   "recovered-history",
   "current-history-budget",
+  "delivered-knowledge-budget",
 ] as const)(
   "delivers selected knowledge through active steering with %s receipt semantics",
   (mode) =>
@@ -706,6 +707,17 @@ it.effect.each([
             disabledLayer,
             ServerSettings.layerTest(),
             Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+              nativeDeliveryEstimate: (target) =>
+                Effect.sync(() => {
+                  assert.deepEqual(target, {
+                    projectId,
+                    threadId,
+                    providerInstanceId,
+                    providerThreadId,
+                    nativeThreadId: "knowledge-native-thread",
+                  });
+                  return mode === "delivered-knowledge-budget" ? 150_000 : 0;
+                }),
               resolveForTurn: (context) =>
                 Effect.suspend(() => {
                   resolved += 1;
@@ -860,6 +872,8 @@ it.effect.each([
                   driver,
                   instanceId: providerInstanceId,
                   providerSessionId,
+                  getModelContextWindow: () =>
+                    mode === "delivered-knowledge-budget" ? 200_000 : undefined,
                   steerTurn: (input: ProviderAdapter.ProviderAdapterV2SteerInput) =>
                     Effect.suspend(() => {
                       received.push(input.message.text);

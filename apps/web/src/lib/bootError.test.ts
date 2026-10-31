@@ -41,20 +41,20 @@ describe("resolveTriageCommand", () => {
     ).resolves.toBe("& 'C:\\Users\\Jo O''Neil\\.t3\\bin\\t3.cmd' triage");
   });
 
-  it("falls back to npx without a usable desktop launcher", async () => {
+  it("keeps diagnostics on the installed fork without a usable desktop launcher", async () => {
     using _warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await expect(resolveTriageCommand(undefined)).resolves.toBe("npx t3 triage");
-    await expect(resolveTriageCommand({} as DesktopBridge)).resolves.toBe("npx t3 triage");
+    await expect(resolveTriageCommand(undefined)).resolves.toBe("t3 triage");
+    await expect(resolveTriageCommand({} as DesktopBridge)).resolves.toBe("t3 triage");
     await expect(resolveTriageCommand(desktopWith(async () => notOnPath(null)))).resolves.toBe(
-      "npx t3 triage",
+      "t3 triage",
     );
     const staleWindowsPathEntry = { ...notOnPath(null), supported: true, onPath: true };
     await expect(
       resolveTriageCommand(desktopWith(async () => staleWindowsPathEntry)),
-    ).resolves.toBe("npx t3 triage");
+    ).resolves.toBe("t3 triage");
     await expect(
       resolveTriageCommand(desktopWith(() => Promise.reject(new Error("ipc closed")))),
-    ).resolves.toBe("npx t3 triage");
+    ).resolves.toBe("t3 triage");
   });
 });
 

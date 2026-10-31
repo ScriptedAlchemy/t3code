@@ -40,6 +40,7 @@ export const prepareKnowledgeDelivery = Effect.fn("ProjectKnowledge.prepareDeliv
   }) {
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
     let budget: ProjectKnowledgeDelivery["budget"];
+    let bodyAlreadySent = false;
     const refuse = Effect.fn("ProjectKnowledge.refuseDelivery")(function* (
       error: ProjectKnowledgeError,
     ) {
@@ -94,7 +95,7 @@ export const prepareKnowledgeDelivery = Effect.fn("ProjectKnowledge.prepareDeliv
       yield* knowledge.recordDelivery({
         ...input.target,
         status,
-        items: composer.items,
+        items: bodyAlreadySent ? [] : composer.items,
         omissions: composer.omissions,
         ...(budget === undefined ? {} : { budget }),
         createdAt: now,
@@ -113,9 +114,12 @@ export const prepareKnowledgeDelivery = Effect.fn("ProjectKnowledge.prepareDeliv
       );
     const checkBudget = Effect.fn("ProjectKnowledge.checkDeliveryBudget")(function* (
       allowance: NonNullable<ProjectKnowledgeDelivery["budget"]>,
+      alreadySent = false,
     ) {
-      budget = allowance;
-      if (composer.byteLength <= allowance.knowledgeAllowance) return;
+      bodyAlreadySent = alreadySent;
+      const estimatedTokens = alreadySent ? 0 : composer.byteLength;
+      budget = { ...allowance, estimatedTokens };
+      if (estimatedTokens <= allowance.knowledgeAllowance) return;
       const error = new ProjectKnowledgeError({
         reason: "context_budget",
         projectId: input.target.projectId,

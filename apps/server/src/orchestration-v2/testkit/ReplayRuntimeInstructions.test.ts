@@ -42,7 +42,7 @@ function turnStart(id: number, instructions: string, prompt: string, reasoningEf
 }
 
 describe("materializeReplayTranscriptRuntimeInstructions", () => {
-  it("refreshes Muse PR guidance while preserving each turn's model and runtime options", () => {
+  it("refreshes Muse runtime guidance while preserving each turn's model and runtime options", () => {
     const expectedTurns = [
       { model: "muse-first-model", reasoningEffort: "low", prompt: "First request" },
       { model: "muse-second-model", reasoningEffort: "high", prompt: "Second request" },
@@ -55,7 +55,7 @@ describe("materializeReplayTranscriptRuntimeInstructions", () => {
       ),
     );
     const recorded = transcript(
-      expectedTurns.map((entry) => {
+      expectedTurns.map((entry, turnIndex) => {
         const frame = entry.frame;
         return {
           ...entry,
@@ -65,7 +65,17 @@ describe("materializeReplayTranscriptRuntimeInstructions", () => {
               ...frame.params,
               input: frame.params.input.map((part, index) =>
                 index === 0
-                  ? { ...part, text: part.text.replace(currentGuidancePattern, legacyGuidance) }
+                  ? {
+                      ...part,
+                      text: part.text
+                        .replace(currentGuidancePattern, legacyGuidance)
+                        .replace(
+                          /\n\n<github_reads>[\s\S]*?<\/github_reads>/u,
+                          turnIndex === 0
+                            ? ""
+                            : "\n\n<github_reads>Old GitHub guidance.</github_reads>",
+                        ),
+                    }
                   : part,
               ),
             },

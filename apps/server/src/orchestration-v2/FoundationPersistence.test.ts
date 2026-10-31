@@ -2688,6 +2688,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         );
         const layerWorker = EffectWorker.layerWithOptions({
           workerId: "hung-delegated-stop-worker",
+          maxAttempts: 1,
         }).pipe(
           Layer.provide(
             Layer.merge(Layer.succeed(EffectOutbox.EffectOutboxV2, outbox), layerExecutor),
@@ -2707,15 +2708,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           ]);
           yield* outbox.notifyAvailable();
 
-          const turn = yield* Deferred.await(turnStarted).pipe(
-            Effect.timeoutOption("1 hour"),
-            Effect.forkChild,
-          );
-          yield* TestClock.adjust("1 hour");
-          assert.isTrue(
-            Option.isSome(yield* Fiber.join(turn)),
-            "provider-turn.start never ran behind the hung delegated-tasks.stop",
-          );
+          yield* TestClock.adjust("30 seconds");
+          yield* Deferred.await(turnStarted);
           const stop = yield* outbox.get(stopEffectId);
           assert.isTrue(Option.isSome(stop));
           if (Option.isSome(stop)) {

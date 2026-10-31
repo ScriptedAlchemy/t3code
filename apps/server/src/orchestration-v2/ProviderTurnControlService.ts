@@ -517,13 +517,24 @@ export const layer: Layer.Layer<
                       "providerTurns",
                       "contextHandoffs",
                     ]);
-                    return nativeContextHistory(history, providerThread).estimate(
-                      (yield* projections.getTurnStartHistory(input.threadId)).filter(
-                        (item) => item.type !== "user_message" || item.messageId !== message.id,
-                      ),
+                    const knowledgeEstimate = yield* knowledge.nativeDeliveryEstimate({
+                      projectId: thread.projectId,
+                      threadId: input.threadId,
+                      providerInstanceId: run.providerInstanceId,
+                      providerThreadId: providerThread.id,
+                      nativeThreadId: providerThread.nativeThreadRef?.nativeId ?? null,
+                    });
+                    return (
+                      knowledgeEstimate +
+                      nativeContextHistory(history, providerThread).estimate(
+                        (yield* projections.getTurnStartHistory(input.threadId)).filter(
+                          (item) => item.type !== "user_message" || item.messageId !== message.id,
+                        ),
+                      )
                     );
                   })
                 : 0;
+            const state = yield* knowledgeDelivery.readState;
             yield* knowledgeDelivery.checkBudget(
               handoffBudgetAssumptions({
                 tokenCap,
@@ -536,8 +547,8 @@ export const layer: Layer.Layer<
                   thread.worktreePath,
                 ),
               }),
+              state.sent,
             );
-            const state = yield* knowledgeDelivery.readState;
             if (state.sentThisAttempt) return;
             if (state.uncertain)
               return yield* new ProviderTurnControlError({

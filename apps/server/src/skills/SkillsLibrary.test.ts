@@ -2,6 +2,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Effect from "effect/Effect";
@@ -12,10 +13,13 @@ import * as PubSub from "effect/PubSub";
 
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { discoverAntigravitySkills } from "../provider/Drivers/AntigravitySkills.ts";
+import { prepareAntigravityProfile } from "../provider/antigravityAuthSupport.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SkillsLibrary from "./SkillsLibrary.ts";
 
-const setup = Effect.fn("SkillsLibrary.test.setup")(function* () {
+const setup = Effect.fn("SkillsLibrary.test.setup")(function* (
+  drivers: ReadonlyArray<ProviderDriverKind> = [],
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-skills-library-" });
@@ -26,6 +30,28 @@ const setup = Effect.fn("SkillsLibrary.test.setup")(function* () {
   yield* fs.makeDirectory(codex, { recursive: true });
   const service = yield* SkillsLibrary.make.pipe(
     Effect.provide(ServerSettings.ServerSettingsService.layerTest()),
+    Effect.provide(
+      Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+        listInstances: Effect.succeed(
+          drivers.map((driverKind) => ({
+            instanceId: ProviderInstanceId.make(driverKind),
+            driverKind,
+            enabled: true,
+            displayName: undefined,
+            continuationIdentity: { driverKind, continuationKey: driverKind },
+            get orchestrationAdapter(): never {
+              throw new Error("Sharing skills must not start a provider session.");
+            },
+            get snapshot(): never {
+              throw new Error("Sharing skills must not probe a provider.");
+            },
+            get textGeneration(): never {
+              throw new Error("Sharing skills must not generate text.");
+            },
+          })),
+        ),
+      }),
+    ),
     Effect.provideService(HostProcess.HomeDirectory, home),
     Effect.provideService(HostProcess.Environment, { HOME: home }),
   );
@@ -64,6 +90,83 @@ const snapshot = (root: string) =>
 
 it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
   describe("apply", () => {
+    it.effect.skipIf(!symlinksSupported)(
+      "makes shared skills available to a configured Antigravity with no global home",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, library, service, skill, read } = yield* setup([
+            ProviderDriverKind.make("antigravity"),
+          ]);
+          yield* skill(library, "review", "shared review instructions");
+          const sourceSkill = path.join(library, "review");
+          yield* fs.writeFileString(path.join(sourceSkill, "reference.md"), "reference");
+          yield* fs.symlink("reference.md", path.join(sourceSkill, "inside.md"));
+          const outside = path.join(home, "private.txt");
+          yield* fs.writeFileString(outside, "private");
+          yield* fs.symlink(outside, path.join(sourceSkill, "outside.md"));
+          expect(yield* fs.exists(path.join(home, ".gemini"))).toBe(false);
+
+          yield* service.apply;
+          const profileDirectory = path.join(home, "private-profile");
+          yield* prepareAntigravityProfile({ profileDirectory, userHome: home });
+
+          const profileSkills = path.join(profileDirectory, "config", "skills");
+          expect(yield* read(profileSkills, "review")).toContain("shared review instructions");
+          const nativeRoot = yield* Effect.promise(() => NodeFSP.realpath(profileSkills));
+          for (const name of ["SKILL.md", "inside.md"]) {
+            const resolved = yield* Effect.promise(() =>
+              NodeFSP.realpath(path.join(profileSkills, "review", name)),
+            );
+            expect(resolved.startsWith(`${nativeRoot}${path.sep}`)).toBe(true);
+          }
+          expect(
+            yield* Effect.promise(() =>
+              NodeFSP.realpath(path.join(profileSkills, "review", "outside.md")),
+            ),
+          ).toBe(outside);
+          expect(
+            (yield* discoverAntigravitySkills({
+              cwd: path.join(home, "project"),
+              userHome: home,
+            })).map((entry) => entry.name),
+          ).toEqual(["review"]);
+          expect(yield* fs.exists(path.join(home, ".gemini", "config", "mcp_config.json"))).toBe(
+            false,
+          );
+
+          yield* skill(library, "review", "updated instructions");
+          yield* fs.remove(path.join(sourceSkill, "reference.md"));
+          yield* prepareAntigravityProfile({ profileDirectory, userHome: home });
+          expect(yield* read(profileSkills, "review")).toContain("updated instructions");
+          expect(yield* fs.exists(path.join(profileSkills, "review", "reference.md"))).toBe(false);
+
+          yield* fs.remove(sourceSkill, { recursive: true });
+          const failed = yield* prepareAntigravityProfile({
+            profileDirectory,
+            userHome: home,
+          }).pipe(Effect.result);
+          expect(failed._tag).toBe("Failure");
+          yield* service.apply;
+          yield* prepareAntigravityProfile({ profileDirectory, userHome: home });
+          expect(yield* fs.exists(path.join(profileSkills, "review"))).toBe(false);
+
+          yield* skill(library, "review", "restored instructions");
+          yield* service.apply;
+          yield* service.detach;
+          yield* prepareAntigravityProfile({ profileDirectory, userHome: home });
+          expect(yield* read(profileSkills, "review")).toContain("restored instructions");
+          yield* skill(
+            path.join(home, ".gemini", "config", "skills"),
+            "review",
+            "edited after detaching",
+          );
+          expect(yield* read(profileSkills, "review")).toContain("edited after detaching");
+          expect(
+            yield* fs.exists(path.join(profileDirectory, "t3-skill-snapshots", "config")),
+          ).toBe(false);
+        }),
+    );
+
     it.effect.skipIf(!symlinksSupported)(
       "keeps one copy of shared skills and links every native harness root",
       () =>

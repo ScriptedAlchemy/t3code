@@ -1,4 +1,6 @@
 import { afterEach, expect, it, vi } from "vite-plus/test";
+import * as NodeURL from "node:url";
+import { AndroidConfig, IOSConfig } from "expo/config-plugins";
 
 // Keep config parsing independent of local env files and build credentials.
 vi.mock("../../scripts/lib/public-config.ts", () => ({
@@ -49,7 +51,9 @@ it.each([
 
 it("keeps a fork's bundled client instead of accepting upstream OTA updates by default", async () => {
   const config = await loadConfig("production");
-  expect(config.updates?.enabled).toBe(false);
+  const native = await nativeUpdatesConfig(config);
+  expect(native.ios.EXUpdatesEnabled).toBe(false);
+  expect(native.android["expo.modules.updates.ENABLED"]).toBe("false");
 });
 
 it.each([
@@ -69,5 +73,46 @@ it.each([
     expect(config.updates?.url).toBe(`https://u.expo.dev/${projectId}`);
     expect(config.extra?.eas.projectId).toBe(projectId);
     expect(config.owner).toBe("fork-owner");
+    const native = await nativeUpdatesConfig(config);
+    expect(native.ios.EXUpdatesEnabled).toBe(expected);
+    expect(native.ios.EXUpdatesURL).toBe(`https://u.expo.dev/${projectId}`);
+    expect(native.android["expo.modules.updates.ENABLED"]).toBe(String(expected));
+    expect(native.android["expo.modules.updates.EXPO_UPDATE_URL"]).toBe(
+      `https://u.expo.dev/${projectId}`,
+    );
   },
 );
+
+async function nativeUpdatesConfig(config: Awaited<ReturnType<typeof loadConfig>>) {
+  const projectRoot = NodeURL.fileURLToPath(new URL(".", import.meta.url));
+  const ios = await IOSConfig.Updates.setUpdatesConfigAsync(projectRoot, config, {
+    EXUpdatesEnabled: true,
+    EXUpdatesURL: "https://u.expo.dev/previous-project",
+  });
+  const manifest = await AndroidConfig.Updates.setUpdatesConfigAsync(projectRoot, config, {
+    manifest: {
+      $: { "xmlns:android": "http://schemas.android.com/apk/res/android" },
+      application: [
+        {
+          $: { "android:name": ".MainApplication" },
+          "meta-data": [
+            { $: { "android:name": "expo.modules.updates.ENABLED", "android:value": "true" } },
+            {
+              $: {
+                "android:name": "expo.modules.updates.EXPO_UPDATE_URL",
+                "android:value": "https://u.expo.dev/previous-project",
+              },
+            },
+          ],
+        },
+      ],
+    },
+  });
+  const android = Object.fromEntries(
+    AndroidConfig.Manifest.getMainApplicationOrThrow(manifest)["meta-data"]!.map((item) => [
+      item.$["android:name"],
+      item.$["android:value"],
+    ]),
+  );
+  return { ios, android };
+}

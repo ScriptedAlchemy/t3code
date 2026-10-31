@@ -174,8 +174,9 @@ function isMcpToolError(result: unknown): boolean {
 function createMcpClient(endpoint: string, token: string) {
   let nextId = 1;
   let sessionId: string | undefined;
+  let connecting: Promise<void> | undefined;
 
-  const headers = (): Record<string, string> => {
+  const headers = (currentSessionId?: string): Record<string, string> => {
     const next: Record<string, string> = {
       accept: "application/json, text/event-stream",
       authorization: token.startsWith("Bearer ") ? token : \`Bearer \${token}\`,
@@ -185,22 +186,35 @@ function createMcpClient(endpoint: string, token: string) {
       // header; initialize itself does not require it.
       "mcp-protocol-version": PROTOCOL,
     };
-    if (sessionId !== undefined) next["mcp-session-id"] = sessionId;
+    if (currentSessionId !== undefined) next["mcp-session-id"] = currentSessionId;
     return next;
   };
 
-  const request = async (method: string, params?: unknown, signal?: AbortSignal) => {
+  const request = async (
+    method: string,
+    params?: unknown,
+    signal?: AbortSignal,
+    retryExpiredSession = true,
+  ): Promise<JsonValue | undefined> => {
     const id = nextId++;
+    const sentSessionId = method === "initialize" ? undefined : sessionId;
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: headers(),
+      headers: headers(sentSessionId),
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
       signal,
     });
-    const nextSession = response.headers.get("mcp-session-id");
-    if (nextSession) sessionId = nextSession;
     const body = await response.text();
     if (!response.ok) {
+      // Stateful MCP rejects an expired session before dispatching its tool.
+      // Reinitialize without the old id and retry once; ambiguous failures
+      // (disconnects, timeouts, 5xx) must never replay a possible mutation.
+      if (response.status === 404 && sentSessionId !== undefined && retryExpiredSession) {
+        signal?.throwIfAborted();
+        if (sessionId === sentSessionId || connecting !== undefined) await connect(signal);
+        signal?.throwIfAborted();
+        return request(method, params, signal, false);
+      }
       throw new Error(\`MCP \${method} failed (\${response.status}): \${body.slice(0, 400)}\`);
     }
     if (body.length === 0) return undefined;
@@ -208,20 +222,22 @@ function createMcpClient(endpoint: string, token: string) {
     if (parsed.error) {
       throw new Error(parsed.error.message ?? \`MCP \${method} returned an error\`);
     }
+    if (method === "initialize") sessionId = response.headers.get("mcp-session-id") ?? undefined;
     return parsed.result;
   };
 
   const notify = async (method: string, params?: unknown, signal?: AbortSignal) => {
     await fetch(endpoint, {
       method: "POST",
-      headers: headers(),
+      headers: headers(sessionId),
       body: JSON.stringify({ jsonrpc: "2.0", method, params }),
       signal,
     });
   };
 
-  return {
-    async connect(signal?: AbortSignal) {
+  function connect(signal?: AbortSignal): Promise<void> {
+    if (connecting !== undefined) return connecting;
+    const attempt = (async () => {
       await request(
         "initialize",
         {
@@ -232,7 +248,15 @@ function createMcpClient(endpoint: string, token: string) {
         signal,
       );
       await notify("notifications/initialized", {}, signal).catch(() => undefined);
-    },
+    })();
+    connecting = attempt;
+    const clear = () => { if (connecting === attempt) connecting = undefined; };
+    void attempt.then(clear, clear);
+    return attempt;
+  }
+
+  return {
+    connect,
     async listTools(signal?: AbortSignal) {
       const tools: McpTool[] = [];
       let cursor: string | undefined;
@@ -475,8 +499,17 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
     }
   });
 
+  // Retry a failed startup before each turn. Pi refreshes the active tool
+  // registry when this awaited hook registers tools, before that turn starts.
   // Keep guidance in the system prompt so leading slash commands still expand.
-  pi.on("before_agent_start", (event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
+    try {
+      await ensureStarted();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(\`t3-code MCP unavailable: \${message}\`, "warning");
+      return undefined;
+    }
     reconcileDiscovery(ctx);
     const instructions = env(DEVICE_TOOLS_ENV) === "1"
       ? ORCHESTRATION_INSTRUCTIONS + "\\n\\n" + DEVICE_INSTRUCTIONS

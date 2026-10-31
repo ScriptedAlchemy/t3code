@@ -135,6 +135,44 @@ describe("Pi project trust", () => {
 });
 
 describe("Pi MCP tool results", () => {
+  it("reinitializes an expired MCP session once for concurrent calls without replaying server failures", async () => {
+    let unavailable = false;
+    const bridge = await loadMcpBridge({ unavailable: () => unavailable });
+    const tool = bridge.tools.find((tool) => tool.name === "mcp__t3-code__delegate_task")!;
+    bridge.expireSession();
+    const results = await Promise.all([
+      tool.execute("call-1", { task: "first" }),
+      tool.execute("call-2", { task: "second" }),
+    ]);
+    assert.equal(results.length, 2);
+    assert.deepEqual(bridge.completedCalls, [
+      { name: "delegate_task", arguments: { task: "first" } },
+      { name: "delegate_task", arguments: { task: "second" } },
+    ]);
+    assert.equal(bridge.requests.filter((request) => request.method === "initialize").length, 2);
+    const initializations = bridge.requests.flatMap((request, index) =>
+      request.method === "initialize" ? [bridge.transports[index]!] : [],
+    );
+    assert.isTrue(initializations.every((transport) => transport.sessionId === undefined));
+    assert.equal(bridge.transports.at(-1)?.sessionId, "fixture-session-2");
+
+    // A generic failure can happen after a mutation. Only an expired-session
+    // rejection proves the request did not reach the tool dispatcher.
+    const attempts = bridge.requests.length;
+    unavailable = true;
+    const failure = await tool.execute("call-3", { task: "third" }).then(
+      () => assert.fail("Server failures must propagate without replaying the tool."),
+      (error: unknown) => String(error),
+    );
+    assert.include(failure, "failed (503)");
+    assert.equal(bridge.requests.length, attempts + 1);
+    assert.equal(bridge.completedCalls.length, 2);
+    unavailable = false;
+    await tool.execute("call-4", { task: "fourth" });
+    assert.equal(bridge.completedCalls.length, 3);
+    assert.equal(bridge.requests.filter((request) => request.method === "initialize").length, 2);
+  });
+
   it("returns mixed screenshot blocks and typed script output without repeating structured text", async () => {
     const content = [
       { type: "text", text: "Browser screenshot" },
@@ -193,13 +231,35 @@ describe("Pi MCP tool exposure", () => {
     ui: { notify: () => undefined },
   };
 
-  it("keeps orchestration direct and optional bridge tools discoverable on modern Pi", async () => {
-    const bridge = await loadMcpBridge({ modern: true, toolSearchAvailable: true });
-    await bridge.handlers.get("session_start")!({ systemPrompt: "" }, discoveryContext);
+  it("recovers unavailable MCP startup before advertising instructions and discoverable tools", async () => {
+    let available = false;
+    const bridge = await loadMcpBridge({
+      modern: true,
+      toolSearchAvailable: true,
+      unavailable: () => !available,
+    });
+    const notices: string[] = [];
+    const context = {
+      ...discoveryContext,
+      ui: { notify: (message: string) => notices.push(message) },
+    };
+    await bridge.handlers.get("session_start")!({ systemPrompt: "" }, context);
     const start = bridge.handlers.get("before_agent_start");
     assert.isDefined(start);
-    const prompt = await start!({ systemPrompt: "Pi system prompt" }, discoveryContext);
+    const failedPrompt = await start!({ systemPrompt: "Pi system prompt" }, context);
+    assert.isUndefined(failedPrompt, "unavailable tool catalogs must not inject T3 guidance");
+    assert.isEmpty(bridge.tools);
+    available = true;
+    const prompt = await start!({ systemPrompt: "Pi system prompt" }, context);
     assert.include(prompt?.systemPrompt ?? "", "orchestrator_capabilities");
+    assert.include(prompt?.systemPrompt ?? "", "t3_project_code_query");
+    assert.lengthOf(notices, 2);
+    const connections = bridge.requests.filter((request) => request.method === "initialize").length;
+    await start!({ systemPrompt: "Pi system prompt" }, context);
+    assert.equal(
+      bridge.requests.filter((request) => request.method === "initialize").length,
+      connections,
+    );
     assert.equal(bridge.servers.length, 0);
     assert.equal(bridge.tools.length, 8);
     assert.deepEqual(bridge.getActiveTools(), ["read", "tool_search"]);

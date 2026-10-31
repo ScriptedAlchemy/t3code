@@ -98,8 +98,14 @@ wins in this order: `.gemini/skills`, `.agents/skills`, `.agent/skills`. See
 [commands and skills](./composer.md#commands-and-skills) for invoking them.
 
 Skills for every project go in `~/.gemini/config/skills` or
-`~/.gemini/antigravity-cli/skills`. Antigravity does not read `~/.agents/skills`,
-so a skill there only appears when the project itself is your home directory.
+`~/.gemini/antigravity-cli/skills`. T3 Code's managed Antigravity runtime does not
+load the standalone CLI's `~/.gemini/skills` location.
+
+To share skills from `~/.agents/skills`, enable the
+[skills library](./composer.md#one-skills-library-for-every-provider). T3 Code prepares
+a readable copy for Antigravity when a provider session starts. Edit the original
+shared skill, then start a new session to pick up changes. Private skills in an
+Antigravity account's profile remain separate from the shared library.
 
 Antigravity receives images directly. Every other attachment, including PDFs,
 text, audio, archives, and videos, is passed as a saved file path for the agent

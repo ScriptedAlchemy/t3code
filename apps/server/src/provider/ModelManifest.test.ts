@@ -247,15 +247,17 @@ const INVALID_REMOTE_MANIFESTS: ReadonlyArray<ModelManifest.ModelManifestData> =
   }),
 ];
 
-const layerHttpClient = (handler: () => Response) =>
+const layerHttpClient = (handler: (url: string) => Response) =>
   Layer.succeed(
     HttpClient.HttpClient,
-    HttpClient.make((request) => Effect.succeed(HttpClientResponse.fromWeb(request, handler()))),
+    HttpClient.make((request) =>
+      Effect.succeed(HttpClientResponse.fromWeb(request, handler(request.url))),
+    ),
   );
 
 const layerService = (input: {
   readonly prefix: string;
-  readonly response: () => Response;
+  readonly response: (url: string) => Response;
   readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
 }) =>
   ServerConfig.layerTest(process.cwd(), { prefix: input.prefix }).pipe(
@@ -265,9 +267,20 @@ const layerService = (input: {
   );
 
 describe("ModelManifest service", () => {
-  it.live("prefers a fetched manifest over the bundle and caches it to disk", () =>
+  it.live("fetches and caches this fork's manifest without reusing an upstream cache", () =>
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig.ServerConfig;
+      yield* fs.writeFileString(
+        path.join(config.stateDir, "model-manifest.json"),
+        JSON.stringify({ fetchedAtMs: 0, manifest: REMOTE_MANIFEST }),
+      );
       const service = yield* ModelManifest.make;
+      assert.strictEqual(
+        (yield* service.current).updatedAt,
+        ModelManifest.BUNDLED_MODEL_MANIFEST.updatedAt,
+      );
       const refreshed = yield* service.refresh;
       assert.deepStrictEqual(refreshed, REMOTE_MANIFEST);
 
@@ -278,7 +291,11 @@ describe("ModelManifest service", () => {
       Effect.provide(
         layerService({
           prefix: "model-manifest-fetch-test",
-          response: () => Response.json(REMOTE_MANIFEST),
+          response: (url) =>
+            url ===
+            "https://raw.githubusercontent.com/ScriptedAlchemy/t3code/main/apps/server/src/provider/model-manifest.json"
+              ? Response.json(REMOTE_MANIFEST)
+              : new Response("Wrong manifest repository", { status: 404 }),
         }),
       ),
     ),
@@ -340,7 +357,7 @@ describe("ModelManifest service", () => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const config = yield* ServerConfig.ServerConfig;
-      const cachePath = path.join(config.stateDir, "model-manifest.json");
+      const cachePath = path.join(config.stateDir, "model-manifest-ScriptedAlchemy-t3code.json");
       const { updatedAt: _undated, ...undatedManifest } = REMOTE_MANIFEST;
       for (const stale of [
         undatedManifest,

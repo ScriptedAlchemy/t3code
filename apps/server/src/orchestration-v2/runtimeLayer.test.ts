@@ -280,7 +280,11 @@ const moveProject = (projectId: ProjectId, workspaceRoot: string, updatedAt: str
 const layerTest = Layer.mergeAll(
   RuntimeLayer.layer.pipe(
     Layer.provide(disabledLayer),
-    Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
+    Layer.provide(
+      Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+        nativeDeliveryEstimate: () => Effect.succeed(0),
+      }),
+    ),
   ),
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
@@ -302,7 +306,11 @@ const layerTest = Layer.mergeAll(
 
 const layerLegacyImportTest = RuntimeLayer.layer.pipe(
   Layer.provide(disabledLayer),
-  Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
+  Layer.provide(
+    Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+      nativeDeliveryEstimate: () => Effect.succeed(0),
+    }),
+  ),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
   Layer.provideMerge(SqlitePersistence.layerMemory),
@@ -342,7 +350,11 @@ const layerResourceCleanupTest = ResourceCleanupService.layer.pipe(
 const layerProjectDeletionTest = Layer.mergeAll(
   RuntimeLayer.layer.pipe(
     Layer.provide(disabledLayer),
-    Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
+    Layer.provide(
+      Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+        nativeDeliveryEstimate: () => Effect.succeed(0),
+      }),
+    ),
     Layer.provide(RuntimeLayer.layerProjectService),
   ),
   RuntimeLayer.layerProjectService,
@@ -827,7 +839,11 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
 const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
   RuntimeLayer.layer.pipe(
     Layer.provide(disabledLayer),
-    Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
+    Layer.provide(
+      Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+        nativeDeliveryEstimate: () => Effect.succeed(0),
+      }),
+    ),
     Layer.provide(RuntimeLayer.layerProjectService),
   ),
   RuntimeLayer.layerProjectService,
@@ -8559,7 +8575,11 @@ const queueResumeDisabledInstanceProjectId = ProjectId.make(
 const layerQueueResumeDisabledInstanceTest = Layer.mergeAll(
   RuntimeLayer.layer.pipe(
     Layer.provide(disabledLayer),
-    Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
+    Layer.provide(
+      Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+        nativeDeliveryEstimate: () => Effect.succeed(0),
+      }),
+    ),
   ),
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,

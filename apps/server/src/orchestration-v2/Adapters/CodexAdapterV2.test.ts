@@ -1488,7 +1488,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const nativeThreadId = `inject-${response}`;
         const prompt = "Only the current request";
         const history: ProviderAdapter.ProviderAdapterV2HistoricalContext = {
-          context: "Historical conversation",
+          context:
+            "LCM summary: retained decision.\nAttached memory evidence: verified constraint.",
           messages: (["user", "assistant"] as const).map((role) => ({
             role,
             text:
@@ -1551,9 +1552,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const harness = yield* makeCodexReplayHarness(
           transcript,
           () => Effect.void,
-          (method) =>
+          (method, params) =>
             Effect.sync(() => {
               requests.push(method);
+              if (method === "thread/inject_items") {
+                // Assert the context carrier independently of historyResponseItems: it contains
+                // summarized messages and selected memory evidence that messages alone cannot replay.
+                assert.deepEqual((params as { items: unknown[] }).items[0], {
+                  type: "message",
+                  role: "user",
+                  content: [{ type: "input_text", text: history.context }],
+                });
+              }
             }),
         );
         const injection = yield* harness.runtime.injectHistory!({
