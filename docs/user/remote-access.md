@@ -399,7 +399,8 @@ and the access, then approve.
   scripts.
 - The link shows up in that machine's **Settings → Sharing & access** like any
   outside agent. Revoke it there to end it. **Forget** on this machine only
-  removes it here.
+  removes it here. On mobile, open **Settings → Environments**, select the source machine,
+  and choose **Forget link** under its linked environments.
 - Links last 30 days. Link again with a new pairing code to renew one.
 
 An agent can also hand a task to a linked machine with `delegate_task`: it runs

@@ -5,6 +5,8 @@ import * as NodeOS from "node:os";
 import * as NodeModule from "node:module";
 import * as NodeVM from "node:vm";
 import { assert, describe, it } from "@effect/vitest";
+import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
+import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 
 import { PI_T3_MCP_EXTENSION_SOURCE } from "./mcpExtensionSource.ts";
 import { loadMcpBridge } from "./mcpBridge.testkit.ts";
@@ -76,8 +78,34 @@ describe("Pi orchestration prompt section", () => {
       assert.isDefined(result);
       assert.isTrue(result!.systemPrompt.startsWith(`${event.systemPrompt}\n\n`));
       assert.include(result!.systemPrompt, "orchestrator_capabilities");
+      assert.include(result!.systemPrompt, buildRuntimeInstructions({ harness: "Pi" }));
+      assert.include(
+        result!.systemPrompt,
+        "Pi processes started by extensions do not automatically inherit T3 tools or permission prompts.",
+      );
+      assert.include(
+        result!.systemPrompt,
+        "Use `delegate_task` for child work needing them, including project intelligence.",
+      );
     }
   });
+
+  it.each([false, true])(
+    "renders runtime and capability-scoped device guidance in Pi prompt sections, device access=%s",
+    async (deviceToolsAvailable) => {
+      const bridge = await loadMcpBridge({ deviceToolsAvailable });
+      const sections: Record<string, string> = {};
+      const result = await bridge.handlers.get("before_agent_start")!(
+        { systemPrompt: "base", systemPromptOptions: { sections } },
+        { ui: { notify: assert.fail } },
+      );
+      assert.isUndefined(result);
+      const instructions = sections.t3_code_orchestration ?? "";
+      assert.include(instructions, buildRuntimeInstructions({ harness: "Pi" }));
+      if (deviceToolsAvailable) assert.include(instructions, T3_CODE_DEVICE_TOOL_INSTRUCTIONS);
+      else assert.notInclude(instructions, T3_CODE_DEVICE_TOOL_INSTRUCTIONS);
+    },
+  );
 });
 
 describe("Pi project trust", () => {

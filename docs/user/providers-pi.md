@@ -71,7 +71,11 @@ extension runs outside a tool call remains governed by Pi's own extension trust 
 T3 Code's `delegate_task` tool creates durable child threads in the shared subagent UI. If the user
 installs Pi's example `subagent` extension, T3 Code also shows its task progress and results in that
 UI. Pi runs those children without a session, so they cannot be opened or resumed as T3 Code
-threads.
+threads. The example extension also starts each child without T3 Code's injected tool and
+permission bridge: those children do not receive project memory, conversation summaries, code
+graph, other T3 tools, or T3 permission prompts. Use `delegate_task` for child work that needs
+these integrations. Other extensions that start separate Pi processes need to provide their own
+child integration; showing a child's progress in T3 Code does not mount its tools.
 
 ## Troubleshooting
 

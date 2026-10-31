@@ -2,16 +2,31 @@ import { afterEach, expect, it, vi } from "vite-plus/test";
 
 // Keep config parsing independent of local env files and build credentials.
 vi.mock("../../scripts/lib/public-config.ts", () => ({
-  loadRepoEnv: () => ({ APP_VARIANT: process.env.APP_VARIANT }),
+  loadRepoEnv: () => ({
+    APP_VARIANT: process.env.APP_VARIANT,
+    T3CODE_MOBILE_UPDATES_ENABLED: process.env.T3CODE_MOBILE_UPDATES_ENABLED,
+    T3CODE_MOBILE_EAS_PROJECT_ID: process.env.T3CODE_MOBILE_EAS_PROJECT_ID,
+    T3CODE_MOBILE_EAS_OWNER: process.env.T3CODE_MOBILE_EAS_OWNER,
+  }),
 }));
 
 afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-async function loadConfig(variant: string | undefined) {
+async function loadConfig(
+  variant: string | undefined,
+  mobileEnv: Readonly<Record<string, string | undefined>> = {},
+) {
   vi.resetModules();
   vi.stubEnv("APP_VARIANT", variant);
+  for (const name of [
+    "T3CODE_MOBILE_UPDATES_ENABLED",
+    "T3CODE_MOBILE_EAS_PROJECT_ID",
+    "T3CODE_MOBILE_EAS_OWNER",
+  ]) {
+    vi.stubEnv(name, mobileEnv[name]);
+  }
   return (await import("./app.config.ts")).default;
 }
 
@@ -31,3 +46,28 @@ it.each([
   expect(config.ios?.bundleIdentifier).toBe(identifier);
   expect(config.android?.package).toBe(identifier);
 });
+
+it("keeps a fork's bundled client instead of accepting upstream OTA updates by default", async () => {
+  const config = await loadConfig("production");
+  expect(config.updates?.enabled).toBe(false);
+});
+
+it.each([
+  [undefined, false],
+  ["0", false],
+  ["1", true],
+])(
+  "uses one explicitly configured EAS project with updates enabled=%j",
+  async (enabled, expected) => {
+    const projectId = "6b739d79-41f7-4a38-8bf8-1d9e0e256f08";
+    const config = await loadConfig("preview", {
+      T3CODE_MOBILE_UPDATES_ENABLED: enabled,
+      T3CODE_MOBILE_EAS_PROJECT_ID: projectId,
+      T3CODE_MOBILE_EAS_OWNER: "fork-owner",
+    });
+    expect(config.updates?.enabled).toBe(expected);
+    expect(config.updates?.url).toBe(`https://u.expo.dev/${projectId}`);
+    expect(config.extra?.eas.projectId).toBe(projectId);
+    expect(config.owner).toBe("fork-owner");
+  },
+);

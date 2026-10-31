@@ -135,10 +135,15 @@ function renderDeliveredKnowledge(items: ReadonlyArray<ProjectKnowledgeDeliveryI
  * sent rather than the current source, so history stays truthful after an edit or forget.
  */
 export const deliveredKnowledgeForHistory = Effect.fn("ProjectKnowledge.deliveredForHistory")(
-  function* (input: {
+  function* <
+    Message extends Pick<
+      OrchestrationV2HistoricalMessage,
+      "kind" | "threadId" | "runId" | "itemId"
+    >,
+  >(input: {
     readonly projectId: ProjectId;
-    readonly messages: ReadonlyArray<OrchestrationV2HistoricalMessage>;
-    readonly userItemId: (messageId: MessageId) => string;
+    readonly messages: ReadonlyArray<Message>;
+    readonly userItemId: (messageId: MessageId) => string | undefined;
   }) {
     const candidates = new Map(
       input.messages.flatMap((message) =>
@@ -158,6 +163,7 @@ export const deliveredKnowledgeForHistory = Effect.fn("ProjectKnowledge.delivere
     // Oldest first: a failover attempt's later record is what the latest conversation saw.
     for (const row of rows) {
       const itemId = input.userItemId(row.messageId);
+      if (itemId === undefined) continue;
       const message = candidates.get(itemId);
       // Forgotten knowledge carries nothing forward, not even an empty wrapper.
       const items = row.items.filter((item) => !item.contentRemoved);

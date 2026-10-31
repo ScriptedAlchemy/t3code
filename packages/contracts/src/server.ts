@@ -958,12 +958,12 @@ export class ServerNpmReleaseError extends Schema.TaggedError<ServerNpmReleaseEr
   { reason: Schema.String },
 ) {
   override get message(): string {
-    return `Could not check the configured npm registry: ${this.reason}`;
+    return `Could not check available releases: ${this.reason}`;
   }
 }
 
 export const ServerSelfUpdateInput = Schema.Struct({
-  /** Exact npm version, never a dist-tag, so server and client agree on the request. */
+  /** Exact release version, never a channel, so server and client agree on the request. */
   targetVersion: TrimmedNonEmptyString,
   /** Desktop-managed hosts move their app to this update track first. Sent only for a track switch. */
   channel: Schema.optionalKey(DesktopUpdateChannelSchema),

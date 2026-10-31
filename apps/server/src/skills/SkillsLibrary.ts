@@ -62,13 +62,13 @@ const HARNESS_SKILL_ROOTS: ReadonlyArray<HarnessSkillRoot> = [
     private: [".system"],
     readsLibrary: true,
   },
-  {
+  ...["config", "antigravity-cli"].map((directory): HarnessSkillRoot => ({
     driver: ProviderDriverKind.make("antigravity"),
     home: (_environment, home) =>
-      Path.Path.pipe(Effect.map((path) => path.join(home, ".gemini", "config"))),
+      Path.Path.pipe(Effect.map((path) => path.join(home, ".gemini", directory))),
     private: [],
     readsLibrary: false,
-  },
+  })),
 ];
 
 type EntryKind = "skill" | "libraryLink" | "otherLink" | "other";
@@ -473,9 +473,6 @@ export const make = Effect.gen(function* () {
   });
 });
 
-const isClaudeOrCodex = (driverKind: ProviderDriverKind) =>
-  driverKind === CLAUDE || driverKind === CODEX;
-
 export const layer = Layer.effect(
   SkillsLibrary,
   Effect.gen(function* () {
@@ -497,7 +494,9 @@ export const layer = Layer.effect(
     ) =>
       new Set(
         instances
-          .filter((instance) => isClaudeOrCodex(instance.driverKind))
+          .filter((instance) =>
+            HARNESS_SKILL_ROOTS.some((root) => root.driver === instance.driverKind),
+          )
           .map((instance) => instance.instanceId),
       );
     let known = instanceIds(yield* registry.listInstances);

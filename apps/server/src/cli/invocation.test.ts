@@ -41,11 +41,13 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
     Effect.gen(function* () {
       const npx = "/home/theo/.npm/_npx/abc/node_modules/t3/dist/bin.mjs";
       expect(yield* rootCommand({ node: "/usr/bin/node", entry: npx })).toBe(
-        "sudo npx t3 browser setup",
+        `sudo /usr/bin/node ${npx} browser setup`,
       );
       expect(
         yield* rootCommand({ node: "/home/theo/.nvm/versions/node/v24/bin/node", entry: npx }),
-      ).toBe('sudo env "PATH=$PATH" npx t3 browser setup');
+      ).toBe(
+        `sudo env "PATH=$PATH" /home/theo/.nvm/versions/node/v24/bin/node ${npx} browser setup`,
+      );
       expect(
         yield* rootCommand({
           node: "/home/theo/.local/node/bin/node",
@@ -141,6 +143,18 @@ it.layer(NodeServices.layer)("host CLI commands", (it) => {
       expect((yield* hostCommand("win32", {})).command).toBe(
         't3 doctor "--base-dir" "C:\\Users\\Jane Doe\\.t3"',
       );
+      const cachedEntry = "C:\\Users\\Jane Doe\\npm\\_npx\\hash\\node_modules\\t3\\bin\\t3.mjs";
+      expect(
+        (yield* resolveHostCliCommand("doctor", ["--base-dir", "C:\\Users\\Jane Doe\\.t3"]).pipe(
+          Effect.provideService(HostProcess.ExecutablePath, "C:\\Program Files\\nodejs\\node.exe"),
+          Effect.provideService(HostProcess.Arguments, ["node", cachedEntry]),
+          Effect.provideService(HostProcess.IsExecutable, false),
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(HostProcess.Environment, {}),
+        )).command,
+      ).toBe(
+        `& "C:\\Program Files\\nodejs\\node.exe" "${cachedEntry}" doctor "--base-dir" "C:\\Users\\Jane Doe\\.t3"`,
+      );
       expect(
         (yield* resolveHostCliCommand("doctor", ["--base-dir", "C:\\T3\\\u201CArchive\u201D"]).pipe(
           Effect.provideService(HostProcess.Platform, "win32"),
@@ -180,7 +194,10 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
           `{"name":"t3","version":"${packageJson.version}","bin":{"t3":"./bin/t3.mjs"}}`,
         );
         const launchedBy = entry.endsWith("t3.mjs");
-        const installation = yield* resolveServerInstallation.pipe(
+        const [installation, command] = yield* Effect.all([
+          resolveServerInstallation,
+          resolveHostCliCommand("doctor", ["--base-dir", path.join(root, "t3 home")]),
+        ]).pipe(
           Effect.provideService(HostProcess.Arguments, [launchedBy ? executable : "node", entry]),
           Effect.provideService(HostProcess.ExecutablePath, executable),
           Effect.provideService(HostProcess.IsExecutable, launchedBy),
@@ -190,6 +207,10 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
           ),
         );
         expect(installation).toEqual({ kind });
+        expect(command.command).toContain(executable);
+        expect(command.command).toContain(path.join(root, "t3 home"));
+        if (!launchedBy) expect(command.command).toContain(entry);
+        expect(command.launcher).toBe(launchedBy);
       }
     }),
   );

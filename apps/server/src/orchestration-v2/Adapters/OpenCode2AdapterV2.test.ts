@@ -314,6 +314,7 @@ const resumed = (
     readonly resolveExtractedTextPath?: (path: string) => Effect.Effect<string | undefined>;
     readonly fileSystem?: FileSystem.FileSystem;
     readonly onPrompt?: (input: unknown) => void;
+    readonly onInstructions?: (input: unknown) => void;
   },
 ) =>
   Effect.gen(function* () {
@@ -336,6 +337,9 @@ const resumed = (
       {
         ...(options?.fileSystem === undefined ? {} : { fileSystem: options.fileSystem }),
         ...(options?.onPrompt === undefined ? {} : { onPrompt: options.onPrompt }),
+        ...(options?.onInstructions === undefined
+          ? {}
+          : { onInstructions: options.onInstructions }),
         ...(options?.external === undefined ? {} : { external: options.external }),
         ...(options?.replayGate === undefined ? {} : { replayGate: options.replayGate }),
         ...(options?.attachmentsDir === undefined
@@ -2438,27 +2442,38 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         event("session.execution.succeeded", { sessionID: SESSION }),
       ];
       // Idle Location eviction drops OpenCode's runtime MCP servers without a reconnect.
-      const { runtime, thread } = yield* resumed([
-        add,
-        reply("mcp.add", null),
-        ...turn,
-        add,
-        reply("mcp.add", { status: 500, body: { message: "MCP unavailable" } }),
-        out("session.instructions.entry.put", {
-          sessionID: SESSION,
-          key: "t3-code",
-          value: buildRuntimeInstructions({ harness: "OpenCode", model: bigPickle.model }),
-        }),
-        reply("session.instructions.entry.put", null),
-        ...turn,
-        out("mcp.remove", { server, "location[directory]": WORK }),
-        reply("mcp.remove", null),
-      ]);
+      const instructions: unknown[] = [];
+      const { runtime, thread } = yield* resumed(
+        [
+          add,
+          reply("mcp.add", null),
+          ...turn,
+          add,
+          reply("mcp.add", { status: 500, body: { message: "MCP unavailable" } }),
+          out("session.instructions.entry.put", {
+            sessionID: SESSION,
+            key: "t3-code",
+            value: buildRuntimeInstructions({ harness: "OpenCode", model: bigPickle.model }),
+          }),
+          reply("session.instructions.entry.put", null),
+          ...turn,
+          out("mcp.remove", { server, "location[directory]": WORK }),
+          reply("mcp.remove", null),
+        ],
+        { onInstructions: (input) => instructions.push(input) },
+      );
       for (let index = 0; index < 2; index++) {
         const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
         yield* runtime.startTurn(turnInput(thread));
         assert.equal((yield* Fiber.join(terminal))?.status, "completed");
       }
+      const firstInstructions = instructions[0] as { value: string };
+      assert.include(
+        firstInstructions.value,
+        "Use `delegate_task` for child work using project memory",
+      );
+      assert.include(firstInstructions.value, "native OpenCode 2 subagents do not inherit");
+      assert.lengthOf(instructions, 2);
       // A transient registration failure changes availability, not the adapter's supported features.
       assert.isTrue(runtime.providerSession.capabilities.tools.supportsMcpTools);
     }).pipe(Effect.scoped),
