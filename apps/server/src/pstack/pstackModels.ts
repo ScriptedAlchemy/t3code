@@ -1,10 +1,10 @@
 import {
   type ModelSelection,
-  type ModelPreferences,
   type ProviderInstanceId,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type ServerProvider,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
 import { PSTACK_PANEL_ROLES, type PstackRoleDefault } from "@t3tools/pstack";
@@ -128,7 +128,7 @@ function defaultSeat(
   providers: ReadonlyArray<ServerProvider>,
   constraintsFor: (provider: ServerProvider) => ReadonlyArray<string>,
   parentModelSelection: ModelSelection | undefined,
-  modelPreferences: ModelPreferences["providerModelPreferences"] | undefined,
+  modelPreferences: ServerSettings["providerModelPreferences"] | undefined,
 ): ParsedSeat {
   if (slug === "inherit-parent" || slug === "auto") return { kind: "inherit" };
   const withoutFast = slug.replace(/-fast$/, "");
@@ -210,7 +210,7 @@ export function resolveRoles(
     readonly capableInstanceIds: ReadonlySet<ProviderInstanceId>;
     readonly parentModelSelection?: ModelSelection;
     readonly settings: Parameters<typeof delegationProviderConstraints>[2]["settings"] &
-      Partial<Pick<ModelPreferences, "providerModelPreferences">>;
+      Partial<Pick<ServerSettings, "providerModelPreferences">>;
   } & Parameters<typeof delegationProviderConstraints>[2],
 ) {
   const constraintsFor = (provider: ServerProvider) =>

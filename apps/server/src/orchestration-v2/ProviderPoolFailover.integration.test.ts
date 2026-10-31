@@ -629,7 +629,7 @@ it.live.each(["cooling", "unregistered"] as const)(
             ...makeProvider(second, "Claude - Work", "claude:home:second"),
             usageLimits: {
               checkedAt: "2026-10-01T00:00:00.000Z",
-              windows: [{ id: "session", label: "Session", usedPercent: 50 }],
+              windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 50 }],
             },
           },
         ]);
