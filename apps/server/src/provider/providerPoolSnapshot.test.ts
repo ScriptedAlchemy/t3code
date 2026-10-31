@@ -99,23 +99,40 @@ describe("withProviderPools", () => {
     assert.deepEqual(shared.at(-1)?.continuation, { groupKey: "codex:home:shared" });
   });
 
-  it("reports the healthiest member's status and auth", () => {
-    const published = withProviderPools({
-      providers: [
-        provider("claudeAgent", claude, {
-          status: "error",
-          auth: { status: "unauthenticated" },
-          checkedAt: "2026-10-19T00:00:01.000Z",
-        }),
-        provider("claudeAgent_work", claude, { checkedAt: "2026-10-19T00:00:02.000Z" }),
-      ],
-      providerPools: pools({ claudeAgent: ["claudeAgent", "claudeAgent_work"] }),
-    });
-    const pool = published.at(-1);
-    assert.equal(pool?.status, "ready");
-    assert.equal(pool?.auth.status, "authenticated");
-    assert.equal(pool?.checkedAt, "2026-10-19T00:00:02.000Z");
-  });
+  it.each([false, true])(
+    "reports the healthiest member's catalog and health (unavailable: %s)",
+    (unavailable) => {
+      const published = withProviderPools({
+        providers: [
+          provider("claudeAgent", claude, {
+            status: "error",
+            auth: { status: "unauthenticated" },
+            checkedAt: "2026-10-19T00:00:01.000Z",
+            ...(unavailable
+              ? {
+                  availability: "unavailable",
+                  enabled: false,
+                  installed: false,
+                  models: [],
+                  slashCommands: [],
+                }
+              : {}),
+          }),
+          provider("claudeAgent_work", claude, { checkedAt: "2026-10-19T00:00:02.000Z" }),
+        ],
+        providerPools: pools({ claudeAgent: ["claudeAgent", "claudeAgent_work"] }),
+      });
+      const pool = published.at(-1);
+      assert.equal(pool?.status, "ready");
+      assert.equal(pool?.auth.status, "authenticated");
+      assert.equal(pool?.checkedAt, "2026-10-19T00:00:02.000Z");
+      assert.deepEqual(
+        pool?.models.map((entry) => entry.slug),
+        ["opus", "sonnet"],
+      );
+      assert.deepEqual(pool?.slashCommands, [{ name: "compact" }, { name: "review" }]);
+    },
+  );
 
   it("keeps the pool and member identities when only one account remains enabled", () => {
     const providers = [personal, provider("claudeAgent_work", claude, { enabled: false })];
