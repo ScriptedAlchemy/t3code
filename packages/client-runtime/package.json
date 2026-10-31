@@ -19,6 +19,10 @@
       "types": "./src/projectKnowledge/index.ts",
       "default": "./src/projectKnowledge/index.ts"
     },
+    "./assembly-highlighting": {
+      "types": "./src/assemblyHighlighting.ts",
+      "default": "./src/assemblyHighlighting.ts"
+    },
     "./zip/bounded-zip": {
       "types": "./src/zip/boundedZip.ts",
       "default": "./src/zip/boundedZip.ts"

@@ -8,6 +8,8 @@ import { environmentShell } from "../../state/shell";
 import { serverEnvironment } from "../../state/server";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { toastManager } from "../ui/toast";
+import { openSideChatTab } from "../../lib/sideChatPane";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 
 const RELATED_THREAD_SHELL_WAIT_MS = 1_000;
 
@@ -15,6 +17,7 @@ export function useOpenRelatedThread(input: {
   readonly environmentId: EnvironmentId;
   readonly routeThreadKey: string;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
+  readonly activeThreadRef?: ScopedThreadRef | null | undefined;
 }) {
   const { environmentId, routeThreadKey, currentRouteThreadKeyRef } = input;
   const navigate = useNavigate();
@@ -47,6 +50,7 @@ export function useOpenRelatedThread(input: {
       toastManager.add({ type: "info", title: "This thread is no longer available" });
       return;
     }
+    if (input.activeThreadRef && openSideChatTab(input.activeThreadRef, shell)) return;
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(threadRef),

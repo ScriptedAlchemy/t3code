@@ -598,6 +598,8 @@ declare module "effect/Schema" {
        * never copies it, and the destination keeps its own value when it updates a copy.
        */
       readonly settingsMachineLocal?: boolean | undefined;
+      /** Set by `SettingsSecretValue`: the credential may name a secret provider reference. */
+      readonly settingsSecretReference?: boolean | undefined;
       readonly providerSettingsForm?: ProviderSettingsFormAnnotation | undefined;
       readonly providerSettingsFormSchema?: ProviderSettingsFormSchemaAnnotation | undefined;
     }

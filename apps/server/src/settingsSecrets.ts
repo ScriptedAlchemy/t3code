@@ -8,6 +8,7 @@ import {
   SimlockDeviceHostConfig,
   UsageLimitSourceConfig,
   machineLocalSettingsFields,
+  isSecretReference,
   secretSettingsFields,
 } from "@t3tools/contracts";
 import { acpRegistryClient } from "@t3tools/provider-acp-registry/client";
@@ -87,7 +88,7 @@ export function mapSettingsSecrets(
   ) => {
     const next = { ...fields };
     for (const field of secretFields) {
-      if (!(field in next)) continue;
+      if (!(field in next) || isSecretReference(next[field])) continue;
       next[field] = writeSecretFieldValues(
         next[field],
         readSecretFieldValues(next[field]).map(([serverHost, value]) => {
