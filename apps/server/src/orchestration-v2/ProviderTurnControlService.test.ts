@@ -872,6 +872,27 @@ it.effect.each([
                   driver,
                   instanceId: providerInstanceId,
                   providerSessionId,
+                  providerSession: {
+                    id: providerSessionId,
+                    driver,
+                    providerInstanceId,
+                    status: "running",
+                    cwd: "/workspace",
+                    model: modelSelection.model,
+                    capabilities: CodexProviderCapabilitiesV2,
+                    createdAt: now,
+                    updatedAt: now,
+                    lastError: null,
+                  },
+                  events: Stream.empty,
+                  ensureThread: () => Effect.die("unused ensureThread"),
+                  resumeThread: () => Effect.die("unused resumeThread"),
+                  startTurn: () => Effect.die("unused startTurn"),
+                  interruptTurn: () => Effect.die("unused interruptTurn"),
+                  respondToRuntimeRequest: () => Effect.die("unused respondToRuntimeRequest"),
+                  readThreadSnapshot: () => Effect.die("unused readThreadSnapshot"),
+                  rollbackThread: () => Effect.die("unused rollbackThread"),
+                  forkThread: () => Effect.die("unused forkThread"),
                   getModelContextWindow: () =>
                     mode === "delivered-knowledge-budget" ? 200_000 : undefined,
                   steerTurn: (input: ProviderAdapter.ProviderAdapterV2SteerInput) =>
@@ -888,7 +909,7 @@ it.effect.each([
                           )
                         : Effect.void;
                     }),
-                } as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+                } satisfies ProviderAdapter.ProviderAdapterV2SessionRuntime),
             }),
           ),
         ),

@@ -29,28 +29,30 @@ const setup = Effect.fn("SkillsLibrary.test.setup")(function* (
   yield* fs.makeDirectory(claude, { recursive: true });
   yield* fs.makeDirectory(codex, { recursive: true });
   const service = yield* SkillsLibrary.make.pipe(
-    Effect.provide(ServerSettings.ServerSettingsService.layerTest()),
     Effect.provide(
-      Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-        listInstances: Effect.succeed(
-          drivers.map((driverKind) => ({
-            instanceId: ProviderInstanceId.make(driverKind),
-            driverKind,
-            enabled: true,
-            displayName: undefined,
-            continuationIdentity: { driverKind, continuationKey: driverKind },
-            get orchestrationAdapter(): never {
-              throw new Error("Sharing skills must not start a provider session.");
-            },
-            get snapshot(): never {
-              throw new Error("Sharing skills must not probe a provider.");
-            },
-            get textGeneration(): never {
-              throw new Error("Sharing skills must not generate text.");
-            },
-          })),
-        ),
-      }),
+      Layer.mergeAll(
+        ServerSettings.ServerSettingsService.layerTest(),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          listInstances: Effect.succeed(
+            drivers.map((driverKind) => ({
+              instanceId: ProviderInstanceId.make(driverKind),
+              driverKind,
+              enabled: true,
+              displayName: undefined,
+              continuationIdentity: { driverKind, continuationKey: driverKind },
+              get orchestrationAdapter(): never {
+                throw new Error("Sharing skills must not start a provider session.");
+              },
+              get snapshot(): never {
+                throw new Error("Sharing skills must not probe a provider.");
+              },
+              get textGeneration(): never {
+                throw new Error("Sharing skills must not generate text.");
+              },
+            })),
+          ),
+        }),
+      ),
     ),
     Effect.provideService(HostProcess.HomeDirectory, home),
     Effect.provideService(HostProcess.Environment, { HOME: home }),
