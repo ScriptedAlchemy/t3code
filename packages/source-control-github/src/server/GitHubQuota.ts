@@ -70,6 +70,10 @@ const make = Effect.gen(function* () {
         provider: SourceControlProviderKind.make("github"),
         host: host.trim().toLowerCase(),
         retryAt: snapshot.resetAtMs,
+        pauseReason: snapshot.remaining === 0 ? "quota-exhausted" : "reserve-protected",
+        resource,
+        remaining: snapshot.remaining,
+        limit: snapshot.limit,
       });
     },
   );

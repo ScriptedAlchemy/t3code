@@ -22,6 +22,7 @@ const reactTests = [
   "src/features/files/FileCodeRelationships.test.tsx",
   "src/features/loom/ProjectLoomRouteScreen.test.tsx",
   "src/features/pull-requests/usePullRequestList.test.tsx",
+  "src/features/pull-requests/usePullRequestLiveChecks.test.tsx",
   "src/features/files/ZipArchiveView.test.tsx",
   "src/features/pull-requests/guide/useReviewGuide.test.tsx",
   "src/features/settings/SettingsServerControlsRouteScreen.test.tsx",

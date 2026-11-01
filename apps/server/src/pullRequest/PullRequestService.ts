@@ -127,7 +127,7 @@ const DETAIL_CACHE_TTL = Duration.seconds(60);
 const MERGED_DETAIL_CACHE_TTL = Duration.minutes(10);
 const detailTimeToLive = (state: PullRequestState | undefined) =>
   state === "merged" ? MERGED_DETAIL_CACHE_TTL : DETAIL_CACHE_TTL;
-const CHECKS_CACHE_TTL = Duration.seconds(15);
+const CHECKS_CACHE_TTL = Duration.seconds(45);
 const REPORTED_STATE_DEDUPE_MS = 5 * 60 * 1_000;
 const DIFF_CACHE_TTL = Duration.seconds(60);
 const COMMIT_DIFF_CACHE_TTL = Duration.minutes(10);
@@ -227,6 +227,7 @@ export class PullRequestService extends Context.Service<
     ) => Effect.Effect<void, PullRequestError>;
     readonly subscribeRefreshes: Stream.Stream<number>;
     readonly refreshAfterTurn: (projectId: ProjectId) => Effect.Effect<void>;
+    readonly refreshAfterTurns: (projectIds: ReadonlyArray<ProjectId>) => Effect.Effect<void>;
     /** Project and remote lookups inside `effect` read once per filter, e.g. across one sync sweep. */
     readonly withSharedProjectReads: <A, E, R>(
       effect: Effect.Effect<A, E, R>,
@@ -479,34 +480,37 @@ function withRateLimitBackoff(
     effect: Effect.Effect<A, PullRequestProviderError>,
     allowPaused: boolean,
   ) =>
-    limits.check(key, allowPaused ? { allowPaused: true } : undefined).pipe(
-      Effect.mapError(
-        (error) =>
-          new PullRequestProviderError({
-            provider: api.kind,
-            operation,
-            reason: "rate-limited",
-            detail: error.detail,
-            retryAt: error.retryAt,
-            cause: error,
-          }),
-      ),
-      Effect.flatMap((lease) =>
-        effect.pipe(
-          Effect.provideService(SourceControlRateLimit.Interactive, allowPaused),
-          Effect.tap(() => limits.recordSuccess({ ...key, lease })),
-          Effect.tapError((error) =>
-            error.reason === "rate-limited"
-              ? limits.recordRateLimit({
-                  ...key,
-                  lease,
-                  ...(error.retryAt === undefined ? {} : { retryAt: error.retryAt }),
-                })
-              : Effect.void,
+    // GitHub owns credential/resource cooldowns in its shared REST/GraphQL transport.
+    api.kind === "github"
+      ? effect.pipe(Effect.provideService(SourceControlRateLimit.Interactive, allowPaused))
+      : limits.check(key, allowPaused ? { allowPaused: true } : undefined).pipe(
+          Effect.mapError(
+            (error) =>
+              new PullRequestProviderError({
+                provider: api.kind,
+                operation,
+                reason: "rate-limited",
+                detail: error.detail,
+                retryAt: error.retryAt,
+                cause: error,
+              }),
           ),
-        ),
-      ),
-    );
+          Effect.flatMap((lease) =>
+            effect.pipe(
+              Effect.provideService(SourceControlRateLimit.Interactive, allowPaused),
+              Effect.tap(() => limits.recordSuccess({ ...key, lease })),
+              Effect.tapError((error) =>
+                error.reason === "rate-limited"
+                  ? limits.recordRateLimit({
+                      ...key,
+                      lease,
+                      ...(error.retryAt === undefined ? {} : { retryAt: error.retryAt }),
+                    })
+                  : Effect.void,
+              ),
+            ),
+          ),
+        );
   const wrap =
     <Args extends ReadonlyArray<unknown>, A>(
       operation: string,
@@ -1806,7 +1810,7 @@ export const make = Effect.gen(function* () {
             baseBranch: changeRequest.baseBranch,
             createdAt: changeRequest.createdAt,
             updatedAt: changeRequest.updatedAt,
-            observedAt,
+            observedAt: changeRequest.observedAt ?? observedAt,
             mergedAt: changeRequest.mergedAt,
             closedAt: changeRequest.closedAt,
             reviewers: changeRequest.reviewers,
@@ -3086,7 +3090,10 @@ export const make = Effect.gen(function* () {
                 .pipe(
                   Effect.mapError(toPullRequestError("checks")),
                   observeRead,
-                  Effect.map(({ value, observedAt }) => ({ ...value, observedAt })),
+                  Effect.map(({ value, observedAt }) => ({
+                    ...value,
+                    observedAt: value.observedAt ?? observedAt,
+                  })),
                 ),
         ),
       );
@@ -3108,10 +3115,6 @@ export const make = Effect.gen(function* () {
                 ),
               ),
     },
-  );
-
-  const checks: PullRequestService["Service"]["checks"] = credentialCached((input) =>
-    Cache.get(checksCache, refCacheKey(input)),
   );
 
   const checkFailureCache = yield* Cache.makeWith(
@@ -3279,9 +3282,31 @@ export const make = Effect.gen(function* () {
     {
       capacity: DETAIL_CACHE_CAPACITY,
       timeToLive: (exit) =>
-        Exit.isSuccess(exit) ? detailTimeToLive(exit.value.state) : Duration.zero,
+        Exit.isSuccess(exit)
+          ? Duration.millis(
+              Math.max(
+                0,
+                (exit.value.observedAt ?? clock.currentTimeMillisUnsafe()) +
+                  Duration.toMillis(detailTimeToLive(exit.value.state)) -
+                  clock.currentTimeMillisUnsafe(),
+              ),
+            )
+          : Duration.zero,
     },
   );
+  const checks: PullRequestService["Service"]["checks"] = credentialCached(
+    Effect.fn("PullRequestService.checks")(function* (input) {
+      const key = refCacheKey(input);
+      const cached = yield* Cache.getOption(checksCache, key);
+      if (Option.isSome(cached)) return cached.value;
+      // A detail read already in flight seeds its checks before completing.
+      yield* Cache.getOption(detailCache, key).pipe(
+        Effect.orElseSucceed(() => Option.none<PullRequestDetail>()),
+      );
+      return yield* Cache.get(checksCache, key);
+    }),
+  );
+
   const summaryFromDetail = (
     detail: PullRequestDetail,
     previous: PullRequestSummary | undefined,
@@ -3662,27 +3687,36 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  const refreshAfterTurn: PullRequestService["Service"]["refreshAfterTurn"] = Effect.fn(
-    "PullRequestService.refreshAfterTurn",
-  )(function* (projectId) {
+  const refreshAfterTurns: PullRequestService["Service"]["refreshAfterTurns"] = Effect.fn(
+    "PullRequestService.refreshAfterTurns",
+  )(function* (projectIds) {
+    const projects = new Set(projectIds);
+    if (projects.size === 0) return;
     // Everything the provider holds, not just the project's repository: a turn can touch a
     // change request reached through another repository, and no epoch may move until those
     // reads are gone, or a reader in between keeps the old one under the new epoch.
     yield* forgetProviderReads();
     listingsEpoch = ++epochCounter;
-    projectEpochs.delete(projectId);
-    if (projectEpochs.size >= REF_EPOCH_CAPACITY) {
-      const oldest = projectEpochs.keys().next().value;
-      if (oldest !== undefined) {
-        projectEpochFloor = projectEpochs.get(oldest)!;
-        projectEpochs.delete(oldest);
+    for (const projectId of projects) {
+      projectEpochs.delete(projectId);
+      if (projectEpochs.size >= REF_EPOCH_CAPACITY) {
+        const oldest = projectEpochs.keys().next().value;
+        if (oldest !== undefined) {
+          projectEpochFloor = projectEpochs.get(oldest)!;
+          projectEpochs.delete(oldest);
+        }
       }
+      projectEpochs.set(projectId, listingsEpoch);
     }
-    projectEpochs.set(projectId, listingsEpoch);
-    const epoch = listingsEpoch;
-    yield* readCache.invalidate(`project:${projectId}`);
-    yield* SubscriptionRef.set(pullRequestRefreshes, epoch);
+    yield* Effect.forEach(projects, (projectId) => readCache.invalidate(`project:${projectId}`), {
+      discard: true,
+    });
+    yield* SubscriptionRef.set(pullRequestRefreshes, ++epochCounter);
   });
+
+  const refreshAfterTurn: PullRequestService["Service"]["refreshAfterTurn"] = Effect.fn(
+    "PullRequestService.refreshAfterTurn",
+  )((projectId) => refreshAfterTurns([projectId]));
 
   const invalidatedByMutation =
     <I extends PullRequestRef>(
@@ -3860,6 +3894,7 @@ export const make = Effect.gen(function* () {
       Stream.filter((revision) => revision > 0),
     ),
     refreshAfterTurn,
+    refreshAfterTurns,
     detail: credentialCached(detail),
     checks,
     checkFailures,

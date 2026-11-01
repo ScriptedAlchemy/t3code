@@ -1011,7 +1011,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/source-control",
     scope: "environment-defaults",
     searchTerms: [
-      "gh cli claude pull request status checks failures feedback rate limit gate block T3_GH_DIRECT",
+      "gh cli claude codex agents pull request status checks failures feedback rate limit gate block T3_GH_DIRECT",
     ],
   },
   {

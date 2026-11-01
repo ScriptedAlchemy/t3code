@@ -388,7 +388,7 @@ it("answers simple mocked commands itself and gives the simulator the sample's h
   );
 });
 
-it("applies the Claude GitHub gate before shell mocks without gating Codex", () => {
+it("applies native and PATH GitHub gates before shell mocks without claiming absolute-path coverage", () => {
   const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
   const testCase = {
     ...childCase,
@@ -407,7 +407,10 @@ it("applies the Claude GitHub gate before shell mocks without gating Codex", () 
     "git status && gh pr view 123 --json headRefOid,statusCheckRollup",
   ]) {
     assert.match(cannedOutput(claude, command) ?? "", /^<tool_use_error>.*pull_request_status/s);
-    assert.equal(cannedOutput(codex, command), mockOutput(codex, command));
+    assert.match(
+      cannedOutput(codex, command) ?? "",
+      /^T3 already reads this.*pull_request_status/s,
+    );
   }
   assert.match(
     cannedOutput(claude, "T3_GH_DIRECT=1 gh pr checks 123 --watch") ?? "",
@@ -420,7 +423,18 @@ it("applies the Claude GitHub gate before shell mocks without gating Codex", () 
     "gh issue view 77 --repo acme/app",
   ]) {
     assert.equal(cannedOutput(claude, command), "command executed");
+    assert.equal(cannedOutput(codex, command), "command executed");
   }
+  assert.equal(cannedOutput(codex, "/usr/bin/gh pr checks 123"), "command executed");
+  assert.match(cannedOutput(claude, "/usr/bin/gh pr checks 123") ?? "", /pull_request_status/);
+  assert.match(
+    cannedOutput(codex, "T3_GH_DIRECT=1 gh pr checks 123 --watch") ?? "",
+    /Do not poll GitHub/,
+  );
+  assert.equal(
+    cannedOutput(codex, "GH_HOST=enterprise.example gh pr checks 123"),
+    "command executed",
+  );
   assert.isUndefined(cannedOutput(claude, "git status"));
 });
 

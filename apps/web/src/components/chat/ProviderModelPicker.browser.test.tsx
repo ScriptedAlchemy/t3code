@@ -134,6 +134,8 @@ it("keeps a docked picker open after a pick and hands focus to that model's effo
         instanceEntries={entries}
         modelOptionsByInstance={options}
         triggerAriaLabel="Choose model"
+        isComposerOwned
+        activeAccount={{ poolName: "Codex accounts", memberName: "Personal" }}
         onInstanceModelChange={(_, selected) => setModel(selected)}
         effortColumn={(levels[model] ?? []).map((level, index, all) => (
           <button
@@ -152,7 +154,19 @@ it("keeps a docked picker open after a pick and hands focus to that model's effo
   }
 
   await using screen = await render(<Picker />);
+  await expect
+    .element(screen.getByRole("button", { name: "Choose model" }))
+    .toHaveTextContent("Original model · Personal");
+  await expect
+    .element(screen.getByRole("button", { name: "Choose model" }))
+    .toHaveAccessibleDescription("Codex accounts · Personal");
+  const accountTooltip = page.getByText("Original model · Codex accounts · Personal", {
+    exact: true,
+  });
+  await screen.getByText("Original model · Personal", { exact: true }).hover();
+  await expect.element(accountTooltip).toBeVisible();
   await screen.getByRole("button", { name: "Choose model" }).click();
+  await expect.element(accountTooltip).not.toBeInTheDocument();
   const search = page.getByPlaceholder("Search models...");
   await expect.element(search).toHaveFocus();
   await userEvent.keyboard("{ArrowRight}");
@@ -162,7 +176,13 @@ it("keeps a docked picker open after a pick and hands focus to that model's effo
 
   await page.getByRole("option", { name: /Second model/ }).click();
   await expect.element(page.getByRole("radio", { name: "Medium" })).toHaveFocus();
+  await expect
+    .element(screen.getByRole("button", { name: "Choose model" }))
+    .toHaveTextContent("Second model · Personal");
 
   await page.getByRole("option", { name: /Plain model/ }).click();
+  await page.getByRole("option", { name: /Second model/ }).click();
+  await expect.element(page.getByRole("radio", { name: "Medium" })).toHaveFocus();
+  await userEvent.keyboard("{Escape}");
   await expect.element(search).not.toBeInTheDocument();
 });

@@ -1496,53 +1496,61 @@ it.effect("keeps two hosts of one provider kind as two accounts", () =>
   }),
 );
 
-it.effect("stops new reads after a rate limit while leaving manual actions available", () =>
-  Effect.gen(function* () {
-    let listCalls = 0;
-    let actionCalls = 0;
-    const service = yield* makeService({
-      projects: [
-        project({ id: "p1", title: "cloud", workspaceRoot: "/cloud", repository: "acme/web" }),
-      ],
-      providers: [
-        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-          listChangeRequests: () =>
-            Effect.sync(() => {
-              listCalls += 1;
-            }).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new PullRequestProviderError({
-                    provider: SourceControlProviderKind.make("github"),
-                    operation: "listChangeRequests",
-                    reason: "rate-limited",
-                    detail: "GitHub API rate limit exceeded.",
-                  }),
+it.effect.each(["github", "gitlab"])(
+  "leaves GitHub backoff to its transport and protects other providers (%s)",
+  (kind) =>
+    Effect.gen(function* () {
+      let listCalls = 0;
+      let actionCalls = 0;
+      const service = yield* makeService({
+        projects: [
+          project({
+            id: "p1",
+            title: "cloud",
+            workspaceRoot: "/cloud",
+            repository: "acme/web",
+            provider: kind,
+          }),
+        ],
+        providers: [
+          fakePullRequestProvider(SourceControlProviderKind.make(kind), {
+            listChangeRequests: () =>
+              Effect.sync(() => {
+                listCalls += 1;
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new PullRequestProviderError({
+                      provider: SourceControlProviderKind.make(kind),
+                      operation: "listChangeRequests",
+                      reason: "rate-limited",
+                      detail: "GitHub API rate limit exceeded.",
+                    }),
+                  ),
                 ),
               ),
-            ),
-          runAction: () =>
-            Effect.sync(() => {
-              actionCalls += 1;
-            }),
-        }),
-      ],
-    });
+            runAction: () =>
+              Effect.sync(() => {
+                actionCalls += 1;
+              }),
+          }),
+        ],
+      });
 
-    const first = yield* service.list({ state: "open", involvement: "all" });
-    const paused = yield* service.list({ state: "open", involvement: "authored" });
-    yield* service.runAction({
-      projectId: "p1" as ProjectId,
-      repository: "acme/web",
-      number: 1,
-      action: "close",
-    });
+      const first = yield* service.list({ state: "open", involvement: "all" });
+      const paused = yield* service.list({ state: "open", involvement: "authored" });
+      yield* service.runAction({
+        projectId: "p1" as ProjectId,
+        repository: "acme/web",
+        number: 1,
+        action: "close",
+      });
 
-    assert.strictEqual(listCalls, 1);
-    assert.strictEqual(actionCalls, 1);
-    assert.lengthOf(first.errors, 1);
-    assert.lengthOf(paused.errors, 1);
-  }),
+      assert.strictEqual(listCalls, kind === "github" ? 2 : 1);
+      assert.strictEqual(actionCalls, 1);
+      assert.lengthOf(first.errors, 1);
+      assert.lengthOf(paused.errors, 1);
+    }),
 );
 
 it.effect("refuses a repository that does not belong to the requested project", () =>
@@ -2291,6 +2299,12 @@ it.effect("a refresh or a finished turn drops the provider's own change request 
       undefined,
       undefined,
     ]);
+
+    forgotten.length = 0;
+    yield* service.refreshAfterTurns([reference.projectId, "p2" as ProjectId, reference.projectId]);
+    assert.deepStrictEqual(forgotten, [undefined]);
+    yield* service.refreshAfterTurns([]);
+    assert.deepStrictEqual(forgotten, [undefined]);
   }),
 );
 
@@ -2308,6 +2322,13 @@ it.effect("a read during a refresh cannot keep the provider's old change request
           title: "web",
           workspaceRoot: "/a",
           repository: "acme/web",
+          provider: "gitlab",
+        }),
+        project({
+          id: "p2",
+          title: "api",
+          workspaceRoot: "/b",
+          repository: "acme/api",
           provider: "gitlab",
         }),
       ],
@@ -2349,6 +2370,15 @@ it.effect("a read during a refresh cannot keep the provider's old change request
     hostTitle = "after refresh";
     yield* refreshWithReadInBetween(service.invalidate({ reference }));
     assert.strictEqual((yield* service.detail(reference)).title, "after refresh");
+
+    const second = { projectId: "p2" as ProjectId, repository: "acme/api", number: 2 };
+    assert.strictEqual((yield* service.detail(second)).title, "after refresh");
+    hostTitle = "after batch";
+    yield* refreshWithReadInBetween(
+      service.refreshAfterTurns([reference.projectId, second.projectId]),
+    );
+    assert.strictEqual((yield* service.detail(reference)).title, "after batch");
+    assert.strictEqual((yield* service.detail(second)).title, "after batch");
   }),
 );
 
@@ -3091,14 +3121,70 @@ it.effect(
       yield* TestClock.adjust("16 seconds");
       yield* service.detail(reference);
       expect(yield* service.checks(reference)).toMatchObject({
+        state: detail.state,
+        observedAt: 1_000,
+      });
+      expect(reads).toBe(0);
+      yield* TestClock.adjust("30 seconds");
+      expect(yield* service.checks(reference)).toMatchObject({
         state: "closed",
-        observedAt: 17_000,
+        observedAt: 47_000,
       });
       expect(reads).toBe(1);
       yield* service.detail(reference);
       expect((yield* service.checks(reference))?.state).toBe("closed");
       expect(reads).toBe(1);
     }),
+);
+
+it.effect("shares an in-flight GitHub detail with concurrent checks readers", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let detailReads = 0;
+    let checkReads = 0;
+    const reference = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          getChangeRequest: () =>
+            Effect.gen(function* () {
+              detailReads += 1;
+              yield* Deferred.succeed(started, undefined);
+              yield* Deferred.await(release);
+              return { ...hostedChangeRequest("Description"), headSha: "abc123" };
+            }),
+          getChangeRequestChecks: () =>
+            Effect.sync(() => {
+              checkReads += 1;
+              return { state: "open" as const, checks: [] };
+            }),
+        }),
+      ],
+    });
+    const detailFiber = yield* service
+      .detail(reference)
+      .pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(started);
+    const readers = yield* Effect.all(
+      Array.from({ length: 8 }, () => service.checks(reference)),
+      { concurrency: "unbounded" },
+    ).pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.succeed(release, undefined);
+    const detail = yield* Fiber.join(detailFiber);
+    const checks = yield* Fiber.join(readers);
+    expect(checks).toEqual(
+      Array.from({ length: 8 }, () => ({
+        state: detail.state,
+        headSha: detail.headSha,
+        checks: detail.checks,
+        observedAt: detail.observedAt,
+      })),
+    );
+    expect(detailReads).toBe(1);
+    expect(checkReads).toBe(0);
+  }),
 );
 
 it.effect("preserves check observation time on cache hits and advances it on refresh", () =>
@@ -3123,8 +3209,8 @@ it.effect("preserves check observation time on cache hits and advances it on ref
     yield* TestClock.adjust("1 second");
     expect(yield* service.checks(reference)).toEqual(first);
     expect(reads).toBe(1);
-    yield* TestClock.adjust("15 seconds");
-    expect(yield* service.checks(reference)).toMatchObject({ observedAt: 17_000 });
+    yield* TestClock.adjust("45 seconds");
+    expect(yield* service.checks(reference)).toMatchObject({ observedAt: 47_000 });
     expect(reads).toBe(2);
   }),
 );
@@ -4689,7 +4775,7 @@ it.effect("coalesces completed check failures and separates credentials and atte
     expect((yield* service.checkFailures(input)).log).toMatchObject({ text: "second" });
     expect(calls).toBe(2);
     attempt = 2;
-    yield* TestClock.adjust("16 seconds");
+    yield* TestClock.adjust("46 seconds");
     yield* service.checkFailures({ ...ref, handle: "job:123:2" });
     expect(calls).toBe(3);
     const readsForTwoCalls = Effect.fn(function* (handle: string) {
@@ -4700,7 +4786,7 @@ it.effect("coalesces completed check failures and separates credentials and atte
     });
     attempt = 3;
     log = { _tag: "unavailable", reason: "still-running" };
-    yield* TestClock.adjust("16 seconds");
+    yield* TestClock.adjust("46 seconds");
     expect(yield* readsForTwoCalls("job:123:3")).toBe(2);
     log = { _tag: "unavailable", reason: "no-access" };
     expect(yield* readsForTwoCalls("job:123:3")).toBe(2);
@@ -4708,11 +4794,11 @@ it.effect("coalesces completed check failures and separates credentials and atte
     expect(yield* readsForTwoCalls("job:123:3")).toBe(1);
     attempt = 4;
     log = { _tag: "unavailable", reason: "expired" };
-    yield* TestClock.adjust("16 seconds");
+    yield* TestClock.adjust("46 seconds");
     expect(yield* readsForTwoCalls("job:123:4")).toBe(1);
     attempt = 5;
     log = { _tag: "unavailable", reason: "not-actions" };
-    yield* TestClock.adjust("16 seconds");
+    yield* TestClock.adjust("46 seconds");
     expect(yield* readsForTwoCalls("job:123:5")).toBe(1);
     expect(
       (yield* Effect.flip(service.checkFailures({ ...input, expectedAccountId: "other" })))._tag,
@@ -4720,9 +4806,12 @@ it.effect("coalesces completed check failures and separates credentials and atte
     const settled = calls;
     refuse = true;
     attempt = 6;
-    yield* TestClock.adjust("16 seconds");
+    yield* TestClock.adjust("46 seconds");
     yield* Effect.flip(service.checkFailures({ ...ref, handle: "job:123:6" }));
-    yield* Effect.flip(service.checkFailures(input));
+    expect(yield* service.checkFailures(input)).toMatchObject({
+      attempt: 1,
+      log: { _tag: "excerpt", text: "second" },
+    });
     expect(calls).toBe(settled + 1);
   }),
 );

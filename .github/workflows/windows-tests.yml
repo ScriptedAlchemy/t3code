@@ -26,7 +26,8 @@ permissions:
 jobs:
   test:
     name: Test (${{ inputs.package || 'all non-server' }})
-    runs-on: blacksmith-8vcpu-windows-2025
+    # Forks do not inherit upstream's Blacksmith runner integration.
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-8vcpu-windows-2025' || 'windows-2025' }}
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -64,6 +65,18 @@ jobs:
         if: inputs.package == '' || inputs.package == 'apps/desktop'
         run: vp run --filter "@t3tools/desktop" ensure:electron
 
+      - name: Install Chromium
+        if: inputs.package == '' || inputs.package == 'apps/web'
+        run: node apps/web/node_modules/playwright/cli.js install --only-shell chromium
+
+      - name: Install server Chromium
+        if: inputs.package == 'apps/server'
+        run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
+
+      - name: Build server native addon
+        if: inputs.package == 'apps/server' && inputs.files != ''
+        run: node native/project-memory/build.mjs
+
       # `vp run ... test -- <files>` does not forward positional args to vitest,
       # so file-scoped runs call `vp test run` inside the package instead.
       - name: Test
@@ -72,7 +85,21 @@ jobs:
           $package = '${{ inputs.package }}'
           $files = '${{ inputs.files }}'
           if ($package -eq '') {
-            vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' test
+            $packages = node -e "const { readWorkspace } = require('./.github/scripts/ci-changes.cjs'); for (const pkg of readWorkspace()) if (pkg.hasTest && pkg.name !== 't3' && pkg.name !== '@t3tools/monorepo') console.log(pkg.dir)"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $failed = @()
+            foreach ($workspace in $packages) {
+              Write-Output "::group::Test $workspace"
+              vp run --filter "./$workspace" test
+              $exitCode = $LASTEXITCODE
+              Write-Output "::endgroup::"
+              if ($exitCode -ne 0) { $failed += $workspace }
+            }
+            if ($failed.Count -gt 0) {
+              Write-Output "::error::Failed test suites: $($failed -join ', ')"
+              exit 1
+            }
+            exit 0
           } elseif ($files -eq '') {
             vp run --filter "./$package" test
           } else {

@@ -1142,12 +1142,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
     runtimeOptions: Partial<
-      Pick<CodexAdapterV2.CodexAdapterV2Options, "settings" | "resolveRuntime">
-    > & { readonly modelProvider?: string | null } = {},
+      Pick<CodexAdapterV2.CodexAdapterV2Options, "settings" | "resolveRuntime" | "environment">
+    > & { readonly modelProvider?: string | null; readonly shellPath?: string } = {},
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
   ) =>
     Effect.gen(function* () {
-      const { modelProvider = null, ...adapterRuntimeOptions } = runtimeOptions;
+      const { modelProvider = null, shellPath, ...adapterRuntimeOptions } = runtimeOptions;
       const fileSystem = yield* FileSystem.FileSystem;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const serverConfig = yield* ProviderReplayHarness.makeReplayServerConfig(
@@ -1188,7 +1188,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                             ? Effect.sync(() => {
                                 configReadRequests.push(params);
                                 return {
-                                  config: { model_provider: modelProvider },
+                                  config: {
+                                    model_provider: modelProvider,
+                                    ...(shellPath === undefined
+                                      ? {}
+                                      : { shell_environment_policy: { set: { PATH: shellPath } } }),
+                                  },
                                   origins: {},
                                 };
                               })
@@ -1208,8 +1213,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
         instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
         settings: DEFAULT_CODEX_SETTINGS,
-        ...adapterRuntimeOptions,
         environment: {},
+        ...adapterRuntimeOptions,
         clientFactory,
         crypto: yield* Crypto.Crypto,
         fileSystem,
@@ -1583,6 +1588,56 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         assert.equal(requests.filter((method) => method === "turn/start").length, 1);
         assert.isBelow(requests.indexOf("thread/inject_items"), requests.indexOf("turn/start"));
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect.each([undefined, "/explicit/codex/bin"])(
+    "retains the hydrated managed gh PATH while respecting explicit Codex PATH %s",
+    (shellPath) =>
+      Effect.gen(function* () {
+        const managedPath =
+          "/t3/github/bin/launcher:/user/.nvm/bin:/user/.asdf/shims:/user/bin:/bin";
+        const expectedConfig = {
+          ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+          ...(shellPath === undefined ? { "shell_environment_policy.set.PATH": managedPath } : {}),
+        };
+        const entries = codexReplayPreamble({
+          nativeThreadId: "managed-gh-thread",
+          nativeTurnId: "unused",
+          prompt: "unused",
+        }).slice(0, 5);
+        entries[3] = {
+          type: "expect_outbound",
+          label: "thread/start",
+          frame: { id: 2, method: "thread/start", params: { config: expectedConfig } },
+        };
+        const requests: Array<unknown> = [];
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({ scenario: "managed-gh-path", entries }),
+          () => Effect.void,
+          (method, params) =>
+            Effect.sync(() => {
+              if (method === "thread/start") requests.push(params);
+            }),
+          undefined,
+          {
+            ...(shellPath === undefined ? {} : { shellPath }),
+            environment: {
+              PATH: managedPath,
+              T3_GH_SHIM_DIR: "/t3/github/bin/launcher",
+              CUSTOM: "preserved",
+            },
+          },
+        );
+        assert.deepEqual(requests, [
+          { cwd: "/workspace", model: "gpt-5.4", config: expectedConfig },
+        ]);
+        assert.equal(harness.configReadRequests.length, 1);
       }).pipe(
         Effect.scoped,
         Effect.provide(

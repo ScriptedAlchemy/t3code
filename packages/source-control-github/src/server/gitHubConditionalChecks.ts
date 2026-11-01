@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { PositiveInt, type PullRequestChecks } from "@t3tools/contracts";
+import { normalizeHost } from "@t3tools/source-control-core/server/pullRequestUtils";
 
 import * as GitHubRest from "./GitHubRest.ts";
 import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
@@ -75,7 +76,9 @@ export const makeChecksRevalidator = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const credential = yield* GitHubRequestPolicy.PinnedGitHubCredential;
-      if (credential === null) return yield* read;
+      if (credential === null || normalizeHost(credential.host) !== normalizeHost(input.host)) {
+        return yield* read;
+      }
       const key = `${credential.credentialFingerprint}\0${input.host}\0${input.repository}\0${input.number}`;
       const entry = yield* Cache.get(entries, key);
       return yield* entry.gate.withPermit(
@@ -101,6 +104,14 @@ export const makeChecksRevalidator = Effect.gen(function* () {
               })
               .pipe(
                 Effect.catchTags({
+                  GitHubApiRateLimitError: (error) =>
+                    error.resource === "core" ? Effect.succeed(null) : Effect.fail(error),
+                  SourceControlRateLimitPausedError: (error) =>
+                    error.resource === "core" &&
+                    (error.pauseReason === "reserve-protected" ||
+                      error.pauseReason === "quota-exhausted")
+                      ? Effect.succeed(null)
+                      : Effect.fail(error),
                   GitHubApiNotFoundError: () =>
                     Effect.sync(() => {
                       entry.supported = false;

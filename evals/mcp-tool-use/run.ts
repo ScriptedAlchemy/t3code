@@ -65,7 +65,11 @@ import {
 } from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { proxyConfig } from "../shared/proxy.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
-import { decideGitHubCommand } from "../../apps/server/src/sourceControl/agentGitHubReads.ts";
+import {
+  decideGitHubArguments,
+  decideGitHubCommand,
+} from "../../apps/server/src/sourceControl/agentGitHubReads.ts";
+import { agentShellCommands } from "../../apps/server/src/sourceControl/agentShellCommands.ts";
 import { DeviceExpect, gradeDevice } from "./device-grading.ts";
 import {
   AGENT_DEVICE_SHELL,
@@ -1234,12 +1238,22 @@ type Config = {
 };
 
 /**
- * Claude's real GitHub gate precedes shell mocks, as PreToolUse precedes command execution.
+ * Claude's native gate and Codex's PATH launcher precede shell mocks. Absolute gh paths still
+ * bypass the launcher, and its argv gate cannot see a surrounding shell loop.
  */
 export const cannedOutput = (sample: Sample, command: string) => {
   if (!sample.base.codex) {
     const decision = decideGitHubCommand(command);
     if (!decision.allow) return `<tool_use_error>${decision.reason}</tool_use_error>`;
+  } else {
+    for (const shell of agentShellCommands(command)) {
+      if (shell.executable !== "gh") continue;
+      const decision = decideGitHubArguments(
+        shell.words.slice(1),
+        Object.fromEntries(shell.assignments),
+      );
+      if (!decision.allow) return `${decision.reason}\n`;
+    }
   }
   return (
     mockOutput(sample, command) ??
