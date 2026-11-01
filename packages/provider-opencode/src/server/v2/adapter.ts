@@ -3375,6 +3375,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       get providerSession() {
         return session;
       },
+      supportsT3Tools: !connection.external,
       events: Stream.fromQueue(events),
       // Idle release must wait for background children and held wakes after parent settlement.
       hasPendingBackgroundWork: Effect.sync(() => [...threads.values()].some(owesWork)),

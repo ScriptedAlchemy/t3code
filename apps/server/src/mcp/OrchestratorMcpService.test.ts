@@ -1062,6 +1062,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     readonly driver: ProviderDriverKind;
     readonly model?: string;
     readonly enabled?: boolean;
+    readonly optionValues?: ReadonlyArray<string>;
   }): ServerProvider => ({
     instanceId: input.instanceId,
     driver: input.driver,
@@ -1075,7 +1076,26 @@ describe("OrchestratorMcpService provider resolution", () => {
     models:
       input.model === undefined
         ? []
-        : [{ slug: input.model, name: input.model, isCustom: false, capabilities: null }],
+        : [
+            {
+              slug: input.model,
+              name: input.model,
+              isCustom: false,
+              capabilities:
+                input.optionValues === undefined
+                  ? null
+                  : {
+                      optionDescriptors: [
+                        {
+                          id: "reasoningEffort",
+                          label: "Effort",
+                          type: "select",
+                          options: input.optionValues.map((id) => ({ id, label: id })),
+                        },
+                      ],
+                    },
+            },
+          ],
     slashCommands: [],
     skills: [],
   });
@@ -1629,6 +1649,9 @@ describe("OrchestratorMcpService provider resolution", () => {
     "unavailable",
     "expired",
     "unknown quota",
+    "unregistered adapters",
+    "only cooling adapter registered",
+    "only healthy adapter registered",
   ] as const)("pool delegation availability: %s", (scenario) =>
     Effect.gen(function* () {
       const poolInstanceId = ProviderInstanceId.make("pool_codex");
@@ -1667,7 +1690,12 @@ describe("OrchestratorMcpService provider resolution", () => {
           },
         },
       ];
-      const available = ["healthy capacity", "expired", "unknown quota"].includes(scenario);
+      const available = [
+        "healthy capacity",
+        "expired",
+        "unknown quota",
+        "only healthy adapter registered",
+      ].includes(scenario);
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -1692,7 +1720,15 @@ describe("OrchestratorMcpService provider resolution", () => {
           refreshInstance: () =>
             Effect.succeed(members.map(({ pool: _pool, ...member }) => member)),
         }),
-        adapterRegistryLayer([codexInstanceId, workInstanceId]),
+        adapterRegistryLayer(
+          scenario === "unregistered adapters"
+            ? []
+            : scenario === "only cooling adapter registered"
+              ? [codexInstanceId]
+              : scenario === "only healthy adapter registered"
+                ? [workInstanceId]
+                : [codexInstanceId, workInstanceId],
+        ),
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
@@ -2351,6 +2387,38 @@ describe("OrchestratorMcpService provider resolution", () => {
             candidateDriver: driver,
           },
           {
+            name: "requested-options-on-peer",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: false,
+            selectedInstanceId: codexAltInstanceId,
+            candidateDriver: driver,
+          },
+          {
+            name: "requested-model-on-peer",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: false,
+            selectedInstanceId: codexAltInstanceId,
+            candidateDriver: driver,
+          },
+          {
+            name: "requested-model-prefers-advertised-peer",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: false,
+            selectedInstanceId: codexAltInstanceId,
+            candidateDriver: driver,
+          },
+          {
+            name: "requested-model-unknown-catalog-fallback",
+            inheritedEnabled: true,
+            peerEnabled: false,
+            explicit: false,
+            selectedInstanceId: codexInstanceId,
+            candidateDriver: driver,
+          },
+          {
             name: "unavailable-inherited-falls-back-to-healthy-peer",
             inheritedEnabled: false,
             peerEnabled: true,
@@ -2444,17 +2512,30 @@ describe("OrchestratorMcpService provider resolution", () => {
             }),
             ServerSettings.layerTest(),
             providerRegistryLayer([
-              providerSnapshot({
-                instanceId: codexInstanceId,
-                driver,
-                model: "gpt-5.4",
-                enabled: testCase.inheritedEnabled,
-              }),
+              {
+                ...providerSnapshot({
+                  instanceId: codexInstanceId,
+                  driver,
+                  model: "gpt-5.4",
+                  enabled: testCase.inheritedEnabled,
+                  ...(testCase.name === "requested-options-on-peer"
+                    ? { optionValues: ["medium", "high"] }
+                    : {}),
+                }),
+                ...(testCase.name === "requested-model-prefers-advertised-peer" ||
+                testCase.name === "requested-model-unknown-catalog-fallback"
+                  ? { models: [] }
+                  : {}),
+              },
               providerSnapshot({
                 instanceId: codexAltInstanceId,
                 driver: testCase.candidateDriver,
-                model: "codex-alt-model",
+                model:
+                  testCase.name === "requested-options-on-peer" ? "gpt-5.4" : "codex-alt-model",
                 enabled: testCase.peerEnabled,
+                ...(testCase.name === "requested-options-on-peer"
+                  ? { optionValues: ["high", "max"] }
+                  : {}),
               }),
             ]),
             adapterRegistryLayer(
@@ -2480,7 +2561,17 @@ describe("OrchestratorMcpService provider resolution", () => {
                           ? codexInstanceId
                           : testCase.selectedInstanceId,
                     } as const)
-                  : ({ driverKind: testCase.candidateDriver } as const);
+                  : ({
+                      driverKind: testCase.candidateDriver,
+                      ...(testCase.name === "requested-model-on-peer" ||
+                      testCase.name === "requested-model-prefers-advertised-peer" ||
+                      testCase.name === "requested-model-unknown-catalog-fallback"
+                        ? { model: "codex-alt-model" }
+                        : {}),
+                      ...(testCase.name === "requested-options-on-peer"
+                        ? { model: "gpt-5.4", options: [{ id: "reasoningEffort", value: "max" }] }
+                        : {}),
+                    } as const);
             if (testCase.selectedInstanceId === null) {
               const error = yield* service
                 .delegateTask(scope, {
@@ -2558,6 +2649,12 @@ describe("OrchestratorMcpService provider resolution", () => {
             );
             if (testCase.name === "healthy-inherited") {
               assert.deepEqual(request.modelSelection, parentModelSelection, testCase.name);
+            } else if (testCase.name === "requested-options-on-peer") {
+              assert.deepEqual(request.modelSelection, {
+                instanceId: codexAltInstanceId,
+                model: "gpt-5.4",
+                options: [{ id: "reasoningEffort", value: "max" }],
+              });
             } else {
               assert.equal(request.modelSelection.model, "codex-alt-model", testCase.name);
             }
@@ -3001,11 +3098,18 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
-  it.effect(
-    "pstack targets set the same effort under any parent and leave speed to inheritance",
-    () =>
+  it.effect.each([
+    { driver: "codex", model: "gpt-6-astra", effortId: "reasoningEffort" },
+    { driver: "pi", model: "openai/gpt-6-astra", effortId: "thinking" },
+    { driver: "opencode2", model: "openai/gpt-6-astra", effortId: "variant" },
+    { driver: "acpRegistry", model: "gpt-6-astra", effortId: "reasoningEffort" },
+  ])(
+    "pstack targets dispatch advertised $driver models and effort under either parent",
+    ({ driver, model, effortId }) =>
       Effect.gen(function* () {
         const claudeId = ProviderInstanceId.make("claudeAgent");
+        const targetId = ProviderInstanceId.make(driver === "codex" ? "codex" : `${driver}-work`);
+        const inheritedSpeed = driver === "codex" ? [{ id: "serviceTier", value: "priority" }] : [];
         const providers: ServerProvider[] = [
           {
             ...providerSnapshot({
@@ -3016,30 +3120,34 @@ describe("OrchestratorMcpService provider resolution", () => {
           },
           {
             ...providerSnapshot({
-              instanceId: codexInstanceId,
-              driver: ProviderDriverKind.make("codex"),
+              instanceId: targetId,
+              driver: ProviderDriverKind.make(driver),
             }),
             models: [
               {
-                slug: "gpt-6-astra",
+                slug: model,
                 name: "Astra",
                 isCustom: false,
                 capabilities: {
                   optionDescriptors: [
                     {
-                      id: "reasoningEffort",
+                      id: effortId,
                       label: "Effort",
                       type: "select",
                       currentValue: "medium",
                       options: ["low", "medium", "high", "xhigh"].map((id) => ({ id, label: id })),
                     },
-                    {
-                      id: "serviceTier",
-                      label: "Tier",
-                      type: "select",
-                      currentValue: "default",
-                      options: ["default", "priority"].map((id) => ({ id, label: id })),
-                    },
+                    ...(driver === "codex"
+                      ? [
+                          {
+                            id: "serviceTier",
+                            label: "Tier",
+                            type: "select" as const,
+                            currentValue: "default",
+                            options: ["default", "priority"].map((id) => ({ id, label: id })),
+                          },
+                        ]
+                      : []),
                   ],
                 },
               },
@@ -3050,13 +3158,19 @@ describe("OrchestratorMcpService provider resolution", () => {
           settings: DEFAULT_SERVER_SETTINGS,
           projectId,
           nowMs: 0,
-          file: parseModelsFile(
-            "architect runners: claudeAgent/claude-opus-5-5 effort=xhigh, codex/gpt-6-astra reasoningEffort=high",
-          ),
-          defaults: [{ label: "architect runners", defaultValue: "auto" }],
+          file:
+            driver === "codex"
+              ? parseModelsFile(
+                  "architect runners: claudeAgent/claude-opus-5-5 effort=xhigh, codex/gpt-6-astra reasoningEffort=high",
+                )
+              : undefined,
+          defaults: [
+            { label: "architect runners", defaultValue: "claude-opus-5-5-xhigh, gpt-6-astra-high" },
+          ],
           providers,
           capableInstanceIds: new Set(providers.map((provider) => provider.instanceId)),
         });
+        assert.deepEqual(resolved.diagnostics, []);
         const results: unknown[][] = [];
         for (const inherited of [
           {
@@ -3068,12 +3182,9 @@ describe("OrchestratorMcpService provider resolution", () => {
             ],
           },
           {
-            instanceId: codexInstanceId,
-            model: "gpt-6-astra",
-            options: [
-              { id: "reasoningEffort", value: "xhigh" },
-              { id: "serviceTier", value: "priority" },
-            ],
+            instanceId: targetId,
+            model,
+            options: [{ id: effortId, value: "xhigh" }, ...inheritedSpeed],
           },
         ]) {
           const selections: unknown[] = [];
@@ -3144,9 +3255,9 @@ describe("OrchestratorMcpService provider resolution", () => {
               ],
             },
             {
-              instanceId: codexInstanceId,
-              model: "gpt-6-astra",
-              options: [{ id: "reasoningEffort", value: "high" }],
+              instanceId: targetId,
+              model,
+              options: [{ id: effortId, value: "high" }],
             },
           ],
           [
@@ -3156,12 +3267,9 @@ describe("OrchestratorMcpService provider resolution", () => {
               options: [{ id: "effort", value: "xhigh" }],
             },
             {
-              instanceId: codexInstanceId,
-              model: "gpt-6-astra",
-              options: [
-                { id: "reasoningEffort", value: "high" },
-                { id: "serviceTier", value: "priority" },
-              ],
+              instanceId: targetId,
+              model,
+              options: [{ id: effortId, value: "high" }, ...inheritedSpeed],
             },
           ],
         ]);

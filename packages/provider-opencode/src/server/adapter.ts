@@ -3080,6 +3080,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           driver: OPENCODE_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: sessionEntity,
+          supportsT3Tools: !connection.external,
           events: Stream.fromEffectRepeat(Queue.take(events)),
           hasPendingBackgroundWork: Effect.sync(() => busySessionIds.size > 0),
           ensureThread: Effect.fn("OpencodeAdapter.ensureThread")(

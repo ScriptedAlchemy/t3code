@@ -31,7 +31,7 @@ const TERMS = [
 ];
 
 const T3_TERMS = [
-  { key: "/loop", re: /\/loop\b/ },
+  { key: "/loop", re: /(?<![\w./])\/loop(?![\w/-]|\.[\w./])/ },
   { key: "update_state", re: /\bupdate_state\b/ },
   { key: "watch-pr", re: /\bwatch-pr\b/ },
   { key: "bootstrap", re: /\bbootstrap\b/ },

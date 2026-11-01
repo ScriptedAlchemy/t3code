@@ -33,7 +33,7 @@ Swap in the real paths, skills, and done checks. Informal wording works.
 
 ## Review and ship
 
-- `$pstack:interrogate the whole branch, but skeptically. don't change anything yet. no nitpicks unless it's a real bug or regression.` Read the dismissals too.
+- `$pstack:interrogate the whole branch, but skeptically. don't change anything yet. no nitpicks unless it's a real bug or regression.` Read the Dropped list too.
 - `$pstack:create-formal-verification-skill prove <property> holds in <module>, even when <steps> interleave or retry.` After merges or refactors in that code: `$pstack:maintain-formal-verification-skill`.
 - `$pstack:swarm check every package under <dir> against its check script. one worker per package. one report.`
 - `$pstack:poteto-mode open the pr. small ordered commits, evidence in the description.`
@@ -46,6 +46,6 @@ Swap in the real paths, skills, and done checks. Informal wording works.
 - `$pstack:show-me-your-work catch me up on what you did last night.` Read its Attention section first.
 - `$pstack:ketchup` catches you up on this chat since your last message and lists every call that waits on you.
 - `$pstack:poteto-mode full autopilot on this queue. each item is independent.`
-- `$pstack:poteto-mode autopilot these changes but stack them, don't ship. i'll land the stack.`
+- `$pstack:poteto-mode autopilot these changes, but don't merge. i'll land them.`
 - `$pstack:reflect capture what we learned so the next run doesn't repeat it.` Approve only edits that change a future decision.
 - `$pstack:bro` restates the last reply in plain words.

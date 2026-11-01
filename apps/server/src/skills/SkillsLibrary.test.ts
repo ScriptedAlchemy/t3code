@@ -125,7 +125,7 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
             yield* Effect.promise(() =>
               NodeFSP.realpath(path.join(profileSkills, "review", "outside.md")),
             ),
-          ).toBe(outside);
+          ).toBe(yield* fs.realPath(outside));
           expect(
             (yield* discoverAntigravitySkills({
               cwd: path.join(home, "project"),

@@ -94,6 +94,23 @@ describe("materializeReplayTranscriptRuntimeInstructions", () => {
     );
   });
 
+  it("materializes new GitHub read guidance for legacy Muse transcripts", () => {
+    const currentInstructions = buildRuntimeInstructions({ harness: "Muse Code", model: "muse" });
+    const oldReadGuidance = /\n\n<github_reads>[\s\S]*?<\/github_reads>/u;
+    const legacyInstructions = currentInstructions
+      .replace(currentGuidancePattern, legacyGuidance)
+      .replace(oldReadGuidance, "");
+    const staleInstructions = currentInstructions
+      .replace(currentGuidancePattern, legacyGuidance)
+      .replace(oldReadGuidance, "\n\n<github_reads>Use direct gh reads.</github_reads>");
+
+    for (const recordedInstructions of [legacyInstructions, staleInstructions]) {
+      const recorded = transcript([turnStart(1, recordedInstructions, "Original prompt", "low")]);
+      const expected = transcript([turnStart(1, currentInstructions, "Original prompt", "low")]);
+      assert.deepEqual(materializeReplayTranscriptRuntimeInstructions(recorded, runtime), expected);
+    }
+  });
+
   it("preserves user text, other instructions, inbound frames, and non-turn requests", () => {
     const currentInstructions = buildRuntimeInstructions({ harness: "Muse Code", model: "muse" });
     const suffix = "\n\n<task_instructions>Keep this instruction exact.</task_instructions>";

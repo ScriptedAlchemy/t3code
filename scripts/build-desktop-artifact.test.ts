@@ -32,6 +32,7 @@ import {
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
   stageDesktopServerDist,
+  prunePackagedPstackTestFixtures,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   UnsupportedDesktopBuildArchitectureError,
@@ -251,6 +252,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           "upstream/.gitignore",
           "upstream/skills/poteto-mode/scripts/bun.lock",
         ];
+        const testFixture = "upstream/skills/statechart/scripts/test/corpus/Counter/chart.mmd";
+        const testFixturePath = path.join(serverDistDir, "pstack", testFixture);
+        yield* fs.makeDirectory(path.dirname(testFixturePath), { recursive: true });
+        yield* fs.writeFileString(testFixturePath, "test-only fixture");
         for (const file of files) {
           const source = path.join(serverDistDir, "pstack", file);
           yield* fs.makeDirectory(path.dirname(source), { recursive: true });
@@ -258,6 +263,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         }
         yield* fs.writeFileString(path.join(serverDistDir, "bin.mjs"), "server");
         yield* stageDesktopServerDist({ platform, serverDistDir, stageAppDir });
+        const packagedFixture = path.join(stageAppDir, "apps/server/dist/pstack", testFixture);
+        assert.isFalse(yield* fs.exists(packagedFixture));
+        assert.isTrue(yield* fs.exists(testFixturePath));
         for (const file of files) {
           assert.equal(
             yield* fs.readFileString(path.join(stageAppDir, "apps/server/dist/pstack", file)),
@@ -1364,10 +1372,15 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const fixture = yield* makeWindowsPayloadFixture({ copyUnpackedNatives: true });
+      const packagedPstackDir = path.join(fixture.packagedAppDir, "resources/pstack");
       yield* fs.copy(
         path.join(import.meta.dirname, "../packages/pstack/upstream"),
-        path.join(fixture.packagedAppDir, "resources/pstack/upstream"),
+        path.join(packagedPstackDir, "upstream"),
       );
+      yield* prunePackagedPstackTestFixtures(packagedPstackDir);
+      const scriptsDir = path.join(packagedPstackDir, "upstream/skills/statechart/scripts");
+      assert.isFalse(yield* fs.exists(path.join(scriptsDir, "test")));
+      assert.isTrue(yield* fs.exists(path.join(scriptsDir, "statechart.ts")));
       yield* stageSelfContainedPlatformPackages(
         path.join(import.meta.dirname, "../apps/server/node_modules"),
         path.join(fixture.packagedAppDir, "resources/node_modules"),
