@@ -75,8 +75,10 @@ selected model. If access to that model ends, select another available model
 before continuing.
 
 Antigravity creates empty `.gemini/skills` and `.agents/skills` folders in the
-workspace when a session starts. Git does not track empty folders, so they never
-appear in commits.
+workspace when a session starts. Runtime 1.4.5 also writes
+`skills/system/run-workflow/SKILL.md`, which describes its built-in workflow tool.
+The empty folders do not appear in Git, but the workflow skill can appear as an
+untracked file in the project.
 
 Use Antigravity's native `/plan` command for planning. T3 Code's separate Plan mode
 is unavailable. Tool approvals follow [Permission modes](./permission-modes.md).

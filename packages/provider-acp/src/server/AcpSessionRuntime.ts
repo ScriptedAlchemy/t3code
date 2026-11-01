@@ -1233,6 +1233,12 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   EffectAcpErrors.AcpError,
   ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
 > {
+  const sessionWorkspace = {
+    cwd: options.cwd,
+    ...(options.additionalDirectories?.length
+      ? { additionalDirectories: options.additionalDirectories }
+      : {}),
+  };
   const crypto = yield* Crypto.Crypto;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const runtimeScope = yield* Scope.fork(yield* Scope.Scope);
@@ -2163,9 +2169,6 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         | EffectAcpSchema.LoadSessionResponse
         | EffectAcpSchema.NewSessionResponse
         | EffectAcpSchema.ResumeSessionResponse;
-      const additionalDirectories = options.additionalDirectories?.length
-        ? { additionalDirectories: options.additionalDirectories }
-        : {};
       if (options.resumeSessionId) {
         sessionId = options.resumeSessionId;
         if (
@@ -2174,16 +2177,14 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         ) {
           const loadPayload = {
             sessionId,
-            cwd: options.cwd,
-            ...additionalDirectories,
+            ...sessionWorkspace,
             mcpServers: sessionMcpServers(initializeResult),
           } satisfies EffectAcpSchema.LoadSessionRequest;
           sessionSetupResult = yield* runLoadSessionWithReplayIdle(loadPayload, initializeResult);
         } else if (initializeResult.agentCapabilities?.sessionCapabilities?.resume != null) {
           const resumePayload = {
             sessionId,
-            cwd: options.cwd,
-            ...additionalDirectories,
+            ...sessionWorkspace,
             mcpServers: sessionMcpServers(initializeResult),
           } satisfies EffectAcpSchema.ResumeSessionRequest;
           sessionSetupResult = yield* runLoggedRequest(
@@ -2199,9 +2200,8 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         }
       } else {
         const createPayload = {
-          cwd: options.cwd,
+          ...sessionWorkspace,
           mcpServers: sessionMcpServers(initializeResult),
-          ...additionalDirectories,
         } satisfies EffectAcpSchema.NewSessionRequest;
         const created = yield* runLoggedRequest(
           "session/new",
@@ -2399,7 +2399,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         Effect.flatMap((started) => {
           const requestPayload = {
             sessionId,
-            cwd: options.cwd,
+            ...sessionWorkspace,
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
           } satisfies EffectAcpSchema.LoadSessionRequest;
           return runLoadSessionWithReplayIdle(requestPayload, started.initializeResult);
@@ -2411,7 +2411,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         Effect.flatMap((started) => {
           const requestPayload = {
             sessionId,
-            cwd: options.cwd,
+            ...sessionWorkspace,
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
           } satisfies EffectAcpSchema.ResumeSessionRequest;
           return runLoggedRequest(
@@ -2427,7 +2427,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         Effect.flatMap((started) => {
           const requestPayload = {
             sessionId,
-            cwd: options.cwd,
+            ...sessionWorkspace,
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
           } satisfies EffectAcpSchema.ForkSessionRequest;
           return runLoggedRequest(
