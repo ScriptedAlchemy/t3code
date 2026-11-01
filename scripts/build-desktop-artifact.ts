@@ -3100,16 +3100,14 @@ export const packWindowsServerAsar = Effect.fn("packWindowsServerAsar")(function
 });
 
 /** The native source keeps its test corpus; published desktop apps only need runnable skills. */
-export const prunePackagedPstackTestFixtures = Effect.fn(
-  "desktopArtifact.prunePackagedPstackTestFixtures",
-)(function* (pstackDir: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  yield* fs.remove(
-    path.join(pstackDir, "upstream", "skills", "statechart", "scripts", "test"),
-    { recursive: true, force: true },
-  );
-});
+export const prunePackagedPstackTestFixtures = Effect.fn("prunePackagedPstackTestFixtures")(
+  function* (pstackDir: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const fixtureDir = path.join(pstackDir, "upstream/skills/statechart/scripts/test");
+    yield* fs.remove(fixtureDir, { recursive: true, force: true });
+  },
+);
 
 export const stageDesktopServerDist = Effect.fn("stageDesktopServerDist")(function* (input: {
   readonly platform: typeof BuildPlatform.Type;

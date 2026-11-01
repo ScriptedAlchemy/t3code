@@ -263,9 +263,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         }
         yield* fs.writeFileString(path.join(serverDistDir, "bin.mjs"), "server");
         yield* stageDesktopServerDist({ platform, serverDistDir, stageAppDir });
-        assert.isFalse(
-          yield* fs.exists(path.join(stageAppDir, "apps/server/dist/pstack", testFixture)),
-        );
+        const packagedFixture = path.join(stageAppDir, "apps/server/dist/pstack", testFixture);
+        assert.isFalse(yield* fs.exists(packagedFixture));
         assert.isTrue(yield* fs.exists(testFixturePath));
         for (const file of files) {
           assert.equal(
@@ -1376,16 +1375,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         path.join(packagedPstackDir, "upstream"),
       );
       yield* prunePackagedPstackTestFixtures(packagedPstackDir);
-      assert.isFalse(
-        yield* fs.exists(
-          path.join(packagedPstackDir, "upstream/skills/statechart/scripts/test"),
-        ),
-      );
-      assert.isTrue(
-        yield* fs.exists(
-          path.join(packagedPstackDir, "upstream/skills/statechart/scripts/statechart.ts"),
-        ),
-      );
+      const scriptsDir = path.join(packagedPstackDir, "upstream/skills/statechart/scripts");
+      assert.isFalse(yield* fs.exists(path.join(scriptsDir, "test")));
+      assert.isTrue(yield* fs.exists(path.join(scriptsDir, "statechart.ts")));
       yield* stageSelfContainedPlatformPackages(
         path.join(import.meta.dirname, "../apps/server/node_modules"),
         path.join(fixture.packagedAppDir, "resources/node_modules"),
