@@ -33,7 +33,9 @@ describe("managed GitHub CLI environment", () => {
         const path = yield* Path.Path;
         const platform = yield* HostProcess.Platform;
         const host = yield* ProviderHost.ProviderHost;
-        const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-gh-" });
+        const stateDir = yield* fs
+          .makeTempDirectoryScoped({ prefix: "t3-gh-" })
+          .pipe(Effect.flatMap(fs.realPath));
         const realDir = path.join(stateDir, "real gh ' $HOME `literal`");
         yield* fs.makeDirectory(realDir);
         const profileDir = path.join(stateDir, ".nvm", "bin");
