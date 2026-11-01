@@ -32,6 +32,7 @@ import {
   type ThreadId,
   type TurnTokenUsage,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AgentScope, AgentScopeThreadId } from "@t3tools/shared/AgentScope";
 import { HTML_RENDER_TOOL_NAME } from "@t3tools/shared/htmlRender";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
@@ -653,6 +654,7 @@ function acpMcpContext(
   session: McpProviderSession.McpProviderSessionConfig | undefined,
   self: SelfInvocation,
   mcpOverHttp: boolean | undefined,
+  incomingDecision?: string,
 ): AcpMcpContext {
   if (session === undefined) {
     return { servers: [], acpServers: [], httpServers: [] };
@@ -668,6 +670,9 @@ function acpMcpContext(
           { name: "ELECTRON_RUN_AS_NODE", value: "1" },
           { name: "T3_ACP_MCP_ENDPOINT", value: session.endpoint },
           { name: "T3_ACP_MCP_AUTHORIZATION", value: session.authorizationHeader },
+          ...(incomingDecision === undefined
+            ? []
+            : [{ name: "T3_INCOMING_DECISION", value: incomingDecision }]),
         ],
       },
     ],
@@ -1434,12 +1439,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
   const host = yield* ProviderHost.ProviderHost;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const { flavor, selfInvocation: self } = options;
+  const incomingDecision = (yield* HostProcess.Environment).T3_INCOMING_DECISION;
   const readMcpContext = (threadId: ThreadId | null) =>
     threadId === null
       ? Effect.succeed(acpMcpContext(undefined, self, flavor.mcpOverHttp))
       : mcpSessions
           .read(threadId)
-          .pipe(Effect.map((session) => acpMcpContext(session, self, flavor.mcpOverHttp)));
+          .pipe(
+            Effect.map((session) =>
+              acpMcpContext(session, self, flavor.mcpOverHttp, incomingDecision),
+            ),
+          );
   const driver = flavor.driver;
   const continuationRequests = options.continuationRequests;
   const postSettleContinuationEnabled =

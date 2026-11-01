@@ -5,8 +5,10 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 
+import { makeIncomingDecisionShadow } from "./IncomingDecisionShadow.ts";
 import { mcpToolSession, runAcpMcpCliFastPath, runAcpMcpStdioBridge } from "./AcpMcpStdioBridge.ts";
 
 function makeHarness(responder: (request: Request) => Promise<Response> | Response) {
@@ -39,6 +41,149 @@ function pendingFetch(started: Deferred.Deferred<AbortSignal | undefined>) {
 }
 
 describe("AcpMcpStdioBridge", () => {
+  it.effect(
+    "shadows only matching tool responses before delivery and preserves the delivered prefix",
+    () =>
+      Effect.gen(function* () {
+        const input = new NodeStream.PassThrough();
+        const written: string[] = [];
+        let decisions = 0;
+        const result = { content: [{ type: "text", text: "original evidence\n".repeat(30) }] };
+        const incomingDecision = yield* makeIncomingDecisionShadow(
+          JSON.stringify({ mode: "shadow", port: 8009, model: "test-candidate", device: "metal" }),
+          async () => {
+            decisions++;
+            expect(written).toHaveLength(2);
+            return Response.json({
+              model: "test-candidate",
+              answers: {
+                "0": {
+                  type: "choice",
+                  choice: "drop",
+                  confidence: 1,
+                  probabilities: { keep: 0, drop: 1, abstain: 0 },
+                },
+              },
+              usage: { input_tokens: 1, output_tokens: 1 },
+            });
+          },
+        );
+        using stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        const bridge = runAcpMcpStdioBridge({
+          endpoint: "http://127.0.0.1:1/mcp",
+          authorization: "Bearer bridge-test",
+          input,
+          output: { write: (chunk) => written.push(chunk) },
+          incomingDecision,
+          fetchImplementation: async (_url, init) => {
+            const request = JSON.parse(String(init?.body));
+            return Response.json([
+              { jsonrpc: "2.0", method: "notifications/progress", params: { unchanged: true } },
+              { jsonrpc: "2.0", id: 999, result },
+              { jsonrpc: "2.0", id: request.id, result },
+            ]);
+          },
+        });
+        input.end('{"jsonrpc":"2.0","id":1,"method":"tools/call"}\n');
+        yield* bridge;
+        expect(decisions).toBe(1);
+        expect(written).toEqual([
+          JSON.stringify({
+            jsonrpc: "2.0",
+            method: "notifications/progress",
+            params: { unchanged: true },
+          }) + "\n",
+          JSON.stringify({ jsonrpc: "2.0", id: 999, result }) + "\n",
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result }) + "\n",
+        ]);
+        expect(stderr).toHaveBeenCalledWith(expect.stringContaining('"applied":false'));
+        expect(stderr.mock.calls.flat().join("")).not.toContain("original evidence");
+      }),
+  );
+
+  it.effect.each(["decision", "malformed", "timeout"] as const)(
+    "preserves the provider prefix through %s selection",
+    (outcome) =>
+      Effect.gen(function* () {
+        const input = new NodeStream.PassThrough();
+        const written: string[] = [];
+        const started = yield* Deferred.make<void>();
+        const first = `${"é evidence ".repeat(30)}\n\n`;
+        const result = {
+          meta: { x: 1 },
+          content: [
+            { type: "text", text: first + "remove\n\n", extra: 2 },
+            { type: "text", text: "留める" },
+          ],
+        };
+        const incomingDecision = yield* makeIncomingDecisionShadow(
+          JSON.stringify({ mode: "shadow", port: 8009, model: "test", device: "metal" }),
+          async () => {
+            if (outcome === "timeout") {
+              Deferred.doneUnsafe(started, Effect.void);
+              return new Promise<Response>(() => {});
+            }
+            return Response.json({
+              model: "test",
+              answers: Object.fromEntries(
+                ["keep", "drop", "abstain"].map((choice, id) => [
+                  outcome === "malformed" && id === 1 ? "unknown-block" : String(id),
+                  {
+                    type: "choice",
+                    choice,
+                    confidence: 0.5,
+                    probabilities: { keep: 0.3, drop: 0.3, abstain: 0.4 },
+                  },
+                ]),
+              ),
+              usage: { input_tokens: 1, output_tokens: 1 },
+            });
+          },
+          "test-select",
+        );
+        using _stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        const bridge = runAcpMcpStdioBridge({
+          endpoint: "http://127.0.0.1:1/mcp",
+          authorization: "test",
+          input,
+          output: { write: (chunk) => written.push(chunk) },
+          incomingDecision,
+          fetchImplementation: async (_url, init) => {
+            const request = JSON.parse(String(init?.body));
+            return Response.json([
+              { jsonrpc: "2.0", method: "prefix", params: { text: "prior" } },
+              { jsonrpc: "2.0", id: request.id, result, extra: true },
+            ]);
+          },
+        });
+        input.end('{"jsonrpc":"2.0","id":1,"method":"tools/call"}\n');
+        const fiber = yield* Effect.forkChild(bridge);
+        if (outcome === "timeout") {
+          yield* Deferred.await(started);
+          yield* TestClock.adjust("1 second");
+        }
+        yield* Fiber.join(fiber);
+        expect(written).toEqual([
+          JSON.stringify({ jsonrpc: "2.0", method: "prefix", params: { text: "prior" } }) + "\n",
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result:
+              outcome === "decision"
+                ? {
+                    ...result,
+                    content: [{ ...result.content[0], text: first }, result.content[1]],
+                  }
+                : result,
+            extra: true,
+          }) + "\n",
+        ]);
+        if (outcome === "timeout") {
+          expect(_stderr).toHaveBeenCalledWith(expect.stringContaining('"elapsedMs":1000'));
+        }
+      }),
+  );
+
   it("prints structured results once in the terminal while retaining other content and errors", async () => {
     const originalEnvironment = process.env;
     using _environment = {
