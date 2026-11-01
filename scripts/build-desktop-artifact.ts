@@ -3099,6 +3099,18 @@ export const packWindowsServerAsar = Effect.fn("packWindowsServerAsar")(function
   }
 });
 
+/** The native source keeps its test corpus; published desktop apps only need runnable skills. */
+export const prunePackagedPstackTestFixtures = Effect.fn(
+  "desktopArtifact.prunePackagedPstackTestFixtures",
+)(function* (pstackDir: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* fs.remove(
+    path.join(pstackDir, "upstream", "skills", "statechart", "scripts", "test"),
+    { recursive: true, force: true },
+  );
+});
+
 export const stageDesktopServerDist = Effect.fn("stageDesktopServerDist")(function* (input: {
   readonly platform: typeof BuildPlatform.Type;
   readonly serverDistDir: string;
@@ -3107,12 +3119,14 @@ export const stageDesktopServerDist = Effect.fn("stageDesktopServerDist")(functi
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const destination = path.join(input.stageAppDir, "apps/server/dist");
+  const stagedPstackDir = path.join(destination, "pstack");
   yield* fs.makeDirectory(destination, { recursive: true });
   if (input.platform === "win") {
-    yield* fs.copy(path.join(input.serverDistDir, "pstack"), path.join(destination, "pstack"));
+    yield* fs.copy(path.join(input.serverDistDir, "pstack"), stagedPstackDir);
   } else {
     yield* fs.copy(input.serverDistDir, destination);
   }
+  yield* prunePackagedPstackTestFixtures(stagedPstackDir);
 });
 
 export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(function* (input: {
