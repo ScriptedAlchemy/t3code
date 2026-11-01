@@ -1,7 +1,6 @@
 import type { SourceControlProviderKind } from "@t3tools/contracts";
 import type { ForgeCommand } from "@t3tools/source-control-core/shared/definition";
-
-import { sourceControlDefinitions } from "./sourceControlDefinitions.ts";
+import { builtInSourceControlDefinitions as sourceControlDefinitions } from "@t3tools/source-control-definitions/registry";
 
 // Where a shell starts a command, past `NAME=value` assignments and wrappers like `timeout 60`.
 // A command anywhere else, as in `echo "gh pr create"`, is text, not a command that runs.
@@ -106,6 +105,8 @@ function shellWords(segment: string): Array<string> {
 }
 
 export interface AgentShellCommand {
+  /** The executable as written, before basename normalization. */
+  readonly executable: string;
   /** The program and its arguments, after assignments and wrappers such as `timeout 60`. */
   readonly words: ReadonlyArray<string>;
   /** `NAME=value` assignments that prefixed the command, including those after `env`. */
@@ -174,6 +175,7 @@ export function agentShellCommands(input: string): ReadonlyArray<AgentShellComma
     if (words.length === 0) continue;
     const program = words[0] ?? "";
     commands.push({
+      executable: program,
       words: [program.slice(program.lastIndexOf("/") + 1), ...words.slice(1)],
       assignments,
       repeats: watches || loopDepth > 0,
@@ -197,8 +199,15 @@ export interface AgentForgeCommand {
 export function classifyAgentShellCommands(input: string): ReadonlyArray<AgentForgeCommand> {
   return agentShellCommands(input).flatMap((shellCommand) => {
     for (const definition of sourceControlDefinitions.definitions) {
-      const command = definition.classifyCommand?.(shellCommand.words) ?? null;
+      let command = definition.classifyCommand?.(shellCommand.words) ?? null;
       if (command === null) continue;
+      // Environment-selected hosts/repos may differ from this thread's repository.
+      if (
+        definition.kind === "github" &&
+        (shellCommand.assignments.get("GH_HOST") || shellCommand.assignments.get("GH_REPO"))
+      ) {
+        command = { kind: "other" };
+      }
       return [
         {
           forge: definition.kind,

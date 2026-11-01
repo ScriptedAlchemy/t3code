@@ -73,6 +73,19 @@ it.effect("keeps providers and hosts isolated", () =>
   }).pipe(Effect.provide(SourceControlRateLimit.layer)),
 );
 
+it.effect("isolates primary quota cooldowns within one host", () =>
+  Effect.gen(function* () {
+    const limits = yield* SourceControlRateLimit.SourceControlRateLimit;
+    const graphql = { ...github, resource: "graphql" };
+    const lease = yield* limits.check(graphql);
+    yield* limits.recordRateLimit({ ...graphql, lease });
+
+    yield* limits.check(github);
+    yield* limits.check({ ...github, resource: "core" });
+    assert.strictEqual((yield* Effect.flip(limits.check(graphql))).resource, "graphql");
+  }).pipe(Effect.provide(SourceControlRateLimit.layer)),
+);
+
 it.effect("does not let an older success clear a concurrent pause", () =>
   Effect.gen(function* () {
     const limits = yield* SourceControlRateLimit.SourceControlRateLimit;

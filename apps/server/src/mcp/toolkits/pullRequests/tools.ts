@@ -423,7 +423,7 @@ const PullRequestStatusTool = Tool.make("pull_request_status", {
 
 const PullRequestFailuresTool = Tool.make("pull_request_failures", {
   description:
-    "Why a PR's CI failed: each failing check's failed steps, annotations, and a bounded log excerpt around the errors. Use instead of gh run view --log-failed or gh api .../jobs/<id>/logs.",
+    "Why one PR's CI failed: each failing check's failed steps, annotations, and a bounded log excerpt around the errors. Accepts one PR per call; make separate calls for several PRs. Use instead of gh run view --log-failed or gh api .../jobs/<id>/logs.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     ...PullRequestFailuresInput.fields,
@@ -440,7 +440,7 @@ const PullRequestFailuresTool = Tool.make("pull_request_failures", {
 
 const PullRequestFeedbackTool = Tool.make("pull_request_feedback", {
   description:
-    "Unresolved review threads, review verdicts, and comments on a PR, bot findings included, newest first. Use instead of gh api .../reviews, .../comments, or reviewThreads GraphQL.",
+    "Unresolved review threads, review verdicts, and comments on one PR, bot findings included, newest first. Accepts one PR per call; make separate calls for several PRs. Use instead of gh api .../reviews, .../comments, or reviewThreads GraphQL.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     ...PullRequestReadInput.fields,

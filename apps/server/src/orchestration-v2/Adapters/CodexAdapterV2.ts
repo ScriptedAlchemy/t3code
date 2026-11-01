@@ -1331,8 +1331,15 @@ export const CODEX_THREAD_CONFIG = {
 // T3 waits can block for an hour; keep Codex's MCP timeout above that.
 const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 
+const decodeCodexShellEnvironment = Schema.decodeUnknownOption(
+  Schema.Struct({
+    shell_environment_policy: Schema.Struct({ set: Schema.Record(Schema.String, Schema.String) }),
+  }),
+);
+
 function codexThreadRuntimeParams(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+  readonly environment: NodeJS.ProcessEnv;
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }): {
@@ -1341,11 +1348,20 @@ function codexThreadRuntimeParams(input: {
   readonly config: Readonly<Record<string, Schema.Json>>;
 } {
   const { mcpSession } = input;
+  const managedPath =
+    input.environment.T3_GH_SHIM_DIR === undefined
+      ? undefined
+      : input.environment[
+          Object.keys(input.environment).find((key) => key.toUpperCase() === "PATH") ?? "PATH"
+        ];
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      // Reapply the hydrated startup PATH after Codex's snapshot, retaining startup profile
+      // tools and our gh launcher. Login profiles stay enabled. Explicit user PATH config wins.
+      ...(managedPath === undefined ? {} : { "shell_environment_policy.set.PATH": managedPath }),
       ...(mcpSession === undefined
         ? {}
         : {
@@ -1668,13 +1684,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+        const environment = resolvedRuntime?.environment ?? adapterOptions.environment;
         const client = yield* clientFactory.open({
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
           runtimePolicy: input.runtimePolicy,
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
-          environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+          environment,
         });
         const additionalContextByThread = yield* Ref.make(
           new Map<
@@ -1763,6 +1780,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         // A failed open is discarded, so the next turn spawns the updated binary.
         if (adapterOptions.compatibility !== undefined) yield* ensureInitialized;
         const now = yield* DateTime.now;
+        const configuredShellPaths = yield* Ref.make(new Set<string>());
         const readModelProvider = (runtimePolicy = input.runtimePolicy) =>
           ensureInitialized.pipe(
             Effect.andThen(
@@ -1772,7 +1790,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }),
             ),
             Effect.flatMap(Schema.decodeUnknownEffect(CodexSchema.V2ConfigReadResponse)),
+            Effect.tap((response) =>
+              Ref.update(configuredShellPaths, (current) => {
+                const next = new Set(current);
+                const configured = decodeCodexShellEnvironment(response.config);
+                const hasPath =
+                  Option.isSome(configured) &&
+                  Object.keys(configured.value.shell_environment_policy.set).some(
+                    (key) => key.toUpperCase() === "PATH",
+                  );
+                if (hasPath) next.add(runtimePolicy.cwd ?? "");
+                else next.delete(runtimePolicy.cwd ?? "");
+                return next;
+              }),
+            ),
             Effect.map((response) => response.config.model_provider ?? "openai"),
+          );
+        const threadEnvironment = (runtimePolicy = input.runtimePolicy) =>
+          Ref.get(configuredShellPaths).pipe(
+            Effect.map((configured) =>
+              configured.has(runtimePolicy.cwd ?? "") ? {} : environment,
+            ),
           );
         const session = providerSession({
           providerSessionId: input.providerSessionId,
@@ -6968,15 +7006,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }),
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
+              Effect.andThen(
+                environment.T3_GH_SHIM_DIR === undefined
+                  ? Effect.void
+                  : readModelProvider(threadInput.runtimePolicy),
+              ),
               Effect.andThen(mcpSessions.read(threadInput.threadId)),
               Effect.flatMap((mcpSession) =>
-                client.request(
-                  "thread/start",
-                  codexThreadRuntimeParams({
-                    mcpSession,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
+                threadEnvironment(threadInput.runtimePolicy).pipe(
+                  Effect.flatMap((environment) =>
+                    client.request(
+                      "thread/start",
+                      codexThreadRuntimeParams({
+                        environment,
+                        mcpSession,
+                        modelSelection: threadInput.modelSelection,
+                        runtimePolicy: threadInput.runtimePolicy,
+                      }),
+                    ),
+                  ),
                 ),
               ),
               Effect.map((response): OrchestrationV2ProviderThread =>
@@ -7006,6 +7054,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 modelProvider: yield* readModelProvider(threadInput.runtimePolicy),
                 excludeTurns: true,
                 ...codexThreadRuntimeParams({
+                  environment: yield* threadEnvironment(threadInput.runtimePolicy),
                   mcpSession: yield* readMcpSession(
                     threadInput.threadId ?? threadInput.providerThread.appThreadId,
                   ),
@@ -7794,6 +7843,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   modelProvider: yield* readModelProvider(),
                   excludeTurns: true,
                   ...codexThreadRuntimeParams({
+                    environment: yield* threadEnvironment(),
                     mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
                     modelSelection: input.modelSelection,
                     runtimePolicy: input.runtimePolicy,
@@ -7847,6 +7897,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       ? {}
                       : { lastTurnId: boundary.lastTurnId }),
                     ...codexThreadRuntimeParams({
+                      environment: yield* threadEnvironment(threadInput.runtimePolicy),
                       mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
                       ...(threadInput.modelSelection === undefined
                         ? {}

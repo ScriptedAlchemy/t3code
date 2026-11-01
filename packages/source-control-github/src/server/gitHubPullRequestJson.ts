@@ -1175,6 +1175,10 @@ function toCheckContexts(nodes: ReadonlyArray<CheckContext>): ReadonlyArray<GitH
 
 export function toPullRequestCheckContextsPage(result: PullRequestCheckContexts.Result): {
   readonly headSha: string;
+  readonly headBranch: string;
+  readonly headRepositoryOwner: string | null;
+  readonly isCrossRepository: boolean;
+  readonly state: PullRequestState;
   readonly contexts: ReadonlyArray<GitHubCheckContext>;
   readonly nextCursor: string | null;
 } | null {
@@ -1183,6 +1187,10 @@ export function toPullRequestCheckContextsPage(result: PullRequestCheckContexts.
   const contexts = nodesOf(pr.commits)[0]?.commit.statusCheckRollup?.contexts;
   return {
     headSha: pr.headRefOid,
+    headBranch: pr.headRefName,
+    headRepositoryOwner: pr.headRepositoryOwner?.login ?? null,
+    isCrossRepository: pr.isCrossRepository,
+    state: toState(pr),
     contexts: toCheckContexts(nodesOf(contexts)),
     nextCursor: nextCursorOf(contexts?.pageInfo),
   };

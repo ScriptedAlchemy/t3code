@@ -73,7 +73,7 @@ describe("classifyGhCommand", () => {
     ],
     [
       "gh api https://api.github.com/repos/acme/app/check-runs/119542773959/annotations",
-      { kind: "read", intent: "failures", target: { repository: "acme/app" } },
+      { kind: "other" },
     ],
     [
       "gh api -X GET -f per_page=100 repos/acme/app/actions/jobs/1/logs",
@@ -91,15 +91,9 @@ describe("classifyGhCommand", () => {
       "gh -R=acme/app pr checks 123",
       { kind: "read", intent: "status", target: { repository: "acme/app", number: 123 } },
     ],
-    [
-      "gh --hostname=github.com api repos/acme/app/pulls/4/reviews",
-      { kind: "read", intent: "feedback", target: { repository: "acme/app", number: 4 } },
-    ],
+    ["gh --hostname=github.com api repos/acme/app/pulls/4/reviews", { kind: "other" }],
     ["gh -R acme/app pr checks 123 --watch", { kind: "poll" }],
-    [
-      "gh --hostname github.com api --method GET repos/acme/app/pulls/4/reviews",
-      { kind: "read", intent: "feedback", target: { repository: "acme/app", number: 4 } },
-    ],
+    ["gh --hostname github.com api --method GET repos/acme/app/pulls/4/reviews", { kind: "other" }],
     // Polls.
     ["gh pr checks 4497 --watch", { kind: "poll" }],
     ["gh run watch 39810344331", { kind: "poll" }],
@@ -137,6 +131,14 @@ describe("classifyGhCommand", () => {
     ["gh search prs --review-requested=@me", { kind: "other" }],
     ["gh issue list --state open --limit 150", { kind: "other" }],
     ["gh auth status", { kind: "other" }],
+    // An owner/repo target loses host and header semantics; these must stay with gh.
+    ["gh pr checks 12 -R enterprise.example/acme/app", { kind: "other" }],
+    ["gh pr checks 12 --repo https://enterprise.example/acme/app", { kind: "other" }],
+    ["gh run view 9 --log-failed -R enterprise.example/acme/app", { kind: "other" }],
+    ["gh api --hostname enterprise.example repos/acme/app/pulls/4/reviews", { kind: "other" }],
+    ["gh api https://enterprise.example/repos/acme/app/pulls/4/reviews", { kind: "other" }],
+    ["gh api repos/acme/app/pulls/4/reviews -H Accept:custom", { kind: "other" }],
+    ["gh api repos/acme/app/pulls/4/reviews --header=Authorization:custom", { kind: "other" }],
     ["gh", { kind: "other" }],
   ] as const)("%s", (command, expected) => {
     expect(classifyGhCommand(words(command))).toEqual(expected);

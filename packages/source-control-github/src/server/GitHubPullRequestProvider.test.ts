@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as TestClock from "effect/testing/TestClock";
@@ -66,6 +68,53 @@ it.effect("maps credential verification failures without relabeling operation fa
     verificationFails = false;
     expect(yield* verify(input, operation).pipe(Effect.flip)).toBe("operation-failed");
     expect(operations).toBe(1);
+  }),
+);
+
+it.effect("polls checks without loading pull request details and keeps fork approval gates", () =>
+  Effect.gen(function* () {
+    const provider = yield* make.pipe(
+      Effect.provide(
+        Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
+          revalidateChecks: (_input, read) => read,
+          getPullRequestDetail: () => Effect.die("Checks must not fetch the full pull request"),
+          getPullRequestChecks: () =>
+            Effect.succeed({
+              state: "open",
+              headSha: "abc123",
+              headBranch: "contribution",
+              headRepositoryOwner: "octocat",
+              isCrossRepository: true,
+              checks: [{ name: "build", status: "success", description: null, url: null }],
+            }),
+          listWorkflowRunsRequiringApproval: () =>
+            Effect.succeed([
+              {
+                id: 123,
+                name: "contributor tests",
+                url: "https://github.com/acme/web/actions/runs/123",
+              },
+            ]),
+        }),
+      ),
+    );
+    const read = provider.getChangeRequestChecks;
+    if (read === undefined) return yield* Effect.die("checks read missing");
+    expect(
+      yield* read({ cwd: "/w", host: "github.com", repository: "acme/web", number: 7 }),
+    ).toEqual({
+      state: "open",
+      headSha: "abc123",
+      checks: [
+        { name: "build", status: "success", description: null, url: null },
+        {
+          name: "contributor tests",
+          status: "action-required",
+          description: "A maintainer must approve this workflow before it can run.",
+          url: "https://github.com/acme/web/actions/runs/123",
+        },
+      ],
+    });
   }),
 );
 
@@ -336,6 +385,23 @@ describe("gitHubViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
+          getPullRequestChecks: () =>
+            Effect.succeed({
+              state: "open",
+              headSha: "abc123",
+              headBranch: "feat/page",
+              headRepositoryOwner: "octocat",
+              isCrossRepository: true,
+              checks: [
+                {
+                  name: "manual gate",
+                  status: "action-required",
+                  description: null,
+                  url: "https://example.com/manual-gate",
+                },
+                { name: "build", status: "success", description: null, url: null },
+              ],
+            }),
           getPullRequestDetail: () =>
             Effect.succeed({
               ...coreFields,
@@ -430,6 +496,165 @@ const openDetail = {
   comments: [],
   commits: [],
 };
+
+const pinned = <A, E>(read: Effect.Effect<A, E>, fingerprint = "first", host = "github.com") =>
+  read.pipe(
+    Effect.provideService(GitHubRequestPolicy.PinnedGitHubCredential, {
+      host,
+      token: Redacted.make(`token-${fingerprint}`),
+      credentialFingerprint: fingerprint,
+    }),
+  );
+
+it.effect("shares pinned PR observations across worktrees without extending their age", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(1_000);
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let detailReads = 0;
+    let checksReads = 0;
+    let headSha = "old";
+    const provider = yield* make.pipe(
+      Effect.provide(
+        Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
+          revalidateChecks: (_input, read) => read,
+          getPullRequestDetail: () =>
+            Effect.gen(function* () {
+              detailReads++;
+              const result = { ...openDetail, isCrossRepository: false, headSha };
+              if (detailReads === 1) {
+                yield* Deferred.succeed(entered, undefined);
+                yield* Deferred.await(release);
+              }
+              return result;
+            }),
+          getPullRequestChecks: () =>
+            Effect.sync(() => {
+              checksReads++;
+              return { ...openDetail, isCrossRepository: false, headSha };
+            }),
+        }),
+      ),
+    );
+    const checks = provider.getChangeRequestChecks;
+    if (checks === undefined) return yield* Effect.die("checks missing");
+    const input = { cwd: "/first", host: "github.com", repository: "acme/web", number: 7 };
+    const detail = yield* Effect.forkChild(pinned(provider.getChangeRequest(input)), {
+      startImmediately: true,
+    });
+    yield* Deferred.await(entered);
+    const readers = yield* Effect.forkChild(
+      Effect.all(
+        Array.from({ length: 8 }, (_, index) =>
+          pinned(checks({ ...input, cwd: `/worktree-${index}` })),
+        ),
+        { concurrency: "unbounded" },
+      ),
+      { startImmediately: true },
+    );
+    yield* Deferred.succeed(release, undefined);
+    const first = yield* Fiber.join(detail);
+    const results = yield* Fiber.join(readers);
+    expect(first).toMatchObject({ headSha: "old", observedAt: 1_000 });
+    expect(results).toEqual(
+      Array.from({ length: 8 }, () => ({
+        state: "open",
+        checks: [],
+        headSha: "old",
+        observedAt: 1_000,
+      })),
+    );
+    expect({ detailReads, checksReads }).toEqual({ detailReads: 1, checksReads: 0 });
+    yield* TestClock.adjust("16 seconds");
+    expect(yield* pinned(provider.getChangeRequest({ ...input, cwd: "/second" }))).toMatchObject({
+      observedAt: 1_000,
+    });
+    headSha = "new";
+    yield* TestClock.adjust("30 seconds");
+    expect(yield* pinned(checks(input))).toMatchObject({ headSha: "new", observedAt: 47_000 });
+    expect({ detailReads, checksReads }).toEqual({ detailReads: 1, checksReads: 1 });
+    yield* pinned(provider.getChangeRequest(input));
+    yield* pinned(provider.getChangeRequest(input), "second");
+    yield* provider.getChangeRequest(input);
+    yield* provider.getChangeRequest(input);
+    const enterprise = { ...input, host: "github.acme.com" };
+    yield* pinned(provider.getChangeRequest(enterprise));
+    yield* pinned(provider.getChangeRequest(enterprise));
+    yield* pinned(provider.getChangeRequest(enterprise), "first", enterprise.host);
+    yield* pinned(provider.getChangeRequest(enterprise), "first", enterprise.host);
+    expect(detailReads).toBe(8);
+  }),
+);
+
+it.effect(
+  "detaches reads before and after a failed mutation, including reads still in flight",
+  () =>
+    Effect.gen(function* () {
+      const oldReadEntered = yield* Deferred.make<void>();
+      const releaseOldRead = yield* Deferred.make<void>();
+      const writeEntered = yield* Deferred.make<void>();
+      const releaseWrite = yield* Deferred.make<void>();
+      let headSha = "before";
+      let reads = 0;
+      const provider = yield* make.pipe(
+        Effect.provide(
+          Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
+            getPullRequestDetail: () =>
+              Effect.gen(function* () {
+                reads++;
+                const result = { ...openDetail, isCrossRepository: false, headSha };
+                if (reads === 1) {
+                  yield* Deferred.succeed(oldReadEntered, undefined);
+                  yield* Deferred.await(releaseOldRead);
+                }
+                return result;
+              }),
+            runPullRequestAction: () =>
+              Effect.gen(function* () {
+                headSha = "during";
+                yield* Deferred.succeed(writeEntered, undefined);
+                yield* Deferred.await(releaseWrite);
+                headSha = "after";
+                return yield* new GitHubRequestPolicy.GitHubApiResponseError({
+                  host: "github.com",
+                  operation: "runPullRequestAction",
+                  status: 502,
+                });
+              }),
+          }),
+        ),
+      );
+      const input = { cwd: "/first", host: "github.com", repository: "acme/web", number: 7 };
+      const oldRead = yield* Effect.forkChild(pinned(provider.getChangeRequest(input)), {
+        startImmediately: true,
+      });
+      yield* Deferred.await(oldReadEntered);
+      const write = yield* Effect.forkChild(
+        pinned(provider.runAction({ ...input, action: "update-branch" })).pipe(Effect.exit),
+        { startImmediately: true },
+      );
+      yield* Deferred.await(writeEntered);
+      const during = yield* Effect.forkChild(
+        pinned(provider.getChangeRequest({ ...input, cwd: "/second" })),
+        { startImmediately: true },
+      );
+      // Release the old lookup after the new reader has had to choose its cache entry.
+      yield* Deferred.succeed(releaseOldRead, undefined);
+      expect(yield* Fiber.join(during)).toMatchObject({ headSha: "during" });
+      yield* Deferred.succeed(releaseWrite, undefined);
+      expect((yield* Fiber.join(write))._tag).toBe("Failure");
+      expect(yield* pinned(provider.getChangeRequest(input))).toMatchObject({ headSha: "after" });
+      expect(yield* Fiber.join(oldRead)).toMatchObject({ headSha: "before" });
+      expect(yield* pinned(provider.getChangeRequest(input))).toMatchObject({ headSha: "after" });
+      expect(reads).toBe(3);
+      const forget = provider.forgetChangeRequestReads;
+      if (forget === undefined) return yield* Effect.die("invalidation missing");
+      headSha = "pushed";
+      yield* forget({ repository: input.repository, number: input.number });
+      expect(yield* pinned(provider.getChangeRequest(input))).toMatchObject({ headSha: "pushed" });
+      expect(reads).toBe(4);
+    }),
+);
 
 it.effect("does not classify same-repository gates as fork workflow approvals", () =>
   Effect.gen(function* () {
