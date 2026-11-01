@@ -85,6 +85,8 @@ import { openCodeToolTurnItem } from "./toolItems.ts";
 export const OPENCODE_PROVIDER = ProviderDriverKind.make("opencode");
 export const OPENCODE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(OPENCODE_PROVIDER);
 export const OPENCODE_SDK_PROTOCOL = "opencode-sdk.sse" as const;
+export const OPENCODE_NATIVE_CHILD_INSTRUCTIONS =
+  "Use `delegate_task` for child work using project memory, conversation summaries, or code graph; native OpenCode subagents do not inherit T3's session instructions.";
 const DEFAULT_OPENCODE_SETTINGS = Schema.decodeSync(OpenCodeSettings)({});
 
 const makeOpenCodeMessageId = Effect.fnUntraced(function* (
@@ -957,25 +959,64 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             : {}),
         });
 
-        const mcpSession = yield* mcpSessions.read(input.threadId);
-        let hasT3Mcp = false;
-        if (mcpSession !== undefined && !connection.external) {
-          const result = yield* OpenCodeRuntime.runOpenCodeSdk("mcp.add", () =>
-            client.mcp.add({
-              name: "t3-code",
-              config: {
-                type: "remote",
-                url: mcpSession.endpoint,
-                headers: { Authorization: mcpSession.authorizationHeader },
-                oauth: false,
-              },
-            }),
-          );
-          hasT3Mcp = result.data?.["t3-code"]?.status === "connected";
-        }
-        const orchestrationSystemPrompt = t3OrchestrationSystemPrompt(
-          hasT3Mcp,
-          mcpSession?.capabilities?.has("device") === true,
+        let registeredMcp:
+          | { readonly endpoint: string; readonly authorizationHeader: string }
+          | undefined;
+        const prepareMcp = Effect.fnUntraced(
+          function* (threadId: ThreadId) {
+            if (connection.external) return undefined;
+            const mcpSession = yield* mcpSessions.read(threadId);
+            if (mcpSession === undefined) {
+              if (registeredMcp !== undefined) {
+                yield* OpenCodeRuntime.runOpenCodeSdk("mcp.disconnect", (signal) =>
+                  client.mcp.disconnect({ name: "t3-code" }, { signal }),
+                );
+                registeredMcp = undefined;
+              }
+              return undefined;
+            }
+            const status = () =>
+              OpenCodeRuntime.runOpenCodeSdk("mcp.status", (signal) =>
+                client.mcp.status(undefined, { signal }),
+              ).pipe(Effect.map((result) => result.data?.["t3-code"]?.status));
+            const unchanged =
+              registeredMcp?.endpoint === mcpSession.endpoint &&
+              registeredMcp.authorizationHeader === mcpSession.authorizationHeader;
+            let connectionStatus = unchanged ? yield* status() : undefined;
+            if (connectionStatus === undefined) {
+              const result = yield* OpenCodeRuntime.runOpenCodeSdk("mcp.add", (signal) =>
+                client.mcp.add(
+                  {
+                    name: "t3-code",
+                    config: {
+                      type: "remote",
+                      url: mcpSession.endpoint,
+                      headers: { Authorization: mcpSession.authorizationHeader },
+                      oauth: false,
+                    },
+                  },
+                  { signal },
+                ),
+              );
+              registeredMcp = mcpSession;
+              // Native add returns a status map even when its handshake failed.
+              connectionStatus = result.data?.["t3-code"]?.status;
+            } else if (connectionStatus !== "connected") {
+              // Native connect's boolean is an acknowledgement, not a connection result.
+              yield* OpenCodeRuntime.runOpenCodeSdk("mcp.connect", (signal) =>
+                client.mcp.connect({ name: "t3-code" }, { signal }),
+              );
+              connectionStatus = yield* status();
+            }
+            return connectionStatus === "connected" ? mcpSession : undefined;
+          },
+          Effect.timeout("10 seconds"),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not connect T3 Code's MCP server to OpenCode.", {
+              threadId: input.threadId,
+              errorTag: causeErrorTag(cause),
+            }).pipe(Effect.as(undefined)),
+          ),
         );
 
         const now = yield* DateTime.now;
@@ -3039,7 +3080,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           driver: OPENCODE_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: sessionEntity,
-          supportsT3Tools: hasT3Mcp,
+          supportsT3Tools: !connection.external,
           events: Stream.fromEffectRepeat(Queue.take(events)),
           hasPendingBackgroundWork: Effect.sync(() => busySessionIds.size > 0),
           ensureThread: Effect.fn("OpencodeAdapter.ensureThread")(
@@ -3267,8 +3308,13 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 );
                 return;
               }
+              const mcpSession = yield* prepareMcp(turnInput.threadId);
               const systemPrompt = [
-                orchestrationSystemPrompt,
+                t3OrchestrationSystemPrompt(
+                  mcpSession !== undefined,
+                  mcpSession?.capabilities?.has("device") === true,
+                ),
+                mcpSession === undefined ? undefined : OPENCODE_NATIVE_CHILD_INSTRUCTIONS,
                 buildRuntimeInstructions({
                   harness: "OpenCode",
                   model: turnInput.modelSelection.model,

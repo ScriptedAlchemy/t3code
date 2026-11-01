@@ -216,8 +216,11 @@ jobs:
 
       - name: Prepare updater metadata and checksums
         shell: bash
+        env:
+          VERSION: ${{ needs.bundle.outputs.version }}
         run: |
           set -euo pipefail
+          node scripts/build-release-metadata.ts --version "$VERSION" --output-dir assets
           node scripts/merge-update-manifests.ts --platform mac assets/nightly-mac.yml assets/nightly-mac-x64.yml
           node scripts/merge-update-manifests.ts --platform win assets/nightly-win-x64.yml assets/nightly-win-arm64.yml assets/nightly.yml
           cd assets

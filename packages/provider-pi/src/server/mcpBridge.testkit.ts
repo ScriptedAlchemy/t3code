@@ -47,17 +47,23 @@ export async function loadMcpBridge(
     readonly toolSearchDisabled?: boolean;
     readonly allowsTool?: (name: string) => boolean;
     readonly runtimeMode?: string;
+    readonly deviceToolsAvailable?: boolean;
     readonly inputSchema?: Record<string, unknown>;
+    readonly unavailable?: () => boolean;
   } = {},
 ) {
   const handlers = new Map<string, AgentStartHook>();
   const tools: RegisteredTool[] = [];
   const requests: Array<{ readonly method: string; readonly params?: unknown }> = [];
+  const completedCalls: unknown[] = [];
+  let nextSessionId = 1;
+  let sessionId: string | undefined;
   let activeTools = ["read"];
   let bridgeSourcePath = "/fixture/pi-t3-extension.ts";
   const transports: Array<{
     readonly url: string;
     readonly authorization: string;
+    readonly sessionId: string | undefined;
     readonly signal: AbortSignal | undefined;
   }> = [];
   const servers: Array<{ readonly name: string; readonly config: Record<string, unknown> }> = [];
@@ -92,6 +98,7 @@ export async function loadMcpBridge(
         T3_MCP_BEARER_TOKEN: "fixture-token",
         T3_PI_MCP_EXTENSION_PATH: "/fixture/pi-t3-extension.ts",
         T3_PI_RUNTIME_MODE: options.runtimeMode,
+        T3_PI_DEVICE_TOOLS_AVAILABLE: options.deviceToolsAvailable ? "1" : undefined,
       },
     },
     AbortSignal,
@@ -105,6 +112,7 @@ export async function loadMcpBridge(
       transports.push({
         url,
         authorization: transport.headers.authorization!,
+        sessionId: transport.headers["mcp-session-id"],
         signal: transport.signal,
       });
       const request = JSON.parse(transport.body) as {
@@ -113,14 +121,36 @@ export async function loadMcpBridge(
         params?: unknown;
       };
       requests.push(request);
+      if (options.unavailable?.()) return new Response("MCP unavailable", { status: 503 });
+      if (request.method === "initialize") {
+        if (transport.headers["mcp-session-id"] !== undefined) {
+          return new Response("Initialize must not reuse a session", { status: 400 });
+        }
+        sessionId = `fixture-session-${nextSessionId++}`;
+      } else if (sessionId === undefined || transport.headers["mcp-session-id"] !== sessionId) {
+        return new Response("MCP session expired", { status: 404 });
+      }
+      if (request.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (request.method === "tools/call") completedCalls.push(request.params);
       const result =
-        request.method === "tools/list"
-          ? { tools: catalog }
-          : request.method === "tools/call"
-            ? (options.result ?? { content: [{ type: "text", text: "browser snapshot" }] })
-            : {};
+        request.method === "initialize"
+          ? {
+              protocolVersion: "2025-06-18",
+              capabilities: { tools: {} },
+              serverInfo: { name: "t3-fixture", version: "1.0.0" },
+            }
+          : request.method === "tools/list"
+            ? { tools: catalog }
+            : request.method === "tools/call"
+              ? (options.result ?? { content: [{ type: "text", text: "browser snapshot" }] })
+              : {};
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }), {
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          ...(request.method === "initialize" ? { "mcp-session-id": sessionId! } : {}),
+        },
       });
     },
     pi: {
@@ -159,6 +189,10 @@ export async function loadMcpBridge(
       bridgeSourcePath = path;
     },
     requests,
+    completedCalls,
+    expireSession: () => {
+      sessionId = undefined;
+    },
     servers,
     transports,
     getActiveTools: () => activeTools,

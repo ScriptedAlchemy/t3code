@@ -8,6 +8,12 @@ type AppVariant = "development" | "preview" | "production";
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
 
+// Fork builds keep their bundled client unless the builder explicitly selects an OTA feed.
+const mobileUpdatesEnabled = repoEnv.T3CODE_MOBILE_UPDATES_ENABLED === "1";
+const easProjectId =
+  repoEnv.T3CODE_MOBILE_EAS_PROJECT_ID?.trim() || "d763fcb8-d37c-41ea-a773-b54a0ab4a454";
+const easOwner = repoEnv.T3CODE_MOBILE_EAS_OWNER?.trim() || "pingdotgg";
+
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
 const runtimeVersionPolicy =
@@ -237,8 +243,8 @@ const config: ExpoConfig = {
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+    enabled: mobileUpdatesEnabled,
+    url: `https://u.expo.dev/${easProjectId}`,
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
@@ -457,11 +463,11 @@ const config: ExpoConfig = {
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
     eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+      projectId: easProjectId,
       observe: { endpointUrl: observeEndpointUrl },
     },
   },
-  owner: "pingdotgg",
+  owner: easOwner,
   experiments: {
     // Metro only runs babel-plugin-react-compiler when this is set; see src/reactCompilerCoverage.test.ts.
     reactCompiler: true,

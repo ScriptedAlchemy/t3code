@@ -1030,7 +1030,7 @@ const composeDelivery = Effect.fn("test.composeDelivery")(function* (
         ]),
       ),
     );
-  return { delivery, forget, excerpts };
+  return { delivery, forget, excerpts, byteLength: composer.byteLength };
 });
 
 it.effect("keeps each steering message's receipt and forgets only its own evidence", () =>
@@ -1132,6 +1132,132 @@ it.effect("checks delivery state beyond the evidence inspector's twenty-receipt 
         messageId: MessageId.make("another-message"),
       })).sent,
     );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("keeps native attachment occupancy across retries, scrubbing and legacy receipts", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("native-delivery-estimate");
+    yield* createProject(projectId);
+    const fixture = yield* composeDelivery(projectId, "native-delivery");
+    const budget = {
+      estimatedTokens: fixture.byteLength,
+      capacity: 128_000,
+      occupancy: 0,
+      requestSize: 10,
+      headroom: 32_000,
+      knowledgeAllowance: 16_000,
+      tokenCap: 16_000,
+      byteCap: 64_000,
+    };
+    const receipt = {
+      ...fixture.delivery("native-delivery-attempt", "prepared", 1),
+      providerThreadId: ProviderThreadId.make("native-delivery-provider-thread"),
+      nativeThreadId: "original-native",
+      budget,
+    };
+    const estimate = knowledge.nativeDeliveryEstimate(receipt);
+    yield* knowledge.recordDelivery(receipt);
+    assert.equal(yield* estimate, 0);
+    yield* knowledge.recordDelivery({ ...receipt, status: "sent" });
+    assert.equal(yield* estimate, fixture.byteLength);
+    // A settled receipt is immutable; another attempt's base-only retry carries no new body.
+    yield* knowledge.recordDelivery({ ...receipt, budget: { ...budget, estimatedTokens: 0 } });
+    yield* knowledge.recordDelivery({
+      ...receipt,
+      attemptId: RunAttemptId.make("base-only-retry"),
+      status: "sent",
+      items: [],
+      budget: { ...budget, estimatedTokens: 0 },
+      createdAt: DateTime.formatIso(at(2)),
+      updatedAt: DateTime.formatIso(at(2)),
+    });
+    assert.equal(yield* estimate, fixture.byteLength);
+    const historyEvidence = deliveredKnowledgeForHistory({
+      projectId,
+      messages: [
+        {
+          kind: "user_message",
+          threadId: receipt.threadId,
+          runId: receipt.runId,
+          itemId: TurnItemId.make("original-delivered-item"),
+        },
+      ],
+      userItemId: (messageId) =>
+        messageId === receipt.messageId ? "original-delivered-item" : undefined,
+    });
+    assert.include(
+      (yield* historyEvidence).get("original-delivered-item")!,
+      receipt.items[0]!.text,
+    );
+    yield* knowledge.recordDelivery({
+      ...receipt,
+      messageId: MessageId.make("accepted-steering-message"),
+      status: "sent",
+    });
+    assert.equal(yield* estimate, fixture.byteLength * 2);
+    for (const [index, excluded] of [
+      { status: "prepared" as const },
+      { status: "failed" as const },
+      { status: "uncertain" as const },
+      { nativeThreadId: "old-native" },
+      { threadId: ThreadId.make("another-thread") },
+      { projectId: ProjectId.make("another-project") },
+      { providerInstanceId: ProviderInstanceId.make("another-provider") },
+      { providerThreadId: ProviderThreadId.make("another-provider-thread") },
+    ].entries()) {
+      yield* knowledge.recordDelivery({
+        ...receipt,
+        status: "sent",
+        attemptId: RunAttemptId.make(`excluded-attempt-${index}`),
+        messageId: MessageId.make(`excluded-message-${index}`),
+        ...excluded,
+      });
+    }
+    assert.equal(yield* estimate, fixture.byteLength * 2);
+    assert.equal(yield* knowledge.nativeDeliveryEstimate({ ...receipt, nativeThreadId: null }), 0);
+    assert.equal(
+      yield* knowledge.nativeDeliveryEstimate({ ...receipt, nativeThreadId: "replacement-native" }),
+      0,
+    );
+    const { estimatedTokens: _size, ...legacyBudget } = budget;
+    yield* knowledge.recordDelivery({
+      ...receipt,
+      status: "sent",
+      messageId: MessageId.make("legacy-with-budget"),
+      budget: legacyBudget,
+    });
+    const { budget: _budget, ...legacyReceipt } = receipt;
+    yield* knowledge.recordDelivery({
+      ...legacyReceipt,
+      status: "sent",
+      messageId: MessageId.make("legacy-without-budget"),
+    });
+    for (const [index, legacy] of [
+      legacyReceipt,
+      { ...legacyReceipt, budget: legacyBudget },
+    ].entries())
+      yield* knowledge.recordDelivery({
+        ...legacy,
+        status: "sent",
+        messageId: MessageId.make(`legacy-omission-only-${index}`),
+        items: [],
+        omissions: [{ contextId: "omitted", label: "Omitted", reason: "not_referenced" }],
+      });
+    const expected = fixture.byteLength * 2 + legacyBudget.knowledgeAllowance + 48_000;
+    assert.equal(yield* estimate, expected);
+    yield* fixture.forget;
+    assert.equal((yield* historyEvidence).size, 0);
+    assert.equal(
+      (yield* fixture.excerpts).find((entry) => entry[0] === receipt.attemptId)?.[2],
+      "",
+    );
+    assert.equal(yield* estimate, expected);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE project_knowledge_deliveries SET items_json = 'unreadable evidence'
+      WHERE attempt_id = ${receipt.attemptId} AND message_id = ${receipt.messageId}`;
+    assert.equal(yield* estimate, expected);
   }).pipe(Effect.provide(layerTest)),
 );
 
@@ -2478,6 +2604,7 @@ it.effect(
         nativeThreadId: "restart-native-conversation",
         status: "prepared" as const,
         budget: {
+          estimatedTokens: 777,
           capacity: 128000,
           occupancy: 1000,
           requestSize: 200,
@@ -2521,6 +2648,13 @@ it.effect(
           assert.equal(persisted.length, 1);
           assert.equal(persisted[0]?.status, "uncertain");
           assert.equal(persisted[0]?.nativeThreadId, receipt.nativeThreadId);
+          yield* knowledge.recordDelivery({ ...persisted[0]!, status: "sent" });
+        }).pipe(Effect.provide(reopened())),
+      );
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+          assert.equal(yield* knowledge.nativeDeliveryEstimate(receipt), 777);
         }).pipe(Effect.provide(reopened())),
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

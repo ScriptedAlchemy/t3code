@@ -1,128 +1,158 @@
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ServerNpmReleaseError } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Fiber from "effect/Fiber";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
-import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-import * as ProcessRunner from "../processRunner.ts";
 import * as NpmRelease from "./npmRelease.ts";
+import { trackSwitchBlockReason } from "./selfUpdate.ts";
 
 const version = "0.1.5-nightly.20261030.1";
-const output = (stdout: string, code = 0): ProcessRunner.ProcessRunOutput => ({
-  stdout,
-  stderr: "",
-  code: ChildProcessSpawner.ExitCode(code),
-  timedOut: false,
-  stdoutTruncated: false,
-  stderrTruncated: false,
-  stdoutInvalidUtf8: false,
-  stderrInvalidUtf8: false,
-});
-
-const noPublicRegistry = HttpClient.make(() =>
-  Effect.die("a configured npm lookup must not fall back to public npm"),
-);
-// A fake npm on PATH decides whether npm counts as installed.
-const makeService = Effect.fnUntraced(function* (
-  run: ProcessRunner.ProcessRunner["Service"]["run"],
-  publicRegistry: HttpClient.HttpClient = noPublicRegistry,
-  npmInstalled = true,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const npmBin = yield* fs.makeTempDirectoryScoped({ prefix: "t3-npm-release-" });
-  for (const name of ["npm", "npm.cmd"]) {
-    yield* fs.writeFileString(path.join(npmBin, name), "", { mode: 0o755 });
-  }
-  return yield* NpmRelease.make().pipe(
-    Effect.provideService(ProcessRunner.ProcessRunner, { run }),
-    Effect.provideService(HttpClient.HttpClient, publicRegistry),
-    Effect.provideService(HostProcess.Environment, {
-      PATH: npmInstalled ? npmBin : "",
-      PATHEXT: ".CMD",
-    }),
+const repository = "https://api.github.com/repos/ScriptedAlchemy/t3code/releases";
+const indexUrl = `${repository}?per_page=100&page=1`;
+const metadataUrl = (releaseVersion: string) =>
+  `https://github.com/ScriptedAlchemy/t3code/releases/download/v${releaseVersion}/t3-release.json`;
+const json = (value: unknown) => new Response(JSON.stringify(value));
+const makeService = (
+  reply: (request: HttpClientRequest.HttpClientRequest) => Response,
+  environment: NodeJS.ProcessEnv = {},
+) =>
+  NpmRelease.make().pipe(
+    Effect.provideService(
+      HttpClient.HttpClient,
+      HttpClient.make((request) =>
+        Effect.succeed(HttpClientResponse.fromWeb(request, reply(request))),
+      ),
+    ),
+    Effect.provideService(HostProcess.Environment, environment),
   );
-}, Effect.provide(NodeServices.layer));
 
 it.effect.each([
-  {
-    spec: version,
-    stdout: JSON.stringify({ version, t3code: { databaseMigration: 42 } }),
-    migration: 42,
-  },
-  {
-    spec: "nightly",
-    stdout: JSON.stringify([{ version, t3code: { databaseMigration: 42 } }]),
-    migration: 42,
-  },
-  { spec: "latest", stdout: JSON.stringify(version), migration: undefined },
-])("reads $spec through npm and retains migration compatibility metadata", (fixture) =>
+  { spec: version, expectedVersion: version },
+  { spec: "nightly", expectedVersion: version },
+  { spec: "latest", expectedVersion: "0.1.4" },
+])("resolves this fork's $spec release instead of the upstream npm package", (fixture) =>
   Effect.gen(function* () {
-    const calls: ProcessRunner.ProcessRunInput[] = [];
-    const service = yield* makeService((input) => {
-      calls.push(input);
-      return Effect.succeed(output(fixture.stdout));
+    const requests: string[] = [];
+    const lookupUrl = fixture.spec === version ? `${repository}/tags/v${version}` : indexUrl;
+    const service = yield* makeService((request) => {
+      requests.push(request.url);
+      if (request.url === lookupUrl) {
+        return json(
+          fixture.spec === version
+            ? { tag_name: `v${version}` }
+            : [
+                { tag_name: "v9.9.9-nightly.20261031.1", draft: true },
+                { tag_name: "v9.9.9", draft: true },
+                { tag_name: "v9.9.9-preview.20261031.1" },
+                { tag_name: `v${version}` },
+                { tag_name: "v0.1.4" },
+              ],
+        );
+      }
+      expect(request.url).toBe(metadataUrl(fixture.expectedVersion));
+      return json({ version: fixture.expectedVersion, databaseMigration: 85 });
     });
-    const expected = {
-      version,
-      ...(fixture.migration === undefined ? {} : { databaseMigration: fixture.migration }),
-    };
+    const expected = { version: fixture.expectedVersion, databaseMigration: 85 };
     expect(yield* service.get({ spec: fixture.spec })).toEqual(expected);
     expect(yield* service.get({ spec: fixture.spec })).toEqual(expected);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({
-      command: expect.stringMatching(/[/\\]npm(?:\.cmd)?$/i),
-      args: ["view", "--global", "--json", `t3@${fixture.spec}`, "version", "t3code"],
-      maxOutputBytes: 256 * 1024,
-    });
+    expect(requests).toEqual([lookupUrl, metadataUrl(fixture.expectedVersion)]);
     yield* TestClock.adjust("1 minute");
     expect(yield* service.get({ spec: fixture.spec })).toEqual(expected);
-    expect(calls).toHaveLength(2);
+    expect(requests).toHaveLength(4);
   }),
 );
 
-it.effect("treats a registry 404 as unpublished without trying another registry", () =>
+it.effect("finds stable releases beyond a page of nightlies", () =>
   Effect.gen(function* () {
-    const service = yield* makeService(() =>
-      Effect.succeed(output('{"error":{"code":"E404"}}', 1)),
-    );
-    expect(yield* service.get({ spec: version })).toBeNull();
+    const requests: string[] = [];
+    const service = yield* makeService((request) => {
+      requests.push(request.url);
+      if (request.url === indexUrl) return json([{ tag_name: `v${version}` }]);
+      if (request.url === `${repository}?per_page=100&page=2`) {
+        return json([{ tag_name: "v0.1.4" }]);
+      }
+      return json({ version: "0.1.4", databaseMigration: 42 });
+    });
+    expect(yield* service.get({ spec: "latest" })).toEqual({
+      version: "0.1.4",
+      databaseMigration: 42,
+    });
+    expect(requests).toEqual([indexUrl, `${repository}?per_page=100&page=2`, metadataUrl("0.1.4")]);
   }),
 );
 
-const spawnFailure = () =>
-  Effect.fail(
-    new ProcessRunner.ProcessSpawnError({
-      command: "npm",
-      argumentCount: 6,
-      cause: new Error("EACCES"),
+it.effect.each(["missing tag", "draft", "empty track"])(
+  "treats an unpublished fork release as unavailable: %s",
+  (scenario) =>
+    Effect.gen(function* () {
+      let requests = 0;
+      const service = yield* makeService(() => {
+        requests++;
+        return scenario === "missing tag"
+          ? new Response("", { status: 404 })
+          : json(scenario === "draft" ? { tag_name: `v${version}`, draft: true } : []);
+      });
+      expect(
+        yield* service.get({ spec: scenario === "empty track" ? "latest" : version }),
+      ).toBeNull();
+      expect(requests).toBe(1);
     }),
-  );
+);
+
+it.effect("keeps old releases with no migration asset blocked from crossing tracks", () =>
+  Effect.gen(function* () {
+    const service = yield* makeService((request) =>
+      request.url === indexUrl
+        ? json([{ tag_name: `v${version}` }])
+        : new Response("", { status: 404 }),
+    );
+    const release = yield* service.get({ spec: "nightly" });
+    expect(release).toEqual({ version });
+    expect(
+      trackSwitchBlockReason({
+        serverVersion: "0.1.4",
+        targetVersion: release!.version,
+        targetDatabaseMigration: release!.databaseMigration,
+        databaseMigration: () => 85,
+      }),
+    ).toContain("Cannot confirm");
+  }),
+);
 
 it.effect.each([
-  output("not json"),
-  output('{"error":{"code":"E401","detail":"sensitive"}}', 1),
-  output('{"version":"9.9.9"}'),
-  output("[]"),
-  output("", 9009),
-  { ...output(JSON.stringify({ version })), stdoutTruncated: true },
-  { ...output(JSON.stringify({ version })), timedOut: true },
-  "spawn failure",
-] as const)("reports an unavailable lookup rather than an unpublished release: %j", (result) =>
+  { scope: "index", status: 404, body: "sensitive" },
+  { scope: "index", status: 403, body: "sensitive" },
+  { scope: "index", status: 500, body: "sensitive" },
+  { scope: "index", status: 200, body: "not json" },
+  { scope: "index", status: 200, body: "{}" },
+  { scope: "tag", status: 200, body: '{"tag_name":"v9.9.9"}' },
+  { scope: "metadata", status: 500, body: "sensitive" },
+  { scope: "metadata", status: 200, body: "not json" },
+  {
+    scope: "metadata",
+    status: 200,
+    body: JSON.stringify({ version: "9.9.9", databaseMigration: 85 }),
+  },
+  { scope: "metadata", status: 200, body: JSON.stringify({ version, databaseMigration: -1 }) },
+  { scope: "metadata", status: 200, body: JSON.stringify({ version, databaseMigration: 1.5 }) },
+  { scope: "metadata", status: 200, body: JSON.stringify({ version }) },
+])("reports failed or invalid release metadata instead of an unpublished release: %j", (fixture) =>
   Effect.gen(function* () {
-    const service = yield* makeService(() =>
-      result === "spawn failure" ? spawnFailure() : Effect.succeed(result),
-    );
-    const found = yield* service.get({ spec: version }).pipe(Effect.result);
+    const service = yield* makeService((request) => {
+      if (fixture.scope === "metadata" && request.url === indexUrl) {
+        return json([{ tag_name: `v${version}` }]);
+      }
+      return new Response(fixture.body, { status: fixture.status });
+    });
+    const found = yield* service
+      .get({ spec: fixture.scope === "tag" ? version : "nightly" })
+      .pipe(Effect.result);
     expect(Result.isFailure(found)).toBe(true);
     if (Result.isFailure(found)) {
       expect(found.failure).toBeInstanceOf(ServerNpmReleaseError);
@@ -131,49 +161,53 @@ it.effect.each([
   }),
 );
 
-it.effect("falls back to public npm only when npm is not installed", () =>
+it.effect("authenticates the fork API without sending the GitHub token to an asset mirror", () =>
   Effect.gen(function* () {
-    const urls: string[] = [];
     const service = yield* makeService(
-      () => Effect.die("npm is not installed"),
-      HttpClient.make((request) => {
-        urls.push(request.url);
-        const response = request.url.endsWith("/nightly")
-          ? new Response(JSON.stringify({ version, t3code: { databaseMigration: 42 } }))
-          : request.url.endsWith("/latest")
-            ? new Response(new ReadableStream())
-            : new Response("{}", { status: 404 });
-        return Effect.succeed(HttpClientResponse.fromWeb(request, response));
-      }),
-      false,
+      (request) => {
+        if (request.url === indexUrl) {
+          expect(request.headers.authorization).toBe("Bearer test-token");
+          return json([{ tag_name: `v${version}` }]);
+        }
+        expect(request.url).toBe(`https://mirror.example/v${version}/t3-release.json`);
+        expect(request.headers.authorization).toBeUndefined();
+        return json({ version, databaseMigration: 85 });
+      },
+      { GH_TOKEN: "test-token", T3CODE_RELEASE_BASE_URL: "https://mirror.example/" },
     );
-    expect(yield* service.get({ spec: "nightly" })).toEqual({ version, databaseMigration: 42 });
-    expect(yield* service.get({ spec: "9.9.9" })).toBeNull();
-    const stalled = yield* service.get({ spec: "latest" }).pipe(Effect.result, Effect.forkChild);
-    yield* TestClock.adjust("15 seconds");
-    expect(Result.isFailure(yield* Fiber.join(stalled))).toBe(true);
-    expect(urls).toEqual([
-      "https://registry.npmjs.org/t3/nightly",
-      "https://registry.npmjs.org/t3/9.9.9",
-      "https://registry.npmjs.org/t3/latest",
-    ]);
+    expect(yield* service.get({ spec: "nightly" })).toEqual({ version, databaseMigration: 85 });
   }),
 );
 
-it.effect("runs at most two npm lookups at once", () =>
+it.effect("times out a stalled release response", () =>
+  Effect.gen(function* () {
+    const service = yield* makeService(() => new Response(new ReadableStream()));
+    const stalled = yield* service.get({ spec: "latest" }).pipe(Effect.result, Effect.forkChild);
+    yield* TestClock.adjust("15 seconds");
+    expect(Result.isFailure(yield* Fiber.join(stalled))).toBe(true);
+  }),
+);
+
+it.effect("runs at most two release lookups at once", () =>
   Effect.gen(function* () {
     const started = yield* Queue.unbounded<void>();
     const release = yield* Deferred.make<void>();
     let running = 0;
     let peak = 0;
-    const service = yield* makeService(() =>
-      Effect.gen(function* () {
-        peak = Math.max(peak, ++running);
-        yield* Queue.offer(started, undefined);
-        yield* Deferred.await(release);
-        running--;
-        return output('{"error":{"code":"E404"}}', 1);
-      }),
+    const service = yield* NpmRelease.make().pipe(
+      Effect.provideService(HostProcess.Environment, {}),
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.gen(function* () {
+            peak = Math.max(peak, ++running);
+            yield* Queue.offer(started, undefined);
+            yield* Deferred.await(release);
+            running--;
+            return HttpClientResponse.fromWeb(request, new Response("", { status: 404 }));
+          }),
+        ),
+      ),
     );
     const lookups = yield* Effect.forEach(
       ["1.0.0", "1.0.1", "1.0.2"],
@@ -189,10 +223,12 @@ it.effect("runs at most two npm lookups at once", () =>
 );
 
 it.effect.each(["--registry=https://example.com", "../other", "other-package@latest", "*", ""])(
-  "rejects invalid release specs before spawning npm: %s",
+  "rejects invalid release specs before requesting a release: %s",
   (spec) =>
     Effect.gen(function* () {
-      const service = yield* makeService(() => Effect.die("invalid specs must not spawn npm"));
+      const service = yield* makeService(() => {
+        throw new Error("invalid specs must not request a release");
+      });
       expect(Result.isFailure(yield* service.get({ spec }).pipe(Effect.result))).toBe(true);
     }),
 );

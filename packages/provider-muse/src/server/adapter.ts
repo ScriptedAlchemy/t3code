@@ -41,6 +41,7 @@ import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import { t3OrchestrationSystemPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
 import {
   MuseApproval,
@@ -325,6 +326,8 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       // Only idle host failures can be retried on this runtime.
       let relaunchable = false;
       let nativeSessionId: string | undefined;
+      let orchestrationInstructions: string | undefined;
+      let pendingOrchestrationInstructions: string | undefined;
       let thread: OrchestrationV2ProviderThread | undefined;
       let active: ActiveTurn | undefined;
       let lastProviderTurn: OrchestrationV2ProviderTurn | undefined;
@@ -755,6 +758,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         } else if (item.kind === "reasoning") {
           turnItem = { ...base, type: "reasoning", text, streaming };
         } else if (item.kind === "compaction") {
+          if (item.status === "completed" && (!item.outcome || item.outcome === "compacted")) {
+            pendingOrchestrationInstructions = orchestrationInstructions;
+          }
           turnItem = {
             ...base,
             type: "compaction",
@@ -1858,6 +1864,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           );
           if (result.session.sessionId !== nativeSessionId)
             return yield* protocolError("Muse returned a different session identity");
+          orchestrationInstructions = t3OrchestrationSystemPrompt(
+            mcpSession !== undefined,
+            mcpSession?.capabilities?.has("device") === true,
+          );
+          pendingOrchestrationInstructions = orchestrationInstructions;
           if (requestedId)
             yield* request("session/setApprovalMode", {
               mode: museApprovalMode(args.runtimePolicy.runtimeMode),
@@ -2054,6 +2065,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 `Muse returned an unsupported compaction status: ${result.status}`,
               );
           } else {
+            const instructions = pendingOrchestrationInstructions;
+            // Consume before sending: compaction can arrive before the turn acknowledgement.
+            pendingOrchestrationInstructions = undefined;
             const result = yield* request(
               "turn/start",
               {
@@ -2066,6 +2080,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                       reasoningEffort: effort,
                     }),
                   },
+                  ...(instructions === undefined ? [] : [{ type: "text", text: instructions }]),
                   ...parts,
                 ],
                 displayText: turnInput.message.text || "Image attachment",
@@ -2086,6 +2101,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           }
         }).pipe(
           Effect.onError((cause) => {
+            pendingOrchestrationInstructions = orchestrationInstructions;
             const error = Cause.squash(cause);
             const detail = isProtocolError(error)
               ? error.detail

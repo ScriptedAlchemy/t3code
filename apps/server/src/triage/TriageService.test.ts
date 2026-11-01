@@ -46,7 +46,10 @@ const RELEASE_COMMIT = "7027b1f";
 
 /** The service over a stub git that answers each command with `answer`. */
 const makeTriage = (
-  answer: (command: string) => Effect.Effect<string, GitCommandError> = (command) =>
+  answer: (
+    command: string,
+    args: ReadonlyArray<string>,
+  ) => Effect.Effect<string, GitCommandError> = (command) =>
     Effect.succeed(
       command === "ls-remote"
         ? `${RELEASE_COMMIT}\trefs/tags/v${packageJson.version}\n`
@@ -65,7 +68,7 @@ const makeTriage = (
         execute: (input) => {
           const command = input.args[0] ?? "";
           commands.push(command);
-          return answer(command).pipe(
+          return answer(command, input.args).pipe(
             Effect.map((stdout) => ({
               exitCode: ChildProcessSpawner.ExitCode(0),
               stdout,
@@ -91,17 +94,22 @@ const readContext = Effect.gen(function* () {
 it.effect("sessions started during a clone share it, and a release tag is looked up once", () =>
   Effect.gen(function* () {
     const fetches = yield* Queue.unbounded<void>();
-    const { triage, commands } = yield* makeTriage((command) =>
+    const { triage, commands } = yield* makeTriage((command, args) =>
       command === "fetch"
         ? Queue.offer(fetches, undefined).pipe(Effect.andThen(Effect.never))
         : Effect.succeed(
-            command === "ls-remote" ? `${RELEASE_COMMIT}\trefs/tags/v${packageJson.version}\n` : "",
+            command === "ls-remote"
+              ? args[1] === "https://github.com/ScriptedAlchemy/t3code"
+                ? `${RELEASE_COMMIT}\trefs/tags/v${packageJson.version}\n`
+                : MAIN
+              : "",
           ),
     );
 
     yield* triage.prepare({ client: {} });
     yield* triage.prepare({ client: {} });
     yield* Queue.take(fetches);
+    assert.include(yield* readContext, `commit ${RELEASE_COMMIT}`);
 
     assert.deepEqual(
       commands.filter((command) => command === "ls-remote" || command === "init"),

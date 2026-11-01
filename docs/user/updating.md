@@ -4,6 +4,12 @@ The app you use and the server running your agents can be on different machines.
 When a server is behind your web or desktop app, the update button at the bottom
 of the sidebar and **Settings → Environments** offer to update it.
 
+This fork's desktop and standalone CLI updates come from
+[ScriptedAlchemy/t3code releases](https://github.com/ScriptedAlchemy/t3code/releases).
+The fork currently publishes **Nightly** releases. Install the fork's desktop
+app or bundled web app to get its client changes; the upstream hosted web app,
+mobile store apps, and npm package follow separate releases.
+
 ## Update everything at once
 
 The update button at the bottom of the sidebar updates every connected machine
@@ -37,6 +43,11 @@ and how many can resume afterwards. See **Continue threads after restarts**
 below.
 
 ## Switch between Stable and Nightly
+
+Keep this fork on **Nightly** unless a release exists on the track you want.
+Switching tracks searches this fork's release repository; it does not switch
+the installation to upstream T3 Code. If a track has no release, the dialog
+reports that it is unavailable.
 
 In the desktop app, change **Settings → About → Update track**. T3 Code shows each
 connected machine it will move and each one it skips, then moves them in one
@@ -112,15 +123,16 @@ On the host, run:
 t3 update <client-version>
 ```
 
-Replace `<client-version>` with the version shown in the notice. The command
+Replace `<client-version>` with a fork release version shown in the notice. The command
 asks before restarting the background service; if you decline, run
 `t3 service restart` when you are ready. For a server you started by hand,
 stop it and start it again afterwards with your usual options such as `--host`
 or `--tailscale-serve`.
 
-If you run the server with `npx` rather than an installed `t3`, there is
-nothing to update on the host: stop the server and relaunch it as
-`npx t3@<client-version>` with the same subcommand and options.
+The npm update and relaunch actions apply to upstream npm installations.
+This fork does not publish `t3` to npm: use its
+[standalone installer](./install.md#command-line), or pull and rebuild a source
+checkout. Running `npx t3@<version>` selects upstream, not a fork release.
 
 ## If an update fails
 
@@ -153,18 +165,23 @@ from Applications again.
 If the desktop app's server keeps failing at startup, T3 Code shows a "T3 Code
 could not start" window instead of the app. If a newer version is available,
 choose **Update** to install it. If not, the window links to the last version
-that started on your computer. Download and install it to go back. Use **Copy
+that started on your computer in this fork's releases. Download and install it to go back. Use **Copy
 details** to include the error in a bug report.
 
-## Registries and proxies
+## Release sources and package registries
 
-Each server checks T3 Code releases, and providers installed with npm, through
-its own npm, so the checks use npm's configured registry, authentication, and
-proxy settings. Providers installed with Homebrew or pnpm check through those
-tools.
-Configure npm on the server's machine. If that registry cannot be reached, the
-release shows as unavailable; T3 Code does not try the public registry instead.
-Machines without npm check the public npm registry directly.
+Each fork server checks T3 Code releases and their database compatibility
+metadata from this fork's GitHub releases. The server needs access to GitHub
+and the release assets; changing npm's registry does not change which T3 Code
+builds are offered. Older releases without compatibility metadata cannot be
+used for a cross-track switch until the target release's compatibility is known.
+
+Providers installed with npm still check through the server's npm, using its
+configured registry, authentication, and proxy settings. Providers installed
+with Homebrew or pnpm check through those tools. Configure these package
+managers on the server's machine. If its npm registry cannot be reached, the
+provider's update check fails rather than trying the public registry instead.
+Machines without npm check the public npm registry directly for those providers.
 
 ## Update providers
 
@@ -198,8 +215,14 @@ there before refreshing to find newer versions. The same setting controls whethe
 T3 Code downloads model catalog updates, so with it off new models may not appear
 until you enable it and refresh provider status.
 
-Install App Store or Google Play releases as usual. The mobile app can also
+The App Store and Google Play apps follow upstream releases. Those apps can also
 download updates in the background and apply them when you next leave the app.
 It saves drafts and queued messages before restarting. If you keep the app open
 for a long time, it may ask to install immediately; choosing **Later** leaves the
 update queued for the next suitable moment.
+
+This fork does not publish those store or over-the-air updates. If you built the
+fork's mobile app from source, rebuild it from the updated checkout to receive
+its native client changes. Fork builds disable over-the-air updates by default.
+To opt into your own Expo project's updates, configure its project and owner and
+explicitly enable updates when building; see [Mobile app setup](./install.md#mobile-app).

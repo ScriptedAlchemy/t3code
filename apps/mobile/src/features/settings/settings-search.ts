@@ -71,6 +71,8 @@ const SETTINGS_SEARCH_TERMS = {
     "sign in",
     "login",
     "auth",
+    "skills library",
+    "shared skills",
   ],
   SettingsEnvironmentSourceControl: [
     "git",

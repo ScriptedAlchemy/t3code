@@ -1152,6 +1152,8 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
       nativeThreadId: Schema.String,
       status: Schema.Literals(["pending", "injected", "inline"]),
       itemIds: Schema.Array(TurnItemId),
+      /** Conservative batch occupancy, recorded once when several handoffs share a delivery. */
+      estimatedTokens: Schema.optional(NonNegativeInt),
       omittedItemIds: Schema.optional(Schema.Array(TurnItemId)),
       /** Conversation summaries delivered in place of the items in summarizedItemIds. */
       summaryIds: Schema.optional(Schema.Array(ConversationSummaryId)),

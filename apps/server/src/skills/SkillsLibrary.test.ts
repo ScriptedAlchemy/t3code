@@ -2,6 +2,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Effect from "effect/Effect";
@@ -11,10 +12,14 @@ import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import { discoverAntigravitySkills } from "../provider/Drivers/AntigravitySkills.ts";
+import { prepareAntigravityProfile } from "../provider/antigravityAuthSupport.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SkillsLibrary from "./SkillsLibrary.ts";
 
-const setup = Effect.fn("SkillsLibrary.test.setup")(function* () {
+const setup = Effect.fn("SkillsLibrary.test.setup")(function* (
+  drivers: ReadonlyArray<ProviderDriverKind> = [],
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-skills-library-" });
@@ -24,7 +29,31 @@ const setup = Effect.fn("SkillsLibrary.test.setup")(function* () {
   yield* fs.makeDirectory(claude, { recursive: true });
   yield* fs.makeDirectory(codex, { recursive: true });
   const service = yield* SkillsLibrary.make.pipe(
-    Effect.provide(ServerSettings.ServerSettingsService.layerTest()),
+    Effect.provide(
+      Layer.mergeAll(
+        ServerSettings.ServerSettingsService.layerTest(),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          listInstances: Effect.succeed(
+            drivers.map((driverKind) => ({
+              instanceId: ProviderInstanceId.make(driverKind),
+              driverKind,
+              enabled: true,
+              displayName: undefined,
+              continuationIdentity: { driverKind, continuationKey: driverKind },
+              get orchestrationAdapter(): never {
+                throw new Error("Sharing skills must not start a provider session.");
+              },
+              get snapshot(): never {
+                throw new Error("Sharing skills must not probe a provider.");
+              },
+              get textGeneration(): never {
+                throw new Error("Sharing skills must not generate text.");
+              },
+            })),
+          ),
+        }),
+      ),
+    ),
     Effect.provideService(HostProcess.HomeDirectory, home),
     Effect.provideService(HostProcess.Environment, { HOME: home }),
   );
@@ -64,7 +93,84 @@ const snapshot = (root: string) =>
 it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
   describe("apply", () => {
     it.effect.skipIf(!symlinksSupported)(
-      "keeps one copy of a skill two harnesses share and links it into both",
+      "makes shared skills available to a configured Antigravity with no global home",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, library, service, skill, read } = yield* setup([
+            ProviderDriverKind.make("antigravity"),
+          ]);
+          yield* skill(library, "review", "shared review instructions");
+          const sourceSkill = path.join(library, "review");
+          yield* fs.writeFileString(path.join(sourceSkill, "reference.md"), "reference");
+          yield* fs.symlink("reference.md", path.join(sourceSkill, "inside.md"));
+          const outside = path.join(home, "private.txt");
+          yield* fs.writeFileString(outside, "private");
+          yield* fs.symlink(outside, path.join(sourceSkill, "outside.md"));
+          expect(yield* fs.exists(path.join(home, ".gemini"))).toBe(false);
+
+          yield* service.apply;
+          const profileDirectory = path.join(home, "private-profile");
+          yield* prepareAntigravityProfile({ profileDirectory, userHome: home });
+
+          const profileSkills = path.join(profileDirectory, "config", "skills");
+          expect(yield* read(profileSkills, "review")).toContain("shared review instructions");
+          const nativeRoot = yield* Effect.promise(() => NodeFSP.realpath(profileSkills));
+          for (const name of ["SKILL.md", "inside.md"]) {
+            const resolved = yield* Effect.promise(() =>
+              NodeFSP.realpath(path.join(profileSkills, "review", name)),
+            );
+            expect(resolved.startsWith(`${nativeRoot}${path.sep}`)).toBe(true);
+          }
+          expect(
+            yield* Effect.promise(() =>
+              NodeFSP.realpath(path.join(profileSkills, "review", "outside.md")),
+            ),
+          ).toBe(yield* fs.realPath(outside));
+          expect(
+            (yield* discoverAntigravitySkills({
+              cwd: path.join(home, "project"),
+              userHome: home,
+            })).map((entry) => entry.name),
+          ).toEqual(["review"]);
+          expect(yield* fs.exists(path.join(home, ".gemini", "config", "mcp_config.json"))).toBe(
+            false,
+          );
+
+          yield* skill(library, "review", "updated instructions");
+          yield* fs.remove(path.join(sourceSkill, "reference.md"));
+          yield* prepareAntigravityProfile({ profileDirectory, userHome: home });
+          expect(yield* read(profileSkills, "review")).toContain("updated instructions");
+          expect(yield* fs.exists(path.join(profileSkills, "review", "reference.md"))).toBe(false);
+
+          yield* fs.remove(sourceSkill, { recursive: true });
+          const failed = yield* prepareAntigravityProfile({
+            profileDirectory,
+            userHome: home,
+          }).pipe(Effect.result);
+          expect(failed._tag).toBe("Failure");
+          yield* service.apply;
+          yield* prepareAntigravityProfile({ profileDirectory, userHome: home });
+          expect(yield* fs.exists(path.join(profileSkills, "review"))).toBe(false);
+
+          yield* skill(library, "review", "restored instructions");
+          yield* service.apply;
+          yield* service.detach;
+          yield* prepareAntigravityProfile({ profileDirectory, userHome: home });
+          expect(yield* read(profileSkills, "review")).toContain("restored instructions");
+          yield* skill(
+            path.join(home, ".gemini", "config", "skills"),
+            "review",
+            "edited after detaching",
+          );
+          expect(yield* read(profileSkills, "review")).toContain("edited after detaching");
+          expect(
+            yield* fs.exists(path.join(profileDirectory, "t3-skill-snapshots", "config")),
+          ).toBe(false);
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "keeps one copy of shared skills and links every native harness root",
       () =>
         Effect.gen(function* () {
           const { fs, path, home, claude, codex, library, service, skill, read, link } =
@@ -72,6 +178,8 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
           yield* skill(claude, "shared", "same");
           yield* skill(codex, "shared", "same");
           yield* skill(claude, "claude-only", "claude");
+          const antigravity = path.join(home, ".gemini", "antigravity-cli", "skills");
+          yield* skill(antigravity, "antigravity-only", "antigravity");
           yield* skill(path.join(claude, "synced", "org_account"), "synced-skill", "synced");
           yield* skill(path.join(codex, ".system"), "bundled", "bundled");
           // A root that already is the library must not be emptied into itself.
@@ -82,12 +190,25 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
 
           yield* service.apply;
 
-          expect((yield* fs.readDirectory(library)).sort()).toEqual(["claude-only", "shared"]);
+          expect((yield* fs.readDirectory(library)).sort()).toEqual([
+            "antigravity-only",
+            "claude-only",
+            "shared",
+          ]);
           expect(yield* read(library, "shared")).toContain("same");
-          for (const root of [claude, codex]) {
+          for (const root of [claude, codex, antigravity]) {
             expect(yield* link(root, "shared")).toBe(path.join(library, "shared"));
             expect(yield* link(root, "claude-only")).toBe(path.join(library, "claude-only"));
+            expect(yield* link(root, "antigravity-only")).toBe(
+              path.join(library, "antigravity-only"),
+            );
           }
+          expect(
+            (yield* discoverAntigravitySkills({
+              cwd: path.join(home, "project"),
+              userHome: home,
+            })).map((skill) => skill.name),
+          ).toEqual(["antigravity-only", "claude-only", "shared"]);
           expect(yield* read(path.join(claude, "synced", "org_account"), "synced-skill")).toContain(
             "synced",
           );
@@ -98,10 +219,15 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
           expect(status.libraryPath).toBe(library);
           expect(status.conflicts).toEqual([]);
           expect(status.linked).toEqual([
+            { driver: "claudeAgent", name: "antigravity-only" },
             { driver: "claudeAgent", name: "claude-only" },
             { driver: "claudeAgent", name: "shared" },
+            { driver: "codex", name: "antigravity-only" },
             { driver: "codex", name: "claude-only" },
             { driver: "codex", name: "shared" },
+            { driver: "antigravity", name: "antigravity-only" },
+            { driver: "antigravity", name: "claude-only" },
+            { driver: "antigravity", name: "shared" },
           ]);
 
           const before = yield* snapshot(home);
@@ -189,6 +315,10 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
           yield* skill(claude, "hello", "hello");
           yield* skill(claude, "kept", "kept");
           yield* skill(codex, "codex-only", "codex");
+          const antigravityRoots = ["config", "antigravity-cli"].map((directory) =>
+            path.join(home, ".gemini", directory, "skills"),
+          );
+          for (const root of antigravityRoots) yield* fs.makeDirectory(root, { recursive: true });
           yield* service.apply;
           const elsewhere = path.join(home, "dev", "skills");
           yield* skill(elsewhere, "mine", "mine");
@@ -208,8 +338,10 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
           yield* service.detach;
 
           for (const name of ["hello", "codex-only"]) {
-            expect(yield* link(claude, name)).toBeUndefined();
-            expect(yield* read(claude, name)).toBe(yield* read(library, name));
+            for (const root of [claude, ...antigravityRoots]) {
+              expect(yield* link(root, name)).toBeUndefined();
+              expect(yield* read(root, name)).toBe(yield* read(library, name));
+            }
           }
           expect(yield* link(claude, "mine")).toBe(path.join(elsewhere, "mine"));
           expect(yield* link(claude, "alias")).toBe(path.join(library, "hello"));

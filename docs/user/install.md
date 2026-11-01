@@ -3,6 +3,12 @@
 T3 Code runs coding agents on your computer and lets you control them from its
 desktop, web, or mobile app. Set up the machine where the agents will work first.
 
+These instructions install the **ScriptedAlchemy fork**. Its
+[GitHub Releases](https://github.com/ScriptedAlchemy/t3code/releases) currently
+publish Nightly desktop apps and standalone CLI archives with the bundled web app.
+Use these builds for the fork's features. The upstream hosted web app, npm package,
+community packages, and mobile store apps have their own release paths.
+
 ## Requirements
 
 You need an installed, authenticated provider before starting a thread. You can
@@ -11,19 +17,19 @@ launch T3 Code and configure providers afterwards.
 ## Command line
 
 ```bash
-curl -fsSL https://t3.codes/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ScriptedAlchemy/t3code/main/scripts/install.sh | sh
 ```
 
 On Windows, in PowerShell:
 
 ```powershell
-irm https://t3.codes/install.ps1 | iex
+irm https://raw.githubusercontent.com/ScriptedAlchemy/t3code/main/scripts/install.ps1 | iex
 ```
 
 This installs the `t3` binary to `~/.local/bin`. If your shell reports `command not found`
 afterwards, that directory is not on your `PATH` yet; the installer prints the
-line to add. Set `T3CODE_CHANNEL=nightly` to install the nightly train, or
-`T3CODE_VERSION` to pin an exact version.
+line to add. The installer defaults to this fork's Nightly channel. Set
+`T3CODE_VERSION` to pin an exact version published in this fork's releases.
 
 | Task                                             | Command                                                                 |
 | ------------------------------------------------ | ----------------------------------------------------------------------- |
@@ -43,17 +49,18 @@ If `t3` or `t3 start` reports an already running server, connect to that server
 instead. Stop it before starting a replacement, or use a different `--base-dir`
 for an independent server.
 
-To try T3 Code once without installing it, run `npx t3@latest` instead (needs
-Node.js for `npx`).
+This fork does not publish the `t3` npm package. Running `npx t3@latest` or
+`npx t3@nightly` starts upstream T3 Code. Use the standalone installer above
+or build from this repository to run the fork.
 
 ### Intel Macs
 
 There is no `t3` executable for Intel Macs (the desktop app is available). To
 run a server there, build it from source with `vp`, which provides the Node version it needs
-([Install vp](https://github.com/pingdotgg/t3code#install-vp)):
+([Install vp](../../README.md#install-vp)):
 
 ```bash
-git clone https://github.com/pingdotgg/t3code
+git clone https://github.com/ScriptedAlchemy/t3code
 cd t3code && vp i && vp run build:desktop
 node apps/server/dist/bin.mjs
 ```
@@ -63,25 +70,37 @@ update it with `git pull` and a rebuild.
 
 ## Desktop app
 
-Download a release from [GitHub Releases](https://github.com/pingdotgg/t3code/releases),
-or use a package manager:
+Download your platform's build from the fork's
+[GitHub Releases](https://github.com/ScriptedAlchemy/t3code/releases). Keep
+**Settings → About → Update track** on **Nightly**, the track this fork currently
+publishes.
+
+On Debian or Ubuntu, download the fork's `.deb` from that release and run:
+
+```bash
+sudo apt install ./T3-Code-*.deb
+```
+
+The `.deb` updates itself like the other desktop builds. It asks for your
+password to install each update. If your desktop has no password prompt, the
+update fails. Download the new fork `.deb` and install it the same way.
+
+### Upstream package managers
+
+The packages below distribute upstream T3 Code and do not include this fork's
+additions. They remain useful if you intend to install upstream:
 
 | Platform           | Install                                                      |
 | ------------------ | ------------------------------------------------------------ |
 | Windows            | `winget install T3Tools.T3Code`                              |
 | macOS              | `brew install --cask t3-code`                                |
-| Debian, Ubuntu     | `sudo apt install ./T3-Code-*.deb`                           |
 | Arch Linux         | `yay -S t3code-bin`                                          |
 | Arch Linux nightly | `yay -S t3code-nightly-bin`                                  |
 | Nix                | `nix profile add github:NixOS/nixpkgs/nixos-unstable#t3code` |
 
-The `.deb` updates itself like the other desktop builds. It asks for your
-password to install each update. If your desktop has no password prompt, the
-update fails. Download the new `.deb` and install it the same way.
-
 ### Nix (nixpkgs)
 
-T3 Code is maintained in [nixpkgs](https://github.com/NixOS/nixpkgs/tree/nixos-unstable/pkgs/by-name/t3/t3code).
+Upstream T3 Code is maintained in [nixpkgs](https://github.com/NixOS/nixpkgs/tree/nixos-unstable/pkgs/by-name/t3/t3code).
 The command above installs from `nixos-unstable` and requires Nix 2.30 or later with
 `nix-command` and `flakes` enabled. Launch the desktop app with `t3code-desktop`;
 the package also includes the `t3` command.
@@ -108,7 +127,9 @@ terminal, open **Settings → About** and choose **Install** next to
 **t3 command**. On macOS and Linux it adds a `t3` link to a folder on your
 `PATH`; on Windows it adds the app's command folder to your `PATH`. Open a new
 terminal afterwards. **Remove** takes it off again. If you already have `t3`
-from npm, it stays as it is.
+from npm, it stays as it is. That npm command still runs upstream T3 Code;
+remove or rename it before installing the fork's desktop command if you want
+`t3` to use the fork.
 
 ### Windows Subsystem for Linux
 
@@ -132,14 +153,28 @@ command cannot reach the app, start or update the desktop app and try again.
 
 ## Mobile app
 
-Install T3 Code from the
+The upstream mobile app is available from the
 [App Store](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824) or
 [Google Play](https://play.google.com/store/apps/details?id=com.t3tools.t3code).
 The phone connects to a server on another machine. Follow
 [remote access](./remote-access.md) to link it through T3 Connect or a pairing URL.
 
+These store apps and the upstream hosted web app at [app.t3.codes](https://app.t3.codes)
+do not contain this fork's client screens. They can connect when their protocol
+version is compatible, but server features alone do not add fork UI to them.
+Use the fork's desktop or server-hosted web app for the fork UI. To use the native
+mobile additions, build the mobile app from this repository; this fork's release
+workflow does not publish mobile store builds or mobile over-the-air updates.
+Fork mobile builds disable over-the-air updates by default and keep their bundled
+client. To publish and receive updates from your own Expo project, set
+`T3CODE_MOBILE_EAS_PROJECT_ID` and `T3CODE_MOBILE_EAS_OWNER` to that project's
+values, then set `T3CODE_MOBILE_UPDATES_ENABLED=1` when building. The same project
+ID configures both EAS and the update feed. Setting the enabled flag without
+changing the project deliberately opts into the existing upstream Expo feed.
+`T3CODE_MOBILE_UPDATES_ENABLED=0` always disables it.
+
 Store links and QR codes are also available in **Settings → About → Mobile app**
-on web and desktop. The store apps work with both stable and Nightly servers. Test builds are optional:
+on web and desktop. They link to the upstream store apps. Upstream test builds are optional:
 
 - **iPhone and iPad:** TestFlight is invite-only.
 - **Android:** download an APK from the

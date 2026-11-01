@@ -33,6 +33,61 @@ const mockRuntimeOptions = {
 } satisfies AcpSessionRuntime.AcpSessionRuntimeOptions;
 
 describe("AcpSessionRuntime", () => {
+  it.live.each(["new", "load", "resume"] as const)(
+    "preserves extra workspace roots on %s startup and later activation",
+    (startup) =>
+      Effect.gen(function* () {
+        const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "acp-session-roots-"));
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+        );
+        const requestLogPath = NodePath.join(directory, "requests.jsonl");
+        const additionalDirectories = [NodePath.join(directory, "attachments")];
+        const runtime = yield* AcpSessionRuntime.make({
+          ...mockRuntimeOptions,
+          spawn: {
+            ...mockRuntimeOptions.spawn,
+            env: {
+              T3_ACP_SESSION_LIFECYCLE: "1",
+              T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+            },
+          },
+          cwd: directory,
+          additionalDirectories,
+          ...(startup === "new"
+            ? {}
+            : { resumeSessionId: "mock-session-1", resumeMethod: startup }),
+        });
+        const started = yield* runtime.start();
+        yield* runtime.loadSession(started.sessionId);
+        yield* runtime.resumeSession(started.sessionId);
+        yield* runtime.forkSession(started.sessionId);
+        // Read what the subprocess received after the client's wire-schema conversion.
+        const requests = NodeFS.readFileSync(requestLogPath, "utf8")
+          .split(/\r?\n/u)
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { method?: string; params?: unknown })
+          .filter((request) =>
+            ["session/new", "session/load", "session/resume", "session/fork"].includes(
+              request.method ?? "",
+            ),
+          );
+        expect(requests.map((request) => request.method)).toEqual([
+          // ACP v2 expresses a load as a resume with replay.
+          startup === "new" ? "session/new" : "session/resume",
+          "session/resume",
+          "session/resume",
+          "session/fork",
+        ]);
+        for (const request of requests) {
+          expect(request.params).toMatchObject({
+            cwd: directory,
+            additionalDirectories,
+          });
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect.each(["session/new", "session/resume"] as const)(
     "buffers root metadata while %s startup is still pending",
     (setupMethod) =>

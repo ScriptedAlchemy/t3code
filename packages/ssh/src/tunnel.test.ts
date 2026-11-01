@@ -161,23 +161,28 @@ describe("ssh tunnel scripts", () => {
       }),
   );
 
-  it.live("reuses an installed CLI from the same release before requesting a preview archive", () =>
+  it.live("reuses an installed CLI only when it matches the exact requested release", () =>
     Effect.gen(function* () {
-      const result = yield* runArchiveRunner("1.2.3");
+      const result = yield* runArchiveRunner(ARCHIVE.archiveVersion);
       assert.equal(result.exitCode, 0, result.stderr);
       assert.equal(result.stdout, "installed:pair --json\n");
       assert.isFalse(result.runtimeExists);
     }),
   );
 
-  it.live("reports the missing release URL without adopting an incompatible installed CLI", () =>
-    Effect.gen(function* () {
-      const result = yield* runArchiveRunner("1.2.2");
-      assert.notEqual(result.exitCode, 0);
-      assert.include(result.stderr, `/v${ARCHIVE.archiveVersion}/SHA256SUMS`);
-      assert.include(result.stderr, "Install a compatible T3 CLI");
-      assert.isFalse(result.runtimeExists);
-    }),
+  it.live.each(["1.2.2", "1.2.3", "1.2.3-nightly.20260911.4", "1.2.3-preview.20260911.3"])(
+    "does not adopt installed release %s when the exact fork archive is unavailable",
+    (installedVersion) =>
+      Effect.gen(function* () {
+        const result = yield* runArchiveRunner(installedVersion);
+        assert.notEqual(result.exitCode, 0);
+        assert.include(
+          result.stderr,
+          `https://github.com/ScriptedAlchemy/t3code/releases/download/v${ARCHIVE.archiveVersion}/SHA256SUMS`,
+        );
+        assert.include(result.stderr, `Install the exact T3 CLI (${ARCHIVE.archiveVersion})`);
+        assert.isFalse(result.runtimeExists);
+      }),
   );
 
   it("rejects archive versions that are not a single exact version segment", () => {
