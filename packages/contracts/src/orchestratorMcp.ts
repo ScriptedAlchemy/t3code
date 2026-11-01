@@ -94,7 +94,8 @@ export const OrchestratorMcpTarget = Schema.Struct({
   ),
   driverKind: Schema.optional(
     ProviderDriverKind.annotate({
-      description: "Prefer `providerInstanceId`.",
+      description:
+        "Local targets only; prefer providerInstanceId. For a linked environment, omit driverKind and use providerInstanceId from that environment's orchestrator_capabilities.",
     }),
   ),
   model: Schema.optional(TrimmedNonEmptyString),

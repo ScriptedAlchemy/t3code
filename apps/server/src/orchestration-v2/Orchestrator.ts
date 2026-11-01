@@ -1034,6 +1034,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       return { type: "unrouted", selection: input.selection };
     }
+    const registeredInstanceIds = new Set(yield* providerAdapters.list());
+    const excluded = new Set(input.excluded);
+    for (const provider of providers) {
+      if (provider.pool?.role !== "pool" && !registeredInstanceIds.has(provider.instanceId)) {
+        excluded.add(provider.instanceId);
+      }
+    }
     const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     return routeModelSelection({
@@ -1043,7 +1050,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projectId: input.projectId,
       threadId: input.threadId,
       current: input.current,
-      ...(input.excluded === undefined ? {} : { excluded: input.excluded }),
+      excluded,
       nowMs,
     });
   });

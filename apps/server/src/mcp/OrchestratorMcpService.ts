@@ -2,6 +2,7 @@ import {
   providerConstraints,
   delegationProviderConstraints,
   invalidOptionSelections,
+  isCapabilityModelVisible,
   readOrchestrationProviders,
 } from "../provider/orchestrationTargets.ts";
 import {
@@ -306,7 +307,7 @@ function listCapabilityModels(input: {
 }) {
   const rank = new Map(input.preferences?.modelOrder.map((slug, index) => [slug, index]));
   const visible = input.provider.models
-    .filter((model) => model.isCustom || !input.preferences?.hiddenModels.includes(model.slug))
+    .filter((model) => isCapabilityModelVisible(model, input.preferences))
     .toSorted((a, b) => (rank.get(a.slug) ?? rank.size) - (rank.get(b.slug) ?? rank.size));
   const { instanceId, driver, displayName } = input.provider;
   const providerText = `${instanceId} ${driver} ${displayName ?? ""}`.toLowerCase();
@@ -1249,9 +1250,18 @@ const make = Effect.gen(function* () {
   }): Effect.fn.Return<ResolvedTarget, OrchestratorMcpFailure> {
     const requestedInstanceId = input.target?.providerInstanceId;
     const requestedDriver = input.target?.driverKind;
+    const inheritedSelection = input.parent.thread.modelSelection;
+    const requestedModel = input.target?.model;
+    const requestedOptions = input.target?.options;
+    const modelFor = (provider: ServerProvider) =>
+      requestedModel ??
+      (provider.instanceId === inheritedSelection.instanceId
+        ? inheritedSelection.model
+        : provider.models[0]?.slug);
     const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
     const availability = {
       providers: input.providers,
+      capableInstanceIds: orchestrationCapableInstanceIds,
       settings: yield* serverSettings.getSettings.pipe(
         Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
       ),
@@ -1272,6 +1282,7 @@ const make = Effect.gen(function* () {
       const candidates = input.providers.filter(
         (provider) =>
           provider.driver === requestedDriver &&
+          provider.pool?.role !== "member" &&
           orchestrationCapableInstanceIds.has(provider.instanceId),
       );
       if (candidates.length === 0) {
@@ -1294,6 +1305,14 @@ const make = Effect.gen(function* () {
         ...preferred,
         ...healthyCandidates.filter((candidate) => !preferred.includes(candidate)),
       ];
+      if (requestedModel !== undefined) {
+        orderedCandidates.sort(
+          (left, right) =>
+            Number(right.models.some((model) => model.slug === requestedModel)) -
+            Number(left.models.some((model) => model.slug === requestedModel)),
+        );
+      }
+      let firstEnabled: ServerProvider | undefined;
       for (const candidate of orderedCandidates) {
         const enabledForProject =
           input.skipProjectEnablementFilter === true ||
@@ -1301,11 +1320,25 @@ const make = Effect.gen(function* () {
             projectId: input.parent.thread.projectId,
             instanceId: candidate.instanceId,
           }));
-        if (enabledForProject) {
-          instanceId = candidate.instanceId;
-          break;
-        }
+        if (!enabledForProject) continue;
+        firstEnabled ??= candidate;
+        const model = modelFor(candidate);
+        const advertised = candidate.models.find((entry) => entry.slug === model);
+        if (
+          model === undefined ||
+          (requestedModel !== undefined &&
+            candidate.models.length > 0 &&
+            advertised === undefined) ||
+          (requestedOptions !== undefined &&
+            invalidOptionSelections(requestedOptions, advertised?.capabilities?.optionDescriptors)
+              .length > 0)
+        )
+          continue;
+        instanceId = candidate.instanceId;
+        break;
       }
+      // Keep the specific model or option error when every enabled instance rejects the target.
+      instanceId ??= firstEnabled?.instanceId;
       if (instanceId === undefined) {
         return yield* failure(
           "provider_unavailable",
@@ -1338,13 +1371,7 @@ const make = Effect.gen(function* () {
       );
     }
 
-    const inheritedSelection = input.parent.thread.modelSelection;
-    const requestedModel = input.target?.model;
-    const model =
-      requestedModel ??
-      (instanceId === inheritedSelection.instanceId
-        ? inheritedSelection.model
-        : provider.models[0]?.slug);
+    const model = modelFor(provider);
     if (model === undefined) {
       return yield* failure(
         "model_unavailable",
@@ -1362,7 +1389,6 @@ const make = Effect.gen(function* () {
       );
     }
 
-    const requestedOptions = input.target?.options;
     if (requestedOptions !== undefined) {
       const descriptors = provider.models.find((candidate) => candidate.slug === model)
         ?.capabilities?.optionDescriptors;
@@ -2124,6 +2150,7 @@ const make = Effect.gen(function* () {
       );
       const availability = {
         providers,
+        capableInstanceIds: orchestrationCapableInstanceIds,
         settings,
         projectId: parent?.thread.projectId ?? null,
         nowMs: yield* Clock.currentTimeMillis,

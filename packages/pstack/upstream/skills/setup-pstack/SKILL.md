@@ -87,7 +87,7 @@ Overwrite `<models>` with no frontmatter: comment lines, `# budget: <label> (<ef
 
 ### 6. Confirm
 
-Say where the file was written and that it applies to the next pstack run in this environment. Another environment needs its own setup because provider instances differ.
+Say where the file was written and that it applies to the next pstack run in this environment. Do not use an older `<t3_pstack>` block for roles just changed. If the user asks to continue in this turn, refresh `orchestrator_capabilities` and validate the exact newly saved targets and options before delegating. Another environment needs its own setup because provider instances differ.
 
 ### 7. Offer a verification skill (optional)
 

@@ -662,6 +662,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         ],
         { external: true },
       ).pipe(Scope.provide(scope));
+      assert.isFalse(runtime.supportsT3Tools);
       yield* runtime.startTurn(turnInput(thread));
       yield* Scope.close(scope, Exit.void);
     }),
@@ -2461,6 +2462,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       }
       // A transient registration failure changes availability, not the adapter's supported features.
       assert.isTrue(runtime.providerSession.capabilities.tools.supportsMcpTools);
+      assert.isTrue(runtime.supportsT3Tools);
     }).pipe(Effect.scoped),
   );
 

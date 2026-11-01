@@ -161,6 +161,7 @@ describe("checkPack", () => {
       "upstream/skills/poteto-mode/scripts/watch-pr/github.ts",
       "function isBugbot() {}\n",
     );
+    pack.write("upstream/helper.ts", 'import { check } from "./passes/loop-check.ts";\n');
     pack.seal();
     expect(checkPack(pack.root)).toEqual([]);
     pack.write("upstream/helper.sh", "AskQuestion\n");

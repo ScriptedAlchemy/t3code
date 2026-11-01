@@ -958,13 +958,9 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
         });
 
         const mcpSession = yield* mcpSessions.read(input.threadId);
-        const hasT3Mcp = mcpSession !== undefined && !connection.external;
-        const orchestrationSystemPrompt = t3OrchestrationSystemPrompt(
-          hasT3Mcp,
-          mcpSession?.capabilities?.has("device") === true,
-        );
-        if (hasT3Mcp) {
-          yield* OpenCodeRuntime.runOpenCodeSdk("mcp.add", () =>
+        let hasT3Mcp = false;
+        if (mcpSession !== undefined && !connection.external) {
+          const result = yield* OpenCodeRuntime.runOpenCodeSdk("mcp.add", () =>
             client.mcp.add({
               name: "t3-code",
               config: {
@@ -975,7 +971,12 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               },
             }),
           );
+          hasT3Mcp = result.data?.["t3-code"]?.status === "connected";
         }
+        const orchestrationSystemPrompt = t3OrchestrationSystemPrompt(
+          hasT3Mcp,
+          mcpSession?.capabilities?.has("device") === true,
+        );
 
         const now = yield* DateTime.now;
         let sessionEntity: OrchestrationV2ProviderSession = {
@@ -3038,6 +3039,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           driver: OPENCODE_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: sessionEntity,
+          supportsT3Tools: hasT3Mcp,
           events: Stream.fromEffectRepeat(Queue.take(events)),
           hasPendingBackgroundWork: Effect.sync(() => busySessionIds.size > 0),
           ensureThread: Effect.fn("OpencodeAdapter.ensureThread")(

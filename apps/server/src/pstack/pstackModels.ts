@@ -1,13 +1,17 @@
 import {
+  type ModelSelection,
   type ProviderInstanceId,
+  type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type ServerProvider,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
 import { PSTACK_PANEL_ROLES, type PstackRoleDefault } from "@t3tools/pstack";
 import {
   delegationProviderConstraints,
   invalidOptionSelections,
+  isCapabilityModelVisible,
 } from "../provider/orchestrationTargets.ts";
 
 interface Entry {
@@ -16,8 +20,14 @@ interface Entry {
   readonly options: ReadonlyArray<ProviderOptionSelection>;
   readonly error?: string;
 }
-type Seat = { readonly kind: "inherit" } | { readonly kind: "target"; readonly target: Entry };
-type ParsedSeat = { readonly kind: "inherit" } | { readonly kind: "entry"; readonly entry: Entry };
+type Seat =
+  | { readonly kind: "inherit" }
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "target"; readonly target: Entry };
+type ParsedSeat =
+  | { readonly kind: "inherit" }
+  | { readonly kind: "entry"; readonly entry: Entry }
+  | { readonly kind: "unresolved"; readonly model: string; readonly reason: string };
 
 export function parseModelsFile(text: string) {
   const lines = new Map<string, ReadonlyArray<ParsedSeat>>();
@@ -61,7 +71,7 @@ export function parseModelsFile(text: string) {
           const value = token.slice(equal + 1);
           options.push({
             id: token.slice(0, equal),
-            value: value === "true" ? true : value === "false" ? false : value,
+            value,
           });
         }
         return {
@@ -80,61 +90,117 @@ export function parseModelsFile(text: string) {
 }
 
 const effortLadder = ["low", "medium", "high", "xhigh", "max"];
-// Speed stays with the provider's own default unless the models file sets it.
+// Omitted speed follows T3's normal inheritance/default rules.
 const speedOptionIds = new Set(["fastMode", "serviceTier"]);
+
+function resolveOptions(
+  requested: ReadonlyArray<ProviderOptionSelection>,
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+) {
+  const selections = requested.map((selection) => {
+    const descriptor = descriptors.find((descriptor) => descriptor.id === selection.id);
+    return descriptor?.type === "boolean" &&
+      (selection.value === "true" || selection.value === "false")
+      ? { id: selection.id, value: selection.value === "true" }
+      : selection;
+  });
+  const problems = [...invalidOptionSelections(selections, descriptors)];
+  const options: ProviderOptionSelection[] = [];
+  for (const descriptor of descriptors) {
+    if (
+      speedOptionIds.has(descriptor.id) &&
+      !selections.some((option) => option.id === descriptor.id)
+    )
+      continue;
+    const value =
+      selections.find((option) => option.id === descriptor.id)?.value ??
+      getProviderOptionCurrentValue(descriptor) ??
+      (descriptor.type === "boolean" ? false : undefined);
+    if (value === undefined) problems.push(`option ${descriptor.id} has no current value`);
+    else options.push({ id: descriptor.id, value });
+  }
+  problems.push(...invalidOptionSelections(options, descriptors));
+  return { options, problems };
+}
 
 function defaultSeat(
   slug: string,
   providers: ReadonlyArray<ServerProvider>,
   constraintsFor: (provider: ServerProvider) => ReadonlyArray<string>,
+  parentModelSelection: ModelSelection | undefined,
+  modelPreferences: ServerSettings["providerModelPreferences"] | undefined,
 ): ParsedSeat {
   if (slug === "inherit-parent" || slug === "auto") return { kind: "inherit" };
   const withoutFast = slug.replace(/-fast$/, "");
   const effortMatch = /-(low|medium|high|xhigh|max)$/.exec(withoutFast);
-  const model = effortMatch ? withoutFast.slice(0, effortMatch.index) : withoutFast;
-  const driver = model.startsWith("claude-")
-    ? "claudeAgent"
-    : model.startsWith("gpt-")
-      ? "codex"
-      : model.startsWith("grok-")
-        ? "grok"
-        : model.startsWith("composer-") || model.startsWith("cursor-grok-")
-          ? "cursor"
-          : undefined;
-  const provider = providers.find(
-    (candidate) =>
-      candidate.driver === driver &&
-      constraintsFor(candidate).length === 0 &&
-      candidate.pool?.role !== "member" &&
-      candidate.models.some((candidate) => candidate.slug === model),
+  const variants = [
+    { model: slug, effort: undefined },
+    ...(withoutFast === slug ? [] : [{ model: withoutFast, effort: undefined }]),
+    ...(effortMatch === null
+      ? []
+      : [{ model: withoutFast.slice(0, effortMatch.index), effort: effortMatch[1] }]),
+  ];
+  const advertised = providers.flatMap((provider) =>
+    provider.models.map((model) => ({ provider, model })),
   );
-  const descriptors =
-    provider?.models.find((candidate) => candidate.slug === model)?.capabilities
-      ?.optionDescriptors ?? [];
-  const options: ProviderOptionSelection[] = [];
-  const effort = effortMatch?.[1];
-  const descriptor = descriptors.find(
-    (candidate) =>
-      candidate.type === "select" &&
-      candidate.options.filter((option) => effortLadder.includes(option.id)).length >= 2,
-  );
-  if (effort !== undefined && descriptor?.type === "select") {
-    const clamped = effortLadder
-      .slice(0, effortLadder.indexOf(effort) + 1)
-      .findLast((value) => descriptor.options.some((option) => option.id === value));
-    options.push({ id: descriptor.id, value: clamped ?? effort });
+  for (const variant of variants) {
+    const matching = advertised.filter(
+      ({ model }) =>
+        model.slug === variant.model ||
+        (!variant.model.includes("/") && model.slug.endsWith(`/${variant.model}`)),
+    );
+    if (matching.length === 0) continue;
+    const eligible = matching.filter(
+      ({ provider, model }) =>
+        constraintsFor(provider).length === 0 &&
+        provider.pool?.role !== "member" &&
+        isCapabilityModelVisible(model, modelPreferences?.[provider.instanceId]),
+    );
+    const exact = eligible.filter(({ model }) => model.slug === variant.model);
+    const candidates = exact.length > 0 ? exact : eligible;
+    if (new Set(candidates.map(({ model }) => model.slug)).size > 1)
+      return {
+        kind: "unresolved",
+        model: slug,
+        reason: "model alias is ambiguous; run setup-pstack to choose an advertised model",
+      };
+    const priority = (provider: ServerProvider) =>
+      provider.pool?.role === "pool"
+        ? 0
+        : provider.instanceId === parentModelSelection?.instanceId
+          ? 1
+          : 2;
+    const available = candidates.toSorted(
+      (left, right) => priority(left.provider) - priority(right.provider),
+    );
+    for (const { provider, model } of available) {
+      const descriptors = model.capabilities?.optionDescriptors ?? [];
+      const options: ProviderOptionSelection[] = [];
+      const descriptor = descriptors.find(
+        (candidate) =>
+          candidate.type === "select" &&
+          candidate.options.filter((option) => effortLadder.includes(option.id)).length >= 2,
+      );
+      if (variant.effort !== undefined && descriptor?.type === "select") {
+        const clamped = effortLadder
+          .slice(0, effortLadder.indexOf(variant.effort) + 1)
+          .findLast((value) => descriptor.options.some((option) => option.id === value));
+        if (clamped === undefined) continue;
+        options.push({ id: descriptor.id, value: clamped });
+      }
+      if (resolveOptions(options, descriptors).problems.length > 0) continue;
+      return {
+        kind: "entry",
+        entry: { providerInstanceId: provider.instanceId, model: model.slug, options },
+      };
+    }
+    return {
+      kind: "unresolved",
+      model: slug,
+      reason: "no available provider can run this model with the requested reasoning budget",
+    };
   }
-  return {
-    kind: "entry",
-    entry: {
-      providerInstanceId: provider?.instanceId ?? driver ?? "unknown",
-      model,
-      options,
-      ...(provider !== undefined && effort !== undefined && descriptor === undefined
-        ? { error: "model does not advertise an effort option" }
-        : {}),
-    },
-  };
+  return { kind: "unresolved", model: slug, reason: "model is not advertised" };
 }
 
 export function resolveRoles(
@@ -142,6 +208,9 @@ export function resolveRoles(
     readonly file: ReturnType<typeof parseModelsFile> | undefined;
     readonly defaults: ReadonlyArray<PstackRoleDefault>;
     readonly capableInstanceIds: ReadonlySet<ProviderInstanceId>;
+    readonly parentModelSelection?: ModelSelection;
+    readonly settings: Parameters<typeof delegationProviderConstraints>[2]["settings"] &
+      Partial<Pick<ServerSettings, "providerModelPreferences">>;
   } & Parameters<typeof delegationProviderConstraints>[2],
 ) {
   const constraintsFor = (provider: ServerProvider) =>
@@ -151,6 +220,24 @@ export function resolveRoles(
       input,
     );
   const diagnostics = [...(input.file?.diagnostics ?? [])];
+  const parent =
+    input.parentModelSelection === undefined
+      ? undefined
+      : input.providers.find(
+          (provider) => provider.instanceId === input.parentModelSelection?.instanceId,
+        );
+  const parentConstraints =
+    input.parentModelSelection === undefined
+      ? []
+      : parent === undefined
+        ? ["provider instance is not registered"]
+        : constraintsFor(parent);
+  const inherited: Seat =
+    parentConstraints.length === 0 ? { kind: "inherit" } : { kind: "unavailable" };
+  if (parentConstraints.length > 0)
+    diagnostics.push(
+      `Parent model cannot run a child task (${parentConstraints.join(" ")}); refresh orchestrator_capabilities before choosing another target.`,
+    );
   for (const role of input.file?.lines.keys() ?? []) {
     if (!input.defaults.some((entry) => entry.label === role))
       diagnostics.push(`Unknown role ${role}; ignored.`);
@@ -160,43 +247,48 @@ export function resolveRoles(
       input.file?.lines.get(role.label) ??
       role.defaultValue
         .split(",")
-        .map((slug) => defaultSeat(slug.trim(), input.providers, constraintsFor));
+        .map((slug) =>
+          defaultSeat(
+            slug.trim(),
+            input.providers,
+            constraintsFor,
+            input.parentModelSelection,
+            input.settings.providerModelPreferences,
+          ),
+        );
     const panel = PSTACK_PANEL_ROLES.has(role.label);
+    const fallback = (index: number, target: string, reason: string): Seat | undefined => {
+      const action =
+        inherited.kind === "unavailable"
+          ? "parent delegation is unavailable; refresh orchestrator_capabilities before choosing another target."
+          : panel
+            ? "runs on the parent model."
+            : "excluded from pool; uses the parent model if no seats remain.";
+      diagnostics.push(
+        `Fallback: ${role.label} seat ${index + 1} ${target} unavailable (${reason}); ${action}`,
+      );
+      return panel ? inherited : undefined;
+    };
     const seats = entries.map((seat, index): Seat | undefined => {
-      if (seat.kind === "inherit") return seat;
+      if (seat.kind === "inherit")
+        return inherited.kind === "unavailable" && !panel ? undefined : inherited;
+      if (seat.kind === "unresolved") return fallback(index, seat.model, seat.reason);
       const entry = seat.entry;
       const provider = input.providers.find(
         (provider) => provider.instanceId === entry.providerInstanceId,
       );
       const model = provider?.models.find((model) => model.slug === entry.model);
       const descriptors = model?.capabilities?.optionDescriptors ?? [];
+      const { options, problems } = resolveOptions(entry.options, descriptors);
       let reason =
         entry.error ??
         (provider === undefined
           ? "provider instance is not registered"
           : constraintsFor(provider).join(" ") || undefined);
       reason ??= model === undefined ? "model is not advertised" : undefined;
-      reason ??= invalidOptionSelections(entry.options, descriptors).join(" ") || undefined;
-      const options: ProviderOptionSelection[] = [];
-      for (const descriptor of descriptors) {
-        if (
-          speedOptionIds.has(descriptor.id) &&
-          !entry.options.some((option) => option.id === descriptor.id)
-        )
-          continue;
-        const value =
-          entry.options.find((option) => option.id === descriptor.id)?.value ??
-          getProviderOptionCurrentValue(descriptor) ??
-          (descriptor.type === "boolean" ? false : undefined);
-        if (value === undefined) reason ??= `option ${descriptor.id} has no current value`;
-        else options.push({ id: descriptor.id, value });
-      }
-      reason ??= invalidOptionSelections(options, descriptors).join(" ") || undefined;
+      reason ??= problems.join(" ") || undefined;
       if (reason !== undefined) {
-        diagnostics.push(
-          `Fallback: ${role.label} seat ${index + 1} ${entry.providerInstanceId}/${entry.model} unavailable (${reason}); ${panel ? "runs on the parent model." : "excluded from pool; uses the parent model if no seats remain."}`,
-        );
-        return panel ? { kind: "inherit" } : undefined;
+        return fallback(index, `${entry.providerInstanceId}/${entry.model}`, reason);
       }
       return {
         kind: "target",
@@ -206,7 +298,7 @@ export function resolveRoles(
     const available = seats.filter((seat) => seat !== undefined);
     return {
       role: role.label,
-      seats: available.length > 0 ? available : [{ kind: "inherit" } as const],
+      seats: available.length > 0 ? available : [inherited],
     };
   });
   return { roles, diagnostics };
@@ -225,6 +317,8 @@ export function formatPstackBlock(input: {
     `<models>: ${input.modelsPath}`,
     ...input.skillNames.map((name) => `Read <pstack>/skills/${name}/SKILL.md and follow it.`),
     "Resolved roles (exact delegate_task targets; they override any model a skill or <models> names):",
+    "These targets are a snapshot. If a target is rejected or marked unavailable, refresh orchestrator_capabilities before retrying; keep the user's model choices and reasoning budget, and report any fallback.",
+    "After setup-pstack changes <models>, re-read it and resolve against fresh orchestrator_capabilities; the earlier targets below no longer apply.",
     ...input.resolved.roles.map(({ role, seats }) => {
       const rule =
         seats.length > 1
@@ -232,7 +326,7 @@ export function formatPstackBlock(input: {
             ? " (panel, one child per seat)"
             : " (pool, pick one per spawn)"
           : "";
-      return `- ${role}${rule}: ${seats.map((seat, index) => `[${index + 1}] ${seat.kind === "inherit" ? "inherit" : JSON.stringify(seat.target)}`).join(" ")}`;
+      return `- ${role}${rule}: ${seats.map((seat, index) => `[${index + 1}] ${seat.kind === "target" ? JSON.stringify(seat.target) : seat.kind}`).join(" ")}`;
     }),
     ...(input.resolved.diagnostics.length === 0
       ? []

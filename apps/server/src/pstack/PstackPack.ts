@@ -1,6 +1,7 @@
 import {
   resolveProjectProviderInstanceEnabled,
   type ComposerContextRecord,
+  type ModelSelection,
   type OrchestrationV2ConversationMessage,
   type ProjectId,
   type ServerProviderSkill,
@@ -49,6 +50,8 @@ export class PstackPack extends Context.Service<
     readonly expandComposer: (
       input: {
         readonly projectId: ProjectId;
+        readonly parentModelSelection?: ModelSelection;
+        readonly supportsOrchestrationTools?: boolean;
         readonly text: string;
         readonly records: ReadonlyArray<ComposerContextRecord>;
       },
@@ -280,6 +283,11 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
         plan.skillNames.filter((name) => pack.skills.some((skill) => skill.name === name)),
       );
       if (names.size === 0) return input;
+      if (input.supportsOrchestrationTools === false)
+        return plan.apply(
+          names,
+          "pstack is unavailable: this session does not expose T3 orchestration tools. Use a T3-managed session to run this workflow.",
+        );
       const file = yield* fs.readFileString(modelsPath).pipe(
         Effect.catchIf(
           (error) => error.reason._tag === "NotFound",
@@ -302,6 +310,9 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
           defaults: pack.defaults,
           settings: currentSettings,
           projectId: input.projectId,
+          ...(input.parentModelSelection === undefined
+            ? {}
+            : { parentModelSelection: input.parentModelSelection }),
           nowMs: yield* Clock.currentTimeMillis,
           ...providers,
           providers: providers.providers.map((provider) => ({

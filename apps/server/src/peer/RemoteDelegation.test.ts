@@ -1138,6 +1138,24 @@ it.effect("a task named only by environment inherits the parent's model, within 
       yield* linkTo(a.links, b, "auto-accept-edits");
       yield* seedParent(a);
 
+      for (const target of [
+        { environmentId: box.environmentId, driverKind: "claudeAgent" },
+        {
+          environmentId: box.environmentId,
+          driverKind: "claudeAgent",
+          providerInstanceId: instanceId,
+          model: modelSelection.model,
+        },
+      ]) {
+        const rejected = yield* a.call("delegate_task", {
+          task: "Review with the requested harness.",
+          target,
+        });
+        expect(rejected.isError).toBe(true);
+        expect(JSON.stringify(rejected.content)).toContain("orchestrator_capabilities");
+        expect(yield* Ref.get(thread.launchCount)).toBe(0);
+      }
+
       const result = yield* a.call("delegate_task", {
         task: "Run the suite on the box.",
         target: { environmentId: box.environmentId },
