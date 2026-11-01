@@ -69,6 +69,14 @@ jobs:
         if: inputs.package == '' || inputs.package == 'apps/web'
         run: node apps/web/node_modules/playwright/cli.js install --only-shell chromium
 
+      - name: Install server Chromium
+        if: inputs.package == 'apps/server'
+        run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
+
+      - name: Build server native addon
+        if: inputs.package == 'apps/server' && inputs.files != ''
+        run: node native/project-memory/build.mjs
+
       # `vp run ... test -- <files>` does not forward positional args to vitest,
       # so file-scoped runs call `vp test run` inside the package instead.
       - name: Test
