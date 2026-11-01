@@ -26,7 +26,8 @@ permissions:
 jobs:
   test:
     name: Test (${{ inputs.package || 'all non-server' }})
-    runs-on: blacksmith-8vcpu-windows-2025
+    # Forks do not inherit upstream's Blacksmith runner integration.
+    runs-on: ${{ github.repository == 'pingdotgg/t3code' && 'blacksmith-8vcpu-windows-2025' || 'windows-2025' }}
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -63,6 +64,10 @@ jobs:
       - name: Ensure Electron runtime is installed
         if: inputs.package == '' || inputs.package == 'apps/desktop'
         run: vp run --filter "@t3tools/desktop" ensure:electron
+
+      - name: Install Chromium
+        if: inputs.package == '' || inputs.package == 'apps/web'
+        run: node apps/web/node_modules/playwright/cli.js install --only-shell chromium
 
       # `vp run ... test -- <files>` does not forward positional args to vitest,
       # so file-scoped runs call `vp test run` inside the package instead.
