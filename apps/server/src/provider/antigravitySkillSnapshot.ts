@@ -6,7 +6,7 @@ import * as AcpErrors from "effect-acp/errors";
 
 import { sameContent } from "@t3tools/provider-core/server/homeOverlay";
 
-/** ACP 1.4.1 rejects skill links escaping a native root after realpath resolution. */
+/** ACP rejects skill links that resolve outside its native allowed roots. */
 export const prepareAntigravitySkillSnapshot = Effect.fn("prepareAntigravitySkillSnapshot")(
   function* (input: {
     readonly sourceDirectory: string;
