@@ -2,6 +2,13 @@
 // @effect-diagnostics nodeBuiltinImport:off preferSchemaOverJson:off
 import * as NodeReadline from "node:readline";
 
+import {
+  makeIncomingDecisionShadow,
+  type IncomingDecisionShadow,
+  type ShadowReceipt,
+} from "./IncomingDecisionShadow.ts";
+
+import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -33,6 +40,7 @@ const MCP_PROTOCOL_VERSION = "2025-06-18";
 export interface AcpMcpStdioBridgeOptions {
   readonly endpoint: string;
   readonly authorization: string;
+  readonly incomingDecision?: IncomingDecisionShadow["Service"];
   readonly input: NodeJS.ReadableStream;
   readonly output: { write(chunk: string): unknown };
   readonly fetchImplementation?: (url: string, init?: RequestInit) => Promise<Response>;
@@ -187,10 +195,36 @@ export function runAcpMcpStdioBridge(options: AcpMcpStdioBridgeOptions): Effect.
 
     const handleServerPayload = Effect.fn("AcpMcpStdioBridge.handleServerPayload")(function* (
       payload: unknown,
+      request: JsonRpcEnvelope,
     ): Effect.fn.Return<void> {
       for (const entry of Array.isArray(payload) ? payload : [payload]) {
+        const started = yield* Clock.currentTimeNanos;
+        let receipt: ShadowReceipt | undefined;
         protocolVersion = protocolVersionOf(entry) ?? protocolVersion;
-        yield* writeMessage(entry);
+        const envelope = asEnvelope(entry);
+        let output = entry;
+        if (
+          options.incomingDecision !== undefined &&
+          request.method === "tools/call" &&
+          request.id !== undefined &&
+          envelope?.id === request.id &&
+          envelope.error === undefined
+        ) {
+          const observed = yield* options.incomingDecision.observe(envelope.result);
+          receipt = observed.receipt;
+          output = { ...(entry as Record<string, unknown>), result: observed.result };
+        }
+        const serialized = `${JSON.stringify(output)}\n`;
+        const ready = yield* Clock.currentTimeNanos;
+        if (receipt !== undefined && receipt.status !== "disabled") {
+          const completed = { ...receipt, elapsedMs: Number(ready - started) / 1e6 };
+          yield* Effect.sync(() => {
+            process.stderr.write(`${JSON.stringify({ incomingDecision: completed })}\n`);
+          }).pipe(Effect.ignoreCause);
+        }
+        yield* Effect.sync(() => {
+          options.output.write(serialized);
+        });
       }
     });
 
@@ -235,7 +269,9 @@ export function runAcpMcpStdioBridge(options: AcpMcpStdioBridgeOptions): Effect.
           }
           return yield* discardResponseBody(response);
         }
-        yield* Stream.runForEach(responsePayloads(response, bridgeError), handleServerPayload);
+        yield* Stream.runForEach(responsePayloads(response, bridgeError), (payload) =>
+          handleServerPayload(payload, envelope),
+        );
       },
       (effect, _line, envelope) =>
         effect.pipe(
@@ -333,11 +369,17 @@ export async function runAcpMcpCliFastPath(
   }
   if (command === "acp-mcp-bridge") {
     await Effect.runPromise(
-      runAcpMcpStdioBridge({
-        endpoint,
-        authorization,
-        input: process.stdin,
-        output: process.stdout,
+      Effect.gen(function* () {
+        const incomingDecision = yield* makeIncomingDecisionShadow(
+          process.env.T3_INCOMING_DECISION,
+        );
+        yield* runAcpMcpStdioBridge({
+          incomingDecision,
+          endpoint,
+          authorization,
+          input: process.stdin,
+          output: process.stdout,
+        });
       }),
     );
     return;
