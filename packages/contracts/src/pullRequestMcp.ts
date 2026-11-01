@@ -42,7 +42,10 @@ export const PullRequestReadInput = Schema.Struct({
   pullRequests: Schema.optional(
     Schema.Array(PullRequestReadTarget)
       .check(Schema.isMinLength(1), Schema.isMaxLength(1))
-      .annotate({ description: DEFAULT_TARGET }),
+      .annotate({
+        description:
+          "Exactly one PR per call. For several PRs, make separate calls. Omit to use this thread's, its parent's, or this branch's single PR; otherwise name one by url or repository and number.",
+      }),
   ),
 });
 export type PullRequestReadInput = typeof PullRequestReadInput.Type;

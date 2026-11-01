@@ -17,6 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as CodeIntelligence from "../project/knowledge/CodeIntelligence.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -28,6 +29,47 @@ import * as CheckpointCapture from "./CheckpointCaptureService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RunFinalization from "./RunFinalizationService.ts";
+
+it.effect("coalesces completed turns without starving later project refreshes", () => {
+  const projectA = ProjectId.make("project-turn-refresh-a");
+  const projectB = ProjectId.make("project-turn-refresh-b");
+  const refreshed: ProjectId[] = [];
+  const layer = RunFinalization.layerObserver.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(WorkspaceEntries.WorkspaceEntries)({}),
+        Layer.mock(CodeIntelligence.CodeIntelligence)({}),
+        Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+        Layer.mock(PullRequestService.PullRequestService)({
+          refreshAfterTurns: (projectIds) =>
+            Effect.sync(() => {
+              refreshed.push(...projectIds);
+            }),
+        }),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const observer = yield* RunFinalization.RunFinalizationObserver;
+    yield* Effect.forEach(Array.from({ length: 20 }), () => observer.refreshAfterTurn(projectA));
+    assert.deepEqual(refreshed, []);
+    yield* TestClock.adjust("9 seconds");
+    yield* observer.refreshAfterTurn(projectA);
+    yield* observer.refreshAfterTurn(projectB);
+    yield* TestClock.adjust("1 second");
+    assert.deepEqual(refreshed, [projectA, projectB]);
+
+    // Continuous activity starts a new fixed window instead of postponing the last refresh.
+    yield* observer.refreshAfterTurn(projectA);
+    yield* TestClock.adjust("9 seconds");
+    yield* observer.refreshAfterTurn(projectA);
+    yield* TestClock.adjust("1 second");
+    assert.deepEqual(refreshed, [projectA, projectB, projectA]);
+    yield* TestClock.adjust("1 minute");
+    assert.deepEqual(refreshed, [projectA, projectB, projectA]);
+  }).pipe(Effect.provide(layer));
+});
 
 it.effect("completes finalization when the post-checkpoint workspace refresh fails", () => {
   const threadId = ThreadId.make("thread_refresh_failure");

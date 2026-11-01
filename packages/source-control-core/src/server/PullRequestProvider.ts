@@ -39,6 +39,7 @@ import type {
   SourceControlProviderKind,
 } from "@t3tools/contracts";
 import { SourceControlProviderKind as SourceControlProviderKindSchema } from "@t3tools/contracts";
+import { SourceControlPauseReason } from "./SourceControlRateLimit.ts";
 
 export class PullRequestProviderError extends Schema.TaggedError<PullRequestProviderError>()(
   "PullRequestProviderError",
@@ -54,6 +55,10 @@ export class PullRequestProviderError extends Schema.TaggedError<PullRequestProv
     ]),
     detail: Schema.String,
     retryAt: Schema.optional(Schema.Number),
+    pauseReason: Schema.optional(SourceControlPauseReason),
+    resource: Schema.optional(Schema.String),
+    remaining: Schema.optional(Schema.Finite),
+    limit: Schema.optional(Schema.Finite),
     /**
      * Why the host would not return a repository and what to change, in the reader's terms.
      * Shown beside that repository in the list; `detail` is about the failed call instead.
@@ -76,6 +81,10 @@ export interface PullRequestProviderFailure {
   readonly reason: PullRequestProviderError["reason"];
   readonly retryAt?: number | undefined;
   readonly accessHint?: string | undefined;
+  readonly pauseReason?: PullRequestProviderError["pauseReason"];
+  readonly resource?: string | undefined;
+  readonly remaining?: number | undefined;
+  readonly limit?: number | undefined;
 }
 
 export interface ProviderChangeRequest {
@@ -190,6 +199,8 @@ export interface ProviderChangeRequestStat {
 }
 
 export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
+  /** When these fields were fetched, if the provider reuses a previous observation. */
+  readonly observedAt?: number;
   readonly maintainerCanModify?: boolean;
   readonly headSha?: string | null;
   readonly body: string;
@@ -365,7 +376,7 @@ export interface PullRequestProviderApi {
   readonly getChangeRequestChecks?: (
     input: ProviderRepositoryRef & { readonly number: number },
   ) => Effect.Effect<
-    Pick<PullRequestChecks, "state" | "checks" | "headSha">,
+    Pick<PullRequestChecks, "state" | "checks" | "headSha" | "observedAt">,
     PullRequestProviderError
   >;
 

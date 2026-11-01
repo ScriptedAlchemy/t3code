@@ -10,6 +10,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as Redacted from "effect/Redacted";
+import { SourceControlProviderKind } from "@t3tools/contracts";
 
 import { HttpClient, HttpClientResponse } from "effect/http";
 
@@ -559,6 +560,10 @@ const checkContextsPage = (
       repository: {
         pullRequest: {
           headRefOid,
+          headRefName: "feat/page",
+          headRepositoryOwner: { __typename: "User", login: "octocat" },
+          isCrossRepository: true,
+          state: "OPEN",
           commits: {
             nodes: [
               {
@@ -733,6 +738,62 @@ it.effect(
 );
 
 layer("GitHubPullRequestApi.layer", (it) => {
+  it.effect.each([false, true])(
+    "reads checks directly across pages without mixing heads (head changed: %s)",
+    (headChanged) =>
+      Effect.gen(function* () {
+        mockedExecute.mockReturnValueOnce(
+          Effect.succeed(
+            output(
+              checkContextsPage(
+                [checkRun({ name: "build", status: "COMPLETED", conclusion: "SUCCESS" })],
+                "next",
+              ),
+            ),
+          ),
+        );
+        mockedExecute.mockReturnValueOnce(
+          Effect.succeed(
+            output(
+              checkContextsPage(
+                [checkRun({ name: "tests", status: "COMPLETED", conclusion: "FAILURE" })],
+                null,
+                headChanged ? "def456" : "abc123",
+              ),
+            ),
+          ),
+        );
+        const api = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+        if (headChanged) {
+          expect(yield* api.getPullRequestChecks(pullRequestInput).pipe(Effect.flip)).toMatchObject(
+            {
+              _tag: "GitHubPullRequestReadError",
+              operation: "getPullRequestChecks",
+            },
+          );
+        } else {
+          const result = yield* api.getPullRequestChecks(pullRequestInput);
+          expect(result).toMatchObject({
+            state: "open",
+            headSha: "abc123",
+            headBranch: "feat/page",
+            headRepositoryOwner: "octocat",
+            isCrossRepository: true,
+          });
+          expect(result.checks.map(({ name, status }) => ({ name, status }))).toEqual([
+            { name: "tests", status: "failure" },
+            { name: "build", status: "success" },
+          ]);
+        }
+        expect(variablesOf("PullRequestCore")).toHaveLength(0);
+        expect(variablesOf("PullRequestCheckContexts")).toEqual([
+          expect.objectContaining({ number: 7 }),
+          expect.objectContaining({ number: 7, after: "next" }),
+        ]);
+        expect(mockedExecute).toHaveBeenCalledTimes(2);
+      }),
+  );
+
   it.effect("turns maintainer edits off without rewriting the pull request's text", () =>
     Effect.gen(function* () {
       mockedExecute.mockImplementation((call) =>
@@ -3000,77 +3061,99 @@ layer("GitHubPullRequestApi.layer", (it) => {
     }),
   );
 
-  it.effect("verifies a REST-forbidden account through GraphQL with the pinned credential", () =>
-    Effect.gen(function* () {
-      const input = { cwd: "/w", host: "github.identity-fallback.test" };
-      const original = {
-        token: Redacted.make("original-token"),
-        fingerprint: `${input.host}:original`,
-      };
-      mockedCredential.mockReturnValue(Effect.succeed(original));
-      mockedExecute.mockImplementation((call) =>
-        Effect.gen(function* () {
-          expect(yield* SourceControlRateLimit.CredentialScope).toBe(original.fingerprint);
-          if (call.kind === "rest") {
-            expect(call.path).toBe("user");
-            expect(yield* GitHubRequestPolicy.PinnedGitHubCredential).toMatchObject({
-              host: input.host,
-              credentialFingerprint: original.fingerprint,
-            });
-            mockedCredential.mockReturnValue(
-              Effect.succeed({
-                token: Redacted.make("replacement-token"),
-                fingerprint: `${input.host}:replacement`,
-              }),
+  it.effect.each(["forbidden", "core-rate-limit", "core-paused"])(
+    "verifies a REST $0 account through GraphQL with the pinned credential",
+    (reason) =>
+      Effect.gen(function* () {
+        const input = { cwd: "/w", host: `github.identity-fallback-${reason}.test` };
+        const original = {
+          token: Redacted.make("original-token"),
+          fingerprint: `${input.host}:original`,
+        };
+        mockedCredential.mockReturnValue(Effect.succeed(original));
+        mockedExecute.mockImplementation((call) =>
+          Effect.gen(function* () {
+            expect(yield* SourceControlRateLimit.CredentialScope).toBe(original.fingerprint);
+            if (call.kind === "rest") {
+              expect(call.path).toBe("user");
+              expect(yield* GitHubRequestPolicy.PinnedGitHubCredential).toMatchObject({
+                host: input.host,
+                credentialFingerprint: original.fingerprint,
+              });
+              mockedCredential.mockReturnValue(
+                Effect.succeed({
+                  token: Redacted.make("replacement-token"),
+                  fingerprint: `${input.host}:replacement`,
+                }),
+              );
+              const context = {
+                host: input.host,
+                operation: "getRoutingIdentity",
+              };
+              if (reason === "core-rate-limit") {
+                return yield* new GitHubRequestPolicy.GitHubApiRateLimitError({
+                  ...context,
+                  resource: "core",
+                });
+              }
+              if (reason === "core-paused") {
+                return yield* new SourceControlRateLimit.SourceControlRateLimitPausedError({
+                  provider: SourceControlProviderKind.make("github"),
+                  host: input.host,
+                  resource: "core",
+                  pauseReason: "quota-exhausted",
+                  retryAt: Date.parse("2099-08-13T14:00:00Z"),
+                });
+              }
+              return yield* new GitHubRequestPolicy.GitHubApiResponseError({
+                ...context,
+                status: 403,
+                githubErrors: ["Resource not accessible by integration"],
+              });
+            }
+            expect(call.host).toBe(input.host);
+            expect(call.authorization).toBe("Bearer original-token");
+            expect(call.query).toMatch(/viewer\s*\{/);
+            expect(call.query).toContain("databaseId");
+            expect(call.query).toContain("login");
+            return output(
+              '{"data":{"viewer":{"databaseId":789,"login":"acme-app[bot]"}}}',
+              false,
+              false,
+              graphqlQuota(0),
             );
-            return yield* new GitHubRequestPolicy.GitHubApiResponseError({
-              host: input.host,
-              operation: "getRoutingIdentity",
-              status: 403,
-              githubErrors: ["Resource not accessible by integration"],
-            });
-          }
-          expect(call.host).toBe(input.host);
-          expect(call.authorization).toBe("Bearer original-token");
-          expect(call.query).toMatch(/viewer\s*\{/);
-          expect(call.query).toContain("databaseId");
-          expect(call.query).toContain("login");
-          return output(
-            '{"data":{"viewer":{"databaseId":789,"login":"acme-app[bot]"}}}',
-            false,
-            false,
-            graphqlQuota(0),
+          }),
+        );
+        const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+        const quota = yield* GitHubQuota.GitHubQuota;
+        yield* quota
+          .observe(input.host, graphqlQuota(1))
+          .pipe(
+            Effect.provideService(SourceControlRateLimit.CredentialScope, original.fingerprint),
           );
-        }),
-      );
-      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
-      const quota = yield* GitHubQuota.GitHubQuota;
-      yield* quota
-        .observe(input.host, graphqlQuota(1))
-        .pipe(Effect.provideService(SourceControlRateLimit.CredentialScope, original.fingerprint));
-      const identity = { accountId: "789", viewer: "acme-app[bot]" };
-      expect(yield* cli.getRoutingIdentity(input)).toEqual(identity);
+        const identity = { accountId: "789", viewer: "acme-app[bot]" };
+        expect(yield* cli.getRoutingIdentity(input)).toEqual(identity);
 
-      mockedCredential.mockReturnValue(Effect.succeed(original));
-      expect(yield* cli.getRoutingIdentity(input)).toEqual(identity);
-      expect(mockedExecute).toHaveBeenCalledTimes(2);
+        mockedCredential.mockReturnValue(Effect.succeed(original));
+        expect(yield* cli.getRoutingIdentity(input)).toEqual(identity);
+        expect(mockedExecute).toHaveBeenCalledTimes(2);
 
-      const exhausted = yield* quota
-        .admit(input.host, "graphql")
-        .pipe(
-          Effect.provideService(SourceControlRateLimit.CredentialScope, original.fingerprint),
-          Effect.flip,
-        );
-      expect(exhausted._tag).toBe("SourceControlRateLimitPausedError");
-      yield* quota
-        .admit(input.host, "graphql")
-        .pipe(
-          Effect.provideService(
-            SourceControlRateLimit.CredentialScope,
-            `${input.host}:replacement`,
-          ),
-        );
-    }),
+        const exhausted = yield* quota
+          .admit(input.host, "graphql")
+          .pipe(
+            Effect.provideService(SourceControlRateLimit.CredentialScope, original.fingerprint),
+            Effect.flip,
+          );
+        expect(exhausted._tag).toBe("SourceControlRateLimitPausedError");
+        yield* quota
+          .admit(input.host, "graphql")
+          .pipe(
+            Effect.provideService(
+              SourceControlRateLimit.CredentialScope,
+              `${input.host}:replacement`,
+            ),
+          );
+      }),
   );
 
   it.effect("rejects a null GraphQL account id without caching it", () =>
@@ -3111,6 +3194,16 @@ layer("GitHubPullRequestApi.layer", (it) => {
       host: "github.identity-server-error.test",
       operation: "getRoutingIdentity",
       status: 500,
+    }),
+    new GitHubRequestPolicy.GitHubApiRateLimitError({
+      host: "github.identity-secondary-error.test",
+      operation: "getRoutingIdentity",
+    }),
+    new SourceControlRateLimit.SourceControlRateLimitPausedError({
+      provider: SourceControlProviderKind.make("github"),
+      host: "github.identity-secondary-paused.test",
+      pauseReason: "rate-limited",
+      retryAt: Date.parse("2099-08-13T14:00:00Z"),
     }),
   ])("preserves $_tag from REST identity verification without trying GraphQL", (error) =>
     Effect.gen(function* () {

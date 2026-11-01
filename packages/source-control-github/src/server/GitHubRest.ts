@@ -137,7 +137,11 @@ function classify(input: {
   const { status, headers, body } = input.answer;
   const meta = { status, headers };
   if (GitHubRequestPolicy.isRateLimited({ status, headers, body })) {
-    return { _tag: "RateLimited", ...meta };
+    return {
+      _tag: "RateLimited",
+      secondary: GitHubRequestPolicy.isSecondaryRateLimited({ headers, body }),
+      ...meta,
+    };
   }
   if (status === 401) return { _tag: "Unauthorized", ...meta };
   if (status === 404) return { _tag: "NotFound", ...meta };

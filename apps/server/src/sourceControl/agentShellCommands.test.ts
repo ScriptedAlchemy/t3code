@@ -97,6 +97,7 @@ describe("agentShellCommands", () => {
       ),
       [
         {
+          executable: "gh",
           words: ["gh", "api", "repos/acme/app/pulls/$n/comments", "--jq", ".[] | .body"],
           assignments: new Map(),
           repeats: false,

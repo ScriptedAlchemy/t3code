@@ -179,6 +179,12 @@ query PullRequestCheckContexts(
 ) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      state
+      isCrossRepository
+      headRefName
+      headRepositoryOwner {
+        login
+      }
       headRefOid
       commits(last: 1) {
         nodes {

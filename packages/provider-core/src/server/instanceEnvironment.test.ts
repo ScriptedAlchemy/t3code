@@ -8,6 +8,23 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { mergeProviderInstanceEnvironment } from "./instanceEnvironment.ts";
 
 describe("mergeProviderInstanceEnvironment", () => {
+  it.effect(
+    "applies Windows instance overrides case-insensitively before preparing the agent PATH",
+    () =>
+      Effect.gen(function* () {
+        const baseEnv = { PATH: "C:\\old", Custom: "inherited" };
+        expect(
+          yield* mergeProviderInstanceEnvironment(
+            [
+              { name: "Path", value: "C:\\provider-gh", sensitive: false },
+              { name: "CUSTOM", value: "override", sensitive: false },
+            ],
+            baseEnv,
+          ),
+        ).toEqual({ Path: "C:\\provider-gh", CUSTOM: "override" });
+        expect(baseEnv).toEqual({ PATH: "C:\\old", Custom: "inherited" });
+      }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+  );
   it.effect.each([
     { value: "~/.account", tail: ".account" },
     { value: "~\\.account\\work", tail: ".account\\work" },

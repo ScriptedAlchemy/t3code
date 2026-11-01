@@ -1,11 +1,14 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import { removeAgentCredits } from "@t3tools/source-control-core/server/mergeMessage";
+import { normalizeHost } from "@t3tools/source-control-core/server/pullRequestUtils";
 import * as Cache from "effect/Cache";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
 import * as Hash from "effect/Hash";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import type {
   PullRequestActor,
   PullRequestCapabilities,
@@ -16,6 +19,7 @@ import type {
 
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as GitHubPullRequestApi from "./GitHubPullRequestApi.ts";
+import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
 import {
   PullRequestProviderError,
   type PullRequestProviderFailure,
@@ -26,6 +30,7 @@ import {
 } from "@t3tools/source-control-core/server/PullRequestProvider";
 import type { GitHubCredentialSource } from "./GitHubCredentials.ts";
 import type {
+  GitHubPullRequestCore,
   GitHubRepositoryAccess,
   GitHubViewerAccess,
   GitHubWorkflowRunApproval,
@@ -117,9 +122,18 @@ function gitHubProviderFailure(
       return {
         reason: "rate-limited",
         ...(error.retryAt === undefined ? {} : { retryAt: error.retryAt }),
+        pauseReason: error.resource === undefined ? "rate-limited" : "quota-exhausted",
+        ...(error.resource === undefined ? {} : { resource: error.resource }),
       };
     case "SourceControlRateLimitPausedError":
-      return { reason: "rate-limited", retryAt: error.retryAt };
+      return {
+        reason: "rate-limited",
+        retryAt: error.retryAt,
+        ...(error.pauseReason === undefined ? {} : { pauseReason: error.pauseReason }),
+        ...(error.resource === undefined ? {} : { resource: error.resource }),
+        ...(error.remaining === undefined ? {} : { remaining: error.remaining }),
+        ...(error.limit === undefined ? {} : { limit: error.limit }),
+      };
     case "GitHubApiNotFoundError":
       return error.credential === undefined || error.credential === "app"
         ? { reason: "not-found" }
@@ -219,11 +233,48 @@ class SearchCoverage {
   }
 }
 
+const PULL_REQUEST_READ_TTL = Duration.seconds(45);
+const PULL_REQUEST_READ_CAPACITY = 128;
+type PullRequestRef = ProviderRepositoryRef & { readonly number: number };
+type Observed<A> = A & { readonly observedAt: number };
+
+/** The exact pinned token sees the same PR from every checkout; unpinned reads never share. */
+class PullRequestRead<A> {
+  readonly key: string;
+  readonly repository: string;
+  readonly number: number;
+  readonly lookup: Effect.Effect<A, GitHubPullRequestApi.GitHubPullRequestApiError>;
+
+  constructor(
+    input: PullRequestRef,
+    fingerprint: string,
+    lookup: Effect.Effect<A, GitHubPullRequestApi.GitHubPullRequestApiError>,
+  ) {
+    this.repository = input.repository.trim().toLowerCase();
+    this.number = input.number;
+    this.lookup = lookup;
+    this.key = JSON.stringify([
+      fingerprint,
+      normalizeHost(input.host),
+      this.repository,
+      this.number,
+    ]);
+  }
+
+  [Equal.symbol](that: unknown): boolean {
+    return that instanceof PullRequestRead && that.key === this.key;
+  }
+  [Hash.symbol](): number {
+    return Hash.string(this.key);
+  }
+}
+
 const rendersEmpty = (body: string): boolean =>
   body.replace(/<!--[\s\S]*?-->/g, "").trim().length === 0;
 
 export const make = Effect.gen(function* () {
   const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+  const clock = yield* Clock.Clock;
 
   // GitHub does not index every repository for search: a renamed one answers for its old name
   // with silence rather than with an error. Where search has any pull request for a repository it
@@ -290,8 +341,16 @@ export const make = Effect.gen(function* () {
       cause: error,
     });
 
-  const readChecks = (input: ProviderRepositoryRef & { readonly number: number }) =>
-    cli.getPullRequestDetail(input).pipe(
+  const withWorkflowChecks = <
+    A extends Pick<
+      GitHubPullRequestCore,
+      "state" | "checks" | "headSha" | "headBranch" | "headRepositoryOwner" | "isCrossRepository"
+    >,
+  >(
+    input: ProviderRepositoryRef & { readonly number: number },
+    read: Effect.Effect<A, GitHubPullRequestApi.GitHubPullRequestApiError>,
+  ) =>
+    read.pipe(
       Effect.flatMap((pullRequest) =>
         (pullRequest.state !== "open" || pullRequest.isCrossRepository !== true
           ? Effect.succeed({
@@ -327,7 +386,6 @@ export const make = Effect.gen(function* () {
         ).pipe(
           Effect.map((workflowApprovals) => ({
             ...pullRequest,
-            author: withAvatar(pullRequest.author, new Map(), input.host),
             checks: withWorkflowApprovals(
               pullRequest.checks,
               workflowApprovals.runs,
@@ -340,6 +398,131 @@ export const make = Effect.gen(function* () {
         ),
       ),
     );
+
+  const observe = Effect.fnUntraced(function* <A>(
+    read: Effect.Effect<A, GitHubPullRequestApi.GitHubPullRequestApiError>,
+  ) {
+    const observedAt = yield* Clock.currentTimeMillis;
+    return { ...(yield* read), observedAt };
+  });
+  const sharedReadTtl = <A extends { readonly observedAt: number }>(
+    exit: Exit.Exit<A, GitHubPullRequestApi.GitHubPullRequestApiError>,
+  ) =>
+    Exit.isSuccess(exit)
+      ? Duration.millis(
+          Math.max(
+            0,
+            exit.value.observedAt +
+              Duration.toMillis(PULL_REQUEST_READ_TTL) -
+              clock.currentTimeMillisUnsafe(),
+          ),
+        )
+      : Duration.zero;
+  const detailRequest = (input: PullRequestRef, fingerprint: string) =>
+    new PullRequestRead(
+      input,
+      fingerprint,
+      observe(withWorkflowChecks(input, cli.getPullRequestDetail(input))),
+    );
+  type DetailObservation = Effect.Success<ReturnType<typeof detailRequest>["lookup"]>;
+  const details = yield* Cache.makeWith(
+    (request: PullRequestRead<DetailObservation>) => request.lookup,
+    {
+      capacity: PULL_REQUEST_READ_CAPACITY,
+      timeToLive: sharedReadTtl,
+    },
+  );
+  const readChecks = (input: PullRequestRef) =>
+    cli.revalidateChecks(input, withWorkflowChecks(input, cli.getPullRequestChecks(input)));
+  type ChecksObservation = Observed<Effect.Success<ReturnType<typeof readChecks>>>;
+  const checkReads = yield* Cache.makeWith(
+    (request: PullRequestRead<ChecksObservation>) => request.lookup,
+    {
+      capacity: PULL_REQUEST_READ_CAPACITY,
+      timeToLive: sharedReadTtl,
+    },
+  );
+  const pinnedFingerprint = Effect.fnUntraced(function* (input: PullRequestRef) {
+    const credential = yield* GitHubRequestPolicy.PinnedGitHubCredential;
+    return credential !== null &&
+      normalizeHost(credential.host) === normalizeHost(input.host) &&
+      credential.credentialFingerprint.length > 0
+      ? credential.credentialFingerprint
+      : null;
+  });
+  const readSharedDetail = Effect.fn("GitHubPullRequestProvider.readSharedDetail")(function* (
+    input: PullRequestRef,
+  ) {
+    const fingerprint = yield* pinnedFingerprint(input);
+    return fingerprint === null
+      ? yield* withWorkflowChecks(input, cli.getPullRequestDetail(input))
+      : yield* Cache.get(details, detailRequest(input, fingerprint));
+  });
+  const readSharedChecks = Effect.fn("GitHubPullRequestProvider.readSharedChecks")(function* (
+    input: PullRequestRef,
+  ) {
+    const fingerprint = yield* pinnedFingerprint(input);
+    if (fingerprint === null) return yield* readChecks(input);
+    return yield* Cache.get(
+      checkReads,
+      new PullRequestRead<ChecksObservation>(
+        input,
+        fingerprint,
+        Effect.gen(function* () {
+          const detail = yield* Cache.getOption(details, detailRequest(input, fingerprint)).pipe(
+            Effect.orElseSucceed(() => Option.none<DetailObservation>()),
+          );
+          if (Option.isNone(detail)) return yield* observe(readChecks(input));
+          return {
+            state: detail.value.state,
+            checks: detail.value.checks,
+            ...(detail.value.headSha == null ? {} : { headSha: detail.value.headSha }),
+            observedAt: detail.value.observedAt,
+          };
+        }),
+      ),
+    );
+  });
+  type ReadScope = Parameters<NonNullable<PullRequestProviderApi["forgetChangeRequestReads"]>>[0];
+  const forgetCache = <A>(
+    cache: Cache.Cache<PullRequestRead<A>, A, GitHubPullRequestApi.GitHubPullRequestApiError>,
+    scope: ReadScope,
+  ) =>
+    Cache.keys(cache).pipe(
+      Effect.flatMap((keys) =>
+        Effect.forEach(
+          Array.from(keys).filter(
+            (key) =>
+              scope === undefined ||
+              (key.repository === scope.repository.trim().toLowerCase() &&
+                (scope.number === undefined || key.number === scope.number)),
+          ),
+          (key) => Cache.invalidate(cache, key),
+          { discard: true },
+        ),
+      ),
+    );
+  const forgetChangeRequestReads = Effect.fn("GitHubPullRequestProvider.forgetChangeRequestReads")(
+    function* (scope?: ReadScope) {
+      // Removing an entry detaches its in-flight lookup too; completion cannot put it back.
+      yield* forgetCache(details, scope);
+      yield* forgetCache(checkReads, scope);
+    },
+  );
+  const writing =
+    <I extends PullRequestRef, A, E>(write: (input: I) => Effect.Effect<A, E>) =>
+    (input: I) => {
+      const invalidate = forgetChangeRequestReads({
+        repository: input.repository,
+        ...("stackNumber" in input && input.stackNumber !== undefined
+          ? {}
+          : { number: input.number }),
+      });
+      return invalidate.pipe(
+        Effect.andThen(() => write(input)),
+        Effect.ensuring(invalidate),
+      );
+    };
 
   const provider: PullRequestProviderApi = {
     kind: SourceControlProviderKind.make("github"),
@@ -447,17 +630,18 @@ export const make = Effect.gen(function* () {
       cli.getCheckFailure(input).pipe(Effect.mapError(fail("getChangeRequestCheckFailure"))),
 
     getChangeRequestChecks: (input) =>
-      cli.revalidateChecks(input, readChecks(input)).pipe(
-        Effect.map(({ state, checks, headSha }) => ({
-          state,
-          checks,
-          ...(headSha == null ? {} : { headSha }),
+      readSharedChecks(input).pipe(
+        Effect.map((value) => ({
+          ...("observedAt" in value ? { observedAt: value.observedAt } : {}),
+          state: value.state,
+          checks: value.checks,
+          ...(value.headSha == null ? {} : { headSha: value.headSha }),
         })),
         Effect.mapError(fail("getChangeRequestChecks")),
       ),
 
     getChangeRequest: (input) =>
-      readChecks(input).pipe(
+      readSharedDetail(input).pipe(
         Effect.map((pullRequest): ProviderChangeRequestDetail => ({
           ...pullRequest,
           author: withAvatar(pullRequest.author, new Map<string, string>(), input.host),
@@ -489,6 +673,8 @@ export const make = Effect.gen(function* () {
         })),
         Effect.mapError(fail("getChangeRequest")),
       ),
+
+    forgetChangeRequestReads,
 
     getChangeRequestActivity: (input) =>
       Effect.all(
@@ -632,7 +818,7 @@ export const make = Effect.gen(function* () {
     listReviewerCandidates: (input) =>
       cli.listReviewerCandidates(input).pipe(Effect.mapError(fail("listReviewerCandidates"))),
 
-    setReviewerRequest: (input) =>
+    setReviewerRequest: writing((input) =>
       cli
         .setReviewerRequest({
           cwd: input.cwd,
@@ -643,6 +829,7 @@ export const make = Effect.gen(function* () {
           requested: input.requested,
         })
         .pipe(Effect.mapError(fail("setReviewerRequest"))),
+    ),
 
     listLabelCandidates: (input) =>
       cli.listLabelCandidates(input).pipe(Effect.mapError(fail("listLabelCandidates"))),
@@ -653,7 +840,7 @@ export const make = Effect.gen(function* () {
     searchRepositoryAuthors: (input) =>
       cli.searchRepositoryAuthors(input).pipe(Effect.mapError(fail("searchRepositoryAuthors"))),
 
-    setLabels: (input) =>
+    setLabels: writing((input) =>
       cli
         .setLabels({
           cwd: input.cwd,
@@ -664,8 +851,9 @@ export const make = Effect.gen(function* () {
           applied: input.applied,
         })
         .pipe(Effect.mapError(fail("setLabels"))),
+    ),
 
-    runAction: (input) =>
+    runAction: writing((input) =>
       cli
         .runPullRequestAction({
           cwd: input.cwd,
@@ -682,8 +870,9 @@ export const make = Effect.gen(function* () {
           ...(input.updateMethod === undefined ? {} : { updateMethod: input.updateMethod }),
         })
         .pipe(Effect.mapError(fail("runAction"))),
+    ),
 
-    updateChangeRequest: (input) =>
+    updateChangeRequest: writing((input) =>
       cli
         .updatePullRequest({
           ...(input.maintainerCanModify === undefined
@@ -697,10 +886,13 @@ export const make = Effect.gen(function* () {
           ...(input.body === undefined ? {} : { body: input.body }),
         })
         .pipe(Effect.mapError(fail("updateChangeRequest"))),
+    ),
 
-    comment: (input) => cli.commentOnPullRequest(input).pipe(Effect.mapError(fail("comment"))),
+    comment: writing((input) =>
+      cli.commentOnPullRequest(input).pipe(Effect.mapError(fail("comment"))),
+    ),
 
-    updateComment: (input) =>
+    updateComment: writing((input) =>
       cli
         .updateComment({
           cwd: input.cwd,
@@ -712,10 +904,13 @@ export const make = Effect.gen(function* () {
           body: input.body,
         })
         .pipe(Effect.mapError(fail("updateComment"))),
+    ),
 
-    submitReview: (input) => cli.submitReview(input).pipe(Effect.mapError(fail("submitReview"))),
+    submitReview: writing((input) =>
+      cli.submitReview(input).pipe(Effect.mapError(fail("submitReview"))),
+    ),
 
-    replyToThread: (input) =>
+    replyToThread: writing((input) =>
       cli
         .replyToReviewThread({
           cwd: input.cwd,
@@ -725,8 +920,9 @@ export const make = Effect.gen(function* () {
           body: input.body,
         })
         .pipe(Effect.mapError(fail("replyToThread"))),
+    ),
 
-    setReaction: (input) =>
+    setReaction: writing((input) =>
       cli
         .setReaction({
           cwd: input.cwd,
@@ -738,8 +934,9 @@ export const make = Effect.gen(function* () {
           reacted: input.reacted,
         })
         .pipe(Effect.mapError(fail("setReaction"))),
+    ),
 
-    setThreadResolution: (input) =>
+    setThreadResolution: writing((input) =>
       cli
         .setReviewThreadResolution({
           cwd: input.cwd,
@@ -749,6 +946,7 @@ export const make = Effect.gen(function* () {
           resolved: input.resolved,
         })
         .pipe(Effect.mapError(fail("setThreadResolution"))),
+    ),
   };
 
   return provider;
