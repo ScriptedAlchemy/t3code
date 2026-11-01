@@ -289,10 +289,14 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
         h.controls.selected = h.second;
         yield* h.refresh();
 
-        expect(h.acquisitions).toEqual([
-          { binaryPath: "", path: h.instancePath },
-          { binaryPath: "", path: h.instancePath },
-        ]);
+        expect(h.acquisitions).toHaveLength(2);
+        expect(h.acquisitions.map(({ binaryPath }) => binaryPath)).toEqual(["", ""]);
+        expect(h.acquisitions[0]?.path).toBe(h.acquisitions[1]?.path);
+        const acquiredPath = h.acquisitions[0]?.path;
+        // The managed gh launcher may prefix PATH, but must preserve the provider's PATH.
+        expect(
+          acquiredPath === h.instancePath || acquiredPath?.endsWith(`:${h.instancePath}`),
+        ).toBe(true);
         const nativeLaunches = h.launches.filter((launch) => launch.harnessPath !== undefined);
         expect(nativeLaunches.map((launch) => launch.command)).toEqual([
           h.first.executablePath,
