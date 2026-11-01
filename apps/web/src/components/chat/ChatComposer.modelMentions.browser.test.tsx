@@ -51,7 +51,7 @@ vi.mock("./ComposerCommandMenuLayer", () => ({
 vi.mock("./ComposerControlsBar", () => ({ ComposerControlsBar: () => null }));
 vi.mock("./ComposerFooterControls", () => ({ ComposerFooterPrimaryActions: () => null }));
 vi.mock("./useProviderWorkspaceSnapshotRefresh", () => ({
-  useProviderWorkspaceSnapshotRefresh: () => () => {},
+  useProviderWorkspaceSnapshotRefresh: () => ({ refresh: () => {}, scanning: false }),
 }));
 vi.mock("./useComposerMenuItems", () => ({
   useComposerMenuItems: () => ({
