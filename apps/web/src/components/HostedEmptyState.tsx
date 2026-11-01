@@ -1,10 +1,11 @@
 import { useAuth } from "@clerk/react";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { CLI_RELEASES_PAGE_URL } from "@t3tools/shared/cliRelease";
 import { Link } from "@tanstack/react-router";
 import { CheckIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
-import { APP_DISPLAY_NAME, DESKTOP_DOWNLOAD_URL } from "~/branding";
+import { APP_DISPLAY_NAME } from "~/branding";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 import { isElectron } from "../env";
 import { isLocalEnvironmentDisabled } from "../localEnvironment";
@@ -88,7 +89,7 @@ function T3ConnectSteps() {
         )}
       </SetupStep>
       <SetupStep number={2}>
-        <RunOnComputer command="npx t3 connect" />
+        <RunOnComputer command="t3 connect" />
         {isSignedIn ? (
           <div className="mt-4 space-y-1.5">
             <CloudEnvironmentConnectRows
@@ -119,7 +120,7 @@ function PairingSteps() {
   return (
     <>
       <SetupStep number={1}>
-        <RunOnComputer command="npx t3 pair" />
+        <RunOnComputer command="t3 pair" />
       </SetupStep>
       <SetupStep number={2}>
         <Button render={<Link to="/settings/connections" />} size="sm">
@@ -148,15 +149,15 @@ function SetupStep({
 function RunOnComputer({ command }: { readonly command: string }) {
   return (
     <>
-      <p>Run on your computer:</p>
+      <p>Run with this fork's CLI on your computer:</p>
       <CommandBlock command={command} className="mt-2" />
       <a
         className="mt-2 inline-block text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-        href={DESKTOP_DOWNLOAD_URL}
+        href={CLI_RELEASES_PAGE_URL}
         target="_blank"
         rel="noreferrer noopener"
       >
-        Or download the desktop app
+        Download this fork's CLI or desktop app
       </a>
     </>
   );

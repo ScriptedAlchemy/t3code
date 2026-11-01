@@ -119,7 +119,7 @@ Leaving reasoning level or service tier unset uses the provider's own configurat
 ## Project memory
 
 Open **Project memory** from the thread details, the command palette, or
-`mod+shift+u` on web or desktop, or from the composer on mobile. Search
+`mod+shift+u` on web or desktop, or from thread actions on mobile. Search
 conversations and saved facts in the current project, inspect their sources, and
 select evidence for your next message. Selecting a fact shows its evidence;
 only its checkbox adds it to your draft. Archived conversations are excluded unless
@@ -132,7 +132,7 @@ press `mod+alt+f`. Each kind of result is listed separately; if one is
 unavailable on the server, the others still appear.
 
 To save a fact from the conversation, choose **Remember for this project** on a
-message on web or desktop. Project memory opens that message; choose **Save as
+message. Project memory opens that message; choose **Save as
 fact** to start a fact prefilled from it and citing it.
 
 Agents can save observations for later recall. These remain marked as proposed
@@ -298,10 +298,11 @@ and your next message starts the agent again with the new setup.
 
 ### One skills library for every provider
 
-Turn on **Settings → Providers → Skills library**, under Advanced, to keep one set of
+Turn on **Settings → Providers → Skills library** (under Advanced on web and desktop) to keep one set of
 skills for every provider and account on that environment. T3 Code moves each skill
-folder from `~/.claude/skills` and `~/.codex/skills` into `~/.agents/skills` and links it
-back, and links every skill there into Claude's and Antigravity's skill folders. Codex,
+folder from `~/.claude/skills`, `~/.codex/skills`, and Antigravity's user skill folders
+into `~/.agents/skills` and links it back, and links every skill there into Claude's
+and Antigravity's skill folders. Codex,
 Cursor, OpenCode, and other agents that read `~/.agents/skills` see the same set. Claude's
 account-synced skills and Codex's bundled skills stay where they are.
 

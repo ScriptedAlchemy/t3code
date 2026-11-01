@@ -94,28 +94,19 @@ export const resolveServerInstallation = Effect.gen(function* () {
   return { kind: "npm-global", prefix } satisfies ServerInstallation;
 }).pipe(Effect.orElseSucceed(() => null));
 
-/** The original package spec is unavailable at startup; infer its channel from the version. */
-function suggestedPackageSpec(version: string): string {
-  const channel = /^[^-+]+-(nightly|preview)\./.exec(version)?.[1];
-  return channel === undefined ? "t3" : `t3@${channel}`;
-}
-
-function formatCliCommand(input: {
-  readonly subcommand: string;
-  readonly entryPath: string;
-  readonly version: string;
-}): string {
-  const runner = detectCliRunner(input.entryPath);
-  if (runner === null) {
-    return `t3 ${input.subcommand}`;
-  }
-  return `${runner} ${suggestedPackageSpec(input.version)} ${input.subcommand}`;
-}
-
-export const resolveCliCommand = (subcommand: string) =>
-  Effect.map(resolveEntryPath, (entryPath) =>
-    formatCliCommand({ subcommand, entryPath, version: packageJson.version }),
-  );
+export const resolveCliCommand = Effect.fn("invocation.resolveCliCommand")(function* (
+  subcommand: string,
+) {
+  const entryPath = yield* resolveEntryPath;
+  if (detectCliRunner(entryPath) === null) return `t3 ${subcommand}`;
+  // Reuse the running fork; inferring an npm package from its cache would fetch upstream.
+  const platform = yield* HostProcess.Platform;
+  const executable = hostShellWord(platform, yield* HostProcess.ExecutablePath);
+  const call = platform === "win32" ? `& ${executable}` : executable;
+  return (yield* HostProcess.IsExecutable)
+    ? `${call} ${subcommand}`
+    : `${call} ${hostShellWord(platform, entryPath)} ${subcommand}`;
+});
 
 const shellWord = (value: string) =>
   /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`;
@@ -143,7 +134,7 @@ const resolveInstallLauncher = Effect.gen(function* () {
 });
 
 /**
- * Uses this install's `t3` on PATH, the originating runner, or its absolute launcher path.
+ * Uses this install's `t3` on PATH, its cached script, or its absolute launcher path.
  * Arguments are quoted for POSIX shells or PowerShell on Windows.
  */
 export const resolveHostCliCommand = Effect.fn("invocation.resolveHostCliCommand")(function* (
@@ -154,7 +145,9 @@ export const resolveHostCliCommand = Effect.fn("invocation.resolveHostCliCommand
   const withArgs = (prefix: string) =>
     [prefix, ...args.map((arg) => hostShellWord(platform, arg))].join(" ");
   const command = yield* resolveCliCommand(subcommand);
-  if (command !== `t3 ${subcommand}`) return { command: withArgs(command), launcher: false };
+  if (command !== `t3 ${subcommand}`) {
+    return { command: withArgs(command), launcher: yield* HostProcess.IsExecutable };
+  }
   const onPath = yield* resolveCommandPath("t3");
   if (onPath !== null) {
     const shim = (yield* HostProcess.Environment).T3CODE_CLI_PATH?.trim();

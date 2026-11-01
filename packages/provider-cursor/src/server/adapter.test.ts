@@ -753,7 +753,7 @@ describe("CursorAdapterV2", () => {
         lastVisitedAt: null,
         deletedAt: null,
       };
-      // Starts at run 5: a conversation from before device instructions existed, now resumed.
+      // Starts at run 5: a conversation from before current T3 instructions existed, now resumed.
       let runOrdinal = 4;
       const send = Effect.fnUntraced(function* (compact = false) {
         runOrdinal += 1;
@@ -790,7 +790,13 @@ describe("CursorAdapterV2", () => {
       const told = (orchestration: boolean, devices: boolean) => ({ orchestration, devices });
 
       yield* setDeviceAccess(true);
-      assert.deepEqual(yield* send(), told(false, true));
+      assert.deepEqual(
+        yield* send(),
+        told(true, true),
+        "resume sends current intelligence guidance",
+      );
+      assert.include(sentMessages.at(-1)!, "t3_project_code_query");
+      assert.include(sentMessages.at(-1)!, "t3_conversation_summary_expand");
       assert.deepEqual(yield* send(), told(false, false));
       yield* send(true);
       assert.deepEqual(

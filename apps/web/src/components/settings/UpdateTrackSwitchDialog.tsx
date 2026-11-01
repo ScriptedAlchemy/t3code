@@ -39,7 +39,7 @@ export function UpdateTrackSwitchDialog({
   readonly channel: DesktopUpdateChannel;
   readonly onClose: () => void;
 }) {
-  // npm dist-tags match the desktop channel names.
+  // The environment resolves the release track from its own release repository.
   const release = useAtomValue(npmReleaseAtom(channel));
   if (AsyncResult.isSuccess(release) && release.value !== null) {
     return <SwitchPlan release={{ channel, ...release.value }} onClose={onClose} />;
@@ -54,7 +54,7 @@ export function UpdateTrackSwitchDialog({
             {AsyncResult.isFailure(release)
               ? npmReleaseFailureMessage(release.cause)
               : AsyncResult.isSuccess(release)
-                ? `Could not find the latest ${label} release in this environment's npm registry.`
+                ? `Could not find a ${label} release in this environment's release repository.`
                 : "Checking releases…"}
           </AlertDialogDescription>
         </AlertDialogHeader>

@@ -1,6 +1,8 @@
 # T3 Code
 
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
+T3 Code is an "agent harness control surface" for the agents on your machine. This repository is the **ScriptedAlchemy fork** of [T3 Code](https://github.com/pingdotgg/t3code).
+
+The fork's [Nightly releases](https://github.com/ScriptedAlchemy/t3code/releases) include the desktop app and the standalone `t3` CLI with its bundled web app. Install these builds to use this fork's features. The upstream hosted web app, mobile store apps, npm package, and community packages are separate distributions; see [Upstream distributions](#upstream-distributions).
 
 Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, Google Antigravity, and fx. If they're set up on your computer, T3 Code can control them.
 
@@ -26,22 +28,32 @@ We wanted something performant, remote-ready, and truly open. If we ever go the 
 ### Command line
 
 ```bash
-curl -fsSL https://t3.codes/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ScriptedAlchemy/t3code/main/scripts/install.sh | sh
 ```
 
 On Windows, in PowerShell:
 
 ```powershell
-irm https://t3.codes/install.ps1 | iex
+irm https://raw.githubusercontent.com/ScriptedAlchemy/t3code/main/scripts/install.ps1 | iex
 ```
 
-Then run `t3` to start the server and open the local web app. `t3 service install` keeps it running in the background, `t3 update` moves to a newer release, and `t3 --help` has the full reference.
+The installer defaults to this fork's Nightly channel. Then run `t3` to start the server and open the local web app. `t3 service install` keeps it running in the background, `t3 update` moves to a newer fork release, and `t3 --help` has the full reference.
 
-To try it once without installing, run `npx t3@latest` instead.
+This fork does not publish the `t3` npm package. `npx t3@latest` and `npx t3@nightly` run upstream builds.
 
 ### Desktop app
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
+Install the desktop app for your platform from the fork's [GitHub Releases](https://github.com/ScriptedAlchemy/t3code/releases). Keep its update track on **Nightly**, which is the track this fork currently publishes.
+
+On Debian or Ubuntu, download the fork's `.deb` from that release, then:
+
+```bash
+sudo apt install ./T3-Code-*.deb
+```
+
+### Upstream distributions
+
+The [hosted web app](https://app.t3.codes), [iOS app](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android app](https://play.google.com/store/apps/details?id=com.t3tools.t3code), and the package-manager commands below distribute upstream T3 Code. They do not include this fork's client changes. Use the fork's desktop app or bundled web app for its UI; its native mobile changes require a mobile build from this repository.
 
 #### Windows (`winget`)
 
@@ -59,14 +71,6 @@ scoop install extras/t3code
 
 ```bash
 brew install --cask t3-code
-```
-
-#### Debian, Ubuntu (`.deb`)
-
-Download the `.deb` from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), then:
-
-```bash
-sudo apt install ./T3-Code-*.deb
 ```
 
 #### Arch Linux (AUR)

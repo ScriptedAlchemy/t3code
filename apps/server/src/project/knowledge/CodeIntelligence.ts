@@ -554,7 +554,11 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
         const outcome = yield* buildOnce(checkoutPath);
         // Subscribers query again on failure; repeating that event would keep starting builds
         // for a persistent failure even when nobody explicitly asks to retry.
-        if (outcome._tag === "Published" || (outcome._tag === "Failed" && !state.lastFailed)) {
+        if (
+          outcome._tag === "Published" ||
+          (outcome._tag === "Failed" && !state.lastFailed) ||
+          (outcome._tag === "Unchanged" && state.lastFailed)
+        ) {
           state.lastFailed = outcome._tag === "Failed";
           const generation =
             outcome._tag === "Published"
@@ -566,12 +570,13 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
                     return null;
                   }
                 });
+          // Existing clients understand a published generation becoming available again.
           const event: ProjectCodeIndexEvent = {
-            outcome: outcome._tag === "Published" ? "published" : "failed",
+            outcome: outcome._tag === "Failed" ? "failed" : "published",
             generation,
           };
           yield* PubSub.publish(indexChanges, { checkoutPath, event });
-        } else if (outcome._tag === "Unchanged") state.lastFailed = false;
+        }
         yield* Deferred.succeed(current, outcome);
         // Promoting and reading the next build in one step keeps a concurrent request from
         // starting a second loop for the same checkout.
@@ -684,8 +689,12 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
       }).pipe(Effect.mapError((cause) => toQueryError(cause.reason)));
       if (!("result" in reply)) return yield* toQueryError("invalid-result");
       const state = checkouts.get(checkoutPath);
+      const needsRefresh =
+        reply.result.index?.state === "unindexed" ||
+        reply.result.index?.state === "indexing" ||
+        reply.result.index?.state === "stale";
       const refreshing: keyof typeof REFRESH_LIMITATIONS | undefined =
-        state?.running != null || isBuildRunning(checkoutPath)
+        needsRefresh && (state?.running != null || isBuildRunning(checkoutPath))
           ? "building"
           : state?.lastFailed
             ? "failed"

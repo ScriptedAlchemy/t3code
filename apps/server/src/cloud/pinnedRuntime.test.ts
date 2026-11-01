@@ -67,39 +67,50 @@ const extractingRunner = (fs: FileSystem.FileSystem, path: Path.Path, commands: 
   });
 
 it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
-  it.effect("installs the verified release archive as the runtime executable", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-archive-" });
-      const requests: string[] = [];
-      const commands: string[] = [];
-      const paths = yield* ensurePinnedRuntimeInstalled({
-        baseDir,
-        version,
-        fs,
-        path,
-        platform: "linux",
-        arch: "x64",
-        httpClient: releaseHttpClient(yield* validChecksums, requests),
-        releaseBaseUrl: "https://releases.example/download",
-        runner: extractingRunner(fs, path, commands),
-        validate: (staging) =>
-          fs.exists(staging.entryPath).pipe(
-            Effect.flatMap((exists) => (exists ? Effect.void : Effect.die("missing runtime"))),
-            Effect.orDie,
-          ),
-      });
-      assert.equal(paths.entryPath, path.join(paths.versionDir, "t3"));
-      assert.deepEqual(pinnedRuntimeCommand(paths), { command: paths.entryPath, args: [] });
-      assert.deepEqual(requests, [
-        `https://releases.example/download/v${version}/SHA256SUMS`,
-        `https://releases.example/download/v${version}/${archiveName}`,
-      ]);
-      assert.deepEqual(commands, ["tar"]);
-      assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
-      assert.isFalse(yield* fs.exists(path.join(paths.versionDir, "t3-runtime-archive")));
-    }),
+  it.effect.each([
+    {
+      releaseBaseUrl: undefined,
+      expectedBaseUrl: "https://github.com/ScriptedAlchemy/t3code/releases/download",
+    },
+    {
+      releaseBaseUrl: "https://releases.example/download",
+      expectedBaseUrl: "https://releases.example/download",
+    },
+  ])(
+    "installs the verified release archive with base URL $releaseBaseUrl",
+    ({ releaseBaseUrl, expectedBaseUrl }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-archive-" });
+        const requests: string[] = [];
+        const commands: string[] = [];
+        const paths = yield* ensurePinnedRuntimeInstalled({
+          baseDir,
+          version,
+          fs,
+          path,
+          platform: "linux",
+          arch: "x64",
+          httpClient: releaseHttpClient(yield* validChecksums, requests),
+          ...(releaseBaseUrl === undefined ? {} : { releaseBaseUrl }),
+          runner: extractingRunner(fs, path, commands),
+          validate: (staging) =>
+            fs.exists(staging.entryPath).pipe(
+              Effect.flatMap((exists) => (exists ? Effect.void : Effect.die("missing runtime"))),
+              Effect.orDie,
+            ),
+        });
+        assert.equal(paths.entryPath, path.join(paths.versionDir, "t3"));
+        assert.deepEqual(pinnedRuntimeCommand(paths), { command: paths.entryPath, args: [] });
+        assert.deepEqual(requests, [
+          `${expectedBaseUrl}/v${version}/SHA256SUMS`,
+          `${expectedBaseUrl}/v${version}/${archiveName}`,
+        ]);
+        assert.deepEqual(commands, ["tar"]);
+        assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
+        assert.isFalse(yield* fs.exists(path.join(paths.versionDir, "t3-runtime-archive")));
+      }),
   );
 
   it.effect("cleans up an interrupted download without reporting verification or extraction", () =>

@@ -86,7 +86,11 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
-import { OPENCODE_PROVIDER, openCodePermissionRequestKind } from "../adapter.ts";
+import {
+  OPENCODE_NATIVE_CHILD_INSTRUCTIONS,
+  OPENCODE_PROVIDER,
+  openCodePermissionRequestKind,
+} from "../adapter.ts";
 import { openCodeToolTurnItem } from "../toolItems.ts";
 
 const OpenCode2ProviderCapabilities = {
@@ -3039,8 +3043,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       // Re-adding an unchanged config keeps its existing connection.
       let mcpAvailable = false;
       if (wanted !== undefined) {
-        mcpAvailable = yield* client.mcp
-          .add({
+        const wasRegistered = state.mcp !== undefined;
+        mcpAvailable = yield* Effect.gen(function* () {
+          // Track attempted registrations too: a lost acknowledgement can leave native config behind.
+          state.mcp = wanted;
+          yield* client.mcp.add({
             server: name,
             location: { directory },
             config: new Mcp.RemoteConfig({
@@ -3049,21 +3056,40 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               headers: { Authorization: wanted.credential },
               oauth: false,
             }),
-          })
-          .pipe(
-            Effect.timeout(INVENTORY_TIMEOUT),
-            Effect.as(true),
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Could not add T3 Code's MCP server to OpenCode.", cause).pipe(
-                Effect.as(false),
-              ),
-            ),
-          );
-        if (mcpAvailable) state.mcp = wanted;
+          });
+          // Native add/connect acknowledge configuration even if the MCP handshake fails.
+          const status = () =>
+            client.mcp
+              .list({ location: { directory } })
+              .pipe(
+                Effect.map(
+                  (result) => result.data.find((server) => server.name === name)?.status.status,
+                ),
+              );
+          let connectionStatus = yield* status();
+          if (
+            connectionStatus === "pending" ||
+            (wasRegistered && connectionStatus !== "connected")
+          ) {
+            // An identical add is a native no-op; reconnect is what retries its failed transport.
+            yield* client.mcp.connect({ server: name, location: { directory } });
+            connectionStatus = yield* status();
+          }
+          return connectionStatus === "connected";
+        }).pipe(
+          Effect.timeout(INVENTORY_TIMEOUT),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not connect T3 Code's MCP server to OpenCode.", {
+              threadId: turnInput.threadId,
+              errorTag: causeErrorTag(cause),
+            }).pipe(Effect.as(false)),
+          ),
+        );
       }
       const instructions = [
         buildRuntimeInstructions({ harness: "OpenCode", model: turnInput.modelSelection.model }),
         t3OrchestrationSystemPrompt(mcpAvailable, mcpSession?.capabilities?.has("device") === true),
+        mcpAvailable ? OPENCODE_NATIVE_CHILD_INSTRUCTIONS : undefined,
       ]
         .filter((part) => part !== undefined && part.length > 0)
         .join("\n\n");

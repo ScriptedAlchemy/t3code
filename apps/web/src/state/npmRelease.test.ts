@@ -131,36 +131,40 @@ it.effect("resolves track metadata through a supporting server when there is no 
   }),
 );
 
-it.effect("does not call an unsupported RPC or fetch public npm for an older primary server", () =>
-  Effect.gen(function* () {
-    const query = setup(false);
-    using fetch = vi
-      .spyOn(globalThis, "fetch")
-      .mockRejectedValue(new Error("Unexpected browser fetch"));
-    const registry = AtomRegistry.make();
-    NodeAssert.ok(
-      Atom.isWritable<EnvironmentId | null, EnvironmentId | null>(primaryEnvironmentIdAtom),
-      "Expected the mocked primary environment atom to be writable.",
-    );
-    registry.set(primaryEnvironmentIdAtom, first);
-    const release = npmReleaseAtom("latest");
-    const unmount = registry.mount(release);
-    try {
-      const error = yield* AtomRegistry.getResult(registry, release).pipe(Effect.flip);
-      expect(npmReleaseFailureMessage(Cause.fail(error))).toContain(
-        "Update it before switching tracks",
+it.effect(
+  "does not call an unsupported RPC or bypass an older primary server's release lookup",
+  () =>
+    Effect.gen(function* () {
+      const query = setup(false);
+      using fetch = vi
+        .spyOn(globalThis, "fetch")
+        .mockRejectedValue(new Error("Unexpected browser fetch"));
+      const registry = AtomRegistry.make();
+      NodeAssert.ok(
+        Atom.isWritable<EnvironmentId | null, EnvironmentId | null>(primaryEnvironmentIdAtom),
+        "Expected the mocked primary environment atom to be writable.",
       );
-      expect(query).not.toHaveBeenCalled();
-      expect(fetch).not.toHaveBeenCalled();
-    } finally {
-      unmount();
-      registry.dispose();
-    }
-  }),
+      registry.set(primaryEnvironmentIdAtom, first);
+      const release = npmReleaseAtom("latest");
+      const unmount = registry.mount(release);
+      try {
+        const error = yield* AtomRegistry.getResult(registry, release).pipe(Effect.flip);
+        expect(npmReleaseFailureMessage(Cause.fail(error))).toContain(
+          "Update it before switching tracks",
+        );
+        expect(query).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+      } finally {
+        unmount();
+        registry.dispose();
+      }
+    }),
 );
 
 it("only displays the safe release error, not arbitrary transport diagnostics", () => {
-  const error = new ServerNpmReleaseError({ reason: "Install npm on the server's PATH." });
+  const error = new ServerNpmReleaseError({
+    reason: "Could not reach this server's release source.",
+  });
   expect(npmReleaseFailureMessage(Cause.fail(error))).toBe(error.message);
   expect(
     npmReleaseFailureMessage(Cause.fail(new Error("sensitive transport details"))),

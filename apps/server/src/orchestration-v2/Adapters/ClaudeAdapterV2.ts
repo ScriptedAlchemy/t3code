@@ -182,6 +182,7 @@ import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapsh
 import {
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+  T3_CODE_PROJECT_INTELLIGENCE_INSTRUCTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
 import {
   GITHUB_READS_INSTRUCTIONS,
@@ -1426,6 +1427,7 @@ const subagentInstructions =
         hookEventName: "SubagentStart",
         additionalContext: [
           GITHUB_READS_INSTRUCTIONS,
+          T3_CODE_PROJECT_INTELLIGENCE_INSTRUCTIONS,
           ...(deviceInstructions ? [T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH] : []),
         ].join("\n\n"),
       },

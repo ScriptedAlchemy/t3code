@@ -1,16 +1,24 @@
 import { offersLinkedEnvironments } from "@t3tools/client-runtime/link-request";
+import { useAtomValue } from "@effect/atom-react";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { peerLinkHealth } from "@t3tools/client-runtime/state/peerLinks";
 import { useFocusEffect } from "@react-navigation/native";
-import { AuthAccessReadScope, type EnvironmentId } from "@t3tools/contracts";
+import { AuthAccessReadScope, type EnvironmentId, type PeerLinkSummary } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { useCallback, useState } from "react";
 import { AppState, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
 import { useEnvironmentServerConfig } from "../../state/entities";
 import { peerLinkEnvironment } from "../../state/peerLinks";
 import { useEnvironmentQuery } from "../../state/query";
 import { useEnvironmentScope } from "../../state/session";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../settings/components/SettingsSection";
 
 export function LinkedEnvironmentsSection(props: {
@@ -40,12 +48,20 @@ export function LinkedEnvironmentsSection(props: {
       };
     }, [hasLinks]),
   );
-  if (!supported || links.error || !links.data || links.data.links.length === 0) return null;
+  if (!supported || (!links.error && (!links.data || links.data.links.length === 0))) return null;
   const now = DateTime.makeUnsafe(nowMs);
   return (
     <View className="mt-5 gap-3">
       <SettingsSection title={`Linked from ${props.environmentLabel}`}>
-        {links.data.links.map((link) => {
+        {links.error ? (
+          <View className="gap-3 p-4">
+            <Text accessibilityRole="alert" className="text-sm text-danger-foreground">
+              {links.error}
+            </Text>
+            <Button label="Retry linked environments" tone="text" onPress={links.refresh} />
+          </View>
+        ) : null}
+        {links.data?.links.map((link) => {
           const health = peerLinkHealth(link, now);
           const status =
             health.kind === "expired"
@@ -70,10 +86,53 @@ export function LinkedEnvironmentsSection(props: {
               >
                 {status}
               </Text>
+              <ForgetEnvironmentLink environmentId={props.environmentId} link={link} />
             </View>
           );
         })}
       </SettingsSection>
     </View>
+  );
+}
+
+function ForgetEnvironmentLink(props: {
+  readonly environmentId: EnvironmentId;
+  readonly link: PeerLinkSummary;
+}) {
+  const canUnlink = useAtomValue(peerLinkEnvironment.unlink.permissionAtom(props.environmentId));
+  const unlink = useAtomCommand(peerLinkEnvironment.unlink, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  if (!canUnlink) return null;
+  const forget = async () => {
+    if (busy) return;
+    setBusy(true);
+    const result = await unlink({
+      environmentId: props.environmentId,
+      input: { environmentId: props.link.environmentId },
+    }).finally(() => setBusy(false));
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      Dialog.alert(
+        "Could not forget the link",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  };
+  return (
+    <Button
+      label={busy ? "Forgetting…" : "Forget link"}
+      accessibilityLabel={`Forget link to ${props.link.label}`}
+      tone="text"
+      disabled={busy}
+      onPress={() =>
+        Dialog.confirm({
+          title: `Forget ${props.link.label}?`,
+          message: `Agents here stop working there. Revoke "T3 Code · …" in ${props.link.label}'s Connections to end the session there too.`,
+          confirmText: "Forget",
+          destructive: true,
+          onConfirm: () => void forget(),
+        })
+      }
+    />
   );
 }

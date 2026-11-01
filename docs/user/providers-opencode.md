@@ -31,6 +31,11 @@ automatic compaction on or off, `buffer` sets the token headroom, and `keep.toke
 sets how much recent context stays. OpenCode 1.x configures compaction differently.
 Send `/compact` to compact a thread yourself.
 
+OpenCode 2's native subagents inherit the parent thread's allowed T3 tools, but not
+T3's per-session tool guidance. T3 directs agents to use `delegate_task` for child
+work that needs project memory, conversation summaries, or code graph. Those
+delegated threads receive T3's tools and instructions before they start work.
+
 ## Local or external server
 
 Leave **Server URL** empty to let T3 Code start OpenCode locally. A password in
@@ -42,6 +47,11 @@ To use an existing OpenCode server, set **Server URL** and its password in provi
 settings. T3 Code uses only that configured password for an external server; it
 does not forward a local `OPENCODE_SERVER_PASSWORD`. If connection or version checks
 fail, check the URL, credentials, and OpenCode version, then refresh provider status.
+
+Configured servers, including localhost URLs, do not receive T3 Code's agent tools.
+Project memory, conversation summaries, code graph, delegation, and other T3 tools
+are unavailable to the agent in this mode. Leave **Server URL** empty to use these
+integrations. This applies to both OpenCode 1.x and 2.x.
 
 After a lost connection, send another prompt to reconnect to the same OpenCode
 session.

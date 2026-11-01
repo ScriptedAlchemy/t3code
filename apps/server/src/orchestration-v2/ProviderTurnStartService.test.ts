@@ -289,6 +289,7 @@ function makeLocalCommandHarness(input: {
   readonly knowledgeStore?: Effect.Success<typeof KnowledgePersistence.makeStore>;
   readonly initialDeliveries?: ReadonlyArray<ProjectKnowledgeDelivery>;
   readonly recoveryNativeId?: string;
+  readonly modelContextWindow?: number;
   readonly resolveKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["resolveForTurn"];
   readonly readSentDeliveries?: ProjectKnowledge.ProjectKnowledge["Service"]["readSentDeliveries"];
   readonly worktreePath?: string;
@@ -810,6 +811,7 @@ function makeLocalCommandHarness(input: {
                     driver: providerThread.driver,
                     providerSession,
                     startTurn: nativeStart,
+                    getModelContextWindow: () => input.modelContextWindow,
                     ensureThread: () =>
                       Effect.succeed({
                         ...providerThread,
@@ -936,6 +938,10 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProjectKnowledge.ProjectKnowledge)({
           ...(input.resolveKnowledge ? { resolveForTurn: input.resolveKnowledge } : {}),
           ...(input.readSentDeliveries ? { readSentDeliveries: input.readSentDeliveries } : {}),
+          nativeDeliveryEstimate: (target) =>
+            input.knowledgeStore
+              ? input.knowledgeStore.nativeDeliveryEstimate(target).pipe(Effect.orDie)
+              : Effect.succeed(0),
           markDeliveryUncertain: (target) =>
             Effect.gen(function* () {
               const updatedAt = DateTime.formatIso(yield* DateTime.now);
@@ -2061,6 +2067,8 @@ const knowledgeRetryHarness = (
     knowledgeStore?: Effect.Success<typeof KnowledgePersistence.makeStore>;
     initialDeliveries?: ReadonlyArray<ProjectKnowledgeDelivery>;
     recoveryNativeId?: string;
+    modelContextWindow?: number;
+    evidenceText?: string;
   } = {},
 ) => {
   const record = {
@@ -2079,7 +2087,10 @@ const knowledgeRetryHarness = (
     ...options,
     text: formatComposerContextReference(record),
     previousTurn: { runStatus: "completed", turnStatus: "completed" },
-    resolveKnowledge: (context) => Effect.succeed({ context, text: "Evidence", byteLength: 8 }),
+    resolveKnowledge: (context) => {
+      const text = options.evidenceText ?? "Evidence";
+      return Effect.succeed({ context, text, byteLength: Buffer.byteLength(text) });
+    },
   });
   const projection = harness.projection();
   harness.setProjection({
@@ -2106,6 +2117,95 @@ const dispatchKnowledge = (start: RunExecutionService.RunExecutionServiceV2Start
     modelSelection: start.modelSelection,
     runtimePolicy: start.runtimePolicy,
   });
+
+effectIt.effect("reserves accepted knowledge before another turn without native telemetry", () =>
+  Effect.gen(function* () {
+    const store = yield* KnowledgePersistence.makeStore;
+    const first = knowledgeRetryHarness({
+      knowledgeStore: store,
+      modelContextWindow: 200_000,
+      evidenceText: "e".repeat(14_000),
+    });
+    const projection = first.projection();
+    const originalMessageId = MessageId.make("earlier-knowledge-message");
+    first.setProjection({
+      ...projection,
+      runs: projection.runs.map((run) => ({ ...run, userMessageId: originalMessageId })),
+      messages: projection.messages.map((message) => ({ ...message, id: originalMessageId })),
+    });
+    yield* first.start;
+    yield* dispatchKnowledge(first.startRootRun.mock.calls[0]![0]);
+    const original = (yield* store.deliveries(
+      projection.thread.projectId,
+      projection.thread.id,
+      originalMessageId,
+    ))[0]!;
+    // Cursor exposes a 200k window without turn usage. Ten earlier accepted
+    // attachments must consume the same fallback budget as their canonical text.
+    for (let index = 1; index < 10; index++) {
+      yield* store.recordDelivery({
+        ...original,
+        attemptId: RunAttemptId.make(`earlier-knowledge-attempt-${index}`),
+        runId: RunId.make(`earlier-knowledge-run-${index}`),
+        messageId: MessageId.make(`earlier-knowledge-message-${index}`),
+      });
+    }
+    const next = knowledgeRetryHarness({
+      knowledgeStore: store,
+      modelContextWindow: 200_000,
+      evidenceText: "e".repeat(14_000),
+    });
+    yield* next.start.pipe(Effect.result);
+    expect(next.startRootRun).not.toHaveBeenCalled();
+    const rejected = (yield* store.deliveries(
+      projection.thread.projectId,
+      projection.thread.id,
+      next.projection().messages[0]!.id,
+    ))[0]!;
+    expect(rejected.status).toBe("failed");
+    expect(rejected.omissions[0]?.reason).toBe("over_budget");
+    expect(rejected.budget?.occupancy).toBeGreaterThan(140_000);
+    expect(rejected.budget!.knowledgeAllowance).toBeLessThan(10_000);
+
+    const retry = knowledgeRetryHarness({
+      knowledgeStore: store,
+      modelContextWindow: 200_000,
+      evidenceText: "e".repeat(14_000),
+    });
+    const retryProjection = retry.projection();
+    const retryAttemptId = RunAttemptId.make("same-native-knowledge-retry");
+    retry.setProjection({
+      ...retryProjection,
+      runs: retryProjection.runs.map((run) =>
+        run.activeAttemptId === retry.attemptId
+          ? { ...run, userMessageId: originalMessageId, activeAttemptId: retryAttemptId }
+          : run,
+      ),
+      attempts: retryProjection.attempts.map((attempt) =>
+        attempt.id === retry.attemptId ? { ...attempt, id: retryAttemptId } : attempt,
+      ),
+      messages: retryProjection.messages.map((message) => ({ ...message, id: originalMessageId })),
+    });
+    const occupied = yield* store.nativeDeliveryEstimate(original);
+    yield* retry.start;
+    yield* dispatchKnowledge(retry.startRootRun.mock.calls[0]![0]);
+    expect(retry.nativeStart).toHaveBeenCalledOnce();
+    expect(retry.nativeStart.mock.calls[0]![0].message.text).not.toContain("e".repeat(100));
+    const receipts = yield* store.deliveries(
+      projection.thread.projectId,
+      projection.thread.id,
+      originalMessageId,
+    );
+    const suppressed = receipts.find((receipt) => receipt.attemptId === retryAttemptId)!;
+    expect(suppressed.status).toBe("sent");
+    expect(suppressed.items).toEqual([]);
+    expect(suppressed.budget?.estimatedTokens).toBe(0);
+    expect(receipts.find((receipt) => receipt.attemptId === original.attemptId)).toEqual(original);
+    expect(yield* store.nativeDeliveryEstimate(original)).toBe(occupied);
+  }).pipe(
+    Effect.provide(SqlitePersistence.layerMemory.pipe(Layer.provideMerge(NodeServices.layer))),
+  ),
+);
 
 effectIt.effect(
   "same-attempt retry does not resend knowledge to the same native conversation",

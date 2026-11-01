@@ -10,6 +10,7 @@ import type {
   ServerProvider,
 } from "@t3tools/contracts";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { CLI_RELEASES_PAGE_URL } from "@t3tools/shared/cliRelease";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -540,9 +541,18 @@ function ConnectAccountOption({
               ) : null}
             </div>
             <p className="text-sm text-muted-foreground">
-              Run this on each computer you want to connect.
+              Install{" "}
+              <a
+                href={CLI_RELEASES_PAGE_URL}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="underline underline-offset-2"
+              >
+                this fork's CLI
+              </a>
+              , then run this on each computer you want to connect.
             </p>
-            <CommandBlock command="npx t3 connect" className="mt-3" />
+            <CommandBlock command="t3 connect" className="mt-3" />
             <p className="mt-3 text-xs text-muted-foreground">
               Keep T3 Code running. Select the computers you want to set up above.
             </p>
@@ -650,12 +660,20 @@ function PairingForm({
           </div>
           <CollapsiblePanel>
             <p className="pt-3 text-sm text-muted-foreground">
-              On the computer with your code, start T3 Code or run{" "}
-              <code className="font-mono">npx t3 serve</code>, then run:
+              On the computer with your code, install{" "}
+              <a
+                href={CLI_RELEASES_PAGE_URL}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="underline underline-offset-2"
+              >
+                this fork's CLI or desktop app
+              </a>
+              . Start the app or run <code className="font-mono">t3 serve</code>, then run:
             </p>
-            <CommandBlock command="npx t3 pair" className="mt-2" />
+            <CommandBlock command="t3 pair" className="mt-2" />
             <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-              On a tailnet, run <code className="font-mono">npx t3 pair --tailscale</code> instead.
+              On a tailnet, run <code className="font-mono">t3 pair --tailscale</code> instead.
             </p>
           </CollapsiblePanel>
         </Collapsible>

@@ -15,18 +15,20 @@ const nightlies = Array.from({ length: 100 }, (_, index) => ({
 // regression: #22490
 describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer channel lookup", () => {
   it.each([
+    ["", "1.2.4-nightly.20261020.200"],
+    ["nightly", "1.2.4-nightly.20261020.200"],
     ["stable", "1.2.3"],
     ["preview", "1.2.4-preview.20261019.50"],
-  ])("finds the newest %s release behind a full page of nightlies", async (channel, version) => {
+  ])("finds the newest fork release for channel '%s'", async (channel, version) => {
     const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-index-"));
     const target = NodePath.join(root, "home/runtime/versions", version);
     const server = NodeHttp.createServer((request, response) => {
       const url = new URL(request.url ?? "/", "http://fixture");
       const body =
-        url.pathname === "/pingdotgg/t3code/releases/latest" &&
+        url.pathname === "/ScriptedAlchemy/t3code/releases/latest" &&
         request.headers.accept === "application/json"
           ? { tag_name: "v1.2.3" }
-          : url.pathname === "/repos/pingdotgg/t3code/releases"
+          : url.pathname === "/repos/ScriptedAlchemy/t3code/releases"
             ? { "1": nightlies, "2": [{ tag_name: `v${version}` }, { tag_name: "v1.2.3" }] }[
                 url.searchParams.get("page") ?? ""
               ]

@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { pendingBackgroundTurnItems } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { resolveSelfInvocation, selfInvocationArgs } from "@t3tools/shared/nodeRuntime";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
@@ -1150,6 +1151,7 @@ describe("AcpRegistryAdapterV2", () => {
               }),
           }),
         }).pipe(
+          Effect.provideService(HostProcess.Environment, agentEnvironment),
           Effect.provide(
             Layer.mock(AcpRegistrySupport.AcpRegistryCatalog)({
               resolve: () =>
@@ -1224,6 +1226,21 @@ describe("AcpRegistryAdapterV2", () => {
       assert.deepEqual(
         yield* sessionMcpServers({ agentId: "github-copilot-cli" }, { T3_ACP_MCP_HTTP: "1" }),
         { new: http("Bearer opened-token"), load: http("Bearer rotated-token") },
+      );
+      const decisionConfig = JSON.stringify({
+        mode: "shadow",
+        port: 8009,
+        model: "candidate",
+        device: "metal",
+      });
+      const shadowStdio = (authorization: string) =>
+        stdio(authorization).map((server) => ({
+          ...server,
+          env: [...server.env, { name: "T3_INCOMING_DECISION", value: decisionConfig }],
+        }));
+      assert.deepEqual(
+        yield* sessionMcpServers({ agentId: "gemini" }, { T3_INCOMING_DECISION: decisionConfig }),
+        { new: shadowStdio("Bearer opened-token"), load: shadowStdio("Bearer rotated-token") },
       );
       const acp = [{ type: "acp", name: "t3-code", serverId: "t3-code" }];
       assert.deepEqual(

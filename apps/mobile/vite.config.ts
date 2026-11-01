@@ -28,6 +28,7 @@ const reactTests = [
   "src/features/files/ZipArchiveView.test.tsx",
   "src/features/pull-requests/guide/useReviewGuide.test.tsx",
   "src/features/settings/SettingsServerControlsRouteScreen.test.tsx",
+  "src/features/settings/SettingsProviderAccountsRouteScreen.test.tsx",
   "src/features/settings/components/BranchNamingSettings.test.tsx",
   "src/features/settings/components/SettingsDragHandle.test.tsx",
   "src/features/threads/ThreadMarkdownImage.test.tsx",
@@ -46,6 +47,7 @@ const reactTests = [
   "src/features/home/home-list-options.test.tsx",
   "src/features/workspace/useSearchScrollRestoration.test.tsx",
   "src/features/connection/ConnectionsNewRouteScreen.test.tsx",
+  "src/features/connection/LinkedEnvironmentsSection.test.tsx",
 ];
 
 const sourceRoot = `${normalizePath(NodeURL.fileURLToPath(new URL("./src", import.meta.url)))}/`;

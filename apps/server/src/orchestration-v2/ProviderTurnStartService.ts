@@ -46,6 +46,7 @@ import {
   handoffTokenCapConfig,
   handoffBudget,
   handoffBudgetAssumptions,
+  historyCost,
   contextUsageForHandoff,
   historicalMessage,
   latestNativeContextUsage,
@@ -924,13 +925,22 @@ export const layer: Layer.Layer<
           estimate,
         } = nativeContextHistory(projection, { ...loadedProviderThread, id: providerThread.id });
         const nativeContextEstimate = Effect.gen(function* () {
-          return sameNativeThread
-            ? estimate(
-                (yield* projectionStore.getTurnStartHistory(input.threadId)).filter(
-                  (item) => item.runId !== run.id,
-                ),
-              )
-            : 0;
+          if (!sameNativeThread) return 0;
+          const knowledgeEstimate = yield* knowledge.nativeDeliveryEstimate({
+            projectId: projection.thread.projectId,
+            threadId: projection.thread.id,
+            providerInstanceId: loadedProviderThread.providerInstanceId,
+            providerThreadId: providerThread.id,
+            nativeThreadId: loadedProviderThread.nativeThreadRef?.nativeId ?? null,
+          });
+          return (
+            knowledgeEstimate +
+            estimate(
+              (yield* projectionStore.getTurnStartHistory(input.threadId)).filter(
+                (item) => item.runId !== run.id,
+              ),
+            )
+          );
         });
         const modelContextWindow =
           knownModelWindow ??
@@ -1558,6 +1568,7 @@ export const layer: Layer.Layer<
                 ? yield* nativeContextEstimate
                 : 0,
           }),
+          initialDeliveryState.sent,
         );
         if (!(yield* isCurrentAttemptInStatus("running"))) return;
       }
@@ -1706,7 +1717,12 @@ export const layer: Layer.Layer<
                     persistHandoff({
                       ...sideChatHandoff,
                       toProviderThreadId: runningProviderThread.id,
-                      delivery: { nativeThreadId, status: "inline" as const, itemIds: [] },
+                      delivery: {
+                        nativeThreadId,
+                        status: "inline" as const,
+                        itemIds: [],
+                        estimatedTokens: historyCost([], sideChatContext),
+                      },
                     }),
                   ]),
             ],

@@ -82,7 +82,10 @@ import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.ts";
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
-import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH } from "@t3tools/provider-core/server/orchestrationInstructions";
+import {
+  T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
+  T3_CODE_PROJECT_INTELLIGENCE_INSTRUCTIONS,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
 import { GITHUB_READS_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { PreviewControlsToolkit } from "../../mcp/toolkits/previewControls/tools.ts";
@@ -733,7 +736,7 @@ describe("ClaudeAdapterV2 device instructions", () => {
     assert.notInclude(append({ mcp: false, deviceToolsAvailable: true }), "## T3 Code devices");
   });
 
-  it("gives native subagents the GitHub reads block, plus the device block with device access", async () => {
+  it("gives native subagents project intelligence and GitHub guidance, plus device guidance with access", async () => {
     // Subagents start from their task prompt, not the parent's system prompt.
     const subagentContext = (input: {
       readonly mcp: boolean;
@@ -761,7 +764,7 @@ describe("ClaudeAdapterV2 device instructions", () => {
       {
         hookSpecificOutput: {
           hookEventName: "SubagentStart",
-          additionalContext: `${GITHUB_READS_INSTRUCTIONS}\n\n${T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH}`,
+          additionalContext: `${GITHUB_READS_INSTRUCTIONS}\n\n${T3_CODE_PROJECT_INTELLIGENCE_INSTRUCTIONS}\n\n${T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH}`,
         },
       },
     ]);
@@ -769,7 +772,7 @@ describe("ClaudeAdapterV2 device instructions", () => {
       {
         hookSpecificOutput: {
           hookEventName: "SubagentStart",
-          additionalContext: GITHUB_READS_INSTRUCTIONS,
+          additionalContext: `${GITHUB_READS_INSTRUCTIONS}\n\n${T3_CODE_PROJECT_INTELLIGENCE_INSTRUCTIONS}`,
         },
       },
     ]);
