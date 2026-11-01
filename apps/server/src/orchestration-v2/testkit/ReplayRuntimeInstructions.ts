@@ -23,9 +23,7 @@ export function materializeReplayTranscriptRuntimeInstructions(
   const pullRequestInstructions = instructions.match(
     /<pull_request_linking>[\s\S]*?<\/pull_request_linking>/u,
   )?.[0];
-  const githubReadInstructions = instructions.match(
-    /<github_reads>[\s\S]*?<\/github_reads>/u,
-  )?.[0];
+  const githubReadInstructions = instructions.match(/<github_reads>[\s\S]*?<\/github_reads>/u)?.[0];
   const managedInstructions = [pullRequestInstructions, githubReadInstructions]
     .filter((block): block is string => block !== undefined)
     .join("\n\n");
