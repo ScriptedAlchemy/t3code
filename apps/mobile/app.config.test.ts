@@ -92,6 +92,7 @@ async function nativeUpdatesConfig(config: Awaited<ReturnType<typeof loadConfig>
   const manifest = await AndroidConfig.Updates.setUpdatesConfigAsync(projectRoot, config, {
     manifest: {
       $: { "xmlns:android": "http://schemas.android.com/apk/res/android" },
+      queries: [],
       application: [
         {
           $: { "android:name": ".MainApplication" },
