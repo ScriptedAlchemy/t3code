@@ -1,6 +1,12 @@
-# Repaired local evaluation checkpoint (full-result state)
+# Recorded local evaluation checkpoint (full-result state)
 
 Development experiment; neither configuration is approved for live pruning.
+
+The measurements below used `causal-context-v1` and `selection-evidence-v1`.
+The current evaluator uses v2 eligibility rules and includes context reconstruction in case
+latency. These historical savings, coverage and timing figures have not been rerun under the
+current rules. In this record, “shipped contract” refers to the state/prompt combination measured
+at that checkpoint, not validation of the current evaluator.
 
 ## What this revision repairs
 

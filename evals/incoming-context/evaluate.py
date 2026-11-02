@@ -20,8 +20,8 @@ from incoming import apply_incoming, replace_leaf, text_leaves
 
 ENC = tiktoken.get_encoding('o200k_base')
 CHUNKER = 'lines-400-v1'
-CONTEXT_VERSION = 'causal-context-v1'
-POLICY_VERSION = 'selection-evidence-v1'
+CONTEXT_VERSION = 'causal-context-v2'
+POLICY_VERSION = 'selection-evidence-v2'
 # Request identity. Any frozen result without exactly REQUEST_VERSION in its `request_version`
 # field was measured against a different state, prompt or batching contract and must not be
 # compared with, or reported as, this revision.
@@ -590,6 +590,53 @@ def pending_blocks(value):
     return [{'index': p['block'], 'path': list(p['path']), 'text': p['part']} for p in value]
 
 
+def unsupported_output_reason(value, incoming=None):
+    """Why the text-only scoring state cannot represent this result, or None.
+
+    Preserving an omitted field in the eventual output does not make it visible to the
+    selector. Until the state contract includes metadata and multimodal content, they
+    must not authorize scores that can remove related text.
+    """
+    if incoming is not None:
+        if set(incoming) - {'type', 'call_id', 'output', 'status'}:
+            return 'envelope_metadata_not_in_state'
+        if incoming.get('status') not in (None, 'completed'):
+            return 'result_status_not_in_state'
+    if isinstance(value, str):
+        duplicate = False
+
+        def pairs(items):
+            nonlocal duplicate
+            obj = {}
+            for key, item in items:
+                if key in obj:
+                    duplicate = True
+                obj[key] = item
+            return obj
+
+        try:
+            obj = json.loads(value, object_pairs_hook=pairs)
+        except (TypeError, ValueError):
+            return None  # An ordinary text leaf is included in full.
+        if isinstance(obj, dict) and isinstance(obj.get('output'), str):
+            if duplicate or set(obj) != {'output'}:
+                return 'json_metadata_not_in_state'
+        return None
+    if isinstance(value, list):
+        for block in value:
+            if (not isinstance(block, dict)
+                    or block.get('type') not in ('input_text', 'text')
+                    or not isinstance(block.get('text'), str)):
+                return 'nontext_output_not_in_state'
+            if set(block) - {'type', 'text'}:
+                return 'text_metadata_not_in_state'
+            reason = unsupported_output_reason(block['text'])
+            if reason:
+                return reason
+        return None
+    return 'nontext_output_not_in_state'
+
+
 def request_tokens(payload):
     """Comparison-token count of the exact request a backend would serialize."""
     return tokens(json.dumps(payload))
@@ -711,6 +758,10 @@ def http_score(a, payload):
             headers['Authorization'] = 'Bearer ' + os.environ[a.key_env]
         req = urllib.request.Request(a.endpoint, data=json.dumps(body).encode(), headers=headers)
         with urllib.request.urlopen(req, timeout=a.timeout) as response:
+            # The HTTP server exposes truncation in a header, not in the Jev response body.
+            # Scores from a shortened state cannot authorize removing any source content.
+            if response.headers.get('X-MLX-Decision-Truncated', '').strip().lower() == 'true':
+                raise Failure('oversize', 'runtime truncated the state')
             received = json.load(response)
         probs = probabilities(received)
         missing = set(payload['questions']) - set(probs)
@@ -912,6 +963,12 @@ def proposal(p_keep, protected, threshold):
     A proposal is not a saving: a guard may retain what the proposal asked to remove, and the
     proposal is still recorded when that happens.
     """
+    if (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+            or not math.isfinite(threshold) or not 0 <= threshold <= 1):
+        raise ValueError('Threshold must be a finite probability between 0 and 1')
+    if p_keep is not None and (isinstance(p_keep, bool) or not isinstance(p_keep, (int, float))
+                               or not math.isfinite(p_keep) or not 0 <= p_keep <= 1):
+        raise ValueError('Keep score must be a finite probability between 0 and 1')
     if protected or p_keep is None:
         return 'keep'
     return 'keep' if p_keep >= threshold else 'drop'
@@ -930,8 +987,8 @@ def resolution(original, plan, case_id, rows, threshold, deadline=False,
     this threshold instead of being inherited from another threshold.
 
     ``hard_keep`` maps a block to a retention reason (requested evidence). ``abstain_all`` marks
-    a case with no verified causal context: every block keeps, at every threshold, and the model
-    is never asked. Both are hard constraints, not proposals, so rethreshold cannot drop them.
+    missing causal context or an unsupported result: every block keeps at every threshold, and
+    the model is never asked. Both are hard constraints, so rethreshold cannot drop them.
     """
     hard_keep = dict(hard_keep or {})
     proposals = {p['block']: proposal(rows[p['block']]['p_keep'],
@@ -959,6 +1016,7 @@ def resolution(original, plan, case_id, rows, threshold, deadline=False,
 
 
 def score_case(a, c):
+    case_start = time.perf_counter()
     incoming = source_payload(c)
     prefix = prefix_bytes(c)
     original = incoming['output']
@@ -968,11 +1026,12 @@ def score_case(a, c):
     context_ok = bool(meta['ok'])
     terms = meta.get('evidence_terms', []) if context_ok else []
     context_abstain = a.policy == 'decision' and not context_ok
+    output_reason = unsupported_output_reason(original, incoming)
+    output_abstain = a.policy == 'decision' and output_reason is not None
     view = dict(c)
     view['context'] = meta['rendered'] if context_ok else ''
     view['call'] = meta.get('call_rendered') or {}
     view['call_command'] = (meta.get('call_rendered') or {}).get('command', '')
-    case_start = time.perf_counter()
     plan = plan_blocks(original)
     hard = hard_keep_for_plan(plan, terms) if context_ok else {}
     decisions = [None] * len(plan)
@@ -1025,7 +1084,7 @@ def score_case(a, c):
 
     prompt_version, instructions = prompt_for(a)
     targets = []
-    if a.policy == 'decision' and not context_abstain:
+    if a.policy == 'decision' and not (context_abstain or output_abstain):
         targets = [p for p in plan if not p['protected']]
         if targets and deadline_passed():
             deadline_hit = True
@@ -1079,6 +1138,8 @@ def score_case(a, c):
                 reason = 'lexical baseline; not a model'
         elif context_abstain:
             p_keep, reason = None, 'abstain: missing_context'
+        elif output_abstain:
+            p_keep, reason = None, 'abstain: unsupported_output'
         else:
             if p['block'] in scores:
                 p_keep, latency, usage, reason = scores[p['block']]
@@ -1092,16 +1153,16 @@ def score_case(a, c):
             'block': p['block'], 'path': p['path'], 'sha256': digest(p['part']),
             'tokens': tokens(p['part']), 'protected': p['protected'],
             'p_keep': p_keep, 'reason': reason, 'latency_ms': round(latency, 1), 'usage': usage,
-            'hard_keep': bool(context_abstain or hits),
+            'hard_keep': bool(context_abstain or output_abstain or hits),
             'hard_reason': ('no causal context' if context_abstain
-                            else hits.get('reason')),
+                            else 'unsupported output' if output_abstain else hits.get('reason')),
             'evidence_terms': list(hits.get('terms', [])),
         }
 
     outcome = resolution(original, plan, c['id'], {d['block']: d for d in decisions},
                          a.threshold, deadline=deadline_hit,
                          hard_keep={n: v['reason'] for n, v in hard.items()},
-                         abstain_all=context_abstain)
+                         abstain_all=context_abstain or output_abstain)
     for d in decisions:
         d['proposed'] = outcome['proposals'][d['block']]
         d['effective'] = outcome['effective'][d['block']]
@@ -1137,8 +1198,11 @@ def score_case(a, c):
         'result_blocks_in_state': len(plan),
         'manifest_context_present': meta.get('manifest_context_present'),
         'manifest_context_used': False,
-        'abstained': context_abstain,
-        'abstain_reason': meta.get('abstain_reason'),
+        'abstained': context_abstain or output_abstain,
+        'abstain_reason': (meta.get('abstain_reason') if context_abstain
+                           else output_reason if output_abstain else None),
+        'output_abstained': output_abstain,
+        'output_abstain_reason': output_reason if output_abstain else None,
         'policy': a.policy,
     }
     elapsed_total = (time.perf_counter() - case_start) * 1000
@@ -1161,6 +1225,8 @@ def score_case(a, c):
             'context_ok': context_ok,
             'context_abstained': context_abstain,
             'context_abstain_reason': meta.get('abstain_reason'),
+            'output_abstained': output_abstain,
+            'output_abstain_reason': output_reason if output_abstain else None,
             'manifest_context_used': False,
             'evidence_terms': terms, 'hard_retained_blocks': len(hard),
             'historical_content_rewritten': False,
@@ -1220,6 +1286,7 @@ def build_report(a, results, receipts):
         'deadline_blocks': sum(1 for d in blocks if d['reason'] == 'abstain: deadline'),
         'deadline_abstained_cases': sum(1 for r in results if r['deadline_abstain']),
         'context_abstained_cases': sum(1 for r in results if r.get('context_abstained')),
+        'output_abstained_cases': sum(1 for r in results if r.get('output_abstained')),
         'evidence_retained_blocks': sum(
             1 for r in results for d in r['decisions']
             if d.get('retained_by') == 'requested evidence'),
@@ -1232,7 +1299,9 @@ def build_report(a, results, receipts):
     }
     expected = request_version_for(a)
     versions = {r.get('request_version') for r in results}
-    current_request = a.policy == 'decision' and versions == {expected}
+    current_request = (a.policy == 'decision' and versions == {expected}
+                       and all(r.get('context_version') == CONTEXT_VERSION
+                               and r.get('policy_version') == POLICY_VERSION for r in results))
     return {'policy': a.policy,
             'model': a.model if a.policy == 'decision' else None,
             'threshold': a.threshold, 'backend': a.backend if a.policy == 'decision' else None,
@@ -1303,7 +1372,8 @@ def _derivation_constraints(case_result, plan, case):
     A legacy result is never trusted: its context and evidence are rebuilt from the
     authoritative source, and when that is impossible the derivation abstains and keeps all.
     """
-    legacy = case_result.get('context_version') != CONTEXT_VERSION
+    legacy = (case_result.get('context_version') != CONTEXT_VERSION
+              or case_result.get('policy_version') != POLICY_VERSION)
     if not legacy:
         hard, abstain = {}, bool(case_result.get('context_abstained'))
         for d in case_result['decisions']:
@@ -1332,7 +1402,7 @@ def derive_case(case_result, threshold, original, case=None):
     The measured observation is never rewritten: this re-reads the recorded block geometry,
     re-checks it against the source bytes, and asks the shared resolution for proposals,
     effective selection and the guard at the requested threshold. Hard retention (no causal
-    context, requested evidence) is carried through, so a new threshold cannot drop it.
+    context, unsupported output, requested evidence) survives every threshold.
     """
     plan = plan_blocks(original)
     recorded = case_result['decisions']
@@ -1347,12 +1417,29 @@ def derive_case(case_result, threshold, original, case=None):
     if set(by_block) != {p['block'] for p in plan}:
         raise ValueError('Block numbering drift for ' + case_result['id'])
     hard, abstain, reconstructed = _derivation_constraints(case_result, plan, case)
+    output_reason = (case_result.get('output_abstain_reason') or 'unsupported output'
+                     if case_result.get('output_abstained') else None)
+    policy = case_result.get('receipt', {}).get('model_visible', {}).get('policy')
+    if policy in (None, 'decision'):
+        # Old scores may have been computed while wrapper metadata or image siblings were
+        # hidden. Recheck the source shape; a threshold change cannot make that state valid.
+        try:
+            incoming = source_payload(case) if case is not None else None
+            output_reason = output_reason or unsupported_output_reason(original, incoming)
+        except (OSError, ValueError):
+            output_reason = output_reason or 'source_envelope_unavailable'
+    output_abstain = output_reason is not None
+    if output_abstain:
+        hard.update({p['block']: 'unsupported output' for p in plan})
     outcome = resolution(original, plan, case_result['id'], by_block, threshold,
                          deadline=case_result.get('guard') == 'deadline',
-                         hard_keep=hard, abstain_all=abstain)
+                         hard_keep=hard, abstain_all=abstain or output_abstain)
     outcome['plan'] = plan
     outcome['by_block'] = by_block
     outcome['reconstructed_legacy'] = reconstructed
+    outcome['context_abstained'] = abstain
+    outcome['output_abstained'] = output_abstain
+    outcome['output_abstain_reason'] = output_reason
     return outcome
 
 
@@ -1366,10 +1453,25 @@ def rethreshold(case_result, threshold, original, case=None):
     return outcome['plan'], outcome['selected'], outcome['by_block'], bool(outcome['guard'])
 
 
+def measurement_contract(result):
+    rows = result.get('cases', [result])
+    eligibility = tuple(sorted({(r.get('context_version') or 'legacy-unversioned',
+                                 r.get('policy_version') or 'legacy-unversioned')
+                                for r in rows}))
+    return result.get('request_version'), eligibility
+
+
+def measurement_contract_label(result):
+    version, eligibility = measurement_contract(result)
+    return ((version or 'legacy-unversioned') + '; '
+            + (', '.join(context + '/' + policy for context, policy in eligibility)
+               or 'eligibility-unrecorded'))
+
+
 def request_identity(result):
     """(request_version, matches_current) for a frozen result; absence is legacy, not current."""
-    version = result.get('request_version')
-    return version, version == REQUEST_VERSION
+    version, eligibility = measurement_contract(result)
+    return version, version == REQUEST_VERSION and eligibility == ((CONTEXT_VERSION, POLICY_VERSION),)
 
 
 def sweep(a):
@@ -1421,7 +1523,9 @@ def rerender(a):
         updated['after_sha256'] = digest(text(outcome['selected']))
         # Recompute the result guard for this threshold; a stale guard is not inherited.
         updated['guard'] = outcome['guard']
-        updated['context_abstained'] = outcome['abstain_all']
+        updated['context_abstained'] = outcome['context_abstained']
+        updated['output_abstained'] = outcome['output_abstained']
+        updated['output_abstain_reason'] = outcome['output_abstain_reason']
         updated['derived_legacy_context'] = outcome['reconstructed_legacy']
         updated['decisions'] = []
         for d in r['decisions']:
@@ -1430,6 +1534,10 @@ def rerender(a):
             d.pop('retained_by', None)
             d['proposed'] = outcome['proposals'][d['block']]
             d['effective'] = outcome['effective'][d['block']]
+            if outcome['abstain_all']:
+                d['hard_keep'] = True
+                d['hard_reason'] = ('no causal context' if outcome['context_abstained']
+                                    else 'unsupported output')
             retained_by = outcome['retained'].get(d['block'])
             if retained_by:
                 d['retained_by'] = retained_by
@@ -1451,6 +1559,10 @@ def rerender(a):
                                                 if d['effective'] == 'drop'),
                           'proposed_drops': sum(1 for c in new_cases for d in c['decisions']
                                                 if d['proposed'] == 'drop'),
+                          'context_abstained_cases': sum(bool(c['context_abstained'])
+                                                        for c in new_cases),
+                          'output_abstained_cases': sum(bool(c['output_abstained'])
+                                                       for c in new_cases),
                           'guarded_cases': sum(1 for c in new_cases
                                                if c['guard'] == 'non-expansion')})
     Path(a.out).write_text(json.dumps(out, indent=2))

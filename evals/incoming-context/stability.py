@@ -13,7 +13,8 @@ def load(paths):
 def label(run):
     if run['policy'] != 'decision':
         return run['policy']
-    return f"{Path(run['model']).name}/{run['batch_mode']}"
+    version = e.measurement_contract_label(run)
+    return f"{Path(run['model']).name}/{run['batch_mode']} [{version}]"
 
 
 def latency(runs):
@@ -70,6 +71,8 @@ def timing(paths):
 
 
 def drift(a, b, threshold):
+    if e.measurement_contract(a) != e.measurement_contract(b):
+        raise ValueError('Score drift requires the same request contract')
     left = {c['id']: {d['block']: d for d in c['decisions']} for c in a['cases']}
     right = {c['id']: {d['block']: d for d in c['decisions']} for c in b['cases']}
     shared = sorted(set(left) & set(right))
@@ -78,6 +81,8 @@ def drift(a, b, threshold):
     for cid in shared:
         for block in sorted(set(left[cid]) & set(right[cid])):
             x, y = left[cid][block], right[cid][block]
+            if x.get('sha256') != y.get('sha256') or x.get('path') != y.get('path'):
+                raise ValueError('Block identity drift for ' + cid)
             if x['p_keep'] is None or y['p_keep'] is None:
                 continue
             d = abs(x['p_keep'] - y['p_keep'])

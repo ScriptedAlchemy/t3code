@@ -167,12 +167,15 @@ def build(args):
         parts = [(p['block'], p['path'], p['tokens'], p['part']) for p in e.plan_blocks(payload_of(case))]
         payload = e.source_payload(case)
         recorded = {name_of(run): {c['id']: c for c in run['cases']}[case['id']] for run in results}
-        base = recorded[names[0]]['decisions']
-        if len(base) != len(parts):
-            raise SystemExit('Block count drift for ' + case['id'])
-        for i, (_, _, _, part) in enumerate(parts):
-            if e.digest(part) != base[i]['sha256']:
-                raise SystemExit('Block hash drift for ' + case['id'])
+        for name in names:
+            decisions = recorded[name]['decisions']
+            if len(decisions) != len(parts):
+                raise SystemExit('Block count drift for ' + case['id'] + ' / ' + name)
+            for (block, path, _, part), decision in zip(parts, decisions):
+                if block != decision['block'] or list(path) != list(decision['path']):
+                    raise SystemExit('Block identity drift for ' + case['id'] + ' / ' + name)
+                if e.digest(part) != decision['sha256']:
+                    raise SystemExit('Block hash drift for ' + case['id'] + ' / ' + name)
         blocks = [{'id': i, 'tokens': parts[i][2], 'sha256': e.digest(parts[i][3]),
                    'leaf_path': parts[i][1]} for i in range(len(parts))]
         case_dir = packet / f'case-{index:03d}'
@@ -181,9 +184,14 @@ def build(args):
         meta = base_result.get('context') if isinstance(base_result.get('context'), dict) else None
         for name in names:
             other = recorded[name].get('context')
-            if meta and isinstance(other, dict) and other.get('context_sha256') != meta.get('context_sha256'):
+            fields = ('version', 'policy_version', 'context_sha256', 'rendered',
+                      'call_rendered', 'abstain_reason')
+            expected = {k: meta.get(k) for k in fields} if meta is not None else None
+            actual = {k: other.get(k) for k in fields} if isinstance(other, dict) else None
+            if actual != expected:
                 raise SystemExit('Context drift between candidates for ' + case['id'])
-        recorded_context = bool(meta and meta.get('version') == e.CONTEXT_VERSION)
+        recorded_context = bool(meta and meta.get('version')
+                                and 'rendered' in meta and 'call_rendered' in meta)
         context_lines = ['# Causal state before this tool result', '']
         if recorded_context:
             abstained = bool(meta.get('abstain_reason')) or not meta.get('rendered')
@@ -228,25 +236,26 @@ def build(args):
         labels_dir.mkdir()
         label_map = {}
         rows = []
-        for name in names:
-            case_result = recorded[name]
-            dropped = set(removals[case['id']][name])
+        candidates = list(names)
+        if args.intact_control and not any(len(v) == 0 for v in removals[case['id']].values()):
+            candidates.append(None)
+        rng.shuffle(candidates)
+        for name in candidates:
+            dropped = set(removals[case['id']][name]) if name is not None else set()
             _, kept = kept_output(case, dropped)
-            if e.tokens(kept) != case_result['after']:
-                raise SystemExit('Retention drift for ' + case['id'] + ' / ' + name)
+            if name is not None:
+                case_result = recorded[name]
+                if (e.tokens(kept) != case_result['after']
+                        or e.digest(kept) != case_result.get('after_sha256')):
+                    raise SystemExit('Retention drift for ' + case['id'] + ' / ' + name)
             removed = [{'id': b['id'], 'tokens': b['tokens'], 'sha256': b['sha256'], 'text': parts[b['id']][3]}
                        for b in blocks if b['id'] in dropped]
             label = new_label(rng, used)
             write_label(labels_dir, label, kept, removed, len(blocks),
                         f'{len(blocks) - len(dropped)} of {len(blocks)} blocks retained.')
-            label_map[label] = name
+            label_map[label] = name if name is not None else 'intact-control'
             rows.append({'label': label, 'removed_blocks': sorted(dropped),
                          'removed_tokens': sum(b['tokens'] for b in removed)})
-        if args.intact_control and not any(len(v) == 0 for v in removals[case['id']].values()):
-            label = new_label(rng, used)
-            write_label(labels_dir, label, text, [], len(blocks), 'Intact control: nothing removed.')
-            label_map[label] = 'intact-control'
-            rows.append({'label': label, 'removed_blocks': [], 'removed_tokens': 0})
         identity['cases'][case['id']] = {'packet_case': f'case-{index:03d}', 'labels': label_map}
         manifest['cases'].append({'case': f'case-{index:03d}', 'case_id': case['id'],
                                   'session_sha256': e.digest(case['source']), 'line': case['line'],

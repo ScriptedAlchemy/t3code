@@ -4,16 +4,20 @@ These tests drive the real guard paths (deadline retention and recomputed non-ex
 compare the derived rerender/sweep numbers byte-for-byte against live selection.
 """
 import contextlib
+import copy
 import io
 import json
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import evaluate as e
+import blind_packet as bp
+import equalize
+import report as run_report
+import stability
 
 
 def args(**over):
@@ -47,12 +51,6 @@ def scores(mapping):
     def fake(a, payload):
         return ({q: mapping[int(q[1:])] for q in payload['questions']}, 1.0, {})
     return fake
-
-
-def slow_score(a, payload):
-    """Spends real time so the case deadline, not the scorer, ends the measurement."""
-    time.sleep(0.05)
-    return {q: 0.0 for q in payload['questions']}, 50.0, {}
 
 
 def expanding_body():
@@ -122,6 +120,13 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(e.proposal(0.1, False, 0.1), 'keep')
         self.assertEqual(e.proposal(0.0, True, 0.1), 'keep')
         self.assertEqual(e.proposal(None, False, 0.1), 'keep')
+        for invalid in (float('nan'), float('inf'), -0.1, 1.1, True, '0.1'):
+            with self.subTest(invalid=invalid, field='threshold'):
+                with self.assertRaisesRegex(ValueError, 'Threshold'):
+                    e.proposal(0.1, False, invalid)
+            with self.subTest(invalid=invalid, field='score'):
+                with self.assertRaisesRegex(ValueError, 'score'):
+                    e.proposal(invalid, False, 0.1)
 
     def test_geometry_fixture_is_what_the_guards_exercise(self):
         plan = e.plan_blocks(BODY)
@@ -220,7 +225,14 @@ class NonExpansionTests(unittest.TestCase):
 class DeadlineRetentionTests(unittest.TestCase):
     def measured_deadline_case(self, folder):
         case = write_case(folder, plain_body())
-        with patch.object(e, 'score_request', slow_score):
+        clock = [0.0]
+
+        def score(a, payload):
+            clock[0] += 0.05
+            return {q: 0.0 for q in payload['questions']}, 50.0, {}
+
+        with patch.object(e, 'score_request', score), \
+                patch.object(e.time, 'perf_counter', side_effect=lambda: clock[0]):
             result = e.score_case(args(batch_questions=2, deadline_ms=60), case)
         return case, result
 
@@ -314,6 +326,168 @@ class BlockIdentityTests(unittest.TestCase):
         rows[1]['block'], rows[2]['block'] = rows[2]['block'], rows[1]['block']
         with self.assertRaisesRegex(ValueError, 'Block identity drift'):
             e.derive_case(result, 0.5, BODY)
+
+
+class EqualBudgetTests(unittest.TestCase):
+    def test_equal_budget_counts_effective_drops_and_reconstructs_legacy_constraints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case, result = live(tmp, BODY, SCORES)
+            result['decisions'][2].update(hard_keep=True, hard_reason='requested evidence')
+            for legacy in (False, True):
+                with self.subTest(legacy=legacy):
+                    measured = copy.deepcopy(result)
+                    if legacy:
+                        measured.pop('context_version')
+                    expected = e.derive_case(measured, 0.7, BODY, case=case)
+                    row = equalize.measure(report(measured), {case['id']: case}, 0.7)
+                    self.assertEqual(row['after'], e.tokens(e.text(expected['selected'])))
+                    self.assertEqual(row['dropped_blocks'],
+                                     sum(v == 'drop' for v in expected['effective'].values()))
+
+    def test_threshold_selection_rejects_holdout_and_unknown_splits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case, result = live(tmp, BODY, SCORES)
+            for split in ('test', None):
+                with self.subTest(split=split):
+                    case['split'] = split
+                    with self.assertRaisesRegex(ValueError, 'development'):
+                        equalize.choose(report(result), {case['id']: case}, 0.2, [0.1, 0.7])
+
+
+class BlindPacketIntegrityTests(unittest.TestCase):
+    def packet(self, folder, cases, results, **over):
+        root = Path(folder)
+        paths = []
+        for index, result in enumerate(results):
+            path = root / f'result-{index}.json'
+            path.write_text(json.dumps(result))
+            paths.append(str(path))
+        cases_path = root / 'cases.json'
+        cases_path.write_text(json.dumps({'cases': cases}))
+        out = root / 'review'
+        options = dict(results=paths, cases=str(cases_path), out=str(out), count=len(cases),
+                       seed=7, max_case_tokens=20000, require_removal=False, intact_control=False)
+        options.update(over)
+        call(bp.build, SimpleNamespace(**options))
+        return out
+
+    def candidates(self, measured):
+        runs = [copy.deepcopy(report(measured)) for _ in range(2)]
+        for index, run in enumerate(runs):
+            run['model'] = f'candidate-{index}'
+        return runs
+
+    def test_every_candidate_must_match_source_and_retained_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case, result = live(tmp, BODY, SCORES, threshold=0.7)
+            for field in ('block-hash', 'block-identity', 'retained-hash'):
+                with self.subTest(field=field):
+                    runs = self.candidates(result)
+                    other = runs[1]['cases'][0]
+                    if field == 'block-hash':
+                        other['decisions'][1]['sha256'] = e.digest('different content')
+                    elif field == 'block-identity':
+                        other['decisions'][1]['path'] = ['different-leaf']
+                    else:
+                        other['after_sha256'] = e.digest('different retained bytes')
+                    with self.assertRaisesRegex(SystemExit, 'drift'):
+                        self.packet(tmp, [case], runs)
+
+    def test_missing_candidate_context_is_not_described_as_verified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case, result = live(tmp, BODY, SCORES, threshold=0.7)
+            for missing_index in (0, 1):
+                with self.subTest(missing_index=missing_index):
+                    runs = self.candidates(result)
+                    runs[missing_index]['cases'][0].pop('context')
+                    with self.assertRaisesRegex(SystemExit, 'Context drift'):
+                        self.packet(tmp, [case], runs)
+
+    def test_historical_recorded_context_is_not_replaced_by_manifest_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case, result = live(tmp, BODY, SCORES, threshold=0.7)
+            result['context']['version'] = 'causal-context-v1'
+            result['context_version'] = 'causal-context-v1'
+            case['context'] = 'LATER MANIFEST INSTRUCTIONS'
+            out = self.packet(tmp, [case], [report(result)])
+            context = (out / 'packet' / 'case-001' / 'context.md').read_text()
+        self.assertIn('context version: causal-context-v1', context)
+        self.assertIn(result['context']['rendered'], context)
+        self.assertNotIn('LATER MANIFEST INSTRUCTIONS', context)
+
+    def test_blind_labels_are_permuted_and_control_identity_is_hidden(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cases, measured = [], []
+            for index in range(4):
+                folder = Path(tmp) / f'session-{index}'
+                folder.mkdir()
+                case = write_case(folder, BODY)
+                case['id'] = f'case-{index:04d}'
+                with patch.object(e, 'score_request', scores(SCORES)):
+                    result = e.score_case(args(threshold=0.7), case)
+                cases.append(case)
+                measured.append(result)
+            runs = self.candidates(measured[0])
+            for run in runs:
+                run['cases'] = copy.deepcopy(measured)
+            out = self.packet(tmp, cases, runs, intact_control=True)
+            identities = json.loads((out / 'identity-map.DO-NOT-OPEN.json').read_text())['cases']
+            template = json.loads((out / 'judgments.template.json').read_text())
+            orders = []
+            for entry in template['cases']:
+                mapping = identities[entry['case_id']]['labels']
+                orders.append(tuple(mapping[row['label']] for row in entry['labels']))
+                for row in entry['labels']:
+                    text = (out / 'packet' / entry['case'] / 'labels' /
+                            (row['label'] + '.md')).read_text()
+                    self.assertNotIn('Intact control', text)
+            self.assertGreater(len(set(orders)), 1)
+
+
+class RunComparisonTests(unittest.TestCase):
+    def test_distinct_request_contracts_are_not_pooled_or_hidden(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, measured = live(tmp, BODY, SCORES)
+        current = report(measured)
+        current['file'] = 'current.json'
+        legacy = copy.deepcopy(current)
+        legacy['request_version'] = 'incoming-state-v1:keep-prompt-v1'
+        legacy['file'] = 'legacy.json'
+        old_context = copy.deepcopy(current)
+        old_context['cases'][0]['context_version'] = 'causal-context-v1'
+        old_policy = copy.deepcopy(current)
+        old_policy['cases'][0]['policy_version'] = 'selection-evidence-v1'
+        runs = [current, legacy, old_context, old_policy]
+        rows = stability.latency(runs)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual([r['runs'] for r in rows], [1, 1, 1, 1])
+        summaries = run_report.summarize(runs)
+        self.assertEqual(len({r['name'] for r in summaries}), 4)
+        self.assertIn(e.REQUEST_VERSION, summaries[0]['name'])
+        self.assertIn(legacy['request_version'], summaries[1]['name'])
+        self.assertTrue(e.request_identity(current)[1])
+        for old in (old_context, old_policy):
+            self.assertEqual(e.request_identity(old), (current['request_version'], False))
+            rebuilt = e.build_report(args(), old['cases'], {})
+            self.assertIsNone(rebuilt['request_version'])
+
+    def test_score_drift_requires_matching_contract_and_block_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, measured = live(tmp, BODY, SCORES)
+        original = report(measured)
+        for field in ('contract', 'context', 'policy', 'block'):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(original)
+                if field == 'contract':
+                    changed['request_version'] = 'incoming-state-v1:keep-prompt-v1'
+                elif field == 'context':
+                    changed['cases'][0]['context_version'] = 'causal-context-v1'
+                elif field == 'policy':
+                    changed['cases'][0]['policy_version'] = 'selection-evidence-v1'
+                else:
+                    changed['cases'][0]['decisions'][1]['sha256'] = e.digest('other content')
+                with self.assertRaisesRegex(ValueError, 'contract|identity'):
+                    stability.drift(original, changed, 0.1)
 
 
 if __name__ == '__main__':

@@ -14,19 +14,21 @@ import evaluate as e
 def measure(result, cases, threshold):
     before = after = dropped = 0
     for r in result['cases']:
-        original = e.source_payload(cases[r['id']])['output']
-        plan, selected, _, guarded = e.rethreshold(r, threshold, original)
+        case = cases[r['id']]
+        original = e.source_payload(case)['output']
+        outcome = e.derive_case(r, threshold, original, case=case)
         before += e.tokens(e.text(original))
-        after += e.tokens(e.text(selected))
-        dropped += sum(1 for d in r['decisions']
-                       if not d['protected'] and d['p_keep'] is not None and d['p_keep'] < threshold) \
-            if not guarded else 0
+        after += e.tokens(e.text(outcome['selected']))
+        dropped += sum(v == 'drop' for v in outcome['effective'].values())
     return {'threshold': threshold, 'before': before, 'after': after,
             'saved_fraction': round((before - after) / before, 4) if before else None,
             'dropped_blocks': dropped}
 
 
 def choose(result, cases, target, grid):
+    if any(r.get('split') != 'development' or cases[r['id']].get('split') != 'development'
+           for r in result['cases']):
+        raise ValueError('Threshold selection requires development cases only')
     rows = [measure(result, cases, t) for t in grid]
     best = min(rows, key=lambda m: (abs((m['saved_fraction'] or 0) - target), -m['threshold']))
     return best, rows
@@ -45,8 +47,11 @@ def main():
     for path in a.results:
         result = json.loads(Path(path).read_text())
         best, rows = choose(result, cases, a.target, grid)
-        name = f"{Path(result['model']).name}/{result['batch_mode']}"
+        version = e.measurement_contract_label(result)
+        name = f"{Path(result['model']).name}/{result['batch_mode']} [{version}]"
         payload['candidates'][name] = {'result': path,
+                                       'request_version': result.get('request_version'),
+                                       'measurement_contract': e.measurement_contract(result),
                                        'chosen': {k: best[k] for k in
                                                   ('threshold', 'saved_fraction', 'dropped_blocks')},
                                        'curve': rows}

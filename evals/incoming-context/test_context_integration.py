@@ -411,6 +411,84 @@ class EntireResultStateTests(unittest.TestCase):
             self.assertEqual(len(state_of(payload)), len(plan))
             self.assertEqual(len({b['index'] for b in state_of(payload)}), len(plan))
 
+    def test_output_missing_from_state_abstains_and_survives_rethreshold(self):
+        body = grouped_body()
+        outputs = [
+            (json.dumps({'output': body, 'exit_code': 1}), 'json_metadata_not_in_state', {}),
+            ('{"output":"hidden","output":' + json.dumps(body) + '}',
+             'json_metadata_not_in_state', {}),
+            ([{'type': 'input_text', 'text': json.dumps({'output': body, 'stderr': 'details'})}],
+             'json_metadata_not_in_state', {}),
+            ([{'type': 'input_text', 'text': body},
+              {'type': 'input_image', 'image_url': 'data:image/png;base64,opaque'}],
+             'nontext_output_not_in_state', {}),
+            ([{'type': 'text', 'text': body, 'annotations': {'required': True}}],
+             'text_metadata_not_in_state', {}),
+            (body, 'result_status_not_in_state', {'status': 'failed'}),
+            (body, 'envelope_metadata_not_in_state', {'exit_code': 1}),
+        ]
+        for output, reason, envelope in outputs:
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
+                case = evidence_session(tmp, output=output)
+                if envelope:
+                    path = Path(case['source'])
+                    rows = [json.loads(line) for line in path.read_text().splitlines()]
+                    rows[case['line'] - 1]['payload'].update(envelope)
+                    path.write_text('\n'.join(json.dumps(row) for row in rows) + '\n')
+                with patch.object(e, 'score_request', side_effect=zero) as scorer:
+                    result = e.score_case(args(), case)
+                    scorer.assert_not_called()
+                self.assertEqual(result['requests'], 0)
+                self.assertEqual(result['scored_blocks'], 0)
+                self.assertTrue(result['context_ok'])
+                self.assertFalse(result['context_abstained'])
+                self.assertTrue(result['output_abstained'])
+                self.assertEqual(result['output_abstain_reason'], reason)
+                self.assertTrue(result['receipt']['model_visible']['output_abstained'])
+                self.assertEqual(result['after_sha256'], result['before_sha256'])
+                self.assertTrue(all(d['effective'] == 'keep' and d['hard_keep']
+                                    and d['hard_reason'] == 'unsupported output'
+                                    for d in result['decisions']))
+                report = e.build_report(args(), [result], {})
+                self.assertEqual(report['totals']['output_abstained_cases'], 1)
+                for threshold in (0.0, 0.99, 1.0):
+                    derived = e.derive_case(result, threshold, output, case=case)
+                    self.assertEqual(derived['selected'], output)
+                    self.assertTrue(derived['output_abstained'])
+                    updated = self.rerender_into(tmp, report, case, threshold)
+                    self.assertFalse(updated['cases'][0]['context_abstained'])
+                    self.assertTrue(updated['cases'][0]['output_abstained'])
+                    self.assertEqual(updated['totals']['dropped_blocks'], 0)
+
+                # A frozen old score is re-evaluated against the source shape, never used
+                # to authorize drops merely because that evaluator missed the metadata.
+                legacy = json.loads(json.dumps(result))
+                legacy['context_version'] = 'causal-context-v1'
+                legacy['policy_version'] = 'selection-evidence-v1'
+                legacy.pop('output_abstained')
+                legacy.pop('output_abstain_reason')
+                for decision in legacy['decisions']:
+                    decision['p_keep'] = 0.0
+                    decision['hard_keep'] = False
+                    decision['hard_reason'] = None
+                derived = e.derive_case(legacy, 0.99, output, case=case)
+                self.assertEqual(derived['selected'], output)
+                self.assertTrue(derived['output_abstained'])
+
+    def test_text_only_outputs_still_reach_the_scorer(self):
+        body = grouped_body()
+        for output in (body, json.dumps({'output': body}),
+                       [{'type': 'input_text', 'text': body}]):
+            with self.subTest(kind=type(output).__name__), \
+                    tempfile.TemporaryDirectory() as tmp:
+                case = evidence_session(tmp, output=output)
+                with patch.object(e, 'score_request', zero):
+                    result = e.score_case(args(), case)
+                self.assertFalse(result['output_abstained'])
+                self.assertGreater(result['requests'], 0)
+                self.assertGreater(result['scored_blocks'], 0)
+                self.assertLess(result['after'], result['before'])
+
     def test_one_fixed_prompt_answers_both_batching_modes(self):
         def prompts(mode):
             captured = {}
