@@ -647,6 +647,9 @@ def http_score(a, payload):
         with urllib.request.urlopen(req, timeout=a.timeout) as response:
             received = json.load(response)
         probs = probabilities(received)
+        missing = set(payload['questions']) - set(probs)
+        if missing:
+            raise ValueError('missing answers: ' + ','.join(sorted(missing)))
     except Failure as f:
         f.elapsed_ms = (time.perf_counter() - start) * 1000
         raise

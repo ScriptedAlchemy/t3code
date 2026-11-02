@@ -65,13 +65,16 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual(ctx.exception.kind, 'oversize')
 
     def test_invalid_probability_rejected_and_timed(self):
-        fake = {'answers': {'keep': {'noul': 2}}}
-        with patch.object(e.urllib.request, 'urlopen') as network:
-            network.return_value.__enter__.return_value.read.return_value = json.dumps(fake).encode()
-            with self.assertRaises(e.Failure) as ctx:
-                e.http_score(args(), {'state': 'goal', 'questions': {}})
-        self.assertEqual(ctx.exception.kind, 'invalid_response')
-        self.assertGreater(ctx.exception.elapsed_ms, 0)
+        for fake in [{'answers': {'keep': {'noul': 2}}},
+                     {'answers': {}},
+                     {'answers': {'other': {'noul': 0.9}}}]:
+            with self.subTest(response=fake), \
+                    patch.object(e.urllib.request, 'urlopen') as network:
+                network.return_value.__enter__.return_value.read.return_value = json.dumps(fake).encode()
+                with self.assertRaises(e.Failure) as ctx:
+                    e.http_score(args(), {'state': 'goal', 'questions': {'keep': {}}})
+                self.assertEqual(ctx.exception.kind, 'invalid_response')
+                self.assertGreater(ctx.exception.elapsed_ms, 0)
 
     def test_timeout_keeps_real_elapsed_time(self):
         def slow(*a, **k):
@@ -146,13 +149,16 @@ class EvaluatorTests(unittest.TestCase):
                             for d in result['decisions']))
 
     def test_deadline_after_last_group_still_abstains(self):
+        clock = [0.0]
+
         def slow(a, payload):
-            time.sleep(0.03)
-            return {qid: 0.0 for qid in payload['questions']}, 30.0, {}
+            clock[0] += 0.05
+            return {qid: 0.0 for qid in payload['questions']}, 50.0, {}
 
         with tempfile.TemporaryDirectory() as tmp:
             case = write_case(tmp, BODY)
-            with patch.object(e, 'score_request', slow):
+            with patch.object(e, 'score_request', slow), \
+                    patch.object(e.time, 'perf_counter', side_effect=lambda: clock[0]):
                 result = e.score_case(args(batch='shared-state', batch_questions=64,
                                            batch_tokens=20000, deadline_ms=40), case)
         self.assertTrue(result['deadline_abstain'])
