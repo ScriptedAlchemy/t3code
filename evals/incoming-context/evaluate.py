@@ -19,6 +19,8 @@ from pathlib import Path, PurePosixPath
 
 import tiktoken
 
+from json_bounds import exceeds_depth
+
 import causal_context as causal
 from incoming import apply_incoming, replace_leaf, text_leaves
 
@@ -30,7 +32,7 @@ POLICY_VERSION = 'selection-evidence-v4'
 # decisions. Re-thresholding may only reuse a result that carries this identity; a result
 # recorded under another policy is stale and keeps everything, so old scores can never
 # silently inherit protection rules they were not measured with.
-PROTECTION_VERSION = 'json-span-v3+evidence+source-v2'
+PROTECTION_VERSION = 'json-span-v4-depth64+evidence+source-v2'
 # Request identity. Any frozen result without exactly REQUEST_VERSION in its `request_version`
 # field was measured against a different state, prompt or batching contract and must not be
 # compared with, or reported as, this revision.
@@ -182,7 +184,10 @@ def _read_source(path, signature):
 
     for line_no, line in enumerate(raw_lines, 1):
         try:
-            record = json.loads(line.decode('utf-8'), object_pairs_hook=unique_fields)
+            text = line.decode('utf-8')
+            if exceeds_depth(text, len(text) - len(text.lstrip())):
+                raise ValueError('Source record exceeds JSON depth limit')
+            record = json.loads(text, object_pairs_hook=unique_fields)
         except (ValueError, RecursionError):
             record = None
         row = dict(record) if isinstance(record, dict) else {}
@@ -410,8 +415,10 @@ def _symbol_terms(text, terms, seen, source, line):
 def _param_pairs(body):
     pairs = []
     try:
+        if isinstance(body, str) and exceeds_depth(body, len(body) - len(body.lstrip())):
+            return pairs
         value = json.loads(body)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         value = None
 
     def walk(node, depth=0):
@@ -595,6 +602,8 @@ def _json_scan(raw):
             after_value = after_value and raw[i].isspace()
             i += 1
             continue
+        if exceeds_depth(raw, i):
+            return [], [0]
         try:
             value, end = _DECODER.raw_decode(raw, i)
         except RecursionError:
@@ -732,6 +741,8 @@ def _source_object(body):
             out[key] = value
         return out
     try:
+        if isinstance(body, str) and exceeds_depth(body, len(body) - len(body.lstrip())):
+            return None
         value = json.loads(body, object_pairs_hook=unique)
     except (TypeError, ValueError, RecursionError):
         return None
@@ -1073,6 +1084,8 @@ def unsupported_output_reason(value, incoming=None):
             return obj
 
         try:
+            if exceeds_depth(value, len(value) - len(value.lstrip())):
+                return 'json_nesting_not_in_state'
             obj = json.loads(value, object_pairs_hook=pairs)
         except RecursionError:
             return 'json_nesting_not_in_state'
@@ -1271,6 +1284,7 @@ def http_score(a, payload):
         remaining = _remaining_deadline(a)
         timeout = a.timeout if remaining is None else min(a.timeout, remaining)
         request_sent = True
+        _record_dispatch(a)
         with _local_http_open(req, timeout=timeout) as response:
             # The HTTP server exposes truncation in a header, not in the Jev response body.
             # Scores from a shortened state cannot authorize removing any source content.
@@ -1289,13 +1303,108 @@ def http_score(a, payload):
     return probs, elapsed, received.get('usage', {})
 
 
-_MODEL = None
-_MODEL_RECEIPT = {}
-_MODEL_CONFIG = None
+_LOADED = None
+EXECUTION_VERSION = 'execution-v1'
+
+
+def execution_args(a):
+    local = copy.copy(a)
+    local._execution = {
+        'version': EXECUTION_VERSION, 'protection_version': PROTECTION_VERSION,
+        'machine': machine(),
+        'requested': {key: getattr(a, key, None) for key in (
+            'backend', 'model', 'model_path', 'max_tokens', 'timeout', 'deadline_ms',
+            'prefix_cache_gb', 'max_input_tokens', 'noul_floor', 'warmup',
+            'request_budget', 'request_cap', 'illustrative', 'threshold',
+            'batch_tokens', 'batch_questions')},
+        'runtime': None, 'dispatches': 0, 'unattested_dispatches': 0,
+        'failed_requests': 0, 'mixed_runtime': False,
+    }
+    local._loaded_evidence = None
+    return local
+
+
+def execution_receipt(a):
+    receipt = copy.deepcopy(getattr(a, '_execution', None))
+    if receipt is None:
+        return None
+    receipt['status'] = ('not-executed' if not receipt['dispatches'] else
+                         'unattested' if receipt['unattested_dispatches'] or
+                         receipt['failed_requests'] or receipt['mixed_runtime'] else 'attested')
+    return receipt
+
+
+def _record_dispatch(a, runtime=None):
+    evidence = getattr(a, '_execution', None)
+    if evidence is None:
+        return
+    evidence['dispatches'] += 1
+    if runtime is None:
+        evidence['unattested_dispatches'] += 1
+    elif evidence['runtime'] is None:
+        evidence['runtime'] = copy.deepcopy(runtime)
+    elif evidence['runtime'] != runtime:
+        evidence['mixed_runtime'] = True
+
+
+def compare_execution(runs):
+    reasons, controls, machines = [], [], []
+    for run in runs:
+        receipt = run.get('execution')
+        if not isinstance(receipt, dict) or receipt.get('version') != EXECUTION_VERSION:
+            reasons.append('missing or incompatible execution receipt')
+            continue
+        requested, runtime = receipt.get('requested'), receipt.get('runtime')
+        if not isinstance(requested, dict):
+            reasons.append('invalid requested controls')
+            continue
+        if any(requested.get(k) != run.get(k) for k in ('model', 'model_path', 'backend')):
+            raise ValueError('execution requested identity differs from run')
+        if runtime is not None:
+            if not isinstance(runtime, dict) or runtime.get('source') != (
+                    requested.get('model_path') or requested.get('model')):
+                raise ValueError('execution runtime source differs from requested source')
+        if receipt.get('protection_version') != PROTECTION_VERSION:
+            reasons.append('missing or incompatible protection policy')
+        if receipt.get('mixed_runtime'):
+            raise ValueError('multiple runtime configurations in one run')
+        if (receipt.get('status') != 'attested' or not runtime or
+                not isinstance(receipt.get('dispatches'), int) or receipt['dispatches'] <= 0 or
+                receipt.get('unattested_dispatches') != 0 or receipt.get('failed_requests') != 0):
+            reasons.append('execution is absent, failed or unattested')
+            continue
+        if requested.get('backend') != 'mlx' or runtime.get('backend') != 'mlx-decision':
+            reasons.append('unattested transport')
+        if receipt['dispatches'] != run.get('requests'):
+            reasons.append('dispatch count differs from recorded requests')
+        required = ('runtime_version', 'mlx_version', 'info', 'load_options_requested',
+                    'load_options_applied', 'load_options_refused')
+        if (not isinstance(receipt.get('machine'), dict) or not run.get('tokenizer')
+                or any(k not in requested for k in ('max_tokens', 'timeout', 'deadline_ms',
+                    'warmup', 'request_budget', 'request_cap', 'illustrative'))):
+            reasons.append('execution controls are incomplete')
+        if any(k not in runtime or runtime[k] in (None, 'unknown') for k in required):
+            reasons.append('runtime controls are incomplete')
+        control = {'requested.' + k: v for k, v in requested.items()
+                   if k not in ('model', 'model_path')}
+        control.update({'runtime.' + k: runtime.get(k) for k in required if k != 'info'})
+        control.update({'protection_version': receipt.get('protection_version'),
+                        'tokenizer': run.get('tokenizer')})
+        controls.append(control)
+        machines.append(receipt.get('machine'))
+    differences = sorted({key for control in controls[1:] for key in
+                          set(control) | set(controls[0])
+                          if control.get(key) != controls[0].get(key)})
+    return {'status': 'unverified' if reasons else
+            'different-controls' if differences else 'comparable',
+            'reasons': sorted(set(reasons)), 'differences': differences,
+            'timing_comparable': not reasons and not differences and
+                                 all(m == machines[0] for m in machines)}
 
 
 def load_mlx(a):
-    global _MODEL, _MODEL_RECEIPT, _MODEL_CONFIG
+    global _LOADED
+    a._loaded_evidence = None
     source_arg = a.model_path or a.model
     wanted = {}
     if a.prefix_cache_gb is not None:
@@ -1305,8 +1414,9 @@ def load_mlx(a):
     if a.noul_floor is not None:
         wanted['noul_floor'] = a.noul_floor
     configuration = (source_arg, tuple(sorted(wanted.items())))
-    if _MODEL is not None and _MODEL_CONFIG == configuration:
-        return _MODEL
+    if _LOADED is not None and _LOADED[1] == configuration:
+        a._loaded_evidence = _LOADED
+        return _LOADED[0]
     import importlib.metadata
     import mlx_decision
     opts = dict(wanted)
@@ -1324,17 +1434,17 @@ def load_mlx(a):
                 refused.append(key)
     receipt = {'backend': 'mlx-decision', 'source': source_arg,
                'runtime_version': importlib.metadata.version('mlx-decision'),
-               'info': model.info(), 'load_options_applied': opts,
+               'info': model.info(), 'load_options_requested': wanted,
+               'mlx_version': 'unknown', 'load_options_applied': opts,
                'load_options_refused': sorted(set(refused))}
     try:
         import mlx.core as mx
         receipt['mlx_version'] = getattr(mx, '__version__', 'unknown')
     except Exception:
         pass
-    _MODEL = model
-    _MODEL_CONFIG = configuration
-    _MODEL_RECEIPT = receipt
-    return _MODEL
+    _LOADED = (model, configuration, copy.deepcopy(receipt))
+    a._loaded_evidence = _LOADED
+    return model
 
 
 def warmup(a):
@@ -1358,9 +1468,12 @@ def mlx_score(a, payload):
     try:
         oversize(a, payload)
         _remaining_deadline(a)
+        a._loaded_evidence = None
         model = load_mlx(a)
+        loaded = a._loaded_evidence
         _remaining_deadline(a)
         request_sent = True
+        _record_dispatch(a, loaded[2] if loaded is not None and loaded[0] is model else None)
         result = model.decide_request(payload)
         elapsed = (time.perf_counter() - start) * 1000
         if getattr(result, 'truncated', False):
@@ -1383,7 +1496,12 @@ def mlx_score(a, payload):
 
 
 def score_request(a, payload):
-    return http_score(a, payload) if a.backend == 'http' else mlx_score(a, payload)
+    try:
+        return http_score(a, payload) if a.backend == 'http' else mlx_score(a, payload)
+    except Exception:
+        if getattr(a, '_execution', None) is not None:
+            a._execution['failed_requests'] += 1
+        raise
 
 
 def prefix_bytes(c, keep=400):
@@ -1924,8 +2042,10 @@ def build_report(a, results, receipts):
 
 def receipts_for(a):
     expected = request_version_for(a)
-    receipt = {'machine': machine(),
-               'runtime': _MODEL_RECEIPT if a.backend == 'mlx' and a.policy == 'decision' else None,
+    execution = execution_receipt(a)
+    receipt = {'machine': execution['machine'] if execution else machine(),
+               'runtime': (execution or {}).get('runtime'),
+               'execution': execution,
                'tokenizer': 'o200k_base comparison proxy; not provider billing tokens',
                'chunker': CHUNKER,
                # Identity of the exact request contract, so a frozen result cannot pass as this one.
@@ -1946,21 +2066,23 @@ def receipts_for(a):
 
 
 def run(a):
+    a = execution_args(a)
     cases = json.loads(Path(a.cases).read_text())['cases']
     results = []
     report = {'policy': a.policy, 'threshold': a.threshold, 'quality_status': 'no cases'}
     receipts = receipts_for(a)
-    if a.policy == 'decision' and a.backend == 'mlx':
-        load_mlx(a)
-        receipts = receipts_for(a)
-        if a.warmup:
-            receipts['warmup_ms'] = round(warmup(a), 1)
+    warmup_ms = None
+    if a.policy == 'decision' and a.backend == 'mlx' and a.warmup:
+        warmup_ms = round(warmup(a), 1)
     for c in cases:
         if a.split != 'all' and c['split'] != a.split:
             continue
         if len(results) >= a.limit:
             break
         results.append(score_case(a, c))
+        receipts = receipts_for(a)
+        if warmup_ms is not None:
+            receipts['warmup_ms'] = warmup_ms
         report = build_report(a, results, receipts)
         # Persist completed observations so a local server interruption does not lose measurements.
         Path(a.out).write_text(json.dumps(report, indent=2))

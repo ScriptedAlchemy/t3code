@@ -4,6 +4,8 @@ import hashlib
 import json
 import re
 
+from json_bounds import exceeds_depth
+
 
 _JSON_WS = re.compile(r'[ \t\r\n]*')
 
@@ -61,6 +63,9 @@ def apply_incoming(prefix: bytes, incoming: dict, replacement_output):
 def text_leaves(value):
     """Locate strings, including output inside an incoming JSON tool envelope."""
     if isinstance(value, str):
+        start = len(value) - len(value.lstrip(' \t\r\n'))
+        if start < len(value) and value[start] in '[{' and exceeds_depth(value, start):
+            return [([], value)]
         try:
             obj = json.loads(value)
         except (ValueError, TypeError, RecursionError):
@@ -87,6 +92,9 @@ def replace_leaf(value, path, replacement):
     selected = copy.deepcopy(value)
     key, *rest = path
     if key == 'json':
+        start = len(value) - len(value.lstrip(' \t\r\n'))
+        if start < len(value) and value[start] in '[{' and exceeds_depth(value, start):
+            raise ValueError('JSON nesting exceeds limit')
         obj = json.loads(value)
         if rest != ['output'] or not isinstance(obj, dict) or not isinstance(obj.get('output'), str):
             raise ValueError('Only the text output of a JSON tool envelope may be changed')

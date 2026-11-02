@@ -1226,12 +1226,16 @@ def args_for_edits(manifest, model, model_path, max_tokens=None, timeout=60.0):
 
 def run_edits(manifest, cases_edits, a, out, scorer=ev.score_request, frozen_sha256=None):
     verify_edits(manifest, cases_edits)
+    a = ev.execution_args(a)
+    a._execution['requested']['warmup'] = False
+    a._execution['requested']['request_cap'] = manifest['request_cap']
     scorer = bounded_scorer(manifest, a, scorer)
     started = time.monotonic()
     rows = [evaluate_edits(case, edits, a, scorer=scorer) for case, edits in cases_edits]
     sent = [row['request'] for row in rows if row.get('request')]
     artifact = {
         'version': EDIT_VERSION, 'frozen_sha256': frozen_sha256,
+        'execution': ev.execution_receipt(a),
         'annotation_version': manifest['annotation_version'],
         'annotation_sha256': manifest['annotation_sha256'],
         'model': a.model, 'model_path': a.model_path, 'backend': a.backend,
@@ -1336,12 +1340,14 @@ def compare_edits(runs, out_json):
         'annotation_version': runs[0]['annotation_version'],
         'annotation_sha256': runs[0]['annotation_sha256'],
         'requests': requests, 'request_cap': cap,
+        'execution_comparison': ev.compare_execution(runs),
         'illustrative_threshold': runs[0]['illustrative_threshold'],
         'models': [{'model': run['model'], 'requests': run['requests'],
                     'request_tokens': run['request_tokens'],
                     'input_tokens': run['input_tokens'],
                     'output_tokens': run['output_tokens'],
-                    'elapsed_ms': run['elapsed_ms']} for run in runs],
+                    'elapsed_ms': run['elapsed_ms'],
+                    'execution': run.get('execution')} for run in runs],
         'separation': values,
         'cases': [{'id': case['id'], 'model': run['model'],
                    'kind': case.get('kind'),

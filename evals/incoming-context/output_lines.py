@@ -50,6 +50,8 @@ something this module asserts.
 """
 from __future__ import annotations
 
+from json_bounds import exceeds_depth
+
 import hashlib
 import json
 import math
@@ -271,6 +273,8 @@ def decode(raw, producer):
     start = _first_non_space(raw)
     if start >= len(raw) or raw[start] != '{':
         return Abstained('not-json', raw)
+    if exceeds_depth(raw, start):
+        return Abstained('malformed-json', raw)
     try:
         obj, end = _DECODER.raw_decode(raw, start)
     except _DuplicateKey:

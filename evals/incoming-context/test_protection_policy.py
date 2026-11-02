@@ -58,6 +58,24 @@ def long_json(lines=200):
     return '{\n' + rows + '  "done": true\n}\n'
 
 
+class DecodeDepthPolicyTest(unittest.TestCase):
+    def test_remaining_consumers_share_depth_boundary(self):
+        import causal_context
+        for depth in (64, 65, 10000):
+            body = '{"value":' + '[' * (depth - 1) + '0' + ']' * (depth - 1) + '}'
+            with self.subTest(depth=depth):
+                self.assertEqual(e._source_object(body) is not None, depth == 64)
+                self.assertEqual(causal_context._decoded_args(body) is not None, depth == 64)
+                self.assertEqual(e.unsupported_output_reason(body),
+                                 None if depth == 64 else 'json_nesting_not_in_state')
+                e._param_pairs(body)
+                with tempfile.TemporaryDirectory() as tmp:
+                    source = Path(tmp) / 'source.jsonl'
+                    source.write_text(body + '\n')
+                    row = e._source_snapshot(str(source))['rows'][0]
+                    self.assertEqual(bool(row.get('_invalid_source_record')), depth != 64)
+
+
 class StructureSpanTests(unittest.TestCase):
     def test_complete_json_after_malformed_start_is_still_protected(self):
         raw = 'header\ndata: {"bad":\nordinary text\n' + '{"good": [1, 2]}'
@@ -78,6 +96,20 @@ class StructureSpanTests(unittest.TestCase):
                         result = e.score_case(args(), case)
                     scorer.assert_not_called()
                     self.assertEqual(result['after_sha256'], result['before_sha256'])
+
+    def test_depth_boundary_and_quoted_brackets(self):
+        import incoming
+        for depth in (64, 65):
+            raw = 'header\n' + '[' * depth + json.dumps('["{') + ']' * depth
+            spans, unverified = e._json_scan(raw)
+            if depth == 64:
+                self.assertEqual(spans, [(7, len(raw))])
+            else:
+                self.assertEqual(unverified, [0])
+        raw = '{"output":"ok","metadata":' + '[' * 64 + '0' + ']' * 64 + '}'
+        self.assertEqual(incoming.text_leaves(raw), [([], raw)])
+        with self.assertRaises(ValueError):
+            incoming.replace_leaf(raw, ['json', 'output'], 'x')
 
     def test_long_trace_after_json_does_not_scan_growing_slices(self):
         class NoSlices(str):

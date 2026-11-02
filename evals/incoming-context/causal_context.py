@@ -100,6 +100,8 @@ import json
 import re
 from dataclasses import dataclass
 
+from json_bounds import exceeds_depth
+
 AVAILABLE = 'available'
 MISSING = 'missing'
 AMBIGUOUS = 'ambiguous'
@@ -294,8 +296,10 @@ def _call_body(payload):
 
 def _decoded_args(body):
     try:
+        if isinstance(body, str) and exceeds_depth(body, len(body) - len(body.lstrip())):
+            return None
         value = json.loads(body)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
     return value if isinstance(value, dict) else None
 

@@ -164,15 +164,14 @@ class EvaluatorTests(unittest.TestCase):
         base = dict(model_path=None, prefix_cache_gb=2.0, max_input_tokens=0, noul_floor=0.0)
         with patch.dict('sys.modules', {'mlx_decision': runtime}), \
                 patch('importlib.metadata.version', return_value='test'), \
-                patch.object(e, '_MODEL', None), patch.object(e, '_MODEL_RECEIPT', {}), \
-                patch.object(e, '_MODEL_CONFIG', None):
+                patch.object(e, '_LOADED', None):
             self.assertIs(e.load_mlx(args(model='a', **base)), models[0])
             self.assertIs(e.load_mlx(args(model='a', **base)), models[0])
             self.assertIs(e.load_mlx(args(model='b', **base)), models[1])
             self.assertIs(e.load_mlx(args(model='b', **{**base, 'max_input_tokens': 1000})), models[2])
             self.assertEqual(runtime.load.call_count, 3)
-            self.assertEqual(e._MODEL_RECEIPT['source'], 'b')
-            self.assertEqual(e._MODEL_RECEIPT['load_options_applied']['max_input_tokens'], 1000)
+            self.assertEqual(e._LOADED[2]['source'], 'b')
+            self.assertEqual(e._LOADED[2]['load_options_applied']['max_input_tokens'], 1000)
 
     def test_shared_state_maps_one_question_per_block(self):
         seen = []

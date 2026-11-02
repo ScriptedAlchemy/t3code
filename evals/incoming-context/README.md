@@ -17,7 +17,7 @@ Local model inference additionally needs the Apple Silicon `mlx-decision` runtim
 
 ## What the selector sees
 
-One scoring request is one contract. `REQUEST_VERSION` (`incoming-state-v2:keep-prompt-v2`) names the state and prompt. Comparisons also match the causal-context, selection-policy and protection versions. The current eligibility rules are `causal-context-v4`, `selection-evidence-v4` and `json-span-v3+evidence+source-v2`; results with older or missing identities are not current measurements. `rerender`/`sweep` preserve the input identities and never stamp newer ones.
+One scoring request is one contract. `REQUEST_VERSION` (`incoming-state-v2:keep-prompt-v2`) names the state and prompt. Comparisons also match the causal-context, selection-policy and protection versions. The current eligibility rules are `causal-context-v4`, `selection-evidence-v4` and `json-span-v4-depth64+evidence+source-v2`; results with older or missing identities are not current measurements. `rerender`/`sweep` preserve the input identities and never stamp newer ones.
 
 - `state.recent_user_context` — every sourced human instruction strictly before the result, oldest first, verbatim. `causal_context` collects `message` records with role `user`, skips `assistant` and tool records entirely, and refuses harness envelopes, developer-role messages, opaque content and unknown wrappers instead of promoting them to instructions. Compacted history contributes only retained, client-authored user inputs that carry verified provenance; otherwise the case abstains for an ambiguous goal. Nothing is summarized. Generated handoff headers and historical replay wrappers make the goal ambiguous: omitted history cannot be replaced by generated text presented as a human instruction. Such cases retain their original output without scoring.
 - `state.tool_call` — the resolved originating call: name plus full command or arguments body, never truncated.
@@ -93,3 +93,27 @@ Frozen context, calls and request grouping are verified
 before dispatch; the request cap is enforced before each call. Local MLX calls
 have no enforced wall-clock timeout. Model-loading failures are recorded as
 rejections, not omitted from the result.
+
+JSON admission uses one iterative structural inspector with a maximum container depth of
+64 (the root counts as one). Strings and escaped delimiters do not add depth. Over-depth
+output stays whole; envelope adapters abstain, and source records and call arguments are
+unavailable rather than decoded. Defensive decoder catches remain. The protection version
+owns this eligibility change; causal extraction, source matching, prompt and frozen-input
+formats retain their existing versions. Changed leaf or request identities require refreezing.
+Historical measurements in RESULTS have not been rerun under this policy.
+
+Complete-edit runs and block receipts carry `execution-v1` evidence owned by that invocation.
+Real dispatch records the coupled loaded model/configuration/receipt, including on cache
+hits. A load alone does not attest execution. Injected scorers, patched loaders, preflight
+abstentions, failed loads and unattested HTTP responses cannot borrow a cached receipt.
+Receipts snapshot requested controls, actual applied/refused load options, runtime versions,
+machine/Python metadata and dispatch/failure counts. They are compact evidence, not a request
+journal; source paths and model labels are not weight-content hashes. Complete-edit runs do
+not warm up. Block runs report their requested warmup and measured warmup duration separately.
+
+`compare-edits` preserves each execution receipt and reports `comparable`,
+`different-controls`, or `unverified`, with differing controls or missing evidence stated.
+Missing/unknown runtime evidence, failures and historical receipts remain descriptive data,
+not controlled measurements. Inconsistent requested/loaded sources or multiple runtime
+configurations are rejected. Machine differences qualify timing comparisons. Model identities
+are expected comparison dimensions, while load controls and runtime versions must match.
