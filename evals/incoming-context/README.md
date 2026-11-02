@@ -78,3 +78,11 @@ This adapter is not connected to the decision engine or a live provider.
 Markers identify a source digest and line range; a production retrieval service
 and event locator are still required. Character counts are not token savings,
 and the evaluator must enforce token non-expansion before applying any selection.
+
+`line_experiment.py` provides offline `freeze`/`run`/`compare` and
+`freeze-edits`/`run-edits`/`compare-edits` commands for per-line and complete-edit
+experiments. Comparisons write JSON. Real transcript manifests and results stay
+outside the repository. Frozen context, calls and request grouping are verified
+before dispatch; the request cap is enforced before each call. Local MLX calls
+have no enforced wall-clock timeout. Model-loading failures are recorded as
+rejections, not omitted from the result.

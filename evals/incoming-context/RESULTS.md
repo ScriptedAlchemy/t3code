@@ -355,3 +355,21 @@ envelope, renders original line ranges, and reconstructs omissions from a
 verified original digest. It preserves surrounding envelope text and is not yet
 wired into selection. Unknown representations abstain. This establishes neither
 selection quality nor production interception/cache behavior. That checkpoint passed 154 local unittest tests after review corrections.
+
+### Line and complete-edit development experiments
+
+The private per-line experiment did not establish useful evidence-preserving
+savings. Complete-edit synthetic controls improved within-fixture ranking, but
+that conditional concordance was initially mislabeled as pooled AUC. The
+corrected JSON report distinguishes within-fixture concordance, pooled AUC,
+global score overlap and missing-answer coverage. No threshold was calibrated.
+
+These experiments use hand-labelled synthetic controls and two lifted real
+output envelopes. Descriptive candidate IDs could cue judgments, required-line
+labels do not prove task answerability, and lifted envelopes omit sibling
+outputs. A brace-cut control is structural stress rather than proof of a changed
+task conclusion. Exact serialized historical requests were not saved, so their
+hashes alone cannot independently establish full request visibility. The next
+quality gate requires complete recorded pending results, neutral candidate IDs,
+exact request/response receipts and task-grounded fact questions fixed before
+scoring. Nothing here enables live pruning or establishes billed savings.
