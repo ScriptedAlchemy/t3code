@@ -17,9 +17,9 @@ Local model inference additionally needs the Apple Silicon `mlx-decision` runtim
 
 ## What the selector sees
 
-One scoring request is one contract. `REQUEST_VERSION` (`incoming-state-v2:keep-prompt-v2`) names the state and prompt. Comparisons also match the causal-context, selection-policy and protection versions. The current eligibility rules are `causal-context-v3`, `selection-evidence-v4` and `json-span-v3+evidence+source-v2`; results with older or missing identities are not current measurements. `rerender`/`sweep` preserve the input identities and never stamp newer ones.
+One scoring request is one contract. `REQUEST_VERSION` (`incoming-state-v2:keep-prompt-v2`) names the state and prompt. Comparisons also match the causal-context, selection-policy and protection versions. The current eligibility rules are `causal-context-v4`, `selection-evidence-v4` and `json-span-v3+evidence+source-v2`; results with older or missing identities are not current measurements. `rerender`/`sweep` preserve the input identities and never stamp newer ones.
 
-- `state.recent_user_context` — every sourced human instruction strictly before the result, oldest first, verbatim. `causal_context` collects `message` records with role `user`, skips `assistant` and tool records entirely, and refuses harness envelopes, developer-role messages, opaque content and unknown wrappers instead of promoting them to instructions. Compacted history contributes only retained, client-authored user inputs that carry verified provenance; otherwise the case abstains for an ambiguous goal. Nothing is summarized.
+- `state.recent_user_context` — every sourced human instruction strictly before the result, oldest first, verbatim. `causal_context` collects `message` records with role `user`, skips `assistant` and tool records entirely, and refuses harness envelopes, developer-role messages, opaque content and unknown wrappers instead of promoting them to instructions. Compacted history contributes only retained, client-authored user inputs that carry verified provenance; otherwise the case abstains for an ambiguous goal. Nothing is summarized. Generated handoff headers and historical replay wrappers make the goal ambiguous: omitted history cannot be replaced by generated text presented as a human instruction. Such cases retain their original output without scoring.
 - `state.tool_call` — the resolved originating call: name plus full command or arguments body, never truncated.
 - `state.candidate_tool_output.blocks` — every block of the pending result, including protected boundary and diagnostic blocks, each with a positional `index`, its text-leaf `path` and its exact text. Question batching groups questions only; a block is never hidden from the state because another request asks about it.
 - `questions` — one `noul` question per **eligible** block, using one fixed prompt for both batching modes. A block is eligible only when it is neither a protected boundary/diagnostic block nor already retained by a protection rule. The prompt asks about one block at a time and states that no sibling is guaranteed to survive, so redundancy is never by itself a reason to drop; a later source review, a requested audit and negative evidence are named as reasons to keep.
@@ -82,7 +82,14 @@ and the evaluator must enforce token non-expansion before applying any selection
 `line_experiment.py` provides offline `freeze`/`run`/`compare` and
 `freeze-edits`/`run-edits`/`compare-edits` commands for per-line and complete-edit
 experiments. Comparisons write JSON. Real transcript manifests and results stay
-outside the repository. Frozen context, calls and request grouping are verified
+outside the repository. Complete-edit v2 preserves the full parent result, including headings and sibling
+outputs, while replacing only the selected envelope text. Frozen plans bind parent
+identity, leaf coordinates, required evidence, exact request serialization order,
+and candidate token counts. Model approval is recorded separately from effective
+acceptance; an expanding replacement is always rejected. Controls without verified
+required lines are refused.
+
+Frozen context, calls and request grouping are verified
 before dispatch; the request cap is enforced before each call. Local MLX calls
 have no enforced wall-clock timeout. Model-loading failures are recorded as
 rejections, not omitted from the result.

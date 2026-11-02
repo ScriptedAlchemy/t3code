@@ -24,7 +24,7 @@ from incoming import apply_incoming, replace_leaf, text_leaves
 
 ENC = tiktoken.get_encoding('o200k_base')
 CHUNKER = 'lines-400-v1'
-CONTEXT_VERSION = 'causal-context-v3'
+CONTEXT_VERSION = 'causal-context-v4'
 POLICY_VERSION = 'selection-evidence-v4'
 # Protection identity. A frozen result records the exact retention policy that produced its
 # decisions. Re-thresholding may only reuse a result that carries this identity; a result

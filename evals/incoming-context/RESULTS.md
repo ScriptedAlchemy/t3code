@@ -373,3 +373,24 @@ hashes alone cannot independently establish full request visibility. The next
 quality gate requires complete recorded pending results, neutral candidate IDs,
 exact request/response receipts and task-grounded fact questions fixed before
 scoring. Nothing here enables live pruning or establishes billed savings.
+
+### Complete-parent diagnostic, context v4
+
+One previously exposed real case was manually annotated before scoring with two
+neutral-ID complete edits: removal of adjacent unrelated source, and removal of
+required wire-format evidence. Both requests included the full parent, all siblings,
+and both independent replacement alternatives. The request was 3,258 o200k proxy
+tokens; the original parent was 669, and candidates were 544 and 611 tokens.
+
+At the preregistered illustrative 0.5 threshold, local d1-3B accepted the annotated
+safe edit (0.5511) and rejected the harmful control (0.3736). Local
+pplx-decider-flash-v1.2 accepted both (0.6824 and 0.5517), including the harmful
+control. Request time including model loading was 3.83s and 6.13s respectively.
+These are single diagnostic observations, not a calibrated threshold, held-out
+accuracy estimate, steady-state latency measurement, or production acceptance.
+
+Private annotations, exact request JSON, normalized response probabilities, runtime
+metadata and frozen manifests remain outside Git. No live provider or cache-hit
+behavior was measured. Other packet cases remain unscored: requested source has no
+established safe removal, and an incomplete generated handoff now abstains under
+context v4. Older context-v3 measurements remain historical.

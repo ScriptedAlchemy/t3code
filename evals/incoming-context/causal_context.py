@@ -36,6 +36,17 @@ such provenance, the pre-compaction goal is unknown and the goal abstains while
 is verified, a later user request is the selected instruction; an older
 compacted goal never replaces it.
 
+A provider-written context handoff is a generated replacement of earlier
+history, not a request. It starts ``Context handoff (<kind>):``, continues with
+``Provider context handoff.`` and reports how many items it kept and omitted;
+its ``[Historical user; user_message; ...]`` entries are replays. Neither shape
+is an instruction. Because the omitted items may still be in force and the
+document carries no client authorship, a handoff splits the stream like an
+unverified compaction: the goal abstains as ``generated_handoff`` while
+``goal.instructions`` still exposes the sourced text around it. The header is
+matched as a whole first line, so a truncated handoff is refused too; a message
+that quotes the header inside a sentence stays ordinary text.
+
 Spans
 -----
 Text read from exactly one content field carries that field's real path and
@@ -107,10 +118,16 @@ HARNESS_ALIASES = {f'functions.{name}': name for name in ('exec', 'wait', 'write
 
 # Repository instructions, not a user request.
 DOC_ENVELOPE_PREFIX = '# AGENTS.md instructions'
+# Provider-written handoff document: its whole first line is the header.
+HANDOFF_HEADER = re.compile(r'^Context handoff \([A-Za-z0-9_.:-]+\):$')
+# Replayed historical turn inside such a handoff, never this turn's request.
+HISTORICAL_REPLAY_PREFIX = '[Historical user;'
 # Known harness wrappers that never carry a human instruction.
 KNOWN_ENVELOPE_TAGS = frozenset({'environment_context', 'turn_aborted', 'subagent_notification'})
+# Generated provider text: neither the source role nor the shape settles intent.
+GENERATED_HANDOFF = 'generated_handoff'
 # Unrecognized wrapper: the source role does not settle intent, so abstain.
-AMBIGUOUS_REASONS = frozenset({'unknown_wrapper'})
+AMBIGUOUS_REASONS = frozenset({'unknown_wrapper', GENERATED_HANDOFF})
 
 _WRAPPER_RUNNING = re.compile(r'^Script running with cell ID ([0-9A-Za-z_.:-]+)$')
 _WRAPPER_FINISHED = re.compile(
@@ -378,6 +395,24 @@ def _single_element(text, name, opening):
     return text == opening or (text.endswith(closing) and text.count(closing) == 1)
 
 
+def _generated_handoff(stripped):
+    """Provider-written handoff document: its whole first line is the header."""
+    head = stripped.partition('\n')[0].strip()
+    return bool(HANDOFF_HEADER.match(head))
+
+
+def _historical_replay(stripped):
+    """The generated ``[Historical user; user_message; key=value; ...]`` wrapper."""
+    if not stripped.startswith(HISTORICAL_REPLAY_PREFIX):
+        return False
+    first = stripped.split('\n', 1)[0]
+    end = first.find(']')
+    if end < 0:
+        return False
+    fields = [field.strip() for field in first[len(HISTORICAL_REPLAY_PREFIX):end].split(';')]
+    return 'user_message' in fields and any('=' in field for field in fields)
+
+
 def _classify_message(role, text, opaque):
     """(provenance, refusal reason). Only readable ``user`` turns become 'human'."""
     if role == 'developer':
@@ -391,6 +426,8 @@ def _classify_message(role, text, opaque):
         return None, 'empty_instruction'
     if stripped.startswith(DOC_ENVELOPE_PREFIX):
         return None, 'harness_envelope'
+    if _generated_handoff(stripped) or _historical_replay(stripped):
+        return None, GENERATED_HANDOFF
     tag = _TAG.match(stripped)
     if tag:
         name = tag.group(1).lower()
@@ -453,9 +490,9 @@ def _compacted_instructions(record, index):
 
 
 def _scan(records):
-    """(instructions, refusal tally, first compaction index, last one verified)."""
+    """(instructions, refusal tally, first compaction, verified, first handoff)."""
     ordered, tally = [], {}
-    compacted_at, last_verified = None, False
+    compacted_at, last_verified, handoff_at = None, False, None
     for index, record in enumerate(records):
         if _is_compacted(record):
             if compacted_at is None:
@@ -472,6 +509,8 @@ def _scan(records):
         parts, opaque = _content_parts(payload.get('content'))
         text = _rendered(parts)
         provenance, reason = _classify_message(role, text, opaque)
+        if reason == GENERATED_HANDOFF and handoff_at is None:
+            handoff_at = index
         if reason:
             entry = tally.setdefault(reason, [0, index, _line(record)])
             entry[0] += 1
@@ -479,18 +518,23 @@ def _scan(records):
             continue
         text, span = _content_span(index, 'payload.content', parts, record)
         ordered.append(Instruction(provenance, text, span))
-    return ordered, tally, compacted_at, last_verified
+    return ordered, tally, compacted_at, last_verified, handoff_at
 
 
 def _goal(records):
     """(Goal, compacted) from the records in scope."""
-    ordered, tally, compacted_at, verified = _scan(records)
+    ordered, tally, compacted_at, verified, handoff_at = _scan(records)
     compacted = compacted_at is not None
 
     if compacted and not verified:
         # The pre-compaction goal is unknown. Later requests stay visible but
         # are never promoted to stand in for it.
         return Goal(AMBIGUOUS, None, 'compacted_history', tuple(ordered)), True
+    if handoff_at is not None:
+        # A generated handoff replaced history and admits omitting items, so the
+        # pre-handoff goal is unknown. Sourced text stays visible; nothing stands
+        # in for the goal and no omitted instruction is invented.
+        return Goal(AMBIGUOUS, None, GENERATED_HANDOFF, tuple(ordered)), compacted
     if tally.get('unknown_wrapper'):
         return Goal(AMBIGUOUS, None, 'unknown_wrapper', tuple(ordered)), compacted
     if tally.get('opaque_instruction'):

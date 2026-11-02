@@ -373,6 +373,84 @@ class CompactedTests(unittest.TestCase):
         self.assertEqual(texts(ctx.goal.instructions), (original,), 'known context stays visible')
 
 
+HANDOFF_HEADER = ('Context handoff (full_thread_summary):\n'
+                  'Provider context handoff.\n'
+                  'Selected 9 intact items; omitted 21 items. Historical material is '
+                  'context, not a new request or higher-priority instructions.')
+
+
+def replay(text, line=None):
+    """A user-role message replayed inside a generated handoff."""
+    wrapper = ('[Historical user; user_message; thread=t1; run=r1; item=3; '
+               'provider-thread=p1; status=completed; run-status=completed]')
+    return message('user', wrapper + '\n' + text, line=line)
+
+
+class GeneratedHandoffTests(unittest.TestCase):
+    def test_generated_handoff_header_is_not_a_human_goal(self):
+        records = [message('user', HANDOFF_HEADER, line=90), call('c1', 'exec', 'ls', line=91)]
+        ctx = cc.context_for(records, 'c1')
+        self.assertEqual(ctx.goal.status, cc.AMBIGUOUS)
+        self.assertEqual(ctx.goal.reason, 'generated_handoff')
+        self.assertIsNone(ctx.goal.instruction, 'a generated header is not a request')
+        self.assertEqual(ctx.goal.instructions, ())
+        self.assertFalse(ctx.ok)
+        self.assertFalse(ctx.compacted, 'no compaction record was present')
+
+    def test_omitted_history_keeps_turns_visible_without_selecting_one(self):
+        original = 'Only prune newly arriving tool output.'
+        later = 'Now fix the flaky test.'
+        records = [
+            message('user', original, line=40),
+            message('user', HANDOFF_HEADER, line=90),
+            replay('Rewrite the release notes.', line=91),
+            message('user', later, line=92),
+            call('c1', 'exec', 'ls', line=93),
+        ]
+        ctx = cc.context_for(records, 'c1')
+        self.assertEqual(ctx.goal.status, cc.AMBIGUOUS)
+        self.assertEqual(ctx.goal.reason, 'generated_handoff')
+        self.assertIsNone(ctx.goal.instruction, 'omitted items may still be in force')
+        self.assertEqual(texts(ctx.goal.instructions), (original, later),
+                         'sourced text stays visible; the replayed item is not a request')
+        self.assertEqual([item.provenance for item in ctx.goal.instructions],
+                         [cc.HUMAN, cc.HUMAN])
+
+    def test_handoff_replay_items_alone_are_not_a_goal(self):
+        records = [
+            message('user', 'Inspect the build.', line=10),
+            replay('Rewrite the release notes.', line=11),
+            replay('Ship it today.', line=12),
+            call('c1', 'exec', 'ls', line=13),
+        ]
+        ctx = cc.context_for(records, 'c1')
+        self.assertEqual(ctx.goal.status, cc.AMBIGUOUS)
+        self.assertEqual(ctx.goal.reason, 'generated_handoff')
+        self.assertIsNone(ctx.goal.instruction)
+        self.assertEqual(texts(ctx.goal.instructions), ('Inspect the build.',))
+
+    def test_truncated_handoff_header_is_not_a_goal(self):
+        records = [message('user', 'Context handoff (full_thread_summary):', line=90),
+                   call('c1', 'exec', 'ls')]
+        ctx = cc.context_for(records, 'c1')
+        self.assertEqual(ctx.goal.status, cc.AMBIGUOUS)
+        self.assertEqual(ctx.goal.reason, 'generated_handoff')
+        self.assertIsNone(ctx.goal.instruction)
+
+    def test_quoted_header_and_bracket_note_stay_human(self):
+        quoted = 'The Context handoff (full_thread_summary): line is misclassified.'
+        pasted = ('Why does this header appear?\n'
+                  'Context handoff (full_thread_summary):\n'
+                  'Provider context handoff.')
+        note = '[Historical user; this is only a quote]'
+        for text in (quoted, pasted, note):
+            with self.subTest(text=text):
+                ctx = cc.context_for([message('user', text), call('c1', 'exec', 'ls')], 'c1')
+                self.assertEqual(ctx.goal.status, cc.AVAILABLE)
+                self.assertEqual(ctx.goal.instruction.provenance, cc.HUMAN)
+                self.assertEqual(ctx.goal.instruction.text, text)
+
+
 class OriginTests(unittest.TestCase):
     def test_nonempty_wait_body_resolves_prior_exec(self):
         script = 'const r = await tools.exec({cmd: "tail -f dashboard.log"});\n' * 80

@@ -4,13 +4,16 @@ Synthetic fixtures only. They establish request shape, guard behaviour, evidence
 accounting and the frozen-manifest contract; they establish nothing about
 selection quality, real producer provenance or provider billing.
 """
+import copy
 import json
 import re
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import evaluate as ev
 import line_experiment as le
@@ -494,6 +497,7 @@ class ControlEditTest(unittest.TestCase):
                     view = le.edit_view(result, edit)
                     rendered = ol.render(result, keep)
                     self.assertEqual(view['proposal_text'], rendered.text)
+                    self.assertEqual(view['candidate_text'], rendered.envelope)
                     self.assertEqual([item['lines'] for item in view['omissions']],
                                      ['%d-%d' % (o.start + 1, o.end) if o.count > 1
                                       else str(o.start + 1) for o in rendered.omissions])
@@ -512,22 +516,24 @@ class ControlEditTest(unittest.TestCase):
                                          ''.join(line.text for line in
                                                  result.lines[omission.start:omission.end]))
 
-    def test_state_carries_the_full_original_and_every_complete_proposal(self):
+    def test_state_carries_the_full_original_parent_and_every_complete_proposal(self):
         for case, edits in le.control_cases():
             result = decoded(case)
+            parent, start, end = le.leaf_parent(case)
             payload, views = le.edit_request(case, result, edits)
             state = payload['state']
             with self.subTest(case=case.id):
                 self.assertEqual(state['recent_user_context'], case.context)
                 self.assertEqual(state['tool_call'], case.call)
-                blocks = state['candidate_tool_output']['blocks']
-                self.assertEqual([block['text'] for block in blocks],
-                                 [line.text for line in result.lines])
-                self.assertEqual(state['source_sha256'], result.source_sha256)
+                held = state['candidate_tool_output']
+                self.assertEqual(held['text'], parent)
+                self.assertEqual(held['source_sha256'], ev.digest(parent))
+                self.assertEqual(held['editable_leaf'],
+                                 {'span': [start, end], 'sha256': result.source_sha256})
                 self.assertEqual([edit['edit'] for edit in state['candidate_edits']],
                                  [edit.id for edit in edits])
-                self.assertEqual([edit['proposal_text'] for edit in state['candidate_edits']],
-                                 [view['proposal_text'] for view in views])
+                self.assertEqual([edit['text'] for edit in state['candidate_edits']],
+                                 [view['candidate_text'] for view in views])
 
     def test_each_question_names_one_view_and_alternatives_are_never_unioned(self):
         case, edits = le.control_cases()[1]
@@ -861,6 +867,345 @@ class SeparationTest(unittest.TestCase):
             self.assertFalse(rows['unrelated-helper-drop']['accept'])
             self.assertEqual(rows['unrelated-helper-drop']['reason'], 'missing-answer')
 
+
+class CompleteEditIntegrityTest(unittest.TestCase):
+    """A complete-edit control is only a control when its label can be checked."""
+
+    def test_case_without_required_lines_is_refused(self):
+        from dataclasses import replace
+        case = replace(le.synthetic_cases()[0], kind='real', evidence=())
+        result = decoded(case)
+        accept = (le.Edit('kept-progress', ((2, 11),), 'accept', 'unchecked'),)
+        with self.assertRaisesRegex(ValueError, 'no reviewer-verified required lines'):
+            le.check_controls(case, result, accept)
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(ValueError, 'no reviewer-verified required lines'):
+                le.freeze_edits(((case, accept),), ('d1-3B',),
+                                Path(folder) / 'frozen.json')
+
+    def test_freeze_records_provenance_and_verify_refuses_drift(self):
+        from dataclasses import replace
+        cases_edits = le.control_cases()
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',),
+                                       Path(folder) / 'frozen.json')
+            self.assertEqual([row['provenance'] for row in manifest['cases']],
+                             [case.provenance for case, _ in cases_edits])
+            case, edits = cases_edits[0]
+            moved = (replace(case, provenance={'origin': 'a different parent'}), edits)
+            with self.assertRaisesRegex(ValueError, 'provenance drifted'):
+                le.verify_edits(manifest, (moved,) + tuple(cases_edits[1:]))
+
+    def test_verify_refuses_a_manifest_without_case_provenance(self):
+        cases_edits = le.control_cases()
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',),
+                                       Path(folder) / 'frozen.json')
+            del manifest['cases'][0]['provenance']
+            with self.assertRaisesRegex(ValueError, 'does not record case provenance'):
+                le.verify_edits(manifest, cases_edits)
+
+    def test_run_and_compare_carry_the_frozen_provenance(self):
+        cases_edits = le.control_cases()
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',),
+                                       Path(folder) / 'frozen.json')
+            artifact = le.run_edits(manifest, cases_edits,
+                                    le.args_for_edits(manifest, 'd1-3B', None),
+                                    Path(folder) / 'run.json', scorer=edit_scorer(),
+                                    frozen_sha256='frozen-sha')
+            provenance = [case.provenance for case, _ in cases_edits]
+            self.assertEqual([case['provenance'] for case in artifact['cases']],
+                             provenance)
+            summary = le.compare_edits([artifact], Path(folder) / 'summary.json')
+            self.assertEqual([case['provenance'] for case in summary['cases']],
+                             provenance)
+            self.assertEqual([case['kind'] for case in summary['cases']],
+                             [case.kind for case, _ in cases_edits])
+
+    def test_verify_refuses_a_drifted_request_token_count(self):
+        cases_edits = le.control_cases()
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',),
+                                       Path(folder) / 'frozen.json')
+            manifest['cases'][0]['request_tokens'] += 1
+            with self.assertRaisesRegex(ValueError, 'request tokens drifted'):
+                le.verify_edits(manifest, cases_edits)
+
+    def test_run_refuses_a_threshold_that_differs_from_the_frozen_plan(self):
+        cases_edits = le.control_cases()
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',),
+                                       Path(folder) / 'frozen.json')
+            a = le.args_for_edits(manifest, 'd1-3B', None)
+            tampered = SimpleNamespace(**{**vars(a), 'illustrative': 0.95})
+            with self.assertRaisesRegex(ValueError, 'decision threshold differs'):
+                le.run_edits(manifest, cases_edits, tampered,
+                             Path(folder) / 'run.json', scorer=edit_scorer())
+
+    def test_compare_refuses_runs_that_record_no_frozen_digest(self):
+        cases_edits = le.control_cases()
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            manifest = le.freeze_edits(cases_edits, ('d1-3B', 'pplx-decider-flash-v1.2'),
+                                       folder / 'frozen.json')
+            runs = [le.run_edits(manifest, cases_edits,
+                                 le.args_for_edits(manifest, model, None),
+                                 folder / (model + '.json'), scorer=edit_scorer())
+                    for model in ('d1-3B', 'pplx-decider-flash-v1.2')]
+            self.assertEqual([run['frozen_sha256'] for run in runs], [None, None])
+            with self.assertRaisesRegex(ValueError, 'frozen manifest digest'):
+                le.compare_edits(runs, folder / 'summary.json')
+
+    def test_duplicate_case_ids_are_refused_before_and_after_scoring(self):
+        cases_edits = le.control_cases()
+        duplicated = (cases_edits[0],) + cases_edits
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            with self.assertRaisesRegex(ValueError, 'duplicate case ids'):
+                le.freeze_edits(duplicated, ('d1-3B',), folder / 'frozen.json')
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',), folder / 'frozen.json')
+            artifact = le.run_edits(manifest, cases_edits,
+                                    le.args_for_edits(manifest, 'd1-3B', None),
+                                    folder / 'run.json', scorer=edit_scorer(),
+                                    frozen_sha256='frozen-sha')
+            artifact['cases'].insert(1, dict(artifact['cases'][0]))
+            with self.assertRaisesRegex(ValueError, 'recorded twice in one run'):
+                le.compare_edits([artifact], folder / 'summary.json')
+
+
+def short_parent_case():
+    """A leaf-only case whose two short lines make one marker more costly than it saves."""
+    return replace(tiny_case('a\nbb\nccc\n', 'short-expand'),
+                   evidence=(le.Evidence(1, 'a', 'a retained short line'),
+                             le.Evidence(3, 'ccc', 'a retained short line')))
+
+
+class ParentAwareEditTest(unittest.TestCase):
+    """A complete edit replaces the whole pending result, never one lifted envelope."""
+
+    def setUp(self):
+        self.case = le.synthetic_parent_case()
+        self.result = decoded(self.case)
+        self.parent, self.start, self.end = le.leaf_parent(self.case)
+        self.edits = (
+            le.Edit('drop-unrelated', ((3, 11),), 'accept',
+                    'drops every unrelated match; the reported model and cores stay'),
+            le.Edit('drop-model', ((1, 1),), 'reject',
+                    'drops the reported CPU model the task asks for'),
+        )
+
+    def test_span_selects_the_envelope_and_keeps_every_parent_byte(self):
+        self.assertEqual(self.parent, self.case.parent)
+        self.assertNotEqual(self.parent, self.case.leaf)
+        self.assertEqual(self.parent[self.start:self.end], self.case.leaf)
+        self.assertIn('os.cpu_count()', self.parent[self.end:])
+        facts = self.case.provenance
+        self.assertEqual(facts['parent_sha256'], ev.digest(self.parent))
+        self.assertEqual(facts['parent_chars'], len(self.parent))
+        self.assertEqual(facts['leaf_span'], [self.start, self.end])
+        self.assertEqual(facts['leaf_prefix_sha256'],
+                         ev.digest(self.parent[:self.start]))
+        self.assertEqual(facts['leaf_suffix_sha256'],
+                         ev.digest(self.parent[self.end:]))
+        self.assertEqual(self.result.source_sha256, ev.digest(self.case.leaf))
+        checked, reason = le.check_case(self.case)
+        self.assertIsNone(reason)
+        self.assertEqual(checked.source_sha256, self.result.source_sha256)
+
+    def test_a_parent_that_moves_under_a_fixed_span_is_refused(self):
+        moved = replace(self.case, parent='X' + self.case.parent)
+        with self.assertRaisesRegex(ValueError, 'leaf span does not select'):
+            le.check_case(moved)
+
+    def test_state_carries_the_whole_parent_and_whole_candidate_replacements(self):
+        payload, views = le.edit_request(self.case, self.result, self.edits)
+        state = payload['state']
+        held = state['candidate_tool_output']
+        self.assertEqual(held['text'], self.parent)
+        self.assertEqual(held['source_sha256'], ev.digest(self.parent))
+        self.assertEqual(held['editable_leaf'],
+                         {'span': [self.start, self.end],
+                          'sha256': self.result.source_sha256})
+        self.assertEqual([entry['edit'] for entry in state['candidate_edits']],
+                         [edit.id for edit in self.edits])
+        for entry, view in zip(state['candidate_edits'], views):
+            self.assertEqual(entry['text'], view['candidate_text'])
+            self.assertTrue(entry['text'].startswith(self.parent[:self.start]))
+            self.assertTrue(entry['text'].endswith(self.parent[self.end:]))
+            self.assertIn(self.parent[self.end:], entry['text'])
+            self.assertEqual(view['candidate_sha256'], ev.digest(entry['text']))
+            for key in ('call', 'command', 'tool_call', 'context'):
+                self.assertNotIn(key, entry)
+
+    def test_freeze_and_verify_bind_parent_identity_and_coordinates(self):
+        cases_edits = ((self.case, self.edits),)
+        scores = {'drop-unrelated': 0.9, 'drop-model': 0.1}
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',), folder / 'frozen.json')
+            row = manifest['cases'][0]
+            self.assertEqual(row['parent_sha256'], ev.digest(self.parent))
+            self.assertEqual(row['parent_chars'], len(self.parent))
+            self.assertEqual(row['leaf_span'], [self.start, self.end])
+            self.assertEqual(row['editable_leaf_sha256'], self.result.source_sha256)
+            le.verify_edits(manifest, cases_edits)
+            for key, value in (('parent_sha256', '0' * 64),
+                               ('parent_chars', len(self.parent) + 1),
+                               ('leaf_span', [0, self.end])):
+                tampered = copy.deepcopy(manifest)
+                tampered['cases'][0][key] = value
+                with self.assertRaisesRegex(ValueError, 'parent|coordinates'):
+                    le.verify_edits(tampered, cases_edits)
+            artifact = le.run_edits(manifest, cases_edits,
+                                    le.args_for_edits(manifest, 'd1-3B', None),
+                                    folder / 'run.json',
+                                    scorer=edit_scorer(scores), frozen_sha256='frozen-sha')
+        self.assertEqual(artifact['cases'][0]['parent_sha256'], ev.digest(self.parent))
+        self.assertEqual(artifact['cases'][0]['leaf_span'], [self.start, self.end])
+        self.assertEqual(artifact['cases'][0]['original_parent_tokens'],
+                         ev.tokens(self.parent))
+
+    def test_a_drifted_parent_is_refused_after_freeze(self):
+        cases_edits = ((self.case, self.edits),)
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',),
+                                       Path(folder) / 'frozen.json')
+            moved_parent = self.parent.replace('os.cpu_count()', 'os.cpu_total()')
+            moved = replace(self.case, parent=moved_parent,
+                            provenance={**self.case.provenance,
+                                        **le.parent_facts(moved_parent, self.start,
+                                                          self.end)})
+            with self.assertRaisesRegex(ValueError, 'parent'):
+                le.verify_edits(manifest, ((moved, self.edits),))
+
+
+class EffectiveAcceptTest(unittest.TestCase):
+    """A high p_accept never authorizes an edit that makes the result larger."""
+
+    def test_expansion_is_rejected_even_with_a_high_probability(self):
+        case = short_parent_case()
+        edits = (le.Edit('drop-short', ((2, 2),), 'accept', 'drops one short line'),)
+        result = le.evaluate_edits(case, edits, edit_args(),
+                                   edit_scorer({'drop-short': 0.99}))
+        row = result['views'][0]
+        self.assertTrue(row['expanded'])
+        self.assertEqual(row['p_accept'], 0.99)
+        self.assertTrue(row['proposed_accept'])
+        self.assertFalse(row['accept'])
+        self.assertEqual(row['reason'], 'expanded')
+        self.assertEqual(row['original_tokens'], ev.tokens(case.leaf))
+        self.assertGreater(row['candidate_tokens'], row['original_tokens'])
+
+    def test_effective_accept_still_needs_the_model_to_propose_it(self):
+        case = short_parent_case()
+        edits = (le.Edit('drop-short', ((2, 2),), 'accept', 'drops one short line'),)
+        result = le.evaluate_edits(case, edits, edit_args(),
+                                   edit_scorer({'drop-short': 0.1}))
+        row = result['views'][0]
+        self.assertFalse(row['proposed_accept'])
+        self.assertFalse(row['accept'])
+        self.assertEqual(row['reason'], 'scored')
+
+    def test_compare_refuses_an_accepted_view_that_expands(self):
+        case = short_parent_case()
+        edits = (le.Edit('drop-short', ((2, 2),), 'accept', 'drops one short line'),)
+        cases_edits = ((case, edits),)
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',),
+                                       folder / 'frozen.json')
+            artifact = le.run_edits(manifest, cases_edits,
+                                    le.args_for_edits(manifest, 'd1-3B', None),
+                                    folder / 'run.json',
+                                    scorer=edit_scorer({'drop-short': 0.99}),
+                                    frozen_sha256='frozen-sha')
+            view = artifact['cases'][0]['views'][0]
+            view.update({'accept': True, 'reason': 'scored'})
+            with self.assertRaisesRegex(ValueError, 'expanded'):
+                le.compare_edits([artifact], folder / 'summary.json')
+
+
+class RequestSerializationTest(unittest.TestCase):
+    """The frozen digest covers the exact insertion-order bytes the transport sees."""
+
+    def test_freeze_binds_insertion_order_not_the_sorted_digest(self):
+        cases_edits = le.control_cases()
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',),
+                                       folder / 'frozen.json')
+            case, edits = cases_edits[0]
+            payload, _ = le.edit_request(case, decoded(case), edits)
+            row = manifest['cases'][0]
+            self.assertEqual(manifest['request_serialization'],
+                             le.REQUEST_SERIALIZATION)
+            self.assertEqual(row['request_sha256'], ev.digest(json.dumps(payload)))
+            self.assertNotEqual(row['request_sha256'],
+                                ev.digest(json.dumps(payload, sort_keys=True)))
+            reordered = {'questions': payload['questions'], 'state': payload['state']}
+            self.assertEqual(ev.digest(json.dumps(payload, sort_keys=True)),
+                             ev.digest(json.dumps(reordered, sort_keys=True)))
+            self.assertNotEqual(ev.digest(json.dumps(payload)),
+                                ev.digest(json.dumps(reordered)))
+            manifest['cases'][0]['request_sha256'] = ev.digest(
+                json.dumps(payload, sort_keys=True))
+            with self.assertRaisesRegex(ValueError, 'serialized request drifted'):
+                le.verify_edits(manifest, cases_edits)
+
+    def test_a_reordered_request_is_refused_by_verify(self):
+        cases_edits = le.control_cases()
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',),
+                                       Path(folder) / 'frozen.json')
+
+            original = le.edit_request
+
+            def reordered(case, result, edits):
+                payload, views = original(case, result, edits)
+                return ({'questions': payload['questions'],
+                         'state': payload['state']}, views)
+
+            with patch.object(le, 'edit_request', reordered):
+                with self.assertRaisesRegex(ValueError, 'serialized request drifted'):
+                    le.verify_edits(manifest, cases_edits)
+
+    def test_frozen_digest_is_the_object_the_mlx_transport_receives(self):
+        case, edits = le.control_cases()[0]
+        cases_edits = ((case, edits),)
+        seen = []
+
+        class Result:
+            truncated = False
+
+            def __init__(self, answers):
+                self.answers = answers
+
+            def to_wire(self):
+                return {'answers': self.answers, 'usage': {}}
+
+        class Model:
+            def info(self):
+                return {'test': True}
+
+            def decide_request(self, payload):
+                seen.append(json.dumps(payload))
+                return Result({qid: {'noul': 0.9} for qid in payload['questions']})
+
+        model = Model()
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            manifest = le.freeze_edits(cases_edits, ('d1-3B',),
+                                       folder / 'frozen.json')
+            with patch.object(ev, 'load_mlx', return_value=model):
+                artifact = le.run_edits(manifest, cases_edits,
+                                        le.args_for_edits(manifest, 'd1-3B', None),
+                                        folder / 'run.json', frozen_sha256='frozen-sha')
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(ev.digest(seen[0]), manifest['cases'][0]['request_sha256'])
+            self.assertEqual(artifact['request_serialization'],
+                             le.REQUEST_SERIALIZATION)
+            self.assertTrue(artifact['cases'][0]['views'][0]['accept'])
 
 
 class ReviewRegressionTests(unittest.TestCase):
