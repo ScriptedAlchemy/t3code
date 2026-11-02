@@ -315,7 +315,10 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   const discoveryGeneration = yield* Ref.make(0);
   const effectiveEntry = Effect.gen(function* () {
     const saved = yield* Ref.get(currentEntry);
-    const routes = (yield* Ref.get(discovered)).reduce(insertRoute, connectionRoutes(saved));
+    const routes = (yield* Ref.get(discovered)).reduce(
+      (routes, route) => insertRoute(routes, route),
+      connectionRoutes(saved),
+    );
     return entryWithRoutes(saved, routes);
   });
   const currentRoutes = effectiveEntry.pipe(Effect.map(connectionRoutes));
