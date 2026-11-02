@@ -7,6 +7,7 @@ import math
 import os
 import platform
 import re
+import shlex
 import subprocess
 import time
 import urllib.parse
@@ -21,7 +22,12 @@ from incoming import apply_incoming, replace_leaf, text_leaves
 ENC = tiktoken.get_encoding('o200k_base')
 CHUNKER = 'lines-400-v1'
 CONTEXT_VERSION = 'causal-context-v1'
-POLICY_VERSION = 'selection-evidence-v1'
+POLICY_VERSION = 'selection-evidence-v2'
+# Protection identity. A frozen result records the exact retention policy that produced its
+# decisions. Re-thresholding may only reuse a result that carries this identity; a result
+# recorded under another policy is stale and keeps everything, so old scores can never
+# silently inherit protection rules they were not measured with.
+PROTECTION_VERSION = 'json-span-v3+evidence+source-v1'
 # Request identity. Any frozen result without exactly REQUEST_VERSION in its `request_version`
 # field was measured against a different state, prompt or batching contract and must not be
 # compared with, or reported as, this revision.
@@ -457,13 +463,286 @@ def evidence_hits(block_text, terms):
     return hits
 
 
-def hard_keep_for_plan(plan, terms):
+def hard_keep_for_plan(plan, terms, meta=None):
+    """Blocks retained before any model decision, by explicit, source-referenced reason.
+
+    Precedence is documented rather than incidental: a requested source read keeps the whole
+    result, a decoded JSON container keeps every block it spans, and named evidence keeps any
+    remaining block that contains it. Retention only ever keeps more than the original policy;
+    it never becomes a saving and never hides a proposal.
+    """
     out = {}
+    selection = source_selection(meta) if meta else None
+    if selection:
+        for block in plan:
+            out[block['block']] = {'reason': 'requested source',
+                                   'hard_source': 'source', 'selection': selection}
+    for block, hit in structure_keep(plan).items():
+        previous = out.get(block)
+        if previous and previous['hard_source'] == 'source':
+            continue
+        out[block] = {'reason': hit['reason'], 'hard_source': 'structure',
+                      'spans': hit['spans']}
     for block in plan:
         hits = evidence_hits(block['part'], terms)
-        if hits:
-            out[block['block']] = {'reason': 'requested evidence', 'terms': hits}
+        if not hits:
+            continue
+        previous = out.get(block['block'])
+        if previous is None:
+            out[block['block']] = {'reason': 'requested evidence',
+                                   'hard_source': 'evidence', 'terms': hits}
+        else:
+            previous['terms'] = hits
     return out
+
+
+# ---------------------------------------------------------------------------
+# Structural retention: complete JSON objects and arrays.
+#
+# A tool result often carries a structured record (an audit, a control list, a schema) whose
+# meaning spans several chunks. Chunk-level judging can delete one field of that record and
+# leave the rest, which no reviewer can repair. Structure is therefore read with the stdlib
+# decoder only where a container plausibly starts, and every block the container spans is
+# retained. Nothing else is inferred from the text: a block is retained for being *inside a
+# decoded value*, never because it looks like an audit or a schema.
+# ---------------------------------------------------------------------------
+
+_DECODER = json.JSONDecoder()
+# The first character a JSON value can begin with. Letters are excluded on purpose: a
+# line starting with a markdown link (`[text](url)`) must not read as a truncated array.
+_JSON_VALUE_START = frozenset('"{[}]-0123456789')
+
+
+def _plausible_start(raw, index):
+    """A container start is standalone: at the beginning of a line or after a value delimiter.
+
+    An inline bracket in an argument list (``execve(..., ["/a", "b"], 0x..)``) is syntactically
+    a JSON array but is not a container the tool emitted, so it is not a start.
+    """
+    if raw[index] not in '{[':
+        return False
+    previous = index - 1
+    while previous >= 0 and raw[previous] in ' \t':
+        previous -= 1
+    return previous < 0 or raw[previous] in '\r\n=:>|'
+
+
+def _json_shaped(raw, index):
+    """True when a failed decode at ``index`` still looks like the start of a container.
+
+    ``{"``, ``[{"``, ``[1, 2`` and ``{`` at end of text qualify; ``{ return x;``,
+    ``fn main() {``, ``[u8; 4]`` and markdown links do not, so ordinary source and prose are
+    never retained by this rule.
+    """
+    i = index + 1
+    n = len(raw)
+    while i < n and raw[i].isspace():
+        i += 1
+    if i >= n:
+        # A container that opens at the end of the text was truncated, not prose.
+        return True
+    return raw[i] in _JSON_VALUE_START
+
+
+def _json_scan(raw):
+    """(spans, unverified) for one text leaf.
+
+    ``spans`` are half-open character offsets of complete top-level object/array values.
+    ``unverified`` are starts that look like JSON containers but cannot be decoded: their real
+    end is unknown, so the caller retains from there to the end of the leaf. Scanning resumes
+    after a decoded value, so several values in one text (JSONL, printed payloads) are found.
+    """
+    spans, unverified = [], []
+    i, n = 0, len(raw)
+    after_value = False
+    while i < n:
+        if raw[i] not in '{[' or not (_plausible_start(raw, i) or after_value):
+            after_value = after_value and raw[i].isspace()
+            i += 1
+            continue
+        try:
+            value, end = _DECODER.raw_decode(raw, i)
+        except RecursionError:
+            return [], [0]
+        except ValueError:
+            if _json_shaped(raw, i):
+                unverified.append(i)
+            after_value = False
+            i += 1
+            continue
+        if isinstance(value, (dict, list)) and end > i:
+            spans.append((i, end))
+            i = end
+            after_value = True
+        else:
+            i += 1
+    return spans, unverified
+
+
+def json_container_spans(raw):
+    """Half-open character offsets of complete JSON object/array values in ``raw``.
+
+    Scalars are never returned: only a decoded ``dict`` or ``list`` is a container.
+    """
+    return _json_scan(raw)[0]
+
+
+def structure_keep(plan):
+    """Blocks covered by a decoded container, or by an undecodable JSON-shaped start.
+
+    Spans are leaf-local, and blocks of one leaf are consecutive: their texts concatenate to
+    that leaf exactly, so cumulative part lengths give each block's half-open character range.
+    A block from another leaf is never selected.
+    """
+    out = {}
+    i = 0
+    while i < len(plan):
+        j = i
+        while j < len(plan) and plan[j]['path'] == plan[i]['path']:
+            j += 1
+        raw = ''.join(plan[k]['part'] for k in range(i, j))
+        spans, unverified = _json_scan(raw)
+        if not spans and not unverified:
+            i = j
+            continue
+        bounds = []
+        position = 0
+        for k in range(i, j):
+            start = position
+            position += len(plan[k]['part'])
+            bounds.append((plan[k]['block'], start, position))
+        claims = [(start, end, False) for start, end in spans]
+        for start in unverified:
+            if not raw[:start].strip():
+                # The leaf itself opens a container that never closes: a truncated document,
+                # so the real extent is unknown and the whole leaf is retained.
+                claims.append((start, len(raw), True))
+                continue
+            # A container start in the middle of other text is weak evidence (a trace's
+            # argument list looks like this). Retain the block that carries it, never the tail.
+            for block, begin, finish in bounds:
+                if begin <= start < finish:
+                    claims.append((start, finish, True))
+                    break
+        for start, end, questionable in claims:
+            for block, begin, finish in bounds:
+                if begin < end and start < finish:
+                    entry = out.setdefault(
+                        block, {'reason': 'json_container_unverified', 'spans': []})
+                    if not questionable:
+                        entry['reason'] = 'json_container'
+                    # Spans are recorded in the block's own coordinates, so a consumer never
+                    # has to re-derive which leaf offset a block started at.
+                    entry['spans'].append([max(start, begin) - begin,
+                                           min(end, finish) - begin])
+        for block, _, _ in bounds:
+            if block not in out:
+                continue
+            merged = []
+            for start, end in sorted(out[block]['spans']):
+                if merged and start <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], end)
+                else:
+                    merged.append([start, end])
+            out[block]['spans'] = merged
+        i = j
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Requested-source retention.
+#
+# The holdout regression was a file the user explicitly asked to review, where blocks that
+# carried the type's serialization schema were removed. Nothing in that text proves it was
+# requested, so this rule uses only the resolved call plus a sourced instruction, and it
+# refuses every shape it cannot resolve exactly. A refusal is not a case abstention: it means
+# "no retention claim", and the ordinary selector still decides.
+# ---------------------------------------------------------------------------
+
+_SOURCE_TOOLS = frozenset({'read', 'read_file', 'readfile', 'view'})
+_SOURCE_FIELDS = ('path', 'file_path', 'file')
+_READER_COMMANDS = frozenset({'cat', 'bat', 'nl', 'head', 'tail'})
+_SHELL_META = frozenset('|&;<>()`\n\r*?')
+_READ_INTENT = re.compile(r'(?i)\b(read|reading|review|reviewing|inspect|inspecting|audit|auditing|examine|open|check)\b')
+
+
+def _source_path(value):
+    """A single explicit source path, or None when the value is not one."""
+    if not isinstance(value, str):
+        return None
+    path = value.strip()
+    if not path or len(path) > 400 or path.startswith('-'):
+        return None
+    if any(c in path for c in '\0\n\r*?') or '..' in path.split('/'):
+        return None
+    return path
+
+
+def _selected_source(call):
+    """Exactly one file the originating call reads, or None for any unresolved shape.
+
+    Unknown tools, reader invocations with more than one operand, option-value ambiguity and
+    every shell composition abstain instead of guessing a selection.
+    """
+    if not isinstance(call, dict):
+        return None
+    name = str(call.get('name') or '').strip().lower()
+    body = call.get('command') or ''
+    if not isinstance(body, str) or not body.strip():
+        return None
+    if name in _SOURCE_TOOLS or name.rsplit('.', 1)[-1] in _SOURCE_TOOLS:
+        try:
+            arguments = json.loads(body)
+        except ValueError:
+            return None
+        if not isinstance(arguments, dict):
+            return None
+        if isinstance(arguments.get('paths'), list) or isinstance(arguments.get('files'), list):
+            return None
+        found = [arguments[key] for key in _SOURCE_FIELDS if key in arguments]
+        if len(found) != 1:
+            return None
+        return _source_path(found[0])
+    if any(c in body for c in _SHELL_META) or '$(' in body:
+        return None
+    try:
+        argv = shlex.split(body)
+    except ValueError:
+        return None
+    if not argv or argv[0].rsplit('/', 1)[-1] not in _READER_COMMANDS:
+        return None
+    operands = [a for a in argv[1:] if not a.startswith('-')]
+    if len(operands) != 1:
+        return None
+    return _source_path(operands[0])
+
+
+def source_selection(meta):
+    """Exact requested-source selection: a sourced instruction names the file the call read.
+
+    Both halves are required. The call must resolve to one file without composition, and a
+    human instruction recorded before the result must name that exact path or its basename
+    together with a read/review intent. Anything else returns None.
+    """
+    if not meta or not meta.get('ok'):
+        return None
+    call = meta.get('call_rendered') or {}
+    path = _selected_source(call)
+    if not path:
+        return None
+    normalized = path.replace('\\', '/')
+    basename = normalized.rstrip('/').rsplit('/', 1)[-1]
+    for row in meta.get('instructions') or []:
+        text = ' '.join((row.get('text') or '').split())
+        if not text or not _READ_INTENT.search(text):
+            continue
+        named = normalized in text
+        if not named and basename:
+            named = bool(re.search(r'(?<![\w.-])' + re.escape(basename) + r'(?![\w.-])', text))
+        if named:
+            return [{'path': path, 'call': call.get('name'),
+                     'instruction_line': row.get('line')}]
+    return None
 
 
 def prepare(a):
@@ -907,13 +1186,15 @@ def render_selected(original, plan, case_id, keep_of):
 def proposal(p_keep, protected, threshold):
     """One authoritative proposal for a block at a threshold, from its frozen score.
 
-    Only a scored, unprotected block can propose removal. An unscored block (deadline, oversize
-    or scoring failure) abstains as a keep, and protection is not negotiable at any threshold.
-    A proposal is not a saving: a guard may retain what the proposal asked to remove, and the
-    proposal is still recorded when that happens.
+    Only a scored, unprotected block can propose removal. An unscored block (protected,
+    hard-kept, deadline, oversize or scoring failure) proposes nothing at all: ``None`` is not
+    a keep, it is the absence of a decision, so a guard can never be read as a selector keep.
+    Protection is not negotiable at any threshold, and a proposal is never a saving.
     """
-    if protected or p_keep is None:
+    if protected:
         return 'keep'
+    if p_keep is None:
+        return None
     return 'keep' if p_keep >= threshold else 'drop'
 
 
@@ -929,16 +1210,18 @@ def resolution(original, plan, case_id, rows, threshold, deadline=False,
     ``'drop'`` where ``effective`` is ``'keep'``. Non-expansion is recomputed from the render at
     this threshold instead of being inherited from another threshold.
 
-    ``hard_keep`` maps a block to a retention reason (requested evidence). ``abstain_all`` marks
-    a case with no verified causal context: every block keeps, at every threshold, and the model
-    is never asked. Both are hard constraints, not proposals, so rethreshold cannot drop them.
+    ``hard_keep`` maps a block to a retention reason (requested source, structural container or
+    requested evidence). ``abstain_all`` marks a case with no verified causal context: every
+    block keeps, at every threshold, and the model is never asked. Both are hard constraints,
+    not proposals, so rethreshold cannot drop them and neither is ever a saving.
     """
     hard_keep = dict(hard_keep or {})
     proposals = {p['block']: proposal(rows[p['block']]['p_keep'],
                                       bool(rows[p['block']]['protected'] or p['protected']),
                                       threshold)
                  for p in plan}
-    kept = {n: 'keep' if (abstain_all or n in hard_keep or v == 'keep') else 'drop'
+    # ``None`` is an absent decision, not a keep: an unscored block was never asked about.
+    kept = {n: 'keep' if (abstain_all or n in hard_keep or v in (None, 'keep')) else 'drop'
             for n, v in proposals.items()}
     rendered = render_selected(original, plan, case_id, lambda n: kept[n] == 'keep')
     if deadline:
@@ -974,7 +1257,7 @@ def score_case(a, c):
     view['call_command'] = (meta.get('call_rendered') or {}).get('command', '')
     case_start = time.perf_counter()
     plan = plan_blocks(original)
-    hard = hard_keep_for_plan(plan, terms) if context_ok else {}
+    hard = hard_keep_for_plan(plan, terms, meta) if context_ok else {}
     decisions = [None] * len(plan)
     statuses = collections.Counter()
     scores = {}
@@ -1026,7 +1309,9 @@ def score_case(a, c):
     prompt_version, instructions = prompt_for(a)
     targets = []
     if a.policy == 'decision' and not context_abstain:
-        targets = [p for p in plan if not p['protected']]
+        # Nothing is asked about a block that retention already keeps: the question cannot
+        # change its fate, and asking would only buy latency and a fabricated score.
+        targets = [p for p in plan if not p['protected'] and p['block'] not in hard]
         if targets and deadline_passed():
             deadline_hit = True
         elif targets and a.batch == 'shared-state':
@@ -1088,6 +1373,11 @@ def score_case(a, c):
                 p_keep, reason = None, 'abstain: unavailable'
         seen.add(p['part'])
         hits = hard.get(p['block'], {})
+        if a.policy == 'decision' and hits:
+            # Hard retention is a policy decision, not a model answer: no score is invented
+            # for a block nobody asked about, and no proposal is manufactured from the guard.
+            p_keep, latency, usage = None, 0.0, {}
+            reason = 'hard keep: ' + hits['reason']
         decisions[p['block']] = {
             'block': p['block'], 'path': p['path'], 'sha256': digest(p['part']),
             'tokens': tokens(p['part']), 'protected': p['protected'],
@@ -1095,6 +1385,9 @@ def score_case(a, c):
             'hard_keep': bool(context_abstain or hits),
             'hard_reason': ('no causal context' if context_abstain
                             else hits.get('reason')),
+            'hard_source': ('context' if context_abstain else hits.get('hard_source')),
+            'hard_spans': list(hits.get('spans', [])),
+            'hard_selection': list(hits.get('selection', [])),
             'evidence_terms': list(hits.get('terms', [])),
         }
 
@@ -1130,6 +1423,7 @@ def score_case(a, c):
         'context_sha256': meta.get('context_sha256'),
         'context_version': CONTEXT_VERSION,
         'policy_version': POLICY_VERSION,
+        'protection_version': PROTECTION_VERSION,
         'request_version': STATE_VERSION + ':' + prompt_version,
         'state_version': STATE_VERSION,
         'prompt_version': prompt_version,
@@ -1163,6 +1457,7 @@ def score_case(a, c):
             'context_abstain_reason': meta.get('abstain_reason'),
             'manifest_context_used': False,
             'evidence_terms': terms, 'hard_retained_blocks': len(hard),
+            'protection_version': PROTECTION_VERSION,
             'historical_content_rewritten': False,
             'receipt': receipt, 'batches': batch_receipts,
             'statuses': dict(statuses), 'decisions': decisions}
@@ -1175,6 +1470,24 @@ def build_report(a, results, receipts):
     case_latency = [r['latency_ms'] for r in results]
     block_latency = [d['latency_ms'] for d in blocks if d['reason'] == 'model score']
     scored = [d for d in blocks if d['reason'] == 'model score']
+
+    def category(decision):
+        """One category per block, so the totals partition instead of overlapping."""
+        if decision['protected']:
+            return 'protected'
+        if decision.get('hard_keep'):
+            return ('context' if decision.get('hard_source') == 'context' else 'hard')
+        return 'eligible'
+
+    cats = collections.Counter(category(d) for d in blocks)
+    hard = [d for d in blocks if category(d) == 'hard']
+    eligible = [d for d in blocks if category(d) == 'eligible']
+    by_source = collections.Counter(d.get('hard_source') for d in hard)
+    by_source_tokens = collections.Counter()
+    for d in hard:
+        by_source_tokens[d.get('hard_source')] += d['tokens']
+    asked = sum(b.get('questions') or 0
+                for r in results for b in (r.get('batches') or []))
     hist = {'<0.02': 0, '0.02-0.1': 0, '0.1-0.3': 0, '0.3-0.5': 0, '>=0.5': 0, 'none': 0}
     for d in blocks:
         p = d['p_keep']
@@ -1195,14 +1508,36 @@ def build_report(a, results, receipts):
         'saved_fraction': round((before - after) / before, 4) if before else None,
         'cases': len(results), 'sessions': len({r['source'] for r in results}),
         'blocks': len(blocks),
-        'protected_blocks': sum(1 for d in blocks if d['protected']),
-        'unprotected_blocks': sum(1 for d in blocks if not d['protected']),
+        'protected_blocks': cats['protected'],
+        'unprotected_blocks': len(blocks) - cats['protected'],
         'unprotected_tokens': sum(d['tokens'] for d in blocks if not d['protected']),
         'removed_share_of_unprotected_tokens': round(
             (before - after) / sum(d['tokens'] for d in blocks if not d['protected']), 4)
         if any(not d['protected'] for d in blocks) else None,
         'scored_blocks': len(scored), 'dropped_blocks': sum(1 for d in blocks if d['effective'] == 'drop'),
         'proposed_drops': sum(1 for d in blocks if d['proposed'] == 'drop'),
+        # Protection accounting. `eligible` is what a selector could still be asked about:
+        # unprotected and not already retained by an explicit policy reason. The partition
+        # protected + hard-kept + eligible = all blocks, and asked questions can never exceed
+        # the eligible blocks.
+        'eligible_blocks': len(eligible),
+        'eligible_tokens': sum(d['tokens'] for d in eligible),
+        'hard_keep_blocks': len(hard),
+        'hard_keep_tokens': sum(d['tokens'] for d in hard),
+        'context_abstained_blocks': cats['context'],
+        'structure_protected_blocks': by_source.get('structure', 0),
+        'structure_protected_tokens': by_source_tokens.get('structure', 0),
+        'requested_evidence_blocks': by_source.get('evidence', 0),
+        'requested_evidence_tokens': by_source_tokens.get('evidence', 0),
+        'requested_source_blocks': by_source.get('source', 0),
+        'requested_source_tokens': by_source_tokens.get('source', 0),
+        'asked_questions': asked,
+        'unasked_eligible_questions': max(0, len(eligible) - asked),
+        'actual_calls': sum(bool(b.get('questions')) for r in results
+                            for b in (r.get('batches') or [])),
+        'protected_share': round(
+            (sum(d['tokens'] for d in blocks if d['protected'])
+             + sum(d['tokens'] for d in hard)) / before, 4) if before else None,
         'cases_with_removals': sum(1 for r in results if r['after'] < r['before']),
         'requests': sum(bool(b.get('questions')) for r in results
                         for b in (r.get('batches') or [])),
@@ -1212,7 +1547,10 @@ def build_report(a, results, receipts):
              for b in (r.get('batches') or [])), default=0),
         'oversize_refusals': sum(1 for r in results for b in (r.get('batches') or [])
                                  if b.get('status') == 'oversize' and not b.get('questions')),
-        'failed_blocks': sum(1 for d in blocks if d['reason'].startswith('abstain')),
+        # Context abstention is a policy decision that keeps the original, not an inference
+        # failure; only real scoring abstentions count here.
+        'failed_blocks': sum(1 for d in blocks if d['reason'].startswith('abstain')
+                             and d['reason'] != 'abstain: missing_context'),
         'timeout_blocks': sum(1 for d in blocks if d['reason'] == 'abstain: timeout'),
         'invalid_blocks': sum(1 for d in blocks if d['reason'] == 'abstain: invalid_response'),
         'unavailable_blocks': sum(1 for d in blocks if d['reason'] == 'abstain: unavailable'),
@@ -1225,7 +1563,8 @@ def build_report(a, results, receipts):
             if d.get('retained_by') == 'requested evidence'),
         'guarded_cases': sum(1 for r in results if r['guard'] == 'non-expansion'),
         'completed_requests': sum(r['statuses'].get('ok', 0) for r in results),
-        'failed_requests': sum(v for r in results for k, v in r['statuses'].items() if k != 'ok'),
+        'failed_requests': sum(bool(b.get('questions')) and b.get('status') != 'ok'
+                               for r in results for b in (r.get('batches') or [])),
         'case_latency_ms': latency_stats(case_latency),
         'block_latency_ms': latency_stats(block_latency),
         'score_histogram': hist,
@@ -1233,6 +1572,8 @@ def build_report(a, results, receipts):
     expected = request_version_for(a)
     versions = {r.get('request_version') for r in results}
     current_request = a.policy == 'decision' and versions == {expected}
+    protections = {r.get('protection_version') for r in results}
+    current_protection = protections == {PROTECTION_VERSION}
     return {'policy': a.policy,
             'model': a.model if a.policy == 'decision' else None,
             'threshold': a.threshold, 'backend': a.backend if a.policy == 'decision' else None,
@@ -1243,6 +1584,10 @@ def build_report(a, results, receipts):
             'state_version': STATE_VERSION if current_request else None,
             'prompt_version': prompt_for(a)[0] if current_request else None,
             'request_versions_observed': sorted(v for v in versions if v),
+            'policy_version': POLICY_VERSION,
+            'protection_version': PROTECTION_VERSION if current_protection else None,
+            'protection_versions_observed': sorted(v for v in protections if v),
+            'protection_current': current_protection,
             'quality_status': 'UNVALIDATED: no human labels or downstream replay supplied',
             'receipts': receipts, 'totals': totals, 'cases': results}
 
@@ -1264,6 +1609,7 @@ def receipts_for(a):
                'batch_tokens': a.batch_tokens, 'batch_questions': a.batch_questions,
                'timeout_s': a.timeout, 'prefix_fixture': 'last 400 source lines before the case',
                'context_version': CONTEXT_VERSION, 'policy_version': POLICY_VERSION,
+               'protection_version': PROTECTION_VERSION,
                'warmup': bool(getattr(a, 'warmup', False)),
                'measured_scope': 'in-process selector path; no transport or queue for backend=mlx'}
     return receipt
@@ -1299,9 +1645,9 @@ def run(a):
 def _derivation_constraints(case_result, plan, case):
     """(hard_keep, abstain_all, reconstructed) for rethresholding a frozen result.
 
-    A result produced with the current context version carries its own hard-keep record.
-    A legacy result is never trusted: its context and evidence are rebuilt from the
-    authoritative source, and when that is impossible the derivation abstains and keeps all.
+    Only a result that carries the current protection identity may reuse its recorded
+    hard-keep decisions. Anything else is stale and keeps everything: re-thresholding must
+    never loan new protection rules to scores that were measured without them.
     """
     legacy = case_result.get('context_version') != CONTEXT_VERSION
     if not legacy:
@@ -1322,7 +1668,7 @@ def _derivation_constraints(case_result, plan, case):
     if not meta['ok']:
         return ({p['block']: 'legacy context unverified; abstain' for p in plan}, True, True)
     hard = {n: v['reason'] for n, v in
-            hard_keep_for_plan(plan, meta.get('evidence_terms', [])).items()}
+            hard_keep_for_plan(plan, meta.get('evidence_terms', []), meta).items()}
     return hard, False, True
 
 
@@ -1331,8 +1677,10 @@ def derive_case(case_result, threshold, original, case=None):
 
     The measured observation is never rewritten: this re-reads the recorded block geometry,
     re-checks it against the source bytes, and asks the shared resolution for proposals,
-    effective selection and the guard at the requested threshold. Hard retention (no causal
-    context, requested evidence) is carried through, so a new threshold cannot drop it.
+    effective selection and the guard at the requested threshold. Hard retention is carried
+    through only when the result carries the current protection identity; a result recorded
+    under another policy keeps everything and says so, so old scores can never silently adopt
+    protection they were not measured with.
     """
     plan = plan_blocks(original)
     recorded = case_result['decisions']
@@ -1346,13 +1694,21 @@ def derive_case(case_result, threshold, original, case=None):
     by_block = {d['block']: d for d in recorded}
     if set(by_block) != {p['block'] for p in plan}:
         raise ValueError('Block numbering drift for ' + case_result['id'])
-    hard, abstain, reconstructed = _derivation_constraints(case_result, plan, case)
+    recorded_protection = case_result.get('protection_version')
+    current = (recorded_protection == PROTECTION_VERSION
+               and case_result.get('context_version') == CONTEXT_VERSION)
+    if not current:
+        hard, abstain, reconstructed = {}, True, False
+    else:
+        hard, abstain, reconstructed = _derivation_constraints(case_result, plan, case)
     outcome = resolution(original, plan, case_result['id'], by_block, threshold,
                          deadline=case_result.get('guard') == 'deadline',
                          hard_keep=hard, abstain_all=abstain)
     outcome['plan'] = plan
     outcome['by_block'] = by_block
     outcome['reconstructed_legacy'] = reconstructed
+    outcome['protection_current'] = current
+    outcome['stale_protection'] = None if current else recorded_protection
     return outcome
 
 
@@ -1394,8 +1750,14 @@ def sweep(a):
                      'removed_share_of_unprotected_tokens': round((before - after) / unprotected, 4)
                      if unprotected else None})
     version, current = request_identity(result)
+    protections = {r.get('protection_version') for r in result['cases']}
+    protection_current = protections == {PROTECTION_VERSION}
     payload = {'result': a.result, 'model': result.get('model'), 'batch_mode': result.get('batch_mode'),
                'request_version': version, 'request_version_current': current,
+               'protection_version': PROTECTION_VERSION if protection_current else None,
+               'protection_current': protection_current,
+               'stale_protection': (None if protection_current
+                                    else sorted(protections, key=str)),
                'cases': result['totals']['cases'], 'thresholds': rows}
     if a.out:
         Path(a.out).write_text(json.dumps(payload, indent=2))
@@ -1408,10 +1770,17 @@ def rerender(a):
     out = dict(result)
     out['threshold'] = a.threshold
     out['rerendered_from'] = str(a.result)
-    # Re-thresholding never upgrades a contract: a v1 measurement stays labeled v1.
+    # Re-thresholding never upgrades a contract: a v1 measurement stays labeled v1, and a
+    # result measured under another protection policy keeps everything instead of adopting
+    # retention rules it never saw.
     version, current = request_identity(result)
     out['request_version'] = version
     out['request_version_current'] = current
+    out['protection_current'] = all(
+        r.get('protection_version') == PROTECTION_VERSION for r in result['cases'])
+    out['stale_protection'] = (None if out['protection_current']
+                               else sorted({r.get('protection_version')
+                                            for r in result['cases']}, key=str))
     new_cases = []
     for r in result['cases']:
         original = source_payload(cases[r['id']])['output']
@@ -1423,6 +1792,8 @@ def rerender(a):
         updated['guard'] = outcome['guard']
         updated['context_abstained'] = outcome['abstain_all']
         updated['derived_legacy_context'] = outcome['reconstructed_legacy']
+        updated['protection_current'] = outcome['protection_current']
+        updated['stale_protection'] = outcome['stale_protection']
         updated['decisions'] = []
         for d in r['decisions']:
             d = dict(d)

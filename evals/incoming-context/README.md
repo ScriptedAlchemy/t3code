@@ -20,7 +20,7 @@ One scoring request is one contract. `REQUEST_VERSION` (`incoming-state-v2:keep-
 - `state.recent_user_context` — every sourced human instruction strictly before the result, oldest first, verbatim. `causal_context` collects `message` records with role `user`, skips `assistant` and tool records entirely, and refuses harness envelopes, developer-role messages, opaque content and unknown wrappers instead of promoting them to instructions. Compacted history contributes only retained, client-authored user inputs that carry verified provenance; otherwise the case abstains for an ambiguous goal. Nothing is summarized.
 - `state.tool_call` — the resolved originating call: name plus full command or arguments body, never truncated.
 - `state.candidate_tool_output.blocks` — every block of the pending result, including protected boundary and diagnostic blocks, each with a positional `index`, its text-leaf `path` and its exact text. Question batching groups questions only; a block is never hidden from the state because another request asks about it.
-- `questions` — one `noul` question per scored block, using one fixed prompt for both batching modes. The prompt asks about one block at a time and states that no sibling is guaranteed to survive, so redundancy is never by itself a reason to drop; a later source review, a requested audit and negative evidence are named as reasons to keep.
+- `questions` — one `noul` question per **eligible** block, using one fixed prompt for both batching modes. A block is eligible only when it is neither a protected boundary/diagnostic block nor already retained by a protection rule. The prompt asks about one block at a time and states that no sibling is guaranteed to survive, so redundancy is never by itself a reason to drop; a later source review, a requested audit and negative evidence are named as reasons to keep.
 
 There is no assistant plan, task-progress or conversation-summary field, because the source records never contribute assistant content to the goal and generating one would need inference the evaluator does not have. The available instructions and the full originating call are the whole causal state; adding a summary would be a new context schema with its own failure modes, and the defect this revision repairs did not require it.
 
@@ -28,16 +28,47 @@ Budgets are charged the real serialized request. `--batch-tokens` measures the c
 
 `--prompt v1|v2` selects the question text; `v1` exists only so the prompt change can be measured apart from the state change. The identity of the chosen text is in every receipt.
 
+## Retention that happens before any question
+
+Three rules can keep a block without asking a model. They only ever add retention, they are recorded per block with an explicit reason, and none of them is a saving:
+
+- **`requested source`** — the originating call resolves to exactly one file (a read-like tool with a single `path`/`file_path`/`file`, or a one-operand `cat`/`bat`/`nl`/`head`/`tail` with no shell composition), and a sourced instruction before the result names that file with a read/review/audit intent. Every block of that result is kept. Anything unresolved abstains from the _claim_ — unknown tools, two operands, pipes, redirects, substitutions, globs, option values — and the ordinary selector still decides. This is deliberately rare; in the measured workload every originating call is a harness wrapper around composed commands, so it currently makes no claim at all (see [RESULTS.md](RESULTS.md)).
+- **`json_container`** — a complete JSON object or array decoded with the stdlib `json.JSONDecoder.raw_decode` at a _standalone_ start (line start, or after `=`/`:`/`>`/`|`). Scanning resumes after each decoded value, so JSONL and several printed values are all found. Scalars are never containers, and inline brackets in argument lists (`execve(..., ["/a"], 0x..)`) are not standalone starts. Every block the container spans on that text leaf is kept, with the span recorded in the block's own coordinates.
+- **`json_container_unverified`** — a JSON-shaped start that cannot be decoded. A leaf that opens such a container keeps the whole leaf (a truncated document); a mid-text one keeps only the block that carries it. Code braces (`if (x) {`, `fn main() {`) are not JSON-shaped and never match.
+
+Structural retention is a property of the bytes, not a judgement about semantics: nothing is inferred from text that merely looks like an audit or a schema. Requested evidence terms keep their earlier narrow behaviour.
+
+Hard-kept and protected blocks are never sent to the selector, so their decision row carries `p_keep: null`, `proposed: null`, `hard_keep: true` and a `hard_reason`/`hard_source`. A `null` proposal is not a keep: `proposed` is only ever `drop`/`keep` for a block the model actually scored, and `effective` is the only field that says what happened. If no eligible block remains, nothing is sent and the original result is retained.
+
 ## Evaluate private recordings
 
 Supply an analysis manifest containing `census.sessions` entries with `origin: "T3 Code"` and a local `path` to each rollout JSONL. Generate cases with `evaluate.py prepare --analysis analysis.json --out cases.json`. Pass `--cases cases.json` explicitly to subsequent commands. Keep source recordings, manifests, model weights, result files and blind packets outside Git.
 
 The evaluator reconstructs causal instructions and poll origins from records preceding each result. Missing or ambiguous context retains the whole result without a scoring request. Named evidence adds retention constraints. These heuristics are conservative and do not prove semantic safety.
 
-`run` records model input, scores, effective decisions, elapsed time, per-request state and request token counts, and local prefix receipts. `sweep` and `rerender` derive new thresholds from frozen scores; guards count as zero effective drops. Changes to context, prompt, state or batching require fresh inference. `blind_packet.py` produces anonymous cases for a reviewer. Save judgments before opening the separate identity map. Reviewer-only enrichment must not be represented as model input.
+`run` records model input, scores, effective decisions, elapsed time, per-request state and request token counts, and local prefix receipts. Totals separate protected, hard-kept, context-abstained and eligible blocks and tokens, count questions actually asked against eligible blocks, and count every scoring attempt including failed ones. `sweep` and `rerender` derive new thresholds from frozen scores; guards count as zero effective drops. Changes to context, prompt, state or batching require fresh inference. `blind_packet.py` produces anonymous cases for a reviewer. Save judgments before opening the separate identity map. Reviewer-only enrichment must not be represented as model input.
+
+## Frozen results cannot inherit a newer policy
+
+Every result records `request_version`, `state_version`, `prompt_version`, `policy_version` and `protection_version`. `sweep`/`rerender` reuse a frozen result's hard-keep records only when its `protection_version` is the current one. A result recorded under another policy (or before this version existed) is reported with `protection_current: false` and `stale_protection`, keeps its original output at every threshold, and reports no derived savings. Old artifacts are never rewritten and never silently upgraded: re-thresholding a v2 measurement cannot loan it the JSON or source rules it was not measured with.
 
 ## Current limits
 
-Synthetic checks cover causal cutoffs, poll resolution, retention, failure paths, accounting, the whole-result state (protected and cross-group siblings, future-record exclusion), complete-request budget grouping and abstention, prefix invariance, prompt selection and request-version provenance. Local prefix fixtures do not prove provider cache hits or a supported native-tool interception point. Real-world blind review found necessary evidence lost in the earlier selector and in the earlier prompt text; both contracts have changed, so those judgments do not carry over. See [RESULTS.md](RESULTS.md) for measurements and limits. No model is approved for live pruning.
+Synthetic checks cover causal cutoffs, poll resolution, retention, failure paths, accounting, the whole-result state (protected and cross-group siblings, future-record exclusion), complete-request budget grouping and abstention, prefix invariance, prompt selection and request-version/protection provenance, JSON span decoding (scalars, code braces, JSONL, CRLF, Unicode offsets, nested values, truncated vs bounded tails, cross-leaf isolation) and requested-source abstention on composed commands. They cannot cover a real provider interception point or real provider cache hits. No model is approved for live pruning.
 
-The development sample contains 40 checkpoints. The current context census permits scoring 11 and abstains on 29. Those abstentions remain in workload totals, and only one development case still has an effective removal. A fresh holdout of 8 test-split cases (5 sessions, no session overlap with development) exists, but only 11 of its 46 unprotected blocks are scoreable, so it checks leakage and controls rather than savings. Original measurements and private judgments remain local; they are not a public dataset or a completed validation of this revision.
+The development sample contains 40 checkpoints; 29 abstain for missing causal context and those blocks stay in workload totals. Under the current policy it has 15 hard-kept blocks (13 requested evidence, 2 structural), 58 eligible blocks and still only one case with an effective removal. The sampled test split is exhausted: every unused test checkpoint abstains for causal context, so the fresh sample is 8 never-measured development checkpoints (8 sessions) and is **not** a holdout. `requested source` made no claim on any real call, because the recorded call shape is a harness wrapper around composed commands; the JSON rule is the only protection that changes a real decision, and it changed 2 of 383 development blocks. Original measurements and private judgments remain local; they are not a public dataset or a completed validation of this revision.
+
+### Experimental decoded-line adapter
+
+`output_lines.decode(raw, producer)` accepts the explicitly identified bare
+`t3.exec.v1` envelope with exactly one completed (`exit_code`) or running
+(`session_id`) status form. `render(decoded, keep)` accepts half-open original
+line ranges, coalesces omissions, and changes only the JSON output string token.
+`omitted_text` verifies the original digest before recovering an omitted range.
+No-op rendering preserves the original envelope exactly; unknown shapes abstain.
+The producer identifier is a caller assertion, not inferred provenance.
+
+This adapter is not connected to the decision engine or a live provider.
+Markers identify a source digest and line range; a production retrieval service
+and event locator are still required. Character counts are not token savings,
+and the evaluator must enforce token non-expansion before applying any selection.

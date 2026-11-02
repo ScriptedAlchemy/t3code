@@ -240,10 +240,14 @@ class RequestedEvidenceTests(unittest.TestCase):
         for block, terms in hits.items():
             d = retained[block]
             if not d['protected']:
-                self.assertEqual(d['proposed'], 'drop')
-                self.assertEqual(d['effective'], 'keep')
-                self.assertEqual(d.get('retained_by'), 'requested evidence')
+                # Retention is a policy decision, so there is no fabricated score, proposal
+                # or "retained proposal" standing in for a model answer.
+                self.assertIsNone(d['proposed'])
+                self.assertIsNone(d['p_keep'])
+                self.assertNotIn('retained_by', d)
                 self.assertTrue(d['hard_keep'])
+                self.assertEqual(d['hard_source'], 'evidence')
+                self.assertTrue(d['reason'].startswith('hard keep'))
         # An unrelated middle block still follows the model score and drops.
         unrelated = [d for d in result['decisions']
                      if not d['protected'] and not d['evidence_terms']]
@@ -301,8 +305,11 @@ class DerivedSelectionTests(unittest.TestCase):
         for row in higher['cases'][0]['decisions']:
             if row['block'] in evidence_blocks and not row['protected']:
                 self.assertEqual(row['effective'], 'keep')
-                self.assertEqual(row['proposed'], 'drop')
-                self.assertEqual(row.get('retained_by'), 'requested evidence')
+                # Never scored, so never proposed: the retained keep is not a model keep.
+                self.assertIsNone(row['proposed'])
+                self.assertIsNone(row['p_keep'])
+                self.assertTrue(row['hard_keep'])
+                self.assertEqual(row['hard_source'], 'evidence')
         for row in swept['thresholds']:
             kept = {d['block']: d['effective']
                     for d in higher['cases'][0]['decisions']}
@@ -494,7 +501,10 @@ class EntireResultStateTests(unittest.TestCase):
                 scorer.assert_not_called()
         self.assertEqual(len(result['batches']), 1)
         self.assertEqual(result['requests'], 0)
-        self.assertEqual(e.build_report(args(), [result], {})['totals']['requests'], 0)
+        totals = e.build_report(args(), [result], {})['totals']
+        self.assertEqual(totals['requests'], 0)
+        self.assertEqual(totals['actual_calls'], 0)
+        self.assertEqual(totals['failed_requests'], 0)
         self.assertEqual(result['batches'][0]['status'], 'oversize')
         self.assertEqual(result['batches'][0]['questions'], 0)
         self.assertEqual(result['batches'][0]['request_tokens'], 0)

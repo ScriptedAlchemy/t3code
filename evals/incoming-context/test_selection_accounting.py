@@ -121,7 +121,8 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(e.proposal(0.09, False, 0.1), 'drop')
         self.assertEqual(e.proposal(0.1, False, 0.1), 'keep')
         self.assertEqual(e.proposal(0.0, True, 0.1), 'keep')
-        self.assertEqual(e.proposal(None, False, 0.1), 'keep')
+        # A block nobody scored has no proposal at all: None is not a keep.
+        self.assertIsNone(e.proposal(None, False, 0.1))
 
     def test_geometry_fixture_is_what_the_guards_exercise(self):
         plan = e.plan_blocks(BODY)
@@ -243,7 +244,8 @@ class DeadlineRetentionTests(unittest.TestCase):
                 self.assertEqual((d['p_keep'], d['proposed'], d['effective'], d['guard']),
                                  (0.0, 'drop', 'keep', 'deadline'))
             else:
-                self.assertEqual(d['proposed'], 'keep')
+                # An unscored block proposes nothing; a protected block is kept explicitly.
+                self.assertEqual(d['proposed'], 'keep' if d['protected'] else None)
         self.assertEqual(rerendered['totals']['dropped_blocks'], 0)
         self.assertEqual(rerendered['totals']['proposed_drops'], len(scored))
         self.assertEqual(rerendered['totals']['guarded_cases'], 0)
