@@ -21,7 +21,7 @@ describe("mergeProviderInstanceEnvironment", () => {
             ],
             baseEnv,
           ),
-        ).toEqual({ Path: "C:\\provider-gh", CUSTOM: "override" });
+        ).toEqual({ PATH: "C:\\provider-gh", CUSTOM: "override" });
         expect(baseEnv).toEqual({ PATH: "C:\\old", Custom: "inherited" });
       }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
   );
