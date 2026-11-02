@@ -1,0 +1,7 @@
+__pycache__/
+.venv/
+cases*.json
+analysis.json
+runs/
+blind*/
+*.local.json
