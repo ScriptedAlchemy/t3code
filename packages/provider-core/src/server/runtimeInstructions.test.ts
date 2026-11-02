@@ -7,7 +7,7 @@ describe("buildRuntimeInstructions", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
 
     assert.include(instructions, "Link each PR you create, take over, or push to");
-    assert.include(instructions, "one link_pull_request per PR");
+    assert.include(instructions, "every stack layer");
     assert.include(instructions, "Skip PRs you only read or review");
     assert.include(instructions, "If linking fails, say so.");
     assert.notInclude(instructions, "git log -1");
@@ -33,7 +33,7 @@ describe("buildRuntimeInstructions", () => {
     assert.include(instructions, "never watch, even if the brief says babysit");
     assert.include(
       instructions,
-      "After PR work, a child's last line is: PR <full URL>, head <SHA>, checks and reviews <state>.",
+      "After PR work, a child's last line is the `report` line from pull_request_status.",
     );
     assert.include(instructions, "Never wait with sleep");
     assert.include(instructions, 'New watches default to mode "checks"');
@@ -44,5 +44,17 @@ describe("buildRuntimeInstructions", () => {
     );
     assert.include(instructions, "Omitting mode on an existing watch keeps its mode.");
     assert.include(instructions, "call unwatch_pull_request");
+  });
+
+  it("sends PR reads through T3's tools and keeps gh for writes and gaps", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+
+    assert.include(instructions, "Read pull requests through T3.");
+    assert.include(
+      instructions,
+      "pull_request_status returns head, checks, reviews and mergeability",
+    );
+    assert.include(instructions, "gh spends the same GitHub rate limit");
+    assert.include(instructions, "stop all GitHub reads, gh included, until the time it names");
   });
 });

@@ -18,6 +18,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
+import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   CommonActions,
@@ -458,10 +459,15 @@ export function NewTaskDraftScreen(props: {
       return;
     }
 
-    const selection = resolveDraftProjectSelection(selectedProjectKey, projects, projectScopes, {
-      incomingShareId: props.incomingShareId,
-      pickerClosed: initialPickerRef.current === "open" && isFocused,
-    });
+    const selection = resolveDraftProjectSelection(
+      selectedProjectKey,
+      projects,
+      pickableProjectGroups(projectScopes),
+      {
+        incomingShareId: props.incomingShareId,
+        pickerClosed: initialPickerRef.current === "open" && isFocused,
+      },
+    );
     if (selection.kind === "preserve") {
       initialPickerRef.current = null;
       return;
@@ -893,7 +899,12 @@ export function NewTaskDraftScreen(props: {
       <ThreadScreenBinding
         environmentId={selectedProject.environmentId}
         header={
-          <DraftThreadHeader thread={thread} project={selectedProject} cwd={composerWorkspaceCwd} />
+          <DraftThreadHeader
+            thread={thread}
+            project={selectedProject}
+            cwd={composerWorkspaceCwd}
+            draftKey={flow.draftKey}
+          />
         }
         draftMode={{
           content: heroViewport,

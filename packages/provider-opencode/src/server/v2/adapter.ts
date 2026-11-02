@@ -56,6 +56,7 @@ import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as OpenCode2Client from "./OpenCode2Client.ts";
 import * as OpenCode2Server from "./OpenCode2Server.ts";
 import * as OpenCodeRuntime from "../OpenCodeRuntime.ts";
+import { readableProviderErrorMessage } from "../providerErrorMessage.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import { t3OrchestrationSystemPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
@@ -85,7 +86,11 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
-import { OPENCODE_PROVIDER, openCodePermissionRequestKind } from "../adapter.ts";
+import {
+  OPENCODE_NATIVE_CHILD_INSTRUCTIONS,
+  OPENCODE_PROVIDER,
+  openCodePermissionRequestKind,
+} from "../adapter.ts";
 import { openCodeToolTurnItem } from "../toolItems.ts";
 
 const OpenCode2ProviderCapabilities = {
@@ -1073,7 +1078,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           retryDelayMs: Math.max(0, Math.trunc(delayMs)),
         },
         failure: makeProviderFailure({
-          message: error.message,
+          message: readableProviderErrorMessage(error.message, error.status, error.response?.body),
           code: error.type,
           class: "provider_error",
           retryable: true,
@@ -2125,7 +2130,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         case "session.execution.interrupted":
           return yield* endExecution(state, turn, { status: "interrupted" });
         case "session.execution.failed": {
-          const { type, message, status } = event.data.error;
+          const { type, message, status, response } = event.data.error;
           // OpenCode types an empty balance as provider.quota too, but it answers
           // that with HTTP 402 and it never resets. Usage windows and budgets are 429.
           const usageLimit =
@@ -2133,7 +2138,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           return yield* endExecution(state, turn, {
             status: "failed",
             failure: makeProviderFailure({
-              message,
+              message: readableProviderErrorMessage(message, status, response?.body),
               code: type,
               class: usageLimit ? "usage_limit" : "provider_error",
             }),
@@ -2493,10 +2498,21 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       for (const message of recent.toReversed()) {
         if (message.type !== "assistant" || state.active !== turn) continue;
         const ordinals = { text: 0, reasoning: 0 };
-        for (const part of message.content) {
+        for (const [index, part] of message.content.entries()) {
           if (part.type === "text" || part.type === "reasoning") {
             const block = { assistantMessageID: message.id, ordinal: ordinals[part.type]++ };
-            yield* emitText(state, turn, block, part.type, () => part.text, true);
+            // OpenCode saves a block's text only when the block ends, so the last block of a
+            // response still streaming stays open and keeps the text that already arrived.
+            const open =
+              message.time.streamed === undefined && index === message.content.length - 1;
+            yield* emitText(
+              state,
+              turn,
+              block,
+              part.type,
+              (text) => (open && !part.text.startsWith(text) ? text : part.text),
+              !open,
+            );
             continue;
           }
           if (part.type !== "tool") continue;
@@ -3027,8 +3043,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       // Re-adding an unchanged config keeps its existing connection.
       let mcpAvailable = false;
       if (wanted !== undefined) {
-        mcpAvailable = yield* client.mcp
-          .add({
+        const wasRegistered = state.mcp !== undefined;
+        mcpAvailable = yield* Effect.gen(function* () {
+          // Track attempted registrations too: a lost acknowledgement can leave native config behind.
+          state.mcp = wanted;
+          yield* client.mcp.add({
             server: name,
             location: { directory },
             config: new Mcp.RemoteConfig({
@@ -3037,21 +3056,40 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               headers: { Authorization: wanted.credential },
               oauth: false,
             }),
-          })
-          .pipe(
-            Effect.timeout(INVENTORY_TIMEOUT),
-            Effect.as(true),
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Could not add T3 Code's MCP server to OpenCode.", cause).pipe(
-                Effect.as(false),
-              ),
-            ),
-          );
-        if (mcpAvailable) state.mcp = wanted;
+          });
+          // Native add/connect acknowledge configuration even if the MCP handshake fails.
+          const status = () =>
+            client.mcp
+              .list({ location: { directory } })
+              .pipe(
+                Effect.map(
+                  (result) => result.data.find((server) => server.name === name)?.status.status,
+                ),
+              );
+          let connectionStatus = yield* status();
+          if (
+            connectionStatus === "pending" ||
+            (wasRegistered && connectionStatus !== "connected")
+          ) {
+            // An identical add is a native no-op; reconnect is what retries its failed transport.
+            yield* client.mcp.connect({ server: name, location: { directory } });
+            connectionStatus = yield* status();
+          }
+          return connectionStatus === "connected";
+        }).pipe(
+          Effect.timeout(INVENTORY_TIMEOUT),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not connect T3 Code's MCP server to OpenCode.", {
+              threadId: turnInput.threadId,
+              errorTag: causeErrorTag(cause),
+            }).pipe(Effect.as(false)),
+          ),
+        );
       }
       const instructions = [
         buildRuntimeInstructions({ harness: "OpenCode", model: turnInput.modelSelection.model }),
         t3OrchestrationSystemPrompt(mcpAvailable, mcpSession?.capabilities?.has("device") === true),
+        mcpAvailable ? OPENCODE_NATIVE_CHILD_INSTRUCTIONS : undefined,
       ]
         .filter((part) => part !== undefined && part.length > 0)
         .join("\n\n");
@@ -3337,6 +3375,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       get providerSession() {
         return session;
       },
+      supportsT3Tools: !connection.external,
       events: Stream.fromQueue(events),
       // Idle release must wait for background children and held wakes after parent settlement.
       hasPendingBackgroundWork: Effect.sync(() => [...threads.values()].some(owesWork)),

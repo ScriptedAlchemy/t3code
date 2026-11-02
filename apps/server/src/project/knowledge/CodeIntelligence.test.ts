@@ -1306,6 +1306,15 @@ it.effect("answers from the published generation while its successor builds", ()
         gate,
       );
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      const checkingGate = yield* gate.holdNext;
+      const checking = yield* refresh().pipe(Effect.forkScoped);
+      yield* Deferred.await(checkingGate.entered);
+      const current = yield* run({ operation: "freshness" }).pipe(
+        Effect.ensuring(Deferred.succeed(checkingGate.release, undefined)),
+      );
+      assert.deepInclude(current.index, { state: "ready", generation: 1 });
+      assert.notProperty(current.index, "refresh");
+      assert.deepEqual(yield* Fiber.join(checking), { _tag: "Unchanged" });
       yield* Effect.promise(() => rewriteGeneratedSources(fixture.root, files));
       const held = yield* gate.holdNext;
       const building = yield* refresh().pipe(Effect.forkScoped);
@@ -1394,18 +1403,20 @@ it.effect("notifies a persistent build failure once until a successful refresh",
       yield* failRefresh;
       assert.equal((yield* run({ operation: "freshness" })).index?.refresh, "failed");
       assert.deepEqual(yield* refresh(), { _tag: "Unchanged" });
-      assert.notProperty((yield* run({ operation: "freshness" })).index, "refresh");
+      assert.notProperty((yield* run({ operation: "symbols", name: "greet" })).index, "refresh");
+      assert.deepEqual(yield* refresh(), { _tag: "Unchanged" });
       yield* failRefresh;
       yield* editDefinition(fixture.root, "recovered");
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
 
       assert.deepEqual(
         yield* events.pipe(
-          Stream.takeUntil((event) => event.outcome === "published"),
+          Stream.takeUntil((event) => event.outcome === "published" && event.generation === 2),
           Stream.runCollect,
         ),
         [
           { outcome: "failed", generation: 1 },
+          { outcome: "published", generation: 1 },
           { outcome: "failed", generation: 1 },
           { outcome: "published", generation: 2 },
         ],

@@ -22,7 +22,13 @@ import {
 import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { BrainIcon } from "lucide-react";
 import { Button } from "../ui/button";
+import { ThreadDetailsControl } from "../chat/ThreadDetailsControl";
+import {
+  THREAD_DETAILS_PANEL_ICON_CLASS,
+  THREAD_DETAILS_PANEL_LABEL_CLASS,
+} from "../chat/threadDetailsPanelStyles";
 import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
@@ -120,15 +126,19 @@ export function ProjectMemoryPanel(props: ProjectScope) {
   const open = useOpenProjectMemory();
   if (!available) return null;
   return (
-    <Button variant="ghost" size="sm" onClick={() => open(props)}>
-      Project memory
-    </Button>
+    <ThreadDetailsControl onClick={() => open(props)}>
+      <BrainIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+      <span className={`min-w-0 flex-1 truncate ${THREAD_DETAILS_PANEL_LABEL_CLASS}`}>
+        Project memory
+      </span>
+    </ThreadDetailsControl>
   );
 }
 
 export function ProjectMemoryDialogHost(props: Scope) {
   const available = useProjectMemoryAvailable(props.environmentId);
   const [request, setRequest] = useAtom(openRequestAtom);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- releases the shared open request this host holds until unmount
   useEffect(() => () => setRequest(null), [setRequest]);
   const active =
     available &&
@@ -226,6 +236,7 @@ function MemoryContents(
   } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const selectionVersion = useRef(0);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- invalidates in-flight selection work when the dialog unmounts
   useEffect(
     () => () => {
       selectionVersion.current += 1;

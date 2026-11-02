@@ -5,6 +5,7 @@ import {
   ThreadId,
   type OrchestrationV2ServerCommand as OrchestrationCommand,
   PullRequestOperationError,
+  type PullRequestStatusReport,
   type OrchestrationProjectShell,
   type PullRequestRef,
   type PullRequestReviewGuideResult,
@@ -26,6 +27,7 @@ import {
   v2PullRequestThread,
 } from "../../../orchestration-v2/testkit/pullRequestFixtures.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as PullRequestOracle from "../../../pullRequest/PullRequestOracle.ts";
 import * as PullRequestReviewGuideService from "../../../pullRequest/PullRequestReviewGuideService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -146,6 +148,7 @@ interface HarnessOptions {
     PullRequestReviewGuideResult & { started: boolean },
     PullRequestOperationError
   >;
+  readonly oracle?: Partial<PullRequestOracle.PullRequestOracle["Service"]>;
 }
 
 const NO_GUIDE: PullRequestReviewGuideResult = { guide: null, run: null, currentHeadSha: "head-1" };
@@ -192,6 +195,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
           ),
         ),
     }),
+    Layer.mock(PullRequestOracle.PullRequestOracle)(options.oracle ?? {}),
     Layer.mock(Orchestrator.OrchestratorV2)({
       getThreadShell: (id) =>
         Effect.succeed(id === THREAD_ID && thread ? v2PullRequestThread(thread) : null),
@@ -263,6 +267,27 @@ describe("pull request toolkit handlers", () => {
           source: "agent",
         },
       ]);
+    }),
+  );
+
+  it.effect("links a bare number against the caller project and accepts its fork URL", () =>
+    Effect.gen(function* () {
+      const project = makeProject();
+      const harness = yield* makeHarness({
+        project: {
+          ...project,
+          repositoryIdentity: {
+            ...project.repositoryIdentity!,
+            origin: { canonicalKey: "github.com/scriptedalchemy/t3code" },
+          },
+        },
+      });
+      const result = yield* harness.call("link_pull_request", { number: 123 });
+      expect(result).toMatchObject({ repository: "t3tools/t3code", number: 123 });
+      const fork = yield* harness.call("link_pull_request", {
+        url: "https://github.com/ScriptedAlchemy/t3code/pull/24",
+      });
+      expect(fork).toMatchObject({ repository: "scriptedalchemy/t3code", number: 24 });
     }),
   );
 
@@ -549,6 +574,75 @@ describe("pull request toolkit handlers", () => {
     }),
   );
 
+  it.effect("reports a dismissed stack member as not linked and leaves it dismissed", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        thread: makeThread([makeLink(9, { source: "stack-dismissed" })]),
+      });
+      const result = yield* harness.call("unlink_pull_request", {
+        repository: "t3tools/t3code",
+        number: 9,
+      });
+      expect(result.wasLinked).toBe(false);
+      expect(yield* Ref.get(harness.commands)).toEqual([]);
+    }),
+  );
+
+  it.effect("links several pull requests in one call", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        thread: makeThread([makeLink(1), { ...makeLink(2), source: "stack-dismissed" }]),
+      });
+      const url = (number: number) => `https://github.com/t3tools/t3code/pull/${number}`;
+      const result = yield* harness.call("link_pull_requests", {
+        urls: [url(1), url(2), url(3), url(3), "https://example.com/not-a-pr"],
+      });
+      expect(result).toEqual({
+        linked: [{ host: "github.com", repository: "t3tools/t3code", numbers: [2, 3] }],
+        alreadyLinked: [{ host: "github.com", repository: "t3tools/t3code", numbers: [1] }],
+        linkedCount: 3,
+        invalidUrls: ["https://example.com/not-a-pr"],
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.link", number: 2, source: "agent" },
+        { type: "thread.pull-request.link", number: 3, source: "agent" },
+      ]);
+    }),
+  );
+
+  it.effect("unlinks every visible pull request in the given states in one call", () =>
+    Effect.gen(function* () {
+      const withState = (number: number, state: "open" | "closed" | "merged") => {
+        const link = makeLink(number, { headBranch: `branch-${number}` });
+        return { ...link, snapshot: { ...link.snapshot!, state } };
+      };
+      const harness = yield* makeHarness({
+        thread: makeThread([
+          withState(1, "merged"),
+          withState(2, "open"),
+          withState(3, "closed"),
+          makeLink(4),
+          { ...withState(5, "merged"), source: "stack-dismissed" },
+        ]),
+      });
+      const result = yield* harness.call("unlink_pull_requests", {
+        states: ["closed", "merged"],
+      });
+      expect(result).toEqual({
+        unlinked: [
+          { host: "github.com", repository: "t3tools/t3code", state: "merged", numbers: [1] },
+          { host: "github.com", repository: "t3tools/t3code", state: "closed", numbers: [3] },
+        ],
+        unlinkedCount: 2,
+        remaining: 2,
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.unlink", number: 1 },
+        { type: "thread.pull-request.unlink", number: 3 },
+      ]);
+    }),
+  );
+
   it("reports an older Forgejo link's HTTP port when listing thread links", () => {
     const result = listThreadPullRequests(
       makeThread([
@@ -735,4 +829,87 @@ describe("pull request guide tools", () => {
       ]);
     }),
   );
+
+  describe("agent reads", () => {
+    const status: PullRequestStatusReport = {
+      pullRequests: [
+        {
+          _tag: "Status",
+          url: "https://github.com/t3tools/t3code/pull/5",
+          number: 5,
+          title: "PR 5",
+          state: "open",
+          isDraft: false,
+          headBranch: "feature",
+          baseBranch: "main",
+          headSha: "5b7e2d9c0ffee",
+          mergeability: "mergeable",
+          reviewDecision: null,
+          checks: {
+            verdict: "none",
+            passed: 0,
+            failed: 0,
+            pending: 0,
+            skipped: 0,
+            failing: [],
+            waiting: [],
+          },
+          observedAt: {},
+          report:
+            "PR https://github.com/t3tools/t3code/pull/5, head 5b7e2d9, checks none, reviews none, mergeable",
+          resolvedVia: "linked",
+        },
+      ],
+    };
+
+    it.effect("asks the oracle as the token's thread, with the named targets", () =>
+      Effect.gen(function* () {
+        const calls = yield* Ref.make<ReadonlyArray<unknown>>([]);
+        const harness = yield* makeHarness({
+          oracle: {
+            status: (input) =>
+              Ref.update(calls, (seen) => [...seen, input]).pipe(Effect.as(status)),
+            failures: (input) =>
+              Ref.update(calls, (seen) => [...seen, input]).pipe(
+                Effect.as({
+                  _tag: "RateLimited" as const,
+                  until: "2026-10-30T20:05:00.000Z",
+                  message: "paused",
+                }),
+              ),
+          },
+        });
+        expect(yield* harness.call("pull_request_status", {})).toEqual(status);
+        expect(
+          yield* harness.call("pull_request_failures", {
+            pullRequests: [{ repository: "t3tools/t3code", number: 5 }],
+            checks: ["lint"],
+          }),
+        ).toMatchObject({ _tag: "RateLimited" });
+        expect(yield* Ref.get(calls)).toEqual([
+          { caller: { threadId: THREAD_ID }, pullRequests: undefined },
+          {
+            caller: { threadId: THREAD_ID },
+            pullRequests: [{ repository: "t3tools/t3code", number: 5 }],
+            checks: ["lint"],
+          },
+        ]);
+      }),
+    );
+
+    it.effect("refuses a credential without the pull-requests capability before reading", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({
+          oracle: { feedback: () => Effect.die("must not be called") },
+        });
+        const error = yield* harness
+          .call("pull_request_feedback", {}, ["preview"])
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "McpCapabilityUnavailableError",
+          capability: "pull-requests",
+        });
+      }),
+    );
+  });
 });

@@ -22,6 +22,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
   buildDesktopBundles,
+  copyDesktopBuildArtifacts,
   DesktopBuildManifestRestoreError,
   BundleNotSelfContainedError,
   BuildCommandFailedError,
@@ -31,6 +32,7 @@ import {
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
   stageDesktopServerDist,
+  prunePackagedPstackTestFixtures,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   UnsupportedDesktopBuildArchitectureError,
@@ -250,6 +252,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           "upstream/.gitignore",
           "upstream/skills/poteto-mode/scripts/bun.lock",
         ];
+        const testFixture = "upstream/skills/statechart/scripts/test/corpus/Counter/chart.mmd";
+        const testFixturePath = path.join(serverDistDir, "pstack", testFixture);
+        yield* fs.makeDirectory(path.dirname(testFixturePath), { recursive: true });
+        yield* fs.writeFileString(testFixturePath, "test-only fixture");
         for (const file of files) {
           const source = path.join(serverDistDir, "pstack", file);
           yield* fs.makeDirectory(path.dirname(source), { recursive: true });
@@ -257,6 +263,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         }
         yield* fs.writeFileString(path.join(serverDistDir, "bin.mjs"), "server");
         yield* stageDesktopServerDist({ platform, serverDistDir, stageAppDir });
+        const packagedFixture = path.join(stageAppDir, "apps/server/dist/pstack", testFixture);
+        assert.isFalse(yield* fs.exists(packagedFixture));
+        assert.isTrue(yield* fs.exists(testFixturePath));
         for (const file of files) {
           assert.equal(
             yield* fs.readFileString(path.join(stageAppDir, "apps/server/dist/pstack", file)),
@@ -1218,7 +1227,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         });
 
         assert.isFalse(
-          commands.some((command) => command.command.endsWith(fixture.appExecutableName)),
+          commands.some(
+            (command) =>
+              command.command === NodePath.join(fixture.packagedAppDir, fixture.appExecutableName),
+          ),
         );
         assert.isTrue(
           commands.some(
@@ -1360,10 +1372,15 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const fixture = yield* makeWindowsPayloadFixture({ copyUnpackedNatives: true });
+      const packagedPstackDir = path.join(fixture.packagedAppDir, "resources/pstack");
       yield* fs.copy(
         path.join(import.meta.dirname, "../packages/pstack/upstream"),
-        path.join(fixture.packagedAppDir, "resources/pstack/upstream"),
+        path.join(packagedPstackDir, "upstream"),
       );
+      yield* prunePackagedPstackTestFixtures(packagedPstackDir);
+      const scriptsDir = path.join(packagedPstackDir, "upstream/skills/statechart/scripts");
+      assert.isFalse(yield* fs.exists(path.join(scriptsDir, "test")));
+      assert.isTrue(yield* fs.exists(path.join(scriptsDir, "statechart.ts")));
       yield* stageSelfContainedPlatformPackages(
         path.join(import.meta.dirname, "../apps/server/node_modules"),
         path.join(fixture.packagedAppDir, "resources/node_modules"),
@@ -1861,4 +1878,58 @@ it.effect.skipIf(!symlinksSupported)("rebases packaged links into the isolated t
       resolvedCopiedPackage,
     );
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("preserves packaged app directories from the dir target", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-dir-artifact-" });
+    const stage = path.join(root, "stage");
+    const output = path.join(root, "output");
+    const app = path.join("mac-arm64", "T3 Code.app", "Contents");
+    yield* fs.makeDirectory(path.join(stage, app), { recursive: true });
+    yield* fs.writeFileString(path.join(stage, app, "Info.plist"), "built-app");
+    yield* fs.writeFileString(path.join(stage, "builder-debug.yml"), "debug");
+    const copied = yield* copyDesktopBuildArtifacts(stage, output, true);
+    assert.include(copied, path.join(output, "mac-arm64"));
+    assert.equal(yield* fs.readFileString(path.join(output, app, "Info.plist")), "built-app");
+    assert.equal(yield* fs.readFileString(path.join(stage, app, "Info.plist")), "built-app");
+    yield* fs.remove(path.join(stage, app, "Info.plist"));
+    yield* fs.writeFileString(path.join(stage, app, "New.plist"), "rebuilt-app");
+    yield* copyDesktopBuildArtifacts(stage, output, true);
+    assert.isFalse(yield* fs.exists(path.join(output, app, "Info.plist")));
+    assert.equal(yield* fs.readFileString(path.join(output, app, "New.plist")), "rebuilt-app");
+    const filesOnly = yield* copyDesktopBuildArtifacts(stage, path.join(root, "files-only"));
+    assert.deepEqual(filesOnly, [path.join(root, "files-only", "builder-debug.yml")]);
+    assert.isFalse(yield* fs.exists(path.join(root, "files-only", "mac-arm64")));
+    yield* fs.remove(path.join(stage, "mac-arm64"), { recursive: true });
+    yield* fs.writeFileString(path.join(stage, "mac-arm64"), "flattened");
+    yield* copyDesktopBuildArtifacts(stage, output, true);
+    assert.equal(yield* fs.readFileString(path.join(output, "mac-arm64")), "flattened");
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.effect.skipIf(!symlinksSupported)("preserves relative links when replacing dir artifacts", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-dir-artifact-links-" });
+    const stage = path.join(root, "stage");
+    const output = path.join(root, "output");
+    const app = path.join("mac-arm64", "T3 Code.app", "Contents");
+    yield* fs.makeDirectory(path.join(stage, app), { recursive: true });
+    yield* fs.writeFileString(path.join(stage, app, "Info.plist"), "built-app");
+    yield* fs.symlink("Info.plist", path.join(stage, app, "Current"));
+    yield* copyDesktopBuildArtifacts(stage, output, true);
+    assert.equal(yield* fs.readLink(path.join(output, app, "Current")), "Info.plist");
+    assert.equal(yield* fs.readFileString(path.join(output, app, "Current")), "built-app");
+
+    yield* fs.remove(path.join(stage, app, "Current"));
+    yield* fs.writeFileString(path.join(stage, app, "New.plist"), "rebuilt-app");
+    yield* fs.symlink("New.plist", path.join(stage, app, "Current"));
+    yield* copyDesktopBuildArtifacts(stage, output, true);
+    assert.equal(yield* fs.readLink(path.join(output, app, "Current")), "New.plist");
+    assert.equal(yield* fs.readFileString(path.join(output, app, "Current")), "rebuilt-app");
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );

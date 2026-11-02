@@ -9,5 +9,7 @@ export default defineConfig({
     GitRefname: "effect/Schema#String",
     // Preserve GitHub's strings for comparison with other reads.
     DateTime: "effect/Schema#String",
+    // GitHub's Int fields exceed int32, e.g. CheckRun.databaseId (123135166838).
+    Int: "effect/Schema#Int",
   },
 });

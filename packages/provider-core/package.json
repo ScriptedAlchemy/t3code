@@ -47,6 +47,10 @@
       "types": "./src/server/IdAllocator.ts",
       "import": "./src/server/IdAllocator.ts"
     },
+    "./server/homeOverlay": {
+      "types": "./src/server/homeOverlay.ts",
+      "import": "./src/server/homeOverlay.ts"
+    },
     "./server/instanceEnvironment": {
       "types": "./src/server/instanceEnvironment.ts",
       "import": "./src/server/instanceEnvironment.ts"

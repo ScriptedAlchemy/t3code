@@ -225,24 +225,145 @@ it.effect("preserves explicit panel cardinality, aliases, comments and model sla
     assert.include(result.diagnostics[0]!, "missing/vendor/model");
   }),
 );
-it.effect("recognizes Pi-style thinking as effort", () =>
+it.effect.each([
+  { instanceId: "custom-codex", driver: "codex", model: "gpt-6-astra" },
+  { instanceId: "pi", driver: "pi", model: "openai/gpt-6-astra" },
+  { instanceId: "opencode-work", driver: "opencode2", model: "openai/gpt-6-astra" },
+  { instanceId: "acp-work", driver: "acpRegistry", model: "gpt-6-astra" },
+])(
+  "resolves default models and advertised thinking across harnesses: $driver",
+  ({ instanceId, driver, model }) =>
+    Effect.sync(() => {
+      const piStyle = provider(instanceId, driver, model, [effort("thinking")]);
+      const result = resolveRoles({
+        ...availability,
+        file: undefined,
+        defaults: [{ label: "runner", defaultValue: "gpt-6-astra-xhigh-fast" }],
+        providers: [{ ...providers[1]!, enabled: false }, piStyle],
+        capableInstanceIds: new Set([piStyle.instanceId]),
+      });
+      assert.deepEqual(result.diagnostics, []);
+      assert.deepEqual(result.roles[0]!.seats, [
+        {
+          kind: "target",
+          target: {
+            providerInstanceId: instanceId,
+            model,
+            options: [{ id: "thinking", value: "xhigh" }],
+          },
+        },
+      ]);
+    }),
+);
+it.effect(
+  "keeps advertised default model IDs intact and does not require a reasoning control",
+  () =>
+    Effect.sync(() => {
+      const catalog = provider("pi", "pi", "grok-4.7", []);
+      const exact = provider("custom", "acpRegistry", "custom-fast", []);
+      const result = resolveRoles({
+        ...availability,
+        file: undefined,
+        defaults: [{ label: "architect runners", defaultValue: "grok-4.7-xhigh, custom-fast" }],
+        providers: [catalog, exact],
+        capableInstanceIds: new Set([catalog.instanceId, exact.instanceId]),
+      });
+      assert.deepEqual(result.diagnostics, []);
+      assert.deepEqual(result.roles[0]!.seats, [
+        { kind: "target", target: { providerInstanceId: "pi", model: "grok-4.7", options: [] } },
+        {
+          kind: "target",
+          target: { providerInstanceId: "custom", model: "custom-fast", options: [] },
+        },
+      ]);
+    }),
+);
+it.effect(
+  "does not guess a provider-qualified model when an unqualified default is ambiguous",
+  () =>
+    Effect.sync(() => {
+      const catalog = provider("pi", "pi", "vendor-a/shared-model", []);
+      const other = provider("opencode", "opencode2", "vendor-b/shared-model", []);
+      const result = resolveRoles({
+        ...availability,
+        file: undefined,
+        defaults: [{ label: "architect runners", defaultValue: "shared-model" }],
+        providers: [catalog, other],
+        capableInstanceIds: new Set([catalog.instanceId, other.instanceId]),
+      });
+      assert.deepEqual(result.roles[0]!.seats, [{ kind: "inherit" }]);
+      assert.include(result.diagnostics[0]!, "ambiguous");
+    }),
+);
+it.effect("prefers the parent's available harness and reports unavailable inherited seats", () =>
   Effect.sync(() => {
-    const piStyle = provider("custom-codex", "codex", "gpt-6-astra", [effort("thinking")]);
+    const other = provider("pi", "pi", "gpt-6-astra", [effort("thinking")]);
+    const input = {
+      ...availability,
+      defaults: [{ label: "architect runners", defaultValue: "gpt-6-astra-high, inherit-parent" }],
+      providers: [...providers, other],
+      capableInstanceIds: new Set([...capableInstanceIds, other.instanceId]),
+      parentModelSelection: { instanceId: other.instanceId, model: "gpt-6-astra" },
+      file: undefined,
+    };
+    const result = resolveRoles(input);
+    assert.deepEqual(result.diagnostics, []);
+    assert.deepEqual(result.roles[0]!.seats, [
+      {
+        kind: "target",
+        target: {
+          providerInstanceId: "pi",
+          model: "gpt-6-astra",
+          options: [{ id: "thinking", value: "high" }],
+        },
+      },
+      { kind: "inherit" },
+    ]);
+    const unavailable = resolveRoles({
+      ...input,
+      file: parseModelsFile("architect runners: auto, missing/model"),
+      providers: [...providers, { ...other, enabled: false }],
+    });
+    assert.deepEqual(unavailable.roles[0]!.seats, [
+      { kind: "unavailable" },
+      { kind: "unavailable" },
+    ]);
+    assert.include(unavailable.diagnostics.join("\n"), "Parent model cannot run a child task");
+    assert.notInclude(unavailable.diagnostics.join("\n"), "runs on the parent model");
+  }),
+);
+it.effect("parses option booleans according to the selected model's descriptors", () =>
+  Effect.sync(() => {
+    const catalog = provider("pi", "pi", "vendor/model", [
+      { id: "enabled", label: "Enabled", type: "boolean" },
+      {
+        id: "variant",
+        label: "Variant",
+        type: "select",
+        options: [
+          { id: "true", label: "True" },
+          { id: "false", label: "False" },
+        ],
+      },
+    ]);
     const result = resolveRoles({
       ...availability,
-      file: undefined,
-      defaults: [{ label: "runner", defaultValue: "gpt-6-astra-xhigh-fast" }],
-      providers: [piStyle],
-      capableInstanceIds: new Set([piStyle.instanceId]),
+      file: parseModelsFile("architect runners: pi/vendor/model enabled=false variant=true"),
+      defaults,
+      providers: [catalog],
+      capableInstanceIds: new Set([catalog.instanceId]),
     });
     assert.deepEqual(result.diagnostics, []);
     assert.deepEqual(result.roles[0]!.seats, [
       {
         kind: "target",
         target: {
-          providerInstanceId: "custom-codex",
-          model: "gpt-6-astra",
-          options: [{ id: "thinking", value: "xhigh" }],
+          providerInstanceId: "pi",
+          model: "vendor/model",
+          options: [
+            { id: "enabled", value: false },
+            { id: "variant", value: "true" },
+          ],
         },
       },
     ]);
@@ -300,6 +421,8 @@ it.effect("formats the adapter block exactly and omits empty notes", () =>
         "Read <pstack>/skills/architect/SKILL.md and follow it.",
         "Read <pstack>/skills/arena/SKILL.md and follow it.",
         "Resolved roles (exact delegate_task targets; they override any model a skill or <models> names):",
+        "These targets are a snapshot. If a target is rejected or marked unavailable, refresh orchestrator_capabilities before retrying; keep the user's model choices and reasoning budget, and report any fallback.",
+        "After setup-pstack changes <models>, re-read it and resolve against fresh orchestrator_capabilities; the earlier targets below no longer apply.",
         "- architect runners: [1] inherit",
         "- interrogate reviewers (panel, one child per seat): [1] inherit [2] inherit",
         "- feature, refactoring (pool, pick one per spawn): [1] inherit [2] inherit",
@@ -373,17 +496,57 @@ it.effect("default seats skip unhealthy and incapable instances offering the mod
       installed: false,
     };
     const incapable = { ...first, instanceId: ProviderInstanceId.make("incapable") };
+    const missingDefault = provider("missing-default", "codex", "gpt-6-astra", [
+      effort("reasoningEffort"),
+      {
+        id: "variant",
+        label: "Variant",
+        type: "select",
+        options: [{ id: "standard", label: "Standard" }],
+      },
+    ]);
     const result = resolveRoles({
       ...availability,
       file: undefined,
       defaults,
-      providers: [unhealthy, incapable, ...providers],
-      capableInstanceIds: new Set([...capableInstanceIds, unhealthy.instanceId]),
+      providers: [unhealthy, incapable, missingDefault, ...providers],
+      capableInstanceIds: new Set([
+        ...capableInstanceIds,
+        unhealthy.instanceId,
+        missingDefault.instanceId,
+      ]),
     });
     assert.deepEqual(result.diagnostics, []);
     const seat = result.roles[0]!.seats[1]!;
     assert.equal(seat.kind === "target" && seat.target.providerInstanceId, "codex");
   }),
+);
+it.effect.each([false, true])(
+  "implicit model defaults follow orchestration visibility; custom=%s",
+  (isCustom) =>
+    Effect.sync(() => {
+      const codex = providers[1]!;
+      const input = {
+        ...availability,
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          providerModelPreferences: {
+            [codex.instanceId]: { hiddenModels: ["gpt-6-astra"], modelOrder: [] },
+          },
+        },
+        defaults: [{ label: "architect runners", defaultValue: "gpt-6-astra-high" }],
+        providers: [{ ...codex, models: codex.models.map((model) => ({ ...model, isCustom })) }],
+        capableInstanceIds,
+      };
+      const implicit = resolveRoles({ ...input, file: undefined });
+      assert.equal(implicit.roles[0]!.seats[0]!.kind, isCustom ? "target" : "inherit");
+      const explicit = resolveRoles({
+        ...input,
+        file: parseModelsFile("architect runners: codex/gpt-6-astra reasoningEffort=high"),
+      });
+      assert.equal(explicit.roles[0]!.seats[0]!.kind, "target");
+      assert.deepEqual(explicit.diagnostics, []);
+    }),
 );
 it.effect("clamps default effort below its budget", () =>
   Effect.sync(() => {

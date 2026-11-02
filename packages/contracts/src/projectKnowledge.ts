@@ -398,6 +398,8 @@ export const ProjectKnowledgeDeliveryOmission = Schema.Struct({
   ]),
 });
 export const ProjectKnowledgeDeliveryBudget = Schema.Struct({
+  // Conservative payload occupancy survives source scrubbing and process restarts.
+  estimatedTokens: Schema.optionalKey(NonNegativeInt),
   capacity: Schema.Number,
   occupancy: Schema.Number,
   requestSize: Schema.Number,

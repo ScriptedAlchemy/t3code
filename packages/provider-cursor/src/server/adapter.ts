@@ -68,7 +68,7 @@ import {
   subagentThreadTitle,
 } from "@t3tools/provider-core/server/subagentProjection";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
-import { ConfigurationError } from "./sdk.ts";
+import { isCursorSdkError } from "./sdk.ts";
 export { cursorSdkModelSelection } from "./sdkModel.ts";
 
 const CURSOR_DRIVER_KIND = CursorAgentSdk.CURSOR_PROVIDER;
@@ -336,7 +336,7 @@ class CursorModelUnavailableError extends Schema.TaggedError<CursorModelUnavaila
 // Uncoded SDK model rejections are identifiable only by message prefix.
 const classifyCursorModelRejection =
   (modelSelection: ModelSelection) => (error: CursorAgentSdk.CursorAgentSdkRunnerError) =>
-    error.cause instanceof ConfigurationError &&
+    isCursorSdkError(error.cause, "ConfigurationError") &&
     error.cause.message.startsWith("Cannot use this model:")
       ? new CursorModelUnavailableError({ model: modelSelection.model, cause: error.cause })
       : error;
@@ -477,7 +477,7 @@ function cursorToolSearchResults(
         if (result.type === "count") {
           return result.output.counts.map((entry) => ({
             fileName: entry.file,
-            preview: `${entry.count} matches`,
+            preview: `${entry.count} ${entry.count === 1 ? "match" : "matches"}`,
           }));
         }
         return result.output.matches.map((entry) => ({
@@ -2113,7 +2113,8 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             yield* emitToolArtifacts({
               active: tool,
               completed: true,
-              ...(input.status === "completed" ? {} : { unfinishedStatus: input.status }),
+              // No completion event means the tool outcome is unknown.
+              unfinishedStatus: input.status === "completed" ? "interrupted" : input.status,
             });
           }
           input.context.tools.clear();
@@ -2373,11 +2374,11 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             const hasDeviceTools =
               mcpServers !== undefined && mcpSession?.capabilities?.has("device") === true;
             const known = yield* Ref.get(told);
-            // A conversation this process has not sent to was told on its first run.
+            // A resumed conversation may predate the current T3 instructions.
             const delivered =
               known?.agent === agent.nativeThreadId
                 ? known
-                : { orchestration: turnInput.runOrdinal > 1, device: false };
+                : { orchestration: false, device: false };
             const message = yield* resolveUserMessage(
               turnInput,
               mcpServers,

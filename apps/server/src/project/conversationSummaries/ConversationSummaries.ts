@@ -14,6 +14,7 @@ import {
   type MessageId,
   type OrchestrationV2ConversationMessage,
   type ProjectId,
+  type RunId,
   type ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
@@ -33,6 +34,7 @@ import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as ProjectKnowledge from "../knowledge/ProjectKnowledge.ts";
+import { deliveredKnowledgeForHistory } from "../knowledge/composer.ts";
 import {
   ConversationSummaryPassError,
   ConversationSummaryRuntime,
@@ -648,34 +650,52 @@ const make = Effect.gen(function* () {
         // Look up only the requested item identities, not every command and message body in
         // the thread. json_each avoids SQLite's bind limit for a long omitted-history range.
         const items = yield* sql<{
-          readonly turn_item_id: TurnItemId;
-          readonly message_id: MessageId;
+          readonly itemId: TurnItemId;
+          readonly messageId: MessageId;
+          readonly runId: RunId | null;
+          readonly kind: "user_message" | "assistant_message";
         }>`
-          SELECT item.turn_item_id, json_extract(item.payload_json, '$.messageId') AS message_id
+          SELECT item.turn_item_id AS "itemId", item.run_id AS "runId", item.type AS kind,
+            json_extract(item.payload_json, '$.messageId') AS "messageId"
           FROM json_each(${requestedItems}) AS requested
           JOIN orchestration_v2_projection_turn_items AS item ON item.turn_item_id = requested.value
           WHERE item.thread_id = ${threadId} AND item.type IN ('user_message', 'assistant_message')
         `;
-        const itemByMessage = new Map(items.map((item) => [item.message_id, item.turn_item_id]));
+        const itemByMessage = new Map(items.map((item) => [item.messageId, item]));
         if (itemByMessage.size === 0) continue;
         yield* scanThreadSummarySources(
           projectId,
           threadId,
           Effect.fnUntraced(function* (summaries) {
             for (const metadata of summaries) {
-              const items = metadata.sources.flatMap(
+              const sourceItems = metadata.sources.flatMap(
                 (source) => itemByMessage.get(source.messageId) ?? [],
               );
-              if (items.length !== metadata.sources.length) continue;
+              if (sourceItems.length !== metadata.sources.length) continue;
               // Decode statement bodies only for summaries covering the handoff's requested
               // messages; source validation still runs immediately before offering any text.
               const summary = yield* findSummary({ projectId, threadId, summaryId: metadata.id });
               // Stale rows must not consume the offer limit and hide later usable summaries.
               if ((yield* read(summary)).state !== "available") continue;
+              // Summary input excludes attached knowledge; replay its receipts even when the
+              // source messages were omitted before this handoff was prepared.
+              const evidence = yield* deliveredKnowledgeForHistory({
+                projectId,
+                messages: sourceItems.map((item) => ({ ...item, threadId })),
+                userItemId: (messageId) => itemByMessage.get(messageId)?.itemId,
+              }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge));
               offered.push({
                 id: summary.id,
-                text: renderForHandoff(summary),
-                coveredItemIds: items,
+                text: [
+                  renderForHandoff(summary),
+                  ...sourceItems.flatMap((item, index) => {
+                    const attached = evidence.get(item.itemId);
+                    return attached === undefined
+                      ? []
+                      : [`[Summary source #${index + 1}; item=${item.itemId}]\n${attached}`];
+                  }),
+                ].join("\n\n"),
+                coveredItemIds: sourceItems.map((item) => item.itemId),
               });
               if (offered.length >= HANDOFF_CANDIDATE_LIMIT) return false;
             }

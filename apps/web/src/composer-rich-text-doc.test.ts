@@ -17,10 +17,14 @@ import {
   buildDocJson,
   buildTiptapContent,
   caretTakesMarksBefore,
+  composerChipReplacements,
   ComposerBlockExtensions,
   ComposerCodeBlockExtension,
   ComposerListExtensions,
+  ComposerBoldExtension,
   ComposerCodeExtension,
+  ComposerItalicExtension,
+  ComposerStrikeExtension,
   ComposerTaskItemExtension,
   flatToMarkdown,
   flatToPm,
@@ -28,9 +32,14 @@ import {
   pmToFlat,
   serializeEditorDoc,
   serializeSelection,
-  skillChipReplacements,
   stepCaretAcrossStyledEdge,
+  type ComposerChipResolver,
 } from "./composer-rich-text-doc";
+
+const knownChips: ComposerChipResolver = {
+  skill: (name) => ({ label: name, description: null }),
+  model: () => false,
+};
 
 function stubAtom(name: string, attrs: Record<string, { default: unknown }>) {
   return Node.create({
@@ -64,6 +73,11 @@ const schema = getSchemaByResolvedExtensions(
       skillLabel: { default: "" },
       skillDescription: { default: null },
     }),
+    stubAtom("composer-model", {
+      instanceId: { default: "" },
+      model: { default: "" },
+      source: { default: "" },
+    }),
     stubAtom("composer-citation", {
       citation: { default: null },
       source: { default: "" },
@@ -84,7 +98,7 @@ const schema = getSchemaByResolvedExtensions(
 );
 
 function roundTrip(value: string) {
-  const json = buildDocJson(value, (name) => ({ label: name, description: null }));
+  const json = buildDocJson(value, knownChips);
   const doc = ProseMirrorNode.fromJSON(schema, json);
   // `insertContent` validates every node against the schema; `fromJSON` does not.
   doc.check();
@@ -129,17 +143,13 @@ describe("editable math source", () => {
     const map = roundTrip(source);
     expect(map.value).toBe(source);
     expect(map.runs.some((run) => run.nodeName === "composer-math")).toBe(false);
-    const doc = schema.nodeFromJSON(
-      buildDocJson(source, (name) => ({ label: name, description: null })),
-    );
+    const doc = schema.nodeFromJSON(buildDocJson(source, knownChips));
     expect(serializeSelection(doc, 1, doc.content.size - 1)).toBe(source);
   });
 
   it("edits a command character directly without replacing a formula node", () => {
     const source = "before \\(\\frac{a}{b}\\) after";
-    const doc = schema.nodeFromJSON(
-      buildDocJson(source, (name) => ({ label: name, description: null })),
-    );
+    const doc = schema.nodeFromJSON(buildDocJson(source, knownChips));
     const map = serializeEditorDoc(doc);
     const offset = source.indexOf("{a}") + 1;
     const position = flatToPm(map, offset);
@@ -150,9 +160,7 @@ describe("editable math source", () => {
   it("preserves formula source as text when styling is disabled", () => {
     const source =
       "\\[\n\\text{use $browser, @README.md and [file](t3-context://v1/file/ctx_1)}\n\\]";
-    const doc = plainSchema.nodeFromJSON(
-      buildDocJson(source, (name) => ({ label: name, description: null }), { styling: false }),
-    );
+    const doc = plainSchema.nodeFromJSON(buildDocJson(source, knownChips, { styling: false }));
     const map = serializeEditorDoc(doc);
     expect(map.value).toBe(source);
     expect(map.runs.some((run) => run.kind === "token")).toBe(false);
@@ -185,6 +193,11 @@ const plainSchema = getSchemaByResolvedExtensions(
       skillLabel: { default: "" },
       skillDescription: { default: null },
     }),
+    stubAtom("composer-model", {
+      instanceId: { default: "" },
+      model: { default: "" },
+      source: { default: "" },
+    }),
     stubAtom("composer-citation", {
       citation: { default: null },
       source: { default: "" },
@@ -202,7 +215,7 @@ const plainSchema = getSchemaByResolvedExtensions(
 );
 
 function roundTripPlain(value: string) {
-  const json = buildDocJson(value, (name) => ({ label: name, description: null }), {
+  const json = buildDocJson(value, knownChips, {
     styling: false,
   });
   const doc = ProseMirrorNode.fromJSON(plainSchema, json);
@@ -213,7 +226,7 @@ describe("literal editor answers", () => {
   const makeDoc = (value: string) =>
     ProseMirrorNode.fromJSON(
       plainSchema,
-      buildDocJson(value, (name) => ({ label: name, description: null }), {
+      buildDocJson(value, knownChips, {
         literalText: true,
       }),
     );
@@ -321,10 +334,7 @@ describe("composer rich text document model", () => {
     "para\n- [ ] task\npara",
     "**before @README.md after**",
   ])("maps editable positions in %s", (value) => {
-    const doc = ProseMirrorNode.fromJSON(
-      schema,
-      buildDocJson(value, (name) => ({ label: name, description: null })),
-    );
+    const doc = ProseMirrorNode.fromJSON(schema, buildDocJson(value, knownChips));
     const map = serializeEditorDoc(doc);
     for (let flat = 0; flat <= map.docLength; flat += 1) {
       const position = flatToPm(map, flat);
@@ -346,10 +356,7 @@ describe("composer rich text document model", () => {
   it("renders a leading task dedent as siblings and nests under the new indent", () => {
     const doc = ProseMirrorNode.fromJSON(
       schema,
-      buildDocJson("  - [ ] first\n - [ ] second\n  - [ ] child", (name) => ({
-        label: name,
-        description: null,
-      })),
+      buildDocJson("  - [ ] first\n - [ ] second\n  - [ ] child", knownChips),
     );
     const list = doc.firstChild!;
     expect(list.childCount).toBe(2);
@@ -360,7 +367,7 @@ describe("composer rich text document model", () => {
   it("applies a shared mark to text on both sides of a chip", () => {
     const doc = ProseMirrorNode.fromJSON(
       schema,
-      buildDocJson("**before @README.md after**", (name) => ({ label: name, description: null })),
+      buildDocJson("**before @README.md after**", knownChips),
     );
     expect(doc.firstChild!.childCount).toBe(3);
     doc.firstChild!.forEach((child) =>
@@ -388,10 +395,7 @@ describe("composer rich text document model", () => {
       ),
     ]);
     const serialized = serializeEditorDoc(doc).value;
-    const rebuilt = ProseMirrorNode.fromJSON(
-      schema,
-      buildDocJson(serialized, (name) => ({ label: name, description: null })),
-    );
+    const rebuilt = ProseMirrorNode.fromJSON(schema, buildDocJson(serialized, knownChips));
     expect(rebuilt.eq(doc)).toBe(true);
     expect(serializeEditorDoc(rebuilt).value).toBe(serialized);
   });
@@ -433,10 +437,7 @@ describe("composer rich text document model", () => {
     ]);
     const map = serializeEditorDoc(doc);
     expect(map.value).toBe(expected);
-    const rebuilt = ProseMirrorNode.fromJSON(
-      schema,
-      buildDocJson(map.value, (name) => ({ label: name, description: null })),
-    );
+    const rebuilt = ProseMirrorNode.fromJSON(schema, buildDocJson(map.value, knownChips));
     expect(rebuilt.textContent).toBe(doc.textContent);
     expect(serializeEditorDoc(rebuilt).value).toBe(map.value);
     for (let flat = 0; flat <= map.docLength; flat += 1) {
@@ -603,10 +604,7 @@ describe("composer rich text document model", () => {
   });
 
   it("parses rules ahead of lists and emphasis", () => {
-    const json = buildDocJson("- - -\n***\n___\ntext\n---\n- item", (n) => ({
-      label: n,
-      description: null,
-    }));
+    const json = buildDocJson("- - -\n***\n___\ntext\n---\n- item", knownChips);
     expect(json.content.map((block) => block.type)).toEqual([
       "horizontalRule",
       "horizontalRule",
@@ -643,7 +641,7 @@ describe("composer rich text document model", () => {
   ])("gives the caret a line after the final rule of %j, written %j", (value, expected) => {
     const map = roundTrip(value);
     expect(map.value).toBe(expected);
-    const json = buildDocJson(value, () => ({ label: "", description: null }));
+    const json = buildDocJson(value, knownChips);
     const doc = ProseMirrorNode.fromJSON(schema, json);
     expect(doc.resolve(flatToPm(map, map.docLength)).parent.isTextblock).toBe(true);
   });
@@ -671,7 +669,7 @@ describe("composer rich text document model", () => {
 
   it("reads blocks written with CRLF line endings", () => {
     const value = "# Title\r\n> quote\r\n---\r\n```ts\r\nconst a = 1;\r\n```\r\nafter";
-    const doc = buildDocJson(value, () => ({ label: "", description: null }));
+    const doc = buildDocJson(value, knownChips);
     expect(doc.content.map((block) => block.type)).toEqual([
       "heading",
       "blockquote",
@@ -706,7 +704,7 @@ describe("composer rich text document model", () => {
   it("keeps a chip in a fence info string as source and keeps later chips aligned", () => {
     const value = "```@README.md\ncode\n```\n$my-skill after";
     expect(roundTrip(value).value).toBe(value);
-    const json = buildDocJson(value, (n) => ({ label: n, description: null }));
+    const json = buildDocJson(value, knownChips);
     const after = json.content[1] as {
       content: { type: string; attrs?: { skillName?: string } }[];
     };
@@ -727,7 +725,7 @@ describe("composer rich text document model", () => {
     });
     const stored = serializeEditorDoc(doc).value;
     expect(stored).toBe("````\ninitial\n```\nsecret\n````");
-    expect(buildDocJson(stored, () => ({ label: "", description: null })).content).toHaveLength(1);
+    expect(buildDocJson(stored, knownChips).content).toHaveLength(1);
     expect(roundTrip(stored).value).toBe(stored);
   });
 
@@ -744,8 +742,8 @@ describe("composer rich text document model", () => {
   });
 
   it("keeps a chip's source in a fence as literal text", () => {
-    const value = "```\nsee @b.md and $babysit now\n```\nafter";
-    const known = () => ({ label: "Babysit", description: null });
+    const value = "```\nsee @b.md and $babysit now model:codex/gpt-6.1 ok\n```\nafter";
+    const known = { skill: () => ({ label: "Babysit", description: null }), model: () => true };
     const doc = ProseMirrorNode.fromJSON(schema, buildDocJson(value, known));
     const map = serializeEditorDoc(doc);
     expect(map.value).toBe(value);
@@ -753,8 +751,8 @@ describe("composer rich text document model", () => {
     for (let flat = 0; flat <= map.docLength; flat += 1) {
       expect(markdownToFlat(map, flatToMarkdown(map, flat))).toBe(flat);
     }
-    // Reconciling against the provider's skills leaves the code alone too.
-    expect(skillChipReplacements(doc, known)).toEqual([]);
+    // Reconciling against the provider's skills and models leaves the code alone too.
+    expect(composerChipReplacements(doc, known)).toEqual([]);
   });
 
   it.each([
@@ -786,10 +784,7 @@ describe("composer rich text document model", () => {
 
 describe("serializeSelection", () => {
   function copy(value: string, first: string, last: string) {
-    const doc = ProseMirrorNode.fromJSON(
-      schema,
-      buildDocJson(value, (name) => ({ label: name, description: null })),
-    );
+    const doc = ProseMirrorNode.fromJSON(schema, buildDocJson(value, knownChips));
     let from = -1;
     let to = -1;
     doc.descendants((node, pos) => {
@@ -815,11 +810,10 @@ describe("serializeSelection", () => {
 
 describe("pasting into a list item or quote", () => {
   it("keeps inline marks but builds no blocks", () => {
-    const content = buildTiptapContent(
-      "**bold** text\n- item\n> quote",
-      () => ({ label: "", description: null }),
-      { styling: true, blocks: false },
-    );
+    const content = buildTiptapContent("**bold** text\n- item\n> quote", knownChips, {
+      styling: true,
+      blocks: false,
+    });
     expect(content.map((block) => block.type)).toEqual(["paragraph", "paragraph", "paragraph"]);
     const first = content[0] as { content: { text: string; marks?: { type: string }[] }[] };
     expect(first.content[0]).toMatchObject({ text: "bold", marks: [{ type: "bold" }] });
@@ -828,18 +822,62 @@ describe("pasting into a list item or quote", () => {
   });
 });
 
-describe("pasting into a path query", () => {
-  const skillLabelFor = (name: string) => ({ label: name, description: null });
+describe("model mention chips", () => {
+  const codexChips: ComposerChipResolver = {
+    ...knownChips,
+    model: (instanceId, model) => instanceId === "codex" && model === "gpt-6.1",
+  };
+  const modelAttrs = (doc: ProseMirrorNode) => {
+    const attrs: unknown[] = [];
+    doc.descendants((node) => {
+      if (node.type.name === "composer-model") attrs.push(node.attrs);
+    });
+    return attrs;
+  };
+  const replace = (doc: ProseMirrorNode, chips: ComposerChipResolver) => {
+    const transaction = EditorState.create({ doc }).tr;
+    for (const { from, to, node } of composerChipReplacements(doc, chips)) {
+      transaction.replaceWith(from, to, node);
+    }
+    return transaction.doc;
+  };
+  const chip = { instanceId: "codex", model: "gpt-6.1", source: "model:codex/gpt-6.1" };
 
+  it.each([
+    ["Ask model:codex/gpt-6.1 now", [chip]],
+    ["Ask model:openai/gpt-4o now", []],
+    // Still being typed: `gpt-6` must not chip on the way to `gpt-6.1`.
+    ["Ask model:codex/gpt-6.1", []],
+  ])("chips only a known reference followed by whitespace: %s", (value, expected) => {
+    const doc = ProseMirrorNode.fromJSON(schema, buildDocJson(value, codexChips));
+    doc.check();
+    expect(modelAttrs(doc)).toEqual(expected);
+    expect(serializeEditorDoc(doc).value).toBe(value);
+  });
+
+  it("reconciles references when the environment's models load or change", () => {
+    const value = "Ask model:codex/gpt-6.1 now";
+    const text = ProseMirrorNode.fromJSON(schema, buildDocJson(value, knownChips));
+    expect(modelAttrs(text)).toEqual([]);
+    const loaded = replace(text, codexChips);
+    expect(modelAttrs(loaded)).toEqual([chip]);
+    expect(serializeEditorDoc(loaded).value).toBe(value);
+    const removed = replace(loaded, knownChips);
+    expect(modelAttrs(removed)).toEqual([]);
+    expect(serializeEditorDoc(removed).value).toBe(value);
+  });
+});
+
+describe("pasting into a path query", () => {
   function paste(prompt: string | ProseMirrorNode, pasted: string, pathQueryActive = true) {
     const promptDoc =
       typeof prompt === "string"
-        ? ProseMirrorNode.fromJSON(schema, buildDocJson(prompt, skillLabelFor))
+        ? ProseMirrorNode.fromJSON(schema, buildDocJson(prompt, knownChips))
         : prompt;
     const line = promptDoc.lastChild!;
     const lineBefore = line.textBetween(0, line.content.size, undefined, "\uFFFC");
     const literalLength = pastedPathQueryLength(lineBefore, pasted, pathQueryActive);
-    const blocks = buildTiptapContent(pasted, skillLabelFor, { literalLength });
+    const blocks = buildTiptapContent(pasted, knownChips, { literalLength });
     const [first, ...rest] = blocks.map((block) => ProseMirrorNode.fromJSON(schema, block));
     const head = promptDoc.lastChild!.content.append(first!.content);
     const doc = schema.node("doc", null, [first!.copy(head), ...rest]);
@@ -903,7 +941,7 @@ describe("pasting into a path query", () => {
   it("parses markdown pasted right after a mention chip", () => {
     const withSpace = ProseMirrorNode.fromJSON(
       schema,
-      buildDocJson("Open @README.md ", skillLabelFor),
+      buildDocJson("Open @README.md ", knownChips),
     );
     const paragraph = withSpace.firstChild!;
     expect(paragraph.lastChild!.text).toBe(" ");
@@ -917,10 +955,7 @@ describe("pasting into a path query", () => {
 
 describe("caret stops at styled edges", () => {
   function stateAt(value: string, pmPos: number) {
-    const doc = ProseMirrorNode.fromJSON(
-      schema,
-      buildDocJson(value, (name) => ({ label: name, description: null })),
-    );
+    const doc = ProseMirrorNode.fromJSON(schema, buildDocJson(value, knownChips));
     return EditorState.create({ doc, selection: TextSelection.create(doc, pmPos) });
   }
 
@@ -1003,7 +1038,17 @@ describe("inline code entry", () => {
     const editor = new Editor({
       element: null,
       extensions: [
-        StarterKit.configure({ code: false, codeBlock: false, trailingNode: false }),
+        StarterKit.configure({
+          bold: false,
+          code: false,
+          codeBlock: false,
+          italic: false,
+          strike: false,
+          trailingNode: false,
+        }),
+        ComposerBoldExtension,
+        ComposerItalicExtension,
+        ComposerStrikeExtension,
         ComposerCodeExtension,
         ComposerCodeBlockExtension,
         stubAtom("composer-mention", { path: { default: "" }, source: { default: "" } }),
@@ -1028,7 +1073,67 @@ describe("inline code entry", () => {
     }
   }
 
-  it.each(["", "prefix ", "@README.md"])(
+  it.each(["", "this is a "])(
+    "formats code after %j when the opening backtick is typed last",
+    (prefix) => {
+      const editor = editorFor();
+      type(editor, `${prefix}test\` after`);
+      editor.commands.setTextSelection(prefix.length + 1);
+      type(editor, "`");
+
+      expect(editor.state.doc.textContent).toBe(`${prefix}test after`);
+      expect(serializeEditorDoc(editor.state.doc).value).toBe(`${prefix}\`test\` after`);
+      expect(editor.state.selection.from).toBe(prefix.length + 1);
+      type(editor, "new ");
+      expect(serializeEditorDoc(editor.state.doc).value).toBe(`${prefix}\`new test\` after`);
+      editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+      type(editor, " plain");
+      expect(serializeEditorDoc(editor.state.doc).value).toBe(`${prefix}\`new test\` after plain`);
+      const formatted = editor.state.doc.toJSON();
+      let undos = 0;
+      while (editor.commands.undo()) undos += 1;
+      expect(undos).toBeGreaterThan(0);
+      expect(editor.state.doc.textContent).toBe("");
+      for (let i = 0; i < undos; i += 1) expect(editor.commands.redo()).toBe(true);
+      expect(editor.state.doc.toJSON()).toEqual(formatted);
+    },
+  );
+
+  it.each([
+    { name: "doubled closing ticks", text: "test``" },
+    { name: "a code block", text: "test`", block: "codeBlock" },
+    { name: "bold text", text: "test`", mark: "bold" },
+    { name: "existing inline code", text: "test`", mark: "code" },
+  ])("keeps an opening tick literal before $name", ({ text, block, mark }) => {
+    const editor = editorFor(block, mark);
+    type(editor, text);
+    editor.commands.setTextSelection(1);
+    type(editor, "`");
+    expect(editor.state.doc.textContent).toBe(`\`${text}`);
+  });
+
+  it.each(["hardBreak", "composer-mention"])("does not pair ticks across a %s", (nodeType) => {
+    const editor = editorFor();
+    type(editor, "before");
+    editor.commands.insertContent({ type: nodeType });
+    type(editor, "after`");
+    editor.commands.setTextSelection(1);
+    type(editor, "`");
+    expect(editor.state.doc.firstChild?.firstChild?.marks).toEqual([]);
+    expect(editor.state.doc.textContent).toBe("`beforeafter`");
+
+    const local = editorFor();
+    type(local, "a ` ");
+    local.commands.insertContent({ type: nodeType });
+    type(local, "`local`");
+    expect(local.state.doc.firstChild?.lastChild?.toJSON()).toEqual({
+      type: "text",
+      marks: [{ type: "code" }],
+      text: "local",
+    });
+  });
+
+  it.each(["", "prefix ", "@README.md", "a ``` "])(
     "formats a filled pair after %j, leaves following text plain, and keeps the normal input rule",
     (prefix) => {
       const editor = editorFor();
@@ -1065,6 +1170,48 @@ describe("inline code entry", () => {
       expect(editor.state.doc.toJSON()).toEqual(formatted);
     },
   );
+
+  it.each([
+    [
+      "formats a pair",
+      "do ",
+      [
+        { type: "text", text: "do " },
+        { type: "text", marks: [{ type: "code" }], text: "xyz" },
+      ],
+    ],
+    [
+      "keeps a pair literal after an unmatched backtick",
+      "a ` ",
+      [{ type: "text", text: "a ` `xyz`" }],
+    ],
+  ])("%s whose backticks came from a dead key", (_name, prefix, content) => {
+    const editor = editorFor();
+    type(editor, prefix);
+    editor.view.dispatch(editor.state.tr.insertText("`").setMeta("composition", 1));
+    editor.view.dispatch(editor.state.tr.insertText("`").setMeta("composition", 2));
+    editor.commands.setTextSelection(prefix.length + 2);
+    type(editor, "xyz");
+    expect(editor.state.doc.textContent).toBe(`${prefix}\`xyz\``);
+
+    editor.commands.setTextSelection(prefix.length + 6);
+    expect(editor.state.doc.firstChild?.toJSON().content).toEqual(content);
+  });
+
+  it("does not reuse the closing backtick of a literal pair to open code", () => {
+    const editor = editorFor();
+    editor.view.dispatch(editor.state.tr.insertText("is `enabled`", 1));
+    type(editor, " and `");
+    expect(editor.state.doc.firstChild?.toJSON().content).toEqual([
+      { type: "text", text: "is `enabled` and `" },
+    ]);
+
+    type(editor, "persist`");
+    expect(editor.state.doc.firstChild?.toJSON().content).toEqual([
+      { type: "text", text: "is `enabled` and " },
+      { type: "text", marks: [{ type: "code" }], text: "persist" },
+    ]);
+  });
 
   it("keeps composition edits literal until the caret leaves the typed pair", () => {
     const editor = editorFor();
@@ -1114,5 +1261,71 @@ describe("inline code entry", () => {
     expect(editor.state.doc.toJSON()).toEqual(before);
     editor.commands.setTextSelection(editor.state.doc.content.size - 1);
     expect(editor.state.doc.toJSON()).toEqual(before);
+  });
+
+  function marked(editor: Editor, name: string) {
+    const text: string[] = [];
+    editor.state.doc.descendants((node) => {
+      if (node.isText && node.marks.some((mark) => mark.type.name === name)) {
+        text.push(node.text ?? "");
+      }
+    });
+    return text;
+  }
+
+  /** Types `text` into a backtick pair and steps the caret out so it formats. */
+  function typeCode(editor: Editor, text: string) {
+    const offset = editor.state.selection.from;
+    type(editor, "``");
+    editor.commands.setTextSelection(offset + 1);
+    type(editor, text);
+    editor.commands.setTextSelection(offset + text.length + 2);
+    expect(marked(editor, "code")).toContain(text);
+  }
+
+  it.each([
+    { mark: "italic", open: "*" },
+    { mark: "bold", open: "**" },
+    { mark: "strike", open: "~~" },
+  ])("keeps a $mark delimiter inside an earlier code span literal", ({ mark, open }) => {
+    const editor = editorFor();
+    typeCode(editor, `${open}foo`);
+    type(editor, ` bar \`${open}`);
+    expect(serializeEditorDoc(editor.state.doc).value).toBe(`\`${open}foo\` bar \`${open}`);
+    expect(marked(editor, mark)).toEqual([]);
+    expect(marked(editor, "code")).toEqual([`${open}foo`]);
+  });
+
+  it.each([
+    { mark: "italic", open: "*" },
+    { mark: "bold", open: "**" },
+    { mark: "strike", open: "~~" },
+  ])("still wraps a code span in $mark when both delimiters are outside it", ({ mark, open }) => {
+    const editor = editorFor();
+    type(editor, open);
+    typeCode(editor, "foo");
+    type(editor, ` bar${open}`);
+    expect(serializeEditorDoc(editor.state.doc).value).toBe(`${open}\`foo\` bar${open}`);
+    expect(marked(editor, mark)).toEqual(["foo", " bar"]);
+
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: `${open}foo tail ` },
+            { type: "text", text: "x", marks: [{ type: "code" }] },
+          ],
+        },
+      ],
+    });
+    editor.commands.setTextSelection({
+      from: open.length + 4,
+      to: editor.state.doc.content.size - 1,
+    });
+    type(editor, open);
+    expect(serializeEditorDoc(editor.state.doc).value).toBe(`${open}foo${open}`);
+    expect(marked(editor, mark)).toEqual(["foo"]);
   });
 });

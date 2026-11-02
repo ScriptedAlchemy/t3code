@@ -38,7 +38,7 @@ vp run android:dev
 
 For an EAS build, provide the same configuration through each selected build environment, using an EAS file variable named `T3CODE_ANDROID_GOOGLE_SERVICES_FILE` for the Google services file. Make the file available to fingerprint generation as well as the native build. FCM service-account credentials belong on the relay, not in EAS's app environment. If deploying a separate hosted relay, configure the build's T3 Connect public settings for that relay and Clerk application as described in [T3 Connect](../internals/t3-connect.md).
 
-Set `T3CODE_MOBILE_UPDATES_ENABLED=0` before prebuild and bundling a private binary to disable the repository's configured Expo OTA update source. A debug development-client APK requires Metro; a bundled release build is needed to verify cold-start notification taps without Expo's development launcher.
+Fork builds disable Expo OTA updates by default. Setting `T3CODE_MOBILE_UPDATES_ENABLED=0` before prebuild and bundling explicitly keeps them disabled for a private binary. To opt into your own project's feed, follow [mobile app setup](../user/install.md#mobile-app). A debug development-client APK requires Metro; a bundled release build is needed to verify cold-start notification taps without Expo's development launcher.
 
 ## Clerk sign-in for private builds
 

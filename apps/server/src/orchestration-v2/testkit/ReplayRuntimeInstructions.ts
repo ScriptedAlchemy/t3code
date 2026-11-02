@@ -20,9 +20,7 @@ export function materializeReplayTranscriptRuntimeInstructions(
               : undefined;
   if (harness === undefined) return transcript;
   const instructions = buildRuntimeInstructions({ harness, model: runtime.model });
-  const pullRequestInstructions = instructions.match(
-    /<pull_request_linking>[\s\S]*?<\/pull_request_linking>/u,
-  )?.[0];
+  const sharedRuntimeInstructions = instructions.split("</runtime_info>\n\n")[1];
 
   return {
     ...transcript,
@@ -32,7 +30,7 @@ export function materializeReplayTranscriptRuntimeInstructions(
       if (typeof frame !== "object" || frame === null) return entry;
       if (
         runtime.driver === "muse" &&
-        pullRequestInstructions !== undefined &&
+        sharedRuntimeInstructions !== undefined &&
         "method" in frame &&
         frame.method === "turn/start" &&
         "params" in frame &&
@@ -55,8 +53,8 @@ export function materializeReplayTranscriptRuntimeInstructions(
         }
         // Keep each turn's recorded model, effort, and user input as protocol assertions.
         const text = firstPart.text.replace(
-          /^(<runtime_info>[\s\S]*?<\/runtime_info>\n\n)<pull_request_linking>[\s\S]*?<\/pull_request_linking>/u,
-          (_match, header: string) => `${header}${pullRequestInstructions}`,
+          /^(<runtime_info>[\s\S]*?<\/runtime_info>\n\n)<pull_request_linking>[\s\S]*?<\/pull_request_linking>(?:\n\n<github_reads>[\s\S]*?<\/github_reads>)?/u,
+          (_match, header: string) => `${header}${sharedRuntimeInstructions}`,
         );
         return text === firstPart.text
           ? entry

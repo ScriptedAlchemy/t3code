@@ -12,7 +12,13 @@ import {
   ComposerListExtensions,
   ComposerTaskItemExtension,
   serializeEditorDoc,
+  type ComposerChipResolver,
 } from "./composer-rich-text-doc";
+
+const knownChips: ComposerChipResolver = {
+  skill: (name) => ({ label: name, description: null }),
+  model: () => false,
+};
 
 // ProseMirror's DOM observer can flush on a timer after a test ends, which
 // throws once its DOM is gone, so every editor is acquired with `using`.
@@ -36,7 +42,7 @@ function makeEditor(value: string): Editor & Disposable {
       ComposerCodeBlockExtension,
       ...ComposerBlockExtensions,
     ],
-    content: buildDocJson(value, (name) => ({ label: name, description: null })),
+    content: buildDocJson(value, knownChips),
   });
   return Object.assign(editor, { [Symbol.dispose]: () => editor.destroy() });
 }
@@ -68,13 +74,32 @@ describe("Backspace at the start of a line", () => {
     editor.commands.keyboardShortcut("Backspace");
     expect(storedDraft(editor)).toBe(expected);
   });
+
+  // Neither item has a list of its own kind one level up to lift into.
+  it.each([
+    ["- a\n  - [ ] x\n  - [ ] y", "- a\n  - [ ] xy"],
+    ["- [ ] a\n  - x\n  - y", "- [ ] a\n  - xy"],
+    ["- a\n  - [ ] y\n  - [ ] q", "- ay\n  - [ ] q"],
+  ])("joins y in %j onto the line above", (value, expected) => {
+    using editor = makeEditor(value);
+    placeCaret(editor, "y");
+    editor.commands.keyboardShortcut("Backspace");
+    expect(storedDraft(editor)).toBe(expected);
+  });
+
+  it("removes an empty checkbox under a bullet", () => {
+    using editor = makeEditor("- a\n  - [ ] x\n  - [ ]");
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.atEnd(editor.state.doc)));
+    editor.commands.keyboardShortcut("Backspace");
+    expect(storedDraft(editor)).toBe("- a\n  - [ ] x");
+  });
 });
 
 describe("blocks that a list item or quote cannot hold", () => {
   it("puts lines pasted at the end of an item after the list", () => {
     using editor = makeEditor("- a");
     editor.view.dispatch(editor.state.tr.setSelection(TextSelection.atEnd(editor.state.doc)));
-    const lines = buildTiptapContent("one\ntwo", (name) => ({ label: name, description: null }));
+    const lines = buildTiptapContent("one\ntwo", knownChips);
     editor.commands.insertContent(lines);
     expect(storedDraft(editor)).toBe("- a\none\ntwo");
   });

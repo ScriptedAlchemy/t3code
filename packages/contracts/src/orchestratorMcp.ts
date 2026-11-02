@@ -60,7 +60,7 @@ const OrchestratorMcpSchedule = Schema.Union([
   OrchestratorMcpScheduleFromJsonString,
 ]).annotate({
   description:
-    "Trigger: {type:'interval',everyMs}, {type:'fixed_time',timeOfDay,weekdays?}, or {type:'webhook'}.",
+    "Trigger: {type:'interval',everyMs}, {type:'fixed_time',timeOfDay,weekdays?}, {type:'once',runAt}, or {type:'webhook'}.",
 });
 
 const OrchestratorMcpTargetOptionsFromRecord = Schema.Record(
@@ -94,7 +94,8 @@ export const OrchestratorMcpTarget = Schema.Struct({
   ),
   driverKind: Schema.optional(
     ProviderDriverKind.annotate({
-      description: "Prefer `providerInstanceId`.",
+      description:
+        "Local targets only; prefer providerInstanceId. For a linked environment, omit driverKind and use providerInstanceId from that environment's orchestrator_capabilities.",
     }),
   ),
   model: Schema.optional(TrimmedNonEmptyString),
@@ -569,6 +570,12 @@ export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
       description: "Match model ids and labels. Replaces the short list.",
     }),
   ),
+  allModels: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "List every advertised model, legacy included, with no cap. Models hidden in Settings stay out.",
+    }),
+  ),
 });
 export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
 
@@ -683,6 +690,9 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
       "Public URL for the sender. Absent: no T3 Connect tunnel. The user must enable T3 Connect remote access.",
   }),
   webhookSignature: Schema.optional(Schema.Literals(["none", "set"])),
+  blockedByPolicy: Schema.optional(Schema.String).annotate({
+    description: "Present when an administrator's policy stops this task from running.",
+  }),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 

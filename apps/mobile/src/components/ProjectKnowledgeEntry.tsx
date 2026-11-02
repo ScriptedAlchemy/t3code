@@ -79,17 +79,30 @@ type Page =
   | { readonly kind: "source"; readonly ref: SourceRef }
   | { readonly kind: "remember"; readonly ref: SourceRef }
   | { readonly kind: "editor"; readonly mode: FactEditorMode };
-type RememberRequest = {
+type OpenRequest = {
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
   readonly draftKey: string;
-  readonly message: MessageCitation;
+  readonly message: MessageCitation | null;
 };
 
-// The feed asks the composer's entry to open, since the sheet writes to that draft.
-const rememberListeners = new Set<(request: RememberRequest) => void>();
-export function requestRememberMessage(request: RememberRequest): void {
-  for (const listener of rememberListeners) listener(request);
+// The header and feed ask the composer's entry to open, since the sheet writes to that draft.
+const openListeners = new Set<(request: OpenRequest) => void>();
+export function requestProjectMemory(request: OpenRequest): void {
+  for (const listener of openListeners) listener(request);
+}
+
+/** Opens project memory for a composer draft; undefined when the server has no project memory. */
+export function useOpenProjectMemory(
+  environmentId: EnvironmentId,
+  projectId: ProjectId | undefined,
+  draftKey: string,
+) {
+  const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const open = useCallback(() => {
+    if (projectId) requestProjectMemory({ environmentId, projectId, draftKey, message: null });
+  }, [environmentId, projectId, draftKey]);
+  return config?.environment.capabilities.projectKnowledge === true && projectId ? open : undefined;
 }
 
 export function ProjectKnowledgeEntry(props: Scope) {
@@ -97,8 +110,9 @@ export function ProjectKnowledgeEntry(props: Scope) {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const [open, setOpen] = useState<{ readonly seed: MessageCitation | null } | null>(null);
   const { environmentId, projectId, draftKey } = props;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this entry with the header and feed open requests while mounted
   useEffect(() => {
-    const listener = (request: RememberRequest) => {
+    const listener = (request: OpenRequest) => {
       if (
         isFocused &&
         request.environmentId === environmentId &&
@@ -107,33 +121,23 @@ export function ProjectKnowledgeEntry(props: Scope) {
       )
         setOpen({ seed: request.message });
     };
-    rememberListeners.add(listener);
+    openListeners.add(listener);
     return () => {
-      rememberListeners.delete(listener);
+      openListeners.delete(listener);
     };
   }, [environmentId, projectId, draftKey, isFocused]);
-  if (config?.environment.capabilities.projectKnowledge !== true) return null;
+  if (config?.environment.capabilities.projectKnowledge !== true || !open || !isFocused)
+    return null;
   return (
-    <>
-      <Button
-        label="Project memory"
-        icon="brain"
-        onPress={() => setOpen({ seed: null })}
-        tone="text"
-        accessibilityHint="Search and attach evidence from this project"
-      />
-      {open && isFocused ? (
-        <ProjectKnowledgeSheet
-          key={`${props.environmentId}:${props.projectId}:${props.draftKey}:${open.seed?.messageId ?? ""}`}
-          {...props}
-          // Older servers lack readFact, status and supersede.
-          history={config.environment.capabilities.projectKnowledgeHistory === true}
-          assisted={config.environment.capabilities.projectKnowledgeAssistedLearning === true}
-          seedMessage={open.seed}
-          onClose={() => setOpen(null)}
-        />
-      ) : null}
-    </>
+    <ProjectKnowledgeSheet
+      key={`${props.environmentId}:${props.projectId}:${props.draftKey}:${open.seed?.messageId ?? ""}`}
+      {...props}
+      // Older servers lack readFact, status and supersede.
+      history={config.environment.capabilities.projectKnowledgeHistory === true}
+      assisted={config.environment.capabilities.projectKnowledgeAssistedLearning === true}
+      seedMessage={open.seed}
+      onClose={() => setOpen(null)}
+    />
   );
 }
 
@@ -175,6 +179,7 @@ function ProjectKnowledgeSheet(
     editorDirty.current = dirty;
   }, []);
   const selectionVersion = useRef(0);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- invalidates in-flight selection work when the sheet unmounts
   useEffect(
     () => () => {
       selectionVersion.current += 1;

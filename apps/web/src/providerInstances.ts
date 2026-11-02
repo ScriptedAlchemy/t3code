@@ -64,32 +64,34 @@ export function isProviderInstancePickerVisible(entry: ProviderInstanceEntry): b
   return entry.enabled;
 }
 
+export function deriveProviderInstanceEntry(snapshot: ServerProvider): ProviderInstanceEntry {
+  const instanceId = snapshot.instanceId;
+  const driverKind = snapshot.driver;
+  const defaultId = defaultInstanceIdForDriver(driverKind);
+  const isDefault = instanceId === defaultId;
+  return {
+    instanceId,
+    driverKind,
+    displayName: resolveProviderInstanceDisplayName(snapshot),
+    accentColor: normalizeProviderAccentColor(snapshot.accentColor),
+    ...(driverKind === "acpRegistry" && snapshot.iconUrl
+      ? { acpRegistryIconUrl: snapshot.iconUrl }
+      : {}),
+    continuationGroupKey: snapshot.continuation?.groupKey,
+    enabled: snapshot.enabled,
+    installed: snapshot.installed,
+    status: snapshot.status,
+    isDefault,
+    isAvailable: snapshot.availability !== "unavailable",
+    snapshot,
+    models: snapshot.models,
+  } satisfies ProviderInstanceEntry;
+}
+
 export function deriveProviderInstanceEntries(
   providers: ReadonlyArray<ServerProvider>,
 ): ReadonlyArray<ProviderInstanceEntry> {
-  return providers.map((snapshot) => {
-    const instanceId = snapshot.instanceId;
-    const driverKind = snapshot.driver;
-    const defaultId = defaultInstanceIdForDriver(driverKind);
-    const isDefault = instanceId === defaultId;
-    return {
-      instanceId,
-      driverKind,
-      displayName: resolveProviderInstanceDisplayName(snapshot),
-      accentColor: normalizeProviderAccentColor(snapshot.accentColor),
-      ...(driverKind === "acpRegistry" && snapshot.iconUrl
-        ? { acpRegistryIconUrl: snapshot.iconUrl }
-        : {}),
-      continuationGroupKey: snapshot.continuation?.groupKey,
-      enabled: snapshot.enabled,
-      installed: snapshot.installed,
-      status: snapshot.status,
-      isDefault,
-      isAvailable: snapshot.availability !== "unavailable",
-      snapshot,
-      models: snapshot.models,
-    } satisfies ProviderInstanceEntry;
-  });
+  return providers.map(deriveProviderInstanceEntry);
 }
 
 /** Instance ids repeat across environments; lookups must stay scoped. */
@@ -101,16 +103,21 @@ export function deriveProviderEntriesByEnvironment(
   const byEnvironment = new Map<string, ReadonlyMap<string, ProviderInstanceEntry>>();
   for (const [environmentId, providers, settings] of providersByEnvironment) {
     const derived = deriveProviderInstanceEntries(providers);
-    // The snapshot includes instances enabled by any project; machine settings alone do not.
-    const entries = settings
-      ? derived.map((entry) => applyProviderInstanceBranding(entry, settings))
-      : derived;
+    const entries = settings ? brandProviderInstanceEntries(derived, settings) : derived;
     byEnvironment.set(
       environmentId,
       new Map(entries.map((entry) => [entry.instanceId as string, entry] as const)),
     );
   }
   return byEnvironment;
+}
+
+// The snapshot includes instances enabled by any project; machine settings alone do not.
+export function brandProviderInstanceEntries(
+  entries: ReadonlyArray<ProviderInstanceEntry>,
+  settings: Pick<ServerSettings, "providerInstances">,
+): ReadonlyArray<ProviderInstanceEntry> {
+  return entries.map((entry) => applyProviderInstanceBranding(entry, settings));
 }
 
 /** projectId applies project overrides; explicit null uses machine settings. */
@@ -128,7 +135,7 @@ export function applyProviderInstanceSettings(
   });
 }
 
-function applyProviderInstanceBranding(
+export function applyProviderInstanceBranding(
   entry: ProviderInstanceEntry,
   settings: Pick<ServerSettings, "providerInstances">,
 ): ProviderInstanceEntry {

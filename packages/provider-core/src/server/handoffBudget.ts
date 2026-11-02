@@ -102,6 +102,15 @@ export function nativeContextHistory(
   const deliveredItemIds = new Set(
     settledHandoffs.flatMap((handoff) => handoff.delivery?.itemIds ?? []),
   );
+  const legacyDeliveredItemIds = new Set(
+    settledHandoffs.flatMap((handoff) =>
+      handoff.delivery?.estimatedTokens === undefined ? (handoff.delivery?.itemIds ?? []) : [],
+    ),
+  );
+  const deliveredEstimate = settledHandoffs.reduce(
+    (total, handoff) => total + (handoff.delivery?.estimatedTokens ?? 0),
+    0,
+  );
   const summarizedItemIds = new Set(
     settledHandoffs.flatMap((handoff) => handoff.delivery?.summarizedItemIds ?? []),
   );
@@ -161,7 +170,7 @@ export function nativeContextHistory(
             (legacyInputRunIds.has(item.runId) &&
               !coveredItemIds.has(item.id) &&
               !legacyRecoveredRunIds.has(item.runId)));
-        if (!acceptedNatively && !deliveredItemIds.has(item.id)) return size;
+        if (!acceptedNatively && !legacyDeliveredItemIds.has(item.id)) return size;
         const historical = historicalMessage(item);
         return (
           size +
@@ -170,7 +179,7 @@ export function nativeContextHistory(
             ? attachmentTokenAllowance(item.attachments)
             : 0)
         );
-      }, 0),
+      }, deliveredEstimate),
   };
 }
 

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
-import { makeProviderSettingsSchema, ProviderDriverKind, TrimmedString } from "@t3tools/contracts";
+import {
+  makeProviderSettingsSchema,
+  ProviderDriverKind,
+  SettingsSecretValue,
+  TrimmedString,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import { providerClients } from "./providerDriverMeta";
@@ -11,15 +16,21 @@ import {
 } from "./ProviderSettingsForm";
 
 describe("ProviderSettingsForm helpers", () => {
-  it("keeps every masked field as a stored secret", () => {
+  it("keeps every masked field as a stored secret and offers a reference only where typed so", () => {
     const settingsSchema = makeProviderSettingsSchema({
       token: TrimmedString.pipe(
         Schema.annotateKey({ providerSettingsForm: { control: "password" } }),
       ),
+      apiKey: SettingsSecretValue,
     });
 
-    expect(deriveProviderSettingsFields({ settingsSchema })).toMatchObject([
-      { key: "token", secret: true },
+    expect(
+      deriveProviderSettingsFields({ settingsSchema }).map(
+        ({ key, secret, acceptsSecretReference }) => ({ key, secret, acceptsSecretReference }),
+      ),
+    ).toEqual([
+      { key: "token", secret: true, acceptsSecretReference: undefined },
+      { key: "apiKey", secret: true, acceptsSecretReference: true },
     ]);
   });
 
@@ -41,20 +52,18 @@ describe("ProviderSettingsForm helpers", () => {
     expect(next).toEqual({ forkOwned: 1 });
   });
 
-  it("stores false boolean fields when true is the default", () => {
-    const next = nextProviderConfigWithFieldValue(
-      undefined,
-      {
-        key: "experimental",
-        control: "switch",
-        label: "Experimental",
-        clearWhenEmpty: "omit",
-        defaultBooleanValue: true,
-      },
-      false,
-    );
-
-    expect(next).toEqual({ experimental: false });
+  it("shows the profile switch only to signed-in Claude accounts and stores it off", () => {
+    const claude = providerClients.get(ProviderDriverKind.make("claudeAgent"))!;
+    const cliFields = deriveProviderSettingsFields(claude, { setupMode: "cli" });
+    const shareProfile = cliFields.find((field) => field.key === "shareProfile")!;
+    expect(shareProfile.defaultBooleanValue).toBe(true);
+    expect(cliFields.some((field) => field.key === "homePath")).toBe(false);
+    const existingFields = deriveProviderSettingsFields(claude);
+    expect(existingFields.some((field) => field.key === "shareProfile")).toBe(false);
+    expect(existingFields.some((field) => field.key === "homePath")).toBe(true);
+    expect(nextProviderConfigWithFieldValue(undefined, shareProfile, false)).toEqual({
+      shareProfile: false,
+    });
   });
 });
 

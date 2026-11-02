@@ -228,6 +228,7 @@ it.effect(
         ProjectionStore.ProjectionStoreV2.of({
           apply: () => Effect.void,
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
+          getLimitRecoveryWakeAt: () => Effect.die("unused getLimitRecoveryWakeAt"),
           getOpenRemoteDelegatedTasks: Effect.die("unused getOpenRemoteDelegatedTasks"),
           getShellSnapshot: () => Effect.die("unused getShellSnapshot"),
           listActiveSubagentThreadIds: () => Effect.die("unused listActiveSubagentThreadIds"),
@@ -253,6 +254,7 @@ it.effect(
           getThreadHistoryPage: () => Effect.die("unused"),
           getTimelinePage: () => Effect.die("Unused timeline read"),
           getMessageCount: () => Effect.die("unused message count"),
+          getSubagentCount: () => Effect.die("unused subagent count"),
           getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),
           getTurnItem: () => Effect.die("unused turn item read"),
           getThreadRecords: () => Effect.die("unused record read"),
@@ -281,6 +283,7 @@ it.effect(
           getRunMessage: () => Effect.die("not used"),
           isNodeStored: () => Effect.die("not used"),
           canStartQueuedRun: () => Effect.die("not used"),
+          getHeldQueuedRuns: () => Effect.die("not used"),
           getRecoveryThreadIds: () => Effect.die("unused getRecoveryThreadIds"),
           getUnreadableThreadIds: () => Effect.die("unused getUnreadableThreadIds"),
           getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),
@@ -301,6 +304,8 @@ it.effect(
           closeInstance: () => Effect.void,
           release: () => Effect.void,
           detach: () => Effect.void,
+          otherWorkingThreads: () => Effect.succeed([]),
+          releaseUnlessBusy: () => Effect.succeed(true),
         }),
       );
       const layerControl = ProviderTurnControlService.layer.pipe(
@@ -447,6 +452,36 @@ it.effect.each([
     };
     const received: string[] = [];
     let threadReads = 0;
+    const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+      instanceId: providerInstanceId,
+      driver,
+      providerSessionId,
+      providerSession: {
+        id: providerSessionId,
+        driver,
+        providerInstanceId,
+        status: "running",
+        cwd: "/workspace",
+        model: modelSelection.model,
+        capabilities: CodexProviderCapabilitiesV2,
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+      },
+      events: Stream.empty,
+      ensureThread: () => Effect.die("unused ensureThread"),
+      resumeThread: () => Effect.die("unused resumeThread"),
+      startTurn: () => Effect.die("unused startTurn"),
+      steerTurn: (input) =>
+        Effect.sync(() => {
+          received.push(input.message.text);
+        }),
+      interruptTurn: () => Effect.die("unused interruptTurn"),
+      respondToRuntimeRequest: () => Effect.die("unused respondToRuntimeRequest"),
+      readThreadSnapshot: () => Effect.die("unused readThreadSnapshot"),
+      rollbackThread: () => Effect.die("unused rollbackThread"),
+      forkThread: () => Effect.die("unused forkThread"),
+    };
     const layers = ProviderTurnControlService.layer.pipe(
       Layer.provide(Layer.mock(ProjectKnowledge.ProjectKnowledge)({})),
       Layer.provide(
@@ -531,17 +566,7 @@ it.effect.each([
               }),
           }),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-            get: () =>
-              Effect.succeedSome({
-                steerTurn: (
-                  input: Parameters<
-                    ProviderAdapter.ProviderAdapterV2SessionRuntime["steerTurn"]
-                  >[0],
-                ) =>
-                  Effect.sync(() => {
-                    received.push(input.message.text);
-                  }),
-              } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+            get: () => Effect.succeedSome(runtime),
           }),
         ),
       ),
@@ -601,6 +626,7 @@ it.effect.each([
   "stale-during-history",
   "recovered-history",
   "current-history-budget",
+  "delivered-knowledge-budget",
 ] as const)(
   "delivers selected knowledge through active steering with %s receipt semantics",
   (mode) =>
@@ -701,6 +727,17 @@ it.effect.each([
             disabledLayer,
             ServerSettings.layerTest(),
             Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+              nativeDeliveryEstimate: (target) =>
+                Effect.sync(() => {
+                  assert.deepEqual(target, {
+                    projectId,
+                    threadId,
+                    providerInstanceId,
+                    providerThreadId,
+                    nativeThreadId: "knowledge-native-thread",
+                  });
+                  return mode === "delivered-knowledge-budget" ? 150_000 : 0;
+                }),
               resolveForTurn: (context) =>
                 Effect.suspend(() => {
                   resolved += 1;
@@ -855,6 +892,29 @@ it.effect.each([
                   driver,
                   instanceId: providerInstanceId,
                   providerSessionId,
+                  providerSession: {
+                    id: providerSessionId,
+                    driver,
+                    providerInstanceId,
+                    status: "running",
+                    cwd: "/workspace",
+                    model: modelSelection.model,
+                    capabilities: CodexProviderCapabilitiesV2,
+                    createdAt: now,
+                    updatedAt: now,
+                    lastError: null,
+                  },
+                  events: Stream.empty,
+                  ensureThread: () => Effect.die("unused ensureThread"),
+                  resumeThread: () => Effect.die("unused resumeThread"),
+                  startTurn: () => Effect.die("unused startTurn"),
+                  interruptTurn: () => Effect.die("unused interruptTurn"),
+                  respondToRuntimeRequest: () => Effect.die("unused respondToRuntimeRequest"),
+                  readThreadSnapshot: () => Effect.die("unused readThreadSnapshot"),
+                  rollbackThread: () => Effect.die("unused rollbackThread"),
+                  forkThread: () => Effect.die("unused forkThread"),
+                  getModelContextWindow: () =>
+                    mode === "delivered-knowledge-budget" ? 200_000 : undefined,
                   steerTurn: (input: ProviderAdapter.ProviderAdapterV2SteerInput) =>
                     Effect.suspend(() => {
                       received.push(input.message.text);
@@ -869,7 +929,7 @@ it.effect.each([
                           )
                         : Effect.void;
                     }),
-                } as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+                } satisfies ProviderAdapter.ProviderAdapterV2SessionRuntime),
             }),
           ),
         ),

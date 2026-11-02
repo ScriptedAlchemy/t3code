@@ -5,6 +5,7 @@ import {
   ORCHESTRATION_PROTOCOL_VERSION,
   PortSchema,
 } from "@t3tools/contracts";
+import { CLI_RELEASES_PAGE_URL } from "@t3tools/shared/cliRelease";
 import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
@@ -30,6 +31,8 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } fr
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
+import * as ManagedLimits from "../policy/managedLimits.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { resolveBaseDir } from "../os-jank.ts";
 import {
   type PersistedServerRuntimeState,
@@ -72,7 +75,7 @@ export class NoRunningServerError extends Schema.TaggedError<NoRunningServerErro
       ...(this.inLinkedWorktree
         ? ["In a linked worktree, pass --base-dir to pair with a server outside it."]
         : []),
-      "Start one with `npx t3 serve`, or connect this machine with T3 Connect: `npx t3 connect`.",
+      "Start one with `t3 serve`, or connect this machine with T3 Connect: `t3 connect`.",
     ].join("\n");
   }
 }
@@ -84,7 +87,7 @@ export class IncompatibleServerProtocolError extends Schema.TaggedError<Incompat
   override get message(): string {
     return [
       `The running T3 Code server (${this.serverVersion}) speaks orchestration protocol ${String(this.serverProtocolVersion)}, but this CLI speaks protocol ${String(ORCHESTRATION_PROTOCOL_VERSION)}.`,
-      `Pair with the matching CLI instead: \`npx t3@${this.serverVersion} pair\`.`,
+      `Install this fork's matching CLI from ${CLI_RELEASES_PAGE_URL}/tag/v${encodeURIComponent(this.serverVersion)}, then run \`t3 pair\`.`,
     ].join("\n");
   }
 }
@@ -404,7 +407,7 @@ const resolveTailscalePairingBase = Effect.fn("pair.resolveTailscalePairingBase"
       ),
     );
     notes.push(
-      `Tailscale Serve now maps ${baseUrl} to this server and persists across restarts. Remove it with \`tailscale serve --https=${String(input.servePort)} off\`.`,
+      `Tailscale Serve now maps ${baseUrl} to this server and persists across restarts. Remove it with \`tailscale serve --https=${String(input.servePort)} --set-path=/ off\`.`,
     );
 
     const probed = yield* awaitEnvironmentDescriptor(baseUrl);
@@ -502,6 +505,14 @@ export const pairCommand = Command.make("pair", {
       const notes: Array<string> = [];
       let pairingBaseUrl: string;
       if (flags.tailscale) {
+        // Serve stays on after this command exits, so refuse before turning it on.
+        const policy = yield* ManagedPolicy.ManagedPolicy.pipe(Effect.provide(ManagedPolicy.layer));
+        if (!ManagedLimits.allowsRemoteClients(policy)) {
+          return yield* ManagedLimits.refuseRemoteClients(
+            policy,
+            "so Tailscale Serve cannot be turned on",
+          );
+        }
         const resolved = yield* resolveTailscalePairingBase({
           target,
           servePort: flags.tailscaleServePort,
@@ -512,7 +523,7 @@ export const pairCommand = Command.make("pair", {
         pairingBaseUrl = resolveDirectPairingBaseUrl(target.state);
         if (isLoopbackHost(new URL(pairingBaseUrl).hostname)) {
           notes.push(
-            "This URL is only reachable from this machine. Re-run with --tailscale, or restart the server with a reachable --host.",
+            "This URL is only reachable from this machine. To reach it from your other devices, run `t3 up`, or re-run with --tailscale.",
           );
         } else if (target.state.privateNetworkOnly) {
           notes.push(

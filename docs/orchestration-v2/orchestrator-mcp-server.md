@@ -212,8 +212,10 @@ of models, and every call lands in the agent's context. Each provider lists
 custom, favorite, and the caller's own models, plus all current (non-legacy)
 models for Codex, Claude, Muse, and Grok, or the first 8 current models in the
 user's model order for other providers. `omittedModels` counts the rest, and the
-`search` input finds them, legacy models included. `delegate_task` still accepts
-any catalog model.
+`search` input finds them, legacy models included. `allModels` lists every model
+with no cap, for callers such as setup-pstack that need the whole catalog once.
+Models hidden in Settings stay out of every listing. `delegate_task` still
+accepts any catalog model.
 
 ### `delegate_task`
 
@@ -364,7 +366,9 @@ Pass the task in `message`. Project, model, and modes inherit when omitted;
 workspace does not. `scratch: true` launches without a project, in a folder of
 its own under the environment's Scratch project. For stacked PRs, use the parent branch as `baseRef` with
 `startFromOrigin: false`. The new thread may not run with broader runtime or
-interaction modes than the caller. Launch has no retry key, so inspect existing threads after a failed or lost response before
+interaction modes than the caller. As for `delegate_task`, a runtime mode the
+provider does not offer is refused, and an inherited or default one steps down
+to the broadest mode it offers. Launch has no retry key, so inspect existing threads after a failed or lost response before
 launching again. `create_threads` remains the batch option for a shared checkout.
 
 ### `t3_thread_list`

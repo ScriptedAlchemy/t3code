@@ -1,6 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off - Effect has no incremental digest.
-import { ProviderDriverKind, type ProviderInstallState } from "@t3tools/contracts";
 import { compareSemverVersions } from "@t3tools/shared/semver";
+import {
+  ProviderDriverKind,
+  type ProviderInstallState,
+  type ServerProviderCompatibilityAdvisory,
+} from "@t3tools/contracts";
 import { cliArchiveTarCommand } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -164,6 +168,9 @@ interface CodexInstallationService {
   readonly start: (
     options?: CodexRuntimeOptions,
   ) => Effect.Effect<ProviderInstallState, CodexInstallationError>;
+  readonly compatibility: (
+    version: string,
+  ) => Effect.Effect<ServerProviderCompatibilityAdvisory | undefined>;
   readonly cancel: (
     operationId: string,
   ) => Effect.Effect<ProviderInstallState, CodexInstallationError>;
@@ -690,6 +697,14 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
         ),
         Stream.run(fs.sink(archivePath, { flag: "wx", mode: 0o600 })),
         Effect.timeout("45 minutes"),
+        Effect.catchTags({
+          TimeoutError: (cause) =>
+            installationError(
+              "download",
+              "The Codex download timed out. Retry installation.",
+              cause,
+            ),
+        }),
       );
       if (downloadedBytes !== release.archiveBytes || hash.digest("hex") !== release.sha256)
         return yield* installationError(
@@ -756,6 +771,20 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
       yield* activate();
     },
     Effect.scoped,
+    Effect.catchTags({
+      HttpClientError: (cause) => {
+        const httpStatus =
+          cause.reason._tag === "StatusCodeError" ? cause.reason.response.status : undefined;
+        return new CodexInstallationError({
+          operation: "download",
+          detail:
+            httpStatus === undefined
+              ? "The Codex download was interrupted. Check your internet connection, then retry installation."
+              : `The Codex download server returned HTTP ${httpStatus}. Try again later.`,
+          cause,
+        });
+      },
+    }),
     Effect.mapError(
       wrapFailure(
         "install",
@@ -958,6 +987,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
     refresh,
     resolve,
     acquire,
+    compatibility,
     start,
     cancel,
     state: SubscriptionRef.get(state),

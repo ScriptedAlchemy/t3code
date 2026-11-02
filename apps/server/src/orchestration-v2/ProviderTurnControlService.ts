@@ -55,6 +55,8 @@ export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnCon
     operation: Schema.Literals(["interrupt", "restart", "steer"]),
     providerTurnId: ProviderTurnId,
     turnCompleted: Schema.optional(Schema.Boolean),
+    /** The provider never confirmed the stop; Force stop is the way out. */
+    unresponsive: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
@@ -242,11 +244,26 @@ export const layer: Layer.Layer<
             });
           }
           // Settled turns still reach adapters, which alone know whether background work remains.
-          yield* session.value.interruptTurn({
-            providerThread: loaded.providerThread,
-            providerTurnId: loaded.providerTurn.id,
-            requestRuntimeRestart: true,
-          });
+          yield* session.value
+            .interruptTurn({
+              providerThread: loaded.providerThread,
+              providerTurnId: loaded.providerTurn.id,
+              requestRuntimeRestart: true,
+            })
+            .pipe(
+              Effect.catchTags({
+                ProviderAdapterInterruptTimeoutError: (cause) =>
+                  Effect.fail(
+                    new ProviderTurnControlError({
+                      threadId: input.threadId,
+                      operation: "interrupt",
+                      providerTurnId: input.providerTurnId,
+                      unresponsive: true,
+                      cause,
+                    }),
+                  ),
+              }),
+            );
           // Use real time; ingestion fibers do not advance TestClock and would leave Stop blocked.
           yield* Effect.gen(function* () {
             const deadline = (yield* Clock.currentTimeMillis) + 2_000;
@@ -430,7 +447,14 @@ export const layer: Layer.Layer<
           ) {
             const thread = yield* projections.getThread(input.threadId);
             composer = yield* pstack.expandComposer(
-              { ...composer, projectId: thread.projectId },
+              {
+                ...composer,
+                projectId: thread.projectId,
+                parentModelSelection: thread.modelSelection,
+                supportsOrchestrationTools:
+                  loaded.session.value.supportsT3Tools ??
+                  loaded.session.value.providerSession.capabilities.tools.supportsMcpTools,
+              },
               message,
             );
           }
@@ -500,13 +524,24 @@ export const layer: Layer.Layer<
                       "providerTurns",
                       "contextHandoffs",
                     ]);
-                    return nativeContextHistory(history, providerThread).estimate(
-                      (yield* projections.getTurnStartHistory(input.threadId)).filter(
-                        (item) => item.type !== "user_message" || item.messageId !== message.id,
-                      ),
+                    const knowledgeEstimate = yield* knowledge.nativeDeliveryEstimate({
+                      projectId: thread.projectId,
+                      threadId: input.threadId,
+                      providerInstanceId: run.providerInstanceId,
+                      providerThreadId: providerThread.id,
+                      nativeThreadId: providerThread.nativeThreadRef?.nativeId ?? null,
+                    });
+                    return (
+                      knowledgeEstimate +
+                      nativeContextHistory(history, providerThread).estimate(
+                        (yield* projections.getTurnStartHistory(input.threadId)).filter(
+                          (item) => item.type !== "user_message" || item.messageId !== message.id,
+                        ),
+                      )
                     );
                   })
                 : 0;
+            const state = yield* knowledgeDelivery.readState;
             yield* knowledgeDelivery.checkBudget(
               handoffBudgetAssumptions({
                 tokenCap,
@@ -519,8 +554,8 @@ export const layer: Layer.Layer<
                   thread.worktreePath,
                 ),
               }),
+              state.sent,
             );
-            const state = yield* knowledgeDelivery.readState;
             if (state.sentThisAttempt) return;
             if (state.uncertain)
               return yield* new ProviderTurnControlError({

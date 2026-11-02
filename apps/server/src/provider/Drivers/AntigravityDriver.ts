@@ -14,6 +14,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { HttpClient } from "effect/http";
@@ -46,8 +47,8 @@ import {
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import type { ServerProviderDraft } from "@t3tools/provider-core/server/snapshotProbe";
 import {
-  removeAntigravityRuntimeTempDirs,
   removeAntigravitySessionFiles,
+  retireAntigravityRuntimeTempDirs,
 } from "../acp/AntigravitySessionFiles.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
@@ -146,13 +147,16 @@ export const AntigravityDriver: ProviderDriver<
       ),
     );
     const profileDirectory = directories.profile;
+    const profilePreparation = yield* Semaphore.make(1);
     for (const directory of [
       directories.runtimeTemp,
       path.join(profileDirectory, "antigravity-acp", "tmp"),
     ]) {
-      yield* removeAntigravityRuntimeTempDirs(directory).pipe(
+      const removeRetired = yield* retireAntigravityRuntimeTempDirs(directory).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
       );
+      yield* Effect.forkScoped(removeRetired);
     }
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER,
@@ -202,6 +206,7 @@ export const AntigravityDriver: ProviderDriver<
         userHome,
         tempDirectory: directories.runtimeTemp,
       }).pipe(
+        profilePreparation.withPermit,
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

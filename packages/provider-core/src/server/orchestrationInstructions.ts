@@ -1,5 +1,14 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
 
+export const T3_CODE_PROJECT_INTELLIGENCE_INSTRUCTIONS = `### Project intelligence
+
+- Use intelligence when the task needs project history or relationships; do not prefetch it for a routine edit. Resolve an unknown project with \`t3_project_list\` and \`t3_project_read\`.
+- Prior decisions, conventions, and constraints: \`t3_knowledge_search\`, then verify message citations with \`t3_knowledge_read_source\`. Recall is on demand. When asked to remember project knowledge, use \`t3_knowledge_mutate\` with exact message citations when available; an agent proposal is not a user confirmation.
+- Symbols, callers, dependencies, affected code, or reaching tests: \`t3_project_code_query\`. Pass the thread id for its registered worktree. Check coverage, freshness, and edge evidence; static candidates are not proof of runtime behavior.
+- For a file's checkpoint history, use \`t3_project_file_history\`. A checkpoint does not establish authorship.
+- A handoff summary is model-written. Use \`t3_conversation_summary_expand\` for the original messages; list or describe summaries to locate one. If a source is unavailable, report that rather than quoting a stale excerpt.
+- \`t3_knowledge_prepare_context\` previews selected facts or messages for attachment; it does not send them. These tools use the same \`environmentId\` routing as other T3 tools. Keep the project, thread, fact, summary, and message ids on their owning environment; omit \`environmentId\` for this machine.`;
+
 // Codex truncates entries over 4,000 bytes; keep each section self-contained and below that limit.
 export const T3_CODE_ORCHESTRATION_SECTIONS: ReadonlyArray<string> = [
   `## T3 Code orchestration
@@ -18,14 +27,7 @@ Ordinary coding tasks need no T3 tools.
 - In your reply, mention a thread by its \`link\`, verbatim. Never a plain title or bare id.
 - A secret: call \`request_secret\` yourself. Pass its \`secretRef\` to a T3 tool, or use \`delivery: "file"\` for a shell command. Never ask in chat or invent one. When asked only to schedule, \`schedule_task\` without running its prompt.
 - T3 tools may load late. Try the name once before you call it absent.`,
-  `### Project intelligence
-
-- Use intelligence when the task needs project history or relationships; do not prefetch it for a routine edit. Resolve an unknown project with \`t3_project_list\` and \`t3_project_read\`.
-- Prior decisions, conventions, and constraints: \`t3_knowledge_search\`, then verify message citations with \`t3_knowledge_read_source\`. Recall is on demand. When asked to remember project knowledge, use \`t3_knowledge_mutate\` with exact message citations when available; an agent proposal is not a user confirmation.
-- Symbols, callers, dependencies, affected code, or reaching tests: \`t3_project_code_query\`. Pass the thread id for its registered worktree. Check coverage, freshness, and edge evidence; static candidates are not proof of runtime behavior.
-- For a file's checkpoint history, use \`t3_project_file_history\`. A checkpoint does not establish authorship.
-- A handoff summary is model-written. Use \`t3_conversation_summary_expand\` for the original messages; list or describe summaries to locate one. If a source is unavailable, report that rather than quoting a stale excerpt.
-- \`t3_knowledge_prepare_context\` previews selected facts or messages for attachment; it does not send them. These tools use the same \`environmentId\` routing as other T3 tools. Keep the project, thread, fact, summary, and message ids on their owning environment; omit \`environmentId\` for this machine.`,
+  T3_CODE_PROJECT_INTELLIGENCE_INSTRUCTIONS,
   `### Linked environments
 
 - \`t3_environment_links\` lists linked machines. Pass \`environmentId\` to work there; project, thread, run, and model IDs then belong to that environment. Pass \`threadId\` explicitly. Work stays within your modes and the link's access.
@@ -36,7 +38,7 @@ Ordinary coding tasks need no T3 tools.
   `### Visuals and preview
 
 - Answer data with a trend or comparison with a chart, and show any visual the user asks for here: pass its HTML to \`html_preview\`, then \`html_render\`. If the visual is a file, pass that file's HTML. A screenshot on disk or a text description does not show it. Never start a server for it. Tools a web page exposes give data only. Never use them to show results. Asked for an image to post, send, or use elsewhere: a \`.png\` file and its path, never \`html_render\`.
-- Never use \`preview_*\` to verify or show your own edit, even a frontend edit or an open tab. Do not repeat preview calls from an earlier turn. Use them only when the current request asks for browser work or names a page or tab. Public pages: web fetch or search unless browser work was asked; then preview tools only, no web fetch. Close a tab you opened before you reply, unless the user asked for it or uses it.`,
+- Never use \`preview_*\` unasked to verify or show your own edit. Use them when the current request asks for browser work, including recording edits, or names a page or tab. Do not repeat preview calls from an earlier turn. Public pages: web fetch or search unless browser work was asked; then preview tools only, no web fetch. Close a tab you opened before you reply, unless the user asked for it or uses it.`,
 ];
 
 export const T3_CODE_ORCHESTRATION_INSTRUCTIONS = `

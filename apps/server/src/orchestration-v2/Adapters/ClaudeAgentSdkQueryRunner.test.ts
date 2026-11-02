@@ -22,6 +22,7 @@ import { vi } from "vite-plus/test";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
+import { parseClaudeAccountDir } from "../../provider/Drivers/ClaudeHome.ts";
 import { spawnClaudeProcess } from "../../provider/Drivers/ClaudeProcess.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -474,7 +475,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
             signal: AbortSignal.any([]),
           },
           HostProcess.Platform.defaultValue(),
-          mode === "cli" ? dir : undefined,
+          mode === "cli" ? parseClaudeAccountDir(dir) : undefined,
         ) as NodeChildProcess.ChildProcess;
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {

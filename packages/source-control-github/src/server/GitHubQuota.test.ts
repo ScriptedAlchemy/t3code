@@ -19,6 +19,10 @@ describe("GitHubQuota", () => {
       yield* quota.observe("github.com", headers(499));
       const refused = yield* Effect.flip(quota.admit("github.com", "graphql"));
       assert.strictEqual(refused.retryAt, RESET);
+      assert.strictEqual(refused.pauseReason, "reserve-protected");
+      assert.strictEqual(refused.resource, "graphql");
+      assert.strictEqual(refused.remaining, 499);
+      assert.strictEqual(refused.limit, 5_000);
       yield* quota.admit("github.com", "core");
       yield* quota.admit("ghe.example", "graphql");
       yield* quota.admit("github.com", "graphql").pipe(Effect.provideService(CredentialScope, "b"));
@@ -53,6 +57,8 @@ describe("GitHubQuota", () => {
         quota.admit("github.com", "graphql", { allowReserve: true }),
       );
       assert.strictEqual(refused.retryAt, RESET);
+      assert.strictEqual(refused.pauseReason, "quota-exhausted");
+      assert.strictEqual(refused.remaining, 0);
     }).pipe(Effect.provide(GitHubQuota.layer)),
   );
 

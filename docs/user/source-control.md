@@ -10,6 +10,16 @@ rebases, the files Git brought in are left out. A file stays in the list when th
 committed it, or fixed a conflict in it. Use the branch comparison to review everything that changed
 against your base branch. Restore still returns the complete saved workspace.
 
+On web and desktop, open the Diff pane source picker and choose **Commits** to review one local
+commit at a time. The list shows the newest 100 commits in the branch comparison. A merge commit
+shows its changes against its first parent.
+
+A commit link from a supported code host opens in the Diff pane when the thread's repository has
+that commit locally, on any branch. Otherwise a pull request commit link opens the pull request. Other
+commit links follow your **Open links in** setting; on web, when that opens a new tab, T3 Code first
+shows an **Open link** button. Command/Ctrl+Click always opens the link in your browser. Commit links follow the **Open pull requests in T3 Code**
+setting in **Settings → Diffs**.
+
 ## Connect an account
 
 Install Git and configure authentication on the machine running your T3 Code server. For a remote
@@ -311,6 +321,21 @@ responses. Rate limits and temporary host errors delay monitoring. Ongoing watch
 after ten consecutive updates containing only comments. Unsettle the thread before starting
 another watch. Watching again remembers previously reported check and conflict news; a CI watch
 still reports its final result. Subagents report to their parent thread, which owns monitoring.
+
+Agents read a pull request's status, failed checks, and review feedback through T3. These tools
+reuse the app's cached data and watches. T3 redirects supported `gh` reads from local agent
+sessions, including Claude and Codex, to these tools. Writes and unsupported reads still use
+`gh`. For a read the tools cannot answer, prefix the command with `T3_GH_DIRECT=1`.
+
+To allow direct reads, turn off **Send agents' GitHub reads through T3** in **Settings → Source
+control**. The change applies when an agent session next starts. The setting covers ordinary
+`gh` commands found on the agent's PATH; shell overrides, absolute executable paths, and
+externally hosted providers can run outside it.
+
+When quota runs low, T3 pauses background refreshes to protect a reserve for interactive actions.
+The message distinguishes this pause from exhausted quota or a GitHub throttle. REST and
+GraphQL have separate primary quotas; a GitHub secondary throttle pauses both. Cached data
+remains available during a pause.
 
 Cross-repository links use a project on the same host. Azure DevOps reviews require a project checked
 out from the matching organization and repository.

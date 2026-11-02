@@ -26,7 +26,11 @@ import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 import { ThreadCodeIndexRow } from "./ThreadCodeIndexRow";
 import { ThreadConversationSummariesRow } from "./ThreadConversationSummariesRow";
 import { ThreadServersPanel } from "./ThreadServersPanel";
-import { ThreadDetailsUsage, type ThreadDetailsUsageInput } from "./ThreadDetailsUsage";
+import {
+  ThreadDetailsContext,
+  ThreadDetailsUsage,
+  type ThreadDetailsUsageInput,
+} from "./ThreadDetailsUsage";
 import { ThreadDetailsItemsMenuItems } from "./ThreadDetailsItemsMenu";
 import { resolveThreadDetailsVisibility, THREAD_DETAILS_ITEMS } from "./threadDetailsItems";
 import { useClientSettings } from "../../hooks/useSettings";
@@ -152,6 +156,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
           environment: density === "full" && visible.environment,
           openIn: density !== "essential" && visible.openIn && props.showOpenInPicker,
           scripts: visible.scripts && props.activeProjectScripts !== undefined,
+          memory: visible.memory,
           branch: props.gitCwd !== null && props.isGitRepo && visible.branch,
           git:
             props.gitCwd !== null &&
@@ -162,7 +167,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
         return (
           <>
             <div className="group/details-items">
-              {show.environment || show.openIn || show.scripts || showIndexRows ? (
+              {show.environment || show.openIn || show.scripts || show.memory || showIndexRows ? (
                 <ThreadDetailsSection
                   headingId="thread-details-workspace-heading"
                   title="Workspace"
@@ -224,6 +229,13 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                         threadId={props.threadId}
                       />
                     ) : null}
+
+                    {show.memory ? (
+                      <ProjectMemoryPanel
+                        environmentId={props.environmentId}
+                        projectId={props.projectId}
+                      />
+                    ) : null}
                   </div>
                 </ThreadDetailsSection>
               ) : null}
@@ -254,8 +266,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 </ThreadDetailsSection>
               ) : null}
 
-              <ProjectMemoryPanel environmentId={props.environmentId} projectId={props.projectId} />
-
               {density === "full" && !props.draftId && visible.servers ? (
                 <ThreadServersPanel environmentId={props.environmentId} threadId={props.threadId} />
               ) : null}
@@ -267,14 +277,20 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 />
               ) : null}
 
-              {density === "full" && !props.draftId && visible.lineage ? (
+              {density === "full" && !props.draftId && (visible.lineage || visible.sideChats) ? (
                 <ThreadRelationshipsPanel
                   environmentId={props.environmentId}
                   threadId={props.threadId}
+                  showLineage={visible.lineage}
+                  showSideChats={visible.sideChats}
                 />
               ) : null}
 
               {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
+
+              {visible.context && props.usage.contextWindow ? (
+                <ThreadDetailsContext usage={props.usage.contextWindow} />
+              ) : null}
 
               {/* Shown only when no section above has content, so an emptied card can be refilled. */}
               <div className="p-2 group-has-[>section>:last-child:not(:empty)]/details-items:hidden">

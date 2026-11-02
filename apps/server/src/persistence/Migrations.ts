@@ -87,6 +87,9 @@ import Migration0080 from "./Migrations/080_ProjectIntelligenceAndCrossEnvironme
 import Migration0081 from "./Migrations/081_ProjectKnowledgeMessageDeliveries.ts";
 
 import Migration0082 from "./Migrations/082_ActiveTurnItemIndexes.ts";
+import Migration0083 from "./Migrations/083_ExcludeAttachmentPlaceholdersFromSearch.ts";
+import Migration0084 from "./Migrations/084_SubagentDeliveryState.ts";
+import Migration0085 from "./Migrations/085_ProjectionProjectsPinArchive.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -172,6 +175,9 @@ const migrationEntries = [
   [80, "ProjectIntelligenceAndCrossEnvironment", Migration0080],
   [81, "ProjectKnowledgeMessageDeliveries", Migration0081],
   [82, "ActiveTurnItemIndexes", Migration0082],
+  [83, "ExcludeAttachmentPlaceholdersFromSearch", Migration0083],
+  [84, "SubagentDeliveryState", Migration0084],
+  [85, "ProjectionProjectsPinArchive", Migration0085],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

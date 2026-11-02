@@ -30,6 +30,8 @@ export interface Workflow extends Schema.Struct.Type<typeof Workflow.fields> {}
 
 /** A workflow run. */
 export const WorkflowRun = Schema.Struct({
+  /** The attempt number of this workflow run. */
+  runAttempt: Shared.Int,
   /** The workflow executed in this workflow run. */
   workflow: Workflow
 })
@@ -45,6 +47,10 @@ export interface CheckSuite extends Schema.Struct.Type<typeof CheckSuite.fields>
 /** A check run. */
 export const CheckRun = Schema.Struct({
   __typename: Schema.Literal("CheckRun"),
+  /** Identifies the primary key from the database. */
+  databaseId: Schema.NullOr(Shared.Int),
+  /** A string representing the check run */
+  title: Schema.NullOr(Schema.String),
   /** The name of the check for this check run. */
   name: Schema.String,
   /** The current status of the check run. */
@@ -462,7 +468,7 @@ export const PullRequestCore = GraphQL.query("PullRequestCore", {
       { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed viewerPermission pullRequest(number:$", "number", "){number title url body state isDraft mergeable mergeStateStatus reviewDecision additions deletions changedFiles createdAt updatedAt mergedAt closedAt headRefName baseRefName headRefOid isCrossRepository maintainerCanModify headRepositoryOwner{__typename login}headRepository{nameWithOwner viewerPermission}headRef{id}author{__typename login avatarUrl...on User{id name}}autoMergeRequest{mergeMethod}viewerCanUpdate viewerDidAuthor viewerCanUpdateBranch baseRef{compare(headRef:$", "headRef", "){behindBy}}reviewRequests(first:$", "requestedReviewers", "){nodes{requestedReviewer{__typename...on User{login name}...on Bot{login}...on Team{slug combinedSlug teamName:name teamAvatarUrl:avatarUrl}}}}labels(first:100){nodes{name color}}commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename...", "CheckContext", "}pageInfo{hasNextPage}}}}}}}}"] }
     ],
     fragments: [
-      { name: "CheckContext", body: ["on StatusCheckRollupContext{__typename...on StatusContext{context state targetUrl createdAt description isRequired(pullRequestNumber:$", "number", ")@include(if:$", "required", ")}...on CheckRun{name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber:$", "number", ")@include(if:$", "required", ")checkSuite{workflowRun{workflow{name}}}}}"] }
+      { name: "CheckContext", body: ["on StatusCheckRollupContext{__typename...on StatusContext{context state targetUrl createdAt description isRequired(pullRequestNumber:$", "number", ")@include(if:$", "required", ")}...on CheckRun{databaseId title name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber:$", "number", ")@include(if:$", "required", ")checkSuite{workflowRun{runAttempt workflow{name}}}}}"] }
     ]
   },
   variables: {
@@ -531,6 +537,14 @@ export interface PullRequestCheckContextsRepositoryPullRequestCommitsPullRequest
 
 /** A repository pull request. */
 export const PullRequestCheckContextsRepositoryPullRequestPullRequest = Schema.Struct({
+  /** Identifies the state of the pull request. */
+  state: GraphQL.enumLiterals(Shared.PullRequestState.literals),
+  /** The head and base repositories are different. */
+  isCrossRepository: Schema.Boolean,
+  /** Identifies the name of the head Ref associated with the pull request, even if the ref has been deleted. */
+  headRefName: Schema.String,
+  /** The owner of the repository associated with this pull request's head Ref. */
+  headRepositoryOwner: Schema.NullOr(RepositoryOwner),
   /** Identifies the oid of the head ref associated with the pull request, even if the ref has been deleted. */
   headRefOid: Shared.GitObjectID,
   /** A list of commits present in this pull request's head branch not present in the base branch. */
@@ -556,10 +570,10 @@ export const PullRequestCheckContexts = GraphQL.query("PullRequestCheckContexts"
       { name: "after", body: "String" }
     ],
     selections: [
-      { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){pullRequest(number:$", "number", "){headRefOid commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100 after:$", "after", "){nodes{__typename...", "CheckContext", "}pageInfo{hasNextPage endCursor}}}}}}}}"] }
+      { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){pullRequest(number:$", "number", "){state isCrossRepository headRefName headRepositoryOwner{__typename login}headRefOid commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100 after:$", "after", "){nodes{__typename...", "CheckContext", "}pageInfo{hasNextPage endCursor}}}}}}}}"] }
     ],
     fragments: [
-      { name: "CheckContext", body: ["on StatusCheckRollupContext{__typename...on StatusContext{context state targetUrl createdAt description isRequired(pullRequestNumber:$", "number", ")@include(if:$", "required", ")}...on CheckRun{name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber:$", "number", ")@include(if:$", "required", ")checkSuite{workflowRun{workflow{name}}}}}"] }
+      { name: "CheckContext", body: ["on StatusCheckRollupContext{__typename...on StatusContext{context state targetUrl createdAt description isRequired(pullRequestNumber:$", "number", ")@include(if:$", "required", ")}...on CheckRun{databaseId title name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber:$", "number", ")@include(if:$", "required", ")checkSuite{workflowRun{runAttempt workflow{name}}}}}"] }
     ]
   },
   variables: {

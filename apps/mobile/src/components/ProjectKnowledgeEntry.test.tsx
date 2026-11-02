@@ -227,7 +227,7 @@ vi.mock("../features/settings/appearance/AppearancePreferencesProvider", () => (
 }));
 vi.mock("../features/terminal/terminalTheme", () => ({ getMobileTerminalTheme: () => ({}) }));
 import { ComposerContextSheet } from "./ComposerContextSheet";
-import { ProjectKnowledgeEntry, requestRememberMessage } from "./ProjectKnowledgeEntry";
+import { ProjectKnowledgeEntry, requestProjectMemory } from "./ProjectKnowledgeEntry";
 
 const scope = {
   environmentId: EnvironmentId.make("mobile-memory"),
@@ -330,6 +330,7 @@ function setup(entries = [scope]) {
         ),
       ),
     rerender: () => act(() => root.render(renderEntries())),
+    openMemory: () => act(() => requestProjectMemory({ ...entries[0]!, message: null })),
     click: async (label: string) => {
       const button = [...container.querySelectorAll("button")].find(
         (item) => item.textContent === label || item.getAttribute("aria-label") === label,
@@ -400,7 +401,7 @@ it.each(["selection", "archive", "close", "unmount", "removal"] as const)(
           complete = resolve;
         }),
     );
-    await screen.click("Project memory");
+    screen.openMemory();
     if (change !== "removal") await screen.click("Select for draft");
     await screen.click("Attach to draft");
     if (change === "selection") await screen.click("Selected for draft");
@@ -410,7 +411,7 @@ it.each(["selection", "archive", "close", "unmount", "removal"] as const)(
       );
     if (change === "close") {
       await screen.click("Close");
-      await screen.click("Project memory");
+      screen.openMemory();
     }
     if (change === "unmount") screen.unmount();
     if (change === "removal") await screen.click("Remove from draft");
@@ -435,7 +436,7 @@ it("flags a fact whose citation is unavailable in the list", async () => {
     nextCursor: null,
     unavailableSources: [{ factId: fact.id, reason: "changed" }],
   };
-  await screen.click("Project memory");
+  screen.openMemory();
   expect(screen.container.textContent).toContain("Source changed");
 });
 
@@ -457,7 +458,7 @@ it("saves a remembered feed message with a citation to that message", async () =
     archived: false,
   };
   act(() =>
-    requestRememberMessage({
+    requestProjectMemory({
       environmentId: scope.environmentId,
       projectId: scope.projectId,
       draftKey: scope.draftKey,
@@ -487,7 +488,7 @@ it("shows user origin once without treating the assertion as a citation", async 
     sources: [{ kind: "user" }],
   };
   state.list = { facts: [asserted], nextCursor: null };
-  await screen.click("Project memory");
+  screen.openMemory();
   await screen.click("Inspect fact: " + asserted.content);
   expect(screen.container.textContent?.match(/User assertion/g)).toHaveLength(1);
   expect(screen.container.textContent).toContain("No cited source");
@@ -496,7 +497,7 @@ it("shows user origin once without treating the assertion as a citation", async 
 
 it("attaches the current selection", async () => {
   using screen = setup();
-  await screen.click("Project memory");
+  screen.openMemory();
   await screen.click("Select for draft");
   await screen.click("Attach to draft");
   expect(state.insert).toHaveBeenCalledWith(
@@ -513,7 +514,7 @@ it("attaches the current selection", async () => {
 
 it("edits a citationless agent observation as an explicit user assertion", async () => {
   using screen = setup();
-  await screen.click("Project memory");
+  screen.openMemory();
   await screen.click(`Inspect fact: ${fact.content}`);
   await screen.click("Edit");
   await screen.click("Save");
@@ -558,7 +559,7 @@ it("pages both result streams without restarting the other stream", async () => 
       ],
     },
   }));
-  await screen.click("Project memory");
+  screen.openMemory();
   const input = screen.container.querySelector(
     '[aria-label="Search project knowledge"]',
   ) as HTMLInputElement;
@@ -620,7 +621,7 @@ it.each([
 ] as const)("sends %s feedback against the fact's revision", async (label, helpful) => {
   using screen = setup();
   state.list = { facts: [{ ...fact, revision: 3 }], nextCursor: null };
-  await screen.click("Project memory");
+  screen.openMemory();
   await screen.click(`Inspect fact: ${fact.content}`);
   await screen.click(label);
   expect(state.mutate).toHaveBeenCalledWith({
@@ -638,7 +639,7 @@ it.each([
 
 it("forgets a fact only after the permanent-erase warning is confirmed", async () => {
   using screen = setup();
-  await screen.click("Project memory");
+  screen.openMemory();
   await screen.click(`Inspect fact: ${fact.content}`);
 
   await screen.click("Forget");
@@ -673,7 +674,7 @@ it("marks a superseded fact read-only and lists superseded facts on request", as
     facts: [{ ...fact, supersededBy: ProjectFactId.make("replacement") }],
     nextCursor: null,
   };
-  await screen.click("Project memory");
+  screen.openMemory();
   expect(screen.container.textContent).toContain("Superseded");
   await screen.click(`Inspect fact: ${fact.content}`);
   const labels = [...screen.container.querySelectorAll("button")].map((item) => item.textContent);
@@ -709,7 +710,7 @@ it("supersedes a fact with a new replacement and shows the returned conflict hin
       ],
     },
   });
-  await screen.click("Project memory");
+  screen.openMemory();
   await screen.click(`Inspect fact: ${fact.content}`);
   await screen.click("Supersede");
   await screen.click("Save");
@@ -737,7 +738,7 @@ it("treats a changed message source as the same selection and shows it as change
     facts: { state: "available", matches: [], coverage: "complete", nextCursor: null },
   });
   state.search = match("a".repeat(64));
-  await screen.click("Project memory");
+  screen.openMemory();
   const input = screen.container.querySelector(
     '[aria-label="Search project knowledge"]',
   ) as HTMLInputElement;
@@ -790,7 +791,7 @@ it("replaces a changed source with its current version on request", async () => 
     maxBytes: 48_000,
   });
   state.draft = { text: reference.text, context: { records: [reference.record] } };
-  await screen.click("Project memory");
+  screen.openMemory();
   const input = screen.container.querySelector(
     '[aria-label="Search project knowledge"]',
   ) as HTMLInputElement;
@@ -818,7 +819,7 @@ it("removes the attached draft reference when the selection changes and says so"
   state.setText.mockImplementation((_key: string, text: string) => {
     state.draft = { text };
   });
-  await screen.click("Project memory");
+  screen.openMemory();
   expect(screen.container.textContent).toContain("is attached to this draft");
   await screen.click("Selected for draft");
   expect(state.setText).toHaveBeenCalledWith(scope.draftKey, "See");
@@ -836,7 +837,7 @@ it("drops a revised fact from the selection and the draft after saving", async (
   state.setText.mockImplementation((_key: string, text: string) => {
     state.draft = { text };
   });
-  await screen.click("Project memory");
+  screen.openMemory();
   await screen.click(`Inspect fact: ${fact.content}`);
   await screen.click("Confirm");
   expect(state.setText).toHaveBeenCalledWith(scope.draftKey, "");
@@ -862,7 +863,7 @@ it("opens only the destination composer for a remembered message from another th
     archived: false,
   };
   act(() =>
-    requestRememberMessage({
+    requestProjectMemory({
       environmentId: scope.environmentId,
       projectId: scope.projectId,
       draftKey: "other-thread-draft",
@@ -883,7 +884,7 @@ it("ignores remember requests while the destination entry is unfocused", () => {
   state.focused = false;
   screen.rerender();
   act(() =>
-    requestRememberMessage({
+    requestProjectMemory({
       environmentId: scope.environmentId,
       projectId: scope.projectId,
       draftKey: scope.draftKey,
@@ -901,7 +902,7 @@ it.each(["Hardware Back", "Header Back"])(
   async (back) => {
     using screen = setup();
     state.androidSheet = true;
-    await screen.click("Project memory");
+    screen.openMemory();
     await screen.click("Select for draft");
     await screen.click("Inspect fact: " + fact.content);
     await screen.click(back);
@@ -917,7 +918,7 @@ it.each(["Hardware Back", "Header Back"])(
   async (back) => {
     using screen = setup();
     state.androidSheet = true;
-    await screen.click("Project memory");
+    screen.openMemory();
     await screen.click(back);
     expect(screen.container.textContent).not.toContain("Search");
   },
@@ -928,7 +929,7 @@ it.each(["Hardware Back", "Header Back", "Back", "Cancel"])(
   async (back) => {
     using screen = setup();
     state.androidSheet = true;
-    await screen.click("Project memory");
+    screen.openMemory();
     await screen.click("Inspect fact: " + fact.content);
     await screen.click("Edit");
     const input = screen.container.querySelector('[aria-label="Fact content"]') as HTMLInputElement;

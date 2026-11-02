@@ -65,6 +65,7 @@ import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/
 import { t3OrchestrationSystemPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
+import { readableProviderErrorMessage } from "./providerErrorMessage.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
@@ -84,6 +85,8 @@ import { openCodeToolTurnItem } from "./toolItems.ts";
 export const OPENCODE_PROVIDER = ProviderDriverKind.make("opencode");
 export const OPENCODE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(OPENCODE_PROVIDER);
 export const OPENCODE_SDK_PROTOCOL = "opencode-sdk.sse" as const;
+export const OPENCODE_NATIVE_CHILD_INSTRUCTIONS =
+  "Use `delegate_task` for child work using project memory, conversation summaries, or code graph; native OpenCode subagents do not inherit T3's session instructions.";
 const DEFAULT_OPENCODE_SETTINGS = Schema.decodeSync(OpenCodeSettings)({});
 
 const makeOpenCodeMessageId = Effect.fnUntraced(function* (
@@ -846,7 +849,14 @@ function providerRef(nativeId: string, strength: "strong" | "weak" = "strong") {
 function openCodeErrorMessage(event: Extract<OpenCodeEvent, { type: "session.error" }>): string {
   const error = event.properties.error;
   if (error === undefined) return "OpenCode session failed without an error payload.";
-  return recordString(error.data, "message") ?? error.name;
+  const statusCode = recordValue(error.data, "statusCode");
+  return (
+    readableProviderErrorMessage(
+      recordString(error.data, "message"),
+      typeof statusCode === "number" ? statusCode : undefined,
+      recordString(error.data, "responseBody"),
+    ) ?? error.name
+  );
 }
 
 function terminalStatusForError(
@@ -949,25 +959,65 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             : {}),
         });
 
-        const mcpSession = yield* mcpSessions.read(input.threadId);
-        const hasT3Mcp = mcpSession !== undefined && !connection.external;
-        const orchestrationSystemPrompt = t3OrchestrationSystemPrompt(
-          hasT3Mcp,
-          mcpSession?.capabilities?.has("device") === true,
+        let registeredMcp:
+          | { readonly endpoint: string; readonly authorizationHeader: string }
+          | undefined;
+        const prepareMcp = Effect.fnUntraced(
+          function* (threadId: ThreadId) {
+            if (connection.external) return undefined;
+            const mcpSession = yield* mcpSessions.read(threadId);
+            if (mcpSession === undefined) {
+              if (registeredMcp !== undefined) {
+                yield* OpenCodeRuntime.runOpenCodeSdk("mcp.disconnect", (signal) =>
+                  client.mcp.disconnect({ name: "t3-code" }, { signal }),
+                );
+                registeredMcp = undefined;
+              }
+              return undefined;
+            }
+            const status = () =>
+              OpenCodeRuntime.runOpenCodeSdk("mcp.status", (signal) =>
+                client.mcp.status(undefined, { signal }),
+              ).pipe(Effect.map((result) => result.data?.["t3-code"]?.status));
+            const unchanged =
+              registeredMcp?.endpoint === mcpSession.endpoint &&
+              registeredMcp.authorizationHeader === mcpSession.authorizationHeader;
+            let connectionStatus = unchanged ? yield* status() : undefined;
+            if (connectionStatus === undefined) {
+              const result = yield* OpenCodeRuntime.runOpenCodeSdk("mcp.add", (signal) =>
+                client.mcp.add(
+                  {
+                    name: "t3-code",
+                    config: {
+                      type: "remote",
+                      url: mcpSession.endpoint,
+                      headers: { Authorization: mcpSession.authorizationHeader },
+                      oauth: false,
+                    },
+                  },
+                  { signal },
+                ),
+              );
+              registeredMcp = mcpSession;
+              // Native add returns a status map even when its handshake failed.
+              connectionStatus = result.data?.["t3-code"]?.status;
+            } else if (connectionStatus !== "connected") {
+              // Native connect's boolean is an acknowledgement, not a connection result.
+              yield* OpenCodeRuntime.runOpenCodeSdk("mcp.connect", (signal) =>
+                client.mcp.connect({ name: "t3-code" }, { signal }),
+              );
+              connectionStatus = yield* status();
+            }
+            return connectionStatus === "connected" ? mcpSession : undefined;
+          },
+          Effect.timeout("10 seconds"),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not connect T3 Code's MCP server to OpenCode.", {
+              threadId: input.threadId,
+              errorTag: causeErrorTag(cause),
+            }).pipe(Effect.as(undefined)),
+          ),
         );
-        if (hasT3Mcp) {
-          yield* OpenCodeRuntime.runOpenCodeSdk("mcp.add", () =>
-            client.mcp.add({
-              name: "t3-code",
-              config: {
-                type: "remote",
-                url: mcpSession.endpoint,
-                headers: { Authorization: mcpSession.authorizationHeader },
-                oauth: false,
-              },
-            }),
-          );
-        }
 
         const now = yield* DateTime.now;
         let sessionEntity: OrchestrationV2ProviderSession = {
@@ -2645,15 +2695,19 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   : [threads.get(event.properties.sessionID)].filter(
                       (state): state is OpenCodeThreadState => state !== undefined,
                     );
-              const message = openCodeErrorMessage(event);
               const error = event.properties.error;
               const usageLimit = error?.name === "APIError" && error.data.statusCode === 429;
+              const failure = makeProviderFailure({
+                message: openCodeErrorMessage(event),
+                code: error?.name ?? null,
+                class: usageLimit ? "usage_limit" : "provider_error",
+              });
               if (
                 !isMessageAbortedError(event) &&
                 (event.properties.sessionID === undefined ||
                   states.some((state) => state.parentSubagent === null))
               ) {
-                yield* updateProviderSession("error", message);
+                yield* updateProviderSession("error", failure.message);
               }
               for (const state of states) {
                 if (state.activeTurn !== null) {
@@ -2662,11 +2716,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                     state.activeTurn,
                     terminalStatusForError(event, state.activeTurn),
                     {
-                      failure: makeProviderFailure({
-                        message,
-                        code: error?.name ?? null,
-                        class: usageLimit ? "usage_limit" : "provider_error",
-                      }),
+                      failure,
                       threadDisposition:
                         event.properties.sessionID === undefined ? "broken" : "reusable",
                     },
@@ -2935,6 +2985,32 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           };
         });
 
+        // OpenCode runs each step with the agent and system prompt of the latest
+        // user message, so every prompt in a turn, steers included, repeats them.
+        const turnPromptOptions = Effect.fn("OpenCodeAdapterV2.turnPromptOptions")(function* (
+          turn: ActiveOpenCodeTurn,
+        ) {
+          const mcpSession = yield* prepareMcp(turn.threadId);
+          const agent =
+            getModelSelectionStringOptionValue(turn.modelSelection, "agent") ??
+            (turn.runtimePolicy.interactionMode === "plan" ? "plan" : undefined);
+          const variant = getModelSelectionStringOptionValue(turn.modelSelection, "variant");
+          return {
+            ...(agent === undefined ? {} : { agent }),
+            ...(variant === undefined ? {} : { variant }),
+            system: [
+              t3OrchestrationSystemPrompt(
+                mcpSession !== undefined,
+                mcpSession?.capabilities?.has("device") === true,
+              ),
+              mcpSession === undefined ? undefined : OPENCODE_NATIVE_CHILD_INSTRUCTIONS,
+              buildRuntimeInstructions({ harness: "OpenCode", model: turn.modelSelection.model }),
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          };
+        });
+
         // Native commands await generation; user-message receipts admit their background requests.
         const submitPrompt = Effect.fn("OpenCode.submitPrompt")(function* (
           state: OpenCodeThreadState,
@@ -3030,6 +3106,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           driver: OPENCODE_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: sessionEntity,
+          supportsT3Tools: !connection.external,
           events: Stream.fromEffectRepeat(Queue.take(events)),
           hasPendingBackgroundWork: Effect.sync(() => busySessionIds.size > 0),
           ensureThread: Effect.fn("OpencodeAdapter.ensureThread")(
@@ -3257,22 +3334,6 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 );
                 return;
               }
-              const systemPrompt = [
-                orchestrationSystemPrompt,
-                buildRuntimeInstructions({
-                  harness: "OpenCode",
-                  model: turnInput.modelSelection.model,
-                }),
-              ]
-                .filter(Boolean)
-                .join("\n\n");
-              const agent =
-                getModelSelectionStringOptionValue(turnInput.modelSelection, "agent") ??
-                (turnInput.runtimePolicy.interactionMode === "plan" ? "plan" : undefined);
-              const variant = getModelSelectionStringOptionValue(
-                turnInput.modelSelection,
-                "variant",
-              );
               yield* submitPrompt(
                 state,
                 turn,
@@ -3280,9 +3341,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   sessionID: sessionId,
                   messageID: turn.admissionMessageId!,
                   model: parsedModel,
-                  ...(agent === undefined ? {} : { agent }),
-                  ...(variant === undefined ? {} : { variant }),
-                  system: systemPrompt,
+                  ...(yield* turnPromptOptions(turn)),
                   parts,
                 },
                 admissionAbortController!,
@@ -3393,6 +3452,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   sessionID: sessionId,
                   messageID: turn.admissionMessageId,
                   model: parsedModel,
+                  ...(yield* turnPromptOptions(turn)),
                   parts,
                 },
                 admissionAbortController!,

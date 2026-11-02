@@ -5,6 +5,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import {
+  materializeHomeOverlay,
+  type HomeOverlay,
+  type OverlayPolicy,
+  type OverlayFold,
+} from "@t3tools/provider-core/server/homeOverlay";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
@@ -40,7 +46,61 @@ const CLAUDE_ACCOUNT_ENVIRONMENT = [
   "ANTHROPIC_FOUNDRY_RESOURCE",
 ] as const;
 
-export function claudeCliEnvironment(environment: NodeJS.ProcessEnv, configDir: string) {
+export const ClaudeAccountDir = Schema.NonEmptyString.check(
+  Schema.isPattern(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/),
+).pipe(Schema.brand("ClaudeAccountDir"));
+export type ClaudeAccountDir = typeof ClaudeAccountDir.Type;
+export const parseClaudeAccountDir = Schema.decodeSync(ClaudeAccountDir);
+
+const SYNC_BUCKET = /^(?:\.bucket-)?[0-9a-f-]{36}_(?:[0-9a-f-]{36}|unbound)$/i;
+const SYNCED_BUCKETS: OverlayFold = {
+  _tag: "FoldDirectory",
+  children: (name) =>
+    SYNC_BUCKET.test(name)
+      ? { _tag: "Move", kind: name.startsWith(".bucket-") ? "file" : "directory" }
+      : { _tag: "Conflict" },
+};
+const CLAUDE_PROFILE_FILES = ["settings.json", "CLAUDE.md", "keybindings.json"];
+// The CLI writes into plugins and skills, so those exist before linking; the rest link once present.
+const CLAUDE_PROFILE_WRITABLE_DIRECTORIES = ["plugins", "skills"];
+const CLAUDE_PROFILE_DIRECTORIES = ["agents", "commands", "output-styles", "rules", "hooks"];
+const CLAUDE_PROFILE_ENTRIES: ReturnType<OverlayPolicy["shared"]> = [
+  ...CLAUDE_PROFILE_FILES.map((name) => ({ name, adopt: { _tag: "Conflict" as const } })),
+  ...[...CLAUDE_PROFILE_WRITABLE_DIRECTORIES, ...CLAUDE_PROFILE_DIRECTORIES].map((name) => ({
+    name,
+    ensureDirectory: CLAUDE_PROFILE_WRITABLE_DIRECTORIES.includes(name),
+    adopt:
+      name === "plugins" || name === "skills"
+        ? {
+            _tag: "FoldDirectory" as const,
+            children: (child: string): OverlayFold =>
+              child === "synced"
+                ? SYNCED_BUCKETS
+                : {
+                    _tag:
+                      name === "plugins" && child === "plugin-directory-cache-v2.json"
+                        ? "Drop"
+                        : "Conflict",
+                  },
+          }
+        : { _tag: "Conflict" as const },
+  })),
+];
+
+const CLAUDE_OVERLAY_POLICY: OverlayPolicy = {
+  shared: (sharedNames) =>
+    CLAUDE_PROFILE_ENTRIES.filter(
+      (entry) =>
+        entry.ensureDirectory ||
+        !CLAUDE_PROFILE_DIRECTORIES.includes(entry.name) ||
+        sharedNames.includes(entry.name),
+    ),
+  mustBeReal: [".claude.json", ".credentials.json", "sessions", "session-env", "backups"],
+  healIfLinked: [],
+  retired: CLAUDE_PROFILE_ENTRIES.map((entry) => entry.name),
+};
+
+export function claudeCliEnvironment(environment: NodeJS.ProcessEnv, configDir: ClaudeAccountDir) {
   const next = { ...environment };
   for (const key of Object.keys(next)) {
     const name = key.toUpperCase();
@@ -57,9 +117,9 @@ export function claudeCliEnvironment(environment: NodeJS.ProcessEnv, configDir: 
 }
 
 export function claudeAccountSettings(
-  config: Pick<ClaudeSettings, "setupMode" | "homePath">,
+  configDir: ClaudeAccountDir | undefined,
 ): ClaudeSdkSettings | undefined {
-  if (config.setupMode !== "cli") return undefined;
+  if (configDir === undefined) return undefined;
   return {
     forceLoginMethod: "claudeai",
     apiKeyHelper: "",
@@ -68,18 +128,28 @@ export function claudeAccountSettings(
     env: {
       ...Object.fromEntries(CLAUDE_ACCOUNT_ENVIRONMENT.map((key) => [key, ""])),
       ...Object.fromEntries(CLAUDE_BACKEND_ENVIRONMENT.map((key) => [key, "0"])),
-      CLAUDE_CONFIG_DIR: config.homePath,
-      CLAUDE_SECURESTORAGE_CONFIG_DIR: config.homePath,
+      CLAUDE_CONFIG_DIR: configDir,
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: configDir,
     },
   };
 }
 
-export interface ClaudeRuntime {
-  readonly mode: "existing" | "cli";
-  readonly config: ClaudeSettings;
-  readonly configDir: string;
+export type ClaudeRuntime = {
   readonly environment: NodeJS.ProcessEnv;
-}
+} & (
+  | {
+      readonly mode: "existing";
+      readonly config: ClaudeSettings;
+      readonly configDir: string;
+      readonly overlay: undefined;
+    }
+  | {
+      readonly mode: "cli";
+      readonly config: ClaudeSettings & { readonly homePath: ClaudeAccountDir };
+      readonly configDir: ClaudeAccountDir;
+      readonly overlay: HomeOverlay;
+    }
+);
 
 export const resolveClaudeRuntime = Effect.fn("resolveClaudeRuntime")(function* (input: {
   readonly instanceId: ProviderInstanceId;
@@ -87,18 +157,40 @@ export const resolveClaudeRuntime = Effect.fn("resolveClaudeRuntime")(function* 
   readonly environment: NodeJS.ProcessEnv;
   readonly stateDir: string;
 }): Effect.fn.Return<ClaudeRuntime, never, Path.Path> {
+  if (input.config.setupMode !== "cli") {
+    return {
+      mode: "existing",
+      config: input.config,
+      configDir: yield* resolveClaudeHomePath(input.config, input.environment),
+      environment: yield* makeClaudeEnvironment(input.config, input.environment),
+      overlay: undefined,
+    };
+  }
   const path = yield* Path.Path;
-  const mode = input.config.setupMode ?? "existing";
-  const configDir =
-    mode === "cli"
-      ? path.join(input.stateDir, "providers", "claude", input.instanceId, "cli")
-      : yield* resolveClaudeHomePath(input.config, input.environment);
-  const config = mode === "cli" ? { ...input.config, homePath: configDir } : input.config;
-  const environment =
-    mode === "cli"
-      ? claudeCliEnvironment(input.environment, configDir)
-      : yield* makeClaudeEnvironment(config, input.environment);
-  return { mode, config, configDir, environment };
+  const configDir = parseClaudeAccountDir(
+    path.join(input.stateDir, "providers", "claude", input.instanceId, "cli"),
+  );
+  return {
+    mode: "cli",
+    config: { ...input.config, homePath: configDir },
+    configDir,
+    environment: claudeCliEnvironment(input.environment, configDir),
+    overlay: {
+      sharedRoot: yield* resolveClaudeHomePath({ homePath: "" }, input.environment),
+      accountDir: configDir,
+      policy: CLAUDE_OVERLAY_POLICY,
+      active: input.config.shareProfile,
+    },
+  };
+});
+
+export const materializeClaudeHome = Effect.fn("materializeClaudeHome")(function* (
+  runtime: ClaudeRuntime,
+) {
+  if (!runtime.overlay) return;
+  const fileSystem = yield* FileSystem.FileSystem;
+  yield* fileSystem.makeDirectory(runtime.configDir, { recursive: true, mode: 0o700 });
+  yield* materializeHomeOverlay(runtime.overlay);
 });
 
 export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function* (

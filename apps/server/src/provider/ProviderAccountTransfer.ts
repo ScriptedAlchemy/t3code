@@ -175,9 +175,11 @@ const PATH_SHAPED_VALUE = /^(~|\/|[A-Za-z]:[\\/]|\\\\)/;
 
 function isMachineLocalVariable(variable: {
   readonly name: string;
-  readonly value: string;
+  readonly value: ProviderInstanceEnvironmentVariable["value"];
   readonly sensitive: boolean;
 }): boolean {
+  // A secret reference names a secret provider configured on this machine.
+  if (typeof variable.value !== "string") return true;
   return (
     !variable.sensitive &&
     (MACHINE_LOCAL_ENVIRONMENT_VARIABLES.has(variable.name) ||
@@ -232,15 +234,15 @@ function toPortableAccount(
   }
   const environment: Array<PortableProviderInstance["environment"][number]> = [];
   for (const variable of instance.environment ?? []) {
-    if (variable.sensitive) {
-      if (variable.value.length > 0)
-        addSecret({ _tag: "EnvironmentVariable", name: variable.name, value: variable.value });
+    const { value } = variable;
+    if (typeof value !== "string" || isMachineLocalVariable(variable)) {
+      omitted.push({ setting: environmentVariable(variable.name), reason: "machine-local" });
+    } else if (variable.sensitive) {
+      if (value.length > 0) addSecret({ _tag: "EnvironmentVariable", name: variable.name, value });
       else
         omitted.push({ setting: environmentVariable(variable.name), reason: "missing-on-source" });
-    } else if (isMachineLocalVariable(variable)) {
-      omitted.push({ setting: environmentVariable(variable.name), reason: "machine-local" });
     } else {
-      environment.push({ name: variable.name, value: variable.value });
+      environment.push({ name: variable.name, value });
     }
   }
   if (

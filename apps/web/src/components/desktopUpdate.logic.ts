@@ -1,8 +1,8 @@
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
+import { CLI_RELEASES_PAGE_URL } from "@t3tools/shared/cliRelease";
 
 export type DesktopUpdateButtonAction = "download" | "install" | "none";
 
-const DEFAULT_DESKTOP_RELEASE_REPOSITORY = "pingdotgg/t3code";
 const GITHUB_REPOSITORY_SEGMENT = /^[A-Za-z0-9._-]+$/u;
 
 function isValidRepositorySegment(value: string | undefined): value is string {
@@ -14,11 +14,9 @@ function isValidRepositorySegment(value: string | undefined): value is string {
 function desktopReleaseRepositoryUrl(repository: string | undefined): string {
   const configuredRepository = repository?.trim() ?? "";
   const [owner, name, ...extra] = configuredRepository.split("/");
-  const releaseRepository =
-    isValidRepositorySegment(owner) && isValidRepositorySegment(name) && extra.length === 0
-      ? configuredRepository
-      : DEFAULT_DESKTOP_RELEASE_REPOSITORY;
-  return `https://github.com/${releaseRepository}/releases`;
+  return isValidRepositorySegment(owner) && isValidRepositorySegment(name) && extra.length === 0
+    ? `https://github.com/${configuredRepository}/releases`
+    : CLI_RELEASES_PAGE_URL;
 }
 
 /** The download RPC can beat the updater's downloadedVersion event; fall back to the requested version. */
@@ -145,17 +143,21 @@ export function canCheckForUpdate(state: DesktopUpdateState | null): boolean {
   );
 }
 
+/** `managedDenial` is this machine's policy refusing updates (`managedUpdatesDenial`); it wins. */
 export function getDesktopUpdateDisabledReason(
   state: Pick<DesktopUpdateState, "enabled" | "status" | "message"> | null,
+  managedDenial?: string,
 ): string | null {
+  if (managedDenial !== undefined) return managedDenial;
   if (!state || (state.enabled && state.status !== "disabled")) return null;
   return state.message?.trim() || "Automatic updates are not available in this build.";
 }
 
 export function getDesktopUpdateIdleTooltip(
   state: Pick<DesktopUpdateState, "enabled" | "status" | "message"> | null,
+  managedDenial?: string,
 ) {
-  const disabledReason = getDesktopUpdateDisabledReason(state);
+  const disabledReason = getDesktopUpdateDisabledReason(state, managedDenial);
   return disabledReason
     ? { title: "Updates unavailable", detail: disabledReason }
     : { title: "Check for updates", detail: null };

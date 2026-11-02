@@ -1,6 +1,6 @@
 import * as NodeV8 from "node:v8";
 
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { ProviderDriverKind, SourceControlProviderKind } from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
 import {
   EventId,
@@ -31,6 +31,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Metric from "effect/Metric";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import { TestClock } from "effect/testing";
@@ -222,6 +223,7 @@ const makeHarness = Effect.fn("makePullRequestSyncHarness")(function* (options: 
 
   const layerDependencies = Layer.mergeAll(
     Layer.mock(PullRequestService.PullRequestService)({
+      withSharedProjectReads: (effect) => effect,
       summary,
       stack,
       invalidate: options.invalidate ?? (() => Effect.void),
@@ -807,6 +809,81 @@ describe("PullRequestSyncReactor", () => {
           assert.strictEqual((yield* Ref.get(fixture.summaryCalls)).length, 2);
           assert.strictEqual((yield* Ref.get(fixture.stackCalls)).length, 1);
           assert.strictEqual((yield* Ref.get(fixture.syncCommands)).length, 1);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("keeps the known mergeability while the host recomputes it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const answers = yield* Ref.make<ReadonlyArray<"unknown" | "mergeable">>([
+          "unknown",
+          "mergeable",
+        ]);
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([
+            makeThread("one", {
+              pullRequests: [makeLink(42, { mergeability: "conflicting" })],
+            }),
+          ]),
+          summary: (input) =>
+            Ref.modify(answers, ([next = "mergeable", ...rest]) => [
+              makeSummary(input, { mergeability: next }),
+              rest,
+            ]),
+        });
+
+        yield* Effect.gen(function* () {
+          const reactor = yield* startAndSweep(fixture);
+          assert.deepStrictEqual(yield* Ref.get(fixture.syncCommands), []);
+
+          // An unchanged old PR uses main's five-minute quiet polling cadence.
+          yield* TestClock.adjust("5 minutes");
+          yield* Queue.take(fixture.snapshotReads);
+          yield* reactor.drain;
+          assert.strictEqual((yield* Ref.get(fixture.summaryCalls)).length, 2);
+
+          const commands = yield* Ref.get(fixture.syncCommands);
+          assert.deepStrictEqual(
+            commands.map((command) => command.snapshot.mergeability),
+            ["mergeable"],
+          );
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect.each([
+    { provider: "github" as const, updatedAt: "2026-08-28T00:00:00.000Z" },
+    { provider: "forgejo" as const, updatedAt: "2026-08-27T00:00:00.000Z" },
+  ])("persists unknown mergeability for $provider at $updatedAt", ({ provider, updatedAt }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([
+            makeThread("one", {
+              pullRequests: [makeLink(42, { mergeability: "mergeable" })],
+            }),
+          ]),
+          summary: (input) =>
+            Effect.succeed(
+              makeSummary(input, {
+                provider: SourceControlProviderKind.make(provider),
+                updatedAt,
+                mergeability: "unknown",
+              }),
+            ),
+        });
+        yield* Effect.gen(function* () {
+          yield* startAndSweep(fixture);
+          const commands = yield* Ref.get(fixture.syncCommands);
+          assert.deepStrictEqual(
+            commands.map((command) => command.snapshot.mergeability),
+            ["unknown"],
+          );
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),
@@ -1689,6 +1766,49 @@ describe("PullRequestSyncReactor", () => {
           assert.deepStrictEqual(
             links.map((command) => [command.threadId, command.number, command.source]),
             linked.map((number) => [child, number, "created"]),
+          );
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("counts a forge command once per settled command, labelled by provider", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const fixture = yield* makeHarness({ snapshot: mergingSnapshot() });
+
+        yield* Effect.gen(function* () {
+          const reactor = yield* startAndSweep(fixture);
+          const child = ThreadId.make("counted-child");
+          const ran = {
+            ...commandRan(child, "gh pr checks 4497 --json bucket", "[]", "checks"),
+            driver: ProviderDriverKind.make("counted-driver"),
+          };
+          yield* linksFrom(fixture, reactor, [ran, ran]);
+
+          const counted = (yield* Metric.snapshot).filter(
+            (snapshot) =>
+              snapshot.id === "t3_agent_forge_commands_total" &&
+              snapshot.attributes?.["provider"] === "counted-driver",
+          );
+          assert.deepStrictEqual(
+            counted.map((snapshot) => [
+              snapshot.attributes,
+              (snapshot.state as Metric.CounterState<number>).count,
+            ]),
+            [
+              [
+                {
+                  forge: "github",
+                  kind: "read",
+                  intent: "status",
+                  provider: "counted-driver",
+                  bypass: "false",
+                },
+                1,
+              ],
+            ],
           );
         }).pipe(Effect.provide(fixture.layer));
       }),

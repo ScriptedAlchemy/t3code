@@ -3,7 +3,9 @@ import {
   findProviderPool,
   providerLimitedUntilMs,
   type ProjectId,
+  type ProviderInstanceId,
   type ServerProvider,
+  type ServerProviderModel,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
@@ -11,6 +13,13 @@ import { poolMemberHealth } from "../orchestration-v2/ProviderPoolRouting.ts";
 import * as Effect from "effect/Effect";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+
+export function isCapabilityModelVisible(
+  model: Pick<ServerProviderModel, "slug" | "isCustom">,
+  preferences: { readonly hiddenModels: ReadonlyArray<string> } | undefined,
+): boolean {
+  return model.isCustom || !preferences?.hiddenModels.includes(model.slug);
+}
 
 export function providerConstraints(
   provider: ServerProvider | undefined,
@@ -44,6 +53,7 @@ export function delegationProviderConstraints(
   supportsOrchestrationV2: boolean,
   input: {
     readonly providers: ReadonlyArray<ServerProvider>;
+    readonly capableInstanceIds?: ReadonlySet<ProviderInstanceId>;
     readonly settings: Parameters<typeof poolMemberHealth>[0]["settings"];
     readonly projectId: ProjectId | null;
     readonly nowMs: number;
@@ -58,7 +68,11 @@ export function delegationProviderConstraints(
     return constraints;
   }
   const members = poolMemberHealth({ ...input, members: owner.members });
-  const eligible = members.filter((member) => member.eligible);
+  const eligible = members.filter(
+    (member) =>
+      member.eligible &&
+      (input.capableInstanceIds === undefined || input.capableInstanceIds.has(member.instanceId)),
+  );
   if (eligible.length === 0) {
     constraints.push("No pool member is available for this project.");
   } else if (eligible.every((member) => member.limitedUntilMs !== null)) {
@@ -112,13 +126,15 @@ export const readOrchestrationProviders = Effect.fn("OrchestrationTargets.readPr
       registry.getPublishedProviders,
       adapters.list(),
     ]);
-    // A pool has no adapter of its own; routing picks a member's at dispatch.
-    const capableInstanceIds = new Set([
-      ...instanceIds,
-      ...providers
-        .filter((provider) => provider.pool?.role === "pool")
-        .map((provider) => provider.instanceId),
-    ]);
+    const capableInstanceIds = new Set(instanceIds);
+    // A pool delegates through a registered member adapter, never its virtual id.
+    for (const provider of providers) {
+      if (
+        provider.pool?.role === "pool" &&
+        provider.pool.memberInstanceIds.some((instanceId) => instanceIds.includes(instanceId))
+      )
+        capableInstanceIds.add(provider.instanceId);
+    }
     return { providers, capableInstanceIds };
   },
 );

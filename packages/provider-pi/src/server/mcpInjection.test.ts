@@ -6,6 +6,7 @@ import {
   T3_MCP_URL_ENV,
   T3_PI_RUNTIME_MODE_ENV,
   T3_PI_MCP_EXTENSION_PATH_ENV,
+  T3_PI_DEVICE_TOOLS_ENV,
 } from "./mcpExtensionSource.ts";
 import { buildPiRpcLaunch, resolvePiLaunchArgs } from "./mcpInjection.ts";
 
@@ -22,69 +23,78 @@ const mcpSession = {
 };
 
 describe("pi T3 MCP injection", () => {
-  it("always adds the permission bridge and configures MCP when available", () => {
-    const resolvedArgs = resolvePiLaunchArgs(
-      "--extension=/home/user/.pi/agent/extensions/demo.ts --session-dir=/tmp/pi-sessions --provider=anthropic --model=claude-sonnet --tools='' --name=-review --extension-flag=kept",
-    );
-    assert.isTrue(resolvedArgs.ok);
-    if (!resolvedArgs.ok) return;
-    const launch = buildPiRpcLaunch({
-      launchArgs: resolvedArgs.args,
-      environment: { PATH: "/usr/bin" },
-      mcpSession,
-      extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
-      runtimeMode: "approval-required",
-    });
-    assert.deepEqual(launch.args, [
-      "--mode",
-      "rpc",
-      "--extension",
-      "/home/user/.pi/agent/extensions/demo.ts",
-      "--session-dir",
-      "/tmp/pi-sessions",
-      "--provider",
-      "anthropic",
-      "--model",
-      "claude-sonnet",
-      "--tools",
-      "",
-      "--name",
-      "-review",
-      "--extension-flag=kept",
-      "--extension",
-      "/tmp/cache/pi-t3-mcp-extension.ts",
-    ]);
-    assert.notInclude(launch.args, "--no-extensions");
-    assert.equal(launch.env[T3_MCP_URL_ENV], "http://127.0.0.1:43123/mcp");
-    assert.equal(launch.env[T3_MCP_BEARER_ENV], "secret-pi-token");
-    assert.equal(launch.env[T3_PI_RUNTIME_MODE_ENV], "approval-required");
-    assert.equal(launch.env[T3_PI_MCP_EXTENSION_PATH_ENV], "/tmp/cache/pi-t3-mcp-extension.ts");
+  it.each([false, true])(
+    "adds the permission bridge and capability-scoped MCP, device access=%s",
+    (hasDeviceTools) => {
+      const resolvedArgs = resolvePiLaunchArgs(
+        "--extension=/home/user/.pi/agent/extensions/demo.ts --session-dir=/tmp/pi-sessions --provider=anthropic --model=claude-sonnet --tools='' --name=-review --extension-flag=kept",
+      );
+      assert.isTrue(resolvedArgs.ok);
+      if (!resolvedArgs.ok) return;
+      const launch = buildPiRpcLaunch({
+        launchArgs: resolvedArgs.args,
+        environment: { PATH: "/usr/bin", [T3_PI_DEVICE_TOOLS_ENV]: hasDeviceTools ? "" : "1" },
+        mcpSession: {
+          ...mcpSession,
+          capabilities: new Set(hasDeviceTools ? ["device" as const] : []),
+        },
+        extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
+        runtimeMode: "approval-required",
+      });
+      assert.deepEqual(launch.args, [
+        "--mode",
+        "rpc",
+        "--extension",
+        "/home/user/.pi/agent/extensions/demo.ts",
+        "--session-dir",
+        "/tmp/pi-sessions",
+        "--provider",
+        "anthropic",
+        "--model",
+        "claude-sonnet",
+        "--tools",
+        "",
+        "--name",
+        "-review",
+        "--extension-flag=kept",
+        "--extension",
+        "/tmp/cache/pi-t3-mcp-extension.ts",
+      ]);
+      assert.notInclude(launch.args, "--no-extensions");
+      assert.equal(launch.env[T3_MCP_URL_ENV], "http://127.0.0.1:43123/mcp");
+      assert.equal(launch.env[T3_MCP_BEARER_ENV], "secret-pi-token");
+      assert.equal(launch.env[T3_PI_RUNTIME_MODE_ENV], "approval-required");
+      assert.equal(launch.env[T3_PI_MCP_EXTENSION_PATH_ENV], "/tmp/cache/pi-t3-mcp-extension.ts");
+      assert.equal(launch.env[T3_PI_DEVICE_TOOLS_ENV], hasDeviceTools ? "1" : undefined);
 
-    const permissionOnly = buildPiRpcLaunch({
-      launchArgs: [],
-      environment: {
-        [T3_MCP_URL_ENV]: "http://127.0.0.1:9999/stale",
-        [T3_MCP_BEARER_ENV]: "stale-token",
-        [T3_PI_MCP_EXTENSION_PATH_ENV]: "/stale/extension.ts",
-      },
-      mcpSession: undefined,
-      extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
-      runtimeMode: "auto-accept-edits",
-    });
-    assert.deepEqual(permissionOnly.args, [
-      "--mode",
-      "rpc",
-      "--extension",
-      "/tmp/cache/pi-t3-mcp-extension.ts",
-    ]);
-    assert.isUndefined(permissionOnly.env[T3_MCP_URL_ENV]);
-    assert.isUndefined(permissionOnly.env[T3_MCP_BEARER_ENV]);
-    assert.equal(permissionOnly.env[T3_PI_RUNTIME_MODE_ENV], "auto-accept-edits");
-    assert.equal(
-      permissionOnly.env[T3_PI_MCP_EXTENSION_PATH_ENV],
-      "/tmp/cache/pi-t3-mcp-extension.ts",
-    );
-  });
+      const permissionOnly = buildPiRpcLaunch({
+        launchArgs: [],
+        environment: {
+          [T3_MCP_URL_ENV]: "http://127.0.0.1:9999/stale",
+          [T3_MCP_BEARER_ENV]: "stale-token",
+          [T3_PI_MCP_EXTENSION_PATH_ENV]: "/stale/extension.ts",
+          [T3_PI_DEVICE_TOOLS_ENV]: "1",
+        },
+        mcpSession: undefined,
+        extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
+        runtimeMode: "auto-accept-edits",
+      });
+      assert.deepEqual(permissionOnly.args, [
+        "--mode",
+        "rpc",
+        "--extension",
+        "/tmp/cache/pi-t3-mcp-extension.ts",
+      ]);
+      assert.isUndefined(permissionOnly.env[T3_MCP_URL_ENV]);
+      assert.isUndefined(permissionOnly.env[T3_MCP_BEARER_ENV]);
+      assert.isUndefined(permissionOnly.env[T3_PI_DEVICE_TOOLS_ENV]);
+      assert.equal(permissionOnly.env[T3_PI_RUNTIME_MODE_ENV], "auto-accept-edits");
+      assert.equal(
+        permissionOnly.env[T3_PI_MCP_EXTENSION_PATH_ENV],
+        "/tmp/cache/pi-t3-mcp-extension.ts",
+      );
+    },
+  );
 
   it("forces tools and user extensions off for unattended text generation", () => {
     const launch = buildPiRpcLaunch({

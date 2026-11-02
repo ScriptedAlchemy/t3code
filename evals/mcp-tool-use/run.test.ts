@@ -4,12 +4,21 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { assert, expect, it } from "@effect/vitest";
-import { ComposerContextId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  ComposerContextId,
+  EnvironmentId,
+  PullRequestFailureReport,
+  PullRequestFeedbackReport,
+  PullRequestRateLimited,
+  PullRequestStatusReport,
+  ThreadId,
+} from "@t3tools/contracts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 
 import {
   buildBase,
   buildMessages,
+  cannedOutput,
   failedEarly,
   executeCodex,
   gradeSample,
@@ -116,6 +125,7 @@ it("passes a good run and names every rule a bad run breaks", () => {
     textMust: ["t3-thread://v2/"],
     textMustNot: ["Paste .*token"],
     linked: ["~/pull/124"],
+    linkedNumbers: [124],
   };
   const good: SampleRun = {
     calls: [
@@ -158,6 +168,7 @@ it("passes a good run and names every rule a bad run breaks", () => {
     "textMust /t3-thread://v2//",
     "textMustNot /Paste .*token/",
     "linked ~/pull/124",
+    "linkedNumbers",
   ]);
 });
 
@@ -377,6 +388,91 @@ it("answers simple mocked commands itself and gives the simulator the sample's h
     history?.text,
     '<call>Bash {"command":"git push"}</call>\n<output>\npushed\n</output>\n\nNew call:\n<call>Bash {"command":"git push && gh pr create --fill"}</call>',
   );
+});
+
+it("applies native and PATH GitHub gates before shell mocks without claiming absolute-path coverage", () => {
+  const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+  const testCase = {
+    ...childCase,
+    setup: {
+      ...childCase.setup,
+      shellMocks: [{ match: "gh", output: "command executed" }],
+    },
+  };
+  const claude = makeSample(testCase, base);
+  const codex = makeSample(testCase, {
+    ...base,
+    codex: { input: [], reasoning: { effort: "high" } },
+  });
+  for (const command of [
+    "gh pr checks 123",
+    "git status && gh pr view 123 --json headRefOid,statusCheckRollup",
+  ]) {
+    assert.match(cannedOutput(claude, command) ?? "", /^<tool_use_error>.*pull_request_status/s);
+    assert.match(
+      cannedOutput(codex, command) ?? "",
+      /^T3 already reads this.*pull_request_status/s,
+    );
+  }
+  assert.match(
+    cannedOutput(claude, "T3_GH_DIRECT=1 gh pr checks 123 --watch") ?? "",
+    /Do not poll GitHub/,
+  );
+  for (const command of [
+    "T3_GH_DIRECT=1 gh pr checks 123",
+    "gh pr create --fill",
+    "gh run rerun 9001 --failed",
+    "gh issue view 77 --repo acme/app",
+  ]) {
+    assert.equal(cannedOutput(claude, command), "command executed");
+    assert.equal(cannedOutput(codex, command), "command executed");
+  }
+  assert.equal(cannedOutput(codex, "/usr/bin/gh pr checks 123"), "command executed");
+  assert.match(cannedOutput(claude, "/usr/bin/gh pr checks 123") ?? "", /pull_request_status/);
+  assert.match(
+    cannedOutput(codex, "T3_GH_DIRECT=1 gh pr checks 123 --watch") ?? "",
+    /Do not poll GitHub/,
+  );
+  assert.equal(
+    cannedOutput(codex, "GH_HOST=enterprise.example gh pr checks 123"),
+    "command executed",
+  );
+  assert.isUndefined(cannedOutput(claude, "git status"));
+});
+
+it("validates PR case regexes and decodes read mocks against product result schemas", () => {
+  const decoders = {
+    pull_request_status: Schema.decodeUnknownSync(PullRequestStatusReport),
+    pull_request_failures: Schema.decodeUnknownSync(
+      Schema.Union([PullRequestFailureReport, PullRequestRateLimited]),
+    ),
+    pull_request_feedback: Schema.decodeUnknownSync(
+      Schema.Union([PullRequestFeedbackReport, PullRequestRateLimited]),
+    ),
+  };
+  const decode = Schema.decodeSync(Schema.fromJsonString(McpToolUseCase));
+  const cases = NodeFS.readFileSync(
+    new URL("./cases/pull-requests.ndjson", import.meta.url),
+    "utf8",
+  )
+    .trim()
+    .split("\n")
+    .map((line) => decode(line));
+  for (const testCase of cases) {
+    for (const pattern of [
+      ...(testCase.setup.shellMocks ?? []).map((mock) => mock.match),
+      ...(testCase.expect.shellMustNot ?? []),
+      ...(testCase.expect.textMust ?? []),
+      ...(testCase.expect.textMustNot ?? []),
+    ]) {
+      expect(() => new RegExp(pattern), `${testCase.id}: ${pattern}`).not.toThrow();
+    }
+    for (const [tool, decodeResult] of Object.entries(decoders)) {
+      const mock = testCase.setup.mocks?.[tool];
+      if (mock === undefined || mock === "default") continue;
+      expect(() => decodeResult(mock), `${testCase.id}: ${tool}`).not.toThrow();
+    }
+  }
 });
 
 it("links a PR a shell command created, as T3 does, but not one it only read", () => {
@@ -776,6 +872,10 @@ it("gives native children hook context while excluding the parent's T3 append an
   if (subagentContext) assert.include(shown, subagentContext);
   else assert.notInclude(shown, "SubagentStart hook additional context:");
   assert.include(shown, testCase.prompt);
+  const withoutDevices = await t3SubagentContext("claude-sonnet-5-5", false);
+  assert.include(withoutDevices, "<github_reads>");
+  assert.include(withoutDevices, "pull_request_status");
+  assert.notInclude(withoutDevices, "## T3 Code devices");
 });
 
 // Round-5 adversarial review counterexamples.
@@ -1156,7 +1256,7 @@ it.effect("accepts a successful exact-host recovery after a real device_open err
       hostId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       deviceId: "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB",
     };
-    const wrong = { ...input, hostId: "build-mac" };
+    const wrong = { ...input, hostId: "unknown-host" };
     const error = yield* sample.devices!.call("device_open", wrong);
     assert.isTrue(error.isError);
     const opened = yield* sample.devices!.call("device_open", input);
@@ -3012,7 +3112,7 @@ it.effect("R12 OWN-01 protects occupied panel sessions from selected and wildcar
 );
 
 it.effect(
-  "R12 DISC-01 allows the retained label/all-host/refresh route and bounds failed discovery",
+  "R12 DISC-01 allows the retained label/all-host route and bounds repeated discovery failures",
   () =>
     Effect.gen(function* () {
       const c = deviceCases().find((c) => c.id === "DISC-01")!;
@@ -3021,11 +3121,7 @@ it.effect(
       yield* withDevices(sample);
       const tools = sample.devices!;
       const calls: Array<SampleRun["calls"][number]> = [];
-      for (const input of [
-        { hostId: "build-mac" },
-        {},
-        { hostId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-      ]) {
+      for (const input of [{ hostId: "build-mac" }, {}]) {
         const result = yield* tools.call("device_list", input);
         calls.push({
           step: calls.length,

@@ -50,6 +50,7 @@ import {
   makeStore,
   type DeliveryState,
   type DeliveryStateInput,
+  type NativeDeliveryEstimateInput,
   type HistoryRecord,
   type SearchReceipt,
 } from "./persistence.ts";
@@ -110,6 +111,10 @@ export class ProjectKnowledge extends Context.Service<
     readonly readDeliveryState: (
       input: DeliveryStateInput,
     ) => Effect.Effect<DeliveryState, ProjectKnowledgeError>;
+    /** Accepted attachment occupancy in one native conversation, independent of retained bodies. */
+    readonly nativeDeliveryEstimate: (
+      input: NativeDeliveryEstimateInput,
+    ) => Effect.Effect<number, ProjectKnowledgeError>;
     readonly markDeliveryUncertain: (
       input: DeliveryStateInput,
     ) => Effect.Effect<void, ProjectKnowledgeError>;
@@ -1243,6 +1248,11 @@ const make = Effect.gen(function* () {
   const readDeliveryState: ProjectKnowledge["Service"]["readDeliveryState"] = Effect.fn(
     "ProjectKnowledge.readDeliveryState",
   )((input) => store.readDeliveryState(input).pipe(Effect.mapError(storageError(input.projectId))));
+  const nativeDeliveryEstimate: ProjectKnowledge["Service"]["nativeDeliveryEstimate"] = Effect.fn(
+    "ProjectKnowledge.nativeDeliveryEstimate",
+  )((input) =>
+    store.nativeDeliveryEstimate(input).pipe(Effect.mapError(storageError(input.projectId))),
+  );
   const markDeliveryUncertain: ProjectKnowledge["Service"]["markDeliveryUncertain"] = Effect.fn(
     "ProjectKnowledge.markDeliveryUncertain",
   )(function* (input) {
@@ -1480,6 +1490,7 @@ const make = Effect.gen(function* () {
     recordDelivery,
     readDeliveries,
     readDeliveryState,
+    nativeDeliveryEstimate,
     markDeliveryUncertain,
     readSentDeliveries,
     scrubDeliveryPage,

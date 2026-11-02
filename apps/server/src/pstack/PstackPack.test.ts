@@ -284,6 +284,12 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
             "- architect runners (panel, one child per seat): [1] inherit [2] inherit",
           );
           assert.include(expansion!, "Fallback: architect runners seat 1");
+          const unsupported = yield* pack.expandComposer(
+            { ...input, supportsOrchestrationTools: false },
+            { createdBy: "user" },
+          );
+          assert.include(unsupported.text, "this session does not expose T3 orchestration tools");
+          assert.notInclude(unsupported.text, "<t3_pstack>");
           assert.equal(
             (yield* pack.expandComposer(
               { ...input, text: "$pstack:unknown" },

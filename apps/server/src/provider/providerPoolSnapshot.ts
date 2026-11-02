@@ -1,4 +1,5 @@
 import {
+  isProviderAvailable,
   PROVIDER_DISPLAY_NAMES,
   resolveActiveProviderPools,
   type ActiveProviderPool,
@@ -64,12 +65,16 @@ function makePoolEntry(
   members: ReadonlyArray<ServerProvider>,
 ): ServerProvider {
   const healthiest = healthiestMember(members);
-  const slugs = [...new Set(members.flatMap((member) => member.models.map((model) => model.slug)))];
+  // Unavailable placeholders have no catalog and cannot receive failover.
+  const catalogMembers = members.filter(isProviderAvailable);
+  const slugs = [
+    ...new Set(catalogMembers.flatMap((member) => member.models.map((model) => model.slug))),
+  ];
   // A failover re-sends the run's options to another member, so a model is
-  // shared only when every member accepts the same options for it.
+  // shared only when every available member accepts the same options for it.
   const sharedSlugs = new Set(
     slugs.filter((slug) => {
-      const signatures = members.map((member) => {
+      const signatures = catalogMembers.map((member) => {
         const model = member.models.find((candidate) => candidate.slug === slug);
         return model === undefined ? undefined : optionSignature(model);
       });
@@ -78,7 +83,7 @@ function makePoolEntry(
       );
     }),
   );
-  const models = members
+  const models = catalogMembers
     .flatMap((member) => member.models)
     .filter((model, index, all) => {
       if (!sharedSlugs.has(model.slug)) return false;
@@ -114,8 +119,8 @@ function makePoolEntry(
     auth: healthiest.auth,
     checkedAt: healthiest.checkedAt,
     models,
-    slashCommands: intersectByName(members.map((member) => member.slashCommands)),
-    skills: intersectByName(members.map((member) => member.skills)),
+    slashCommands: intersectByName(catalogMembers.map((member) => member.slashCommands)),
+    skills: intersectByName(catalogMembers.map((member) => member.skills)),
     pool: {
       role: "pool",
       memberInstanceIds: pool.memberInstanceIds,

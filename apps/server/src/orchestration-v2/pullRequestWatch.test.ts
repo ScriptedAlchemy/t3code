@@ -121,6 +121,7 @@ describe("evaluatePullRequestWatch", () => {
     assert.equal(message.notification.outcome, "failed");
     assert.include(message.text, "stopped watching");
     assert.include(message.text, "Binary Size Limit");
+    assert.include(message.text, "Read why with pull_request_failures.");
     assert.notInclude(message.text, "checks passed");
   });
 

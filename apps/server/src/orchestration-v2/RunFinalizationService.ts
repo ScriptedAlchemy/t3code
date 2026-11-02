@@ -2,6 +2,7 @@ import { CheckpointScopeId, ProjectId, RunId, ThreadId } from "@t3tools/contract
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 
 import * as CodeIntelligence from "../project/knowledge/CodeIntelligence.ts";
@@ -98,8 +99,36 @@ export const layerObserver = Layer.effect(
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const codeIntelligence = yield* CodeIntelligence.CodeIntelligence;
+
+    // Many agents can finish in the same project at once. Invalidate once per project in a
+    // fixed window, with a trailing refresh even under continuous activity. Pushes and explicit
+    // PR mutations still call PullRequestService directly and refresh immediately.
+    const pendingProjects = new Set<ProjectId>();
+    const refreshes = yield* Queue.dropping<void>(1);
+    const refreshAfterTurn = Effect.fn("RunFinalizationService.refreshAfterTurn")(
+      (projectId: ProjectId) =>
+        Effect.sync(() => {
+          const first = pendingProjects.size === 0;
+          pendingProjects.add(projectId);
+          if (first) Queue.offerUnsafe(refreshes, undefined);
+        }),
+    );
+    yield* Effect.gen(function* () {
+      yield* Queue.take(refreshes);
+      yield* Effect.sleep("10 seconds");
+      const projects = Array.from(pendingProjects);
+      pendingProjects.clear();
+      yield* pullRequests.refreshAfterTurns(projects).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("failed to refresh pull requests after completed turns", {
+            projectIds: projects,
+            cause,
+          }),
+        ),
+      );
+    }).pipe(Effect.forever, Effect.forkScoped);
     return {
-      refreshAfterTurn: pullRequests.refreshAfterTurn,
+      refreshAfterTurn,
       refresh: Effect.fn("RunFinalizationService.refresh")(
         function* ({ cwd, threadId, runId }) {
           // The index builds in the code intelligence service, off this turn's lane.

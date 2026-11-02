@@ -136,6 +136,7 @@ export interface AcpSessionRuntimeOptions {
     result: EffectAcpSchema.InitializeResponse,
   ) => Effect.Effect<void, never>;
   readonly acpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  readonly httpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -1084,6 +1085,7 @@ export interface AcpSessionRuntimeStartResult {
 export interface AcpSessionActivationOptions {
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly acpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  readonly httpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
 }
 
 export class AcpSessionRuntime extends Context.Service<
@@ -1231,6 +1233,12 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   EffectAcpErrors.AcpError,
   ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
 > {
+  const sessionWorkspace = {
+    cwd: options.cwd,
+    ...(options.additionalDirectories?.length
+      ? { additionalDirectories: options.additionalDirectories }
+      : {}),
+  };
   const crypto = yield* Crypto.Crypto;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const runtimeScope = yield* Scope.fork(yield* Scope.Scope);
@@ -1504,14 +1512,17 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       catch: (cause) =>
         new EffectAcpErrors.AcpSpawnError({ command: options.spawn.command, cause }),
     });
-    yield* observePosixOwnershipLedgerContinuously({
-      childQueues: posixOwnershipChildQueues,
-      controller: posixController,
-      frontier: posixOwnershipFrontier,
-      ledger: posixOwnershipLedger,
-      root: posixOwnershipRoot,
-      rootPid: Number(child.pid),
-    }).pipe(Effect.forkIn(runtimeScope));
+    // Cgroup teardown needs only the root identity captured above.
+    if (linuxCgroupLease === undefined) {
+      yield* observePosixOwnershipLedgerContinuously({
+        childQueues: posixOwnershipChildQueues,
+        controller: posixController,
+        frontier: posixOwnershipFrontier,
+        ledger: posixOwnershipLedger,
+        root: posixOwnershipRoot,
+        rootPid: Number(child.pid),
+      }).pipe(Effect.forkIn(runtimeScope));
+    }
   }
 
   const signalOwnedProcessGroup = (signal: NodeJS.Signals) =>
@@ -2091,12 +2102,14 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     initializeResult: EffectAcpSchema.InitializeResponse,
     activationOptions?: AcpSessionActivationOptions,
   ): ReadonlyArray<EffectAcpSchema.McpServer> => {
+    const mcpCapabilities = initializeResult.agentCapabilities?.mcpCapabilities;
     const acpServers = activationOptions?.acpMcpServers ?? options.acpMcpServers ?? [];
-    if (
-      initializeResult.agentCapabilities?.mcpCapabilities?.acp === true &&
-      acpServers.length > 0
-    ) {
+    if (mcpCapabilities?.acp === true && acpServers.length > 0) {
       return acpServers;
+    }
+    const httpServers = activationOptions?.httpMcpServers ?? options.httpMcpServers ?? [];
+    if (mcpCapabilities?.http === true && httpServers.length > 0) {
+      return httpServers;
     }
     return activationOptions?.mcpServers ?? options.mcpServers ?? [];
   };
@@ -2156,9 +2169,6 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         | EffectAcpSchema.LoadSessionResponse
         | EffectAcpSchema.NewSessionResponse
         | EffectAcpSchema.ResumeSessionResponse;
-      const additionalDirectories = options.additionalDirectories?.length
-        ? { additionalDirectories: options.additionalDirectories }
-        : {};
       if (options.resumeSessionId) {
         sessionId = options.resumeSessionId;
         if (
@@ -2167,16 +2177,14 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         ) {
           const loadPayload = {
             sessionId,
-            cwd: options.cwd,
-            ...additionalDirectories,
+            ...sessionWorkspace,
             mcpServers: sessionMcpServers(initializeResult),
           } satisfies EffectAcpSchema.LoadSessionRequest;
           sessionSetupResult = yield* runLoadSessionWithReplayIdle(loadPayload, initializeResult);
         } else if (initializeResult.agentCapabilities?.sessionCapabilities?.resume != null) {
           const resumePayload = {
             sessionId,
-            cwd: options.cwd,
-            ...additionalDirectories,
+            ...sessionWorkspace,
             mcpServers: sessionMcpServers(initializeResult),
           } satisfies EffectAcpSchema.ResumeSessionRequest;
           sessionSetupResult = yield* runLoggedRequest(
@@ -2192,9 +2200,8 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         }
       } else {
         const createPayload = {
-          cwd: options.cwd,
+          ...sessionWorkspace,
           mcpServers: sessionMcpServers(initializeResult),
-          ...additionalDirectories,
         } satisfies EffectAcpSchema.NewSessionRequest;
         const created = yield* runLoggedRequest(
           "session/new",
@@ -2392,7 +2399,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         Effect.flatMap((started) => {
           const requestPayload = {
             sessionId,
-            cwd: options.cwd,
+            ...sessionWorkspace,
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
           } satisfies EffectAcpSchema.LoadSessionRequest;
           return runLoadSessionWithReplayIdle(requestPayload, started.initializeResult);
@@ -2404,7 +2411,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         Effect.flatMap((started) => {
           const requestPayload = {
             sessionId,
-            cwd: options.cwd,
+            ...sessionWorkspace,
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
           } satisfies EffectAcpSchema.ResumeSessionRequest;
           return runLoggedRequest(
@@ -2420,7 +2427,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         Effect.flatMap((started) => {
           const requestPayload = {
             sessionId,
-            cwd: options.cwd,
+            ...sessionWorkspace,
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
           } satisfies EffectAcpSchema.ForkSessionRequest;
           return runLoggedRequest(

@@ -18,11 +18,11 @@ import {
 // Matches the tail summaries never cover, so the latest exchange always arrives verbatim.
 const FRESH_TAIL_ITEMS = 6;
 
-/**
- * Persist before/after injection: an ambiguous pending delivery requires a fresh native thread.
- * Run `unsent` when the provider refused the turn before reading the prompt, so that
- * refusal does not leave an ambiguous marker behind.
- */
+/** The provider prompt for a turn that carries inline context ahead of the user's text. */
+export const withInlineContext = (context: string, userText: string): string =>
+  context === "" ? userText : `${context}\n\nUser message:\n${userText}`;
+
+/** Persist around injection; ambiguous delivery requires a fresh native thread. Call unsent if refused before prompt consumption. */
 export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextHandoffs")(
   function* <
     InjectError = never,
@@ -161,7 +161,8 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         selected = reduced;
       }
     }
-    if (historyCost(selected.messages, selected.context) > budget) {
+    const estimatedTokens = historyCost(selected.messages, selected.context);
+    if (estimatedTokens > budget) {
       if (input.deferInline) return { context: "", delivered: Effect.void, unsent: Effect.void };
       return yield* new ContextHandoffBudgetError();
     }
@@ -183,7 +184,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     const persist = (status: "pending" | "injected" | "inline") =>
       Effect.forEach(
         pending,
-        (handoff) =>
+        (handoff, index) =>
           input.persist({
             ...handoff,
             ...(nativeThreadId === undefined
@@ -192,6 +193,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
                   delivery: {
                     nativeThreadId,
                     status,
+                    estimatedTokens: index === 0 ? estimatedTokens : 0,
                     omittedItemIds: [
                       ...(handoff.history?.omittedItemIds ?? []).filter(
                         (id) => !summarized.has(id),

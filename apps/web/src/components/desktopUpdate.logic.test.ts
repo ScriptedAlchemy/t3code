@@ -65,17 +65,26 @@ describe("desktop update button state", () => {
 });
 
 describe("desktop update UI helpers", () => {
-  it.each(["owner/repo/extra", "owner#notes/repo", "owner/repo?tab=notes"])(
-    "falls back to upstream for an invalid configured repository: %s",
+  it.each([undefined, "", "owner/repo/extra", "owner#notes/repo", "owner/repo?tab=notes"])(
+    "keeps this build's release source when repository metadata is absent or invalid: %s",
     (repository) => {
       expect(getDesktopUpdateReleaseHistoryUrl(repository)).toBe(
-        "https://github.com/pingdotgg/t3code/releases",
+        "https://github.com/ScriptedAlchemy/t3code/releases",
       );
       expect(getDesktopUpdateReleaseUrl("1.2.3", repository)).toBe(
-        "https://github.com/pingdotgg/t3code/releases/tag/v1.2.3",
+        "https://github.com/ScriptedAlchemy/t3code/releases/tag/v1.2.3",
       );
     },
   );
+
+  it("uses a valid repository embedded by the desktop build", () => {
+    expect(getDesktopUpdateReleaseHistoryUrl("other-owner/another-fork")).toBe(
+      "https://github.com/other-owner/another-fork/releases",
+    );
+    expect(getDesktopUpdateReleaseUrl("1.2.3-nightly.20261031.1", "other-owner/another-fork")).toBe(
+      "https://github.com/other-owner/another-fork/releases/tag/v1.2.3-nightly.20261031.1",
+    );
+  });
 });
 
 describe("canCheckForUpdate", () => {

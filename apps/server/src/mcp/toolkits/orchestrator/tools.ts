@@ -71,7 +71,7 @@ const threadMetadataDependencies = [
 
 const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   description:
-    "List providers, models, options, and runtime modes for `delegate_task`. Short list. `search` finds others. Any catalog model works. Pass environmentId for linked providers.",
+    "List providers, models, options, and runtime modes for `delegate_task`. Short list. `search` finds others; `allModels` lists every model. Any catalog model works. Pass environmentId for linked providers.",
   parameters: OrchestratorMcpCapabilitiesInput,
   success: OrchestratorMcpCapabilitiesResult,
   failure: OrchestratorMcpFailure,
@@ -165,7 +165,7 @@ const ScheduleTaskTool = Tool.make("schedule_task", {
   failureMode: "return",
   dependencies,
 })
-  .annotate(Tool.Title, "Schedule a recurring task")
+  .annotate(Tool.Title, "Schedule a task")
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 

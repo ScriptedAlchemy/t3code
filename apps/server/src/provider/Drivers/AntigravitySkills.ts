@@ -23,7 +23,7 @@ export function resolveAntigravityUserHome(
   return environment.HOME || home;
 }
 
-/** Link private GEMINI_HOME skills to ~/.gemini; ~/.agents/skills is ignored because .agents/skills is project-only. */
+/** The managed ACP runtime's two global skill roots both follow GEMINI_HOME. */
 export function antigravityUserSkillDirectories(
   path: Path.Path,
   geminiHome: string,

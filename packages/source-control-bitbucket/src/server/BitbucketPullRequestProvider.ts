@@ -2,6 +2,7 @@ import { resolvePullRequestAuthorFilter, SourceControlProviderKind } from "@t3to
 import * as Effect from "effect/Effect";
 import type { PullRequestCapabilities, PullRequestViewerPermissions } from "@t3tools/contracts";
 
+import * as BitbucketApi from "./BitbucketApi.ts";
 import * as BitbucketPullRequestApi from "./BitbucketPullRequestApi.ts";
 import {
   PullRequestProviderError,
@@ -109,6 +110,7 @@ function toChangeRequest(pullRequest: BitbucketPullRequest): ProviderChangeReque
 
 export const make = Effect.gen(function* () {
   const api = yield* BitbucketPullRequestApi.BitbucketPullRequestApi;
+  const servesHost = yield* BitbucketApi.BitbucketServesHost.pipe(Effect.orDie);
 
   const fail =
     (operation: string) => (error: BitbucketPullRequestApi.BitbucketPullRequestApiError) =>
@@ -148,6 +150,7 @@ export const make = Effect.gen(function* () {
   const provider: PullRequestProviderApi = {
     kind: SourceControlProviderKind.make("bitbucket"),
     capabilities: CAPABILITIES,
+    servesHost,
     unavailableRequirement: UNAVAILABLE_REQUIREMENT,
     readsPublicHostWithoutCheckout: true,
 
@@ -178,7 +181,11 @@ export const make = Effect.gen(function* () {
 
     getChangeRequestChecks: (input) =>
       Effect.all([api.getPullRequest(input), api.listChecks(input)], { concurrency: 2 }).pipe(
-        Effect.map(([pullRequest, checks]) => ({ state: pullRequest.state, checks })),
+        Effect.map(([pullRequest, checks]) => ({
+          state: pullRequest.state,
+          checks,
+          ...(pullRequest.headSha == null ? {} : { headSha: pullRequest.headSha }),
+        })),
         Effect.mapError(fail("getChangeRequestChecks")),
       ),
 

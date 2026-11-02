@@ -12,6 +12,7 @@ import {
   OrchestrationV2ContextHandoff,
   type OrchestrationV2HistoricalMessage,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -21,6 +22,7 @@ import {
   handoffBudget,
   historyCost,
   historyResponseItems,
+  nativeContextHistory,
   selectHistory,
   historicalMessage,
 } from "@t3tools/provider-core/server/handoffBudget";
@@ -399,6 +401,122 @@ describe("handoff budget", () => {
 });
 
 describe("handoff delivery", () => {
+  it.effect.each([true, false])(
+    "reserves earlier summarized evidence in later budgets without native telemetry (inject=%s)",
+    (native) =>
+      Effect.gen(function* () {
+        const coveredItemIds = Array.from({ length: 8 }, (_, index) =>
+          TurnItemId.make(`item:summary-source-${index}`),
+        );
+        const tail: OrchestrationV2TurnItem = {
+          id: TurnItemId.make("item:tail-command"),
+          threadId,
+          runId: RunId.make("run:source"),
+          nodeId: null,
+          providerThreadId: ProviderThreadId.make("provider-thread:source"),
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "completed",
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "command_execution",
+          input: "vp test",
+          output: "All tests passed.",
+          exitCode: 0,
+        };
+        const source: OrchestrationV2ContextHandoff = {
+          ...handoff,
+          history: {
+            messages: [historicalMessage(tail)!],
+            coverage: "The original sources exceeded the preparation budget.",
+            omittedItems: coveredItemIds.length,
+            omittedItemIds: coveredItemIds,
+          },
+        };
+        let durable = [source, { ...source, id: ContextHandoffId.make("handoff:overlap") }];
+        let deliveredCost = 0;
+        const deliver = () =>
+          deliverContextHandoffs({
+            handoffs: durable,
+            providerThread,
+            budget: 16_000,
+            alreadyDeliveredItemIds: new Set(),
+            summaries: () =>
+              Effect.succeed([
+                {
+                  id: `summary:${"a".repeat(64)}`,
+                  coveredItemIds,
+                  text: `Generated conversation summary with as-sent project evidence: ${"x".repeat(14_000)}`,
+                },
+              ]),
+            inject: (input) => {
+              deliveredCost = historyCost(input.messages, input.context);
+              return Effect.succeed(native);
+            },
+            persist: (value) =>
+              Effect.sync(() => {
+                durable = durable.map((entry) => (entry.id === value.id ? value : entry));
+              }),
+          });
+        const first = yield* deliver();
+        assert.equal(
+          nativeContextHistory(
+            { runs: [], attempts: [], providerTurns: [], contextHandoffs: durable },
+            providerThread,
+          ).estimate([tail]),
+          native ? deliveredCost : 0,
+        );
+        yield* first.delivered;
+        assert.deepEqual(durable[0]?.delivery?.summarizedItemIds, coveredItemIds);
+        assert.isAbove(deliveredCost, 14_000);
+        const occupancy = (
+          contextHandoffs: ReadonlyArray<OrchestrationV2ContextHandoff>,
+          target = providerThread,
+        ) =>
+          nativeContextHistory(
+            { runs: [], attempts: [], providerTurns: [], contextHandoffs },
+            target,
+          );
+        const estimate = occupancy(durable.map((entry) => decodeHandoff(entry))).estimate([tail]);
+        assert.equal(estimate, deliveredCost);
+        const allowance = handoffBudget({
+          tokenCap: 16_000,
+          userText: "Continue",
+          attachments: [],
+          providerThread,
+          nativeContextEstimate: estimate,
+          modelContextWindow: 40_000,
+        });
+        assert.isAtMost(allowance + deliveredCost + 16_000, 40_000);
+        const retry = yield* deliver();
+        yield* retry.delivered;
+        assert.equal(retry.context, "");
+        assert.equal(occupancy(durable).estimate([tail]), deliveredCost);
+        assert.equal(
+          occupancy(
+            durable.map((entry) => ({ ...entry, summaryText: "", history: undefined })),
+          ).estimate([]),
+          deliveredCost,
+        );
+        assert.equal(
+          occupancy(durable, {
+            ...providerThread,
+            nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId: "replacement" },
+          }).estimate([tail]),
+          0,
+        );
+        const { estimatedTokens: _estimate, ...legacy } = durable[0]!.delivery!;
+        assert.equal(
+          occupancy([decodeHandoff({ ...source, delivery: legacy })]).estimate([tail]),
+          Buffer.byteLength(historicalMessage(tail)!.text),
+        );
+      }),
+  );
+
   it.effect.each([
     { native: true, label: "injected" },
     { native: false, label: "inline" },

@@ -72,7 +72,7 @@ jobs:
         run: node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium
       - name: Validate changed files
         if: github.event_name == 'pull_request'
-        run: vp run check:changed HEAD^1 --serial
+        run: vp run check:changed HEAD^1 --concurrency 1
       - name: Validate full repository
         if: github.event_name != 'pull_request'
         run: |

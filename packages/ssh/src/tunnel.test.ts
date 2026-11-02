@@ -16,7 +16,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as SshAuth from "./auth.ts";
-import { SshCommandError } from "./errors.ts";
+import { SshCommandError, SshPasswordPromptError } from "./errors.ts";
 import * as SshTunnel from "./tunnel.ts";
 
 const makeSuccessfulProcess = (stdout: string) => {
@@ -161,23 +161,28 @@ describe("ssh tunnel scripts", () => {
       }),
   );
 
-  it.live("reuses an installed CLI from the same release before requesting a preview archive", () =>
+  it.live("reuses an installed CLI only when it matches the exact requested release", () =>
     Effect.gen(function* () {
-      const result = yield* runArchiveRunner("1.2.3");
+      const result = yield* runArchiveRunner(ARCHIVE.archiveVersion);
       assert.equal(result.exitCode, 0, result.stderr);
       assert.equal(result.stdout, "installed:pair --json\n");
       assert.isFalse(result.runtimeExists);
     }),
   );
 
-  it.live("reports the missing release URL without adopting an incompatible installed CLI", () =>
-    Effect.gen(function* () {
-      const result = yield* runArchiveRunner("1.2.2");
-      assert.notEqual(result.exitCode, 0);
-      assert.include(result.stderr, `/v${ARCHIVE.archiveVersion}/SHA256SUMS`);
-      assert.include(result.stderr, "Install a compatible T3 CLI");
-      assert.isFalse(result.runtimeExists);
-    }),
+  it.live.each(["1.2.2", "1.2.3", "1.2.3-nightly.20260911.4", "1.2.3-preview.20260911.3"])(
+    "does not adopt installed release %s when the exact fork archive is unavailable",
+    (installedVersion) =>
+      Effect.gen(function* () {
+        const result = yield* runArchiveRunner(installedVersion);
+        assert.notEqual(result.exitCode, 0);
+        assert.include(
+          result.stderr,
+          `https://github.com/ScriptedAlchemy/t3code/releases/download/v${ARCHIVE.archiveVersion}/SHA256SUMS`,
+        );
+        assert.include(result.stderr, `Install the exact T3 CLI (${ARCHIVE.archiveVersion})`);
+        assert.isFalse(result.runtimeExists);
+      }),
   );
 
   it("rejects archive versions that are not a single exact version segment", () => {
@@ -437,6 +442,83 @@ describe("ssh tunnel scripts", () => {
         yield* manager.ensureEnvironment(target);
       }).pipe(Effect.provide(layer), Effect.scoped);
       assert.equal(tunnels, 2);
+    }),
+  );
+
+  it.effect.each([
+    {
+      name: "does not ask for a password when the agent cannot sign an accepted key",
+      stderr:
+        'sign_and_send_pubkey: signing failed for ED25519 "/home/julius/.ssh/id_ed25519" from agent: communication with agent failed\r\n' +
+        "julius@devbox: Permission denied (publickey,password).\r\n",
+      expectedPromptAttempts: [],
+    },
+    {
+      name: "asks for a password when signing failure has no agent provenance",
+      stderr:
+        'sign_and_send_pubkey: signing failed for ED25519-CERT "key-cert.pub": agent refused operation\n' +
+        "julius@devbox: Permission denied (publickey,password).\n",
+      expectedPromptAttempts: [1],
+    },
+    {
+      name: "asks for a password when the server rejects every key",
+      stderr: "julius@devbox: Permission denied (publickey,password).\r\n",
+      expectedPromptAttempts: [1],
+    },
+  ])("$name", ({ stderr, expectedPromptAttempts }) =>
+    Effect.gen(function* () {
+      const promptAttempts: Array<number> = [];
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.succeed(
+          commandArgs(command).includes("-G")
+            ? makeSuccessfulProcess("")
+            : {
+                ...makeSuccessfulProcess(""),
+                exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(255)),
+                stderr: Stream.make(new TextEncoder().encode(stderr)),
+              },
+        ),
+      );
+      const layer = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Layer.succeed(HttpClient.HttpClient, testHttpClient),
+        Layer.succeed(NetService.NetService, testNetService),
+        Layer.succeed(
+          SshAuth.SshPasswordPrompt,
+          SshAuth.SshPasswordPrompt.of({
+            isAvailable: true,
+            request: (request) =>
+              Effect.sync(() => {
+                promptAttempts.push(request.attempt);
+                return null;
+              }),
+          }),
+        ),
+        SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* SshTunnel.SshEnvironmentManager;
+        const result = yield* Effect.result(
+          manager.ensureEnvironment({
+            alias: "devbox",
+            hostname: "devbox",
+            username: null,
+            port: null,
+          }),
+        );
+        assert.isTrue(Result.isFailure(result));
+        assert.deepEqual(promptAttempts, expectedPromptAttempts);
+        if (Result.isFailure(result)) {
+          if (expectedPromptAttempts.length === 0) {
+            assert.instanceOf(result.failure, SshCommandError);
+            if (result.failure instanceof SshCommandError)
+              assert.equal(result.failure.stderr, stderr);
+          } else {
+            assert.instanceOf(result.failure, SshPasswordPromptError);
+          }
+        }
+      }).pipe(Effect.provide(layer), Effect.scoped);
     }),
   );
 

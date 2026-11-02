@@ -3,7 +3,11 @@ import * as Schema from "effect/Schema";
 
 import { AuthProvidersManageScope, AuthSettingsWriteScope } from "./auth.ts";
 import { type CommandId, ProjectId } from "./baseSchemas.ts";
-import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceEnvironment,
+  ProviderInstanceId,
+} from "./providerInstance.ts";
 import {
   AntigravitySettings,
   ClientSettingsSchema,
@@ -29,10 +33,27 @@ const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const encodeClientSettings = Schema.encodeSync(ClientSettingsSchema);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
+const encodeProviderInstanceEnvironment = Schema.encodeSync(ProviderInstanceEnvironment);
+const decodeProviderInstanceEnvironment = Schema.decodeSync(ProviderInstanceEnvironment);
+// The environment variable shape builds released before secret references decode.
+const decodeStringOnlyEnvironment = Schema.decodeUnknownSync(
+  Schema.Array(
+    Schema.Struct({ name: Schema.String, value: Schema.String, sensitive: Schema.Boolean }),
+  ),
+);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+
+describe("skills library setting", () => {
+  it("stays off for existing installations and patches like any server setting", () => {
+    expect(decodeServerSettings({}).skillsLibraryEnabled).toBe(false);
+    expect(decodeServerSettingsPatch({ skillsLibraryEnabled: true })).toEqual({
+      skillsLibraryEnabled: true,
+    });
+  });
+});
 
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
@@ -160,14 +181,45 @@ describe("ServerSettings secret providers", () => {
     ).toThrow();
   });
 
-  it("rejects writes of an unknown kind or an account op could misread", () => {
-    const write = (entry: unknown) => () =>
-      decodeServerSettingsPatch({ secretProviders: { personal: entry } });
-    for (const account of ["", "my account", "--help"]) {
-      expect(write(onePassword(account))).toThrow();
+  it("stores a provider environment secret reference in a layout older builds still decode", () => {
+    const providerInstances = (secret: unknown) => ({
+      codex: {
+        driver: "codex",
+        environment: [
+          { name: "OPENAI_API_KEY", sensitive: true, value: "", secret },
+          { name: "BASE_URL", value: "https://example.test" },
+        ],
+      },
+    });
+    const secret = { provider: "personal", reference: "op://Private/OpenAI/credential" };
+    const environment = decodeServerSettings({ providerInstances: providerInstances(secret) })
+      .providerInstances[ProviderInstanceId.make("codex")]?.environment;
+    expect(environment).toEqual([
+      { name: "OPENAI_API_KEY", value: secret, sensitive: true },
+      { name: "BASE_URL", value: "https://example.test", sensitive: false },
+    ]);
+
+    const encoded = encodeProviderInstanceEnvironment(environment ?? []);
+    expect(encoded).toEqual([
+      { name: "OPENAI_API_KEY", value: "", sensitive: true, secret },
+      { name: "BASE_URL", value: "https://example.test", sensitive: false },
+    ]);
+    expect(decodeProviderInstanceEnvironment(encoded)).toEqual(environment);
+    expect(decodeStringOnlyEnvironment(encoded)).toEqual([
+      { name: "OPENAI_API_KEY", value: "", sensitive: true },
+      { name: "BASE_URL", value: "https://example.test", sensitive: false },
+    ]);
+
+    for (const invalid of [
+      { provider: "My Vault", reference: "op://a/b/c" },
+      { provider: "personal", reference: " " },
+      { provider: "personal", reference: "op://Private/OpenAI\n/credential" },
+      { provider: "personal", reference: "x".repeat(1025) },
+    ]) {
+      expect(() =>
+        decodeServerSettings({ providerInstances: providerInstances(invalid) }),
+      ).toThrow();
     }
-    expect(write({ kind: "one_password", label: "Personal" })).toThrow();
-    expect(write({ kind: "openbao", label: "Vault", config: { address: "https://x" } })).toThrow();
   });
 });
 
@@ -538,7 +590,13 @@ describe("machine-local provider settings", () => {
   });
 
   it("marks home and binary paths on Claude", () => {
-    expect(machineLocalSettingsFields(ClaudeSettings)).toEqual(["binaryPath", "homePath"]);
+    expect(machineLocalSettingsFields(ClaudeSettings)).toEqual([
+      "binaryPath",
+      "homePath",
+      "shareProfile",
+    ]);
+    expect(decodeClaudeSettings({ setupMode: "cli" }).shareProfile).toBe(true);
+    expect(decodeClaudeSettings({ shareProfile: false }).shareProfile).toBe(false);
   });
 
   it("keeps secret and machine-local classifications apart", () => {

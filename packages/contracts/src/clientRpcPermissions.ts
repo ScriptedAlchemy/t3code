@@ -25,6 +25,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.previewStopLocalServer]: AuthTerminalOperateScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,
   [WS_METHODS.serverCheckOtlpEndpoint]: AuthSettingsWriteScope,
+  // Refreshing moves skill folders in the host's harness homes, as the switch does.
+  [WS_METHODS.serverRefreshSkillsLibrary]: AuthSettingsWriteScope,
   [WS_METHODS.pullRequestsRunAction]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsUpdate]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsComment]: AuthSourceControlWriteScope,
@@ -72,6 +74,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.scheduledTasksRunNow]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksRotateWebhookToken]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
+  // Force stop kills agent processes, as Stop on a terminal does.
+  [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,
   // A guest link hands thread access to someone outside, like a pairing link.
   [WS_METHODS.guestShareCreate]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksLink]: AuthAccessWriteScope,

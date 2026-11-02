@@ -47,9 +47,10 @@ reporting while a response streams and after it settles.
 Pi skills appear in the composer's `$` menu. This includes user skills and project skills that Pi
 loads for the current workspace; selecting one uses Pi's native skill expansion.
 
-Pi loads its normal user and project extensions. Blocking `select`, `confirm`, `input`, and `editor`
-dialogs work in T3 Code. Notifications appear in the work log. Pi terminal decoration such as
-titles, status lines, and widgets does not have a T3 Code equivalent.
+Pi loads its normal user extensions, and project extensions once the folder is trusted in Pi.
+Blocking `select`, `confirm`, `input`, and `editor` dialogs work in T3 Code. Notifications appear in
+the work log. Pi terminal decoration such as titles, status lines, and widgets does not have a T3
+Code equivalent.
 
 ## Permission Modes
 
@@ -70,7 +71,11 @@ extension runs outside a tool call remains governed by Pi's own extension trust 
 T3 Code's `delegate_task` tool creates durable child threads in the shared subagent UI. If the user
 installs Pi's example `subagent` extension, T3 Code also shows its task progress and results in that
 UI. Pi runs those children without a session, so they cannot be opened or resumed as T3 Code
-threads.
+threads. The example extension also starts each child without T3 Code's injected tool and
+permission bridge: those children do not receive project memory, conversation summaries, code
+graph, other T3 tools, or T3 permission prompts. Use `delegate_task` for child work that needs
+these integrations. Other extensions that start separate Pi processes need to provide their own
+child integration; showing a child's progress in T3 Code does not mount its tools.
 
 ## Troubleshooting
 
@@ -79,7 +84,12 @@ threads.
 - If no models appear, open Pi directly and confirm its authentication and model configuration.
 - If discovery cannot complete, T3 Code keeps Pi available with the `Pi default` model. Start a
   thread to let the interactive Pi session handle any startup prompt.
-- If a project extension is missing, approve the project in Pi, then start a fresh provider session.
-- If a project skill is missing from the `$` menu, approve the project in Pi and refresh the provider.
-- The context meter appears once Pi reports usage for the thread. Some model providers only
-  report usage when a response completes, so the meter can wait for the first reply.
+- If Pi skips project settings, extensions, skills, prompts, MCP servers, or system prompt files
+  because the folder is not trusted, the thread shows a notice on the first turn of the Pi session.
+  Run the configured Pi binary in that folder on the server machine, using the same provider
+  environment, including `PI_CODING_AGENT_DIR` if set. Trust the folder or its parent with `/trust`,
+  then start a new thread using that same worktree. Launch arguments with `--no-approve` keep
+  project files off without the notice.
+- The context meter is off by default; see [commands and skills](./composer.md#commands-and-skills)
+  to enable it on web and desktop. It appears once Pi reports usage for the thread. Some model
+  providers only report usage when a response completes, so the meter can wait for the first reply.

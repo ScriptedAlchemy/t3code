@@ -1,3 +1,6 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Mock native realpath to exercise macOS case correction on every platform.
+import * as NodeFSP from "node:fs/promises";
+import { vi } from "vite-plus/test";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { MspError } from "@muse-code/sdk";
@@ -35,6 +38,10 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import {
+  T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+  T3_CODE_DEVICE_TOOL_INSTRUCTIONS,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
 import type { MuseItem, MuseSubscriptionUsage } from "./protocol.ts";
 import type { MuseSdkHost, MuseSdkHostOptions } from "./sdk.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -379,35 +386,72 @@ const approval = (turnId: string) => ({
   subject: { kind: "shell", command: "touch result.txt" },
 });
 
+vi.mock("node:fs/promises", { spy: true });
+
 describe("MuseAdapterV2", () => {
-  it.effect("connects the thread's MCP credential on native start and resume", () =>
-    Effect.gen(function* () {
-      yield* (yield* McpProviderSessions.McpProviderSessions).set({
-        environmentId: EnvironmentId.make("test-environment"),
-        threadId: THREAD_ID,
-        providerSessionId: "test-session",
-        providerInstanceId: INSTANCE_ID,
-        endpoint: "http://127.0.0.1:43210/mcp",
-        authorizationHeader: "Bearer thread-scoped-test-token",
-        browserToolsAvailable: true,
-      });
-      for (const nativeId of [undefined, "saved-native-session"]) {
-        const fake = yield* makeFakeMuse();
-        fake.host.initializeResult.grantedCapabilities.push("sessionMcp");
-        yield* makeHarness(fake, INSTANCE_ID, nativeId);
-        const call = yield* fake.takeCall(nativeId ? "session/resume" : "session/start");
-        assert.deepStrictEqual(call.params.config, {
-          mcpServers: {
-            "t3-code": {
-              transport: "streamableHttp",
-              mode: "optional",
-              url: "http://127.0.0.1:43210/mcp",
-              headers: { Authorization: "Bearer thread-scoped-test-token" },
-            },
-          },
+  it.effect.each([false, true])(
+    "connects the thread's MCP tools and instructions on start and resume, device access=%s",
+    (hasDeviceTools) =>
+      Effect.gen(function* () {
+        yield* (yield* McpProviderSessions.McpProviderSessions).set({
+          environmentId: EnvironmentId.make("test-environment"),
+          threadId: THREAD_ID,
+          providerSessionId: "test-session",
+          providerInstanceId: INSTANCE_ID,
+          endpoint: "http://127.0.0.1:43210/mcp",
+          authorizationHeader: "Bearer thread-scoped-test-token",
+          browserToolsAvailable: true,
+          capabilities: new Set(hasDeviceTools ? ["device"] : []),
         });
-      }
-    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+        for (const nativeId of [undefined, "saved-native-session"]) {
+          const fake = yield* makeFakeMuse();
+          fake.host.initializeResult.grantedCapabilities.push("sessionMcp");
+          const harness = yield* makeHarness(fake, INSTANCE_ID, nativeId);
+          const call = yield* fake.takeCall(nativeId ? "session/resume" : "session/start");
+          assert.deepStrictEqual(call.params.config, {
+            mcpServers: {
+              "t3-code": {
+                transport: "streamableHttp",
+                mode: "optional",
+                url: "http://127.0.0.1:43210/mcp",
+                headers: { Authorization: "Bearer thread-scoped-test-token" },
+              },
+            },
+          });
+          for (const ordinal of [5, 6, 7]) {
+            yield* harness.runtime.startTurn(yield* turnInput(harness.providerThread, ordinal));
+            const sent = yield* fake.takeCall("turn/start");
+            const text = (sent.params.input as Array<{ type: string; text?: string }>)
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+              .join("\n");
+            if (ordinal === 6) {
+              assert.notInclude(text, T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim());
+              assert.notInclude(text, T3_CODE_DEVICE_TOOL_INSTRUCTIONS);
+            } else {
+              assert.include(text, T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim());
+              if (hasDeviceTools) assert.include(text, T3_CODE_DEVICE_TOOL_INSTRUCTIONS);
+              else assert.notInclude(text, T3_CODE_DEVICE_TOOL_INSTRUCTIONS);
+            }
+            assert.strictEqual(sent.params.displayText, "Hello Muse");
+            if (ordinal === 6) {
+              yield* fake.emit("item/completed", {
+                turnId: sent.commandId,
+                item: {
+                  itemId: "automatic-compaction",
+                  turnId: sent.commandId,
+                  kind: "compaction",
+                  revision: 1,
+                  status: "completed",
+                  outcome: "compacted",
+                },
+              });
+            }
+            yield* fake.emit("turn/completed", { turnId: sent.commandId, terminal: "completed" });
+            yield* harness.takeEvent("turn.terminal");
+          }
+        }
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("selects the runtime mode's permission profile on native start and resume", () =>
@@ -566,6 +610,36 @@ describe("MuseAdapterV2", () => {
       Effect.provideService(HostProcess.Platform, "win32"),
       Effect.scoped,
       Effect.provide(testLayer),
+    ),
+  );
+
+  it.effect("pins sessions and turns to native canonical case", () =>
+    Effect.gen(function* () {
+      using _realpath = vi.spyOn(NodeFSP, "realpath").mockResolvedValue("/workspace/eevee");
+      const fake = yield* makeFakeMuse();
+      const policy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        ...runtimePolicy,
+        cwd: "/workspace/EEVEE",
+      });
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        policy,
+      );
+      yield* startConversation(harness, fake);
+      const sessionStart = fake.calls.find((call) => call.method === "session/start");
+      const turnStart = fake.calls.find((call) => call.method === "turn/start");
+      assert.strictEqual(sessionStart?.params.workspaceRoot, "/workspace/eevee");
+      assert.deepStrictEqual(turnStart?.params.workspaceRoots, [
+        sessionStart?.params.workspaceRoot,
+      ]);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(testLayer),
+      Effect.provideService(HostProcess.Platform, "darwin"),
     ),
   );
 
@@ -1701,6 +1775,59 @@ describe("MuseAdapterV2", () => {
       yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
       const terminal = yield* harness.takeEvent("turn.terminal");
       assert.strictEqual(terminal.status, "completed");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("lists a running subagent under its turn item's native id as Muse reveals it", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      const { nativeId } = yield* startConversation(harness, fake);
+      const revisions = [
+        { revision: 1, status: "inProgress" },
+        { revision: 2, status: "inProgress", subagentId: "" },
+        { revision: 3, status: "inProgress", subagentId: "subagent-1" },
+        {
+          revision: 4,
+          status: "inProgress",
+          subagentId: "subagent-1",
+          childSessionId: "child-session-1",
+        },
+        {
+          revision: 5,
+          status: "completed",
+          subagentId: "subagent-1",
+          childSessionId: "child-session-1",
+        },
+      ];
+      const listed: Array<{ nativeId: string | null | undefined; roster: Array<string> }> = [];
+      for (const fields of revisions) {
+        yield* fake.emit(fields.revision === 1 ? "item/started" : "item/updated", {
+          turnId: nativeId,
+          item: { itemId: "sub-1", kind: "subagent", turnId: nativeId, ...fields },
+        });
+        const item = yield* harness.takeEvent(
+          "turn_item.updated",
+          (event) => event.turnItem.type === "subagent",
+        );
+        const roster = harness.allEvents.findLast(
+          (event) => event.type === "provider_thread.updated",
+        );
+        listed.push({
+          nativeId: item.turnItem.nativeItemRef?.nativeId,
+          roster:
+            roster?.type === "provider_thread.updated"
+              ? (roster.providerThread.pendingBackgroundTasks ?? []).map((task) => task.taskId)
+              : [],
+        });
+      }
+      assert.deepStrictEqual(listed, [
+        { nativeId: "sub-1", roster: ["sub-1"] },
+        { nativeId: "sub-1", roster: ["sub-1"] },
+        { nativeId: "subagent-1", roster: ["subagent-1"] },
+        { nativeId: "child-session-1", roster: ["child-session-1"] },
+        { nativeId: "child-session-1", roster: [] },
+      ]);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

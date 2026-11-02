@@ -33,8 +33,10 @@ import { FileHistory } from "../project/knowledge/FileHistory.ts";
 import { ProjectKnowledge } from "../project/knowledge/ProjectKnowledge.ts";
 import { ConversationSummaries } from "../project/conversationSummaries/ConversationSummaries.ts";
 import { ManagedProjectFolders } from "../project/ManagedProjectFolders.ts";
+import { ProjectCloneTracker } from "../project/ProjectCloneTracker.ts";
 import { ProjectService } from "../project/ProjectService.ts";
 import { ProjectSetupScriptRunner } from "../project/ProjectSetupScriptRunner.ts";
+import { PullRequestOracle } from "../pullRequest/PullRequestOracle.ts";
 import { PullRequestReviewGuideService } from "../pullRequest/PullRequestReviewGuideService.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
 import { SecretRequests } from "../secrets/SecretRequests.ts";
@@ -67,10 +69,12 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(PreviewAutomationBroker)({}),
   Layer.mock(PreviewBrowser)({}),
   Layer.mock(PreviewManager)({}),
+  Layer.mock(ProjectCloneTracker)({}),
   Layer.mock(ProjectService)({}),
   Layer.mock(ProjectSetupScriptRunner)({}),
   Layer.mock(ProviderAdapterRegistryV2)({}),
   Layer.mock(ProviderRegistry)({}),
+  Layer.mock(PullRequestOracle)({}),
   Layer.mock(PullRequestReviewGuideService)({}),
   Layer.mock(ScheduledTaskService)({}),
   Layer.mock(SecretRequests)({}),

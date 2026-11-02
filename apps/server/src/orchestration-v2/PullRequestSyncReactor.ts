@@ -2,6 +2,7 @@ import {
   CommandId,
   isOrchestrationV2WorkActive,
   type OrchestrationV2TurnItem,
+  type ProviderDriverKind,
   type PullRequestSummary,
   type ThreadId,
   type ThreadPullRequestKey,
@@ -17,6 +18,14 @@ import {
   visibleThreadPullRequests,
 } from "../sourceControl/threadPullRequests.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
+import {
+  classifyAgentShellCommands,
+  COMMAND_SEPARATOR,
+  COMMAND_START,
+  shellCode,
+  shellScript,
+  shellSegments,
+} from "../sourceControl/agentShellCommands.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -31,6 +40,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import * as Metrics from "../observability/Metrics.ts";
 import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -50,10 +60,6 @@ const isChangeRequestCloseCommand = (command: string) =>
     (definition) => definition.changeRequestCloseCommand?.test(command) === true,
   );
 
-// Where a shell starts a command, past `NAME=value` assignments and wrappers like `timeout 60`.
-// A create command anywhere else, as in `echo "gh pr create"`, is text, not a command that runs.
-const COMMAND_START =
-  "(?:^|[;&|({`\\n]|\\b(?:do|then|else)\\s)\\s*(?:(?:\\w+=\\S*|env|time|nohup|timeout\\s+\\S+)\\s+)*";
 const CREATE_COMMANDS = sourceControlDefinitions.definitions.flatMap(
   ({ kind, changeRequestCreateCommand: command }) =>
     command === undefined
@@ -70,66 +76,10 @@ const CREATE_COMMANDS = sourceControlDefinitions.definitions.flatMap(
 const createCommandCount = (code: string) =>
   CREATE_COMMANDS.reduce((count, { run }) => count + [...code.matchAll(run)].length, 0);
 
-// Codex runs each command as `/bin/zsh -lc <script>`, quoting the script in pieces such as
-// `"a "'`b`'" c"`.
-const SHELL_WRAPPER = /^\s*(?:\S*\/)?(?:ba|z|da|k)?sh\s+-l?c\s+(?=["'])([\s\S]*)$/u;
-const SHELL_WORD_PIECE = /"((?:\\[\s\S]|[^"\\])*)"|'([^']*)'|\\([\s\S])|(\S)/gu;
-// Heredoc bodies, quoted strings and comments are text a command carries, not commands it runs.
-const HEREDOC_BODY =
-  /<<-?[ \t]*(['"]?)(\w+)\1[^\n]*\n(?:(?:[\s\S]*?\n)?[ \t]*\2[ \t]*(?=\n|$)|[\s\S]*$)/gu;
-const QUOTED_OR_COMMENT = /'[^']*'|"(?:\\[\s\S]|[^"\\])*"|(?<=^|[\s;&|(])#[^\n]*/gmu;
-const COMMAND_SEPARATOR = /&&|\|\||[;|\n]/u;
 // Commands that print other change requests' URLs, so output beside them proves nothing.
 const LISTS_CHANGE_REQUESTS =
   /\b(?:gh\s+(?:pr\s+(?:list|status)|search\s+prs|api)|glab\s+(?:mr\s+list|api))\b/u;
 const URL_LINE = /^[ \t]*(https?:\/\/\S+)[ \t]*$/gmu;
-
-/** The script a shell input runs, unwrapped from Codex's `sh -lc`. */
-function shellScript(input: string): string {
-  const [, wrapped] = SHELL_WRAPPER.exec(input) ?? [];
-  return wrapped === undefined
-    ? input
-    : Array.from(
-        wrapped.matchAll(SHELL_WORD_PIECE),
-        ([, double, single, escaped, bare]) =>
-          double?.replace(/\\(["\\$`])/gu, "$1") ?? single ?? escaped ?? bare,
-      ).join("");
-}
-
-/** A script split at command separators that sit outside quotes. */
-function shellSegments(script: string): ReadonlyArray<string> {
-  const segments: Array<string> = [];
-  let current = "";
-  let quote: string | null = null;
-  for (let index = 0; index < script.length; index++) {
-    const char = script[index] ?? "";
-    if (quote !== null) {
-      current += char;
-      if (char === "\\" && quote === '"') current += script[++index] ?? "";
-      else if (char === quote) quote = null;
-      continue;
-    }
-    if (char === "'" || char === '"') quote = char;
-    if (char === "\\") {
-      current += char + (script[++index] ?? "");
-      continue;
-    }
-    const pair = script.slice(index, index + 2);
-    if (pair === "&&" || pair === "||" || char === ";" || char === "|" || char === "\n") {
-      segments.push(current);
-      current = "";
-      if (pair === "&&" || pair === "||") index++;
-      continue;
-    }
-    current += char;
-  }
-  segments.push(current);
-  return segments;
-}
-
-/** The commands a script runs, without the text it carries. */
-const shellCode = (script: string) =>
-  script.replace(HEREDOC_BODY, "<<").replace(QUOTED_OR_COMMENT, "''");
 
 type CommandExecution = Extract<OrchestrationV2TurnItem, { readonly type: "command_execution" }>;
 
@@ -212,6 +162,23 @@ function snapshotFieldsOf(summary: PullRequestSummary): SnapshotFields {
     ...(summary.checksState === undefined ? {} : { checksState: summary.checksState }),
     ...(summary.mergeability === undefined ? {} : { mergeability: summary.mergeability }),
   };
+}
+
+// GitHub briefly returns unknown after base pushes; other hosts may mean a lasting condition.
+function withKnownMergeability(
+  previous: ThreadPullRequestSnapshot | null,
+  fields: SnapshotFields,
+  provider: PullRequestSummary["provider"],
+): SnapshotFields {
+  if (
+    provider !== "github" ||
+    fields.state !== "open" ||
+    fields.mergeability !== "unknown" ||
+    previous?.updatedAt !== fields.updatedAt
+  )
+    return fields;
+  const known = previous?.state === "open" ? previous.mergeability : undefined;
+  return known === undefined || known === "unknown" ? fields : { ...fields, mergeability: known };
 }
 
 // Rotating ghe.com avatar tokens should not make otherwise identical snapshots differ.
@@ -396,10 +363,12 @@ export const make = Effect.gen(function* () {
     // cache lookup forked inside keeps those frames, so a plain span leaves the sweep collectable.
     const syncEntry = Effect.fnUntraced(function* (
       entry: LinkEntry,
-      fields: SnapshotFields,
+      hostFields: SnapshotFields,
       fetchedStack: { readonly stack: ThreadPullRequestStack | null } | null,
+      provider: PullRequestSummary["provider"],
     ) {
       const { thread, link } = entry;
+      const fields = withKnownMergeability(link.snapshot, hostFields, provider);
       const nextStack = fetchedStack === null ? link.stack : fetchedStack.stack;
       const changed =
         link.snapshot === null ||
@@ -475,7 +444,10 @@ export const make = Effect.gen(function* () {
         entries.some(
           (entry) =>
             entry.link.snapshot === null ||
-            !snapshotFieldsEqual(entry.link.snapshot, fields) ||
+            !snapshotFieldsEqual(
+              entry.link.snapshot,
+              withKnownMergeability(entry.link.snapshot, fields, summary.provider),
+            ) ||
             (summary.stack !== undefined &&
               (entry.link.stack?.number ?? null) !== (summary.stack?.number ?? null)),
         );
@@ -542,7 +514,7 @@ export const make = Effect.gen(function* () {
       yield* Effect.forEach(
         entries,
         (entry) =>
-          syncEntry(entry, fields, fetchedStack).pipe(
+          syncEntry(entry, fields, fetchedStack, summary.provider).pipe(
             persistence.withPermits(1),
             Effect.catchCause((cause) => {
               if (!Cause.hasInterruptsOnly(cause)) retryStacks.add(key);
@@ -599,12 +571,38 @@ export const make = Effect.gen(function* () {
   const worker = yield* makeDrainableWorker((scope: "all" | "requested") =>
     Effect.suspend(() => {
       if (scope === "requested") requestedSweepQueued = false;
-      return sweep(scope);
+      return pullRequests.withSharedProjectReads(sweep(scope));
     }).pipe(Effect.catchCause(logSkipped("pull request sync sweep failed", {}))),
   );
 
   // Threads that ran a close command this run, with the commands already read for.
   const closeCommands = new Map<ThreadId, Set<string>>();
+  // Forge commands already counted this run, so a command settles into the metric once.
+  const countedCommands = new Map<ThreadId, Set<string>>();
+  const countForgeCommands = (
+    event: { readonly threadId: ThreadId; readonly driver?: ProviderDriverKind | undefined },
+    item: CommandExecution,
+  ) =>
+    Effect.suspend(() => {
+      const commands = classifyAgentShellCommands(item.input);
+      if (commands.length === 0) return Effect.void;
+      const counted = countedCommands.get(event.threadId) ?? new Set<string>();
+      countedCommands.set(event.threadId, counted);
+      if (counted.has(item.id)) return Effect.void;
+      counted.add(item.id);
+      return Effect.forEach(
+        commands,
+        ({ forge, command, bypass }) =>
+          Metrics.increment(Metrics.agentForgeCommandsTotal, {
+            forge,
+            kind: command.kind,
+            intent: command.kind === "read" ? command.intent : undefined,
+            provider: event.driver ?? "unknown",
+            bypass,
+          }),
+        { discard: true },
+      );
+    });
   const refreshOpenLinks = (threadId: ThreadId) =>
     projections.getThreadsWithPullRequests(threadId).pipe(
       Effect.flatMap((threads) =>
@@ -624,7 +622,6 @@ export const make = Effect.gen(function* () {
   // An agent that opens a pull request from a shell gets it linked as link_pull_request would.
   const linkCreatedChangeRequests = Effect.fn("PullRequestSyncReactor.linkCreatedChangeRequests")(
     function* (threadId: ThreadId, item: CommandExecution) {
-      if (isOrchestrationV2WorkActive(item.status)) return;
       yield* Effect.forEach(
         changeRequestsCreatedBy(item.input, item.output ?? ""),
         (created) =>
@@ -682,7 +679,12 @@ export const make = Effect.gen(function* () {
           case "turn-item.updated": {
             const item = event.payload;
             if (item.type !== "command_execution") return Effect.void;
-            const linked = linkCreatedChangeRequests(event.threadId, item);
+            const linked = isOrchestrationV2WorkActive(item.status)
+              ? Effect.void
+              : Effect.andThen(
+                  countForgeCommands(event, item),
+                  linkCreatedChangeRequests(event.threadId, item),
+                );
             if (!isChangeRequestCloseCommand(item.input)) return linked;
             const ended = closeCommands.get(event.threadId) ?? new Set<string>();
             closeCommands.set(event.threadId, ended);
@@ -691,7 +693,9 @@ export const make = Effect.gen(function* () {
             return Effect.andThen(linked, refreshOpenLinks(event.threadId));
           }
           case "run.updated":
-            return isTerminalRunStatus(event.payload.status) && closeCommands.delete(event.threadId)
+            if (!isTerminalRunStatus(event.payload.status)) return Effect.void;
+            countedCommands.delete(event.threadId);
+            return closeCommands.delete(event.threadId)
               ? refreshOpenLinks(event.threadId)
               : Effect.void;
           default:

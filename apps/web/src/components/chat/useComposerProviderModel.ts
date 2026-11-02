@@ -69,6 +69,7 @@ export function useComposerProviderModel(
     providers: providerStatuses,
     selectedProvider,
     selectedInstanceId,
+    requestedInstanceId: selection.requestedInstanceId,
     threadModelSelection:
       threadModelSelection && composerModelSelectionFor(providerStatuses, threadModelSelection),
     projectModelSelection:

@@ -67,7 +67,7 @@ it.layer(NodeServices.layer)("pstack composer", (it) => {
         );
       }),
   );
-  it.effect.each(["$pstack:architect", "/pstack:architect"])(
+  it.effect.each(["$pstack:architect", "/pstack:architect", "pstack:architect"])(
     "consumes leading %s and preserves disabled identity",
     (token) =>
       Effect.gen(function* () {
@@ -93,14 +93,14 @@ it.layer(NodeServices.layer)("pstack composer", (it) => {
         }).pipe(Effect.provide(Layer.merge(fixture.layer, fixture.settingsLayer)));
       }),
   );
-  it.effect(
+  it.effect.each(["Please $pstack:architect", "pstack:architect", "  /pstack:architect"])(
     "rewrites inline composer mentions, expands several skills once, and leaves unknown names alone",
-    () =>
+    (leading) =>
       Effect.gen(function* () {
         const fixture = yield* makeFixture();
         const input = {
           projectId: ProjectId.make("composer-test"),
-          text: "Please $pstack:architect design this, then $pstack:setup-pstack configure it. $pstack:architect again $pstack:missing",
+          text: `${leading} design this, then $pstack:setup-pstack configure it. $pstack:architect again $pstack:missing`,
           records: [],
         };
         const result = yield* expandPstackComposer(input, { createdBy: "user" }).pipe(
@@ -108,7 +108,7 @@ it.layer(NodeServices.layer)("pstack composer", (it) => {
         );
         assert.isTrue(
           result.text.startsWith(
-            "Please pstack:architect design this, then pstack:setup-pstack configure it. pstack:architect again $pstack:missing",
+            `${leading.replace(/[$/]/, "")} design this, then pstack:setup-pstack configure it. pstack:architect again $pstack:missing`,
           ),
         );
         assert.include(result.text, "pstack skill: architect, setup-pstack");

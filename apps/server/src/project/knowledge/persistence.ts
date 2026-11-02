@@ -115,6 +115,10 @@ export interface DeliveryState {
   readonly sentThisAttempt: boolean;
   readonly uncertain: boolean;
 }
+export type NativeDeliveryEstimateInput = Pick<
+  ProjectKnowledgeDelivery,
+  "projectId" | "threadId" | "providerInstanceId" | "providerThreadId" | "nativeThreadId"
+>;
 const DeliveryCursor = Schema.fromJsonString(
   Schema.Struct({
     attemptId: ProjectKnowledgeDelivery.fields.attemptId,
@@ -554,6 +558,29 @@ export const makeStore = Effect.gen(function* () {
       uncertain: row?.uncertain === 1,
     };
   });
+  const nativeDeliveryEstimate = Effect.fn("ProjectKnowledgeStore.nativeDeliveryEstimate")(
+    function* (input: NativeDeliveryEstimateInput) {
+      if (input.nativeThreadId == null) return 0;
+      // A retry can record the same message after suppressing its already-sent body.
+      // Reserve it once, without loading or revalidating retained excerpts. Old
+      // receipts use their accepted allowance (or the 48k composer contract limit).
+      const [row] = yield* sql<{ readonly estimatedTokens: number }>`
+        SELECT COALESCE(SUM(estimate), 0) AS "estimatedTokens" FROM (
+          SELECT MAX(COALESCE(
+            json_extract(budget_json, '$.estimatedTokens'),
+            CASE WHEN items_json = '[]' THEN 0
+              ELSE COALESCE(json_extract(budget_json, '$.knowledgeAllowance'), 48000) END
+          )) AS estimate
+          FROM project_knowledge_deliveries
+          WHERE project_id = ${input.projectId} AND thread_id = ${input.threadId}
+            AND provider_instance_id = ${input.providerInstanceId}
+            AND provider_thread_id IS ${input.providerThreadId ?? null}
+            AND native_thread_id = ${input.nativeThreadId} AND status = 'sent'
+          GROUP BY message_id
+        )`;
+      return row?.estimatedTokens ?? 0;
+    },
+  );
   const markDeliveryUncertain = Effect.fn("ProjectKnowledgeStore.markDeliveryUncertain")(function* (
     input: DeliveryStateInput,
     updatedAt: string,
@@ -696,6 +723,7 @@ export const makeStore = Effect.gen(function* () {
     recordRetrieval,
     recordDelivery,
     readDeliveryState,
+    nativeDeliveryEstimate,
     markDeliveryUncertain,
     scrubDeliveries,
     replaceDeliveryItems,

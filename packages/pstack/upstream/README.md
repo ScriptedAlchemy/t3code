@@ -1,6 +1,6 @@
 # pstack for T3 Code
 
-A native T3 Code port of [Lauren Tan's pstack](https://github.com/cursor/plugins/tree/99b609a72323b70204eab407c622f436e858e112/pstack), pinned to version 0.15.32. Skills, playbooks, principles, and agent personas help you write less, higher quality code with rigorous verification and independent perspectives.
+A native T3 Code port of [Lauren Tan's pstack](https://github.com/cursor/plugins/tree/4dd1d05818d19792e7cd6e818f1667f95f7e1dbe/pstack), pinned to version 0.15.36. Skills, playbooks, principles, and agent personas help you write less, higher quality code with rigorous verification and independent perspectives.
 
 T3 Code supplies `$pstack:` composer chips, absolute pack/models paths, and exact role targets in `<t3_pstack>`. Read a bundled skill directly and follow it. Delegation uses `delegate_task`; model choices come from resolved roles. Configure them with `$pstack:setup-pstack`. No separate harness plugin installation or translation file is required.
 

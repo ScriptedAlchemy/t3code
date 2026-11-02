@@ -24,6 +24,20 @@ export function ThreadHeader(
     useAdaptiveWorkspaceLayout();
   const { onOpenTerminal, onMergeBack } = props.gitControls;
   const native = useThreadHeaderOptions(props);
+  const threadActions = [
+    ...(props.onOpenConversationSummaries
+      ? [
+          {
+            id: "conversation-summaries",
+            title: "Conversation summaries",
+            onPress: props.onOpenConversationSummaries,
+          },
+        ]
+      : []),
+    ...(props.onOpenProjectMemory
+      ? [{ id: "project-memory", title: "Project memory", onPress: props.onOpenProjectMemory }]
+      : []),
+  ];
   const androidHeaderActions = useMemo<ReadonlyArray<AppBarAction>>(() => {
     const actions: AppBarAction[] = [];
     if (props.onReturnToThread) {
@@ -80,20 +94,8 @@ export function ThreadHeader(
     <>
       <AppBar
         menus={
-          props.onOpenConversationSummaries
-            ? [
-                {
-                  title: "Thread actions",
-                  icon: "ellipsis",
-                  items: [
-                    {
-                      id: "conversation-summaries",
-                      title: "Conversation summaries",
-                      onPress: props.onOpenConversationSummaries,
-                    },
-                  ],
-                },
-              ]
+          threadActions.length > 0
+            ? [{ title: "Thread actions", icon: "ellipsis", items: threadActions }]
             : undefined
         }
         title={props.title}

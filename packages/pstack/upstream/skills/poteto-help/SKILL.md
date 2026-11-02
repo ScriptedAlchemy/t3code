@@ -67,7 +67,7 @@ The default answer is `$pstack:poteto-mode`, which runs most of the others when 
 | Understand a change or subsystem, explained plainly | [`$pstack:teach`](../teach/SKILL.md) |
 | Catch up on their own recent work on a topic | [`$pstack:recall`](../recall/SKILL.md) |
 | Catch up on what changed in this chat since their last message, in plain words and small visuals, with every item waiting on them listed and decidable from the reply alone | [`$pstack:ketchup`](../ketchup/SKILL.md) |
-| Catch up like `$pstack:ketchup`, in a short silent video of slides, with the waiting calls as text under it | [`$pstack:ketchup-video`](../ketchup-video/SKILL.md) |
+| Catch up like `$pstack:ketchup`, in a short subtitled video of slides, with the waiting calls as text under it | [`$pstack:ketchup-video`](../ketchup-video/SKILL.md) |
 | Know what a small diff could break outside itself | [`$pstack:blast-radius`](../blast-radius/SKILL.md) |
 | Settle types and module shape before code that crosses a function boundary | [`$pstack:architect`](../architect/SKILL.md) |
 | Get several attempts at one brief, merged into the best one | [`$pstack:arena`](../arena/SKILL.md) |
@@ -83,7 +83,7 @@ The default answer is `$pstack:poteto-mode`, which runs most of the others when 
 | Bring a verification skill and its feature map back in line with the app | [`$pstack:maintain-verification-skill`](../maintain-verification-skill/SKILL.md) |
 | Formally verify a race, invariant, or other property that tests rarely reach | [`$pstack:create-formal-verification-skill`](../create-formal-verification-skill/SKILL.md) |
 | Bring a formal verification back in line after the code it covers changed, and learn whether a failure is drift or a bug | [`$pstack:maintain-formal-verification-skill`](../maintain-formal-verification-skill/SKILL.md) |
-| Show a PM or designer what the user sees as a chart checked by a model, with each bug drawn as a numbered path, turn an agreed chart into a TLA+ skeleton, or audit the code against its TLA+ spec | [`$pstack:statechart`](../statechart/SKILL.md) |
+| Show a PM or designer what the user sees as a chart checked by a TLA+ model, with the shortest path to each state that breaks a rule | [`$pstack:statechart`](../statechart/SKILL.md) |
 | Vet a performance number before reporting or acting on it | [`$pstack:benchmark-checklist`](../benchmark-checklist/SKILL.md) |
 | Run a large or cross-cutting change, or one to review after stepping away | [`$pstack:figure-it-out`](../figure-it-out/SKILL.md) |
 | Keep a decision log during a run, and review it afterward | [`$pstack:show-me-your-work`](../show-me-your-work/SKILL.md) |
@@ -119,7 +119,7 @@ Playbooks are step lists inside `$pstack:poteto-mode`, not skills, so they have 
 - "land the stack" runs Shipping.
 - "take over this branch" runs Session pickup.
 - "pause safely" runs Pause safely.
-- "full autopilot on this queue" runs Autopilot-full. "stack them, don't ship" runs Autopilot-stack.
+- "full autopilot on this queue" runs Autopilot-full. "autopilot, don't merge" runs Autopilot-stack.
 - "run the eval playbook" runs Eval.
 
 Use `schedule_task` for timed work and `watch_pull_request` for PR events. Use `skill-creator` when available, otherwise write the Agent Skills folder directly.

@@ -24,6 +24,7 @@ export function useThreadHeaderOptions(props: {
   readonly gitControls: Parameters<typeof ThreadGitControls>[0];
   readonly onReturnToThread?: () => void;
   readonly onOpenConversationSummaries?: () => void;
+  readonly onOpenProjectMemory?: () => void;
   readonly draft?: boolean;
 }) {
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
@@ -71,42 +72,52 @@ export function useThreadHeaderOptions(props: {
     ],
     [sidebarHeaderItem, props.onReturnToThread, props.draft, startNewTask, usesDuoHeader],
   );
-  const summariesHeaderItems = useMemo<NativeHeaderItems>(
-    () =>
-      props.onOpenConversationSummaries
+  const threadActionsHeaderItems = useMemo<NativeHeaderItems>(() => {
+    const items = [
+      ...(props.onOpenConversationSummaries
         ? [
-            withNativeGlassHeaderItem({
-              type: "menu" as const,
-              identifier: "thread-conversation-summaries",
-              accessibilityLabel: "Thread actions",
-              icon: { name: "ellipsis", type: "sfSymbol" as const },
-              menu: {
-                items: [
-                  {
-                    type: "action" as const,
-                    label: "Conversation summaries",
-                    onPress: props.onOpenConversationSummaries,
-                  },
-                ],
-              },
-            }),
+            {
+              type: "action" as const,
+              label: "Conversation summaries",
+              onPress: props.onOpenConversationSummaries,
+            },
           ]
-        : [],
-    [props.onOpenConversationSummaries],
-  );
+        : []),
+      ...(props.onOpenProjectMemory
+        ? [
+            {
+              type: "action" as const,
+              label: "Project memory",
+              onPress: props.onOpenProjectMemory,
+            },
+          ]
+        : []),
+    ];
+    return items.length > 0
+      ? [
+          withNativeGlassHeaderItem({
+            type: "menu" as const,
+            identifier: "thread-conversation-summaries",
+            accessibilityLabel: "Thread actions",
+            icon: { name: "ellipsis", type: "sfSymbol" as const },
+            menu: { items },
+          }),
+        ]
+      : [];
+  }, [props.onOpenConversationSummaries, props.onOpenProjectMemory]);
   const rightHeaderItems = useMemo<NativeHeaderItems>(
     () => [
       ...(usesDuoHeader || layout.usesSplitView
         ? threadCenterHeaderItems
         : compactRightHeaderItems),
-      ...summariesHeaderItems,
+      ...threadActionsHeaderItems,
     ],
     [
       usesDuoHeader,
       layout.usesSplitView,
       threadCenterHeaderItems,
       compactRightHeaderItems,
-      summariesHeaderItems,
+      threadActionsHeaderItems,
     ],
   );
   const canGoBack = navigation.canGoBack();
@@ -142,7 +153,7 @@ export function useThreadHeaderOptions(props: {
     // Factories re-read only on version changes; include displayed items and hidden callback state such as default refs.
     optionsVersion: [
       splitLeftHeaderItems,
-      summariesHeaderItems,
+      threadActionsHeaderItems,
       threadCenterHeaderItems,
       compactRightHeaderItems,
       usesDuoHeader,

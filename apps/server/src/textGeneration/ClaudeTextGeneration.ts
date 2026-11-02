@@ -31,6 +31,7 @@ import {
 } from "../provider/ClaudeModelCatalog.ts";
 import {
   claudeAccountSettings,
+  parseClaudeAccountDir,
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
 } from "../provider/Drivers/ClaudeHome.ts";
@@ -49,6 +50,10 @@ const CLAUDE_INVESTIGATION_ALLOWED = [
 ].join(",");
 // Denies override allows; block git --output/-o because allowed trailing args can otherwise write anywhere.
 const CLAUDE_INVESTIGATION_DENIED = ["Bash(git * --output*)", "Bash(git * -o *)"].join(",");
+
+const NO_SESSION_PERSISTENCE = "--no-session-persistence";
+// Claude Code before 2.0.63 exits with this on stderr; those runs retry without the flag.
+const NO_SESSION_PERSISTENCE_REJECTED = `error: unknown option '${NO_SESSION_PERSISTENCE}'`;
 
 const ClaudeOutputEnvelope = Schema.Struct({
   structured_output: Schema.Unknown,
@@ -175,7 +180,11 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
       ...(ultracode ? { ultracode: true } : {}),
-      ...claudeAccountSettings(claudeSettings),
+      ...claudeAccountSettings(
+        claudeSettings.setupMode === "cli"
+          ? parseClaudeAccountDir(claudeSettings.homePath)
+          : undefined,
+      ),
     };
     const settingsJson = yield* encodeJsonForOperation(
       operation,
@@ -183,7 +192,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       "Failed to encode Claude CLI settings.",
     );
 
-    const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
+    const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
+      noSessionPersistence: boolean,
+    ) {
       const workingDirectory =
         operation === "generateThreadTitle"
           ? yield* fileSystem
@@ -219,6 +230,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
               ]
             : ["--tools", ""]),
           "--disable-slash-commands",
+          ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
           // managed-mcp.json already isolates servers and makes Claude reject this flag.
           ...(managedMcpConfig ? [] : ["--strict-mcp-config"]),
           "--permission-mode",
@@ -258,25 +270,32 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         { concurrency: "unbounded" },
       );
 
-      if (exitCode !== 0) {
+      return { stdout, stderr, exitCode };
+    });
+
+    const rawStdout = yield* runClaudeCommand(true).pipe(
+      Effect.filterOrElse(
+        (result) =>
+          result.exitCode === 0 || !result.stderr.includes(NO_SESSION_PERSISTENCE_REJECTED),
+        () => runClaudeCommand(false),
+      ),
+      Effect.flatMap(({ stdout, stderr, exitCode }) => {
+        if (exitCode === 0) return Effect.succeed(stdout);
         const stderrDetail = stderr.trim();
         const stdoutDetail = stdout.trim();
         const detail =
           claudeErrorResult(stdoutDetail) ??
           (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
-        return yield* new TextGenerationError({
-          operation,
-          detail:
-            detail.length > 0
-              ? `Claude CLI command failed: ${detail}`
-              : `Claude CLI command failed with code ${exitCode}.`,
-        });
-      }
-
-      return stdout;
-    });
-
-    const rawStdout = yield* runClaudeCommand().pipe(
+        return Effect.fail(
+          new TextGenerationError({
+            operation,
+            detail:
+              detail.length > 0
+                ? `Claude CLI command failed: ${detail}`
+                : `Claude CLI command failed with code ${exitCode}.`,
+          }),
+        );
+      }),
       Effect.scoped,
       Effect.timeoutOption(investigate?.timeoutMs ?? CLAUDE_TIMEOUT_MS),
       Effect.flatMap(

@@ -13,9 +13,10 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeEvents from "node:events";
 import * as NodeHttp from "node:http";
 
-import { npmReleaseDatabaseMigration } from "@t3tools/shared/cliRelease";
+import { CLI_RELEASE_METADATA_FILE, npmReleaseDatabaseMigration } from "@t3tools/shared/cliRelease";
 
 import { buildNpmLauncher } from "./build-npm-launcher.ts";
+import { buildReleaseMetadata } from "./build-release-metadata.ts";
 
 const VERSION = "1.2.3";
 const decodeManifest = Schema.decodeEffect(
@@ -122,6 +123,16 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
         assert.isUndefined(manifest.optionalDependencies);
         assert.isAbove(npmReleaseDatabaseMigration(manifest) ?? 0, 0);
 
+        const metadataPath = yield* buildReleaseMetadata({
+          version: VERSION,
+          outputDir: path.join(root, "assets"),
+        });
+        assert.equal(path.basename(metadataPath), CLI_RELEASE_METADATA_FILE);
+        assert.deepStrictEqual(yield* decodeManifest(yield* fs.readFileString(metadataPath)), {
+          version: VERSION,
+          databaseMigration: npmReleaseDatabaseMigration(manifest),
+        });
+
         const installed = path.join(root, "installed");
         yield* fs.makeDirectory(installed);
         const unpack = yield* run("tar", ["-xzf", output.tarball, "-C", installed], {
@@ -160,6 +171,39 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
         const second = yield* run(process.execPath, [launcher, "--version"], { cwd: root, env });
         assert.equal(second.exitCode, 7);
         assert.equal(release.requests.length, requestsAfterFirst);
+
+        const forkReleaseHook = path.join(root, "fork-release.mjs");
+        yield* fs.writeFileString(
+          forkReleaseHook,
+          `const fetchRelease = globalThis.fetch;
+const prefix = "https://github.com/ScriptedAlchemy/t3code/releases/download";
+globalThis.fetch = (input, options) => {
+  const url = String(input);
+  if (!url.startsWith(prefix + "/")) throw new Error("Unexpected release URL: " + url);
+  return fetchRelease(${JSON.stringify(release.baseUrl)} + url.slice(prefix.length), options);
+};\n`,
+        );
+        const defaultRelease = yield* run(
+          process.execPath,
+          ["--import", forkReleaseHook, launcher, "--version"],
+          { cwd: root, env: { PATH: process.env.PATH, T3CODE_HOME: path.join(root, "fork-home") } },
+        );
+        assert.equal(defaultRelease.exitCode, 7, defaultRelease.stderr);
+        assert.equal(defaultRelease.stdout.trim(), `stub --version launcher=${launcher}`);
+
+        const unsupportedHook = path.join(root, "unsupported-platform.mjs");
+        yield* fs.writeFileString(
+          unsupportedHook,
+          'Object.defineProperty(process, "platform", { value: "darwin" });\nObject.defineProperty(process, "arch", { value: "x64" });\n',
+        );
+        const unsupported = yield* run(
+          process.execPath,
+          ["--import", unsupportedHook, launcher, "--version"],
+          { cwd: root, env },
+        );
+        assert.equal(unsupported.exitCode, 1);
+        assert.include(unsupported.stderr, "no T3 Code CLI build is available for darwin-x64");
+        assert.include(unsupported.stderr, "https://github.com/ScriptedAlchemy/t3code/releases");
 
         const ipcServer = path.join(home, "runtime/versions", VERSION, "t3");
         yield* fs.writeFileString(

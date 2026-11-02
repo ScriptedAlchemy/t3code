@@ -1,15 +1,19 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  CommandId,
+  ComposerContextId,
   ConversationSummary,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
   MessageId,
+  ProjectFactId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
+  RunAttemptId,
   RunId,
   ServerSettings as ServerSettingsSchema,
   TextGenerationError,
@@ -50,6 +54,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as HolographicMemory from "../knowledge/HolographicMemory.ts";
 import * as ProjectKnowledge from "../knowledge/ProjectKnowledge.ts";
+import { deliveredKnowledgeForHistory } from "../knowledge/composer.ts";
 import * as ConversationSummaries from "./ConversationSummaries.ts";
 import { conversationSummaryEffects } from "./conversationSummarySchedule.ts";
 
@@ -689,76 +694,170 @@ it.effect(
   },
 );
 
-it.effect("hands off a labelled summary plus the intact tail within budget, once", () => {
-  const model = citing();
-  return Effect.gen(function* () {
-    yield* seed;
-    yield* summarize;
-    const summary = yield* onlySummary;
-    const service = yield* ConversationSummaries.ConversationSummaries;
-    let durable: OrchestrationV2ContextHandoff = yield* Effect.flatMap(
-      ContextHandoffService.ContextHandoffServiceV2,
-      (handoffs) =>
-        handoffs.prepareProviderHandoff({
-          threadId,
-          targetRunId: RunId.make("target-run"),
-          transferId: null,
-          fromProviderThreadIds: [],
-          toProviderThreadId: providerThread.id,
-          fromProviderInstanceId: instanceId,
-          toProviderInstanceId: instanceId,
-          coveredRunOrdinals: { from: 1, to: 1 },
-          strategy: "full_thread_summary",
-          items: Array.from({ length: MESSAGE_COUNT }, (_, index) => item(index)),
-          createdAt: at,
-        }),
-    );
-    // The default cap cannot carry 16 long messages, so older history is omitted at prepare.
-    assert.isAbove(durable.history!.omittedItems, 0);
-    const budget = 12_000;
-    let summaryReads = 0;
-    const deliver = (handoff: OrchestrationV2ContextHandoff) =>
-      deliverContextHandoffs({
-        handoffs: [handoff],
-        providerThread,
-        budget,
-        alreadyDeliveredItemIds: new Set(),
-        summaries: (itemIds) => {
-          summaryReads += 1;
-          return service.forHandoff({ projectId, handoffs: [handoff], itemIds });
+it.effect.each([0, 2])(
+  "hands off a summary with source %i's knowledge and the intact tail within budget, once",
+  (knowledgeSource) => {
+    const model = citing();
+    return Effect.gen(function* () {
+      yield* seed;
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const fact = yield* knowledge.mutate(
+        {
+          action: "create",
+          commandId: CommandId.make("summary-knowledge-create"),
+          factId: ProjectFactId.make("summary-knowledge"),
+          projectId,
+          kind: "constraint",
+          content: "Cache keys must include tenant IDs.",
+          entities: [],
+          tags: [],
+          sources: [{ kind: "user" }],
         },
-        persist: (next) =>
-          Effect.sync(() => {
-            durable = next;
-          }),
+        { kind: "user" },
+      );
+      const context = {
+        environmentId: EnvironmentId.make("summary-environment"),
+        projectId,
+        selections: [{ kind: "fact" as const, factId: fact.id, revision: fact.revision }],
+        maxBytes: 48_000,
+      };
+      const prepared = yield* knowledge.resolveForTurn(context);
+      yield* knowledge.recordDelivery({
+        attemptId: RunAttemptId.make("summary-knowledge-attempt"),
+        runId,
+        threadId,
+        messageId: messageId(knowledgeSource),
+        projectId,
+        providerInstanceId: instanceId,
+        status: "sent",
+        items: [
+          {
+            contextId: ComposerContextId.make("summary-knowledge-context"),
+            label: "Cache isolation",
+            context,
+            text: prepared.text,
+          },
+        ],
+        omissions: [],
+        createdAt: DateTime.formatIso(at),
+        updatedAt: DateTime.formatIso(at),
       });
+      const edited = yield* knowledge.mutate(
+        {
+          action: "edit",
+          commandId: CommandId.make("summary-knowledge-edit"),
+          factId: fact.id,
+          projectId,
+          expectedRevision: fact.revision,
+          content: "Cache keys must include region IDs.",
+          kind: fact.kind,
+          entities: fact.entities,
+          tags: fact.tags,
+          sources: fact.sources,
+        },
+        { kind: "user" },
+      );
+      yield* summarize;
+      const summary = yield* onlySummary;
+      const service = yield* ConversationSummaries.ConversationSummaries;
+      let durable: OrchestrationV2ContextHandoff = yield* Effect.flatMap(
+        ContextHandoffService.ContextHandoffServiceV2,
+        (handoffs) =>
+          handoffs.prepareProviderHandoff({
+            threadId,
+            targetRunId: RunId.make("target-run"),
+            transferId: null,
+            fromProviderThreadIds: [],
+            toProviderThreadId: providerThread.id,
+            fromProviderInstanceId: instanceId,
+            toProviderInstanceId: instanceId,
+            coveredRunOrdinals: { from: 1, to: 1 },
+            strategy: "full_thread_summary",
+            items: Array.from({ length: MESSAGE_COUNT }, (_, index) => item(index)),
+            createdAt: at,
+          }),
+      );
+      // The default cap cannot carry 16 long messages, so older history is omitted at prepare.
+      assert.isAbove(durable.history!.omittedItems, 0);
+      assert.equal(
+        (durable.history!.omittedItemIds ?? []).includes(itemId(knowledgeSource)),
+        knowledgeSource === 2,
+      );
+      const budget = 12_000;
+      let summaryReads = 0;
+      const itemIds = new Map(
+        Array.from({ length: MESSAGE_COUNT }, (_, index) => [messageId(index), itemId(index)]),
+      );
+      const deliver = (handoff: OrchestrationV2ContextHandoff, nativeId = "native-target") =>
+        deliverContextHandoffs({
+          handoffs: [handoff],
+          providerThread: {
+            ...providerThread,
+            nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId },
+          },
+          budget,
+          alreadyDeliveredItemIds: new Set(),
+          summaries: (itemIds) => {
+            summaryReads += 1;
+            return service.forHandoff({ projectId, handoffs: [handoff], itemIds });
+          },
+          evidence: (messages) =>
+            deliveredKnowledgeForHistory({
+              projectId,
+              messages,
+              userItemId: (id) => itemIds.get(id),
+            }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge)),
+          persist: (next) =>
+            Effect.sync(() => {
+              durable = next;
+            }),
+        });
 
-    const delivery = yield* deliver(durable);
-    yield* delivery.delivered;
-    assert.include(delivery.context, `[Conversation summary ${summary.id}`);
-    assert.include(delivery.context, "It is a summary, not the original messages.");
-    assert.include(delivery.context, "t3_conversation_summary_expand");
-    assert.notInclude(delivery.context, rawText(0));
-    for (let index = MESSAGE_COUNT - 2; index < MESSAGE_COUNT; index++)
-      assert.include(delivery.context, rawText(index));
-    assert.isAtMost(historyCost([], delivery.context), budget + 1_024);
-    assert.deepEqual(durable.delivery?.summaryIds, [summary.id]);
-    assert.deepEqual(
-      durable.delivery?.summarizedItemIds?.toSorted(),
-      Array.from({ length: 10 }, (_, index) => itemId(index)).toSorted(),
-    );
-    assert.isTrue(
-      (durable.delivery?.omittedItemIds ?? []).every(
-        (id) => !durable.delivery?.summarizedItemIds?.includes(id),
-      ),
-    );
+      const delivery = yield* deliver(durable);
+      yield* delivery.delivered;
+      assert.include(delivery.context, `[Conversation summary ${summary.id}`);
+      assert.include(delivery.context, "It is a summary, not the original messages.");
+      assert.include(delivery.context, "t3_conversation_summary_expand");
+      assert.include(delivery.context, fact.content!);
+      assert.equal(delivery.context.split("<t3_delivered_knowledge").length - 1, 1);
+      assert.notInclude(delivery.context, edited.content!);
+      assert.notInclude(delivery.context, rawText(0));
+      for (let index = MESSAGE_COUNT - 2; index < MESSAGE_COUNT; index++)
+        assert.include(delivery.context, rawText(index));
+      assert.isAtMost(historyCost([], delivery.context), budget + 1_024);
+      assert.deepEqual(durable.delivery?.summaryIds, [summary.id]);
+      assert.deepEqual(
+        durable.delivery?.summarizedItemIds?.toSorted(),
+        Array.from({ length: 10 }, (_, index) => itemId(index)).toSorted(),
+      );
+      assert.isTrue(
+        (durable.delivery?.omittedItemIds ?? []).every(
+          (id) => !durable.delivery?.summarizedItemIds?.includes(id),
+        ),
+      );
 
-    // The settled delivery is not delivered again, and no summary is read for it.
-    const retry = yield* deliver(durable);
-    assert.equal(retry.context, "");
-    assert.equal(summaryReads, 1);
-  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
-});
+      // The settled delivery is not delivered again, and no summary is read for it.
+      const retry = yield* deliver(durable);
+      assert.equal(retry.context, "");
+      assert.equal(summaryReads, 1);
+
+      yield* knowledge.mutate(
+        {
+          action: "forget",
+          commandId: CommandId.make("summary-knowledge-forget"),
+          factId: fact.id,
+          projectId,
+          expectedRevision: edited.revision,
+        },
+        { kind: "user" },
+      );
+      const afterForget = yield* deliver(durable, "replacement-native");
+      assert.include(afterForget.context, `[Conversation summary ${summary.id}`);
+      assert.notInclude(afterForget.context, fact.content!);
+      assert.notInclude(afterForget.context, "t3_delivered_knowledge");
+    }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+  },
+);
 
 const mcpScope = (capabilities: ReadonlySet<string>): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("summary-environment"),

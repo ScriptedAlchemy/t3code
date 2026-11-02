@@ -265,6 +265,13 @@ const make = Effect.gen(function* () {
       yield* followOne(scope.thread.threadId, recordedTask.id).pipe(Effect.forkIn(followers));
       return { taskId: recordedTask.id };
     }
+    if (target.driverKind !== undefined) {
+      return yield* new OrchestratorMcpFailure({
+        code: "target_required",
+        message:
+          "Linked delegation does not resolve target.driverKind. Omit it and pass target.providerInstanceId and target.model from orchestrator_capabilities with this environmentId.",
+      });
+    }
     // The provider and model inherit as they do for a task here. Another
     // provider there has no model to inherit, so the caller names one.
     const inherited = parent.thread.modelSelection;

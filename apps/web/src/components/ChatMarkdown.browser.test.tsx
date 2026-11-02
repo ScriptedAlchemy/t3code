@@ -16,6 +16,18 @@ const { workspaceSearch, filesystemMetadata } = vi.hoisted(() => ({
   workspaceSearch: vi.fn(),
   filesystemMetadata: vi.fn(),
 }));
+const parsedSources = vi.hoisted(() => [] as string[]);
+vi.mock(import("mdast-util-from-markdown"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    fromMarkdown: ((source: string, ...rest: never[]) => {
+      parsedSources.push(String(source));
+      return (actual.fromMarkdown as (...args: unknown[]) => unknown)(source, ...rest);
+    }) as typeof actual.fromMarkdown,
+  };
+});
+
 vi.mock(import("../state/use-atom-query-runner"), async (original) => ({
   ...(await original()),
   useAtomQueryRunner: ((family: unknown) =>
@@ -27,9 +39,25 @@ vi.mock(import("../state/server"), async (original) => {
   const actual = await original();
   const { Atom } = await import("effect/reactivity");
   const noConfig = Atom.make(null);
+  const modelsConfig = Atom.make({
+    availableEditors: [],
+    settings: { providerInstances: {} },
+    providers: [
+      {
+        instanceId: "codex",
+        driver: "codex",
+        displayName: "Codex",
+        models: [{ slug: "gpt-6.1", name: "GPT-6.1", isCustom: false, capabilities: {} }],
+      },
+    ],
+  });
   return {
     ...actual,
-    serverEnvironment: { ...actual.serverEnvironment, configValueAtom: (() => noConfig) as never },
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      configValueAtom: ((environmentId: string) =>
+        environmentId === "models" ? modelsConfig : noConfig) as never,
+    },
   };
 });
 vi.mock(import("../state/session"), async (original) => {
@@ -59,6 +87,22 @@ vi.mock(import("./chat/MermaidDiagram"), async (original) => {
       const pending = renderDiagram(source);
       return <svg role="img" aria-label={pending ? use(pending) : "Diagram"} />;
     },
+  };
+});
+
+const appearance = vi.hoisted(() => ({
+  value: "light" as "light" | "dark",
+  listeners: new Set<() => void>(),
+}));
+vi.mock(import("../hooks/useTheme"), async (original) => {
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
+    appearance.listeners.add(listener);
+    return () => appearance.listeners.delete(listener);
+  };
+  return {
+    ...(await original()),
+    useRenderedAppearance: () => useSyncExternalStore(subscribe, () => appearance.value),
   };
 });
 
@@ -99,6 +143,8 @@ it("keeps compact audio playback loaded across signed URL renewals", async () =>
 });
 
 function setup() {
+  appearance.value = "light";
+  parsedSources.length = 0;
   settingsOverrides.mathRenderingEnabled = false;
   renderDiagram.mockReset();
   workspaceSearch.mockReset().mockResolvedValue(AsyncResult.success({ entries: [] }));
@@ -137,6 +183,62 @@ it("loads a host image through the page's own route when there is no environment
   expect(new Set(hostImageUrl.mock.calls.map(([path]) => path))).toEqual(
     new Set(["/work/my shot.png"]),
   );
+});
+
+it("loads the <picture> source for the current theme through the image route", async () => {
+  setup();
+  const pixel =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  const hostImageUrl = (path: string) => `${pixel}#${path}`;
+  await using screen = await render(
+    <HostImageUrlContext value={hostImageUrl}>
+      <ChatMarkdown
+        cwd={undefined}
+        text={
+          '<picture><source media="(prefers-color-scheme: dark)" srcset="/work/dark.png"><img src="/work/light.png" alt="Shot"></picture>'
+        }
+      />
+    </HostImageUrlContext>,
+  );
+  await expect
+    .element(screen.getByAltText("Shot"))
+    .toHaveAttribute("src", `${pixel}#/work/light.png`);
+
+  await act(() => {
+    appearance.value = "dark";
+    for (const listener of appearance.listeners) listener();
+  });
+  await expect
+    .element(screen.getByAltText("Shot"))
+    .toHaveAttribute("src", `${pixel}#/work/dark.png`);
+});
+
+it("reuses the parse of a streaming reply's finished blocks when it remounts", async () => {
+  setup();
+  const message = (
+    <ChatMarkdown cwd="/tmp/project" text={"Finished block\n\nStill growing"} isStreaming />
+  );
+  {
+    await using _first = await render(message);
+  }
+  await using screen = await render(message);
+  await expect.element(screen.getByText("Still growing")).toBeVisible();
+  expect(parsedSources.filter((source) => source.includes("Finished block"))).toHaveLength(1);
+});
+
+it("reuses the parse of a remounted message that has stable extra plugins", async () => {
+  setup();
+  const parsed = vi.fn();
+  const countingPlugins = [() => () => void parsed()];
+  const message = (
+    <ChatMarkdown cwd="/tmp/project" text="Cached text" extraRemarkPlugins={countingPlugins} />
+  );
+  {
+    await using _first = await render(message);
+  }
+  await using screen = await render(message);
+  await expect.element(screen.getByText("Cached text")).toBeVisible();
+  expect(parsed).toHaveBeenCalledTimes(1);
 });
 
 describe("ChatMarkdown favicon privacy", () => {
@@ -306,6 +408,46 @@ describe("ChatMarkdown skill chips", () => {
     await userEvent.click(page.getByRole("button", { name: "View instructions" }));
 
     expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "/skills/review/SKILL.md");
+  });
+
+  it("names a mentioned model as its provider does, without a thread", async () => {
+    setup();
+    await using screen = await renderText("Ask (model:codex/gpt-6.1), not model:openai/gpt-4o.", {
+      environmentId: EnvironmentId.make("models"),
+    });
+
+    await expect
+      .element(screen.getByRole("button", { name: "Model GPT-6.1. Show details" }))
+      .toBeVisible();
+    expect(buttonsLabelled(screen.container, "Model gpt-4o. Show details")).toEqual([]);
+    expect(screen.container.textContent).toBe("Ask (GPT-6.1), not model:openai/gpt-4o.");
+  });
+
+  it("keeps chip sources in rich-text copies", async () => {
+    setup();
+    await using screen = await renderText("Run $review with model:codex/gpt-6.1 now", {
+      environmentId: EnvironmentId.make("models"),
+      skills: [{ name: "review", displayName: "Review", path: "/r/SKILL.md", enabled: true }],
+    });
+    await expect
+      .element(screen.getByRole("button", { name: "Model GPT-6.1. Show details" }))
+      .toBeVisible();
+
+    const paragraph = screen.container.querySelector("p")!;
+    window.getSelection()!.selectAllChildren(paragraph);
+    const copy = new ClipboardEvent("copy", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: new DataTransfer(),
+    });
+    paragraph.dispatchEvent(copy);
+
+    expect(copy.clipboardData!.getData("text/plain")).toBe(
+      "Run $review with model:codex/gpt-6.1 now",
+    );
+    expect(copy.clipboardData!.getData("text/html")).toContain(
+      "Run $review with model:codex/gpt-6.1 now",
+    );
   });
 });
 

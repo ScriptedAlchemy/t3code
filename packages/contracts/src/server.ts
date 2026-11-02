@@ -24,6 +24,7 @@ import {
   ResolvedKeybindingsConfig,
 } from "./keybindings.ts";
 import { EditorId, FileManagerRevealKind, RemoteOpenTarget } from "./editor.ts";
+import { ManagedPolicySummary } from "./managedPolicy.ts";
 import { ModelCapabilities, ProviderOptionDescriptor } from "./model.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
@@ -646,6 +647,8 @@ export const ServerConfig = Schema.Struct({
   directEndpoints: Schema.optionalKey(ForwardCompatibleArray(ServerDirectEndpoint)),
   observability: ServerObservability,
   settings: ServerSettings,
+  /** Present when an administrator's policy file manages this environment. */
+  managedPolicy: Schema.optionalKey(ManagedPolicySummary),
   shellResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
   /**
    * The shell can leave idle subagent children out of snapshots (`omitIdleSubagents`), and
@@ -666,6 +669,8 @@ export const ServerConfig = Schema.Struct({
   threadFindProgressive: Schema.optionalKey(Schema.Boolean),
   /** Settings patches may carry `secretProviders`; older servers drop the key without an error. */
   secretProviderSettings: Schema.optionalKey(Schema.Boolean),
+  /** Secret settings may point at a secret provider; older servers drop the reference. */
+  secretReferences: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**
@@ -686,6 +691,36 @@ export const ServerConfig = Schema.Struct({
   pstackSkills: Schema.optionalKey(Schema.Array(ServerProviderSkill)),
 });
 export type ServerConfig = typeof ServerConfig.Type;
+
+export const SkillsLibraryStatus = Schema.Struct({
+  libraryPath: Schema.String,
+  linked: Schema.Array(Schema.Struct({ driver: ProviderDriverKind, name: Schema.String })),
+  conflicts: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      paths: Schema.Tuple([Schema.String, Schema.String]),
+      /** The second path is a link inside the skill whose target lies outside it. */
+      reason: Schema.optionalKey(Schema.Literal("outsideLink")),
+    }),
+  ),
+  nameMismatches: Schema.Array(
+    Schema.Struct({ name: Schema.String, frontmatterName: Schema.String }),
+  ),
+});
+export type SkillsLibraryStatus = typeof SkillsLibraryStatus.Type;
+
+export class SkillsLibraryError extends Schema.TaggedError<SkillsLibraryError>()(
+  "SkillsLibraryError",
+  {
+    operation: Schema.Literals(["scan", "apply", "detach"]),
+    path: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Could not ${this.operation} the skills library at '${this.path}'.`;
+  }
+}
 
 export function resolveEnvironmentMachineKind(
   config: {
@@ -907,8 +942,31 @@ export class ServerProviderUpdateError extends Schema.TaggedError<ServerProvider
   }
 }
 
+export const ServerNpmReleaseInput = Schema.Struct({
+  spec: Schema.String.check(
+    Schema.isMaxLength(64),
+    Schema.isPattern(/^(?:latest|nightly|\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/),
+  ),
+});
+export type ServerNpmReleaseInput = typeof ServerNpmReleaseInput.Type;
+
+export const ServerNpmRelease = Schema.Struct({
+  version: Schema.String,
+  databaseMigration: Schema.optionalKey(Schema.Int),
+});
+export type ServerNpmRelease = typeof ServerNpmRelease.Type;
+
+export class ServerNpmReleaseError extends Schema.TaggedError<ServerNpmReleaseError>()(
+  "ServerNpmReleaseError",
+  { reason: Schema.String },
+) {
+  override get message(): string {
+    return `Could not check available releases: ${this.reason}`;
+  }
+}
+
 export const ServerSelfUpdateInput = Schema.Struct({
-  /** Exact npm version, never a dist-tag, so server and client agree on the request. */
+  /** Exact release version, never a channel, so server and client agree on the request. */
   targetVersion: TrimmedNonEmptyString,
   /** Desktop-managed hosts move their app to this update track first. Sent only for a track switch. */
   channel: Schema.optionalKey(DesktopUpdateChannelSchema),

@@ -67,39 +67,50 @@ const extractingRunner = (fs: FileSystem.FileSystem, path: Path.Path, commands: 
   });
 
 it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
-  it.effect("installs the verified release archive as the runtime executable", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-archive-" });
-      const requests: string[] = [];
-      const commands: string[] = [];
-      const paths = yield* ensurePinnedRuntimeInstalled({
-        baseDir,
-        version,
-        fs,
-        path,
-        platform: "linux",
-        arch: "x64",
-        httpClient: releaseHttpClient(yield* validChecksums, requests),
-        releaseBaseUrl: "https://releases.example/download",
-        runner: extractingRunner(fs, path, commands),
-        validate: (staging) =>
-          fs.exists(staging.entryPath).pipe(
-            Effect.flatMap((exists) => (exists ? Effect.void : Effect.die("missing runtime"))),
-            Effect.orDie,
-          ),
-      });
-      assert.equal(paths.entryPath, path.join(paths.versionDir, "t3"));
-      assert.deepEqual(pinnedRuntimeCommand(paths), { command: paths.entryPath, args: [] });
-      assert.deepEqual(requests, [
-        `https://releases.example/download/v${version}/SHA256SUMS`,
-        `https://releases.example/download/v${version}/${archiveName}`,
-      ]);
-      assert.deepEqual(commands, ["tar"]);
-      assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
-      assert.isFalse(yield* fs.exists(path.join(paths.versionDir, "t3-runtime-archive")));
-    }),
+  it.effect.each([
+    {
+      releaseBaseUrl: undefined,
+      expectedBaseUrl: "https://github.com/ScriptedAlchemy/t3code/releases/download",
+    },
+    {
+      releaseBaseUrl: "https://releases.example/download",
+      expectedBaseUrl: "https://releases.example/download",
+    },
+  ])(
+    "installs the verified release archive with base URL $releaseBaseUrl",
+    ({ releaseBaseUrl, expectedBaseUrl }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-archive-" });
+        const requests: string[] = [];
+        const commands: string[] = [];
+        const paths = yield* ensurePinnedRuntimeInstalled({
+          baseDir,
+          version,
+          fs,
+          path,
+          platform: "linux",
+          arch: "x64",
+          httpClient: releaseHttpClient(yield* validChecksums, requests),
+          ...(releaseBaseUrl === undefined ? {} : { releaseBaseUrl }),
+          runner: extractingRunner(fs, path, commands),
+          validate: (staging) =>
+            fs.exists(staging.entryPath).pipe(
+              Effect.flatMap((exists) => (exists ? Effect.void : Effect.die("missing runtime"))),
+              Effect.orDie,
+            ),
+        });
+        assert.equal(paths.entryPath, path.join(paths.versionDir, "t3"));
+        assert.deepEqual(pinnedRuntimeCommand(paths), { command: paths.entryPath, args: [] });
+        assert.deepEqual(requests, [
+          `${expectedBaseUrl}/v${version}/SHA256SUMS`,
+          `${expectedBaseUrl}/v${version}/${archiveName}`,
+        ]);
+        assert.deepEqual(commands, ["tar"]);
+        assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
+        assert.isFalse(yield* fs.exists(path.join(paths.versionDir, "t3-runtime-archive")));
+      }),
   );
 
   it.effect("cleans up an interrupted download without reporting verification or extraction", () =>
@@ -409,7 +420,7 @@ it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
       // The launcher found on PATH is remembered for a service that cannot see it.
       assert.equal(
         yield* fs.readFileString(path.join(baseDir, "runtime", "launchers")),
-        `${path.join(customBinDir, "t3")}\n${path.join(binDir, "t3")}\n`,
+        `${path.join(customBinDir, "t3")}\n\n${path.join(binDir, "t3")}\n`,
       );
       assert.deepEqual((yield* fs.readDirectory(versionsDir)).toSorted(), [
         ".staging-abc",
@@ -425,6 +436,52 @@ it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
         "2.0.0",
         "other",
       ]);
+    }),
+  );
+
+  it.effect.each([
+    // An interrupted append cut this record short.
+    { name: "an unterminated launcher record", recorded: "/opt/t", cut: "" },
+    // Another process's append is cut short after prune reads the records.
+    { name: "a record cut short after the read", recorded: "/opt/t3\n", cut: "/opt/t" },
+  ])("remembers a launcher found on PATH after $name", ({ recorded, cut }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { baseDir, versionsDir } = yield* setup(["1.0.0", "1.1.0"]);
+      const binDir = path.join(baseDir, "custom-bin");
+      yield* fs.makeDirectory(binDir);
+      yield* fs.symlink(path.join(versionsDir, "1.0.0", "t3"), path.join(binDir, "t3"));
+      const launchersFile = path.join(baseDir, "runtime", "launchers");
+      yield* fs.writeFileString(launchersFile, recorded);
+      const prune = (environment: Record<string, string>) =>
+        prunePinnedRuntimes({ baseDir, keep: [] }).pipe(
+          Effect.provideService(ProcessRunner.ProcessRunner, lsofRunner("p1\nftxt\nn/bin/sh\n")),
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provideService(HostProcess.Environment, environment),
+          Effect.provideService(HostProcess.HomeDirectory, baseDir),
+        );
+
+      yield* prune({ PATH: binDir }).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          readFileString: (file, encoding) =>
+            fs
+              .readFileString(file, encoding)
+              .pipe(
+                Effect.tap(() =>
+                  file === launchersFile
+                    ? fs.writeFileString(file, cut, { flag: "a" })
+                    : Effect.void,
+                ),
+              ),
+        }),
+      );
+      // A service that cannot see the interactive PATH.
+      const removed = yield* prune({});
+
+      assert.deepEqual(removed, []);
+      assert.isTrue(yield* fs.exists(path.join(versionsDir, "1.0.0", "t3")));
     }),
   );
 

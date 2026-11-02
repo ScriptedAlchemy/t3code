@@ -47,7 +47,7 @@ export function npmLauncherPackageManifest(version: string, databaseMigration: n
 }
 
 /** Highest server migration id, from the `NNN_Name.ts` files the server registers. */
-const latestServerMigrationId = Effect.fn("latestServerMigrationId")(function* () {
+export const latestServerMigrationId = Effect.fn("latestServerMigrationId")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const dir = yield* path.fromFileUrl(

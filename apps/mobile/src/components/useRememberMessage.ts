@@ -5,7 +5,7 @@ import type { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import { projectKnowledge } from "../state/projectKnowledge";
 import { serverEnvironment } from "../state/server";
 import { environmentThreadShells } from "../state/threads";
-import { requestRememberMessage } from "./ProjectKnowledgeEntry";
+import { requestProjectMemory } from "./ProjectKnowledgeEntry";
 
 /** Returns a "Remember for this project" action, or null when this thread cannot save facts. */
 export function useRememberMessage(
@@ -22,5 +22,5 @@ export function useRememberMessage(
   if (config?.environment.capabilities.projectKnowledge !== true || !canMutate || !projectId)
     return null;
   return (message: { readonly threadId: ThreadId; readonly messageId: MessageId }) =>
-    requestRememberMessage({ environmentId, projectId, draftKey, message });
+    requestProjectMemory({ environmentId, projectId, draftKey, message });
 }

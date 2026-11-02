@@ -30,6 +30,17 @@ export interface ParsedChangeRequestUrl extends ChangeRequestLink {
   readonly repositoryUrl: string;
 }
 
+export interface CommitLink {
+  readonly host: string;
+  readonly repository: string;
+  readonly sha: string;
+  readonly authority?: string;
+}
+
+export interface CommitUrlInput extends Omit<ChangeRequestUrlInput, "number"> {
+  readonly sha: string;
+}
+
 export interface ChangeRequestTerminology {
   readonly shortLabel: string;
   /** Spelled out because the article follows how the label is said: "an MR". */
@@ -90,6 +101,8 @@ export interface SourceControlMediaUrl {
   readonly fileName: string;
   /** Set when the URL alone says what the media is, as an extensionless upload can. */
   readonly kind?: "image" | "video";
+  /** Set when the bytes behind `fetchUrl` can never change, so a client may cache them by it. */
+  readonly immutable?: true;
 }
 
 export interface ReferenceAutolink {
@@ -217,6 +230,25 @@ export const hostCredentialSettingsFields = {
 export const HostCredentialSettings = Schema.Struct(hostCredentialSettingsFields);
 export type HostCredentialSettings = typeof HostCredentialSettings.Type;
 
+export type ForgeReadIntent = "status" | "failures" | "feedback";
+
+/** The change request a command names, as far as its argv says. Empty means the current one. */
+export interface ForgeCommandTarget {
+  readonly url?: string;
+  readonly repository?: string;
+  readonly number?: number;
+}
+
+/**
+ * What one of this host's CLI commands does. A `read` carries an intent only when T3's pull
+ * request tool of that name answers the exact request; a `poll` waits on the host itself.
+ */
+export type ForgeCommand =
+  | { readonly kind: "read"; readonly intent: ForgeReadIntent; readonly target: ForgeCommandTarget }
+  | { readonly kind: "write" }
+  | { readonly kind: "poll" }
+  | { readonly kind: "other" };
+
 /**
  * What the server and every client know about a forge. It is plain data and pure functions so
  * one copy serves both sides; a lint rule keeps UI runtimes out of `shared/`.
@@ -238,6 +270,9 @@ export interface SourceControlDefinition {
   readonly newRepositoryOwner: (account: string | null) => { readonly owner: string | null } | null;
   readonly defaultCloneTransport: "https" | "ssh";
   readonly changeRequestUrl: (input: ChangeRequestUrlInput) => string | null;
+  readonly commitUrl?: (input: CommitUrlInput) => string | null;
+  /** `known` is set when the caller already knows this host serves the URL's repository. */
+  readonly parseCommitUrl?: (url: URL, known: boolean) => CommitLink | null;
   /** Null when the URL is not one of this host's change requests. */
   readonly parseChangeRequestUrl: (url: URL) => ParsedChangeRequestUrl | null;
   /**
@@ -262,6 +297,11 @@ export interface SourceControlDefinition {
    * on a line of its own. Absent for a host with no such CLI.
    */
   readonly changeRequestCreateCommand?: RegExp;
+  /**
+   * Sorts one shell command, split into words with the program first, into what it does on this
+   * host. Null when the program is not this host's CLI. Absent for a host with no such CLI.
+   */
+  readonly classifyCommand?: (words: ReadonlyArray<string>) => ForgeCommand | null;
   readonly authorProfileUrl: (login: string, repositoryUrl: string) => string | null;
   /**
    * The references this host's own renderer links in plain text, such as `#12` or a commit SHA,
@@ -272,6 +312,8 @@ export interface SourceControlDefinition {
     text: string,
     repositoryUrl: string,
   ) => ReadonlyArray<ReferenceAutolink>;
+  /** True when the host renders a single newline in change request text as a line break. */
+  readonly hardLineBreaks?: boolean;
   /** Where the host lists a change request's checks. Absent means the change request's own page. */
   readonly changeRequestChecksUrl?: (changeRequestUrl: string) => string;
   /**
@@ -290,7 +332,7 @@ export interface SourceControlDefinition {
   readonly isChangeRequestReference: (url: string) => boolean;
   readonly isChangeRequestInRepository: (
     identity: ChangeRequestProjectIdentity,
-    link: ChangeRequestLink,
+    link: ChangeRequestLink | CommitLink,
   ) => boolean;
   readonly canReadChangeRequestOnHost: (
     identity: ChangeRequestProjectIdentity,
@@ -334,6 +376,42 @@ export interface SourceControlDefinition {
 export type SourceControlHostSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
 } & Schema.Decoder<object>;
+
+const FULL_COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu;
+
+export function parseCommitPath(url: URL, route: RegExp): CommitLink | null {
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  const match = route.exec(url.pathname);
+  const repository = match?.[1];
+  const sha = match?.[2];
+  return repository && sha && FULL_COMMIT_SHA.test(sha)
+    ? {
+        host: url.hostname.toLowerCase(),
+        repository: repository.toLowerCase(),
+        sha: sha.toLowerCase(),
+        ...(url.port ? { authority: url.host.toLowerCase() } : {}),
+      }
+    : null;
+}
+
+export function buildCommitUrl(
+  { host, repository, sha, remoteUrl, webUrl }: CommitUrlInput,
+  route: string,
+): string | null {
+  if (!repository || !FULL_COMMIT_SHA.test(sha)) return null;
+  try {
+    const url = new URL(webUrl || `${remoteWebOrigin(host, remoteUrl)}/${repository}`);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    url.pathname = changeRequestUrlBelow(url.pathname, `${route}/${sha.toLowerCase()}`);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Reads a change request from `url` with `route`, whose first group is the repository path and
@@ -383,7 +461,7 @@ export function defineSourceControl<const Definition extends SourceControlDefini
 
 export function isChangeRequestAuthorityOfProject(
   identity: ChangeRequestProjectIdentity,
-  link: ChangeRequestLink,
+  link: ChangeRequestLink | CommitLink,
 ): boolean {
   if (link.authority === undefined) return true;
   try {
@@ -410,7 +488,7 @@ export function projectChangeRequestHost<const Kind extends string | undefined>(
 export function isChangeRequestOnProjectHost(
   projectHost: string,
   identity: ChangeRequestProjectIdentity,
-  link: ChangeRequestLink,
+  link: ChangeRequestLink | CommitLink,
 ): boolean {
   if (!isChangeRequestAuthorityOfProject(identity, link)) return false;
   return projectHost === link.host.toLowerCase() || projectHost === link.authority;
@@ -426,7 +504,7 @@ function projectRepositoryPath(identity: ChangeRequestProjectIdentity): string |
 export function isChangeRequestInProjectRepository(
   projectHost: string,
   identity: ChangeRequestProjectIdentity,
-  link: ChangeRequestLink,
+  link: ChangeRequestLink | CommitLink,
 ): boolean {
   const repository = projectRepositoryPath(identity);
   return (
@@ -533,6 +611,11 @@ export interface ParsedChangeRequest {
   readonly link: ParsedChangeRequestUrl;
 }
 
+export interface ParsedCommit {
+  readonly definition: SourceControlDefinition;
+  readonly link: CommitLink;
+}
+
 export interface SourceControlMedia extends SourceControlMediaUrl {
   readonly definition: SourceControlDefinition;
 }
@@ -549,6 +632,7 @@ export interface SourceControlDefinitionRegistry {
   readonly findByPublicDomain: (hostname: string) => SourceControlDefinition | undefined;
   /** The first host, in registry order, that reads `url` as one of its change requests. */
   readonly parseChangeRequestUrl: (url: string) => ParsedChangeRequest | null;
+  readonly parseCommitUrl: (url: string, kind?: SourceControlProviderKind) => ParsedCommit | null;
   readonly findByChangeRequestUrl: (url: string) => SourceControlDefinition | undefined;
   readonly hostLabelForChangeRequestUrl: (url: string) => string;
   readonly isSameChangeRequest: (left: string, right: string) => boolean;
@@ -648,6 +732,16 @@ export function makeSourceControlDefinitionRegistry(
       );
     },
     parseChangeRequestUrl,
+    parseCommitUrl: (value, kind) => {
+      const url = httpUrl(value);
+      if (url === null) return null;
+      const preferred = kind === undefined ? undefined : byKind.get(kind);
+      for (const definition of kind === undefined ? claimOrder : preferred ? [preferred] : []) {
+        const link = definition.parseCommitUrl?.(url, preferred !== undefined);
+        if (link != null) return { definition, link };
+      }
+      return null;
+    },
     findByChangeRequestUrl: (url) => parseChangeRequestUrl(url)?.definition,
     hostLabelForChangeRequestUrl: (url) =>
       parseChangeRequestUrl(url)?.definition.label ?? "the host",

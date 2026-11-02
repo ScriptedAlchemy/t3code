@@ -41,6 +41,7 @@ import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import { t3OrchestrationSystemPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
 import {
   MuseApproval,
@@ -65,6 +66,7 @@ import { isMuseUsageLimitFailure, museUsageLimitResetAt } from "./usageLimits.ts
 import {
   createMuseSdkHostEffect,
   museApprovalMode,
+  museCanonicalPath,
   musePermissionProfile,
   museWorkspaceRoot,
   type createMuseSdkHost,
@@ -247,6 +249,9 @@ const nativeRef = (nativeId: string) => ({
   nativeId,
   strength: "strong" as const,
 });
+/** The roster lists a child under its turn item's native id, so readers can pair the two. */
+const backgroundTaskId = (item: MuseItem) =>
+  item.kind === "subagent" ? item.childSessionId || item.subagentId || item.itemId : item.itemId;
 const recordSchema = Schema.Record(Schema.String, Schema.Unknown);
 const INFORMATIONAL_NOTIFICATIONS = new Set([
   "session/contextUsage",
@@ -289,11 +294,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       if (input.runtimePolicy.interactionMode === "plan")
         return yield* protocolError("Muse Code does not support dedicated Plan mode");
       const scope = yield* Effect.scope;
-      // Muse requires canonical workspace roots and approval paths; resolve symlinks once.
+      // Native realpath also corrects filesystem case, which Muse validates.
       const requestedCwd = input.runtimePolicy.cwd ?? providerHost.paths.cwd;
-      const cwd = yield* fileSystem
-        .realPath(requestedCwd)
-        .pipe(Effect.orElseSucceed(() => requestedCwd));
+      const cwd = yield* museCanonicalPath(requestedCwd);
       const workspaceRoot = yield* museWorkspaceRoot(cwd);
       const now = yield* DateTime.now;
       let session: OrchestrationV2ProviderSession = {
@@ -326,6 +329,8 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       // Only idle host failures can be retried on this runtime.
       let relaunchable = false;
       let nativeSessionId: string | undefined;
+      let orchestrationInstructions: string | undefined;
+      let pendingOrchestrationInstructions: string | undefined;
       let thread: OrchestrationV2ProviderThread | undefined;
       let active: ActiveTurn | undefined;
       let lastProviderTurn: OrchestrationV2ProviderTurn | undefined;
@@ -598,9 +603,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           item.result?.summary ??
           (status === "failed" ? item.failureReason : undefined);
         const result = resultText ?? null;
-        const nativeTaskRef = item.childSessionId
-          ? nativeRef(item.childSessionId)
-          : nativeRef(item.subagentId ?? item.itemId);
+        const nativeTaskRef = nativeRef(backgroundTaskId(item));
         const subagent: OrchestrationV2Subagent = {
           id: base.nodeId,
           threadId: base.threadId,
@@ -678,7 +681,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             const description = item?.objective ?? item?.entryId ?? item?.fallbackText;
             return [
               {
-                taskId: itemId,
+                taskId: item ? backgroundTaskId(item) : itemId,
                 kind:
                   item?.kind === "subagent" ? ("subagent" as const) : ("background_task" as const),
                 ...(description ? { description } : {}),
@@ -717,7 +720,13 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                     ? "cancelled"
                     : "failed",
             });
-          if (wasRunning !== observedChildren.has(item.itemId)) yield* syncBackground();
+          const running = observedChildren.has(item.itemId);
+          // Muse reveals a subagent's ids over several revisions, so a running child is
+          // relisted whenever the id its turn item carries moves.
+          const listed = thread?.pendingBackgroundTasks?.some(
+            (task) => task.taskId === backgroundTaskId(item),
+          );
+          if (wasRunning !== running || (running && !listed)) yield* syncBackground();
         }
         const streaming = status === "running";
         const base = {
@@ -756,6 +765,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         } else if (item.kind === "reasoning") {
           turnItem = { ...base, type: "reasoning", text, streaming };
         } else if (item.kind === "compaction") {
+          if (item.status === "completed" && (!item.outcome || item.outcome === "compacted")) {
+            pendingOrchestrationInstructions = orchestrationInstructions;
+          }
           turnItem = {
             ...base,
             type: "compaction",
@@ -1859,6 +1871,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           );
           if (result.session.sessionId !== nativeSessionId)
             return yield* protocolError("Muse returned a different session identity");
+          orchestrationInstructions = t3OrchestrationSystemPrompt(
+            mcpSession !== undefined,
+            mcpSession?.capabilities?.has("device") === true,
+          );
+          pendingOrchestrationInstructions = orchestrationInstructions;
           if (requestedId)
             yield* request("session/setApprovalMode", {
               mode: museApprovalMode(args.runtimePolicy.runtimeMode),
@@ -2055,6 +2072,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 `Muse returned an unsupported compaction status: ${result.status}`,
               );
           } else {
+            const instructions = pendingOrchestrationInstructions;
+            // Consume before sending: compaction can arrive before the turn acknowledgement.
+            pendingOrchestrationInstructions = undefined;
             const result = yield* request(
               "turn/start",
               {
@@ -2067,6 +2087,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                       reasoningEffort: effort,
                     }),
                   },
+                  ...(instructions === undefined ? [] : [{ type: "text", text: instructions }]),
                   ...parts,
                 ],
                 displayText: turnInput.message.text || "Image attachment",
@@ -2087,6 +2108,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           }
         }).pipe(
           Effect.onError((cause) => {
+            pendingOrchestrationInstructions = orchestrationInstructions;
             const error = Cause.squash(cause);
             const detail = isProtocolError(error)
               ? error.detail

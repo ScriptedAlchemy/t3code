@@ -101,6 +101,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   ),
   pullRequests: Schema.optionalKey(Schema.Boolean),
   pullRequestChecks: Schema.optionalKey(Schema.Boolean),
+  /** Side chats: hidden `lineage.sideChat` forks. Older servers ignore the fork flag. */
+  sideChats: Schema.optionalKey(Schema.Boolean),
   /** Every protocol-2 server sends this; older mobile builds still read it. */
   inlineMessageContext: Schema.optionalKey(Schema.Boolean),
   requiredWorktreeBootstrap: Schema.optionalKey(Schema.Boolean),
@@ -110,6 +112,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   storageCleanupRun: Schema.optionalKey(Schema.Boolean),
   databaseStorage: Schema.optionalKey(Schema.Boolean),
   otlpEndpointCheck: Schema.optionalKey(Schema.Boolean),
+  skillsLibrary: Schema.optionalKey(Schema.Boolean),
   projectWorktreeCleanup: Schema.optionalKey(Schema.Boolean),
   settledWorktreeCleanup: Schema.optionalKey(Schema.Boolean),
   worktreesDirectory: Schema.optionalKey(Schema.Boolean),
@@ -120,6 +123,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectProviderInstanceOverrides: Schema.optionalKey(Schema.Boolean),
   providerAccountTransfer: Schema.optionalKey(Schema.Boolean),
   threadSnooze: Schema.optionalKey(Schema.Boolean),
+  /** Serves `orchestration.forceStopThread`; hide Force stop where it is absent. */
+  threadForceStop: Schema.optionalKey(Schema.Boolean),
   /** Every protocol-2 server sends this; older mobile builds still read it. */
   environmentThemes: Schema.optionalKey(Schema.Boolean),
   usageLimitSources: Schema.optionalKey(Schema.Boolean),
@@ -144,6 +149,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),
   serverSelfUpdate: Schema.optionalKey(ServerSelfUpdateCapability),
+  /** Server answers server.getNpmRelease using this fork's GitHub releases. */
+  npmReleaseLookup: Schema.optionalKey(Schema.Boolean),
   /** Manual commands must update this install, not the host's default global prefix. */
   serverInstallation: ForwardCompatibleOptional(ServerInstallation),
   serverSelfUpdateProgress: Schema.optionalKey(Schema.Boolean),
@@ -151,6 +158,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Only explicit false skips Live Activity seeding; older servers may still publish. */
   agentActivityPublishing: Schema.optionalKey(Schema.Boolean),
   projectCloneTracking: Schema.optionalKey(Schema.Boolean),
+  /** Server keeps `pinned` and `archived` from project.update. Older servers drop them. */
+  projectOrganization: Schema.optionalKey(Schema.Boolean),
   /** Server answers projects.listIgnoredFiles. */
   ignoredFileListing: Schema.optionalKey(Schema.Boolean),
   environmentIcon: Schema.optionalKey(Schema.Boolean),
@@ -175,6 +184,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   linkFence: Schema.optionalKey(Schema.Boolean),
   /** Server answers server.prepareTriage. */
   triage: Schema.optionalKey(Schema.Boolean),
+  /** Server accepts `{ type: "once" }` scheduled tasks; older servers reject them on save. */
+  oneTimeSchedules: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

@@ -120,6 +120,9 @@ interface LatestReviewFields {
 
 /** Check runs use status/conclusion; commit statuses use a single state. */
 interface CheckFields {
+  readonly databaseId?: number | null | undefined;
+  readonly title?: string | null | undefined;
+  readonly runAttempt?: number | null | undefined;
   readonly name?: string | null | undefined;
   readonly context?: string | null | undefined;
   readonly status?: string | null | undefined;
@@ -585,6 +588,10 @@ function toCheckEntries(raw: ReadonlyArray<CheckFields> | null | undefined): Rea
         check: {
           name,
           status,
+          ...(check.databaseId == null
+            ? {}
+            : { handle: `github-check:${check.databaseId}:${check.runAttempt ?? 0}` }),
+          ...(check.title == null ? {} : { summary: check.title }),
           description: trimmed(check.description),
           url: trimmed(check.detailsUrl) ?? trimmed(check.targetUrl),
           ...(typeof check.isRequired === "boolean" ? { required: check.isRequired } : {}),
@@ -889,6 +896,7 @@ export function pullRequestLookup(changeRequest: {
 }
 
 export interface GitHubPullRequestSummary {
+  readonly headSha: string;
   readonly number: number;
   readonly title: string;
   readonly url: string;
@@ -915,6 +923,7 @@ export function toPullRequestSummary(pr: SummarizedPullRequest): GitHubPullReque
     number: pr.number,
     title: pr.title,
     url: pr.url,
+    headSha: pr.headRefOid,
     headBranch: pr.headRefName,
     baseBranch: pr.baseRefName,
     state: toState(pr),
@@ -1155,13 +1164,21 @@ export type GitHubCheckContext = CheckFields;
 function toCheckContexts(nodes: ReadonlyArray<CheckContext>): ReadonlyArray<GitHubCheckContext> {
   return nodes.map((check) =>
     check.__typename === "CheckRun"
-      ? { ...check, workflowName: check.checkSuite.workflowRun?.workflow.name ?? null }
+      ? {
+          ...check,
+          runAttempt: check.checkSuite.workflowRun?.runAttempt,
+          workflowName: check.checkSuite.workflowRun?.workflow.name ?? null,
+        }
       : check,
   );
 }
 
 export function toPullRequestCheckContextsPage(result: PullRequestCheckContexts.Result): {
   readonly headSha: string;
+  readonly headBranch: string;
+  readonly headRepositoryOwner: string | null;
+  readonly isCrossRepository: boolean;
+  readonly state: PullRequestState;
   readonly contexts: ReadonlyArray<GitHubCheckContext>;
   readonly nextCursor: string | null;
 } | null {
@@ -1170,6 +1187,10 @@ export function toPullRequestCheckContextsPage(result: PullRequestCheckContexts.
   const contexts = nodesOf(pr.commits)[0]?.commit.statusCheckRollup?.contexts;
   return {
     headSha: pr.headRefOid,
+    headBranch: pr.headRefName,
+    headRepositoryOwner: pr.headRepositoryOwner?.login ?? null,
+    isCrossRepository: pr.isCrossRepository,
+    state: toState(pr),
     contexts: toCheckContexts(nodesOf(contexts)),
     nextCursor: nextCursorOf(contexts?.pageInfo),
   };

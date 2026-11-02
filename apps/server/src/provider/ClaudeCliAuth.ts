@@ -27,7 +27,9 @@ export const makeClaudeCliAuth = Effect.fn("makeClaudeCliAuth")(function* (optio
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
   const { runtime, instanceId } = options;
-  const settings = encodeSettings(claudeAccountSettings(runtime.config));
+  const settings = encodeSettings(
+    claudeAccountSettings(runtime.mode === "cli" ? runtime.configDir : undefined),
+  );
   const spawn = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
     yield* fileSystem.makeDirectory(runtime.configDir, { recursive: true, mode: 0o700 });
     const environment = { ...runtime.environment, BROWSER: "false" };

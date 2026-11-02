@@ -1,16 +1,19 @@
 import { makeProviderSettingsSchema, SourceControlProviderKind } from "@t3tools/contracts";
 import {
+  buildCommitUrl,
   changeRequestUrlBelow,
   defineSourceControl,
   hostCredentialSettingsFields,
   isChangeRequestInProjectRepository,
   isChangeRequestOnProjectHost,
   parseChangeRequestPath,
+  parseCommitPath,
   projectChangeRequestHost,
   remoteWebOrigin,
   type SourceControlAppSignIn,
 } from "@t3tools/source-control-core/shared/definition";
 
+import { classifyGhCommand } from "./ghCommand.ts";
 import { gitHubMediaUrl } from "./gitHubMedia.ts";
 import { icon } from "./icon.ts";
 import { gitHubReferenceAutolinks } from "./referenceAutolinks.ts";
@@ -22,15 +25,14 @@ const CHANGE_REQUEST_REFERENCE =
 // GitHub Enterprise Server runs on any hostname, so the `<owner>/<repo>/pull/<n>` route alone
 // identifies a GitHub pull request.
 const CHANGE_REQUEST_PATH = /^\/([^/]+\/[^/]+)\/pull\/(\d+)(?:\/|$)/u;
+const COMMIT_PATH = /^\/([^/]+\/[^/]+)\/(?:commit|pull\/\d+\/commits)\/([0-9a-f]+)\/?$/iu;
 const ISSUE_PATH = /^\/([^/]+\/[^/]+)\/issues\/(\d+)(?:\/|$)/u;
 
 const KIND = SourceControlProviderKind.make("github");
 
 function isGitHubHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
-  return (
-    host === "github.com" || host.endsWith(".github.com") || host.split(".").includes("github")
-  );
+  return host === "github.com" || host.endsWith(".ghe.com") || host.split(".").includes("github");
 }
 
 function isRepositoryPath(repository: string): boolean {
@@ -91,6 +93,11 @@ export const definition = defineSourceControl({
       return null;
     }
   },
+  commitUrl: (input) =>
+    isRepositoryPath(input.repository) ? buildCommitUrl(input, "commit") : null,
+  // A known project's host can be any GitHub Enterprise Server name.
+  parseCommitUrl: (url, known) =>
+    known || isGitHubHost(url.hostname) ? parseCommitPath(url, COMMIT_PATH) : null,
   parseChangeRequestUrl: (url) => parseChangeRequestPath(url, CHANGE_REQUEST_PATH),
   // GitHub writes every bare reference through `/issues/`, including pull requests.
   changeRequestUrlFromReferenceAutolink: (url) => {
@@ -116,6 +123,7 @@ export const definition = defineSourceControl({
   checkoutCommand: ({ number }) => `gh pr checkout ${number}`,
   changeRequestCloseCommand: /\bgh\s+(?:pr\s+(?:merge|close)|stack\s+merge)\b/u,
   changeRequestCreateCommand: /\bgh\s+pr\s+create\b/u,
+  classifyCommand: classifyGhCommand,
   authorProfileUrl: (login, repositoryUrl) =>
     login.endsWith("[bot]")
       ? null
@@ -126,6 +134,7 @@ export const definition = defineSourceControl({
   changeRequestActionsWhenUnreported: new Set(["close", "merge", "ready", "reopen"] as const),
   // One search reads every repository on the host.
   changeRequestListScope: "host",
+  hardLineBreaks: true,
   reviewSummaryRequired: () => false,
   checkoutCommandArgument: (input) => CHECKOUT_COMMAND.exec(input)?.[1]?.trim() ?? null,
   isChangeRequestReference: (url) => CHANGE_REQUEST_REFERENCE.test(url),
@@ -133,9 +142,7 @@ export const definition = defineSourceControl({
   changeRequestHeadRef: (number) => `refs/pull/${number}/head`,
   // `*.ghe.com` is GitHub Enterprise Cloud with data residency, one subdomain per enterprise.
   recognizeRemote: ({ host, hostname }) =>
-    hostname === "github.com" ||
-    hostname.endsWith(".ghe.com") ||
-    hostname.split(".").includes("github")
+    isGitHubHost(hostname)
       ? {
           kind: KIND,
           name: hostname === "github.com" ? "GitHub" : "GitHub Self-Hosted",
