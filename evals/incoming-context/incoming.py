@@ -63,7 +63,7 @@ def text_leaves(value):
     if isinstance(value, str):
         try:
             obj = json.loads(value)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             return [([], value)]
         if isinstance(obj, dict) and isinstance(obj.get('output'), str):
             return [(['json', 'output'], obj['output'])]

@@ -1,6 +1,9 @@
 """Offline, source-referenced tool-output pruning evaluation. No live harness changes."""
 import argparse
+import ast
 import collections
+import copy
+import functools
 import hashlib
 import json
 import math
@@ -12,7 +15,7 @@ import subprocess
 import time
 import urllib.parse
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import tiktoken
 
@@ -21,13 +24,13 @@ from incoming import apply_incoming, replace_leaf, text_leaves
 
 ENC = tiktoken.get_encoding('o200k_base')
 CHUNKER = 'lines-400-v1'
-CONTEXT_VERSION = 'causal-context-v2'
-POLICY_VERSION = 'selection-evidence-v3'
+CONTEXT_VERSION = 'causal-context-v3'
+POLICY_VERSION = 'selection-evidence-v4'
 # Protection identity. A frozen result records the exact retention policy that produced its
 # decisions. Re-thresholding may only reuse a result that carries this identity; a result
 # recorded under another policy is stale and keeps everything, so old scores can never
 # silently inherit protection rules they were not measured with.
-PROTECTION_VERSION = 'json-span-v3+evidence+source-v1'
+PROTECTION_VERSION = 'json-span-v3+evidence+source-v2'
 # Request identity. Any frozen result without exactly REQUEST_VERSION in its `request_version`
 # field was measured against a different state, prompt or batching contract and must not be
 # compared with, or reported as, this revision.
@@ -106,8 +109,6 @@ def records(path):
 # resolved origin are recorded) or the case abstains with no model request.
 # ---------------------------------------------------------------------------
 
-_ROWS = {}
-
 # Repository instructions, generic path words and regex keywords are not
 # evidence: a match must name something the user or the tool call selected.
 _TERM_STOPWORDS = frozenset('''
@@ -157,27 +158,55 @@ _SYMBOL_KEYS = frozenset({'pattern', 'query', 'symbol', 'name', 'signature',
 _WANTED_KEYS = _PATH_KEYS | _SYMBOL_KEYS | {'cmd', 'command', 'args', 'arg'}
 
 
-def read_rows(path):
-    """Every source line as a record carrying its real 1-based line number."""
+def _source_signature(stat):
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+@functools.lru_cache(maxsize=2)
+def _read_source(path, signature):
+    with open(path, 'rb') as source_file:
+        before = _source_signature(os.fstat(source_file.fileno()))
+        raw = source_file.read()
+        after = _source_signature(os.fstat(source_file.fileno()))
+    if before != signature or after != signature or _source_signature(os.stat(path)) != signature:
+        raise ValueError('Source changed while reading: ' + path)
+    raw_lines = tuple(raw.splitlines(keepends=True))
     rows = []
-    with open(path, encoding='utf-8') as f:
-        for line_no, line in enumerate(f, 1):
-            try:
-                record = json.loads(line)
-            except ValueError:
-                record = {}
-            row = dict(record) if isinstance(record, dict) else {}
-            row['line'] = line_no
-            rows.append(row)
-    return rows
+    def unique_fields(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError('Duplicate source field')
+            value[key] = item
+        return value
+
+    for line_no, line in enumerate(raw_lines, 1):
+        try:
+            record = json.loads(line.decode('utf-8'), object_pairs_hook=unique_fields)
+        except (ValueError, RecursionError):
+            record = None
+        row = dict(record) if isinstance(record, dict) else {}
+        if (not isinstance(record, dict)
+                or (record.get('type') == 'response_item'
+                    and not isinstance(record.get('payload'), dict))):
+            row['_invalid_source_record'] = True
+        row['line'] = line_no
+        rows.append(row)
+    return {'rows': rows, 'raw_lines': raw_lines}
+
+
+def _source_snapshot(path):
+    path = os.path.abspath(os.fspath(path))
+    return _read_source(path, _source_signature(os.stat(path)))
+
+
+def read_rows(path):
+    """Every source line with its real line number; malformed history stays visible."""
+    return _source_snapshot(path)['rows']
 
 
 def load_records(path):
-    rows = _ROWS.get(path)
-    if rows is None:
-        rows = read_rows(path)
-        _ROWS[path] = rows
-    return rows
+    return read_rows(path)
 
 
 def _context_shell(reason):
@@ -265,18 +294,23 @@ def causal_for_case(case):
         return _context_shell('case_missing_source_or_line')
     try:
         rows = load_records(source)
-    except (OSError, UnicodeError) as exc:
+    except (OSError, UnicodeError, ValueError) as exc:
         return _context_shell('source_unreadable:' + type(exc).__name__)
     if line < 1 or line > len(rows):
         return _context_shell('result_line_out_of_range')
     result_row = rows[line - 1]
+    if any(row.get('_invalid_source_record') for row in rows[:line]):
+        return _context_shell('invalid_source_record')
     payload = result_row.get('payload')
     payload = payload if isinstance(payload, dict) else {}
+    if (result_row.get('type') != 'response_item'
+            or payload.get('type') not in causal.OUTPUT_TYPES or 'output' not in payload):
+        return _context_shell('invalid_result_record')
     raw = text(payload.get('output', ''))
     if case.get('sha256') and digest(raw) != case['sha256']:
         return _context_shell('result_digest_mismatch')
-    call_id = payload.get('call_id') or (case.get('call') or {}).get('call_id')
-    if not call_id:
+    call_id = payload.get('call_id')
+    if not isinstance(call_id, str) or not call_id:
         return _context_shell('result_without_call_id')
     try:
         ctx = causal.context_for(rows, call_id, before=line - 1)
@@ -655,16 +689,25 @@ def structure_keep(plan):
 #
 # The holdout regression was a file the user explicitly asked to review, where blocks that
 # carried the type's serialization schema were removed. Nothing in that text proves it was
-# requested, so this rule uses only the resolved call plus a sourced instruction, and it
-# refuses every shape it cannot resolve exactly. A refusal is not a case abstention: it means
-# "no retention claim", and the ordinary selector still decides.
+# requested, so this rule uses only literal read calls and sourced instructions. A composed
+# result is retained as a whole; concatenated output cannot be assigned to individual reads.
 # ---------------------------------------------------------------------------
 
 _SOURCE_TOOLS = frozenset({'read', 'read_file', 'readfile', 'view'})
 _SOURCE_FIELDS = ('path', 'file_path', 'file')
 _READER_COMMANDS = frozenset({'cat', 'bat', 'nl', 'head', 'tail'})
-_SHELL_META = frozenset('|&;<>()`\n\r*?')
+_EXEC_TOOLS = frozenset({'exec', 'exec_command'})
+_EXEC_FIELDS = frozenset({'cmd', 'workdir', 'max_output_tokens', 'yield_time_ms', 'tty',
+                          'login', 'shell', 'sandbox_permissions', 'justification', 'prefix_rule'})
+_SHELL_META = frozenset('|<>()`\n\r*?$[]{}#~')
 _READ_INTENT = re.compile(r'(?i)\b(read|reading|review|reviewing|inspect|inspecting|audit|auditing|examine|open|check)\b')
+_JS_STRING = r'''(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*')'''
+_LITERAL_FIELD = re.compile(
+    r'\s*(?P<key>[A-Za-z_]\w*|' + _JS_STRING + r')\s*:\s*'
+    r'(?P<value>' + _JS_STRING + r'|-?\d+(?:\.\d+)?|true|false|null)\s*(?:,|(?=\}))')
+_HARNESS_EXEC = re.compile(
+    r'\s*text\s*\(\s*await\s+tools\.exec_command\s*\(\s*'
+    r'(?P<args>\{(?:' + _JS_STRING + r'|[^{}\'"])*\})\s*\)\s*\)\s*(?:;|(?=\s*$))')
 
 
 def _source_path(value):
@@ -674,76 +717,212 @@ def _source_path(value):
     path = value.strip()
     if not path or len(path) > 400 or path.startswith('-'):
         return None
-    if any(c in path for c in '\0\n\r*?') or '..' in path.split('/'):
+    if (any(c in path for c in '\0\n\r*?$`[]{}') or '..' in path.split('/')
+            or any(0xd800 <= ord(c) <= 0xdfff for c in path)):
         return None
     return path
 
 
-def _selected_source(call):
-    """Exactly one file the originating call reads, or None for any unresolved shape.
+def _source_object(body):
+    def unique(pairs):
+        out = {}
+        for key, value in pairs:
+            if key in out:
+                raise ValueError('duplicate argument')
+            out[key] = value
+        return out
+    try:
+        value = json.loads(body, object_pairs_hook=unique)
+    except (TypeError, ValueError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
 
-    Unknown tools, reader invocations with more than one operand, option-value ambiguity and
-    every shell composition abstain instead of guessing a selection.
-    """
+
+def _literal_arguments(body):
+    """The flat literal argument subset used by printed exec_command calls."""
+    out, position = {}, 1
+    while position < len(body) - 1:
+        if not body[position:-1].strip():
+            break
+        match = _LITERAL_FIELD.match(body, position)
+        if match is None:
+            return None
+        key, raw = match.group('key', 'value')
+        try:
+            if key.startswith(('"', "'")):
+                key = ast.literal_eval(key)
+            if raw.startswith(('"', "'")):
+                # Restrict Python's literal decoder to escapes shared by JavaScript.
+                if re.search(r'\\(?:[^\'"\\bfnrtu]|u(?![0-9a-fA-F]{4}))', raw):
+                    return None
+                value = ast.literal_eval(raw)
+            else:
+                value = json.loads(raw)
+        except (SyntaxError, ValueError):
+            return None
+        if key in out:
+            return None
+        out[key] = value
+        position = match.end()
+    return out
+
+
+def _read_operands(argv):
+    name, args = argv[0].rsplit('/', 1)[-1], argv[1:]
+    if name == 'sed':
+        if (len(args) < 3 or args[0] != '-n'
+                or not re.fullmatch(r'[1-9]\d*(?:,[1-9]\d*)?p', args[1])):
+            return None
+        return args[2:] if all(_source_path(p) for p in args[2:]) else None
+    if name not in _READER_COMMANDS:
+        return None
+    operands, i = [], 0
+    while i < len(args):
+        arg = args[i]
+        if arg == '--':
+            operands.extend(args[i + 1:])
+            break
+        if not arg.startswith('-'):
+            operands.append(arg)
+        elif name in ('head', 'tail') and arg in ('-n', '-c', '--lines', '--bytes'):
+            i += 1
+            if i >= len(args) or not re.fullmatch(r'[+-]?\d+', args[i]):
+                return None
+        elif name in ('head', 'tail') and re.fullmatch(
+                r'(?:-[nc]?\d+|--(?:lines|bytes)=[+-]?\d+|--quiet|--verbose|-q|-v)', arg):
+            pass
+        elif name == 'cat' and re.fullmatch(r'-(?:[AbEenstTuv]+|-number|-number-nonblank|-squeeze-blank)', arg):
+            pass
+        elif name == 'bat' and re.fullmatch(r'(?:-[np]+|--(?:style|color|paging)=[A-Za-z,]+)', arg):
+            pass
+        else:
+            return None
+        i += 1
+    return operands if operands and all(_source_path(p) for p in operands) else None
+
+
+def _shell_sources(command, workdir=None):
+    if not isinstance(command, str) or any(c in command for c in _SHELL_META):
+        return None
+    if workdir is not None and not _source_path(workdir):
+        return None
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=';&')
+        lexer.whitespace_split, lexer.commenters = True, ''
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    segments, argv = [], []
+    for token in tokens:
+        if token in (';', '&&'):
+            if not argv:
+                return None
+            segments.append((argv, token))
+            argv = []
+        elif token and all(c in ';&' for c in token):
+            return None
+        else:
+            argv.append(token)
+    if argv:
+        segments.append((argv, None))
+    elif not segments or segments[-1][1] != ';':
+        return None
+    paths, cwd = [], workdir
+    for argv, separator in segments:
+        if argv[0] == 'cd':
+            if len(argv) != 2 or separator != '&&' or not _source_path(argv[1]):
+                return None
+            cwd = str(PurePosixPath(cwd or '') / argv[1])
+            continue
+        operands = _read_operands(argv)
+        if not operands:
+            return None
+        paths.extend(str(PurePosixPath(cwd or '') / p) for p in operands)
+    return paths or None
+
+
+def _selected_sources(call):
+    """Files selected by a fully recognized literal read, shell list or harness wrapper."""
     if not isinstance(call, dict):
         return None
-    name = str(call.get('name') or '').strip().lower()
+    name = str(call.get('name') or '').strip().lower().rsplit('.', 1)[-1]
     body = call.get('command') or ''
     if not isinstance(body, str) or not body.strip():
         return None
-    if name in _SOURCE_TOOLS or name.rsplit('.', 1)[-1] in _SOURCE_TOOLS:
-        try:
-            arguments = json.loads(body)
-        except ValueError:
-            return None
-        if not isinstance(arguments, dict):
+    if name in _SOURCE_TOOLS:
+        arguments = _source_object(body)
+        if arguments is None:
             return None
         if isinstance(arguments.get('paths'), list) or isinstance(arguments.get('files'), list):
             return None
         found = [arguments[key] for key in _SOURCE_FIELDS if key in arguments]
         if len(found) != 1:
             return None
-        return _source_path(found[0])
-    if any(c in body for c in _SHELL_META) or '$(' in body:
+        path = _source_path(found[0])
+        return [path] if path else None
+    if name not in _EXEC_TOOLS:
         return None
-    try:
-        argv = shlex.split(body)
-    except ValueError:
+    arguments = _source_object(body)
+    if arguments is not None:
+        return _exec_sources(arguments)
+    if name == 'exec_command':
         return None
-    if not argv or argv[0].rsplit('/', 1)[-1] not in _READER_COMMANDS:
+    if not body.lstrip().startswith('text'):
+        return _shell_sources(body)
+    paths, position = [], 0
+    while body[position:].strip():
+        match = _HARNESS_EXEC.match(body, position)
+        if match is None:
+            return None
+        arguments = _literal_arguments(match.group('args'))
+        if arguments is None:
+            return None
+        found = _exec_sources(arguments)
+        if not found:
+            return None
+        paths.extend(found)
+        position = match.end()
+    return paths or None
+
+
+def _exec_sources(arguments):
+    if set(arguments) - _EXEC_FIELDS:
         return None
-    operands = [a for a in argv[1:] if not a.startswith('-')]
-    if len(operands) != 1:
+    shell = arguments.get('shell')
+    if shell is not None and (not isinstance(shell, str)
+                              or shell.rsplit('/', 1)[-1] not in ('sh', 'bash', 'zsh')):
         return None
-    return _source_path(operands[0])
+    return _shell_sources(arguments.get('cmd'), arguments.get('workdir'))
 
 
 def source_selection(meta):
     """Exact requested-source selection: a sourced instruction names the file the call read.
 
-    Both halves are required. The call must resolve to one file without composition, and a
-    human instruction recorded before the result must name that exact path or its basename
-    together with a read/review intent. Anything else returns None.
+    A human instruction must name a proven read's exact path or basename with a read/review
+    intent. Mixed read results are retained whole, because their output has no per-file spans.
     """
     if not meta or not meta.get('ok'):
         return None
     call = meta.get('call_rendered') or {}
-    path = _selected_source(call)
-    if not path:
+    paths = _selected_sources(call)
+    if not paths:
         return None
-    normalized = path.replace('\\', '/')
-    basename = normalized.rstrip('/').rsplit('/', 1)[-1]
-    for row in meta.get('instructions') or []:
-        text = ' '.join((row.get('text') or '').split())
-        if not text or not _READ_INTENT.search(text):
-            continue
-        named = normalized in text
-        if not named and basename:
-            named = bool(re.search(r'(?<![\w.-])' + re.escape(basename) + r'(?![\w.-])', text))
-        if named:
-            return [{'path': path, 'call': call.get('name'),
-                     'instruction_line': row.get('line')}]
-    return None
+    selected = []
+    for path in dict.fromkeys(paths):
+        normalized = path.replace('\\', '/')
+        basename = normalized.rstrip('/').rsplit('/', 1)[-1]
+        for row in meta.get('instructions') or []:
+            text = ' '.join((row.get('text') or '').split())
+            if not text or not _READ_INTENT.search(text):
+                continue
+            named = any(re.search(r'(?<![\w.-])' + re.escape(name)
+                                  + r'(?![\w/-]|\.[\w.-])', text)
+                        for name in (normalized, basename) if name)
+            if named:
+                selected.append({'path': path, 'call': call.get('name'),
+                                 'instruction_line': row.get('line')})
+                break
+    return selected or None
 
 
 def prepare(a):
@@ -757,9 +936,10 @@ def prepare(a):
         calls = {}
         eligible = []
         try:
-            rows = read_rows(path)
+            snapshot = _source_snapshot(path)
+            rows = snapshot['rows']
             for line, d in enumerate(rows, 1):
-                if d.get('type') != 'response_item':
+                if d.get('_invalid_source_record') or d.get('type') != 'response_item':
                     continue
                 p = d.get('payload', {})
                 kind = p.get('type')
@@ -782,15 +962,11 @@ def prepare(a):
                                   for i in range(min(a.per_session, len(eligible)))})
                 for i in indices:
                     c = eligible[i]
+                    c['source_prefix_sha256'] = digest(b''.join(snapshot['raw_lines'][:c['line'] - 1]))
+                    c['source_record_sha256'] = digest(snapshot['raw_lines'][c['line'] - 1])
                     sid = digest(path)
                     c['split'] = 'test' if int(sid[:8], 16) % 5 == 0 else 'development'
-                    call_id = c['call'].get('call_id')
-                    try:
-                        ctx = causal.context_for(rows, call_id, before=c['line'] - 1)
-                        meta = context_meta(ctx, {'context': None}, c['line'])
-                    except Exception as exc:  # never guess from a broken record
-                        meta = _context_shell('context_error:' + type(exc).__name__)
-                        meta['source_line'] = c['line']
+                    meta = causal_for_case(c)
                     c['context'] = meta['rendered']
                     c['context_version'] = CONTEXT_VERSION
                     c['context_ok'] = meta['ok']
@@ -815,25 +991,27 @@ def prepare(a):
                       'skipped': len(skipped)}))
 
 
-_PAYLOAD = {}
-_PREFIX = {}
-
-
 def source_payload(c):
-    key = (c['source'], c['line'])
-    if key in _PAYLOAD:
-        return _PAYLOAD[key]
-    with open(c['source'], encoding='utf-8') as f:
-        for line_no, line in enumerate(f, 1):
-            if line_no != c['line']:
-                continue
-            d = json.loads(line)
-            raw = text(d['payload'].get('output', ''))
-            if digest(raw) != c['sha256']:
-                raise ValueError('Source changed: ' + c['id'])
-            _PAYLOAD[key] = d['payload']
-            return d['payload']
-    raise ValueError('Source missing')
+    snapshot = _source_snapshot(c['source'])
+    line = c.get('line')
+    if isinstance(line, bool) or not isinstance(line, int) or not 1 <= line <= len(snapshot['rows']):
+        raise ValueError('Source result line missing: ' + c['id'])
+    record = snapshot['rows'][line - 1]
+    payload = record.get('payload')
+    if (record.get('_invalid_source_record') or record.get('type') != 'response_item'
+            or not isinstance(payload, dict) or payload.get('type') not in causal.OUTPUT_TYPES
+            or not isinstance(payload.get('call_id'), str) or not payload['call_id']
+            or 'output' not in payload):
+        raise ValueError('Invalid source result: ' + c['id'])
+    if digest(text(payload['output'])) != c['sha256']:
+        raise ValueError('Source changed: ' + c['id'])
+    if (c.get('source_prefix_sha256') is not None
+            and digest(b''.join(snapshot['raw_lines'][:line - 1])) != c['source_prefix_sha256']):
+        raise ValueError('Source prefix changed: ' + c['id'])
+    if (c.get('source_record_sha256') is not None
+            and digest(snapshot['raw_lines'][line - 1]) != c['source_record_sha256']):
+        raise ValueError('Source record changed: ' + c['id'])
+    return copy.deepcopy(payload)
 
 
 def source(c):
@@ -896,6 +1074,8 @@ def unsupported_output_reason(value, incoming=None):
 
         try:
             obj = json.loads(value, object_pairs_hook=pairs)
+        except RecursionError:
+            return 'json_nesting_not_in_state'
         except (TypeError, ValueError):
             return None  # An ordinary text leaf is included in full.
         if isinstance(obj, dict) and isinstance(obj.get('output'), str):
@@ -917,8 +1097,10 @@ def unsupported_output_reason(value, incoming=None):
     return 'nontext_output_not_in_state'
 
 
-def request_tokens(payload):
+def request_tokens(payload, model=None):
     """Comparison-token count of the exact request a backend would serialize."""
+    if model is not None:
+        payload = {**payload, 'model': model}
     return tokens(json.dumps(payload))
 
 
@@ -958,7 +1140,7 @@ def batch_request(c, value, targets, instructions=BLOCK_INSTRUCTIONS):
 
 
 def group_targets(c, plan, targets, budget_tokens, max_questions,
-                  instructions=BLOCK_INSTRUCTIONS):
+                  instructions=BLOCK_INSTRUCTIONS, model=None):
     """Question groups whose complete serialized request fits the budget, or None.
 
     The measured size is the whole request the backend receives: the full state plus that
@@ -971,8 +1153,10 @@ def group_targets(c, plan, targets, budget_tokens, max_questions,
     budget check costs a handful of encodings instead of one per block.
     """
     def size(count):
-        return request_tokens(batch_request(c, plan, rest[:count], instructions))
+        return request_tokens(batch_request(c, plan, rest[:count], instructions), model)
 
+    if max_questions < 1:
+        raise ValueError('A question group must contain at least one question')
     groups = []
     rest = list(targets)
     while rest:
@@ -994,20 +1178,39 @@ def group_targets(c, plan, targets, budget_tokens, max_questions,
     return groups
 
 
-def probabilities(body):
+def probabilities(body, requested=None):
+    if not isinstance(body, dict):
+        raise ValueError('Response must be an object')
     answers = body.get('answers')
     if not isinstance(answers, dict):
         raise ValueError('No answers in response')
+    if requested is not None and set(answers) != set(requested):
+        raise ValueError('Response answer IDs do not match requested questions')
     out = {}
     for qid, ans in answers.items():
         p = ans.get('noul') if isinstance(ans, dict) else None
-        if isinstance(p, bool) or not isinstance(p, (int, float)) or not math.isfinite(p) or not 0 <= p <= 1:
-            raise ValueError('Invalid probability for ' + qid)
+        if (not isinstance(qid, str) or isinstance(p, bool)
+                or not isinstance(p, (int, float)) or not 0 <= p <= 1
+                or not math.isfinite(p)):
+            raise ValueError('Invalid probability for ' + str(qid))
         out[qid] = float(p)
     return out
 
 
+def _response_pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError('Duplicate response field: ' + key)
+        result[key] = value
+    return result
+
+
 def failure_kind(exc):
+    if isinstance(exc, urllib.error.HTTPError) and exc.code in (301, 302, 303, 307, 308):
+        return 'unsupported'
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError):
+        return 'timeout'
     if isinstance(exc, (TimeoutError,)):
         return 'timeout'
     if isinstance(exc, ValueError):
@@ -1025,31 +1228,56 @@ def oversize(a, payload):
     return size
 
 
+def _remaining_deadline(a):
+    deadline = getattr(a, '_deadline_at', None)
+    if deadline is None:
+        return None
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        raise Failure('deadline', 'case deadline reached before inference', request_sent=False)
+    return remaining
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _local_http_open(req, timeout):
+    # A loopback URL must not send private context through environment proxies or redirects.
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), _NoRedirect()).open(req, timeout=timeout)
+
+
 def http_score(a, payload):
-    url = urllib.parse.urlparse(a.endpoint)
-    if url.scheme != 'http' or url.hostname not in ('127.0.0.1', 'localhost', '::1'):
-        raise Failure('unsupported', 'local loopback inference only', request_sent=False)
-    body = dict(payload)
-    body['model'] = a.model
     start = time.perf_counter()
     request_sent = False
     try:
+        try:
+            url = urllib.parse.urlparse(a.endpoint)
+            valid = (url.scheme == 'http' and url.hostname in ('127.0.0.1', 'localhost', '::1')
+                     and not (url.username or url.password or url.fragment)
+                     and (url.port is None or url.port > 0))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise Failure('unsupported', 'local loopback inference only', request_sent=False)
+        body = {**payload, 'model': a.model}
         oversize(a, body)
         headers = {'Content-Type': 'application/json'}
         if a.key_env:
             headers['Authorization'] = 'Bearer ' + os.environ[a.key_env]
         req = urllib.request.Request(a.endpoint, data=json.dumps(body).encode(), headers=headers)
+        remaining = _remaining_deadline(a)
+        timeout = a.timeout if remaining is None else min(a.timeout, remaining)
         request_sent = True
-        with urllib.request.urlopen(req, timeout=a.timeout) as response:
+        with _local_http_open(req, timeout=timeout) as response:
             # The HTTP server exposes truncation in a header, not in the Jev response body.
             # Scores from a shortened state cannot authorize removing any source content.
             if response.headers.get('X-MLX-Decision-Truncated', '').strip().lower() == 'true':
                 raise Failure('oversize', 'runtime truncated the state')
-            received = json.load(response)
-        probs = probabilities(received)
-        missing = set(payload['questions']) - set(probs)
-        if missing:
-            raise ValueError('missing answers: ' + ','.join(sorted(missing)))
+            received = json.load(response, object_pairs_hook=_response_pairs)
+        probs = probabilities(received, payload['questions'])
     except Failure as f:
         f.elapsed_ms = (time.perf_counter() - start) * 1000
         raise
@@ -1063,14 +1291,11 @@ def http_score(a, payload):
 
 _MODEL = None
 _MODEL_RECEIPT = {}
+_MODEL_CONFIG = None
 
 
 def load_mlx(a):
-    global _MODEL, _MODEL_RECEIPT
-    if _MODEL is not None:
-        return _MODEL
-    import importlib.metadata
-    import mlx_decision
+    global _MODEL, _MODEL_RECEIPT, _MODEL_CONFIG
     source_arg = a.model_path or a.model
     wanted = {}
     if a.prefix_cache_gb is not None:
@@ -1079,11 +1304,16 @@ def load_mlx(a):
         wanted['max_input_tokens'] = a.max_input_tokens
     if a.noul_floor is not None:
         wanted['noul_floor'] = a.noul_floor
+    configuration = (source_arg, tuple(sorted(wanted.items())))
+    if _MODEL is not None and _MODEL_CONFIG == configuration:
+        return _MODEL
+    import importlib.metadata
+    import mlx_decision
     opts = dict(wanted)
     refused = []
     while True:
         try:
-            _MODEL = mlx_decision.load(source_arg, **opts)
+            model = mlx_decision.load(source_arg, **opts)
             break
         except (ValueError, TypeError) as exc:
             unsupported = [k for k in opts if k in str(exc)]
@@ -1094,13 +1324,15 @@ def load_mlx(a):
                 refused.append(key)
     receipt = {'backend': 'mlx-decision', 'source': source_arg,
                'runtime_version': importlib.metadata.version('mlx-decision'),
-               'info': _MODEL.info(), 'load_options_applied': opts,
+               'info': model.info(), 'load_options_applied': opts,
                'load_options_refused': sorted(set(refused))}
     try:
         import mlx.core as mx
         receipt['mlx_version'] = getattr(mx, '__version__', 'unknown')
     except Exception:
         pass
+    _MODEL = model
+    _MODEL_CONFIG = configuration
     _MODEL_RECEIPT = receipt
     return _MODEL
 
@@ -1121,20 +1353,20 @@ def warmup(a):
 
 
 def mlx_score(a, payload):
-    model = load_mlx(a)
     start = time.perf_counter()
     request_sent = False
     try:
         oversize(a, payload)
+        _remaining_deadline(a)
+        model = load_mlx(a)
+        _remaining_deadline(a)
         request_sent = True
         result = model.decide_request(payload)
         elapsed = (time.perf_counter() - start) * 1000
         if getattr(result, 'truncated', False):
             raise Failure('oversize', 'runtime truncated the state', elapsed)
-        probs = probabilities(result.to_wire())
-        missing = set(payload['questions']) - set(probs)
-        if missing:
-            raise Failure('invalid_response', 'missing answers: ' + ','.join(sorted(missing)), elapsed)
+        received = result.to_wire()
+        probs = probabilities(received, payload['questions'])
     except Failure as f:
         if not f.elapsed_ms:
             f.elapsed_ms = (time.perf_counter() - start) * 1000
@@ -1147,7 +1379,7 @@ def mlx_score(a, payload):
             kind = 'oversize'
         raise Failure(kind, detail[:200], (time.perf_counter() - start) * 1000,
                       request_sent=request_sent) from exc
-    return probs, elapsed, result.to_wire().get('usage', {})
+    return probs, elapsed, received.get('usage', {})
 
 
 def score_request(a, payload):
@@ -1155,18 +1387,11 @@ def score_request(a, payload):
 
 
 def prefix_bytes(c, keep=400):
-    """Local fixture: the last lines of real history before this result. Cached per checkpoint."""
-    key = (c['source'], c['line'])
-    if key in _PREFIX:
-        return _PREFIX[key]
-    buf = collections.deque(maxlen=keep)
-    with open(c['source'], 'rb') as f:
-        for n, raw in enumerate(f, 1):
-            if n >= c['line']:
-                break
-            buf.append(raw)
-    _PREFIX[key] = b''.join(buf)
-    return _PREFIX[key]
+    """Local fixture: exact trailing history bytes from the current source snapshot."""
+    if isinstance(keep, bool) or not isinstance(keep, int) or keep < 0:
+        raise ValueError('Prefix line count must be a non-negative integer')
+    end = c['line'] - 1
+    return b''.join(_source_snapshot(c['source'])['raw_lines'][max(0, end - keep):end])
 
 
 def machine():
@@ -1287,10 +1512,11 @@ def resolution(original, plan, case_id, rows, threshold, deadline=False,
     # ``None`` is an absent decision, not a keep: an unscored block was never asked about.
     kept = {n: 'keep' if (abstain_all or n in hard_keep or v in (None, 'keep')) else 'drop'
             for n, v in proposals.items()}
-    rendered = render_selected(original, plan, case_id, lambda n: kept[n] == 'keep')
+    rendered = (original if deadline or all(v == 'keep' for v in kept.values())
+                else render_selected(original, plan, case_id, lambda n: kept[n] == 'keep'))
     if deadline:
         guard = 'deadline'
-    elif tokens(text(rendered)) > tokens(text(original)):
+    elif rendered is not original and tokens(text(rendered)) > tokens(text(original)):
         guard = 'non-expansion'
     else:
         guard = None
@@ -1307,6 +1533,7 @@ def resolution(original, plan, case_id, rows, threshold, deadline=False,
 
 def score_case(a, c):
     case_start = time.perf_counter()
+    source_signature = _source_signature(os.stat(c['source']))
     incoming = source_payload(c)
     prefix = prefix_bytes(c)
     original = incoming['output']
@@ -1330,22 +1557,35 @@ def score_case(a, c):
     batch_receipts = []
     deadline_hit = False
     seen = set()
+    transport_model = a.model if a.backend == 'http' else None
 
     def deadline_passed():
-        return bool(a.deadline_ms) and (time.perf_counter() - case_start) * 1000 > a.deadline_ms
+        return bool(a.deadline_ms) and (time.perf_counter() - case_start) * 1000 >= a.deadline_ms
 
     def ask(payload, blocks):
         """Score one request. Any failure abstains its blocks as keep; nothing is truncated."""
+        nonlocal deadline_hit
         state_size = request_tokens(payload['state'])
-        request_size = request_tokens(payload)
+        request_size = request_tokens(payload, transport_model)
         status, detail, probs, elapsed, usage = 'ok', None, None, 0.0, {}
         request_sent = True
         try:
-            probs, elapsed, usage = score_request(a, payload)
+            if deadline_passed():
+                deadline_hit = True
+                raise Failure('deadline', 'request preparation exhausted the case deadline',
+                              request_sent=False)
+            request_args = a
+            if a.deadline_ms:
+                request_args = copy.copy(a)
+                request_args._deadline_at = case_start + a.deadline_ms / 1000
+                if a.backend == 'http':
+                    request_args.timeout = min(a.timeout, _remaining_deadline(request_args))
+            probs, elapsed, usage = score_request(request_args, payload)
             statuses['ok'] += 1
         except Failure as f:
             status, detail, elapsed = f.kind, f.detail, f.elapsed_ms
             request_sent = f.request_sent
+            deadline_hit = deadline_hit or status == 'deadline'
             statuses[status] += 1
         for n in blocks:
             if probs is None:
@@ -1384,9 +1624,10 @@ def score_case(a, c):
         targets = [p for p in plan if not p['protected'] and p['block'] not in hard]
         if targets and deadline_passed():
             deadline_hit = True
-        elif targets and a.batch == 'shared-state':
-            groups = group_targets(view, plan, targets, a.batch_tokens, a.batch_questions,
-                                   instructions)
+        elif targets:
+            max_questions = a.batch_questions if a.batch == 'shared-state' else 1
+            groups = group_targets(view, plan, targets, a.batch_tokens, max_questions,
+                                   instructions, transport_model)
             if groups is None:
                 abstain_budget([p['block'] for p in targets])
             for group in groups or []:
@@ -1396,17 +1637,6 @@ def score_case(a, c):
                 batch_receipts.append(ask(
                     batch_request(view, plan, group, instructions),
                     [p['block'] for p in group]))
-        elif targets:
-            single = request(view, plan, targets[0]['block'], instructions)
-            if a.batch_tokens and request_tokens(single) > a.batch_tokens:
-                abstain_budget([p['block'] for p in targets])
-            else:
-                for p in targets:
-                    if deadline_passed():
-                        deadline_hit = True
-                        break
-                    batch_receipts.append(ask(
-                        request(view, plan, p['block'], instructions), [p['block']]))
     if targets and not deadline_hit and deadline_passed():
         # MLX cannot cancel an in-flight graph, so an over-budget result is discarded whole.
         deadline_hit = True
@@ -1468,6 +1698,17 @@ def score_case(a, c):
                          a.threshold, deadline=deadline_hit,
                          hard_keep={n: v['reason'] for n, v in hard.items()},
                          abstain_all=context_abstain or output_abstain)
+    before = tokens(text(original))
+    after = tokens(text(outcome['selected']))
+    if _source_signature(os.stat(c['source'])) != source_signature:
+        raise ValueError('Source changed during evaluation: ' + c['id'])
+    if targets and not deadline_hit and deadline_passed():
+        deadline_hit = True
+        outcome = resolution(original, plan, c['id'], {d['block']: d for d in decisions},
+                             a.threshold, deadline=True,
+                             hard_keep={n: v['reason'] for n, v in hard.items()},
+                             abstain_all=context_abstain or output_abstain)
+        after = before
     for d in decisions:
         d['proposed'] = outcome['proposals'][d['block']]
         d['effective'] = outcome['effective'][d['block']]
@@ -1479,8 +1720,6 @@ def score_case(a, c):
     guard = outcome['guard']
     selected = outcome['selected']
 
-    before = tokens(text(original))
-    after = tokens(text(selected))
     _, new_item, receipt = apply_incoming(prefix, incoming, selected)
     receipt['prefix_bytes'] = len(prefix)
     receipt['local_fixture_only'] = True
@@ -1764,6 +2003,19 @@ def derive_case(case_result, threshold, original, case=None):
     identity retains the whole result explicitly. Current measurements preserve context,
     output and evidence constraints at every threshold.
     """
+    original_text = text(original)
+    if (case_result.get('before_sha256') != digest(original_text)
+            or case_result.get('before') != tokens(original_text)):
+        raise ValueError('Source bytes or token count drift for ' + case_result['id'])
+    if case is not None:
+        if any(case_result.get(k) != case.get(k) for k in ('id', 'source', 'line')):
+            raise ValueError('Source checkpoint drift for ' + case_result['id'])
+        if _protection_is_current(case_result):
+            recorded_context = case_result.get('context') or {}
+            current_context = causal_for_case(case)
+            if (not recorded_context.get('context_sha256')
+                    or recorded_context['context_sha256'] != current_context['context_sha256']):
+                raise ValueError('Context input drift for ' + case_result['id'])
     plan = plan_blocks(original)
     recorded = case_result['decisions']
     if len(plan) != len(recorded):

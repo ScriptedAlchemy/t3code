@@ -4,11 +4,14 @@ The packet never names a candidate or shows a score. Labels are randomized per c
 so a label in one case does not identify the same configuration in another.
 """
 import argparse
+import collections
+import copy
 import hashlib
 import json
 import random
 import re
 import shutil
+import tempfile
 from pathlib import Path
 
 import evaluate as e
@@ -135,7 +138,7 @@ def write_label(folder, label, kept, removed, block_count, note):
         [{'block': b['id'], 'tokens': b['tokens'], 'sha256': b['sha256']} for b in removed], indent=2))
 
 
-def build(args):
+def _build(args):
     results = [json.loads(Path(p).read_text()) for p in args.results]
     names = [name_of(r) for r in results]
     if len(set(names)) != len(names):
@@ -143,11 +146,18 @@ def build(args):
     available = None
     for run in results:
         ids = {c['id'] for c in run['cases']}
+        if len(ids) != len(run['cases']):
+            raise SystemExit('Duplicate checkpoint in a candidate result')
         available = ids if available is None else available & ids
-    cases_file = {c['id']: c for c in json.loads(Path(args.cases).read_text())['cases']}
+    manifest_cases = json.loads(Path(args.cases).read_text())['cases']
+    cases_file = {c['id']: c for c in manifest_cases}
+    if len(cases_file) != len(manifest_cases):
+        raise SystemExit('Duplicate checkpoint in the case manifest')
     pool = [cases_file[i] for i in sorted(available) if i in cases_file]
     removals = removal_map(results)
     chosen = choose(pool, removals, args.count, args.seed, args.max_case_tokens, args.require_removal)
+    if not chosen:
+        raise SystemExit('No cases satisfy the packet selection criteria')
 
     root = Path(args.out)
     packet = root / 'packet'
@@ -258,6 +268,7 @@ def build(args):
                          'removed_tokens': sum(b['tokens'] for b in removed)})
         identity['cases'][case['id']] = {'packet_case': f'case-{index:03d}', 'labels': label_map}
         manifest['cases'].append({'case': f'case-{index:03d}', 'case_id': case['id'],
+                                  'split': case.get('split') or 'unknown',
                                   'session_sha256': e.digest(case['source']), 'line': case['line'],
                                   'tokens': s['tokens'], 'blocks': len(blocks),
                                   'stratum': s['stratum'], 'flags': s['flags'], 'labels': rows,
@@ -280,8 +291,10 @@ def build(args):
                                        'rationale': '', 'confidence': None}
                                       for r in m['labels']]} for m in manifest['cases']]}
     (root / 'judgments.template.json').write_text(json.dumps(template, indent=2))
+    splits = collections.Counter(m['split'] for m in manifest['cases'])
+    split_text = ', '.join(f'{k}={v}' for k, v in sorted(splits.items()))
     index = ['# Blind review packet', '',
-             f'{manifest["case_count"]} real development cases, {sum(len(m["labels"]) for m in manifest["cases"])} labels.',
+             f'{manifest["case_count"]} cases ({split_text}), {sum(len(m["labels"]) for m in manifest["cases"])} labels.',
              'Labels are random and independently permuted per case. The same label does not mean '
              'the same configuration in another case. Timing, savings, and scores are deliberately '
              'absent from this packet.', '',
@@ -305,6 +318,31 @@ def build(args):
                                            for r in m['labels']),
                                        max(len(r['removed_blocks']) for m in manifest['cases']
                                            for r in m['labels'])]}
+    return summary
+
+
+def build(args):
+    root = Path(args.out)
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise SystemExit('Packet output must be a regular directory')
+    root.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.' + root.name + '-', dir=root.parent) as tmp:
+        staging = Path(tmp) / 'generated'
+        if root.exists():
+            shutil.copytree(root, staging)
+        staged_args = copy.copy(args)
+        staged_args.out = str(staging)
+        summary = _build(staged_args)
+        backup = Path(tmp) / 'previous'
+        if root.exists():
+            root.replace(backup)
+        try:
+            staging.replace(root)
+        except BaseException:
+            if backup.exists():
+                backup.replace(root)
+            raise
+    summary['packet'] = str(root)
     print(json.dumps(summary))
     return summary
 

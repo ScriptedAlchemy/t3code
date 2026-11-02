@@ -6,9 +6,24 @@ configuration drops rather than how much.
 """
 import argparse
 import json
+import math
 from pathlib import Path
 
 import evaluate as e
+
+
+def validate_cohort(results, cases):
+    expected = None
+    for result in results:
+        ids = [r['id'] for r in result['cases']]
+        if not ids or len(ids) != len(set(ids)):
+            raise ValueError('Threshold comparison requires nonempty, unique checkpoints')
+        cohort = set(ids)
+        if not cohort <= cases.keys():
+            raise ValueError('Threshold cohort contains checkpoints absent from the manifest')
+        if expected is not None and cohort != expected:
+            raise ValueError('Threshold comparison requires the same checkpoint cohort')
+        expected = cohort
 
 
 def measure(result, cases, threshold):
@@ -26,6 +41,12 @@ def measure(result, cases, threshold):
 
 
 def choose(result, cases, target, grid):
+    validate_cohort([result], cases)
+    if isinstance(target, bool) or not isinstance(target, (int, float)) \
+            or not math.isfinite(target) or not 0 <= target <= 1:
+        raise ValueError('Target savings must be a finite fraction from 0 to 1')
+    if not grid:
+        raise ValueError('Threshold grid must not be empty')
     if any(r.get('split') != 'development' or cases[r['id']].get('split') != 'development'
            for r in result['cases']):
         raise ValueError('Threshold selection requires development cases only')
@@ -41,14 +62,20 @@ def main():
     p.add_argument('--target', type=float, default=0.15)
     p.add_argument('--out', default='context_eval/runs/thresholds.json')
     a = p.parse_args()
-    cases = {c['id']: c for c in json.loads(Path(a.cases).read_text())['cases']}
+    manifest = json.loads(Path(a.cases).read_text())['cases']
+    cases = {c['id']: c for c in manifest}
+    if len(cases) != len(manifest):
+        raise ValueError('Case manifest contains duplicate checkpoints')
+    results = [json.loads(Path(path).read_text()) for path in a.results]
+    validate_cohort(results, cases)
     grid = [round(0.10 + 0.05 * i, 2) for i in range(18)]
     payload = {'target_saved_fraction': a.target, 'grid': grid, 'candidates': {}}
-    for path in a.results:
-        result = json.loads(Path(path).read_text())
+    for path, result in zip(a.results, results):
         best, rows = choose(result, cases, a.target, grid)
         version = e.measurement_contract_label(result)
         name = f"{Path(result['model']).name}/{result['batch_mode']} [{version}]"
+        if name in payload['candidates']:
+            raise ValueError('Result files share a candidate name: ' + name)
         payload['candidates'][name] = {'result': path,
                                        'request_version': result.get('request_version'),
                                        'measurement_contract': e.measurement_contract(result),

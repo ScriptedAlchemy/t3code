@@ -129,6 +129,11 @@ class GoalTests(unittest.TestCase):
             {'type': 'input_image', 'image_url': 'synthetic-image'},
             [{'type': 'text', 'text': 'Keep the evidence highlighted here.'},
              {'type': 'input_image', 'image_url': 'synthetic-image'}],
+            {'type': 'input_audio', 'data': 'synthetic-audio'},
+            [{'type': 'text', 'text': 'Apply the attached correction.'},
+             {'type': 'file_reference', 'file_id': 'synthetic-file'}],
+            [{'type': 'text', 'text': 'Apply the next instruction.'}, 42],
+            {'type': 'unknown', 'text': 'Only a partial rendering.'},
         ):
             for known in ([], [message('user', 'Inspect the build output.')]):
                 with self.subTest(content=content, known=bool(known)):
@@ -233,18 +238,19 @@ class SpanTests(unittest.TestCase):
 
     def test_multi_content_span_is_derived_with_sources(self):
         content = [{'type': 'text', 'text': 'alpha'},
-                   {'type': 'opaque_marker'},
+                   {'type': 'text', 'text': ''},
                    {'type': 'text', 'text': 'beta'}]
         ctx = cc.context_for([content_message('user', content), call('c1', 'exec', 'ls')], 'c1')
         instruction = ctx.goal.instruction
-        self.assertEqual(instruction.text, 'alpha\nbeta')
+        self.assertEqual(instruction.text, 'alpha\n\nbeta')
         span = instruction.span
         self.assertTrue(span.derived)
         self.assertEqual(span.field, 'payload.content')
         self.assertIsNone(span.start, 'rendered text has no raw offsets')
         self.assertIsNone(span.end)
-        self.assertEqual(span.sources, ('payload.content[0].text', 'payload.content[2].text'))
-        self.assertEqual(span.sha256, digest('alpha\nbeta'))
+        self.assertEqual(span.sources, ('payload.content[0].text', 'payload.content[1].text',
+                                       'payload.content[2].text'))
+        self.assertEqual(span.sha256, digest('alpha\n\nbeta'))
 
     def test_compacted_multi_content_span_is_derived(self):
         content = [{'type': 'text', 'text': 'keep'}, {'type': 'text', 'text': 'this'}]
@@ -370,36 +376,60 @@ class CompactedTests(unittest.TestCase):
 class OriginTests(unittest.TestCase):
     def test_nonempty_wait_body_resolves_prior_exec(self):
         script = 'const r = await tools.exec({cmd: "tail -f dashboard.log"});\n' * 80
-        records = [
-            message('user', 'Check the dashboard stall.'),
-            call('c-exec', 'exec', script, line=100),
-            running(58, line=101),
-            call('c-wait', 'wait', '{"cell_id":"58","yield_time_ms":1000,"max_tokens":2000}',
-                 field='arguments', line=120),
-        ]
-        ctx = cc.context_for(records, 'c-wait')
-        self.assertEqual(ctx.origin.status, cc.AVAILABLE)
-        self.assertEqual(ctx.origin.call_name, 'exec')
-        self.assertEqual(ctx.origin.command, script, 'origin body must be untruncated')
-        self.assertGreaterEqual(len(ctx.origin.command), 3000)
-        self.assertIn('cell_id=58', ctx.origin.via)
-        self.assertIn('c-exec', ctx.origin.via)
-        self.assertEqual(ctx.origin.span.index, 1)
-        self.assertEqual(ctx.origin.span.line, 100)
-        self.assertTrue(ctx.ok)
+        for producer, poll in (('exec', 'wait'), ('functions.exec', 'functions.wait'),
+                               ('exec', 'functions.wait'), ('functions.exec', 'wait')):
+            with self.subTest(producer=producer, poll=poll):
+                records = [
+                    message('user', 'Check the dashboard stall.'),
+                    call('c-exec', producer, script, line=100),
+                    running(58, line=101),
+                    call('c-wait', poll, '{"cell_id":"58","yield_time_ms":1000,"max_tokens":2000}',
+                         field='arguments', line=120),
+                ]
+                ctx = cc.context_for(records, 'c-wait')
+                self.assertEqual(ctx.origin.status, cc.AVAILABLE)
+                self.assertEqual(ctx.origin.call_name, producer)
+                self.assertEqual(ctx.origin.command, script, 'origin body must be untruncated')
+                self.assertGreaterEqual(len(ctx.origin.command), 3000)
+                self.assertIn('cell_id=58', ctx.origin.via)
+                self.assertIn('c-exec', ctx.origin.via)
+                self.assertEqual(ctx.origin.span.index, 1)
+                self.assertEqual(ctx.origin.span.line, 100)
+                self.assertTrue(ctx.ok)
 
     def test_unresolved_handle_does_not_fall_back(self):
-        records = [
-            message('user', 'Check the dashboard stall, error text matters.'),
-            call('c-exec', 'exec', 'echo error', line=100),
-            running(58, line=101),
-            call('c-wait', 'wait', '{"cell_id":"999"}', field='arguments', line=120),
-        ]
-        ctx = cc.context_for(records, 'c-wait')
-        self.assertEqual(ctx.origin.status, cc.MISSING)
-        self.assertEqual(ctx.origin.reason, 'unresolved_cell_id')
-        self.assertIsNone(ctx.origin.command)
-        self.assertFalse(ctx.ok)
+        for producer, poll, handle in (('exec', 'wait', '999'),
+                                       ('exec', 'functions.wait', '999'),
+                                       ('unknown.exec', 'functions.wait', '58')):
+            with self.subTest(producer=producer, poll=poll):
+                records = [
+                    message('user', 'Check the dashboard stall, error text matters.'),
+                    call('c-exec', producer, 'echo error', line=100),
+                    running(58, line=101),
+                    call('c-wait', poll, json.dumps({'cell_id': handle}),
+                         field='arguments', line=120),
+                ]
+                ctx = cc.context_for(records, 'c-wait')
+                self.assertEqual(ctx.origin.status, cc.MISSING)
+                self.assertEqual(ctx.origin.reason, 'unresolved_cell_id')
+                self.assertIsNone(ctx.origin.command)
+                self.assertFalse(ctx.ok)
+
+    def test_duplicate_producer_ids_cannot_announce_handles(self):
+        for announce_again in (False, True):
+            records = [
+                message('user', 'Inspect the build.'),
+                call('c-exec', 'exec', 'old command'),
+                running(7),
+                call('c-exec', 'exec', 'different command'),
+            ]
+            if announce_again:
+                records.append(running(7))
+            records.append(call('c-wait', 'wait', '{"cell_id":"7"}', field='arguments'))
+            with self.subTest(announce_again=announce_again):
+                ctx = cc.context_for(records, 'c-wait')
+                self.assertEqual(ctx.origin.reason, 'unresolved_cell_id')
+                self.assertIsNone(ctx.origin.command)
 
     def test_handle_namespaces_are_distinct(self):
         records = [
@@ -422,20 +452,23 @@ class OriginTests(unittest.TestCase):
         self.assertEqual(other.command, '{"session_id":"39645"}')
 
     def test_stdin_input_cannot_be_treated_as_a_passive_poll(self):
-        for extra, passive in (
-            ({}, True),
-            ({'chars': ''}, True),
-            ({'chars': 'cat regression-test.log\n'}, False),
-            ({'chars': '\n'}, False),
-            ({'chars': None}, False),
-            ({'chars': False}, False),
+        for extra, passive, name in (
+            ({}, True, 'write_stdin'),
+            ({'chars': ''}, True, 'write_stdin'),
+            ({'chars': 'cat regression-test.log\n'}, False, 'write_stdin'),
+            ({'chars': '\n'}, False, 'write_stdin'),
+            ({'chars': None}, False, 'write_stdin'),
+            ({'chars': False}, False, 'write_stdin'),
+            ({}, True, 'functions.write_stdin'),
+            ({'chars': 'cat regression-test.log\n'}, False, 'functions.write_stdin'),
+            ({'chars': None}, False, 'functions.write_stdin'),
         ):
-            with self.subTest(extra=extra):
+            with self.subTest(extra=extra, name=name):
                 records = [
                     message('user', 'Inspect the build.'),
                     call('c-exec', 'exec', 'bash'),
                     finished(session_id=42),
-                    call('c-input', 'write_stdin', json.dumps({'session_id': 42, **extra}),
+                    call('c-input', name, json.dumps({'session_id': 42, **extra}),
                          field='arguments'),
                     output('c-input', 'command output'),
                     call('c-poll', 'write_stdin', '{"session_id":"42","chars":""}',
@@ -500,6 +533,37 @@ class OriginTests(unittest.TestCase):
 
 
 class CutoffTests(unittest.TestCase):
+    def test_explicit_result_cutoff_retains_corrections_and_rejects_duplicate_ids(self):
+        for repeat_call in (False, True):
+            records = [
+                message('user', 'Inspect the first result.'),
+                call('c1', 'exec', 'first command'),
+                output('c1', 'first result'),
+                message('user', 'Keep every line of the next result.'),
+            ]
+            if repeat_call:
+                records.append(call('c1', 'exec', 'second command'))
+            before = len(records)
+            records += [output('c1', 'second result'), message('user', 'Future request.')]
+            with self.subTest(repeat_call=repeat_call):
+                ctx = cc.context_for(records, 'c1', before=before)
+                self.assertEqual(ctx.goal.instruction.text, 'Keep every line of the next result.')
+                self.assertEqual(ctx.considered, before)
+                if repeat_call:
+                    self.assertEqual(ctx.origin.status, cc.AMBIGUOUS)
+                    self.assertEqual(ctx.origin.reason, 'duplicate_call_id')
+                    self.assertIsNone(ctx.origin.command)
+                else:
+                    self.assertEqual(ctx.origin.command, 'first command')
+                first = cc.context_for(records, 'c1')
+                self.assertEqual(first.origin.command, 'first command')
+                self.assertEqual(first.goal.instruction.text, 'Inspect the first result.')
+
+        ctx = cc.context_for([call('c1', 'exec', 'first command'),
+                              call('c1', 'exec', 'second command'), output('c1', 'result')], 'c1')
+        self.assertEqual(ctx.origin.status, cc.AMBIGUOUS)
+        self.assertIsNone(ctx.origin.command)
+
     def test_future_announcement_never_resolves(self):
         future = [
             message('user', 'Check the dashboard stall.'),

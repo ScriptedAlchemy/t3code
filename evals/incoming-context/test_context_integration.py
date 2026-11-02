@@ -149,6 +149,54 @@ class MissingContextTests(unittest.TestCase):
 
 
 class ContextReconstructionTests(unittest.TestCase):
+    def test_cached_source_revalidates_manifest_and_refreshes_all_views(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case = evidence_session(tmp)
+            original = e.source_payload(case)
+            old_context = e.causal_for_case(case)
+            old_prefix = e.prefix_bytes(case)
+            with self.assertRaisesRegex(ValueError, 'Source changed'):
+                e.source_payload(dict(case, sha256='0' * 64))
+
+            path = Path(case['source'])
+            rows = path.read_text().splitlines()
+            human = json.loads(rows[0])
+            human['payload']['content'][0]['text'] = 'Keep every line of this result.'
+            rows[0] = json.dumps(human)
+            output = json.loads(rows[case['line'] - 1])
+            output['payload']['output'] = original['output'].replace('alpha', 'delta')
+            rows[case['line'] - 1] = json.dumps(output)
+            path.write_text('\n'.join(rows) + '\n')
+            refreshed = dict(case, sha256=e.digest(e.text(output['payload']['output'])))
+            with self.assertRaisesRegex(ValueError, 'Source changed'):
+                e.source_payload(case)
+            self.assertEqual(e.source_payload(refreshed), output['payload'])
+            current = e.causal_for_case(refreshed)
+            self.assertNotEqual(current['context_sha256'], old_context['context_sha256'])
+            self.assertIn('Keep every line', current['rendered'])
+            self.assertNotEqual(e.prefix_bytes(refreshed), old_prefix)
+            self.assertEqual(e.prefix_bytes(refreshed, keep=1),
+                             (rows[case['line'] - 2] + '\n').encode())
+
+    def test_unreadable_history_cannot_disappear_from_causal_state(self):
+        for broken in ('{broken json', '[]',
+                       '{"type":"response_item","payload":null}',
+                       '[' * 10000 + '0' + ']' * 10000,
+                       '{"type":"event_msg","type":"response_item","payload":{}}'):
+            with self.subTest(record=broken[:80]), tempfile.TemporaryDirectory() as tmp:
+                case = evidence_session(tmp)
+                path = Path(case['source'])
+                rows = path.read_text().splitlines()
+                rows.insert(1, broken)
+                path.write_text('\n'.join(rows) + '\n')
+                case['line'] += 1
+                with patch.object(e, 'score_request', side_effect=zero) as scorer:
+                    result = e.score_case(args(), case)
+                scorer.assert_not_called()
+                self.assertTrue(result['context_abstained'])
+                self.assertIn('invalid_source_record', result['context_abstain_reason'])
+                self.assertEqual(result['after_sha256'], result['before_sha256'])
+
     def test_old_manifest_rebuilds_from_source_and_ignores_stale_context(self):
         seen = []
 
@@ -160,6 +208,7 @@ class ContextReconstructionTests(unittest.TestCase):
             case = evidence_session(tmp)
             with patch.object(e, 'score_request', capture):
                 result = e.score_case(args(), case)
+            meta2 = e.causal_for_case(case)
         self.assertTrue(result['context_ok'])
         self.assertEqual(result['context']['goal']['status'], 'available')
         self.assertEqual(result['context']['origin']['status'], 'available')
@@ -177,7 +226,6 @@ class ContextReconstructionTests(unittest.TestCase):
         self.assertEqual(result['receipt']['model_visible']['call']['command'],
                          case['call']['arguments'])
         # Deterministic version + hash are recorded.
-        meta2 = e.causal_for_case(case)
         self.assertEqual(meta2['context_sha256'], result['context']['context_sha256'])
         self.assertEqual(meta2['policy_version'], e.POLICY_VERSION)
         self.assertEqual(meta2['version'], e.CONTEXT_VERSION)
@@ -214,6 +262,17 @@ class ContextReconstructionTests(unittest.TestCase):
                 e.prepare(SimpleNamespace(analysis=str(analysis), out=str(out),
                                           per_session=4))
             prepared = json.loads(out.read_text())['cases'][0]
+            raw_rows = Path(session['source']).read_bytes().splitlines(keepends=True)
+            self.assertEqual(prepared['source_prefix_sha256'],
+                             e.digest(b''.join(raw_rows[:prepared['line'] - 1])))
+            self.assertEqual(prepared['source_record_sha256'],
+                             e.digest(raw_rows[prepared['line'] - 1]))
+            e.source_payload(prepared)
+            changed = list(raw_rows)
+            changed[0] = changed[0].replace(b'Compare', b'Inspect')
+            Path(session['source']).write_bytes(b''.join(changed))
+            with self.assertRaisesRegex(ValueError, 'Source prefix changed'):
+                e.source_payload(prepared)
         self.assertTrue(prepared['context_ok'])
         self.assertIn('Compare the t3code repository.', prepared['context'])
         self.assertNotIn('Delete production.', prepared['context'])
@@ -378,11 +437,10 @@ class EntireResultStateTests(unittest.TestCase):
             case = evidence_session(tmp, output=body)
             with patch.object(e, 'score_request', capture):
                 result = e.score_case(args(**over), case)
-        return case, result, seen
+        return e.plan_blocks(body), result, seen
 
     def test_shared_state_shows_protected_siblings_and_other_question_groups(self):
-        case, result, seen = self.score(grouped_body(), batch_questions=2)
-        plan = e.plan_blocks(e.text(e.source(case)))
+        plan, result, seen = self.score(grouped_body(), batch_questions=2)
         protected = {p['block'] for p in plan if p['protected']}
         targets = {p['block'] for p in plan if not p['protected']}
         self.assertGreater(len(seen), 1)
@@ -410,8 +468,7 @@ class EntireResultStateTests(unittest.TestCase):
         self.assertEqual(result['protected_blocks'], len(protected))
 
     def test_per_block_state_also_carries_the_whole_result(self):
-        case, result, seen = self.score(grouped_body(), batch='per-block')
-        plan = e.plan_blocks(e.text(e.source(case)))
+        plan, result, seen = self.score(grouped_body(), batch='per-block')
         self.assertGreater(len(seen), 1)
         for payload in seen:
             self.assertEqual(len(payload['questions']), 1)
@@ -535,6 +592,8 @@ class EntireResultStateTests(unittest.TestCase):
                 'type': 'function_call_output', 'call_id': 'call-later',
                 'output': later_result}}))
             path.write_text('\n'.join(lines) + '\n')
+            with path.open('a') as future:
+                future.write('[' * 10000 + '0' + ']' * 10000 + '\n')
             seen = []
 
             def capture(a, payload):
@@ -543,13 +602,14 @@ class EntireResultStateTests(unittest.TestCase):
 
             with patch.object(e, 'score_request', capture):
                 result = e.score_case(args(), case)
+            original = e.source(case)
         serialized = json.dumps(seen)
         self.assertNotIn('FUTURE_TOOL_RESULT_MARKER', serialized)
         self.assertNotIn('delete production', serialized.lower())
         self.assertNotIn('/etc/passwd', serialized)
         blocks = state_of(seen[0])
         self.assertEqual(''.join(b['text'] for b in blocks),
-                         e.text(e.source(case)))
+                         original)
 
     def test_complete_request_budget_groups_questions_or_abstains(self):
         with tempfile.TemporaryDirectory() as tmp:

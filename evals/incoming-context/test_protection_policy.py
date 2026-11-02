@@ -65,9 +65,19 @@ class StructureSpanTests(unittest.TestCase):
         self.assertIn((start, len(raw)), e.json_container_spans(raw))
 
     def test_excessive_nesting_retains_the_entire_leaf(self):
-        raw = 'header\n' + '[' * 10000 + '0' + ']' * 10000
-        plan = e.plan_blocks(raw)
-        self.assertEqual(set(e.structure_keep(plan)), {p['block'] for p in plan})
+        nested = '[' * 10000 + '0' + ']' * 10000
+        for raw in (nested, 'header\n' + nested,
+                    '{"output":"stdout","metadata":' + nested + '}'):
+            with self.subTest(prefix=raw[:20]):
+                plan = e.plan_blocks(raw)
+                self.assertEqual(set(e.structure_keep(plan)), {p['block'] for p in plan})
+                with tempfile.TemporaryDirectory() as tmp:
+                    case = write_case(tmp, ['Inspect the result.'],
+                                      call('exec', {'cmd': 'build'}), raw)
+                    with patch.object(e, 'score_request', side_effect=zero) as scorer:
+                        result = e.score_case(args(), case)
+                    scorer.assert_not_called()
+                    self.assertEqual(result['after_sha256'], result['before_sha256'])
 
     def test_long_trace_after_json_does_not_scan_growing_slices(self):
         class NoSlices(str):
@@ -237,29 +247,75 @@ class RequestedSourceTests(unittest.TestCase):
                          [{'path': 'src/serde.rs', 'call': 'read', 'instruction_line': 1}])
 
     def test_basename_in_instruction_is_enough_when_exact_path_is_not_written(self):
-        meta = {'ok': True,
-                'call_rendered': {'name': 'read', 'command': '{"file_path": "a/b/serde.rs"}'},
-                'instructions': [{'text': 'Please inspect serde.rs and report.', 'line': 2}]}
-        self.assertIsNotNone(e.source_selection(meta))
+        for instruction, selected in (
+            ('Please inspect serde.rs and report.', True),
+            ('Please inspect serde.rs.', True),
+            ('Please inspect my_serde.rs.', False),
+            ('Please inspect serde.rs.bak.', False),
+        ):
+            meta = {'ok': True,
+                    'call_rendered': {'name': 'read', 'command': '{"file_path": "a/b/serde.rs"}'},
+                    'instructions': [{'text': instruction, 'line': 2}]}
+            self.assertEqual(e.source_selection(meta) is not None, selected, instruction)
 
     def test_reader_shell_command_with_one_operand_is_selected(self):
-        meta = {'ok': True, 'call_rendered': {'name': 'exec', 'command': 'cat src/serde.rs'},
-                'instructions': [{'text': 'Read src/serde.rs.', 'line': 1}]}
-        self.assertEqual(len(e.source_selection(meta)), 1)
+        for command in ('cat src/serde.rs', 'head -n 5 src/serde.rs',
+                        "sed -n '20,80p' src/serde.rs",
+                        'cat src/serde.rs src/other.rs',
+                        "cd /work/app && sed -n '1,120p' src/serde.rs; cat src/other.rs"):
+            with self.subTest(command=command):
+                meta = {'ok': True, 'call_rendered': {'name': 'exec', 'command': command},
+                        'instructions': [{'text': 'Read src/serde.rs.', 'line': 1}]}
+                self.assertEqual(len(e.source_selection(meta)), 1)
+
+    def test_literal_harness_calls_preserve_requested_source(self):
+        commands = [
+            ('exec_command', json.dumps({'cmd': "sed -n '1,120p' src/serde.rs",
+                                         'workdir': '/work/app'})),
+            ('functions.exec', 'text(await tools.exec_command({cmd: "cat src/serde.rs", '
+                              'workdir: "/work/app", max_output_tokens: 8000})); '
+                              'text(await tools.exec_command({cmd: "cat src/other.rs"}));'),
+            ('exec', "text(await tools.exec_command({cmd: 'cat src/serde.rs'}));"),
+        ]
+        for name, command in commands:
+            with self.subTest(name=name, command=command):
+                meta = {'ok': True, 'call_rendered': {'name': name, 'command': command},
+                        'instructions': [{'text': 'Review src/serde.rs.', 'line': 1}]}
+                selected = e.source_selection(meta)
+                self.assertEqual(len(selected), 1)
+                self.assertTrue(selected[0]['path'].endswith('src/serde.rs'))
+                self.assertEqual(selected[0]['instruction_line'], 1)
 
     def test_shell_composition_abstains(self):
         for command in ('cat a.rs | head -20', 'cat a.rs > out', 'cat a.rs && rm a.rs',
-                        'cat $(find . -name a.rs)', 'cat `ls`', 'cat a.rs b.rs',
-                        'head -n 5 a.rs', 'rg pattern a.rs', 'cat *.rs'):
+                        'cat $(find . -name a.rs)', 'cat `ls`',
+                        'rg pattern a.rs', 'cat *.rs', 'cat $FILE',
+                        'sed -i s/a/b/ a.rs', 'cat a.rs; exit', 'cat a.rs; # ignored',
+                        'cat # a.rs'):
             meta = {'ok': True, 'call_rendered': {'name': 'exec', 'command': command},
                     'instructions': [{'text': 'Read a.rs.', 'line': 1}]}
             self.assertIsNone(e.source_selection(meta), command)
 
     def test_unknown_tool_and_json_arguments_abstain(self):
-        meta = {'ok': True, 'call_rendered': {'name': 'exec',
-                                              'command': '{"path": "a.rs"}'},
-                'instructions': [{'text': 'Read a.rs.', 'line': 1}]}
-        self.assertIsNone(e.source_selection(meta))
+        calls = [
+            ('exec', '{"path": "a.rs"}'),
+            ('unknown_tool', 'cat a.rs'),
+            ('exec', 'text("tools.exec_command({cmd: \'cat a.rs\'})");'),
+            ('exec', 'if (false) { text(await tools.exec_command({cmd: "cat a.rs"})); }'),
+            ('exec', 'text(await tools.exec_command({cmd: command}));'),
+            ('exec', 'text(await tools.exec_command({cmd: `cat ${file}`}));'),
+            ('exec', 'text(await tools.exec_command({cmd: "cat a.rs", cmd: "cat b.rs"}));'),
+            ('exec_command', '{"cmd": "cat a.rs", "cmd": "cat b.rs"}'),
+            ('exec_command', '{"cmd": "cat a.rs", "shell": "python"}'),
+            ('exec', 'text(await tools.exec_command({cmd: "cat a.rs", shell: "python"}));'),
+            ('exec', 'text(await tools.exec_command({cmd: "cat a.rs"})); mutate();'),
+            ('read', '{"path": "a.rs", "path": "b.rs"}'),
+        ]
+        for name, command in calls:
+            with self.subTest(name=name, command=command):
+                meta = {'ok': True, 'call_rendered': {'name': name, 'command': command},
+                        'instructions': [{'text': 'Read a.rs.', 'line': 1}]}
+                self.assertIsNone(e.source_selection(meta))
 
     def test_unnamed_path_is_not_requested(self):
         meta = {'ok': True, 'call_rendered': {'name': 'read', 'command': '{"path": "a.rs"}'},
@@ -274,24 +330,34 @@ class RequestedSourceTests(unittest.TestCase):
             seen.append(payload)
             return {q: 0.0 for q in payload['questions']}, 1.0, {}
 
+        calls = [
+            call('read', {'path': 'src/serde.rs'}),
+            call('exec_command', {'cmd': "sed -n '1,120p' src/serde.rs; cat src/other.rs",
+                                  'workdir': '/work/app'}),
+            {'type': 'custom_tool_call', 'call_id': 'call-1', 'name': 'exec',
+             'input': 'text(await tools.exec_command({cmd: "cat src/serde.rs"})); '
+                      'text(await tools.exec_command({cmd: "cat src/other.rs"}));'},
+        ]
         with tempfile.TemporaryDirectory() as tmp:
-            case = write_case(tmp, ['Please review src/serde.rs now.'],
-                              call('read', {'path': 'src/serde.rs'}), body)
-            with patch.object(e, 'score_request', capture):
-                result = e.score_case(args(), case)
-            totals = e.build_report(args(), [result], {})['totals']
-        self.assertEqual(seen, [])
-        self.assertEqual(result['after'], result['before'])
-        self.assertGreater(totals['requested_source_blocks'], 0)
-        self.assertEqual(totals['asked_questions'], 0)
-        self.assertTrue(all(d['hard_source'] == 'source' for d in result['decisions']
-                            if d['hard_keep']))
-        for d in result['decisions']:
-            if d['protected']:
-                continue
-            self.assertIsNone(d['p_keep'])
-            self.assertIsNone(d['proposed'])
-            self.assertEqual(d['effective'], 'keep')
+            for index, origin in enumerate(calls):
+                with self.subTest(origin=origin):
+                    case = write_case(tmp, ['Please review src/serde.rs now.'], origin, body,
+                                      name=f'rollout-{index}.jsonl')
+                    with patch.object(e, 'score_request', capture):
+                        result = e.score_case(args(), case)
+                    totals = e.build_report(args(), [result], {})['totals']
+                    self.assertEqual(seen, [])
+                    self.assertEqual(result['after'], result['before'])
+                    self.assertGreater(totals['requested_source_blocks'], 0)
+                    self.assertEqual(totals['asked_questions'], 0)
+                    self.assertTrue(all(d['hard_source'] == 'source'
+                                        for d in result['decisions'] if d['hard_keep']))
+                    for d in result['decisions']:
+                        if d['protected']:
+                            continue
+                        self.assertIsNone(d['p_keep'])
+                        self.assertIsNone(d['proposed'])
+                        self.assertEqual(d['effective'], 'keep')
 
 
 class PolicyIdentityTests(unittest.TestCase):

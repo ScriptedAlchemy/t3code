@@ -1,5 +1,6 @@
 """Summarize and chart local decision-model evaluation results. Local artifacts only."""
 import argparse
+import collections
 import html
 import json
 from pathlib import Path
@@ -30,6 +31,7 @@ def summarize(runs):
         t = r['totals']
         rows.append({
             'name': name_of(r), 'file': r['file'], 'cases': t['cases'], 'sessions': t['sessions'],
+            'splits': dict(collections.Counter(c.get('split') or 'unknown' for c in r['cases'])),
             'measurement_contract': e.measurement_contract(r),
             'blocks': t['blocks'], 'protected': t['protected_blocks'], 'scored': t['scored_blocks'],
             'dropped': t['dropped_blocks'], 'before': t['before'], 'after': t['after'],
@@ -45,11 +47,12 @@ def summarize(runs):
 
 
 def markdown(rows):
-    out = ['| configuration | cases | blocks | scored | dropped | saved | case p50 ms | p95 ms | p99 ms | max ms | failed | deadline |',
-           '|---|---|---|---|---|---|---|---|---|---|---|---|']
+    out = ['| configuration | splits | cases | blocks | scored | dropped | saved | case p50 ms | p95 ms | p99 ms | max ms | failed | deadline |',
+           '|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for r in rows:
         saved = 'n/a' if r['saved_fraction'] is None else f"{r['saved_fraction'] * 100:.1f}%"
-        out.append(f"| {r['name']} | {r['cases']} | {r['blocks']} | {r['scored']} | {r['dropped']} | {saved} | "
+        splits = ', '.join(f'{k}={v}' for k, v in sorted(r['splits'].items()))
+        out.append(f"| {r['name']} | {splits} | {r['cases']} | {r['blocks']} | {r['scored']} | {r['dropped']} | {saved} | "
                    f"{r['case_p50']} | {r['case_p95']} | {r['case_p99']} | {r['case_max']} | {r['failed_requests']} | {r['deadline_cases']} |")
     return '\n'.join(out)
 
@@ -77,7 +80,7 @@ def scatter(rows, width=640, height=260):
     if not points:
         return '<p>No case points.</p>'
     max_x = max(p[1] for p in points)
-    max_y = max(p[2] for p in points)
+    max_y = max(p[2] for p in points) or 1
     colors = ['#4b7bec', '#eb3b5a', '#20bf6b', '#fa8231', '#8854d0', '#3867d6']
     names = sorted({p[0] for p in points})
     parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img">',
@@ -97,7 +100,7 @@ def scatter(rows, width=640, height=260):
 
 def threshold_curves(payload, width=640, height=280):
     series = {name: [(r['threshold'], r['saved_fraction'] or 0) for r in info['curve']]
-              for name, info in payload['candidates'].items()}
+              for name, info in payload['candidates'].items() if info['curve']}
     if not series:
         return '<p>No threshold curves.</p>'
     xs = [t for points in series.values() for t, _ in points]
@@ -109,9 +112,13 @@ def threshold_curves(payload, width=640, height=280):
              f'<line x1="48" y1="{height - 34}" x2="{width - 10}" y2="{height - 34}" stroke="#bbb"/>',
              f'<line x1="48" y1="10" x2="48" y2="{height - 34}" stroke="#bbb"/>']
     for i, (name, points) in enumerate(sorted(series.items())):
-        coords = ' '.join(f"{48 + (t - min_x) / (max_x - min_x) * (width - 60):.0f},"
+        coords = ' '.join(f"{48 + ((t - min_x) / (max_x - min_x) if max_x > min_x else .5) * (width - 60):.0f},"
                           f"{height - 34 - (v / max_y) * (height - 52):.0f}" for t, v in points)
-        parts.append(f'<polyline points="{coords}" fill="none" stroke="{colors[i % len(colors)]}" stroke-width="2"/>')
+        if len(points) == 1:
+            x, y = coords.split(',')
+            parts.append(f'<circle cx="{x}" cy="{y}" r="3" fill="{colors[i % len(colors)]}"/>')
+        else:
+            parts.append(f'<polyline points="{coords}" fill="none" stroke="{colors[i % len(colors)]}" stroke-width="2"/>')
     parts.append(f'<text x="48" y="{height - 16}" font-size="11" fill="#555">threshold {min_x:.2f} to {max_x:.2f}</text>')
     parts.append(f'<text x="0" y="18" font-size="11" fill="#555">saved ↑</text>')
     parts.append('</svg>')
@@ -134,8 +141,8 @@ def report(runs, out_json=None, out_html=None, curves=None):
                  'td,th{border-bottom:1px solid #ddd;padding:4px 8px;text-align:right}'
                  'th:first-child,td:first-child{text-align:left}</style>',
                  '<h1>Local decision-model evaluation</h1>',
-                 '<p>Incoming tool-output pruning, development cases only. Quality is unvalidated '
-                 'without blind judgments; no labels exist for these cases.</p>',
+                 '<p>Incoming tool-output pruning. Savings and latency alone do not establish '
+                 'quality; independent judgments and downstream replay are needed.</p>',
                  '<h2>Token savings</h2>',
                  bars([(r['name'], r['saved_fraction']) for r in rows]),
                  '<h2>Case latency p50 / p95 / p99 (ms)</h2>',
@@ -156,13 +163,14 @@ def report(runs, out_json=None, out_html=None, curves=None):
             parts.append('<h2>Saved fraction vs. threshold (development cases)</h2>')
             parts.append(threshold_curves(json.loads(Path(curves).read_text())))
         parts.append('<h2>Table</h2><table><tr>' + ''.join(
-            f'<th>{h}</th>' for h in ('configuration', 'cases', 'blocks', 'scored', 'dropped',
+            f'<th>{h}</th>' for h in ('configuration', 'splits', 'cases', 'blocks', 'scored', 'dropped',
                                       'saved', 'p50 ms', 'p95 ms', 'p99 ms', 'failed')) + '</tr>')
         for r in rows:
             saved = 'n/a' if r['saved_fraction'] is None else f"{r['saved_fraction'] * 100:.1f}%"
+            splits = ', '.join(f'{k}={v}' for k, v in sorted(r['splits'].items()))
             parts.append('<tr>' + ''.join(
                 f'<td>{html.escape(str(v))}</td>' for v in
-                (r['name'], r['cases'], r['blocks'], r['scored'], r['dropped'], saved,
+                (r['name'], splits, r['cases'], r['blocks'], r['scored'], r['dropped'], saved,
                  r['case_p50'], r['case_p95'], r['case_p99'], r['failed_requests'])) + '</tr>')
         parts.append('</table>')
         Path(out_html).write_text('\n'.join(parts))

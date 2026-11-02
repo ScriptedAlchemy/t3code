@@ -273,7 +273,7 @@ class FailureRetentionTests(unittest.TestCase):
             case = write_case(tmp, plain_body())
             for backend in ('http', 'mlx'):
                 with self.subTest(backend=backend), \
-                        patch.object(e.urllib.request, 'urlopen') as network, \
+                        patch.object(e, '_local_http_open') as network, \
                         patch.object(e, 'load_mlx') as loader:
                     result = e.score_case(args(backend=backend, max_tokens=1), case)
                     totals = report(result)['totals']
@@ -324,8 +324,9 @@ class FailureRetentionTests(unittest.TestCase):
             case = write_case(tmp, plain_body())
             with patch.object(e, 'score_request', broken):
                 dead = e.score_case(args(deadline_ms=0), case)
-            plan, selected, by_block, guarded = e.rethreshold(dead, 0.5, e.text(e.source(case)))
-        self.assertEqual(selected, e.text(e.source(case)))
+            original = e.source(case)
+            plan, selected, by_block, guarded = e.rethreshold(dead, 0.5, original)
+        self.assertEqual(selected, original)
         self.assertEqual(by_block[0]['p_keep'], 1.0)
         self.assertFalse(guarded)  # nothing was proposed, so no guard had to retain it
         self.assertEqual(len(plan), len(dead['decisions']))
@@ -360,6 +361,23 @@ class BlockIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Block identity drift'):
             e.derive_case(result, 0.5, BODY)
 
+    def test_frozen_scores_require_original_bytes_and_causal_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case, result = live(tmp, BODY, SCORES)
+            for field in ('before', 'before_sha256', 'source', 'line', 'context'):
+                with self.subTest(field=field):
+                    changed = copy.deepcopy(result)
+                    if field == 'context':
+                        changed['context']['context_sha256'] = e.digest('different instructions')
+                    elif field == 'before':
+                        changed[field] += 1
+                    elif field == 'line':
+                        changed[field] += 1
+                    else:
+                        changed[field] = 'different source'
+                    with self.assertRaisesRegex(ValueError, 'Source|Context'):
+                        e.derive_case(changed, 0.5, BODY, case=case)
+
 
 class EqualBudgetTests(unittest.TestCase):
     def test_equal_budget_counts_effective_drops_and_respects_legacy_abstention(self):
@@ -385,6 +403,32 @@ class EqualBudgetTests(unittest.TestCase):
                     case['split'] = split
                     with self.assertRaisesRegex(ValueError, 'development'):
                         equalize.choose(report(result), {case['id']: case}, 0.2, [0.1, 0.7])
+
+    def test_threshold_comparison_requires_same_unique_checkpoint_cohort(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case, result = live(tmp, BODY, SCORES)
+            first = report(result)
+            another_case = dict(case, id='different-checkpoint')
+            cases_path = Path(tmp) / 'cohort.json'
+            cases_path.write_text(json.dumps({'cases': [case, another_case]}))
+            paths = [Path(tmp) / f'candidate-{i}.json' for i in range(2)]
+            paths[0].write_text(json.dumps(first))
+            for mismatch in ('duplicate', 'different', 'empty'):
+                with self.subTest(mismatch=mismatch):
+                    other = copy.deepcopy(first)
+                    other['model'] = 'second-model'
+                    if mismatch == 'duplicate':
+                        other['cases'].append(copy.deepcopy(result))
+                    elif mismatch == 'different':
+                        other['cases'][0]['id'] = 'different-checkpoint'
+                    else:
+                        other['cases'] = []
+                    paths[1].write_text(json.dumps(other))
+                    argv = ['equalize', '--results', *(str(p) for p in paths),
+                            '--cases', str(cases_path), '--out', str(Path(tmp) / 'curve.json')]
+                    with patch('sys.argv', argv), contextlib.redirect_stdout(io.StringIO()), \
+                            self.assertRaisesRegex(ValueError, 'checkpoint|cohort'):
+                        equalize.main()
 
 
 class BlindPacketIntegrityTests(unittest.TestCase):
@@ -426,6 +470,29 @@ class BlindPacketIntegrityTests(unittest.TestCase):
                     with self.assertRaisesRegex(SystemExit, 'drift'):
                         self.packet(tmp, [case], runs)
 
+    def test_rejected_packet_build_preserves_existing_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case, result = live(tmp, BODY, SCORES, threshold=0.7)
+            runs = self.candidates(result)
+            out = self.packet(tmp, [case], runs)
+            note = out / 'packet' / 'case-001' / 'reviewer-notes.txt'
+            note.write_text('Necessary evidence lost in block 2')
+            before = {str(p.relative_to(out)): p.read_bytes() for p in out.rglob('*')
+                      if p.is_file()}
+            for invalid in ('retention', 'empty'):
+                with self.subTest(invalid=invalid):
+                    changed = copy.deepcopy(runs)
+                    if invalid == 'retention':
+                        changed[1]['cases'][0]['after_sha256'] = e.digest('invalid result')
+                    else:
+                        for run in changed:
+                            run['cases'] = []
+                    with self.assertRaisesRegex(SystemExit, 'drift|No cases'):
+                        self.packet(tmp, [case], changed)
+                    after = {str(p.relative_to(out)): p.read_bytes() for p in out.rglob('*')
+                             if p.is_file()}
+                    self.assertEqual(after, before)
+
     def test_missing_candidate_context_is_not_described_as_verified(self):
         with tempfile.TemporaryDirectory() as tmp:
             case, result = live(tmp, BODY, SCORES, threshold=0.7)
@@ -442,11 +509,17 @@ class BlindPacketIntegrityTests(unittest.TestCase):
             result['context']['version'] = 'causal-context-v1'
             result['context_version'] = 'causal-context-v1'
             case['context'] = 'LATER MANIFEST INSTRUCTIONS'
+            case['split'] = result['split'] = 'test'
             out = self.packet(tmp, [case], [report(result)])
             context = (out / 'packet' / 'case-001' / 'context.md').read_text()
+            manifest = json.loads((out / 'packet-manifest.json').read_text())
+            index = (out / 'packet' / 'index.md').read_text()
         self.assertIn('context version: causal-context-v1', context)
         self.assertIn(result['context']['rendered'], context)
         self.assertNotIn('LATER MANIFEST INSTRUCTIONS', context)
+        self.assertEqual(manifest['cases'][0]['split'], 'test')
+        self.assertNotIn('real development cases', index)
+
 
     def test_blind_labels_are_permuted_and_control_identity_is_hidden(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -475,6 +548,32 @@ class BlindPacketIntegrityTests(unittest.TestCase):
                             (row['label'] + '.md')).read_text()
                     self.assertNotIn('Intact control', text)
             self.assertGreater(len(set(orders)), 1)
+
+
+class ReportRenderingTests(unittest.TestCase):
+    def test_report_handles_single_threshold_and_zero_latency_without_changing_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, measured = live(tmp, BODY, SCORES)
+            measured.update(split='test', latency_ms=0.0)
+            run = report(measured)
+            path = Path(tmp) / 'result.json'
+            path.write_text(json.dumps(run))
+            run['file'] = str(path)
+            rows = run_report.summarize([run])
+            with self.subTest(check='split'):
+                self.assertEqual(rows[0]['splits'], {'test': 1})
+            with self.subTest(check='zero-latency'):
+                self.assertIn('<circle ', run_report.scatter(rows))
+            with self.subTest(check='single-threshold'):
+                curve = run_report.threshold_curves({'candidates': {
+                    'candidate': {'curve': [{'threshold': 0.1, 'saved_fraction': 0.0}]}}})
+                self.assertIn('<svg ', curve)
+            out = Path(tmp) / 'report.html'
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_report.report([run], out_html=str(out))
+            rendered = out.read_text()
+            self.assertNotIn('development cases only', rendered)
+            self.assertIn('test=1', rendered)
 
 
 class RunComparisonTests(unittest.TestCase):
@@ -510,7 +609,8 @@ class RunComparisonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _, measured = live(tmp, BODY, SCORES)
         original = report(measured)
-        for field in ('contract', 'context', 'policy', 'protection', 'block'):
+        for field in ('contract', 'context', 'policy', 'protection', 'block',
+                      'context-input', 'missing-block', 'missing-case', 'duplicate-case'):
             with self.subTest(field=field):
                 changed = copy.deepcopy(original)
                 if field == 'contract':
@@ -521,10 +621,51 @@ class RunComparisonTests(unittest.TestCase):
                     changed['cases'][0]['policy_version'] = 'selection-evidence-v1'
                 elif field == 'protection':
                     changed['cases'][0]['protection_version'] = 'structure+evidence+source-v0'
+                elif field == 'context-input':
+                    changed['cases'][0]['context']['context_sha256'] = e.digest('new instructions')
+                elif field == 'missing-block':
+                    changed['cases'][0]['decisions'].pop()
+                elif field == 'missing-case':
+                    changed['cases'] = []
+                elif field == 'duplicate-case':
+                    changed['cases'].append(copy.deepcopy(changed['cases'][0]))
                 else:
                     changed['cases'][0]['decisions'][1]['sha256'] = e.digest('other content')
-                with self.assertRaisesRegex(ValueError, 'contract|identity'):
+                with self.assertRaisesRegex(ValueError, 'contract|identity|context|cohort'):
                     stability.drift(original, changed, 0.1)
+
+    def test_latency_separates_inference_configuration_and_incomplete_cases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case, measured = live(tmp, BODY, SCORES)
+            baseline = report(measured)
+            baseline['receipts'] = {'deadline_ms': 0, 'batch_questions': 64,
+                                    'batch_tokens': 20000, 'max_request_tokens': 7500,
+                                    'timeout_s': 60}
+            runs = [baseline]
+            for field in ('deadline_ms', 'batch_questions', 'batch_tokens',
+                          'max_request_tokens', 'timeout_s'):
+                changed = copy.deepcopy(baseline)
+                changed['receipts'][field] += 1
+                runs.append(changed)
+            changed = copy.deepcopy(baseline)
+            changed['backend'] = 'http'
+            runs.append(changed)
+            self.assertEqual(len(stability.latency(runs)), len(runs))
+
+            for kind in ('context', 'baseline'):
+                with self.subTest(kind=kind):
+                    if kind == 'context':
+                        unscored = copy.deepcopy(baseline)
+                        unscored['cases'][0].update(scored_blocks=0, context_abstained=True)
+                    else:
+                        unscored = e.build_report(args(policy='keep'),
+                                                  [e.score_case(args(policy='keep'), case)], {})
+                    path = Path(tmp) / 'warm.json'
+                    path.write_text(json.dumps(unscored))
+                    row = stability.timing([str(path)])[0]
+                    self.assertEqual(row['protected_only_case_ms']['n'], 0)
+                    bucket = 'abstained_case_ms' if kind == 'context' else 'unscored_case_ms'
+                    self.assertEqual(row[bucket]['n'], 1)
 
 
 if __name__ == '__main__':

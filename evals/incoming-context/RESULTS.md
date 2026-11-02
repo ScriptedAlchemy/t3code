@@ -1,8 +1,9 @@
 # Local evaluation checkpoints
 
-These recorded checkpoints precede the current `causal-context-v2` and
-`selection-evidence-v3` repairs. Current case timing also includes source loading
-and context reconstruction. Coverage, savings and latency have not been rerun
+These recorded checkpoints precede the current `causal-context-v3`,
+`selection-evidence-v4` and `json-span-v3+evidence+source-v2` repairs. Current case
+timing includes source loading, context reconstruction, rendering and accounting.
+Coverage, savings and latency have not been rerun
 under the combined rules; the figures below describe the named historical
 checkpoints, not validation of the current evaluator.
 
@@ -10,7 +11,7 @@ checkpoints, not validation of the current evaluator.
 
 Development experiment; no candidate is approved for live pruning.
 
-### What this revision adds
+### What the recorded revision added
 
 Retention that runs before any question, with an explicit reason per block:
 
@@ -77,8 +78,10 @@ often with several commands per call. No exact single-file selection can be prov
 shape, and mapping blocks back to one command is impossible because the outputs are concatenated.
 The rule therefore made **0 claims** (`requested_source_blocks = 0`) on dev40, the previous
 holdout and the fresh set. It is covered by synthetic tests; it is not evidence on real calls. A
-provider call shape that exposes a single file read would be needed before this rule can help,
-and the alternative — a broad regex over command text — was rejected deliberately.
+provider call shape that exposes a single file read was required by that revision.
+The current evaluator recognizes a bounded subset of literal wrapper calls and read-only
+shell lists, retaining the whole combined result when a requested file is selected. The
+historical zero-claim counts above have not been rerun with that recognition.
 
 <!-- FRESH-CACHE -->
 

@@ -103,6 +103,7 @@ OUTPUT_TYPES = frozenset({'custom_tool_call_output', 'function_call_output'})
 POLL_HANDLES = {'wait': 'cell_id', 'write_stdin': 'session_id'}
 # Namespaced handle -> the call name allowed to announce it.
 ANNOUNCERS = {'cell_id': 'exec', 'session_id': 'exec'}
+HARNESS_ALIASES = {f'functions.{name}': name for name in ('exec', 'wait', 'write_stdin')}
 
 # Repository instructions, not a user request.
 DOC_ENVELOPE_PREFIX = '# AGENTS.md instructions'
@@ -118,7 +119,7 @@ _WRAPPER_FINISHED = re.compile(
 _ENVELOPE_LINE = re.compile(r'^\{"chunk_id":')
 _ENVELOPE_SESSION = re.compile(r'"session_id"\s*:\s*"?([0-9A-Za-z_.:-]+)"?')
 _TAG = re.compile(r'<([A-Za-z_][A-Za-z0-9_-]*)(?:\s[^>]*)?/?>')
-_OPAQUE_TYPES = frozenset({'encrypted_content', 'encrypted', 'refusal', 'input_image', 'image'})
+_TEXT_TYPES = frozenset({None, 'text', 'input_text'})
 
 
 @dataclass(frozen=True)
@@ -221,25 +222,29 @@ def _content_parts(content, root='payload.content'):
     if isinstance(content, str):
         return [(root, content)], False
     if isinstance(content, dict):
-        if content.get('encrypted_content') is not None or content.get('type') in _OPAQUE_TYPES:
+        if content.get('encrypted_content') is not None or content.get('type') not in _TEXT_TYPES:
             return [], True
-        value = content.get('text')
-        return ([(root + '.text', value)] if isinstance(value, str) else []), False
+        for field in ('text', 'content'):
+            if isinstance(content.get(field), str):
+                return [(root + '.' + field, content[field])], False
+        return [], True
     if not isinstance(content, list):
-        return [], False
+        return [], True
     parts, opaque = [], False
     for position, item in enumerate(content):
         item_root = f'{root}[{position}]'
         if isinstance(item, str):
             parts.append((item_root, item))
         elif not isinstance(item, dict):
-            continue
-        elif item.get('encrypted_content') is not None or item.get('type') in _OPAQUE_TYPES:
+            opaque = True
+        elif item.get('encrypted_content') is not None or item.get('type') not in _TEXT_TYPES:
             opaque = True
         elif isinstance(item.get('text'), str):
             parts.append((item_root + '.text', item['text']))
         elif isinstance(item.get('content'), str):
             parts.append((item_root + '.content', item['content']))
+        else:
+            opaque = True
     return parts, opaque
 
 
@@ -276,6 +281,10 @@ def _decoded_args(body):
     except (TypeError, ValueError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _harness_name(name):
+    return HARNESS_ALIASES.get(name, name) if isinstance(name, str) else None
 
 
 def _is_compacted(record):
@@ -325,19 +334,23 @@ def _announcement_index(records, upto):
     index, calls = {}, {}
     for i in range(min(upto, len(records))):
         payload = _payload(records[i])
-        kind = payload.get('type')
-        if kind in CALL_TYPES:
-            calls[payload.get('call_id')] = i
-        elif kind in OUTPUT_TYPES:
-            owner = calls.get(payload.get('call_id'))
-            if owner is None:
+        call_id = payload.get('call_id')
+        if payload.get('type') in CALL_TYPES and isinstance(call_id, str):
+            calls[call_id] = None if call_id in calls else i
+    for i in range(min(upto, len(records))):
+        payload = _payload(records[i])
+        call_id = payload.get('call_id')
+        if payload.get('type') not in OUTPUT_TYPES or not isinstance(call_id, str):
+            continue
+        owner = calls.get(call_id)
+        if owner is None or owner >= i:
+            continue
+        producer = _payload(records[owner])
+        name = _harness_name(producer.get('name'))
+        for namespace, handle in _announcements(_output_text(payload)):
+            if ANNOUNCERS.get(namespace) != name:
                 continue
-            producer = _payload(records[owner])
-            name = producer.get('name')
-            for namespace, handle in _announcements(_output_text(payload)):
-                if ANNOUNCERS.get(namespace) != name:
-                    continue
-                index.setdefault((namespace, handle), []).append((owner, producer))
+            index.setdefault((namespace, handle), []).append((owner, producer))
     return index
 
 
@@ -345,7 +358,8 @@ def _stdin_changed(records, owner, upto, handle):
     """Whether this process received input absent from its launch command."""
     for record in records[owner + 1:upto + 1]:
         payload = _payload(record)
-        if payload.get('type') not in CALL_TYPES or payload.get('name') != 'write_stdin':
+        if (payload.get('type') not in CALL_TYPES
+                or _harness_name(payload.get('name')) != 'write_stdin'):
             continue
         args = _decoded_args(_call_body(payload)[1])
         if args is None:
@@ -494,7 +508,7 @@ def _origin(records, call_index, call_id):
     payload = _payload(records[call_index])
     name = payload.get('name')
     field, body = _call_body(payload)
-    handle_key = POLL_HANDLES.get(name)
+    handle_key = POLL_HANDLES.get(_harness_name(name))
 
     if handle_key:
         # Poll semantics come from the call name; the body is never a command.
@@ -534,8 +548,8 @@ def context_for(records, call_id, *, before=None):
 
     ``records`` is an ordered sequence of rollout record mappings. The caller may
     pass only pre-checkpoint records, or pass everything with ``before=n`` to
-    bound the sequence (exclusive). Records at or after the target call's own
-    output are never used, so a later message cannot stand in for an earlier one.
+    bound the result sequence (exclusive). Without an explicit bound, the first
+    matching output ends the scope. Reused call IDs inside that scope are ambiguous.
     """
     rows = list(records)
     if before is not None:
@@ -543,14 +557,12 @@ def context_for(records, call_id, *, before=None):
             raise ValueError('before must be a non-negative int')
         rows = rows[:before]
 
-    target = next(
-        (i for i, record in enumerate(rows)
-         if _payload(record).get('call_id') == call_id
-         and _payload(record).get('type') in CALL_TYPES),
-        None,
-    )
+    targets = [i for i, record in enumerate(rows)
+               if _payload(record).get('call_id') == call_id
+               and _payload(record).get('type') in CALL_TYPES]
+    target = targets[0] if targets else None
     end = len(rows)
-    if target is not None:
+    if before is None and target is not None:
         for i in range(target + 1, len(rows)):
             payload = _payload(rows[i])
             if payload.get('call_id') == call_id and payload.get('type') in OUTPUT_TYPES:
@@ -559,7 +571,10 @@ def context_for(records, call_id, *, before=None):
     scope = rows[:end]
 
     goal, compacted = _goal(scope)
-    origin = _origin(scope, target, call_id)
+    if sum(i < end for i in targets) > 1:
+        origin = Origin(AMBIGUOUS, None, None, None, None, 'duplicate_call_id')
+    else:
+        origin = _origin(scope, target, call_id)
     exclusions = tuple(
         Exclusion(reason=reason, count=count, first_index=index, first_line=line)
         for reason, (count, index, line) in sorted(exclusions_of(scope).items(),
