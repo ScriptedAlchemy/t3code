@@ -7,7 +7,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import expo.modules.kotlin.Promise
+import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.net.Inet4Address
@@ -28,21 +28,15 @@ class T3LanDiscoveryModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("T3LanDiscovery")
     Events("servicesChanged")
-    AsyncFunction("start") { promise: Promise -> onMain(promise) { start() } }
-    AsyncFunction("stop") { promise: Promise -> onMain(promise) { stop() } }
-    AsyncFunction("refresh") { promise: Promise -> onMain(promise) { if (listener != null) { stop(); start() } } }
-    OnDestroy { main.post { stop() } }
-  }
-
-  private fun onMain(promise: Promise, action: () -> Unit) {
-    main.post {
-      try {
-        action()
-        promise.resolve(null)
-      } catch (error: Exception) {
-        promise.reject("ERR_LAN_DISCOVERY", error.message, error)
+    AsyncFunction("start") { start() }.runOnQueue(Queues.MAIN)
+    AsyncFunction("stop") { stop() }.runOnQueue(Queues.MAIN)
+    AsyncFunction("refresh") {
+      if (listener != null) {
+        stop()
+        start()
       }
-    }
+    }.runOnQueue(Queues.MAIN)
+    OnDestroy { main.post { stop() } }
   }
 
   private fun id(service: NsdServiceInfo) = "${service.serviceName}.${service.serviceType}"
@@ -50,12 +44,24 @@ class T3LanDiscoveryModule : Module() {
   private fun start() {
     if (listener != null) return
     val current = ++generation
-    val wifi = appContext.reactContext?.applicationContext?.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-    multicastLock = wifi?.createMulticastLock("t3-lan-discovery")?.apply { setReferenceCounted(false); acquire() }
+    val wifi = appContext.reactContext?.applicationContext?.getSystemService(
+      Context.WIFI_SERVICE
+    ) as? WifiManager
+    multicastLock =
+      wifi?.createMulticastLock("t3-lan-discovery")?.apply {
+        setReferenceCounted(false)
+        acquire()
+      }
     val discovery = object : NsdManager.DiscoveryListener {
       override fun onDiscoveryStarted(type: String) = Unit
       override fun onDiscoveryStopped(type: String) = Unit
-      override fun onStartDiscoveryFailed(type: String, code: Int) { main.post { if (listener === this) stop() } }
+      override fun onStartDiscoveryFailed(type: String, code: Int) {
+        main.post {
+          if (listener === this) {
+            stop()
+          }
+        }
+      }
       override fun onStopDiscoveryFailed(type: String, code: Int) = Unit
       override fun onServiceFound(service: NsdServiceInfo) {
         main.post {
@@ -78,18 +84,17 @@ class T3LanDiscoveryModule : Module() {
       }
     }
     listener = discovery
-    try {
+    runCatching {
       manager.discoverServices("_t3code._tcp.", NsdManager.PROTOCOL_DNS_SD, discovery)
-    } catch (error: Exception) {
-      stop()
-      throw error
-    }
+    }.onFailure { stop() }.getOrThrow()
   }
 
   private fun stop() {
     generation++
     listener?.let {
-      try { manager.stopServiceDiscovery(it) } catch (_: IllegalArgumentException) { }
+      try {
+        manager.stopServiceDiscovery(it)
+      } catch (_: IllegalArgumentException) { }
     }
     listener = null
     multicastLock?.let { if (it.isHeld) it.release() }
@@ -104,23 +109,37 @@ class T3LanDiscoveryModule : Module() {
     if (resolving) return
     while (pending.isNotEmpty()) {
       val (current, key) = pending.removeFirst()
-      val service = services[key] ?: continue
-      if (current != generation) continue
+      val service = services[key]
+      if (current != generation || service == null) continue
       resolving = true
       val resolve = object : NsdManager.ResolveListener {
         override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
-          main.post { resolving = false; resolveNext() }
+          main.post {
+            resolving = false
+            resolveNext()
+          }
         }
         override fun onServiceResolved(info: NsdServiceInfo) {
           main.post {
             resolving = false
             if (generation == current && services[key] === service) {
               val environmentId = info.attributes["environmentId"]?.toString(Charsets.UTF_8)
-              val hosts = if (Build.VERSION.SDK_INT >= 34) info.hostAddresses.filterIsInstance<Inet4Address>()
-                else listOfNotNull(info.host as? Inet4Address)
+              val hosts = if (Build.VERSION.SDK_INT >= 34) {
+                info.hostAddresses.filterIsInstance<Inet4Address>()
+              } else {
+                listOfNotNull(info.host as? Inet4Address)
+              }
               val addresses = hosts.mapNotNull { it.hostAddress }.distinct()
-              if (!environmentId.isNullOrEmpty() && addresses.isNotEmpty() && info.port in 1..65535) {
-                records[key] = mapOf("id" to key, "environmentId" to environmentId, "addresses" to addresses, "port" to info.port)
+              if (!environmentId.isNullOrEmpty() && addresses.isNotEmpty() &&
+                info.port in 1..65535
+              ) {
+                records[key] =
+                  mapOf(
+                    "id" to key,
+                    "environmentId" to environmentId,
+                    "addresses" to addresses,
+                    "port" to info.port
+                  )
                 publish()
               }
             }
@@ -133,9 +152,8 @@ class T3LanDiscoveryModule : Module() {
         manager.resolveService(service, resolve)
       } catch (_: RuntimeException) {
         resolving = false
-        continue
       }
-      return
+      if (resolving) return
     }
   }
 
