@@ -77,6 +77,9 @@ never mistaken for a command. The handle must be announced in a PRIOR output
 linked to a prior call by ``call_id``; that producing call's body is the origin.
 Handles are namespaced: a ``cell_id`` never matches a ``session_id``
 announcement. Unknown or missing announcements leave the origin unresolved.
+Only empty ``write_stdin`` calls are passive polls. Once a session receives
+input, its launch command no longer describes the interaction history, so
+that call and subsequent polls abstain until a new producer owns the handle.
 """
 
 from __future__ import annotations
@@ -218,7 +221,7 @@ def _content_parts(content, root='payload.content'):
     if isinstance(content, str):
         return [(root, content)], False
     if isinstance(content, dict):
-        if content.get('encrypted_content') is not None:
+        if content.get('encrypted_content') is not None or content.get('type') in _OPAQUE_TYPES:
             return [], True
         value = content.get('text')
         return ([(root + '.text', value)] if isinstance(value, str) else []), False
@@ -338,6 +341,23 @@ def _announcement_index(records, upto):
     return index
 
 
+def _stdin_changed(records, owner, upto, handle):
+    """Whether this process received input absent from its launch command."""
+    for record in records[owner + 1:upto + 1]:
+        payload = _payload(record)
+        if payload.get('type') not in CALL_TYPES or payload.get('name') != 'write_stdin':
+            continue
+        args = _decoded_args(_call_body(payload)[1])
+        if args is None:
+            continue
+        raw = args.get('session_id')
+        if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+            continue
+        if str(raw).strip() == handle and args.get('chars', '') != '':
+            return True
+    return False
+
+
 def _single_element(text, name, opening):
     """True when the whole message is one ``<name>...</name>`` element."""
     closing = f'</{name}>'
@@ -346,22 +366,23 @@ def _single_element(text, name, opening):
 
 def _classify_message(role, text, opaque):
     """(provenance, refusal reason). Only readable ``user`` turns become 'human'."""
+    if role == 'developer':
+        return None, 'developer_role'
+    if role != 'user':
+        return None, None
     if opaque:
         return None, 'opaque_instruction'
     stripped = text.strip()
     if not stripped:
         return None, 'empty_instruction'
-    if role == 'developer':
-        return None, 'developer_role'
-    if role != 'user':
-        return None, None
     if stripped.startswith(DOC_ENVELOPE_PREFIX):
         return None, 'harness_envelope'
     tag = _TAG.match(stripped)
     if tag:
         name = tag.group(1).lower()
         if name in KNOWN_ENVELOPE_TAGS:
-            return None, 'harness_envelope'
+            return None, ('harness_envelope' if _single_element(stripped, name, tag.group(0))
+                          else 'unknown_wrapper')
         if _single_element(stripped, name, tag.group(0)):
             return None, 'unknown_wrapper'
     return HUMAN, None
@@ -377,35 +398,44 @@ def _order_key(pair):
 
 
 def _compacted_instructions(record, index):
-    """[(order, Instruction)] from compacted history with explicit provenance."""
+    """(sourced instructions, complete provenance) from compacted history."""
     payload = _payload(record)
     history = payload.get('replacement_history')
     metadata = payload.get('replacement_history_metadata')
     if not isinstance(history, list) or not isinstance(metadata, list):
-        return []
+        return [], False
     if len(history) != len(metadata):
-        return []
-    found = []
+        return [], False
+    found, complete = [], True
     for position, item in enumerate(history):
-        meta = metadata[position]
-        if not isinstance(meta, dict) or not isinstance(item, dict):
-            continue
-        if meta.get('client_authored') is not True or not meta.get('retained_source'):
-            continue
-        order = meta.get('user_input_order')
-        if isinstance(order, bool) or not isinstance(order, (int, str)):
+        if not isinstance(item, dict):
+            complete = False
             continue
         if item.get('role') != 'user':
             continue
         base = f'payload.replacement_history[{position}].content'
         parts, opaque = _content_parts(item.get('content'), root=base)
-        if opaque or not _rendered(parts).strip():
+        text = _rendered(parts)
+        provenance, reason = _classify_message('user', text, opaque)
+        if reason == 'harness_envelope':
+            continue
+        if provenance is None:
+            complete = False
+            continue
+        meta = metadata[position]
+        if not isinstance(meta, dict):
+            complete = False
+            continue
+        if meta.get('client_authored') is not True or not meta.get('retained_source'):
+            complete = False
+            continue
+        order = meta.get('user_input_order')
+        if isinstance(order, bool) or not isinstance(order, (int, str)):
+            complete = False
             continue
         text, span = _content_span(index, base, parts, record)
-        if _classify_message('user', text, False)[0] is None:
-            continue
         found.append((order, Instruction(COMPACTED_HUMAN, text, span)))
-    return found
+    return found, complete and bool(found)
 
 
 def _scan(records):
@@ -416,8 +446,7 @@ def _scan(records):
         if _is_compacted(record):
             if compacted_at is None:
                 compacted_at = index
-            entries = _compacted_instructions(record, index)
-            last_verified = bool(entries)
+            entries, last_verified = _compacted_instructions(record, index)
             ordered.extend(instr for _, instr in sorted(entries, key=_order_key))
             continue
         payload = _payload(record)
@@ -448,12 +477,12 @@ def _goal(records):
         # The pre-compaction goal is unknown. Later requests stay visible but
         # are never promoted to stand in for it.
         return Goal(AMBIGUOUS, None, 'compacted_history', tuple(ordered)), True
+    if tally.get('unknown_wrapper'):
+        return Goal(AMBIGUOUS, None, 'unknown_wrapper', tuple(ordered)), compacted
+    if tally.get('opaque_instruction'):
+        return Goal(MISSING, None, 'opaque_instruction', tuple(ordered)), compacted
     if ordered:
         return Goal(AVAILABLE, ordered[-1], None, tuple(ordered)), compacted
-    if tally.get('unknown_wrapper'):
-        return Goal(AMBIGUOUS, None, 'unknown_wrapper'), compacted
-    if tally.get('opaque_instruction'):
-        return Goal(MISSING, None, 'opaque_instruction'), compacted
     if tally:
         return Goal(MISSING, None, 'no_human_instruction'), compacted
     return Goal(MISSING, None, 'no_records' if not records else 'no_user_message'), compacted
@@ -480,6 +509,8 @@ def _origin(records, call_index, call_id):
         if not hits:
             return Origin(MISSING, name, None, None, None, f'unresolved_{handle_key}')
         owner, producer = hits[-1]   # nearest prior announcement
+        if handle_key == 'session_id' and _stdin_changed(records, owner, call_index, handle):
+            return Origin(MISSING, name, None, None, None, 'interactive_stdin_unrepresented')
         owner_field, owner_body = _call_body(producer)
         if not owner_body.strip():
             return Origin(MISSING, producer.get('name'), None, None, None, 'producer_body_empty')

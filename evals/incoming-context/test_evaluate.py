@@ -76,6 +76,18 @@ class EvaluatorTests(unittest.TestCase):
                 self.assertEqual(ctx.exception.kind, 'invalid_response')
                 self.assertGreater(ctx.exception.elapsed_ms, 0)
 
+    def test_http_runtime_truncation_rejects_otherwise_valid_scores(self):
+        with patch.object(e.urllib.request, 'urlopen') as network, \
+                patch.object(e.time, 'perf_counter', side_effect=[1.0, 1.025]):
+            response = network.return_value.__enter__.return_value
+            response.headers = {'X-MLX-Decision-Truncated': 'true'}
+            response.read.return_value = json.dumps(
+                {'answers': {'keep': {'noul': 0.0}}}).encode()
+            with self.assertRaises(e.Failure) as ctx:
+                e.http_score(args(), {'state': 'goal', 'questions': {'keep': {}}})
+        self.assertEqual(ctx.exception.kind, 'oversize')
+        self.assertAlmostEqual(ctx.exception.elapsed_ms, 25.0)
+
     def test_timeout_keeps_real_elapsed_time(self):
         def slow(*a, **k):
             time.sleep(0.05)
@@ -165,6 +177,27 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual(result['after'], result['before'])
         self.assertEqual(result['statuses'].get('ok'), 1)
 
+    def test_context_reconstruction_counts_toward_case_deadline(self):
+        clock = [0.0]
+        reconstruct = e.causal_for_case
+
+        def slow_context(case):
+            context = reconstruct(case)
+            clock[0] += 0.05
+            return context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            case = write_case(tmp, BODY)
+            with patch.object(e, 'causal_for_case', slow_context), \
+                    patch.object(e, 'score_request',
+                                 lambda a, p: ({q: 0.0 for q in p['questions']}, 0.0, {})), \
+                    patch.object(e.time, 'perf_counter', side_effect=lambda: clock[0]):
+                result = e.score_case(args(batch='shared-state', deadline_ms=40), case)
+        self.assertTrue(result['deadline_abstain'])
+        self.assertEqual(result['requests'], 0)
+        self.assertEqual(result['after'], result['before'])
+        self.assertEqual(result['latency_ms'], 50.0)
+
     def test_proposed_drops_survive_non_expansion_guard(self):
         with tempfile.TemporaryDirectory() as tmp:
             case = write_case(tmp, BODY)
@@ -222,6 +255,16 @@ class IncomingTests(unittest.TestCase):
         changed = replace_leaf(value, leaves[0][0], 'a\nc')
         self.assertEqual(json.loads(changed[0]['text'])['exit_code'], 0)
         self.assertEqual(changed[1], value[1])
+        for wrapper in [
+            '  { "output" : "a\\nb\\nc", "exit_code": 0, "elapsed": 1e-4, '
+            '"label": "\\u0061", "event": 1, "event": 2 }\n',
+            '{"meta": {"output": "untouched"}, "out\\u0070ut": "a\\nb\\nc"}',
+        ]:
+            with self.subTest(wrapper=wrapper):
+                leaves = text_leaves(wrapper)
+                self.assertEqual(leaves, [(['json', 'output'], 'a\nb\nc')])
+                self.assertEqual(replace_leaf(wrapper, leaves[0][0], 'a\nc'),
+                                 wrapper.replace('"a\\nb\\nc"', '"a\\nc"'))
 
 
 if __name__ == '__main__':

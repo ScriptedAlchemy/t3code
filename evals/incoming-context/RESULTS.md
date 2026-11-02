@@ -1,6 +1,12 @@
 # Local evaluation checkpoints
 
-## v3 protection-policy checkpoint (current)
+These recorded checkpoints precede the current `causal-context-v2` and
+`selection-evidence-v3` repairs. Current case timing also includes source loading
+and context reconstruction. Coverage, savings and latency have not been rerun
+under the combined rules; the figures below describe the named historical
+checkpoints, not validation of the current evaluator.
+
+## Recorded v3 protection-policy checkpoint
 
 Development experiment; no candidate is approved for live pruning.
 
@@ -50,9 +56,10 @@ evidence. Same prompts (`keep-prompt-v2`), same thresholds, same batching, same 
 | holdout v2 (frozen) | pplx 0.10  |    3.67 % |                3/4 |     11 |              11 |     4 |   0.95 s | 6.77 s |
 | holdout v3          | pplx 0.10  |    3.67 % |                3/3 |      8 |               8 |     2 |   8.9 ms | 5.61 s |
 
-Reading it: the protection removes 15 of 73 questions on dev40 and 3 of 11 on the holdout without
-changing net savings. The two holdout proposals that used to be "retained by requested evidence"
-are now simply never asked, which is why 4/3 becomes 3/3 with the same removed blocks. d1 still
+Reading it: the protection removes 15 of 73 questions on dev40 and 3 of 11 on the holdout.
+pplx dev40 savings decrease from 11.03% to 10.71%; holdout savings remain unchanged.
+The holdout proposal retained by requested evidence is now never asked, which is why
+4/3 becomes 3/3 with the same removed blocks. d1 still
 proposes nothing at 0.25: its only dev40 proposals were evidence blocks, and evidence blocks are
 no longer scored.
 
@@ -100,6 +107,10 @@ one checkpoint per session, then size extremes.
 | Exact duplicate (control)     |       0 % |                0/0 |     0 |     0 |             6 |               3 |   5.1 ms | 14.0 ms |
 | d1-3B, 0.25                   |    5.43 % |                8/8 |    72 |     8 |             6 |               3 |    9.8 s |  19.3 s |
 | pplx-decider-flash-v1.2, 0.10 |    5.46 % |                7/7 |    72 |     8 |             6 |               3 |   11.5 s |  18.6 s |
+
+The recorded census lists 68 eligible blocks while this table lists 72 asked questions.
+That discrepancy has not been reconciled against the private run artifacts; these counts
+must not be treated as a validated coverage measurement.
 
 Three of the eight cases lose content (one under d1, two different ones under pplx); the other
 five keep everything, so this set does show positive removals next to keep-all behaviour. The
@@ -157,8 +168,8 @@ auditable; it does not make the known failure class safe:
 
 - the holdout case that the root judged a major source-evidence loss still loses exactly the same
   three blocks, because the requested-source rule cannot resolve the real call shape;
-- every saving still comes from one large result per corpus, so the figures describe a workload,
-  not a validated policy;
+- dev40 savings still come from one large result, and the fresh sample has only eight selected
+  checkpoints, so these figures describe workloads rather than a validated policy;
 - the fresh sample is development-split and selected, not a holdout.
 
 Before promotion: a provider call shape that exposes a single file read (so requested-source can
@@ -340,5 +351,4 @@ The new `output_lines.py` prototype independently decodes one bare command-resul
 envelope, renders original line ranges, and reconstructs omissions from a
 verified original digest. It preserves surrounding envelope text and is not yet
 wired into selection. Unknown representations abstain. This establishes neither
-selection quality nor production interception/cache behavior. The complete local
-unittest suite passes 154 tests after review corrections.
+selection quality nor production interception/cache behavior. That checkpoint passed 154 local unittest tests after review corrections.

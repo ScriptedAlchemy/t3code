@@ -124,15 +124,21 @@ class GoalTests(unittest.TestCase):
         self.assertEqual(texts(ctx.goal.instructions), ('First request.', 'Actually, the second request.'))
 
     def test_opaque_instruction_stays_missing(self):
-        records = [
-            record({'type': 'message', 'role': 'user',
-                    'content': [{'type': 'encrypted_content', 'encrypted_content': 'AAAA'}]}),
-            call('c1', 'exec', 'ls'),
-        ]
-        ctx = cc.context_for(records, 'c1')
-        self.assertEqual(ctx.goal.status, cc.MISSING)
-        self.assertEqual(ctx.goal.reason, 'opaque_instruction')
-        self.assertIsNone(ctx.goal.instruction)
+        for content in (
+            [{'type': 'encrypted_content', 'encrypted_content': 'AAAA'}],
+            {'type': 'input_image', 'image_url': 'synthetic-image'},
+            [{'type': 'text', 'text': 'Keep the evidence highlighted here.'},
+             {'type': 'input_image', 'image_url': 'synthetic-image'}],
+        ):
+            for known in ([], [message('user', 'Inspect the build output.')]):
+                with self.subTest(content=content, known=bool(known)):
+                    records = [*known, content_message('user', content),
+                               call('c1', 'exec', 'ls')]
+                    ctx = cc.context_for(records, 'c1')
+                    self.assertEqual(ctx.goal.status, cc.MISSING)
+                    self.assertEqual(ctx.goal.reason, 'opaque_instruction')
+                    self.assertIsNone(ctx.goal.instruction)
+                    self.assertFalse(ctx.ok)
 
     def test_unknown_wrapper_abstains(self):
         records = [
@@ -149,6 +155,32 @@ class GoalTests(unittest.TestCase):
         self_closing = cc.context_for([message('user', '<foo/>'), call('c1', 'exec', 'ls')], 'c1')
         self.assertEqual(self_closing.goal.status, cc.AMBIGUOUS)
         self.assertEqual(self_closing.goal.reason, 'unknown_wrapper')
+
+        for wrapped in (
+            '<mystery_wrapper>Keep stderr intact.</mystery_wrapper>',
+            '<environment_context>cwd=/repo</environment_context>\nKeep stderr intact.',
+        ):
+            with self.subTest(wrapped=wrapped):
+                mixed = cc.context_for([
+                    message('user', 'Inspect the build output.'),
+                    message('user', wrapped),
+                    message('user', 'Continue.'),
+                    call('c1', 'exec', 'ls'),
+                ], 'c1')
+                self.assertEqual(mixed.goal.status, cc.AMBIGUOUS)
+                self.assertEqual(mixed.goal.reason, 'unknown_wrapper')
+                self.assertIsNone(mixed.goal.instruction)
+                self.assertFalse(mixed.ok)
+
+    def test_opaque_developer_message_does_not_hide_human_goal(self):
+        ctx = cc.context_for([
+            message('user', 'Inspect the build output.'),
+            content_message('developer', {'encrypted_content': 'AAAA'}),
+            call('c1', 'exec', 'ls'),
+        ], 'c1')
+        self.assertTrue(ctx.ok)
+        self.assertEqual(ctx.goal.instruction.text, 'Inspect the build output.')
+        self.assertEqual([e.reason for e in ctx.exclusions], ['developer_role'])
 
     def test_human_text_starting_with_angle_bracket_is_kept(self):
         text = '<html> is not rendering on the settings page'
@@ -303,6 +335,28 @@ class CompactedTests(unittest.TestCase):
         self.assertIsNone(ctx.goal.instruction)
         self.assertEqual(ctx.goal.instructions, ())
 
+        retained = verified('Inspect the build output.')['payload']
+        for content, extra in (
+            ([{'type': 'text', 'text': 'Keep stderr intact.'}], {}),
+            ([{'type': 'text', 'text': 'Keep stderr intact.'}],
+             {'retained_source': 'window-1', 'user_input_order': None}),
+            ([{'type': 'input_image', 'image_url': 'synthetic-image'}],
+             {'retained_source': 'window-1'}),
+        ):
+            with self.subTest(content=content, extra=extra):
+                partial = compacted(
+                    [*retained['replacement_history'],
+                     {'type': 'message', 'role': 'user', 'content': content}],
+                    [*retained['replacement_history_metadata'],
+                     {'client_authored': True, 'user_input_order': 2, **extra}],
+                )
+                ctx = cc.context_for([partial, call('c1', 'exec', 'ls')], 'c1')
+                self.assertEqual(ctx.goal.status, cc.AMBIGUOUS)
+                self.assertEqual(ctx.goal.reason, 'compacted_history')
+                self.assertIsNone(ctx.goal.instruction)
+                self.assertFalse(ctx.ok)
+                self.assertEqual(texts(ctx.goal.instructions), ('Inspect the build output.',))
+
     def test_later_unverified_compaction_abstains(self):
         original = 'Only prune newly arriving tool output.'
         records = [verified(original, line=40), compacted([], []), call('c1', 'exec', 'ls')]
@@ -366,6 +420,56 @@ class OriginTests(unittest.TestCase):
         other = cc.context_for(records, 'c-other').origin
         self.assertEqual(other.status, cc.AVAILABLE)
         self.assertEqual(other.command, '{"session_id":"39645"}')
+
+    def test_stdin_input_cannot_be_treated_as_a_passive_poll(self):
+        for extra, passive in (
+            ({}, True),
+            ({'chars': ''}, True),
+            ({'chars': 'cat regression-test.log\n'}, False),
+            ({'chars': '\n'}, False),
+            ({'chars': None}, False),
+            ({'chars': False}, False),
+        ):
+            with self.subTest(extra=extra):
+                records = [
+                    message('user', 'Inspect the build.'),
+                    call('c-exec', 'exec', 'bash'),
+                    finished(session_id=42),
+                    call('c-input', 'write_stdin', json.dumps({'session_id': 42, **extra}),
+                         field='arguments'),
+                    output('c-input', 'command output'),
+                    call('c-poll', 'write_stdin', '{"session_id":"42","chars":""}',
+                         field='arguments'),
+                ]
+                for target in ('c-input', 'c-poll'):
+                    ctx = cc.context_for(records, target)
+                    self.assertEqual(ctx.ok, passive)
+                    if passive:
+                        self.assertEqual(ctx.origin.command, 'bash')
+                    else:
+                        self.assertEqual(ctx.origin.status, cc.MISSING)
+                        self.assertEqual(ctx.origin.reason, 'interactive_stdin_unrepresented')
+                        self.assertIsNone(ctx.origin.command)
+
+        for input_handle in (7, 42):
+            records = [
+                message('user', 'Inspect the build.'),
+                call('c-exec', 'exec', 'bash'),
+                finished(session_id=42),
+                call('c-input', 'write_stdin',
+                     json.dumps({'session_id': input_handle, 'chars': 'echo changed\n'}),
+                     field='arguments'),
+            ]
+            if input_handle == 42:
+                records += [call('c-new', 'exec', 'tail -f regression-test.log'),
+                            finished(session_id=42, call_id='c-new')]
+            records.append(call('c-poll', 'write_stdin', '{"session_id":42}',
+                                field='arguments'))
+            with self.subTest(unrelated_input=input_handle == 7):
+                ctx = cc.context_for(records, 'c-poll')
+                self.assertTrue(ctx.ok)
+                self.assertEqual(ctx.origin.command,
+                                 'bash' if input_handle == 7 else 'tail -f regression-test.log')
 
     def test_poll_text_never_becomes_a_command(self):
         records = [

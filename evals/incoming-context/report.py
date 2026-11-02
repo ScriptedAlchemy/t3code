@@ -4,6 +4,8 @@ import html
 import json
 from pathlib import Path
 
+import evaluate as e
+
 
 def load(paths):
     runs = []
@@ -18,7 +20,8 @@ def name_of(run):
     if run['policy'] != 'decision':
         return run['policy']
     model = (run.get('model') or 'model').split('/')[-1]
-    return f"{model} / {run.get('batch_mode')} @ {run.get('threshold')}"
+    version = e.measurement_contract_label(run)
+    return f"{model} / {run.get('batch_mode')} @ {run.get('threshold')} [{version}]"
 
 
 def summarize(runs):
@@ -27,6 +30,7 @@ def summarize(runs):
         t = r['totals']
         rows.append({
             'name': name_of(r), 'file': r['file'], 'cases': t['cases'], 'sessions': t['sessions'],
+            'measurement_contract': e.measurement_contract(r),
             'blocks': t['blocks'], 'protected': t['protected_blocks'], 'scored': t['scored_blocks'],
             'dropped': t['dropped_blocks'], 'before': t['before'], 'after': t['after'],
             'saved_fraction': t['saved_fraction'],
@@ -142,7 +146,7 @@ def report(runs, out_json=None, out_html=None, curves=None):
                  '<h2>Per-block keep score buckets</h2>']
         seen = set()
         for r in rows:
-            model = r['name'].split(' @ ')[0]
+            model = (r['name'].split(' @ ')[0], json.dumps(r['measurement_contract']))
             if model in seen:
                 continue
             seen.add(model)

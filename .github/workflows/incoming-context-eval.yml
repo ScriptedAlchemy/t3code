@@ -1,0 +1,40 @@
+name: Incoming Context Eval
+
+on:
+  pull_request:
+    paths:
+      - "evals/incoming-context/**"
+      - ".github/workflows/incoming-context-eval.yml"
+  push:
+    branches: [main]
+    paths:
+      - "evals/incoming-context/**"
+      - ".github/workflows/incoming-context-eval.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: incoming-context-eval-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Incoming context behavior tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TIKTOKEN_CACHE_DIR: ${{ runner.temp }}/tiktoken
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: evals/incoming-context
+      - name: Install evaluator dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/incoming-context-venv"
+          "$RUNNER_TEMP/incoming-context-venv/bin/python" -m pip install -r evals/incoming-context/requirements.txt
+      - name: Test evaluator without model inference
+        working-directory: evals/incoming-context
+        run: '"$RUNNER_TEMP/incoming-context-venv/bin/python" -m unittest discover -p "test_*.py"'

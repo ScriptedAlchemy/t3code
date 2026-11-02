@@ -2,6 +2,28 @@
 import copy
 import hashlib
 import json
+import re
+
+
+_JSON_WS = re.compile(r'[ \t\r\n]*')
+
+
+def _output_span(value):
+    """Locate the effective output value in an already validated JSON object."""
+    decoder = json.JSONDecoder()
+    pos = _JSON_WS.match(value, value.index('{') + 1).end()
+    span = None
+    while value[pos] != '}':
+        key, pos = decoder.raw_decode(value, pos)
+        colon = _JSON_WS.match(value, pos).end()
+        start = _JSON_WS.match(value, colon + 1).end()
+        _, end = decoder.raw_decode(value, start)
+        if key == 'output':
+            span = (start, end)
+        pos = _JSON_WS.match(value, end).end()
+        if value[pos] == ',':
+            pos = _JSON_WS.match(value, pos + 1).end()
+    return span
 
 
 def stamp(prefix: bytes) -> str:
@@ -56,6 +78,8 @@ def text_leaves(value):
 
 
 def replace_leaf(value, path, replacement):
+    if not isinstance(replacement, str):
+        raise ValueError('Only text replacements are supported')
     if not path:
         if not isinstance(value, str):
             raise ValueError('Only text leaves may be changed')
@@ -64,7 +88,10 @@ def replace_leaf(value, path, replacement):
     key, *rest = path
     if key == 'json':
         obj = json.loads(value)
-        obj = replace_leaf(obj, rest, replacement)
-        return json.dumps(obj, ensure_ascii=False)
+        if rest != ['output'] or not isinstance(obj, dict) or not isinstance(obj.get('output'), str):
+            raise ValueError('Only the text output of a JSON tool envelope may be changed')
+        start, end = _output_span(value)
+        # Re-encoding the object can discard duplicate fields and alter diagnostic metadata.
+        return value[:start] + json.dumps(replacement, ensure_ascii=False) + value[end:]
     selected[key] = replace_leaf(selected[key], rest, replacement)
     return selected
