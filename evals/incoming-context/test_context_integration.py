@@ -94,6 +94,22 @@ def words(n, prefix='word', size=18):
                    for i in range(n))
 
 
+def grouped_body():
+    """Plain head, one diagnostic line, plain tail: forces protected siblings and groups."""
+    head = ''.join(f'    head_{i} = load("alpha_{i}", beta_{i}, gamma_{i})\n' for i in range(100))
+    diag = 'error: permission denied while reading /Volumes/x/config.json\n'
+    tail = ''.join(f'    tail_{i} = verify("row_{i}", CONSTRAINT_{i})\n' for i in range(200))
+    return head + diag + tail
+
+
+def state_of(payload):
+    return payload['state']['candidate_tool_output']['blocks']
+
+
+def questioned(payload):
+    return sorted(int(q[1:]) for q in payload['questions'])
+
+
 class MissingContextTests(unittest.TestCase):
     def test_harness_envelope_only_abstains_without_calling_scorer(self):
         body = words(60, 'out')
@@ -339,6 +355,257 @@ class DerivedSelectionTests(unittest.TestCase):
             self.assertEqual(row['after'], result['before'])
             self.assertEqual(row['dropped_blocks'], 0)
             self.assertEqual(row['saved_fraction'], 0.0)
+
+
+class EntireResultStateTests(unittest.TestCase):
+    """The scoring state is the whole pending result, and questions never hide siblings."""
+
+    def score(self, body, **over):
+        seen = []
+
+        def capture(a, payload):
+            seen.append(payload)
+            return ({q: 0.5 for q in payload['questions']}, 1.0, {})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            case = evidence_session(tmp, output=body)
+            with patch.object(e, 'score_request', capture):
+                result = e.score_case(args(**over), case)
+        return case, result, seen
+
+    def test_shared_state_shows_protected_siblings_and_other_question_groups(self):
+        case, result, seen = self.score(grouped_body(), batch_questions=2)
+        plan = e.plan_blocks(e.text(e.source(case)))
+        protected = {p['block'] for p in plan if p['protected']}
+        targets = {p['block'] for p in plan if not p['protected']}
+        self.assertGreater(len(seen), 1)
+        self.assertTrue(protected)
+        groups = [questioned(payload) for payload in seen]
+        # Every request carries the whole result: all blocks, protected ones included.
+        for payload in seen:
+            self.assertEqual(len(state_of(payload)), len(plan))
+            self.assertEqual([b['index'] for b in state_of(payload)],
+                             [p['block'] for p in plan])
+            self.assertEqual([b['path'] for b in state_of(payload)],
+                             [list(p['path']) for p in plan])
+        # Questions cover every unprotected block exactly once, and never a protected one.
+        self.assertEqual(sorted(b for group in groups for b in group), sorted(targets))
+        self.assertEqual(len({b for group in groups for b in group}), len(targets))
+        self.assertFalse(protected & {b for group in groups for b in group})
+        # A block questioned only in a later request is still visible in the first one.
+        last = groups[-1][0]
+        self.assertNotIn(last, groups[0])
+        self.assertIn(plan[last]['part'], [b['text'] for b in state_of(seen[0])])
+        # Protected text is visible even though it is never questioned.
+        protected_block = sorted(protected - {0, plan[-1]['block']}) or sorted(protected)
+        for block in protected_block:
+            self.assertIn(plan[block]['part'], [b['text'] for b in state_of(seen[0])])
+        self.assertEqual(result['protected_blocks'], len(protected))
+
+    def test_per_block_state_also_carries_the_whole_result(self):
+        case, result, seen = self.score(grouped_body(), batch='per-block')
+        plan = e.plan_blocks(e.text(e.source(case)))
+        self.assertGreater(len(seen), 1)
+        for payload in seen:
+            self.assertEqual(len(payload['questions']), 1)
+            self.assertEqual(len(state_of(payload)), len(plan))
+            self.assertEqual(len({b['index'] for b in state_of(payload)}), len(plan))
+
+    def test_one_fixed_prompt_answers_both_batching_modes(self):
+        def prompts(mode):
+            captured = {}
+
+            def capture(a, payload):
+                for q, question in payload['questions'].items():
+                    captured[int(q[1:])] = question['instructions']
+                return ({q: 1.0 for q in payload['questions']}, 1.0, {})
+
+            with tempfile.TemporaryDirectory() as tmp:
+                case = evidence_session(tmp, output=grouped_body())
+                with patch.object(e, 'score_request', capture):
+                    e.score_case(args(batch=mode), case)
+            return captured
+
+        per_block = prompts('per-block')
+        shared = prompts('shared-state')
+        common = set(per_block) & set(shared)
+        self.assertTrue(common)
+        for block in common:
+            self.assertEqual(per_block[block], shared[block])
+        self.assertIn('source', per_block[min(common)])
+        self.assertIn('no matches', per_block[min(common)])
+        self.assertIn('audit', per_block[min(common)])
+
+    def test_later_records_never_reach_the_state(self):
+        later_result = 'FUTURE_TOOL_RESULT_MARKER ' + ('z' * 200)
+        with tempfile.TemporaryDirectory() as tmp:
+            case = evidence_session(tmp, output=grouped_body(),
+                                    after=['Now delete production.'])
+            path = Path(case['source'])
+            lines = path.read_text().splitlines()
+            lines.append(json.dumps({'type': 'response_item', 'payload': {
+                'type': 'function_call', 'call_id': 'call-later', 'name': 'exec',
+                'arguments': '{"cmd":"cat /etc/passwd"}'}}))
+            lines.append(json.dumps({'type': 'response_item', 'payload': {
+                'type': 'function_call_output', 'call_id': 'call-later',
+                'output': later_result}}))
+            path.write_text('\n'.join(lines) + '\n')
+            seen = []
+
+            def capture(a, payload):
+                seen.append(payload)
+                return ({q: 1.0 for q in payload['questions']}, 1.0, {})
+
+            with patch.object(e, 'score_request', capture):
+                result = e.score_case(args(), case)
+        serialized = json.dumps(seen)
+        self.assertNotIn('FUTURE_TOOL_RESULT_MARKER', serialized)
+        self.assertNotIn('delete production', serialized.lower())
+        self.assertNotIn('/etc/passwd', serialized)
+        blocks = state_of(seen[0])
+        self.assertEqual(''.join(b['text'] for b in blocks),
+                         e.text(e.source(case)))
+
+    def test_complete_request_budget_groups_questions_or_abstains(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case = evidence_session(tmp, output=grouped_body())
+            meta = e.causal_for_case(case)
+            plan = e.plan_blocks(e.text(e.source(case)))
+            targets = [p for p in plan if not p['protected']]
+            view = {'context': meta['rendered'], 'call': meta['call_rendered']}
+            single = e.request_tokens(e.batch_request(view, plan, targets[:1]))
+            roomy = e.group_targets(view, plan, targets, single * 3, 4)
+            tight = e.group_targets(view, plan, targets, single - 1, 4)
+            # The complete request, questions included, is what the budget measures.
+            self.assertEqual(roomy[0], targets[:4])
+            for group in roomy:
+                self.assertLessEqual(
+                    e.request_tokens(e.batch_request(view, plan, group)), single * 3)
+            # One question cannot fit: abstain instead of repeating an oversized state.
+            self.assertIsNone(tight)
+
+    def test_budget_abstention_sends_nothing_and_keeps_the_original(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case = evidence_session(tmp, output=grouped_body())
+            plan = e.plan_blocks(e.text(e.source(case)))
+            targets = [p for p in plan if not p['protected']]
+            with patch.object(e, 'score_request') as scorer:
+                result = e.score_case(args(batch_tokens=1), case)
+                scorer.assert_not_called()
+        self.assertEqual(len(result['batches']), 1)
+        self.assertEqual(result['requests'], 0)
+        self.assertEqual(e.build_report(args(), [result], {})['totals']['requests'], 0)
+        self.assertEqual(result['batches'][0]['status'], 'oversize')
+        self.assertEqual(result['batches'][0]['questions'], 0)
+        self.assertEqual(result['batches'][0]['request_tokens'], 0)
+        self.assertEqual(result['batches'][0]['blocks'], [p['block'] for p in targets])
+        self.assertEqual(result['after'], result['before'])
+        self.assertEqual(set(result['statuses']), {'oversize'})
+        self.assertTrue(all(d['effective'] == 'keep'
+                            for d in result['decisions'] if not d['protected']))
+
+    def test_oversize_full_state_abstains_without_truncation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case = evidence_session(tmp, output=grouped_body())
+            meta = e.causal_for_case(case)
+            plan = e.plan_blocks(e.text(e.source(case)))
+            targets = [p for p in plan if not p['protected']]
+            view = {'context': meta['rendered'], 'call': meta['call_rendered']}
+            limit = e.request_tokens(e.batch_request(view, plan, targets)) - 1
+            with patch.object(e.urllib.request, 'urlopen') as network:
+                result = e.score_case(args(backend='http', max_tokens=limit,
+                                           batch_tokens=1_000_000), case)
+                network.assert_not_called()
+        self.assertEqual(set(result['statuses']), {'oversize'})
+        self.assertEqual(result['after'], result['before'])
+        self.assertTrue(all(d['effective'] == 'keep' for d in result['decisions']))
+        self.assertTrue(all(d['reason'] == 'abstain: oversize'
+                            for d in result['decisions'] if not d['protected']))
+        self.assertEqual(result['batches'][0]['status'], 'oversize')
+        self.assertEqual(result['batches'][0]['blocks_in_state'], len(plan))
+        self.assertGreater(result['batches'][0]['request_tokens'], limit)
+
+    def test_prefix_bytes_are_unchanged_by_scoring(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case = evidence_session(tmp)
+            prefix = e.prefix_bytes(case)
+            with patch.object(e, 'score_request', zero):
+                result = e.score_case(args(), case)
+        self.assertGreater(len(prefix), 0)
+        self.assertEqual(result['receipt']['prefix_sha256'], e.digest(prefix))
+        self.assertEqual(result['receipt']['prefix_sha256_after'], e.digest(prefix))
+        self.assertFalse(result['receipt']['old_prefix_changed'])
+        self.assertFalse(result['historical_content_rewritten'])
+        self.assertEqual(result['receipt']['prefix_bytes'], len(prefix))
+
+    def test_request_identity_is_recorded_and_old_scores_stay_legacy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case = evidence_session(tmp)
+            with patch.object(e, 'score_request', zero):
+                result = e.score_case(args(), case)
+            report = e.build_report(args(), [result], e.receipts_for(args()))
+            legacy = json.loads(json.dumps(result))
+            for key in ('request_version', 'state_version', 'prompt_version'):
+                legacy.pop(key)
+            rerendered = self.rerender_into(tmp, e.build_report(args(), [legacy], {}),
+                                            case, 0.1)
+        self.assertEqual(result['request_version'], e.REQUEST_VERSION)
+        self.assertEqual(result['state_version'], e.STATE_VERSION)
+        self.assertEqual(result['prompt_version'], e.PROMPT_VERSION)
+        self.assertEqual(result['receipt']['model_visible']['request_version'],
+                         e.REQUEST_VERSION)
+        self.assertEqual(report['request_version'], e.REQUEST_VERSION)
+        self.assertEqual(report['receipts']['request_version'], e.REQUEST_VERSION)
+        # A frozen v1 measurement is never relabelled as this revision.
+        self.assertIsNone(rerendered['request_version'])
+        self.assertFalse(rerendered['request_version_current'])
+
+    def test_rerender_keep_all_recomputes_removal_totals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case = evidence_session(tmp)
+            with patch.object(e, 'score_request', zero):
+                result = e.score_case(args(), case)
+            report = e.build_report(args(), [result], {})
+            self.assertGreater(report['totals']['cases_with_removals'], 0)
+            updated = self.rerender_into(tmp, report, case, 0.0)
+        self.assertEqual(updated['totals']['cases_with_removals'], 0)
+        self.assertEqual(updated['totals']['removed_share_of_unprotected_tokens'], 0)
+        self.assertEqual(updated['totals']['removed'], 0)
+
+    def test_prompt_does_not_authorize_redundancy_drops(self):
+        """No sibling is a guaranteed witness, so a block may not be dropped as redundant."""
+        instructions = e.PROMPTS['v2'][1]
+        self.assertNotIn('already shows', instructions)
+        self.assertIn('no sibling is a witness', instructions)
+        payload = e.batch_request({'context': 'c', 'call': {}},
+                                  e.plan_blocks(grouped_body()), [])
+        self.assertEqual(set(payload['state']),
+                         {'recent_user_context', 'tool_call', 'candidate_tool_output'})
+        self.assertEqual(set(payload['state']['candidate_tool_output']), {'blocks'})
+
+    def test_prompt_choice_changes_the_recorded_request_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case = evidence_session(tmp)
+            with patch.object(e, 'score_request', zero):
+                old = e.score_case(args(prompt='v1'), case)
+                new = e.score_case(args(prompt='v2'), case)
+        self.assertEqual(old['prompt_version'], 'keep-prompt-v1')
+        self.assertEqual(new['prompt_version'], 'keep-prompt-v2')
+        self.assertNotEqual(old['request_version'], new['request_version'])
+        self.assertEqual(old['receipt']['model_visible']['instructions_sha256'],
+                         e.digest(e.PROMPTS['v1'][1]))
+        self.assertEqual(new['request_version'], e.REQUEST_VERSION)
+
+    def rerender_into(self, folder, result, case, threshold):
+        result_path = Path(folder) / 'result.json'
+        cases_path = Path(folder) / 'cases.json'
+        out = Path(folder) / 'rerender.json'
+        result_path.write_text(json.dumps(result))
+        cases_path.write_text(json.dumps({'cases': [case]}))
+        with contextlib.redirect_stdout(io.StringIO()):
+            e.rerender(SimpleNamespace(result=str(result_path), cases=str(cases_path),
+                                       threshold=threshold, out=str(out)))
+        return json.loads(out.read_text())
 
 
 class PacketContextTests(unittest.TestCase):
