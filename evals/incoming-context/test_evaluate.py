@@ -10,7 +10,7 @@ import evaluate as e
 
 
 def args(**over):
-    base = dict(policy='decision', threshold=0.1, batch='per-block', batch_questions=32, batch_tokens=8000,
+    base = dict(policy='decision', threshold=0.1, batch='per-block', batch_questions=32, batch_tokens=32000,
                 deadline_ms=0, max_tokens=7500, backend='mlx', timeout=60.0, model='test',
                 key_env=None, endpoint='http://localhost')
     base.update(over)
@@ -93,7 +93,7 @@ class EvaluatorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             case = write_case(tmp, BODY)
             with patch.object(e, 'score_request', fake):
-                result = e.score_case(args(batch='shared-state', batch_questions=64, batch_tokens=20000), case)
+                result = e.score_case(args(batch='shared-state', batch_questions=64, batch_tokens=24000), case)
         self.assertEqual(len(seen), 1)
         self.assertEqual(len(seen[0]['questions']), result['scored_blocks'])
         self.assertEqual(result['decisions'][1]['effective'], 'drop')
@@ -154,7 +154,7 @@ class EvaluatorTests(unittest.TestCase):
             case = write_case(tmp, BODY)
             with patch.object(e, 'score_request', slow):
                 result = e.score_case(args(batch='shared-state', batch_questions=64,
-                                           batch_tokens=20000, deadline_ms=40), case)
+                                           batch_tokens=24000, deadline_ms=40), case)
         self.assertTrue(result['deadline_abstain'])
         self.assertEqual(result['after'], result['before'])
         self.assertEqual(result['statuses'].get('ok'), 1)
@@ -163,7 +163,7 @@ class EvaluatorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             case = write_case(tmp, BODY)
             with patch.object(e, 'score_request', lambda a, p: ({q: 0.0 for q in p['questions']}, 1.0, {})):
-                result = e.score_case(args(batch='shared-state', batch_questions=64, batch_tokens=20000), case)
+                result = e.score_case(args(batch='shared-state', batch_questions=64, batch_tokens=24000), case)
         # Dropping every unprotected block cannot expand the result, so the guard stays out of it.
         self.assertIsNone(result['guard'])
         self.assertLess(result['after'], result['before'])
