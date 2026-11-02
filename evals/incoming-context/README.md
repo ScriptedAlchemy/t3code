@@ -23,6 +23,6 @@ The evaluator reconstructs causal instructions and poll origins from records pre
 
 ## Current limits
 
-Synthetic checks cover causal cutoffs, poll resolution, retention, failure paths, accounting and packet rendering. Local prefix fixtures do not prove provider cache hits or a supported native-tool interception point. Real-world blind review found necessary evidence lost in the earlier selector. The repaired selector still needs completed blind review. No model is approved for live pruning.
+Synthetic checks cover causal cutoffs, poll resolution, retention, failure paths, accounting and packet rendering. Local prefix fixtures do not prove provider cache hits or a supported native-tool interception point. Real-world blind review found necessary evidence lost in the earlier selector. A small repaired blind review found major evidence loss with d1; pplx passed one removal case with limited confidence. See [RESULTS.md](RESULTS.md) for measurements and limits. No model is approved for live pruning.
 
 The development sample contains 40 checkpoints. The current context census permits scoring 11 and abstains on 29. Those abstentions remain in workload totals. Original measurements and private judgments remain local; they are not a public dataset or a completed validation of this revision.
