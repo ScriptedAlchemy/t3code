@@ -1,5 +1,6 @@
 import { disabledLayer } from "../pstack/PstackPack.testkit.ts";
 import * as ProjectKnowledge from "../project/knowledge/ProjectKnowledge.ts";
+import * as ModelEvaluations from "../modelEvaluations/ModelEvaluations.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { assert, it } from "@effect/vitest";
@@ -143,6 +144,7 @@ const layerRuntime = (dbPath: string) => {
     ),
     RuntimeLayer.layerProjectService,
   ).pipe(
+    Layer.provide(Layer.mock(ModelEvaluations.ModelEvaluations)({ enqueueRun: () => Effect.void })),
     Layer.provide(
       Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({
         peek: () => Effect.succeed(unusedEnrichment),

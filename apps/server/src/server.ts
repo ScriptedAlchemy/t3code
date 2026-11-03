@@ -593,7 +593,6 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
     ),
   ),
   Layer.provide(ConversationSummaries.layerRuntime),
-  Layer.provideMerge(ModelEvaluations.layerRuntime.pipe(Layer.provide(EffectOutboxV2.layer))),
   Layer.provide(ProjectKnowledge.layerDeliveryScrubber),
 );
 
@@ -699,7 +698,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(
     Layer.merge(ConversationSummaries.layer, ModelEvaluations.layer).pipe(
-      Layer.provide(Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer)),
+      Layer.provide(
+        Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer, EffectOutboxV2.layer),
+      ),
     ),
   ),
   Layer.provideMerge(ProjectLoom.layer),

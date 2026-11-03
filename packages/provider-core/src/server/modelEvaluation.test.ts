@@ -1,7 +1,7 @@
 import { expect, it } from "vite-plus/test";
 import {
   MessageId,
-  ModelEvaluationVerdict,
+  type ModelEvaluationVerdict,
   NodeId,
   ProviderInstanceId,
   ProviderThreadId,
@@ -13,7 +13,6 @@ import {
   type BlindModelEvaluationPacket,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import * as Schema from "effect/Schema";
 
 import {
   buildModelEvaluationEvidence,
@@ -35,7 +34,6 @@ const run = {
   status: "completed" as const,
 };
 const now = DateTime.makeUnsafe("2026-01-02T00:00:00Z");
-const isModelEvaluationVerdict = Schema.is(ModelEvaluationVerdict);
 
 function message(
   role: "user" | "assistant",
@@ -285,12 +283,16 @@ it("abstains when there is no finalized outcome and rejects fabricated citations
   expect(
     validateModelEvaluationVerdict({ ...verdict(), outcome: "insufficient_evidence" }, packet),
   ).toBe(false);
-  expect(
-    isModelEvaluationVerdict({
+  for (const invalid of [
+    null,
+    {},
+    {
       ...verdict(),
       scores: { ...verdict().scores, correctness: 4.5 },
-    }),
-  ).toBe(false);
+    },
+  ]) {
+    expect(validateModelEvaluationVerdict(invalid, packet)).toBe(false);
+  }
   const extraTopLevelField = { ...verdict(), model: "Invented attribution" };
   expect(validateModelEvaluationVerdict(extraTopLevelField, packet)).toBe(false);
   const extraNestedField = {

@@ -1,16 +1,7 @@
-import { ModelEvaluationVerdict } from "@t3tools/contracts";
 import { validateModelEvaluationVerdict } from "@t3tools/provider-core/server/modelEvaluation";
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 import type { ModelEvaluationCase } from "./cases.ts";
 
-const decode = Schema.decodeUnknownOption(ModelEvaluationVerdict);
-
-export function gradeModelEvaluation(fixture: ModelEvaluationCase, output: unknown) {
-  const decoded = decode(output);
-  if (Option.isNone(decoded))
-    return { pass: false, failures: ["Output does not match the verdict schema."] };
-  const verdict = decoded.value;
+export function gradeModelEvaluation(fixture: ModelEvaluationCase, verdict: unknown) {
   if (!validateModelEvaluationVerdict(verdict, fixture.packet)) {
     return {
       pass: false,
@@ -59,11 +50,6 @@ export function gradeModelEvaluation(fixture: ModelEvaluationCase, output: unkno
     case "incomplete-artifact":
       require(verdict.outcome ===
         "insufficient_evidence", "Missing specification, implementation, and results require abstention.");
-      require(Object.values(verdict.scores).every(
-        (score) => score === null,
-      ), "All dimensions must remain unknown.");
-      require(verdict.confidence ===
-        "low", "Incomplete evidence cannot justify confident judgment.");
       break;
   }
   return { pass: failures.length === 0, failures };

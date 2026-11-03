@@ -31,11 +31,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
-import {
-  ModelEvaluationPassError,
-  ModelEvaluationRuntime,
-  modelEvaluationEffects,
-} from "./modelEvaluationSchedule.ts";
+import { modelEvaluationEffects } from "./modelEvaluationSchedule.ts";
 
 const WINDOW_LIMIT = 200;
 const HISTORY_LIMIT = 50;
@@ -48,7 +44,9 @@ const DIMENSIONS = [
 ] as const;
 const encodeRecord = Schema.encodeSync(Schema.fromJsonString(ModelEvaluationRecord));
 const decodeRecord = Schema.decodeUnknownEffect(Schema.fromJsonString(ModelEvaluationRecord));
-const encodePacket = Schema.encodeSync(Schema.fromJsonString(BlindModelEvaluationPacket));
+const encodePacket = Schema.encodeSync(
+  Schema.fromJsonString(Schema.NullOr(BlindModelEvaluationPacket)),
+);
 const encodeIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(MessageId)));
 const decodeSelection = Schema.decodeUnknownEffect(Schema.fromJsonString(ModelSelection));
 const isModelEvaluationError = Schema.is(ModelEvaluationError);
@@ -148,17 +146,28 @@ function summarize(
   });
 }
 
+export class ModelEvaluationPassError extends Schema.TaggedError<ModelEvaluationPassError>()(
+  "ModelEvaluationPassError",
+  { runId: Schema.String, cause: Schema.Defect() },
+) {}
+
+type RunInput = Pick<ModelEvaluationRecord, "threadId" | "runId" | "runOutcome">;
+
 export class ModelEvaluations extends Context.Service<
   ModelEvaluations,
   {
-    readonly evaluateRun: (typeof ModelEvaluationRuntime.Service)["evaluateRun"];
+    readonly enqueueRun: (input: RunInput) => Effect.Effect<void, ModelEvaluationPassError>;
+    readonly evaluateRun: (input: RunInput) => Effect.Effect<void, ModelEvaluationPassError>;
     readonly list: (input: {
       readonly projectId: ProjectId;
     }) => Effect.Effect<ModelEvaluationReport, ModelEvaluationError>;
     readonly clear: (input: {
       readonly projectId: ProjectId;
     }) => Effect.Effect<void, ModelEvaluationError>;
-    readonly guidance: (typeof ModelEvaluationRuntime.Service)["guidance"];
+    readonly guidance: (input: {
+      readonly projectId: ProjectId;
+      readonly models?: ReadonlyArray<Pick<ModelSelection, "instanceId" | "model">>;
+    }) => Effect.Effect<ReadonlyArray<ModelEvaluationGuidance>, ModelEvaluationError>;
   }
 >()("t3/modelEvaluations/ModelEvaluations") {}
 
@@ -170,6 +179,7 @@ const make = Effect.gen(function* () {
   const textGeneration = yield* TextGeneration.TextGeneration;
   const fs = yield* FileSystem.FileSystem;
   const providers = yield* ProviderRegistry.ProviderRegistry;
+  const outbox = yield* EffectOutbox.EffectOutboxV2;
   const generationLock = yield* Semaphore.make(1);
 
   const requireProject = Effect.fn("ModelEvaluations.requireProject")(function* (
@@ -353,6 +363,19 @@ const make = Effect.gen(function* () {
     (effect, { projectId }) => effect.pipe(Effect.mapError(mapError(projectId))),
   );
 
+  const enqueueRun: ModelEvaluations["Service"]["enqueueRun"] = Effect.fn(
+    "ModelEvaluations.enqueueRun",
+  )(
+    function* (input) {
+      const effects = modelEvaluationEffects({ ...input, settings: yield* settings.getSettings });
+      if (effects.length === 0) return;
+      yield* outbox.enqueue(effects);
+      yield* outbox.notifyAvailable(effects.length);
+    },
+    (effect, { runId }) =>
+      effect.pipe(Effect.mapError((cause) => new ModelEvaluationPassError({ runId, cause }))),
+  );
+
   const evaluateRun: ModelEvaluations["Service"]["evaluateRun"] = Effect.fn(
     "ModelEvaluations.evaluateRun",
   )(
@@ -438,18 +461,17 @@ const make = Effect.gen(function* () {
           });
         }).pipe(
           Effect.scoped,
-          Effect.map((value) => ({ ok: true as const, verdict: value })),
-          Effect.catchTags({ TextGenerationError: () => Effect.succeed({ ok: false as const }) }),
+          Effect.catchTags({ TextGenerationError: () => Effect.succeed(null) }),
         );
-        if (!generated.ok) {
+        if (generated === null) {
           status = "failed";
           reason = "The evaluator could not complete this evaluation. No model score was recorded.";
-        } else if (!validateModelEvaluationVerdict(generated.verdict, evidence.packet)) {
+        } else if (!validateModelEvaluationVerdict(generated, evidence.packet)) {
           status = "failed";
           reason =
             "The evaluator returned unsupported scores or evidence references. No model score was recorded.";
         } else {
-          verdict = generated.verdict;
+          verdict = generated;
           status = verdict.outcome;
           reason = null;
         }
@@ -476,10 +498,8 @@ const make = Effect.gen(function* () {
               return;
             const latestEvidence = build(latest);
             if (
-              (latestEvidence === null) !== (evidence === null) ||
-              (latestEvidence !== null &&
-                evidence !== null &&
-                encodePacket(latestEvidence.packet) !== encodePacket(evidence.packet))
+              encodePacket(latestEvidence?.packet ?? null) !==
+              encodePacket(evidence?.packet ?? null)
             )
               return;
             yield* requireProject(projectId);
@@ -512,28 +532,7 @@ const make = Effect.gen(function* () {
         Effect.mapError((cause) => new ModelEvaluationPassError({ runId, cause })),
       ),
   );
-  return ModelEvaluations.of({ evaluateRun, list, clear, guidance });
+  return ModelEvaluations.of({ enqueueRun, evaluateRun, list, clear, guidance });
 });
 
 export const layer = Layer.effect(ModelEvaluations, make);
-export const layerRuntime = Layer.effect(
-  ModelEvaluationRuntime,
-  Effect.gen(function* () {
-    const service = yield* ModelEvaluations;
-    const outbox = yield* EffectOutbox.EffectOutboxV2;
-    const settings = yield* ServerSettings.ServerSettingsService;
-    const enqueueRun: (typeof ModelEvaluationRuntime.Service)["enqueueRun"] = Effect.fn(
-      "ModelEvaluations.enqueueRun",
-    )(
-      function* (input) {
-        const effects = modelEvaluationEffects({ ...input, settings: yield* settings.getSettings });
-        if (effects.length === 0) return;
-        yield* outbox.enqueue(effects);
-        yield* outbox.notifyAvailable(effects.length);
-      },
-      (effect, { runId }) =>
-        effect.pipe(Effect.mapError((cause) => new ModelEvaluationPassError({ runId, cause }))),
-    );
-    return { evaluateRun: service.evaluateRun, guidance: service.guidance, enqueueRun };
-  }),
-);

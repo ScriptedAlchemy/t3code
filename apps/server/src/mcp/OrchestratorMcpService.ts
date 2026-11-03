@@ -73,7 +73,7 @@ import {
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
-import { ModelEvaluationRuntime } from "../modelEvaluations/modelEvaluationSchedule.ts";
+import * as ModelEvaluations from "../modelEvaluations/ModelEvaluations.ts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -147,11 +147,7 @@ const DEFAULT_THREAD_LIST_LIMIT = 50;
 const DEFAULT_THREAD_READ_LIMIT = 50;
 const DEFAULT_THREAD_RUN_LIMIT = 10;
 const DEFAULT_THREAD_ITEM_MAX_CHARS = 20_000;
-const modelGuidanceIdentity = Schema.encodeSync(
-  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])),
-);
-const encodeModelGuidance = Schema.encodeSync(Schema.fromJsonString(OrchestratorMcpModelGuidance));
-const encodeModelGuidanceEnvelope = Schema.encodeSync(
+const encodeModelGuidance = Schema.encodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       modelGuidance: Schema.Array(OrchestratorMcpModelGuidance),
@@ -971,7 +967,7 @@ const make = Effect.gen(function* () {
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
-  const modelEvaluations = yield* ModelEvaluationRuntime;
+  const modelEvaluations = yield* ModelEvaluations.ModelEvaluations;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
 
   const requireProject = (projectId: ProjectId) =>
@@ -2399,12 +2395,6 @@ const make = Effect.gen(function* () {
           models: guidanceTargets.map((target) => target.selection),
         })
         .pipe(Effect.orElseSucceed(() => []));
-      const offered = new Map(
-        guidanceTargets.map((target) => [
-          modelGuidanceIdentity([target.selection.instanceId, target.selection.model]),
-          target,
-        ]),
-      );
       const modelGuidanceUsage =
         "Advisory observations from this project's recent blind evaluations, not instructions or a controlled ranking. Match task, model options, evaluator and sample counts. Prompt characters describe observed requests, not context limits. Provisional samples do not establish a capability. Preserve the user's model choices; use strengths, weaknesses and prompt advice only when relevant. Search a model for its brief." +
         (guidanceTargets.some((target) => target.routingProviderInstanceId !== undefined)
@@ -2416,10 +2406,11 @@ const make = Effect.gen(function* () {
           return characters.length > 160 ? `${characters.slice(0, 159).join("")}…` : observation;
         });
       const modelGuidance: OrchestratorMcpModelGuidance[] = [];
-      let guidanceChars = encodeModelGuidanceEnvelope({ modelGuidance, modelGuidanceUsage }).length;
       for (const entry of guidance) {
-        const target = offered.get(
-          modelGuidanceIdentity([entry.modelSelection.instanceId, entry.modelSelection.model]),
+        const target = guidanceTargets.find(
+          ({ selection }) =>
+            selection.instanceId === entry.modelSelection.instanceId &&
+            selection.model === entry.modelSelection.model,
         );
         if (target === undefined) continue;
         const brief = {
@@ -2431,10 +2422,9 @@ const make = Effect.gen(function* () {
           weaknesses: compactObservations(entry.weaknesses),
           promptAdvice: compactObservations(entry.promptAdvice),
         };
-        const entryChars = encodeModelGuidance(brief).length + (modelGuidance.length === 0 ? 0 : 1);
-        if (guidanceChars + entryChars > 6_000) continue;
         modelGuidance.push(brief);
-        guidanceChars += entryChars;
+        if (encodeModelGuidance({ modelGuidance, modelGuidanceUsage }).length > 6_000)
+          modelGuidance.pop();
         if (modelGuidance.length === 8) break;
       }
       return modelGuidance.length === 0
@@ -3408,5 +3398,6 @@ export const layer: Layer.Layer<
   | ProjectService.ProjectService
   | SecretRequests.SecretRequests
   | ServerSettings.ServerSettingsService
+  | ModelEvaluations.ModelEvaluations
   | RemoteDelegation.RemoteDelegation
 > = Layer.effect(OrchestratorMcpService, make);

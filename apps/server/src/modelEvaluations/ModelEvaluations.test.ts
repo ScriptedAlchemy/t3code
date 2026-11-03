@@ -1,7 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  DEFAULT_SERVER_SETTINGS,
   EventId,
   MessageId,
   ProjectId,
@@ -24,11 +23,13 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as EventStore from "../orchestration-v2/EventStore.ts";
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -36,7 +37,6 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ModelEvaluations from "./ModelEvaluations.ts";
-import { modelEvaluationEffects } from "./modelEvaluationSchedule.ts";
 
 type Generate = TextGeneration.TextGeneration["Service"]["generateModelEvaluation"];
 const projectId = ProjectId.make("evaluation-project");
@@ -61,7 +61,14 @@ const makeLayer = (
         getPublishedProviders: Effect.succeed(published),
       }),
     ),
-    Layer.provideMerge(Layer.mergeAll(ProjectStore.layer, ProjectionStore.layer, EventStore.layer)),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        ProjectStore.layer,
+        ProjectionStore.layer,
+        EventStore.layer,
+        EffectOutbox.layer,
+      ),
+    ),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provideMerge(ServerSettings.layerTest({ enableModelEvaluations: enabled })),
     Layer.provideMerge(NodeServices.layer),
@@ -273,12 +280,17 @@ it.effect(
     return Effect.gen(function* () {
       const seeded = yield* seed({ subagent: true });
       const service = yield* ModelEvaluations.ModelEvaluations;
-      assert.deepEqual(modelEvaluationEffects({ ...input, settings: DEFAULT_SERVER_SETTINGS }), []);
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const effectId = `effect:model-evaluation.generate:${runId}`;
+      yield* service.enqueueRun(input);
+      assert.isTrue(Option.isNone(yield* outbox.get(effectId)));
       yield* service.evaluateRun(input);
       assert.equal(calls.length, 0);
       yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
         enableModelEvaluations: true,
       });
+      yield* service.enqueueRun(input);
+      assert.equal(Option.getOrThrow(yield* outbox.get(effectId)).status, "pending");
       yield* Effect.all([service.evaluateRun(input), service.evaluateRun(input)], {
         concurrency: "unbounded",
       });

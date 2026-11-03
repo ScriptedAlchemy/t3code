@@ -19,8 +19,9 @@ pnpm model-evaluations --model haiku --samples 3 --out runs/judge-baseline
 pnpm model-evaluations --model haiku --samples 3 --baseline runs/judge-baseline/results.json --out runs/judge-candidate
 ```
 
-`--dry-run` validates every selected packet and writes the real prompts, with **zero model calls**.
-It neither creates a provider client nor reports a quality pass. Real runs require an installed,
+`--dry-run` validates every selected packet and writes only `prompts.json`, with **zero model calls**.
+It neither creates a provider client nor produces scored results. Use a new output directory to keep
+dry-run prompts separate from any earlier results. Real runs require an installed,
 authenticated Claude CLI that supports `--safe-mode`. `--model` defaults to the CLI's `haiku` alias;
 use `sonnet` or a configured Claude model ID to compare another judge.
 
@@ -31,7 +32,7 @@ unknown for real runs. A dry run costs $0. CI runs only the deterministic grader
 
 ## Results
 
-The output directory contains `prompts.json`, `results.json`, `summary.json`, and `summary.md`.
+Real runs write `prompts.json`, `results.json`, and `summary.md`.
 Raw structured verdicts and failure reasons remain inspectable. Call errors count as failed
 samples. A case passes only if more than half its samples pass; a tie fails. A real run exits with
 status 1 if any case fails.

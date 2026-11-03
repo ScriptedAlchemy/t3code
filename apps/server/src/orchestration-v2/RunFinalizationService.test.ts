@@ -23,10 +23,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as CodeIntelligence from "../project/knowledge/CodeIntelligence.ts";
-import {
-  ModelEvaluationPassError,
-  ModelEvaluationRuntime,
-} from "../modelEvaluations/modelEvaluationSchedule.ts";
+import * as ModelEvaluations from "../modelEvaluations/ModelEvaluations.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
@@ -135,15 +132,13 @@ it.effect.each(["workspace refresh", "evaluation enqueue"] as const)(
               }),
             refreshAfterTurn: () => Effect.void,
           }),
-          Layer.succeed(ModelEvaluationRuntime, {
-            evaluateRun: () => Effect.void,
-            guidance: () => Effect.succeed([]),
+          Layer.mock(ModelEvaluations.ModelEvaluations)({
             enqueueRun: (request) =>
               Effect.gen(function* () {
                 assert.deepEqual(request, { threadId, runId, runOutcome: "completed" });
                 captured.push("evaluation");
                 if (failure === "evaluation enqueue")
-                  return yield* new ModelEvaluationPassError({
+                  return yield* new ModelEvaluations.ModelEvaluationPassError({
                     runId,
                     cause: new Error("Could not enqueue evaluation"),
                   });
@@ -264,6 +259,7 @@ it.effect("finalizes a run without waiting for the code index refresh its checkp
             Layer.provideMerge(CodeIntelligence.layer),
             Layer.provide(
               Layer.mergeAll(
+                Layer.mock(ModelEvaluations.ModelEvaluations)({}),
                 Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({
                   execute: () => Effect.void,
                 }),

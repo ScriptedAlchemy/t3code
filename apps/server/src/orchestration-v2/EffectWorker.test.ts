@@ -39,10 +39,8 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { AssistedLearningRunner } from "../project/knowledge/assistedLearningSchedule.ts";
-import {
-  ModelEvaluationRuntime,
-  modelEvaluationEffects,
-} from "../modelEvaluations/modelEvaluationSchedule.ts";
+import * as ModelEvaluations from "../modelEvaluations/ModelEvaluations.ts";
+import { modelEvaluationEffects } from "../modelEvaluations/modelEvaluationSchedule.ts";
 import {
   DeliveryScrubRunner,
   deliveryScrubEffect,
@@ -219,22 +217,19 @@ it.effect(
         runOutcome: "completed",
         settings: { ...DEFAULT_SERVER_SETTINGS, enableModelEvaluations: true },
       })[0]!;
-      const executor = layerExecutorFor({ events }).pipe(
-        Layer.provide(
-          Layer.succeed(ModelEvaluationRuntime, {
-            evaluateRun: (request) =>
-              Ref.update(events, (value) => [
-                ...value,
-                `judge:${request.runId}:${request.runOutcome}`,
-              ]).pipe(
-                Effect.andThen(Deferred.succeed(entered, undefined)),
-                Effect.andThen(Deferred.await(release)),
-              ),
-            enqueueRun: () => Effect.void,
-            guidance: () => Effect.succeed([]),
-          }),
-        ),
-      );
+      const executor = layerExecutorFor({
+        events,
+        modelEvaluations: {
+          evaluateRun: (request) =>
+            Ref.update(events, (value) => [
+              ...value,
+              `judge:${request.runId}:${request.runOutcome}`,
+            ]).pipe(
+              Effect.andThen(Deferred.succeed(entered, undefined)),
+              Effect.andThen(Deferred.await(release)),
+            ),
+        },
+      });
       const layer = EffectWorker.layer.pipe(
         Layer.provideMerge(
           Layer.merge(
@@ -416,6 +411,7 @@ function layerExecutorFor(input: {
   readonly events: Ref.Ref<ReadonlyArray<string>>;
   readonly failFirstStart?: Ref.Ref<boolean>;
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
+  readonly modelEvaluations?: Partial<ModelEvaluations.ModelEvaluations["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
@@ -496,6 +492,10 @@ function layerExecutorFor(input: {
     Layer.provide(
       Layer.mergeAll(
         layerDependencies,
+        Layer.mock(ModelEvaluations.ModelEvaluations)({
+          enqueueRun: () => Effect.void,
+          ...input.modelEvaluations,
+        }),
         Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
         ServerSettings.layerTest(
           input.continueAfterRestart === true ? { continueThreadsAfterServerUpdate: true } : {},

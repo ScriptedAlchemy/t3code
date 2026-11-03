@@ -22,7 +22,7 @@ import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { Menu } from "../../components/ui/Menu";
 import { RowPressable } from "../../components/ui/RowPressable";
-import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import { buildModelMenuActions, buildModelOptions, groupByProvider } from "../../lib/modelOptions";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
 import { modelEvaluations } from "../../state/modelEvaluations";
 import { useEnvironmentQuery } from "../../state/query";
@@ -41,8 +41,8 @@ export function ModelEvaluationSettings() {
   return (
     <View className="gap-4">
       <Text className="px-2 text-sm text-foreground-muted">
-        Blind evaluations score completed tasks with a separate model call. Model and provider
-        labels are removed before judging; the scores build guidance for future delegation.
+        Scores completed tasks to build project guidance. Model and provider labels are removed
+        before judging.
       </Text>
       {supported.length !== selectedTargets.length || supported.length === 0 ? (
         <Text className="px-2 text-sm text-foreground-muted">
@@ -72,30 +72,29 @@ function EnvironmentEvaluationSettings(props: {
   scopedProjectId: ProjectId | null;
   projectSelected: boolean;
 }) {
-  const config = useEnvironmentServerConfig(props.environmentId);
-  const canWrite = useAtomValue(
-    serverEnvironment.updateSettings.permissionAtom(props.environmentId),
-  );
+  const { environmentId, label } = props;
+  const config = useEnvironmentServerConfig(environmentId);
+  const canWrite = useAtomValue(serverEnvironment.updateSettings.permissionAtom(environmentId));
   const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
-  const projects = useProjects().filter((project) => project.environmentId === props.environmentId);
+  const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const [chosenProjectId, setChosenProjectId] = useState<ProjectId | null>(null);
   const [saving, setSaving] = useState(false);
+  if (config === null) return null;
+  const readOnly = saving || !canWrite || props.projectSelected;
   const project =
     projects.find(
       (item) => item.id === (props.projectSelected ? props.scopedProjectId : chosenProjectId),
     ) ?? null;
-  const settings = config?.settings;
-  const selection =
-    settings?.modelEvaluationModelSelection ?? settings?.textGenerationModelSelection;
+  const settings = config.settings;
+  const selection = settings.modelEvaluationModelSelection ?? settings.textGenerationModelSelection;
   const capable = new Set(
-    config?.providers.filter(isModelEvaluationJudge).map((provider) => provider.instanceId),
+    config.providers.filter(isModelEvaluationJudge).map((provider) => provider.instanceId),
   );
-  const models = buildModelOptions(config, selection ?? null, undefined, null, "settings").filter(
+  const models = buildModelOptions(config, selection, undefined, null, "settings").filter(
     (model) => capable.has(model.selection.instanceId) && !model.isUnavailable,
   );
-  const groups = groupByProvider(models);
-  const selectedProvider = config?.providers.find(
-    (provider) => provider.instanceId === selection?.instanceId,
+  const selectedProvider = config.providers.find(
+    (provider) => provider.instanceId === selection.instanceId,
   );
   const judgeAvailable =
     selectedProvider?.installed === true &&
@@ -104,45 +103,28 @@ function EnvironmentEvaluationSettings(props: {
     selectedProvider.availability !== "unavailable" &&
     models.some(
       (model) =>
-        model.selection.instanceId === selection?.instanceId &&
+        model.selection.instanceId === selection.instanceId &&
         model.selection.model === selection.model,
     );
   const write = async (patch: ServerSettingsPatch) => {
-    if (saving || !canWrite || props.projectSelected) return;
+    if (readOnly) return;
     setSaving(true);
-    const result = await update({ environmentId: props.environmentId, input: { patch } });
+    const result = await update({ environmentId, input: { patch } });
     setSaving(false);
     if (result._tag === "Failure")
       Dialog.alert("Could not save model evaluations", String(squashAtomCommandFailure(result)));
   };
-  if (!settings || !selection) return null;
-  const disabledFor = (key: string) =>
-    saving ||
-    !canWrite ||
-    props.projectSelected ||
-    isManagedSettingPath(config?.managedPolicy, key);
+  const disabledFor = (key: string) => readOnly || isManagedSettingPath(config.managedPolicy, key);
   const actions: MenuAction[] = [
     {
       id: "default",
       title: "Use text generation model",
       state: settings.modelEvaluationModelSelection === null ? "on" : undefined,
     },
-    ...groups.map((group) => ({
-      id: group.providerKey,
-      title: group.providerLabel,
-      subactions: group.models.map((model) => ({
-        id: model.key,
-        title: model.label,
-        state:
-          selection.instanceId === model.selection.instanceId &&
-          selection.model === model.selection.model
-            ? ("on" as const)
-            : undefined,
-      })),
-    })),
+    ...buildModelMenuActions(groupByProvider(models), selection),
   ];
   return (
-    <SettingsSection title={`Model evaluations · ${props.label}`}>
+    <SettingsSection title={`Model evaluations · ${label}`}>
       <SettingsSwitchRow
         icon="sparkles"
         label="Blind model evaluations"
@@ -170,14 +152,13 @@ function EnvironmentEvaluationSettings(props: {
             void write({ modelEvaluationModelSelection: null });
             return;
           }
-          const model = models.find((candidate) => candidate.key === key);
+          const model = models.find((candidate) => `model:${candidate.key}` === key);
           if (model) void write({ modelEvaluationModelSelection: model.selection });
         }}
       />
       {!judgeAvailable ? (
         <Text className="px-4 py-2 text-sm text-foreground-muted">
-          Choose an available evaluation judge before enabling. A supported judge can score tasks
-          from every harness.
+          Choose an available judge before enabling.
         </Text>
       ) : null}
       <EvaluationMenu
@@ -197,13 +178,14 @@ function EnvironmentEvaluationSettings(props: {
       {project ? (
         <ProjectEvaluationReport
           key={project.id}
-          environmentId={props.environmentId}
+          environmentId={environmentId}
           projectId={project.id}
           projectTitle={project.title}
+          enabled={settings.enableModelEvaluations}
         />
       ) : (
         <Text className="px-4 py-3 text-sm text-foreground-muted">
-          Choose a project to inspect its observations. Guidance stays within that project.
+          Choose a project to view its evaluations and guidance.
         </Text>
       )}
     </SettingsSection>
@@ -242,8 +224,8 @@ function ProjectEvaluationReport(props: {
   environmentId: EnvironmentId;
   projectId: ProjectId;
   projectTitle: string;
+  enabled: boolean;
 }) {
-  const config = useEnvironmentServerConfig(props.environmentId);
   const query = useEnvironmentQuery(
     modelEvaluations.list({
       environmentId: props.environmentId,
@@ -298,16 +280,13 @@ function ProjectEvaluationReport(props: {
       ) : query.data && !query.error ? (
         <>
           <Text className="text-sm text-foreground-muted">
-            Observations from up to {query.data.windowLimit} tasks in the past 90 days. Scores range
-            from 0 to 4; unknown dimensions stay unscored. Small samples and judge opinions are
-            advisory.
-            {config?.settings.enableModelEvaluations === false
-              ? " Evaluations are off; saved history is still available."
-              : ""}
+            Up to {query.data.windowLimit} evaluations from the past 90 days. Scores use 0–4;
+            unknown dimensions stay unscored. Small samples and judge opinions are advisory.
+            {!props.enabled ? " Evaluations are off; saved history is still available." : ""}
           </Text>
           {query.data.records.length === 0 ? (
             <Text className="text-sm text-foreground-muted">
-              No evaluations yet. Complete a task with evaluations enabled to collect evidence.
+              No evaluations yet. Complete a task with evaluations enabled to collect scores.
             </Text>
           ) : null}
           {query.data.guidance.map((guidance) => (

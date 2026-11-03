@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { IsoDateTime, NonNegativeInt, ProjectId, RunId, ThreadId } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
 
-export const ModelEvaluationTaskCategory = Schema.Literals([
+const ModelEvaluationTaskCategory = Schema.Literals([
   "coding",
   "debugging",
   "review",
@@ -13,9 +13,7 @@ export const ModelEvaluationTaskCategory = Schema.Literals([
   "planning",
   "other",
 ]);
-export type ModelEvaluationTaskCategory = typeof ModelEvaluationTaskCategory.Type;
-
-export const ModelEvaluationConfidence = Schema.Literals(["low", "medium", "high"]);
+const ModelEvaluationConfidence = Schema.Literals(["low", "medium", "high"]);
 export const ModelEvaluationRunOutcome = Schema.Literals([
   "completed",
   "failed",
@@ -27,15 +25,13 @@ export type ModelEvaluationRunOutcome = typeof ModelEvaluationRunOutcome.Type;
 const Score = Schema.NullOr(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 4 })));
 const MeanScore = Schema.NullOr(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 4 })));
 
-export const ModelEvaluationScores = Schema.Struct({
+const ModelEvaluationScores = Schema.Struct({
   taskCompletion: Score,
   correctness: Score,
   instructionFollowing: Score,
   verification: Score,
 });
-export type ModelEvaluationScores = typeof ModelEvaluationScores.Type;
-
-export const ModelEvaluationObservation = Schema.Struct({
+const ModelEvaluationObservation = Schema.Struct({
   text: Schema.NonEmptyString.check(Schema.isMaxLength(600)),
   citations: Schema.Array(Schema.String.check(Schema.isPattern(/^[UEC][1-9]\d{0,2}$/))).check(
     Schema.isMaxLength(5),

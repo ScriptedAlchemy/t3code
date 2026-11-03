@@ -29,6 +29,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerHttp from "../http.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as ModelEvaluations from "../modelEvaluations/ModelEvaluations.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -38,6 +39,8 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 class PeerTestApi extends HttpApi.make("environment")
   .add(EnvironmentHttpApi.groups.metadata)
   .add(EnvironmentHttpApi.groups.mcpOAuth) {}
+
+const layerModelEvaluations = Layer.mock(ModelEvaluations.ModelEvaluations)({});
 
 export const descriptorOf = (
   environmentId: string,
@@ -107,6 +110,7 @@ export const servePeer = <E, R>(
         Layer.provide(AuthHttp.layerAuthenticatedAuth),
       ),
       tools.pipe(
+        Layer.provide(layerModelEvaluations),
         Layer.provideMerge(McpHttpServer.layerMcpTransport),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
@@ -163,6 +167,7 @@ export const layerLinkingEnvironment = (
   ssh?: SshTunnel.SshEnvironmentManager["Service"],
 ) =>
   PeerMcpClient.layer.pipe(
+    Layer.provideMerge(layerModelEvaluations),
     Layer.provideMerge(
       PeerLinks.layer.pipe(
         Layer.provide(

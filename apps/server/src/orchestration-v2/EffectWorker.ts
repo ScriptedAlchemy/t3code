@@ -34,7 +34,7 @@ import {
 } from "../project/knowledge/deliveryScrubSchedule.ts";
 import { AssistedLearningRunner } from "../project/knowledge/assistedLearningSchedule.ts";
 import { ConversationSummaryRuntime } from "../project/conversationSummaries/conversationSummarySchedule.ts";
-import { ModelEvaluationRuntime } from "../modelEvaluations/modelEvaluationSchedule.ts";
+import * as ModelEvaluations from "../modelEvaluations/ModelEvaluations.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
@@ -87,6 +87,7 @@ export const layerExecutor: Layer.Layer<
   | ThreadTitleRegenerationService.ThreadTitleRegenerationService
   | ThreadManagementService.ThreadManagementService
   | ServerSettings.ServerSettingsService
+  | ModelEvaluations.ModelEvaluations
 > = Layer.effect(
   OrchestrationEffectExecutorV2,
   Effect.gen(function* () {
@@ -104,7 +105,7 @@ export const layerExecutor: Layer.Layer<
     const assistedLearning = yield* AssistedLearningRunner;
     const deliveryScrubber = yield* DeliveryScrubRunner;
     const conversationSummaries = yield* ConversationSummaryRuntime;
-    const modelEvaluations = yield* ModelEvaluationRuntime;
+    const modelEvaluations = yield* ModelEvaluations.ModelEvaluations;
     return OrchestrationEffectExecutorV2.of({
       execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function (effect, options) {
         const willRetry = options?.willRetry ?? false;

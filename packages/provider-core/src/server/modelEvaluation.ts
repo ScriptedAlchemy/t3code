@@ -321,10 +321,12 @@ export function buildModelEvaluationEvidence(input: {
 }
 
 export function validateModelEvaluationVerdict(
-  verdict: ModelEvaluationVerdict,
+  input: unknown,
   packet: BlindModelEvaluationPacket,
-): boolean {
-  if (Option.isNone(decodeModelEvaluationVerdict(verdict))) return false;
+): input is ModelEvaluationVerdict {
+  const decoded = decodeModelEvaluationVerdict(input);
+  if (Option.isNone(decoded)) return false;
+  const verdict = decoded.value;
   const refs = new Set([
     packet.request.ref,
     ...packet.context.map((entry) => entry.ref),

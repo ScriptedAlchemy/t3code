@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  resolveProjectProviderInstanceEnabled,
   type EnvironmentId,
   type ModelEvaluationGuidance,
   type ProjectId,
@@ -46,14 +47,12 @@ export function ModelEvaluationSettings() {
   const updateSettings = useUpdateScopedSettings();
   const { environment, connectedEnvironments, targets } = useSettingsScope();
   const providersByEnvironment = useEnvironmentProviders();
-  const supported =
-    connectedEnvironments.length > 0 &&
-    connectedEnvironments.every(
-      (target) => target.serverConfig?.environment.capabilities.modelEvaluations === true,
-    );
   const supportedEnvironments = connectedEnvironments.filter(
     (target) => target.serverConfig?.environment.capabilities.modelEvaluations === true,
   );
+  const supported =
+    supportedEnvironments.length > 0 &&
+    supportedEnvironments.length === connectedEnvironments.length;
   const providers =
     (environment ? providersByEnvironment.get(environment.environmentId) : undefined) ??
     EMPTY_SERVER_PROVIDERS;
@@ -82,39 +81,33 @@ export function ModelEvaluationSettings() {
         ),
     );
   const mixedEnabled = useScopedSettingsMixed(["enableModelEvaluations"]);
-  const enablingIssue = targets.flatMap((target) => {
-    const ownProviders = providersByEnvironment.get(target.environmentId) ?? EMPTY_SERVER_PROVIDERS;
-    const ownSelection =
+  const unavailableEnvironments = targets.flatMap((target) => {
+    const judge =
       target.settings.modelEvaluationModelSelection ?? target.settings.textGenerationModelSelection;
-    const ownProvider = ownProviders.find(
-      (candidate) => candidate.instanceId === ownSelection.instanceId,
-    );
-    const ownEntries = providerInstanceEntriesFor(
-      ownProviders.filter(isModelEvaluationJudge),
-      target.settings,
-      null,
-    );
-    const ownEntry = ownEntries.find(
-      (candidate) => candidate.instanceId === ownSelection.instanceId,
-    );
-    const ownModels = getCustomModelOptionsByInstance(
+    const provider = providersByEnvironment
+      .get(target.environmentId)
+      ?.find(
+        (candidate) =>
+          candidate.instanceId === judge.instanceId && isModelEvaluationJudge(candidate),
+      );
+    if (
+      !provider ||
+      !resolveProjectProviderInstanceEnabled(target.settings, null, judge.instanceId) ||
+      provider.availability === "unavailable" ||
+      !provider.installed ||
+      provider.status === "error" ||
+      provider.auth.status === "unauthenticated"
+    )
+      return [target.label];
+    const models = getCustomModelOptionsByInstance(
       mergeEnvironmentSettings(target.settings, settings),
-      ownProviders,
-      ownSelection.instanceId,
-      ownSelection.model,
-    ).get(ownSelection.instanceId);
-    return ownEntry?.enabled &&
-      ownEntry.isAvailable &&
-      ownEntry.installed &&
-      ownEntry.status !== "error" &&
-      ownProvider?.auth.status !== "unauthenticated" &&
-      ownModels?.some((model) => model.slug === ownSelection.model && !model.isUnavailable)
+      [provider],
+      judge.instanceId,
+      judge.model,
+    ).get(judge.instanceId);
+    return models?.some((model) => model.slug === judge.model && !model.isUnavailable)
       ? []
-      : [
-          connectedEnvironments.find(
-            (candidate) => candidate.environmentId === target.environmentId,
-          )?.label ?? "the selected environment",
-        ];
+      : [target.label];
   });
   return (
     <SettingsSection id="model-evaluations" title="Model evaluations">
@@ -124,12 +117,11 @@ export function ModelEvaluationSettings() {
         {...searchableSetting("blind-model-evaluations")}
         description={
           <>
-            Scores completed tasks with a separate evaluation call. Model and provider labels are
-            removed before judging; scores build observed guidance for future delegation.
-            {enablingIssue.length > 0 ? (
+            Use an extra model call to score completed tasks and build project guidance. Model and
+            provider labels are removed before judging.
+            {unavailableEnvironments.length > 0 ? (
               <span className="mt-1 block text-warning">
-                Choose an available evaluation judge on {enablingIssue.join(", ")} before enabling.
-                A supported judge can score tasks from every harness.
+                Choose an available judge on {unavailableEnvironments.join(", ")} before enabling.
               </span>
             ) : null}
             {!supported ? (
@@ -146,15 +138,16 @@ export function ModelEvaluationSettings() {
               checked={settings.enableModelEvaluations}
               disabled={
                 !supported ||
-                ((!settings.enableModelEvaluations || mixedEnabled) && enablingIssue.length > 0)
+                ((!settings.enableModelEvaluations || mixedEnabled) &&
+                  unavailableEnvironments.length > 0)
               }
               onCheckedChange={(checked) => {
-                if (!checked || enablingIssue.length === 0)
+                if (!checked || unavailableEnvironments.length === 0)
                   updateSettings({ enableModelEvaluations: checked });
               }}
               aria-label="Blind model evaluations"
             />
-            {mixedEnabled && enablingIssue.length > 0 && supported ? (
+            {mixedEnabled && unavailableEnvironments.length > 0 && supported ? (
               <Button
                 size="sm"
                 variant="outline"
@@ -173,8 +166,7 @@ export function ModelEvaluationSettings() {
         {...searchableSetting("model-evaluation-judge")}
         description={
           <>
-            Uses your text generation model unless you select a separate judge. The judge must
-            support isolated evaluation without tools or project access.
+            Choose a judge, or use this environment's text generation model.
             {!mixedJudge && selectionIssue ? (
               <span className="mt-1 block text-warning">{selectionIssue}</span>
             ) : null}
@@ -201,20 +193,11 @@ export function ModelEvaluationSettings() {
                 : selectionIssue
                   ? { triggerLabel: selection.model }
                   : {})}
-              onInstanceModelChange={(instanceId, model) => {
-                const reason = disabledReason(instanceId, model);
-                if (reason) {
-                  toastManager.add({
-                    type: "error",
-                    title: "Judge model not saved",
-                    description: reason,
-                  });
-                  return;
-                }
+              onInstanceModelChange={(instanceId, model) =>
                 updateSettings({
                   modelEvaluationModelSelection: createModelSelection(instanceId, model),
-                });
-              }}
+                })
+              }
             />
             {supported &&
             entry &&
@@ -288,12 +271,9 @@ function ProjectEvaluationBrowser(props: {
     <div className="space-y-3 px-4 py-4 sm:px-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-medium">Learned guidance · {props.environmentLabel}</h3>
-        <Select
+        <Select<ProjectId>
           value={project?.id ?? null}
-          onValueChange={(value) => {
-            const selected = projects.find((item) => item.id === value);
-            if (selected) setChosenProjectId(selected.id);
-          }}
+          onValueChange={setChosenProjectId}
           disabled={projects.length === 0 || (projectScoped && projects.length === 1)}
         >
           <SelectTrigger
@@ -321,7 +301,7 @@ function ProjectEvaluationBrowser(props: {
         />
       ) : (
         <p className="text-xs text-muted-foreground">
-          Choose a project to inspect its observations. Guidance stays within that project.
+          Choose a project to view its evaluations and guidance.
         </p>
       )}
     </div>
@@ -391,16 +371,15 @@ function ProjectEvaluationReport(props: {
       ) : query.data && !query.error ? (
         <>
           <p className="text-xs text-muted-foreground">
-            Observations from up to {query.data.windowLimit} tasks in the past 90 days. Scores range
-            from 0 to 4; unknown dimensions stay unscored. Small samples and judge opinions are
-            advisory.
+            Up to {query.data.windowLimit} evaluations from the past 90 days. Scores use 0–4;
+            unknown dimensions stay unscored. Small samples and judge opinions are advisory.
             {config?.settings.enableModelEvaluations === false
               ? " Evaluations are off; saved history is still available."
               : ""}
           </p>
           {query.data.records.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No evaluations yet. Complete a task with evaluations enabled to collect evidence.
+              No evaluations yet. Complete a task with evaluations enabled to collect scores.
             </p>
           ) : null}
           {query.data.guidance.map((guidance) => (

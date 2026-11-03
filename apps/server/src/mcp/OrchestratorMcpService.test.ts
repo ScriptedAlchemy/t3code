@@ -64,7 +64,7 @@ import { buildUnavailableProviderSnapshot } from "../provider/unavailableProvide
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { ModelEvaluationRuntime } from "../modelEvaluations/modelEvaluationSchedule.ts";
+import * as ModelEvaluations from "../modelEvaluations/ModelEvaluations.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
@@ -77,9 +77,12 @@ const decodeTarget = Schema.decodeUnknownEffect(OrchestratorMcpTarget);
 const decodeModelGuidance = Schema.decodeUnknownSync(ModelEvaluationGuidance);
 const decodeCapabilitiesResult = Schema.decodeUnknownSync(OrchestratorMcpCapabilitiesResult);
 
-const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
+const layerOrchestratorWithEvaluations = OrchestratorMcpService.layer.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+);
+const layerOrchestratorService = layerOrchestratorWithEvaluations.pipe(
+  Layer.provide(Layer.mock(ModelEvaluations.ModelEvaluations)({})),
 );
 
 describe("OrchestratorMcpService", () => {
@@ -1548,7 +1551,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         });
       }).pipe(
         Effect.provide(
-          layerOrchestratorService.pipe(
+          layerOrchestratorWithEvaluations.pipe(
             Layer.provide(
               Layer.mergeAll(
                 NodeServices.layer,
@@ -1576,9 +1579,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   },
                 }),
                 providerRegistryLayer(catalog),
-                Layer.succeed(ModelEvaluationRuntime, {
-                  evaluateRun: () => Effect.void,
-                  enqueueRun: () => Effect.void,
+                Layer.mock(ModelEvaluations.ModelEvaluations)({
                   guidance: ({ projectId, models }) =>
                     Effect.sync(() => {
                       assert.isDefined(models);
@@ -1821,9 +1822,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             unrelatedId,
             opencodeInstanceId,
           ]),
-          Layer.succeed(ModelEvaluationRuntime, {
-            evaluateRun: () => Effect.void,
-            enqueueRun: () => Effect.void,
+          Layer.mock(ModelEvaluations.ModelEvaluations)({
             guidance: (input) =>
               Effect.sync(() => {
                 assert.equal(input.projectId, projectId);
@@ -1849,7 +1848,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             ordinaryObservation,
           ]);
           assert.isTrue(result.modelGuidanceUsage?.includes("Preserve the user's model choices"));
-        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+        }).pipe(Effect.provide(layerOrchestratorWithEvaluations.pipe(Layer.provide(dependencies))));
       }),
     );
 
@@ -3387,6 +3386,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       OrchestratorMcpService.layer.pipe(
         Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
         Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(git)),
+        Layer.provide(Layer.mock(ModelEvaluations.ModelEvaluations)({})),
         Layer.provide(
           Layer.mergeAll(
             NodeServices.layer,
