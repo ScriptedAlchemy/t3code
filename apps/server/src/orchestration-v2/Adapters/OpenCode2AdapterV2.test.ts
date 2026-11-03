@@ -958,6 +958,35 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect.each([false, true])(
+    "denies a child that inherited full access before it can open a browser (external=%s)",
+    (external) =>
+      Effect.gen(function* () {
+        const inherited = [{ action: "*", resource: "*", effect: "allow" }];
+        const launch = backgroundLaunch(CHILD, inherited);
+        const { runtime, thread } = yield* resumed(
+          [
+            ...launch.slice(0, -1),
+            out("session.update", {
+              sessionID: CHILD,
+              permissions: [
+                ...inherited,
+                { action: "browser", resource: "*", effect: "deny" },
+                { action: "skill", resource: "browser", effect: "deny" },
+              ],
+            }),
+            reply("session.update", null),
+            ...launch.slice(-1),
+            event("session.execution.succeeded", { sessionID: SESSION }),
+          ],
+          { external },
+        );
+        const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+        yield* runtime.startTurn(withLineage(thread));
+        assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps a finished background subagent's queued report as pending work", () =>
     Effect.gen(function* () {
       const { runtime, thread } = yield* resumed([
@@ -2347,6 +2376,51 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           assert.equal((yield* Fiber.join(terminal))?.status, "completed");
         }
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("rewrites browser rules when the desktop changes them during the update", () =>
+    Effect.gen(function* () {
+      const attached = [...t3Rules, ...browserAllows];
+      const runtime = yield* openCode2ReplayRuntimeWithInstructions(
+        [
+          ...opening,
+          out("session.get", { sessionID: SESSION }),
+          replyData("session.get", sessionInfo({ permissions: attached })),
+          ...noOpenRequests,
+          out("session.update", {
+            sessionID: SESSION,
+            permissions: withBrowserRules(t3Rules, browserAllows),
+          }),
+          reply("session.update", null),
+          out("agent.list", "<any>"),
+          reply("agent.list", agentList),
+          out("session.update", {
+            sessionID: SESSION,
+            permissions: withBrowserRules(supervisedRules, [...browserDenies, ...browserAllows]),
+          }),
+          event("session.permissions", { sessionID: SESSION, permissions: t3Rules }),
+          reply("session.update", null),
+          out("session.update", {
+            sessionID: SESSION,
+            permissions: withBrowserRules(supervisedRules, browserDenies),
+          }),
+          reply("session.update", null),
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event("session.execution.succeeded", { sessionID: SESSION }),
+        ],
+        { external: true },
+      );
+      const thread = yield* runtime.resumeThread({
+        providerThread: providerThread(yield* DateTime.now),
+        threadId,
+        modelSelection: bigPickle,
+        runtimePolicy: policy(),
+      });
+      const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+      yield* runtime.startTurn(turnInput(thread, bigPickle, "approval-required"));
+      assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+    }).pipe(Effect.scoped),
   );
 
   const turnItems = (collected: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>

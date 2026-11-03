@@ -357,6 +357,30 @@ const browserRule = (entry: Rule) =>
   (entry.action === "browser" && entry.resource === "*") ||
   (entry.action === "skill" && entry.resource === "browser");
 
+// A full-access `*` allow matches the browser. Drop inherited allows, then deny whatever that still turns on.
+const withoutInheritedBrowserAccess = (rules: ReadonlyArray<Rule>): ReadonlyArray<Rule> => {
+  const kept = rules.filter((entry) => !browserRule(entry) || entry.effect !== "allow");
+  let browser: Rule["effect"] | undefined;
+  let skill: Rule["effect"] | undefined;
+  for (const entry of kept) {
+    if (entry.action === "*" && entry.resource === "*") {
+      browser = entry.effect;
+      skill = entry.effect;
+    } else if (entry.action === "browser" && entry.resource === "*") {
+      browser = entry.effect;
+    } else if (entry.action === "skill" && entry.resource === "browser") {
+      skill = entry.effect;
+    }
+  }
+  return [
+    ...kept,
+    ...(browser === "allow" ? [rule("browser", "deny")] : []),
+    ...(skill === "allow"
+      ? [{ action: "skill", resource: "browser", effect: "deny" } satisfies Rule]
+      : []),
+  ];
+};
+
 const nativeBrowserRules = (
   rules: ReadonlyArray<Rule>,
   deniedByDefault: boolean,
@@ -2347,11 +2371,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         if (owner !== undefined) {
           childOwners.set(event.data.sessionID, owner);
           let info = event.data;
-          if (connection.external && info.permissions !== undefined) {
-            const permissions = info.permissions.filter(
-              (entry) => !browserRule(entry) || entry.effect !== "allow",
-            );
-            if (permissions.length !== info.permissions.length) {
+          if (info.permissions !== undefined) {
+            const permissions = withoutInheritedBrowserAccess(info.permissions);
+            if (!sameRules(info.permissions, permissions)) {
               const updated = yield* client.session
                 .update({ sessionID: info.sessionID, permissions })
                 .pipe(
@@ -2871,18 +2893,27 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         const native = yield* client.session.get({ sessionID: Session.ID.make(state.sessionId) });
         if (state.rules === undefined) state.rules = native.permissions ?? [];
       }
-      const { previous, rules } = yield* rulesFor(
-        state,
-        policy,
-        rootOf(state).providerThread.appThreadId,
-        preserveBrowser,
-      );
-      if (!sameRules(previous, rules)) {
+      // A desktop permission event can land while an update is in flight.
+      let caughtUp = false;
+      while (!caughtUp) {
+        const { previous, rules } = yield* rulesFor(
+          state,
+          policy,
+          rootOf(state).providerThread.appThreadId,
+          preserveBrowser,
+        );
+        if (sameRules(previous, rules)) {
+          caughtUp = true;
+          continue;
+        }
         yield* client.session.update({
           sessionID: Session.ID.make(state.sessionId),
           permissions: rules,
         });
-        if (state.rules === previous) state.rules = rules;
+        if (state.rules === previous) {
+          state.rules = rules;
+          caughtUp = true;
+        }
       }
       state.policy = policy;
     });
