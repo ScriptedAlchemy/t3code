@@ -67,8 +67,13 @@ function setup() {
     environmentId: EnvironmentId.make("environment-test"),
     threadId: ThreadId.make("thread-test"),
   };
-  return () => (
-    <ThreadSplitSuggestion threadRef={threadRef} projectId={ProjectId.make("project-test")} idle />
+  return (key = "initial") => (
+    <ThreadSplitSuggestion
+      key={key}
+      threadRef={threadRef}
+      projectId={ProjectId.make("project-test")}
+      idle
+    />
   );
 }
 
@@ -108,6 +113,10 @@ it("discards stale replies, supports opt-out and dismissal that outlasts edits, 
   await screen.rerender(view());
   await act(() => vi.advanceTimersByTime(1000));
   expect(replies).toHaveLength(0);
+  await screen.rerender(view("remounted"));
+  await act(() => vi.advanceTimersByTime(1000));
+  expect(replies).toHaveLength(0);
+  await expect.element(action).not.toBeInTheDocument();
   state.source.prompt = "";
   await screen.rerender(view());
 

@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import type { ProjectId, ScopedThreadRef } from "@t3tools/contracts";
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { scopeProjectRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { useComposerDraftStore, composerDraftHasUserContent } from "~/composerDraftStore";
 import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
@@ -10,6 +10,8 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { threadEnvironment } from "~/state/threads";
 import { toastManager } from "../ui/toastManager";
 import { Button } from "../ui/button";
+
+const dismissedThreadKeys = new Set<string>();
 
 export function ThreadSplitSuggestion({
   threadRef,
@@ -35,7 +37,8 @@ export function ThreadSplitSuggestion({
   });
   const newThread = useNewThreadHandler();
   const [suggestedKey, setSuggestedKey] = useState<string | null>(null);
-  const [dismissed, setDismissed] = useState(false);
+  const threadKey = scopedThreadKey(threadRef);
+  const [dismissed, setDismissed] = useState(() => dismissedThreadKeys.has(threadKey));
   const [opening, setOpening] = useState(false);
   const enabled =
     settings.threadSplitSuggestionsEnabled &&
@@ -56,7 +59,10 @@ export function ThreadSplitSuggestion({
     setObservedKey(selectionKey);
     setSuggestedKey(null);
   }
-  if (dismissed && !prompt.trim()) setDismissed(false);
+  if (dismissed && !prompt.trim()) {
+    dismissedThreadKeys.delete(threadKey);
+    setDismissed(false);
+  }
   const check = useEffectEvent(async (message: string, key: string, cancelled: () => boolean) => {
     const result = await suggest({
       environmentId: threadRef.environmentId,
@@ -124,7 +130,10 @@ export function ThreadSplitSuggestion({
         type="button"
         variant="ghost"
         size="sm"
-        onClick={() => setDismissed(true)}
+        onClick={() => {
+          dismissedThreadKeys.add(threadKey);
+          setDismissed(true);
+        }}
         aria-label="Dismiss new thread suggestion"
       >
         Dismiss

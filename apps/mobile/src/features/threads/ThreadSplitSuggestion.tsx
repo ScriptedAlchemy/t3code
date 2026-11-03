@@ -12,6 +12,9 @@ import {
   setComposerDraftText,
   updateComposerDraftSettings,
 } from "../../state/use-composer-drafts";
+import { scopedThreadKey } from "../../lib/scopedEntities";
+
+const dismissedThreadKeys = new Set<string>();
 
 type ThreadSplitSuggestionProps = {
   readonly environmentId: EnvironmentId;
@@ -27,15 +30,22 @@ export function ThreadSplitSuggestion(props: ThreadSplitSuggestionProps) {
   const canSuggest = useAtomValue(
     threadEnvironment.suggestSplit.permissionAtom(props.environmentId),
   );
-  const [dismissed, setDismissed] = useState(false);
+  const threadKey = scopedThreadKey(props.environmentId, props.threadId);
+  const [dismissed, setDismissed] = useState(() => dismissedThreadKeys.has(threadKey));
   const hasMessage = Boolean(props.message.trim());
-  if (dismissed && !hasMessage) setDismissed(false);
+  if (dismissed && !hasMessage) {
+    dismissedThreadKeys.delete(threadKey);
+    setDismissed(false);
+  }
   if (!props.enabled || !focused || !canSuggest || !hasMessage || dismissed) return null;
   return (
     <ActiveThreadSplitSuggestion
       key={JSON.stringify([props.environmentId, props.threadId, props.message])}
       {...props}
-      onDismiss={() => setDismissed(true)}
+      onDismiss={() => {
+        dismissedThreadKeys.add(threadKey);
+        setDismissed(true);
+      }}
     />
   );
 }
