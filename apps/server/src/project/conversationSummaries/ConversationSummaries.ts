@@ -102,6 +102,7 @@ const encodeIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.St
 const decodePass = Schema.decodeUnknownEffect(Schema.fromJsonString(ConversationSummaryPass));
 const encodePass = Schema.encodeSync(Schema.fromJsonString(ConversationSummaryPass));
 const isConversationSummaryError = Schema.is(ConversationSummaryError);
+const isConversationSummaryPassError = Schema.is(ConversationSummaryPassError);
 
 type FinalizedMessage = OrchestrationV2ConversationMessage & {
   readonly role: "user" | "assistant";
@@ -932,7 +933,7 @@ const make = Effect.gen(function* () {
     (effect, { runId }) =>
       effect.pipe(
         Effect.mapError((cause) =>
-          cause instanceof ConversationSummaryPassError
+          isConversationSummaryPassError(cause)
             ? cause
             : new ConversationSummaryPassError({ runId, cause }),
         ),

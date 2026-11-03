@@ -21,6 +21,7 @@ import {
   TextGenerationError,
   ThreadId,
   TurnItemId,
+  type ConversationSummaryExpansion,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
@@ -157,7 +158,9 @@ const messageEvent = (index: number, text: string): OrchestrationV2DomainEvent =
   },
 });
 
-const item = (index: number): OrchestrationV2TurnItem => {
+const item = (
+  index: number,
+): Extract<OrchestrationV2TurnItem, { type: "user_message" | "assistant_message" }> => {
   const base = {
     id: itemId(index),
     threadId,
@@ -437,7 +440,7 @@ it.effect(
       };
       assert.deepEqual(yield* service.forHandoff(input), []);
       assert.isTrue(first.hasMore);
-      let hasMore = first.hasMore;
+      let hasMore: boolean = first.hasMore;
       for (let pass = 0; pass < 8 && hasMore; pass++) hasMore = (yield* summarize).hasMore;
       assert.isFalse(hasMore);
       const ordinary = new Set(Array.from({ length: MESSAGE_COUNT }, (_, index) => rawText(index)));
@@ -496,7 +499,7 @@ it.effect(
         offers[0]!.summaryIds ?? [],
         summaries.map((summary) => summary.id),
       );
-      assert.sameMembers(offers[0]!.coveredItemIds, [...input.itemIds]);
+      assert.sameMembers([...offers[0]!.coveredItemIds], [...input.itemIds]);
     }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
   },
 );
@@ -578,7 +581,7 @@ it.effect(
     return Effect.gen(function* () {
       yield* seed;
       const projections = yield* ProjectionStore.ProjectionStoreV2;
-      const command: OrchestrationV2TurnItem = {
+      const command: Extract<OrchestrationV2TurnItem, { type: "command_execution" }> = {
         ...item(0),
         id: TurnItemId.make("test-command"),
         type: "command_execution",
@@ -588,7 +591,7 @@ it.effect(
         exitCode: 1,
         completedAt: DateTime.add(at, { minutes: 3, seconds: 30 }),
       };
-      const event: OrchestrationV2DomainEvent = {
+      const event: Extract<OrchestrationV2DomainEvent, { type: "turn-item.updated" }> = {
         id: EventId.make("test-command-complete"),
         type: "turn-item.updated",
         threadId,
@@ -713,7 +716,7 @@ it.effect("does not offer tool-only evidence from a deleted project", () => {
   return Effect.gen(function* () {
     yield* seedThread(6);
     const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const command: OrchestrationV2TurnItem = {
+    const command: Extract<OrchestrationV2TurnItem, { type: "command_execution" }> = {
       ...item(0),
       id: TurnItemId.make("tool-only-command"),
       type: "command_execution",
@@ -792,7 +795,7 @@ it.effect(
       const restored = new Map<string, string>();
       let pages = 0;
       while (offset !== null && pages < 100) {
-        const page = yield* service.expand({
+        const page: ConversationSummaryExpansion = yield* service.expand({
           ...scope,
           summaryId: summary.id,
           offset,
