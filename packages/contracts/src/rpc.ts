@@ -1,3 +1,4 @@
+import { ThreadSplitSuggestionInput, ThreadSplitSuggestionResult } from "./threadSplit.ts";
 import {
   ConversationSummaryDescribeInput,
   ConversationSummaryError,
@@ -453,6 +454,7 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  orchestrationSuggestThreadSplit: "orchestration.suggestThreadSplit",
   projectCodeQuery: "projectCode.query",
   projectCodeFileHistory: "projectCode.fileHistory",
   projectCodeSubscribeIndex: "projectCode.subscribeIndex",
@@ -2170,7 +2172,14 @@ export const WsProjectCodeRpcGroup = RpcGroup.make(
   WsProjectCodeSubscribeIndexRpc,
 ).middleware(RpcScopeAuthorization);
 
+const WsThreadSplitSuggestionRpc = Rpc.make(WS_METHODS.orchestrationSuggestThreadSplit, {
+  payload: ThreadSplitSuggestionInput,
+  success: ThreadSplitSuggestionResult,
+  error: EnvironmentAuthorizationError,
+});
+
 export const WsRpcGroup = RpcGroup.make(
+  WsThreadSplitSuggestionRpc,
   WsGuestShareCreateRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,

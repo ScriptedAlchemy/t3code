@@ -5,7 +5,8 @@ of the preceding thread's results, files, decisions or instructions. A different
 subject alone does not establish independence. This is an offline experiment;
 it does not create threads, alter history, or display suggestions.
 
-The direct prompt lives in `detector.py`. Each request contains one question:
+The direct prompt is shared with the server in
+`packages/shared/src/threadSplitPrompt.json`. Each request contains one question:
 pplx's joint question attention makes scores depend on siblings when batched.
 Truncated requests and inference failures abstain and are counted separately.
 
@@ -47,7 +48,7 @@ and measured on the same sample, so they do not establish held-out accuracy.
 A separate synthetic-switch analysis used a different cutoff (about 0.919);
 do not combine those thresholds or treat either as a production default.
 
-Before app integration, validate on new sessions and decide how the local model
-is provisioned on each server platform. Any initial client affordance should be
-opt-in, passive and asynchronous, with explicit user action to create a fresh
-thread. Automatic splitting and interrupting prompts are outside this draft.
+The app integration is opt-in, passive and asynchronous, using an explicitly
+configured local endpoint. It requires user action to move a draft into a fresh
+thread. Validate on new sessions before considering a default-on rollout.
+Automatic splitting and interrupting prompts are outside this feature.

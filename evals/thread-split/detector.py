@@ -1,24 +1,16 @@
 import math
 
-PROMPT = (
-    'Could the agent handle the new user message independently of all earlier thread '
-    'context, without reusing any earlier result, file, decision, or instruction? '
-    'Answer yes only if independent.'
+import json
+from pathlib import Path
+
+QUESTION = json.loads(
+    (Path(__file__).resolve().parents[2] / 'packages/shared/src/threadSplitPrompt.json').read_text()
 )
+PROMPT = QUESTION['instructions']
 
 
 def request(state):
-    return {
-        'state': state,
-        'questions': {'q': {
-            'type': 'noul',
-            'instructions': PROMPT,
-            'criteria': {
-                'true': 'No earlier thread result, file, decision, or instruction is needed.',
-                'false': 'Handling relies on an earlier thread result, file, decision, or instruction.',
-            },
-        }},
-    }
+    return {'state': state, 'questions': {'q': QUESTION}}
 
 
 def score_response(response):
