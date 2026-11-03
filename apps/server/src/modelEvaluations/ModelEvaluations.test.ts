@@ -291,9 +291,24 @@ it.effect(
       });
       yield* service.enqueueRun(input);
       assert.equal(Option.getOrThrow(yield* outbox.get(effectId)).status, "pending");
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const before = yield* projections.getThreadRecords(threadId, ["runs", "messages", "turnItems"]);
+      const counts = yield* sql`SELECT
+        (SELECT COUNT(*) FROM orchestration_events) AS events,
+        (SELECT COUNT(*) FROM orchestration_v2_projection_threads) AS threads,
+        (SELECT COUNT(*) FROM scheduled_tasks) AS scheduled`;
       yield* Effect.all([service.evaluateRun(input), service.evaluateRun(input)], {
         concurrency: "unbounded",
       });
+      assert.deepEqual(
+        yield* projections.getThreadRecords(threadId, ["runs", "messages", "turnItems"]),
+        before,
+      );
+      assert.deepEqual(yield* sql`SELECT
+        (SELECT COUNT(*) FROM orchestration_events) AS events,
+        (SELECT COUNT(*) FROM orchestration_v2_projection_threads) AS threads,
+        (SELECT COUNT(*) FROM scheduled_tasks) AS scheduled`, counts);
       assert.equal(calls.length, 1);
       const sent = calls[0]!;
       assert.notInclude(sent.cwd, "private/project-with-model-config");
