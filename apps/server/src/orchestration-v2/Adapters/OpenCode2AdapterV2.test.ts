@@ -87,6 +87,7 @@ const mcpRules = [
   { action: "t3-code-*", resource: "*", effect: "deny" },
   { action: "t3-code-thread_opencode2-adapter_*", resource: "*", effect: "allow" },
 ];
+const externalRules = [{ action: "*", resource: "*", effect: "allow" }, ...mcpRules];
 const t3Rules = [
   { action: "*", resource: "*", effect: "allow" },
   { action: "browser", resource: "*", effect: "deny" },
@@ -328,7 +329,10 @@ const resumed = (
       withInstructions([
         ...opening,
         out("session.get", { sessionID: SESSION }),
-        replyData("session.get", sessionInfo()),
+        replyData(
+          "session.get",
+          sessionInfo(options?.external === true ? { permissions: externalRules } : {}),
+        ),
         ...noOpenRequests,
         ...(options?.supervised === true
           ? [
@@ -1712,31 +1716,41 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("gives a resumed session T3's rules when it was made with others", () =>
-    Effect.gen(function* () {
-      const runtime = yield* openCode2ReplayRuntimeWithInstructions([
-        ...opening,
-        out("session.get", { sessionID: SESSION }),
-        replyData(
-          "session.get",
-          sessionInfo({
-            permissions: [
-              { action: "*", resource: "*", effect: "allow" },
-              { action: "subagent", resource: "*", effect: "deny" },
-            ],
-          }),
-        ),
-        ...noOpenRequests,
-        out("session.update", { sessionID: SESSION, permissions: t3Rules }),
-        reply("session.update", null),
-      ]);
-      yield* runtime.resumeThread({
-        providerThread: providerThread(yield* DateTime.now),
-        threadId,
-        modelSelection: bigPickle,
-        runtimePolicy: policy(),
-      });
-    }).pipe(Effect.scoped),
+  it.effect.each([{ external: false }, { external: true }])(
+    "sets resumed browser rules (external=$external)",
+    ({ external }) =>
+      Effect.gen(function* () {
+        const runtime = yield* openCode2ReplayRuntimeWithInstructions(
+          [
+            ...opening,
+            out("session.get", { sessionID: SESSION }),
+            replyData(
+              "session.get",
+              sessionInfo({
+                permissions: [
+                  { action: "*", resource: "*", effect: "allow" },
+                  { action: "subagent", resource: "*", effect: "deny" },
+                  { action: "browser", resource: "*", effect: "allow" },
+                  { action: "skill", resource: "browser", effect: "allow" },
+                ],
+              }),
+            ),
+            ...noOpenRequests,
+            out("session.update", {
+              sessionID: SESSION,
+              permissions: external ? externalRules : t3Rules,
+            }),
+            reply("session.update", null),
+          ],
+          { external },
+        );
+        yield* runtime.resumeThread({
+          providerThread: providerThread(yield* DateTime.now),
+          threadId,
+          modelSelection: bigPickle,
+          runtimePolicy: policy(),
+        });
+      }).pipe(Effect.scoped),
   );
 
   it.effect("moves the session when the thread's worktree changed", () =>
@@ -1789,7 +1803,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         [
           ...opening,
           out("session.get", { sessionID: SESSION }),
-          replyData("session.get", sessionInfo()),
+          replyData("session.get", sessionInfo({ permissions: externalRules })),
           out("permission.list", { sessionID: SESSION }),
           replyData("permission.list", [shellAsk.data]),
           out("session.form.list", { sessionID: SESSION }),

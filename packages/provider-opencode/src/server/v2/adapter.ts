@@ -378,13 +378,18 @@ const sessionRules = (
   paths: ReadonlyArray<Rule>,
   grants: ReadonlyArray<Rule>,
   mcpServerName: string | null,
+  external: boolean,
 ): ReadonlyArray<Rule> => [
   ...(policy.runtimeMode === "full-access"
     ? [
         rule("*", "allow"),
-        // Re-deny OpenCode's browser: it needs OpenCode's desktop app, which T3 never attaches.
-        rule("browser", "deny"),
-        { action: "skill", resource: "browser", effect: "deny" } satisfies Rule,
+        // T3 does not attach OpenCode's desktop browser to managed servers.
+        ...(external
+          ? []
+          : [
+              rule("browser", "deny"),
+              { action: "skill", resource: "browser", effect: "deny" } satisfies Rule,
+            ]),
       ]
     : [
         rule("shell", "ask"),
@@ -2783,6 +2788,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         paths,
         policy.runtimeMode === "full-access" ? [] : thread.grants,
         appThreadId === null ? null : yield* mcpServerNameFor(appThreadId),
+        connection.external,
       );
     });
 

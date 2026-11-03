@@ -65,11 +65,7 @@ const mcpRules = (name: string) => [
   { action: "t3-code-*", resource: "*", effect: "deny" },
   { action: `t3-code-thread_${name}_*`, resource: "*", effect: "allow" },
 ];
-const FULL_ACCESS = [
-  { action: "*", resource: "*", effect: "allow" },
-  { action: "browser", resource: "*", effect: "deny" },
-  { action: "skill", resource: "browser", effect: "deny" },
-];
+const FULL_ACCESS = [{ action: "*", resource: "*", effect: "allow" }];
 
 const t3Rules = (name: string) => [...FULL_ACCESS, ...mcpRules(name)];
 
