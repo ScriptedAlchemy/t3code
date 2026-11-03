@@ -1,19 +1,19 @@
 # Context handoffs
 
-Portable provider and fork handoffs are textual summaries. They do not claim native provider context
-parity.
+Portable provider handoffs select saved history within a context budget. Selected user and assistant
+messages retain their complete text and roles; activity is attributed as context. Generated
+conversation summaries may stand in for older items when the project has opted in, but only after
+their sources are revalidated and every range of a replaced item is covered. These transfers do not
+reconstruct native provider session state, tool state, approvals, or attachments.
 
-`ContextHandoffServiceV2` includes user messages, assistant messages, command executions, file
-changes, checkpoints, and prior handoffs. It skips other turn item types. For text-bearing items,
-`compactText` replaces every whitespace run with one space, trims the result, and returns at most
-240 characters. A truncated value contains the first 237 characters followed by `...`. File changes
-carry the filename, while checkpoints carry only the number of files.
+Fork merge-back and side-chat fallback text use `compactText` for compact item descriptions. Its
+240-character prefix is a property of those fallback descriptions, not the provider handoff history
+budget. Omitted history remains discoverable through the handoff's thread and item references.
 
 Provider handoffs use either the full eligible app history or the delta since that provider last
-participated. Fork merge-back handoffs summarize eligible delta items from the child. Neither path
-reconstructs provider-native session state, tool state, approvals, or omitted text.
+participated. Fork merge-back handoffs summarize eligible delta items from the child.
 
-Project-knowledge and conversation-summary references must revalidate their cited messages before
+Project-knowledge and conversation-summary references must revalidate their cited sources before
 expansion or replay into a new provider history. Deleted threads/projects, rolled-back runs, and
 digest mismatches make evidence unavailable; durable facts remain, but retained delivery excerpts
 are scrubbed by bounded, model-free maintenance after removal commits, even if nobody reads the
@@ -26,5 +26,4 @@ as recalling copies already sent to a provider.
 
 Legacy v1 continuation uses a separate algorithm. It considers only user and assistant messages,
 walks backward from the newest message, and builds a transcript suffix within a 32,000-character
-budget. Do not describe that migration budget as the limit for portable handoffs, and do not describe
-the 240-character prefix as a migration rule.
+budget. Do not describe that migration budget as the limit for portable handoffs.

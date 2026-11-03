@@ -27,6 +27,10 @@
       "types": "./src/server/collectStreamText.ts",
       "import": "./src/server/collectStreamText.ts"
     },
+    "./server/conversationEvidence": {
+      "types": "./src/server/conversationEvidence.ts",
+      "import": "./src/server/conversationEvidence.ts"
+    },
     "./server/driver": {
       "types": "./src/server/driver.ts",
       "import": "./src/server/driver.ts"
