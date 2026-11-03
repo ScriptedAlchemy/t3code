@@ -40,6 +40,7 @@ import { TestClock } from "effect/testing";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import { T3_CODE_BROWSER_TOOL_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
@@ -86,7 +87,12 @@ const mcpRules = [
   { action: "t3-code-*", resource: "*", effect: "deny" },
   { action: "t3-code-thread_opencode2-adapter_*", resource: "*", effect: "allow" },
 ];
-const t3Rules = [{ action: "*", resource: "*", effect: "allow" }, ...mcpRules];
+const t3Rules = [
+  { action: "*", resource: "*", effect: "allow" },
+  { action: "browser", resource: "*", effect: "deny" },
+  { action: "skill", resource: "browser", effect: "deny" },
+  ...mcpRules,
+];
 const TITLE = "Prime check";
 const sessionInfo = (overrides: Record<string, unknown> = {}) => ({
   id: SESSION,
@@ -2425,7 +2431,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           providerInstanceId: instanceId,
           endpoint: "http://127.0.0.1:3773/mcp",
           authorizationHeader: "Bearer thread-credential",
-          browserToolsAvailable: false,
+          browserToolsAvailable: true,
         });
         yield* Effect.addFinalizer(() => mcpSessions.clear(threadId));
         const server = "t3-code-thread_opencode2-adapter";
@@ -2517,6 +2523,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           "Use `delegate_task` for child work using project memory",
         );
         assert.include(firstInstructions.value, "native OpenCode subagents do not inherit");
+        assert.include(firstInstructions.value, T3_CODE_BROWSER_TOOL_INSTRUCTIONS.trim());
         assert.lengthOf(instructions, 4);
         assert.deepEqual(instructions[2], instructions[0]);
         // A transient registration failure changes availability, not the adapter's supported features.
@@ -2595,6 +2602,8 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           sessionInfo({
             permissions: [
               { action: "*", resource: "*", effect: "allow" },
+              { action: "browser", resource: "*", effect: "deny" },
+              { action: "skill", resource: "browser", effect: "deny" },
               { action: "t3-code-*", resource: "*", effect: "deny" },
               { action: `${server}_*`, resource: "*", effect: "allow" },
             ],
@@ -4032,6 +4041,8 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           sessionID: FORK,
           permissions: [
             { action: "*", resource: "*", effect: "allow" },
+            { action: "browser", resource: "*", effect: "deny" },
+            { action: "skill", resource: "browser", effect: "deny" },
             { action: "t3-code-*", resource: "*", effect: "deny" },
             { action: "t3-code-thread_opencode2-adapter_fork_*", resource: "*", effect: "allow" },
           ],

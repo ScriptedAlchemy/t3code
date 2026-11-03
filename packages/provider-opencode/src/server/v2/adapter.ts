@@ -59,7 +59,10 @@ import * as OpenCodeRuntime from "../OpenCodeRuntime.ts";
 import { readableProviderErrorMessage } from "../providerErrorMessage.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
-import { t3OrchestrationSystemPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
+import {
+  T3_CODE_BROWSER_TOOL_INSTRUCTIONS,
+  t3OrchestrationSystemPrompt,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { getModelSelectionStringOptionValue, modelSelectionsEqual } from "@t3tools/shared/model";
@@ -377,7 +380,12 @@ const sessionRules = (
   mcpServerName: string | null,
 ): ReadonlyArray<Rule> => [
   ...(policy.runtimeMode === "full-access"
-    ? [rule("*", "allow")]
+    ? [
+        rule("*", "allow"),
+        // Re-deny OpenCode's browser: it needs OpenCode's desktop app, which T3 never attaches.
+        rule("browser", "deny"),
+        { action: "skill", resource: "browser", effect: "deny" } satisfies Rule,
+      ]
     : [
         rule("shell", "ask"),
         rule("edit", policy.runtimeMode === "auto-accept-edits" ? "allow" : "ask"),
@@ -3088,6 +3096,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       }
       const instructions = [
         buildRuntimeInstructions({ harness: "OpenCode", model: turnInput.modelSelection.model }),
+        mcpAvailable && mcpSession?.browserToolsAvailable === true
+          ? T3_CODE_BROWSER_TOOL_INSTRUCTIONS.trim()
+          : undefined,
         t3OrchestrationSystemPrompt(mcpAvailable, mcpSession?.capabilities?.has("device") === true),
         mcpAvailable ? OPENCODE_NATIVE_CHILD_INSTRUCTIONS : undefined,
       ]
