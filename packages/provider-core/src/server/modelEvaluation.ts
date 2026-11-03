@@ -36,22 +36,43 @@ const IDENTITY_NAMES = [
   "Cursor",
   "Muse",
   "Pi",
+  "GPT",
+  "Google",
+  "xAI",
+  "Kimi",
+  "Moonshot",
+  "GLM",
+  "Zhipu",
+  "MiniMax",
+  "Gemma",
+  "Composer",
+  "Fable",
 ];
+const escapePattern = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function familyTokens(model: string) {
+  return model.split("/").flatMap((segment) => segment.match(/^\p{L}{3,}/u) ?? []);
+}
 
 function identityRedactor(identities: ReadonlyArray<string>) {
-  const aliases = [
-    ...new Set([...IDENTITY_NAMES, ...identities].filter((value) => value.trim().length > 1)),
-  ]
+  const aliases = [...new Set(identities.filter((value) => value.trim().length > 1))]
     .toSorted((a, b) => b.length - a.length)
-    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    .map(escapePattern);
   const pattern = new RegExp(
     `(?<![\\p{L}\\p{N}])(?:${aliases.join("|")})(?![\\p{L}\\p{N}])`,
     "giu",
   );
+  const namePattern = new RegExp(
+    `(?<![\\p{L}\\p{N}])(?:${IDENTITY_NAMES.map(escapePattern).join("|")})(?![\\p{L}])`,
+    "giu",
+  );
   return (text: string) =>
     text
+      .replace(/\n?agentId: .*? to continue this agent\)/g, "")
+      .replace(/\n?<usage>[\s\S]*?<\/usage>/g, "")
+      .replace(/(?<![\p{L}\p{N}])(?:gpt|o[134])[-_.]?\d[\w./-]*/giu, "[identity removed]")
       .replace(pattern, "[identity removed]")
-      .replace(/\b(?:gpt|o[134])[-_.]?[\d][\w./-]*\b/giu, "[identity removed]");
+      .replace(namePattern, "[identity removed]");
 }
 
 function clip(text: string, limit: number) {
@@ -85,11 +106,13 @@ function toolValue(value: unknown, redact: (text: string) => string, depth = 0):
 }
 
 function evidenceText(item: OrchestrationV2TurnItem, redact: (text: string) => string) {
+  const json = (value: unknown) =>
+    JSON.stringify(value, (_key, child) => (typeof child === "string" ? redact(child) : child));
   switch (item.type) {
     case "command_execution":
       return {
         kind: "command" as const,
-        text: JSON.stringify({
+        text: json({
           status: item.status,
           input: item.input,
           output: item.output ?? "[output unavailable]",
@@ -101,7 +124,7 @@ function evidenceText(item: OrchestrationV2TurnItem, redact: (text: string) => s
     case "file_change":
       return {
         kind: "file_change" as const,
-        text: JSON.stringify({
+        text: json({
           status: item.status,
           path: item.fileName,
           patch: item.diffStr ?? null,
@@ -113,7 +136,7 @@ function evidenceText(item: OrchestrationV2TurnItem, redact: (text: string) => s
     case "dynamic_tool":
       return {
         kind: "tool" as const,
-        text: JSON.stringify({
+        text: json({
           status: item.status,
           input: toolValue(item.input, redact),
           output: toolValue(item.output, redact),
@@ -123,7 +146,7 @@ function evidenceText(item: OrchestrationV2TurnItem, redact: (text: string) => s
     case "subagent":
       return {
         kind: "subagent" as const,
-        text: JSON.stringify({
+        text: json({
           status: item.status,
           request: item.prompt,
           reportedResult: item.result,
@@ -193,6 +216,7 @@ export function buildModelEvaluationEvidence(input: {
     input.run.modelSelection.model,
     input.run.providerInstanceId,
     ...input.run.modelSelection.model.split("/"),
+    ...familyTokens(input.run.modelSelection.model),
     ...items
       .flatMap((item) => [
         item.id,

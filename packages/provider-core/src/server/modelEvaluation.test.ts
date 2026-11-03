@@ -187,6 +187,45 @@ it("separates identities from evidence and preserves tool outcomes and task data
       durationMs: 40,
     },
   });
+  const glued = fixture();
+  const gluedEvidence = buildModelEvaluationEvidence({
+    ...glued,
+    turnItems: [
+      ...glued.turnItems,
+      {
+        ...itemBase("glued", 4),
+        type: "command_execution",
+        input: "cat notes.txt",
+        output: "done\nClaude wrote this\r\n\tOpus too\nQwen3, Llama3.1, gpt-oss and GPT answered",
+        exitCode: 0,
+      },
+      {
+        ...itemBase("patch", 4),
+        type: "file_change",
+        fileName: "notes.txt",
+        diffStr: "+first\n+Gemini and Grok4 wrote this\n+Google and Kimi built me",
+      },
+    ],
+  })!;
+  const family = fixture();
+  const familyEvidence = buildModelEvaluationEvidence({
+    ...family,
+    run: { ...run, modelSelection: { ...run.modelSelection, model: "vexel-9/zorn-pro" } },
+    messages: [
+      family.messages[0]!,
+      {
+        ...family.messages[1]!,
+        text: "Zorn from Vexel Labs fixed it.\nagentId: a1b2 (use SendMessage with to: 'a1b2' to continue this agent)\n<usage>subagent_tokens: 28485\nduration_ms: 1824</usage>",
+      },
+    ],
+  })!;
+  expect(JSON.stringify(familyEvidence.packet).toLowerCase()).not.toMatch(
+    /zorn|vexel|sendmessage|28485|subagent_tokens/,
+  );
+  const gluedPrompt = buildModelEvaluationPrompt(gluedEvidence.packet).prompt.toLowerCase();
+  for (const name of ["claude", "opus", "qwen", "llama", "gpt", "gemini", "grok", "google", "kimi"])
+    expect(gluedPrompt).not.toContain(name);
+  expect(gluedPrompt).toContain("wrote this");
   const input = fixture();
   const failedEdit = buildModelEvaluationEvidence({
     ...input,

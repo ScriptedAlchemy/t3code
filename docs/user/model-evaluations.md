@@ -16,7 +16,9 @@ which keeps account authentication while disabling custom instructions and exten
 After a task ends, T3 Code gives the judge the request, relevant conversation context, and available
 outcome evidence with model and provider labels removed. The same process covers subagent threads
 run through T3's orchestration. Model names mentioned inside free-form text may be harder to remove
-completely, so blind evaluation reduces identity cues without guaranteeing anonymity.
+completely, and tool output keeps its structure and any token, cost, or timing figures a tool
+reports. Those can hint at which harness ran the task, so blind evaluation reduces identity cues
+without guaranteeing anonymity.
 
 The judge scores task completion, correctness, instruction following, and verification from 0 to 4.
 When the evidence cannot establish a score, that dimension stays unscored. A claim that tests passed
