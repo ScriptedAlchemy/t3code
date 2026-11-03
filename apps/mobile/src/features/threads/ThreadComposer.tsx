@@ -917,6 +917,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
           message={draftMessage}
           enabled={
             props.serverConfig?.settings.threadSplitSuggestionsEnabled === true &&
+            Boolean(props.serverConfig.settings.threadSplitModelEndpoint) &&
             !props.isDraft &&
             !props.hidden &&
             !props.activeThreadBusy &&

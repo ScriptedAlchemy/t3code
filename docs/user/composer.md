@@ -456,12 +456,12 @@ Android opens a compatible installed file viewer.
 
 ## Suggestions to start a fresh thread
 
-In **Settings → Labs**, enable **Thread split suggestions** for an environment
+In **Settings → Labs**, enable **Suggest new threads** for an environment
 and configure its local decision-model endpoint. Suggestions are off by default.
 When an idle thread has a text-only draft that appears independent of its earlier
 work, T3 can offer to start a new thread with that draft. Nothing is sent until
-you send it yourself. Dismiss the suggestion to keep working in the current thread,
-or turn the setting off to stop checks.
+you send it yourself. Dismiss the suggestion to keep working in the current thread;
+it stays hidden until you send or clear that draft. Turn the setting off to stop checks.
 
 Checks run on the connected server, including when you use a remote browser or
 phone. The experimental model can miss new tasks or suggest a split for a follow-up;

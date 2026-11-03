@@ -72,7 +72,7 @@ function setup() {
   );
 }
 
-it("discards stale replies, supports opt-out and dismissal, and preserves concurrent draft edits during explicit transfer", async () => {
+it("discards stale replies, supports opt-out and dismissal that outlasts edits, and preserves concurrent draft edits during explicit transfer", async () => {
   const view = setup();
   await using screen = await render(view());
   using _timers = fakeTimers();
@@ -104,6 +104,12 @@ it("discards stale replies, supports opt-out and dismissal, and preserves concur
   await expect.element(action).not.toBeInTheDocument();
   await act(() => vi.advanceTimersByTime(1000));
   expect(replies).toHaveLength(0);
+  state.source.prompt = "A new task, continued in this thread";
+  await screen.rerender(view());
+  await act(() => vi.advanceTimersByTime(1000));
+  expect(replies).toHaveLength(0);
+  state.source.prompt = "";
+  await screen.rerender(view());
 
   state.source.prompt = "Another task";
   await screen.rerender(view());

@@ -27,16 +27,22 @@ export function ThreadSplitSuggestion(props: ThreadSplitSuggestionProps) {
   const canSuggest = useAtomValue(
     threadEnvironment.suggestSplit.permissionAtom(props.environmentId),
   );
-  if (!props.enabled || !focused || !canSuggest || !props.message.trim()) return null;
+  const [dismissed, setDismissed] = useState(false);
+  const hasMessage = Boolean(props.message.trim());
+  if (dismissed && !hasMessage) setDismissed(false);
+  if (!props.enabled || !focused || !canSuggest || !hasMessage || dismissed) return null;
   return (
     <ActiveThreadSplitSuggestion
       key={JSON.stringify([props.environmentId, props.threadId, props.message])}
       {...props}
+      onDismiss={() => setDismissed(true)}
     />
   );
 }
 
-function ActiveThreadSplitSuggestion(props: ThreadSplitSuggestionProps) {
+function ActiveThreadSplitSuggestion(
+  props: ThreadSplitSuggestionProps & { readonly onDismiss: () => void },
+) {
   const navigation = useNavigation();
   const [suggestedMessage, setSuggestedMessage] = useState<string | null>(null);
   const suggest = useAtomCommand(threadEnvironment.suggestSplit, {
@@ -86,11 +92,7 @@ function ActiveThreadSplitSuggestion(props: ThreadSplitSuggestionProps) {
           setComposerDraftText(props.draftKey, "");
         }}
       />
-      <Button
-        label="Dismiss thread suggestion"
-        tone="text"
-        onPress={() => setSuggestedMessage(null)}
-      />
+      <Button label="Dismiss thread suggestion" tone="text" onPress={props.onDismiss} />
     </View>
   );
 }

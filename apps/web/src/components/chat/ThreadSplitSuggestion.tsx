@@ -35,7 +35,7 @@ export function ThreadSplitSuggestion({
   });
   const newThread = useNewThreadHandler();
   const [suggestedKey, setSuggestedKey] = useState<string | null>(null);
-  const [dismissedPrompt, setDismissedPrompt] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState(false);
   const [opening, setOpening] = useState(false);
   const enabled =
     settings.threadSplitSuggestionsEnabled &&
@@ -56,6 +56,7 @@ export function ThreadSplitSuggestion({
     setObservedKey(selectionKey);
     setSuggestedKey(null);
   }
+  if (dismissed && !prompt.trim()) setDismissed(false);
   const check = useEffectEvent(async (message: string, key: string, cancelled: () => boolean) => {
     const result = await suggest({
       environmentId: threadRef.environmentId,
@@ -66,16 +67,16 @@ export function ThreadSplitSuggestion({
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- debounces remote inference and ignores replies after the draft or destination changes
   useEffect(() => {
-    if (!enabled || prompt === dismissedPrompt) return;
+    if (!enabled || dismissed) return;
     let cancelled = false;
     const timer = setTimeout(() => void check(prompt, requestKey, () => cancelled), 1000);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [enabled, requestKey, prompt, dismissedPrompt]);
+  }, [enabled, requestKey, prompt, dismissed]);
 
-  if (!enabled || suggestedKey !== requestKey || dismissedPrompt === prompt) return null;
+  if (!enabled || dismissed || suggestedKey !== requestKey) return null;
   const open = async () => {
     const current = useComposerDraftStore.getState().getComposerDraft(threadRef);
     if (
@@ -123,7 +124,7 @@ export function ThreadSplitSuggestion({
         type="button"
         variant="ghost"
         size="sm"
-        onClick={() => setDismissedPrompt(prompt)}
+        onClick={() => setDismissed(true)}
         aria-label="Dismiss new thread suggestion"
       >
         Dismiss
