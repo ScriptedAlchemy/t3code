@@ -83,16 +83,16 @@ function commandArgs(command: ChildProcess.Command): ReadonlyArray<string> {
 const ARCHIVE = { archiveVersion: "1.2.3-preview.20260911.4" } as const;
 
 const runArchiveRunner = Effect.fn("test.runArchiveRunner")(
-  function* (installedVersion: string) {
+  function* (installedVersion: string, installDirectory = ".local/bin") {
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectoryScoped();
-    yield* fs.makeDirectory(`${root}/.local/bin`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/${installDirectory}`, { recursive: true });
     yield* fs.makeDirectory(`${root}/bin`);
     yield* fs.writeFileString(
-      `${root}/.local/bin/t3`,
+      `${root}/${installDirectory}/t3`,
       `#!/bin/sh\ncase "$1" in\n--version) echo 't3 v${installedVersion}';;\n__ssh-helper) exit 0;;\n*) printf 'installed:%s\\n' "$*";;\nesac\n`,
     );
-    yield* fs.chmod(`${root}/.local/bin/t3`, 0o700);
+    yield* fs.chmod(`${root}/${installDirectory}/t3`, 0o700);
     yield* fs.writeFileString(`${root}/bin/curl`, '#!/bin/sh\necho "HTTP 404" >&2\nexit 22\n');
     yield* fs.chmod(`${root}/bin/curl`, 0o700);
     yield* fs.writeFileString(`${root}/runner.sh`, SshTunnel.buildRemoteT3RunnerScript(ARCHIVE));
@@ -161,13 +161,15 @@ describe("ssh tunnel scripts", () => {
       }),
   );
 
-  it.live("reuses an installed CLI only when it matches the exact requested release", () =>
-    Effect.gen(function* () {
-      const result = yield* runArchiveRunner(ARCHIVE.archiveVersion);
-      assert.equal(result.exitCode, 0, result.stderr);
-      assert.equal(result.stdout, "installed:pair --json\n");
-      assert.isFalse(result.runtimeExists);
-    }),
+  it.live.each([".local/bin", ".t3/bin"])(
+    "reuses an exact-release installed CLI in %s",
+    (installDirectory) =>
+      Effect.gen(function* () {
+        const result = yield* runArchiveRunner(ARCHIVE.archiveVersion, installDirectory);
+        assert.equal(result.exitCode, 0, result.stderr);
+        assert.equal(result.stdout, "installed:pair --json\n");
+        assert.isFalse(result.runtimeExists);
+      }),
   );
 
   it.live.each(["1.2.2", "1.2.3", "1.2.3-nightly.20260911.4", "1.2.3-preview.20260911.3"])(

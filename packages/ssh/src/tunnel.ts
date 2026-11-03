@@ -445,9 +445,9 @@ T3_RUNTIME_DIR="$HOME/.t3/runtime/versions/$T3_ARCHIVE_VERSION"
 t3_runtime_ready() {
   [ -x "$T3_RUNTIME_DIR/t3" ] && [ "$(cat "$T3_RUNTIME_DIR/.install-complete" 2>/dev/null)" = "$T3_ARCHIVE_VERSION" ]
 }
-# Without the pinned runtime, reuse only an exact-release CLI from install.sh's PATH symlink.
+# Reuse only an exact-release CLI from the shell or the standard install locations.
 if ! t3_runtime_ready; then
-  for T3_INSTALLED in "$(command -v t3 2>/dev/null || true)" "$HOME/.local/bin/t3"; do
+  for T3_INSTALLED in "$(command -v t3 2>/dev/null || true)" "$HOME/.local/bin/t3" "$HOME/.t3/bin/t3"; do
     [ -n "$T3_INSTALLED" ] && [ -x "$T3_INSTALLED" ] || continue
     T3_INSTALLED_VERSION="$("$T3_INSTALLED" --version 2>/dev/null || true)"
     case "$T3_INSTALLED_VERSION" in
