@@ -84,6 +84,7 @@ const makeUnsupportedTextGeneration = (): ProviderTextGenerationRuntime => {
     generateReviewGuide: () => unsupported("generateReviewGuide"),
     generateKnowledgeCandidates: () => unsupported("generateKnowledgeCandidates"),
     generateConversationSummary: () => unsupported("generateConversationSummary"),
+    generateModelEvaluation: () => unsupported("generateModelEvaluation"),
   };
 };
 

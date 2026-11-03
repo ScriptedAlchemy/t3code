@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./modelEvaluations": {
+      "types": "./src/modelEvaluations/index.ts",
+      "default": "./src/modelEvaluations/index.ts"
+    },
     "./projectCode": {
       "types": "./src/projectCode/index.ts",
       "default": "./src/projectCode/index.ts"

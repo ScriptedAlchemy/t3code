@@ -34,6 +34,7 @@ import {
 } from "../project/knowledge/deliveryScrubSchedule.ts";
 import { AssistedLearningRunner } from "../project/knowledge/assistedLearningSchedule.ts";
 import { ConversationSummaryRuntime } from "../project/conversationSummaries/conversationSummarySchedule.ts";
+import { ModelEvaluationRuntime } from "../modelEvaluations/modelEvaluationSchedule.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
@@ -103,6 +104,7 @@ export const layerExecutor: Layer.Layer<
     const assistedLearning = yield* AssistedLearningRunner;
     const deliveryScrubber = yield* DeliveryScrubRunner;
     const conversationSummaries = yield* ConversationSummaryRuntime;
+    const modelEvaluations = yield* ModelEvaluationRuntime;
     return OrchestrationEffectExecutorV2.of({
       execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function (effect, options) {
         const willRetry = options?.willRetry ?? false;
@@ -485,7 +487,8 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
-          case "checkpoint.capture":
+          case "checkpoint.capture": {
+            const request = effect.request;
             return runFinalization
               .finalize({
                 threadId: effect.threadId,
@@ -493,6 +496,24 @@ export const layerExecutor: Layer.Layer<
                 scopeId: effect.request.scopeId,
               })
               .pipe(
+                Effect.tapCause((cause) =>
+                  willRetry || Cause.hasInterruptsOnly(cause)
+                    ? Effect.void
+                    : modelEvaluations
+                        .enqueueRun({
+                          threadId: effect.threadId,
+                          runId: request.runId,
+                          runOutcome: "failed",
+                        })
+                        .pipe(
+                          Effect.catchCause(() =>
+                            Effect.logWarning(
+                              "Could not record an unavailable model evaluation after checkpoint failure",
+                              { effectId: effect.id },
+                            ),
+                          ),
+                        ),
+                ),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
@@ -502,6 +523,7 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          }
           case "scheduled-tasks.cleanup":
             return resourceCleanup.cleanupScheduledTasks(effect.threadId).pipe(
               Effect.mapError(
@@ -578,6 +600,23 @@ export const layerExecutor: Layer.Layer<
           case "project-knowledge.extract":
             return assistedLearning
               .extractRun({
+                threadId: effect.threadId,
+                runId: effect.request.runId,
+                runOutcome: effect.request.runOutcome,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
+          case "model-evaluation.generate":
+            return modelEvaluations
+              .evaluateRun({
                 threadId: effect.threadId,
                 runId: effect.request.runId,
                 runOutcome: effect.request.runOutcome,

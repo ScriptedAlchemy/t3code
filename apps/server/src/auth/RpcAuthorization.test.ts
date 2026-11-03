@@ -73,6 +73,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.conversationSummariesList,
       WS_METHODS.conversationSummariesDescribe,
       WS_METHODS.conversationSummariesExpand,
+      WS_METHODS.modelEvaluationsList,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
     }

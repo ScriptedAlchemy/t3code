@@ -3,6 +3,7 @@ import {
   CheckpointId,
   CheckpointScopeId,
   CommandId,
+  DEFAULT_SERVER_SETTINGS,
   NodeId,
   ProjectId,
   ProviderSessionId,
@@ -38,6 +39,10 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { AssistedLearningRunner } from "../project/knowledge/assistedLearningSchedule.ts";
+import {
+  ModelEvaluationRuntime,
+  modelEvaluationEffects,
+} from "../modelEvaluations/modelEvaluationSchedule.ts";
 import {
   DeliveryScrubRunner,
   deliveryScrubEffect,
@@ -200,6 +205,72 @@ const providerThreadId = ProviderThreadId.make("provider-thread:effect-worker-re
 const providerTurnId = ProviderTurnId.make("provider-turn:effect-worker-restart");
 const attemptId = RunAttemptId.make("run-attempt:effect-worker-restart");
 const runId = RunId.make("run:effect-worker-restart");
+
+it.effect(
+  "replays model evaluations once on the maintenance lane without holding a later turn",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const job = modelEvaluationEffects({
+        threadId,
+        runId,
+        runOutcome: "completed",
+        settings: { ...DEFAULT_SERVER_SETTINGS, enableModelEvaluations: true },
+      })[0]!;
+      const executor = layerExecutorFor({ events }).pipe(
+        Layer.provide(
+          Layer.succeed(ModelEvaluationRuntime, {
+            evaluateRun: (request) =>
+              Ref.update(events, (value) => [
+                ...value,
+                `judge:${request.runId}:${request.runOutcome}`,
+              ]).pipe(
+                Effect.andThen(Deferred.succeed(entered, undefined)),
+                Effect.andThen(Deferred.await(release)),
+              ),
+            enqueueRun: () => Effect.void,
+            guidance: () => Effect.succeed([]),
+          }),
+        ),
+      );
+      const layer = EffectWorker.layer.pipe(
+        Layer.provideMerge(
+          Layer.merge(
+            EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+            executor,
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* outbox.enqueue([job]);
+        assert.isTrue(
+          Option.isSome(yield* outbox.claimNext({ workerId: "lost-judge", lane: "maintenance" })),
+        );
+        assert.deepEqual(yield* outbox.reconcileAfterProcessLoss, { requeued: 1, cancelled: 0 });
+        yield* worker.runMaintenanceOnce.pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        yield* outbox.enqueue([
+          {
+            id: "effect:after-judge",
+            commandId: CommandId.make("command:after-judge"),
+            threadId,
+            request: { type: "provider-turn.start", runId },
+          },
+        ]);
+        assert.isTrue(yield* worker.runTurnOnce);
+        assert.isFalse(yield* Deferred.isDone(release));
+        yield* Deferred.succeed(release, undefined);
+        yield* outbox.awaitSettled(job.id);
+        yield* outbox.enqueue([job]);
+        assert.equal(yield* worker.drain(), 0);
+        assert.deepEqual(yield* Ref.get(events), [`judge:${runId}:completed`, "start"]);
+      }).pipe(Effect.provide(layer));
+    }),
+);
 
 it.effect("starts a follow-up turn while assisted learning is held", () =>
   Effect.gen(function* () {

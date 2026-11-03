@@ -4,6 +4,7 @@ import {
   type TextGenerationOperation,
   type UnifiedSettings,
 } from "@t3tools/contracts";
+import { isModelEvaluationJudge } from "@t3tools/client-runtime/modelEvaluations";
 
 import { mergeEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
@@ -23,6 +24,7 @@ const OPERATION_LABELS: Record<TextGenerationOperation, string> = {
   generateReviewGuide: "review guides",
   generateKnowledgeCandidates: "project knowledge",
   generateConversationSummary: "conversation summaries",
+  generateModelEvaluation: "model evaluations",
 };
 
 export function useScopedModelDisabledReason(
@@ -59,9 +61,10 @@ export function useScopedModelDisabledReason(
         return `This model is unavailable on ${environment?.label ?? "a selected environment"}. Select that environment to choose its model separately.`;
       }
       const provider = providers.find((provider) => provider.instanceId === instanceId);
-      const unsupported = requiredOperations.find(
-        (operation) =>
-          provider !== undefined && !isProviderTextGenerationCapable(provider, operation),
+      const unsupported = requiredOperations.find((operation) =>
+        operation === "generateModelEvaluation"
+          ? provider === undefined || !isModelEvaluationJudge(provider)
+          : provider !== undefined && !isProviderTextGenerationCapable(provider, operation),
       );
       if (unsupported) {
         return `This provider cannot generate ${OPERATION_LABELS[unsupported]} on ${environment.label}. Choose another provider for this setting.`;

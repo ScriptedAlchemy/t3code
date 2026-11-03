@@ -9,6 +9,12 @@ import {
 } from "./conversationSummaries.ts";
 import { LoomWindow, LoomWindowInput, ProjectLoomError } from "./projectLoom.ts";
 import {
+  ModelEvaluationClearInput,
+  ModelEvaluationError,
+  ModelEvaluationListInput,
+  ModelEvaluationReport,
+} from "./modelEvaluation.ts";
+import {
   ProjectKnowledgeError,
   ProjectKnowledgeMutation,
   ProjectKnowledgeListInput,
@@ -467,6 +473,8 @@ export const WS_METHODS = {
   conversationSummariesList: "conversationSummaries.list",
   conversationSummariesDescribe: "conversationSummaries.describe",
   conversationSummariesExpand: "conversationSummaries.expand",
+  modelEvaluationsList: "modelEvaluations.list",
+  modelEvaluationsClear: "modelEvaluations.clear",
   projectReadLoomWindow: "project.readLoomWindow",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -2164,6 +2172,19 @@ export const WsConversationSummariesRpcGroup = RpcGroup.make(
   }),
 ).middleware(RpcScopeAuthorization);
 
+export const WsModelEvaluationsRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.modelEvaluationsList, {
+    payload: ModelEvaluationListInput,
+    success: ModelEvaluationReport,
+    error: Schema.Union([ModelEvaluationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.modelEvaluationsClear, {
+    payload: ModelEvaluationClearInput,
+    success: Schema.Void,
+    error: Schema.Union([ModelEvaluationError, EnvironmentAuthorizationError]),
+  }),
+).middleware(RpcScopeAuthorization);
+
 export const WsProjectCodeRpcGroup = RpcGroup.make(
   WsProjectCodeQueryRpc,
   WsProjectCodeFileHistoryRpc,
@@ -2387,5 +2408,6 @@ export const WsRpcGroup = RpcGroup.make(
   .middleware(RpcScopeAuthorization)
   .merge(WsProjectKnowledgeRpcGroup)
   .merge(WsConversationSummariesRpcGroup)
+  .merge(WsModelEvaluationsRpcGroup)
   .merge(WsProjectLoomRpcGroup)
   .merge(WsProjectCodeRpcGroup);
