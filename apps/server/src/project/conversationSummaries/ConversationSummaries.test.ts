@@ -473,6 +473,13 @@ it.effect("negotiates ranged summary responses while preserving legacy whole-mes
     );
     assert.equal(oldPage.sources.length, 16);
     assert.isNull(oldPage.nextOffset);
+    const modernDecode = Schema.decodeUnknownEffect(
+      Schema.toCodecJson(ConversationSummaryExpansion),
+    );
+    const legacyEncode = Schema.encodeEffect(Schema.toCodecJson(LegacySummaryExpansion));
+    const fromOldServer = yield* modernDecode(yield* legacyEncode(oldPage));
+    assert.deepEqual(fromOldServer, oldPage);
+    assert.equal(fromOldServer.nextTextOffset ?? 0, 0);
     assert.equal(
       oldPage.sources[0]?.result.state === "available" ? oldPage.sources[0].result.text : null,
       rawText(0),

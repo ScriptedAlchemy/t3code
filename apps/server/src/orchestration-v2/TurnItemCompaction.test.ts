@@ -597,7 +597,7 @@ it.effect("keeps post-bound appends visible during compaction", () =>
   ).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("removes duplicate provider transcripts while preserving history and rebuilds", () =>
+it.effect.each([2, 1_000])("compacts %s handoffs without losing history", (count) =>
   Effect.gen(function* () {
     const sink = yield* EventSink.EventSinkV2;
     const eventStore = yield* EventStore.EventStoreV2;
@@ -606,10 +606,14 @@ it.effect("removes duplicate provider transcripts while preserving history and r
     const sql = yield* SqlClient.SqlClient;
     const now = yield* DateTime.now;
     const threadId = ThreadId.make("thread:handoff-compaction");
-    const fixtures = [
-      legacyHandoff(threadId, now, "full", "full_thread_summary"),
-      legacyHandoff(threadId, now, "delta", "delta_since_target_last_seen"),
-    ];
+    const fixtures = Array.from({ length: count }, (_, index) =>
+      legacyHandoff(
+        threadId,
+        now,
+        String(index),
+        index % 2 === 0 ? "full_thread_summary" : "delta_since_target_last_seen",
+      ),
+    );
     const writes = yield* sink.write({
       events: [
         threadCreated(makeThread(threadId, now), now),
@@ -666,7 +670,7 @@ it.effect("removes duplicate provider transcripts while preserving history and r
     });
     assert.deepEqual(yield* eventStore.read({ threadId }).pipe(Stream.runCollect), expected);
     const after = yield* copies();
-    assert.lengthOf(after, 8);
+    assert.lengthOf(after, count * 4);
     assert.isTrue(after.every((row) => fixtures.some(({ receipt }) => row.summary === receipt)));
     assert.deepEqual(
       after.map(({ source, id, history }) => ({ source, id, history })),

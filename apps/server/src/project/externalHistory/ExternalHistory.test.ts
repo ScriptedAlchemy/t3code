@@ -306,6 +306,18 @@ it.layer(NodeServices.layer)("external history service", (it) => {
       });
       if (result.operation !== "search") return yield* Effect.die("wrong response");
       expect(result.matches[0]?.excerpt).toBe("needle");
+      for (const sourceId of [file, "../../private/conversations.json", "chatgpt:../private"]) {
+        expect(
+          (yield* service
+            .query({ operation: "search", sourceId, query: "needle" })
+            .pipe(Effect.flip)).reason,
+        ).toBe("missing");
+        expect(
+          (yield* service
+            .query({ operation: "read", ref: { ...result.matches[0]!.ref, sourceId } })
+            .pipe(Effect.flip)).reason,
+        ).toBe("missing");
+      }
       state.settings = { enabled: true, chatGptExportPaths: [] };
       expect(
         (yield* service.query({ operation: "read", ref: result.matches[0]!.ref }).pipe(Effect.flip))
