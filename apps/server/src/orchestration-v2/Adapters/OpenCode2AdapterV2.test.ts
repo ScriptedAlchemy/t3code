@@ -87,12 +87,21 @@ const mcpRules = [
   { action: "t3-code-*", resource: "*", effect: "deny" },
   { action: "t3-code-thread_opencode2-adapter_*", resource: "*", effect: "allow" },
 ];
-const externalRules = [{ action: "*", resource: "*", effect: "allow" }, ...mcpRules];
 const t3Rules = [
   { action: "*", resource: "*", effect: "allow" },
   { action: "browser", resource: "*", effect: "deny" },
   { action: "skill", resource: "browser", effect: "deny" },
   ...mcpRules,
+];
+const browserAllows = [
+  { action: "browser", resource: "*", effect: "allow" },
+  { action: "skill", resource: "browser", effect: "allow" },
+];
+const browserDenies = t3Rules.slice(1, 3);
+const withBrowserRules = (rules: ReadonlyArray<unknown>, browser: ReadonlyArray<unknown>) => [
+  ...rules.slice(0, 3),
+  ...browser,
+  ...rules.slice(3),
 ];
 const TITLE = "Prime check";
 const sessionInfo = (overrides: Record<string, unknown> = {}) => ({
@@ -329,16 +338,19 @@ const resumed = (
       withInstructions([
         ...opening,
         out("session.get", { sessionID: SESSION }),
-        replyData(
-          "session.get",
-          sessionInfo(options?.external === true ? { permissions: externalRules } : {}),
-        ),
+        replyData("session.get", sessionInfo()),
         ...noOpenRequests,
         ...(options?.supervised === true
           ? [
               out("agent.list", "<any>"),
               reply("agent.list", agentList),
-              out("session.update", { sessionID: SESSION, permissions: supervisedRules }),
+              out("session.update", {
+                sessionID: SESSION,
+                permissions:
+                  options?.external === true
+                    ? withBrowserRules(supervisedRules, browserDenies)
+                    : supervisedRules,
+              }),
               reply("session.update", null),
             ]
           : []),
@@ -753,7 +765,10 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     agent: "general",
     model: { id: "big-pickle", providerID: "opencode", variant: "default" },
   });
-  const backgroundLaunch = (child: string): ReadonlyArray<ProviderReplayEntry> => {
+  const backgroundLaunch = (
+    child: string,
+    permissions?: ReadonlyArray<unknown>,
+  ): ReadonlyArray<ProviderReplayEntry> => {
     const call = "call-background";
     const tool = { sessionID: SESSION, assistantMessageID: "msg_assistant", id: call };
     return [
@@ -767,7 +782,10 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         input: { description: "Sleep", prompt: "sleep", background: true },
         executed: false,
       }),
-      event("session.created", childCreated(child)),
+      event("session.created", {
+        ...childCreated(child),
+        ...(permissions === undefined ? {} : { permissions }),
+      }),
       event("session.tool.progress", {
         ...tool,
         metadata: { sessionID: child, status: "running" },
@@ -865,52 +883,79 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("gives a background subagent the rules of a mode changed while it runs", () =>
-    Effect.gen(function* () {
-      const { runtime, thread } = yield* resumed([
-        ...backgroundLaunch(CHILD),
-        event("session.execution.succeeded", { sessionID: SESSION }),
-        out("agent.list", "<any>"),
-        reply("agent.list", agentList),
-        out("session.update", { sessionID: SESSION, permissions: supervisedRules }),
-        reply("session.update", null),
-        out("session.update", {
-          sessionID: CHILD,
-          permissions: [...supervisedRules.slice(0, 3), ...mcpRules],
-        }),
-        reply("session.update", null),
-        out("session.prompt", { sessionID: SESSION, text: "<any>" }),
-        promptAccepted,
-        event("session.execution.succeeded", { sessionID: SESSION }),
-      ]);
-      const firstEnded = yield* Deferred.make<void>();
-      const ended = yield* runtime.events.pipe(
-        Stream.filter(
-          (
-            event,
-          ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "turn.terminal" }> =>
-            event.type === "turn.terminal",
-        ),
-        Stream.tap(() => Deferred.succeed(firstEnded, undefined)),
-        Stream.take(2),
-        Stream.runCollect,
-        Effect.forkScoped,
-      );
-      yield* runtime.startTurn(withLineage(thread));
-      yield* Deferred.await(firstEnded);
-      yield* runtime.startTurn({
-        ...withLineage(thread),
-        runId: RunId.make("run:opencode2-adapter:2"),
-        runOrdinal: 2,
-        providerTurnOrdinal: 2,
-        attemptId: RunAttemptId.make("attempt:opencode2-adapter:2"),
-        runtimePolicy: policy("approval-required"),
-      });
-      assert.deepEqual(
-        [...(yield* Fiber.join(ended))].map((terminal) => terminal.status),
-        ["completed", "completed"],
-      );
-    }).pipe(Effect.scoped),
+  it.effect.each([false, true])(
+    "gives a background subagent the rules of a mode changed while it runs (external=%s)",
+    (external) =>
+      Effect.gen(function* () {
+        const launch = backgroundLaunch(
+          CHILD,
+          external ? [...t3Rules, ...browserAllows] : undefined,
+        );
+        const { runtime, thread } = yield* resumed(
+          [
+            ...launch.slice(0, -1),
+            ...(external
+              ? [
+                  out("session.update", { sessionID: CHILD, permissions: t3Rules }),
+                  reply("session.update", null),
+                ]
+              : []),
+            ...launch.slice(-1),
+            event("session.execution.succeeded", { sessionID: SESSION }),
+            out("agent.list", "<any>"),
+            reply("agent.list", agentList),
+            out("session.update", {
+              sessionID: SESSION,
+              permissions: external
+                ? withBrowserRules(supervisedRules, browserDenies)
+                : supervisedRules,
+            }),
+            reply("session.update", null),
+            out("session.update", {
+              sessionID: CHILD,
+              permissions: [
+                ...supervisedRules.slice(0, 3),
+                ...(external ? browserDenies : []),
+                ...mcpRules,
+              ],
+            }),
+            reply("session.update", null),
+            out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+            promptAccepted,
+            event("session.execution.succeeded", { sessionID: SESSION }),
+          ],
+          { external },
+        );
+        const firstEnded = yield* Deferred.make<void>();
+        const ended = yield* runtime.events.pipe(
+          Stream.filter(
+            (
+              event,
+            ): event is Extract<
+              ProviderAdapter.ProviderAdapterV2Event,
+              { type: "turn.terminal" }
+            > => event.type === "turn.terminal",
+          ),
+          Stream.tap(() => Deferred.succeed(firstEnded, undefined)),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        yield* runtime.startTurn(withLineage(thread));
+        yield* Deferred.await(firstEnded);
+        yield* runtime.startTurn({
+          ...withLineage(thread),
+          runId: RunId.make("run:opencode2-adapter:2"),
+          runOrdinal: 2,
+          providerTurnOrdinal: 2,
+          attemptId: RunAttemptId.make("attempt:opencode2-adapter:2"),
+          runtimePolicy: policy("approval-required"),
+        });
+        assert.deepEqual(
+          [...(yield* Fiber.join(ended))].map((terminal) => terminal.status),
+          ["completed", "completed"],
+        );
+      }).pipe(Effect.scoped),
   );
 
   it.effect("keeps a finished background subagent's queued report as pending work", () =>
@@ -1716,41 +1761,124 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect.each([{ external: false }, { external: true }])(
-    "sets resumed browser rules (external=$external)",
-    ({ external }) =>
-      Effect.gen(function* () {
-        const runtime = yield* openCode2ReplayRuntimeWithInstructions(
-          [
-            ...opening,
-            out("session.get", { sessionID: SESSION }),
-            replyData(
-              "session.get",
-              sessionInfo({
-                permissions: [
-                  { action: "*", resource: "*", effect: "allow" },
-                  { action: "subagent", resource: "*", effect: "deny" },
-                  { action: "browser", resource: "*", effect: "allow" },
-                  { action: "skill", resource: "browser", effect: "allow" },
-                ],
-              }),
-            ),
-            ...noOpenRequests,
-            out("session.update", {
-              sessionID: SESSION,
-              permissions: external ? externalRules : t3Rules,
+  it.effect.each([
+    {
+      name: "managed full access",
+      external: false,
+      runtimePolicy: policy(),
+      browser: browserAllows,
+      expected: t3Rules,
+    },
+    {
+      name: "disconnected external full access",
+      external: true,
+      runtimePolicy: policy(),
+      browser: [],
+      expected: t3Rules,
+    },
+    {
+      name: "omitted external permissions",
+      external: true,
+      runtimePolicy: policy(),
+      browser: undefined,
+      expected: t3Rules,
+    },
+    {
+      name: "attached external full access",
+      external: true,
+      runtimePolicy: policy(),
+      browser: browserAllows,
+      expected: withBrowserRules(t3Rules, browserAllows),
+    },
+    {
+      name: "managed supervised",
+      external: false,
+      runtimePolicy: policy("approval-required"),
+      browser: browserAllows,
+      expected: supervisedRules,
+    },
+    {
+      name: "attached external supervised",
+      external: true,
+      runtimePolicy: policy("approval-required"),
+      browser: browserAllows,
+      expected: withBrowserRules(supervisedRules, browserAllows),
+    },
+    {
+      name: "explicit external supervised denial",
+      external: true,
+      runtimePolicy: policy("approval-required"),
+      browser: browserDenies,
+      expected: withBrowserRules(supervisedRules, browserDenies),
+    },
+    {
+      name: "attached external plan",
+      external: true,
+      runtimePolicy: { ...policy("approval-required"), interactionMode: "plan" as const },
+      browser: browserAllows,
+      expected: [
+        ...supervisedRules.slice(0, 3),
+        ...browserAllows,
+        { action: "edit", resource: "*", effect: "deny" },
+        ...supervisedRules.slice(3),
+      ],
+    },
+    {
+      name: "replacing external attachment",
+      external: true,
+      runtimePolicy: policy(),
+      browser: [...browserAllows, ...browserAllows],
+      expected: withBrowserRules(t3Rules, [...browserAllows, ...browserAllows]),
+    },
+    {
+      name: "external grant followed by denial",
+      external: true,
+      runtimePolicy: policy(),
+      browser: [...browserAllows, { action: "browser", resource: "*", effect: "deny" }],
+      expected: withBrowserRules(t3Rules, [
+        ...browserAllows,
+        { action: "browser", resource: "*", effect: "deny" },
+      ]),
+    },
+  ])("sets resumed browser rules ($name)", ({ external, runtimePolicy, browser, expected }) =>
+    Effect.gen(function* () {
+      const runtime = yield* openCode2ReplayRuntimeWithInstructions(
+        [
+          ...opening,
+          out("session.get", { sessionID: SESSION }),
+          replyData(
+            "session.get",
+            sessionInfo({
+              permissions:
+                browser === undefined
+                  ? undefined
+                  : [
+                      { action: "*", resource: "*", effect: "allow" },
+                      { action: "subagent", resource: "*", effect: "deny" },
+                      ...browser,
+                    ],
             }),
-            reply("session.update", null),
-          ],
-          { external },
-        );
-        yield* runtime.resumeThread({
-          providerThread: providerThread(yield* DateTime.now),
-          threadId,
-          modelSelection: bigPickle,
-          runtimePolicy: policy(),
-        });
-      }).pipe(Effect.scoped),
+          ),
+          ...noOpenRequests,
+          ...(runtimePolicy.runtimeMode !== "full-access" ||
+          runtimePolicy.interactionMode === "plan"
+            ? [out("agent.list", "<any>"), reply("agent.list", agentList)]
+            : []),
+          out("session.update", {
+            sessionID: SESSION,
+            permissions: expected,
+          }),
+          reply("session.update", null),
+        ],
+        { external },
+      );
+      yield* runtime.resumeThread({
+        providerThread: providerThread(yield* DateTime.now),
+        threadId,
+        modelSelection: bigPickle,
+        runtimePolicy,
+      });
+    }).pipe(Effect.scoped),
   );
 
   it.effect("moves the session when the thread's worktree changed", () =>
@@ -1803,7 +1931,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         [
           ...opening,
           out("session.get", { sessionID: SESSION }),
-          replyData("session.get", sessionInfo({ permissions: externalRules })),
+          replyData("session.get", sessionInfo()),
           out("permission.list", { sessionID: SESSION }),
           replyData("permission.list", [shellAsk.data]),
           out("session.form.list", { sessionID: SESSION }),
@@ -1994,42 +2122,78 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("keeps 'allow this session' in the session's rules, not OpenCode's saved grants", () =>
-    Effect.gen(function* () {
-      const { runtime, thread } = yield* resumed(
-        [
-          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
-          promptAccepted,
-          shellAskEvent,
-          out("session.update", {
-            sessionID: SESSION,
-            permissions: [
-              ...supervisedRules.slice(0, 3),
-              { action: "shell", resource: "echo *", effect: "allow" },
-              ...supervisedRules.slice(3),
-            ],
-          }),
-          reply("session.update", null),
-          out("permission.reply", {
-            sessionID: SESSION,
-            requestID: shellAsk.data.id,
-            decision: "once",
-          }),
-          reply("permission.reply", null),
-          event("session.execution.succeeded", { sessionID: SESSION }),
-        ],
-        { supervised: true },
-      );
-      const requested = yield* requestOf(runtime).pipe(Effect.forkScoped);
-      const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
-      yield* runtime.startTurn(turnInput(thread, bigPickle, "approval-required"));
-      const request = yield* Fiber.join(requested);
-      yield* runtime.respondToRuntimeRequest({
-        requestId: request!.id,
-        decision: "acceptForSession",
-      });
-      assert.equal((yield* Fiber.join(terminal))?.status, "completed");
-    }).pipe(Effect.scoped),
+  it.effect.each(["shell", "browser"] as const)(
+    "keeps 'allow this session' in the session's rules, not OpenCode's saved grants (%s)",
+    (action) =>
+      Effect.gen(function* () {
+        const browser = action === "browser";
+        const ask = browser
+          ? { ...shellAsk.data, action, resources: ["*"], save: ["*"] }
+          : shellAsk.data;
+        const browserAsk = { action: "browser", resource: "*", effect: "ask" };
+        const { runtime, thread } = yield* resumed(
+          [
+            out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+            promptAccepted,
+            ...(browser
+              ? [
+                  event("session.permissions", {
+                    sessionID: SESSION,
+                    permissions: withBrowserRules(supervisedRules, [...browserDenies, browserAsk]),
+                  }),
+                ]
+              : []),
+            event("permission.asked", ask),
+            out("session.update", {
+              sessionID: SESSION,
+              permissions: [
+                ...supervisedRules.slice(0, 3),
+                ...(browser ? [...browserDenies, browserAsk] : []),
+                { action, resource: browser ? "*" : "echo *", effect: "allow" },
+                ...supervisedRules.slice(3),
+              ],
+            }),
+            reply("session.update", null),
+            out("permission.reply", {
+              sessionID: SESSION,
+              requestID: shellAsk.data.id,
+              decision: "once",
+            }),
+            reply("permission.reply", null),
+            ...(browser
+              ? [
+                  event("session.permissions", {
+                    sessionID: SESSION,
+                    permissions: withBrowserRules(supervisedRules, browserDenies),
+                  }),
+                ]
+              : []),
+            event("session.execution.succeeded", { sessionID: SESSION }),
+            ...(browser
+              ? [
+                  out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+                  promptAccepted,
+                  event("session.execution.succeeded", { sessionID: SESSION }),
+                ]
+              : []),
+          ],
+          { supervised: true, external: browser },
+        );
+        const requested = yield* requestOf(runtime).pipe(Effect.forkScoped);
+        const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+        yield* runtime.startTurn(turnInput(thread, bigPickle, "approval-required"));
+        const request = yield* Fiber.join(requested);
+        yield* runtime.respondToRuntimeRequest({
+          requestId: request!.id,
+          decision: "acceptForSession",
+        });
+        assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+        if (browser) {
+          const next = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+          yield* runtime.startTurn(turnInput(thread, bigPickle, "approval-required"));
+          assert.equal((yield* Fiber.join(next))?.status, "completed");
+        }
+      }).pipe(Effect.scoped),
   );
 
   it.effect("reads the agents again while a fresh server still lists none", () =>
@@ -2118,6 +2282,72 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     out("session.form.list", { sessionID: SESSION }),
     replyData("session.form.list", forms),
   ];
+
+  it.effect.each(["detach", "replacement", "stream gap"] as const)(
+    "refreshes external browser permissions after %s",
+    (change) =>
+      Effect.gen(function* () {
+        const attached = [...t3Rules, ...browserAllows];
+        const runtime = yield* openCode2ReplayRuntimeWithInstructions(
+          [
+            ...opening,
+            out("session.get", { sessionID: SESSION }),
+            replyData("session.get", sessionInfo({ permissions: attached })),
+            ...noOpenRequests,
+            out("session.update", {
+              sessionID: SESSION,
+              permissions: withBrowserRules(t3Rules, browserAllows),
+            }),
+            reply("session.update", null),
+            out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+            promptAccepted,
+            ...(change === "stream gap"
+              ? [...reconnected({ [SESSION]: { type: "running" } }), ...openRequests([])]
+              : change === "replacement"
+                ? [
+                    event("session.permissions", {
+                      sessionID: SESSION,
+                      permissions: [...attached, ...browserAllows],
+                    }),
+                    event("session.permissions", { sessionID: SESSION, permissions: attached }),
+                  ]
+                : [event("session.permissions", { sessionID: SESSION, permissions: t3Rules })]),
+            event("session.execution.succeeded", { sessionID: SESSION }),
+            ...(change === "stream gap"
+              ? [
+                  out("session.get", { sessionID: SESSION }),
+                  replyData("session.get", sessionInfo({ permissions: t3Rules })),
+                ]
+              : []),
+            out("agent.list", "<any>"),
+            reply("agent.list", agentList),
+            out("session.update", {
+              sessionID: SESSION,
+              permissions: withBrowserRules(supervisedRules, [
+                ...browserDenies,
+                ...(change === "replacement" ? browserAllows : []),
+              ]),
+            }),
+            reply("session.update", null),
+            out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+            promptAccepted,
+            event("session.execution.succeeded", { sessionID: SESSION }),
+          ],
+          { external: true },
+        );
+        const thread = yield* runtime.resumeThread({
+          providerThread: providerThread(yield* DateTime.now),
+          threadId,
+          modelSelection: bigPickle,
+          runtimePolicy: policy(),
+        });
+        for (const mode of ["full-access", "approval-required"] as const) {
+          const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+          yield* runtime.startTurn(turnInput(thread, bigPickle, mode));
+          assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+        }
+      }).pipe(Effect.scoped),
+  );
 
   const turnItems = (collected: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
     collected.flatMap((event) =>
@@ -2464,6 +2694,13 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           promptAccepted,
           event("session.execution.succeeded", { sessionID: SESSION }),
         ];
+        const turnWithReconnect = [
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          ...reconnected({ [SESSION]: { type: "running" } }),
+          ...openRequests([]),
+          event("session.execution.succeeded", { sessionID: SESSION }),
+        ];
         const status = (state: "connected" | "failed" | "pending") => [
           out("mcp.list", { "location[directory]": WORK }),
           reply("mcp.list", {
@@ -2494,7 +2731,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
             out("mcp.connect", { server, "location[directory]": WORK }),
             reply("mcp.connect", null),
             ...status("connected"),
-            ...turn,
+            ...turnWithReconnect,
             // Native add returns 204 even when its handshake fails; the same config is a no-op.
             add,
             reply("mcp.add", null),
@@ -2520,7 +2757,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
             add,
             reply("mcp.add", { status: 500, body: { message: "MCP unavailable" } }),
             ...instructionsWithoutMcp,
-            ...turn,
+            ...turnWithReconnect,
             out("mcp.remove", { server, "location[directory]": WORK }),
             reply("mcp.remove", null),
           ],
@@ -4044,35 +4281,50 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("moves a fork into its target thread's worktree before the first prompt", () =>
-    Effect.gen(function* () {
-      const FORK = "ses_f1484db83ffeLGtrRCFimo1H0e";
-      const target = "/work/opencode2-fork-target";
-      const { runtime, thread } = yield* resumed([
-        out("session.fork", { sessionID: SESSION }),
-        replyData("session.fork", sessionInfo({ id: FORK })),
-        out("session.update", {
-          sessionID: FORK,
-          permissions: [
-            { action: "*", resource: "*", effect: "allow" },
-            { action: "browser", resource: "*", effect: "deny" },
-            { action: "skill", resource: "browser", effect: "deny" },
-            { action: "t3-code-*", resource: "*", effect: "deny" },
-            { action: "t3-code-thread_opencode2-adapter_fork_*", resource: "*", effect: "allow" },
+  it.effect.each([false, true])(
+    "moves a fork into its target thread's worktree before the first prompt (external=%s)",
+    (external) =>
+      Effect.gen(function* () {
+        const FORK = "ses_f1484db83ffeLGtrRCFimo1H0e";
+        const target = "/work/opencode2-fork-target";
+        const { runtime, thread } = yield* resumed(
+          [
+            out("session.fork", { sessionID: SESSION }),
+            replyData(
+              "session.fork",
+              sessionInfo({
+                id: FORK,
+                ...(external ? { permissions: [...t3Rules, ...browserAllows] } : {}),
+              }),
+            ),
+            out("session.update", {
+              sessionID: FORK,
+              permissions: [
+                { action: "*", resource: "*", effect: "allow" },
+                { action: "browser", resource: "*", effect: "deny" },
+                { action: "skill", resource: "browser", effect: "deny" },
+                { action: "t3-code-*", resource: "*", effect: "deny" },
+                {
+                  action: "t3-code-thread_opencode2-adapter_fork_*",
+                  resource: "*",
+                  effect: "allow",
+                },
+              ],
+            }),
+            reply("session.update", null),
+            // OpenCode makes the fork where its source runs; the target thread runs elsewhere.
+            out("session.move", { sessionID: FORK, directory: target }),
+            reply("session.move", null),
           ],
-        }),
-        reply("session.update", null),
-        // OpenCode makes the fork where its source runs; the target thread runs elsewhere.
-        out("session.move", { sessionID: FORK, directory: target }),
-        reply("session.move", null),
-      ]);
-      const forked = yield* runtime.forkThread({
-        sourceProviderThread: thread,
-        targetThreadId: ThreadId.make("thread:opencode2-adapter:fork"),
-        runtimePolicy: { ...policy(), cwd: target },
-      });
-      assert.equal(forked.nativeThreadRef?.nativeId, FORK);
-    }).pipe(Effect.scoped),
+          { external },
+        );
+        const forked = yield* runtime.forkThread({
+          sourceProviderThread: thread,
+          targetThreadId: ThreadId.make("thread:opencode2-adapter:fork"),
+          runtimePolicy: { ...policy(), cwd: target },
+        });
+        assert.equal(forked.nativeThreadRef?.nativeId, FORK);
+      }).pipe(Effect.scoped),
   );
 
   const continued = (after: ReadonlyArray<ProviderReplayEntry>) =>
