@@ -51,6 +51,10 @@ For remote connections, update both the client and server to inspect tool eviden
 text of long sources. Search is available when the server supports it. Older clients can still read compatible
 message summaries, but may report that summaries could not be read when an update is needed.
 
+To search conversations created outside T3, open **External history** from this view or from
+**Settings → Threads**. [External history](./external-history.md) can read the selected server's
+Codex conversations and configured ChatGPT exports without importing another transcript copy.
+
 ## Context limits
 
 A handoff must leave room for existing provider context, your request and attachments, instructions,

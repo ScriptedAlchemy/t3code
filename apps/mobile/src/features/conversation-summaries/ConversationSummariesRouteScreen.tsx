@@ -27,6 +27,7 @@ import {
   conversationSummarySearchSupportedAtom,
 } from "../../state/conversationSummaries";
 import { useEnvironmentQuery } from "../../state/query";
+import { ExternalHistoryThreadButton } from "../external-history/ExternalHistoryRouteScreen";
 
 interface Scope {
   readonly environmentId: EnvironmentId;
@@ -112,6 +113,10 @@ function SummaryPages(props: Scope & { readonly searchSupported: boolean }) {
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ padding: 20, paddingBottom: 40, gap: 16 }}
     >
+      <ExternalHistoryThreadButton
+        environmentId={props.environmentId}
+        projectId={props.projectId}
+      />
       {selected !== null ? (
         <>
           <Button label="Back to summaries" tone="text" onPress={() => setSelected(null)} />

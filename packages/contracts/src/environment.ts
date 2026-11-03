@@ -90,6 +90,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   conversationSummaries: Schema.optionalKey(Schema.Boolean),
   /** Ranged/tool sources, literal summary search and intra-source expansion cursors. */
   conversationSummarySourceFormat: Schema.optionalKey(Schema.Literal(2)),
+  externalHistory: Schema.optionalKey(Schema.Literal(1)),
   /** project.readLoomWindow and the project Loom view. */
   projectLoom: Schema.optionalKey(Schema.Boolean),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),

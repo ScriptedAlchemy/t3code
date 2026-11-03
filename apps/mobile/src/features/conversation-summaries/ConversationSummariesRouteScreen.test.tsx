@@ -123,6 +123,9 @@ vi.mock("../../state/conversationSummaries", () => ({
 vi.mock("../../state/query", () => ({
   useEnvironmentQuery: (data: unknown) => ({ data, error: null, isPending: false }),
 }));
+vi.mock("../external-history/ExternalHistoryRouteScreen", () => ({
+  ExternalHistoryThreadButton: () => null,
+}));
 
 import { ConversationSummariesRouteScreen } from "./ConversationSummariesRouteScreen";
 

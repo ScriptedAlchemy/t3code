@@ -95,6 +95,10 @@
       "types": "./src/server/nativeProtocolLogging.ts",
       "import": "./src/server/nativeProtocolLogging.ts"
     },
+    "./server/nativeHistory": {
+      "types": "./src/server/nativeHistory.ts",
+      "import": "./src/server/nativeHistory.ts"
+    },
     "./server/notification": {
       "types": "./src/server/notification.ts",
       "import": "./src/server/notification.ts"

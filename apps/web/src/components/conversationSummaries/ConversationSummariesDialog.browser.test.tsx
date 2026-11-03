@@ -38,6 +38,7 @@ vi.mock(
     }) as never,
 );
 vi.mock(import("../../state/session"), () => ({ useEnvironmentScope: () => true }) as never);
+vi.mock(import("../../state/entities"), () => ({ useProject: () => null }) as never);
 vi.mock(
   import("../../state/conversationSummaries"),
   () =>

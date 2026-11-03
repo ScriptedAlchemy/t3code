@@ -9,6 +9,11 @@ import {
 } from "./conversationSummaries.ts";
 import { LoomWindow, LoomWindowInput, ProjectLoomError } from "./projectLoom.ts";
 import {
+  ExternalHistoryError,
+  ExternalHistoryRequest,
+  ExternalHistoryResponse,
+} from "./externalHistory.ts";
+import {
   ProjectKnowledgeError,
   ProjectKnowledgeMutation,
   ProjectKnowledgeListInput,
@@ -453,6 +458,7 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  externalHistoryQuery: "externalHistory.query",
   projectCodeQuery: "projectCode.query",
   projectCodeFileHistory: "projectCode.fileHistory",
   projectCodeSubscribeIndex: "projectCode.subscribeIndex",
@@ -2152,6 +2158,14 @@ const ConversationSummaryRpcSourceFormat = {
   sourceFormat: Schema.optionalKey(Schema.Literal(2)),
 };
 
+export const WsExternalHistoryRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.externalHistoryQuery, {
+    payload: ExternalHistoryRequest,
+    success: ExternalHistoryResponse,
+    error: Schema.Union([ExternalHistoryError, EnvironmentAuthorizationError]),
+  }),
+).middleware(RpcScopeAuthorization);
+
 export const WsConversationSummariesRpcGroup = RpcGroup.make(
   Rpc.make(WS_METHODS.conversationSummariesList, {
     payload: Schema.Struct({
@@ -2402,5 +2416,6 @@ export const WsRpcGroup = RpcGroup.make(
   .middleware(RpcScopeAuthorization)
   .merge(WsProjectKnowledgeRpcGroup)
   .merge(WsConversationSummariesRpcGroup)
+  .merge(WsExternalHistoryRpcGroup)
   .merge(WsProjectLoomRpcGroup)
   .merge(WsProjectCodeRpcGroup);

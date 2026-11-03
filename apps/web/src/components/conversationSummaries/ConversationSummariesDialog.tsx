@@ -21,6 +21,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useState } from "react";
 
 import { conversationSummaries } from "../../state/conversationSummaries";
+import { useProject } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useEnvironmentScope } from "../../state/session";
@@ -36,6 +37,7 @@ import {
 } from "../ui/dialog";
 import { Switch } from "../ui/switch";
 import { Input } from "../ui/input";
+import { ExternalHistoryButton } from "../externalHistory/ExternalHistoryDialog";
 
 const PAGE_SIZE = 20;
 const SOURCE_PAGE_SIZE = 6;
@@ -402,6 +404,7 @@ export function ConversationSummariesDialog(
   props: Scope & { readonly open: boolean; readonly onOpenChange: (open: boolean) => void },
 ) {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
+  const project = useProject({ environmentId: props.environmentId, projectId: props.projectId });
   const searchSupported = config?.environment.capabilities.conversationSummarySourceFormat === 2;
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
@@ -417,6 +420,12 @@ export function ConversationSummariesDialog(
         <DialogPanel>
           <div className="flex flex-col gap-4">
             <SummariesToggle {...props} />
+            <div>
+              <ExternalHistoryButton
+                environmentId={props.environmentId}
+                {...(project ? { currentProjectPath: project.workspaceRoot } : {})}
+              />
+            </div>
             {props.open ? (
               <SummaryList
                 key={`${props.environmentId}:${props.projectId}:${props.threadId}:${searchSupported}`}
