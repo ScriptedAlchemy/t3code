@@ -4,14 +4,24 @@ import {
   CommandId,
   ComposerContextId,
   ConversationSummary,
+  ConversationSummaryError,
+  ConversationSummaryExpansion,
+  ConversationSummaryId,
+  ConversationSummaryList,
+  ConversationSummaryPass,
+  ConversationSummaryRead,
   conversationSummarySourceKey,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
+  KnowledgeMessageRef,
+  KnowledgeSourceUnavailableReason,
   MessageId,
+  ModelSelection,
   NodeId,
   ProjectFactId,
   ProjectId,
+  ProjectKnowledgeSource,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
@@ -21,7 +31,7 @@ import {
   TextGenerationError,
   ThreadId,
   TurnItemId,
-  type ConversationSummaryExpansion,
+  WS_METHODS,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
@@ -39,6 +49,7 @@ import { McpSchema, McpServer } from "effect/ai";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import { conversationSummariesRpcHandlers } from "../../conversationSummariesRpc.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "../../mcp/McpToolAccess.testkit.ts";
@@ -77,6 +88,65 @@ const optedIn = {
 };
 const decodeSettings = Schema.decodeUnknownEffect(ServerSettingsSchema);
 const encodeSummary = Schema.encodeEffect(Schema.fromJsonString(ConversationSummary));
+// Freeze the protocol-2 summary codec from before ranged/tool sources. An older client
+// compiles these shapes into RpcClient; merely accepting our current schema proves nothing.
+const LegacySummary = Schema.Struct({
+  id: ConversationSummaryId,
+  projectId: ProjectId,
+  threadId: ThreadId,
+  sources: Schema.Array(KnowledgeMessageRef).check(Schema.isMinLength(1), Schema.isMaxLength(24)),
+  statements: Schema.Array(
+    Schema.Struct({
+      text: Schema.Trim.check(Schema.isNonEmpty(), Schema.isMaxLength(600)),
+      citations: Schema.Array(MessageId).check(Schema.isMinLength(1), Schema.isMaxLength(8)),
+    }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(8)),
+  modelSelection: ModelSelection,
+  createdAt: Schema.String,
+});
+const LegacySummaryRead = Schema.Union([
+  Schema.Struct({ state: Schema.Literal("available"), summary: LegacySummary }),
+  Schema.Struct({
+    state: Schema.Literal("stale"),
+    id: ConversationSummaryId,
+    sourceCount: Schema.Int,
+    createdAt: Schema.String,
+    reason: KnowledgeSourceUnavailableReason,
+  }),
+]);
+const LegacySummaryList = Schema.Struct({
+  enabled: Schema.Boolean,
+  lastPass: Schema.NullOr(ConversationSummaryPass),
+  summaries: Schema.Array(LegacySummaryRead),
+  nextCursor: Schema.NullOr(ConversationSummaryId),
+});
+const LegacySummaryExpansion = Schema.Struct({
+  summary: LegacySummaryRead,
+  sources: Schema.Array(
+    Schema.Struct({ ref: KnowledgeMessageRef, result: ProjectKnowledgeSource }),
+  ),
+  nextOffset: Schema.NullOr(Schema.Int),
+});
+const LegacySummaryError = Schema.TaggedStruct("ConversationSummaryError", {
+  reason: Schema.Literals(["storage", "missing_project", "missing_summary", "invalid_cursor"]),
+  projectId: ProjectId,
+  cause: Schema.optionalKey(Schema.Defect()),
+});
+const encodeSummaryReadWire = Schema.encodeSync(Schema.toCodecJson(ConversationSummaryRead));
+const encodeSummaryListWire = Schema.encodeSync(Schema.toCodecJson(ConversationSummaryList));
+const encodeSummaryExpansionWire = Schema.encodeSync(
+  Schema.toCodecJson(ConversationSummaryExpansion),
+);
+const decodeLegacyRead = Schema.decodeUnknownSync(Schema.toCodecJson(LegacySummaryRead));
+const decodeLegacyList = Schema.decodeUnknownSync(Schema.toCodecJson(LegacySummaryList));
+const decodeLegacyExpansion = Schema.decodeUnknownSync(Schema.toCodecJson(LegacySummaryExpansion));
+const encodeSummaryErrorWire = Schema.encodeSync(Schema.toCodecJson(ConversationSummaryError));
+const decodeLegacyError = Schema.decodeUnknownSync(Schema.toCodecJson(LegacySummaryError));
+const assertLegacyUpgradeError = (error: ConversationSummaryError) => {
+  const decoded = decodeLegacyError(encodeSummaryErrorWire(error));
+  assert.equal(decoded.reason, "storage");
+  assert.include(String(decoded.cause), "Update this T3 Code client");
+};
 // 8 exchanges: the first 10 messages are settled, the last 6 are the fresh tail.
 const MESSAGE_COUNT = 16;
 
@@ -373,6 +443,131 @@ it.effect(
       SELECT payload_json FROM conversation_summaries
     `;
       assert.isTrue(rows.every((row) => !row.payload_json.includes("Detail. Detail.")));
+    }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+  },
+);
+
+it.effect("negotiates ranged summary responses while preserving legacy whole-message reads", () => {
+  const model = citing();
+  return Effect.gen(function* () {
+    // Sixteen settled sources exceed the new default text budget but fit one legacy page.
+    yield* seedThread(22);
+    yield* summarize;
+    const service = yield* ConversationSummaries.ConversationSummaries;
+    const rpc = conversationSummariesRpcHandlers(service);
+    const ordinary = yield* onlySummary;
+    const oldList = decodeLegacyList(
+      encodeSummaryListWire(yield* rpc[WS_METHODS.conversationSummariesList](scope)),
+    );
+    assert.equal(oldList.summaries.length, 1);
+    const oldRead = decodeLegacyRead(
+      encodeSummaryReadWire(
+        yield* rpc[WS_METHODS.conversationSummariesDescribe]({ ...scope, summaryId: ordinary.id }),
+      ),
+    );
+    assert.equal(oldRead.state, "available");
+    const oldPage = decodeLegacyExpansion(
+      encodeSummaryExpansionWire(
+        yield* rpc[WS_METHODS.conversationSummariesExpand]({ ...scope, summaryId: ordinary.id }),
+      ),
+    );
+    assert.equal(oldPage.sources.length, 16);
+    assert.isNull(oldPage.nextOffset);
+    assert.equal(
+      oldPage.sources[0]?.result.state === "available" ? oldPage.sources[0].result.text : null,
+      rawText(0),
+    );
+    assertLegacyUpgradeError(
+      yield* rpc[WS_METHODS.conversationSummariesExpand]({
+        ...scope,
+        summaryId: ordinary.id,
+        maxChars: 2,
+      }).pipe(Effect.flip),
+    );
+
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* projections.apply(messageEvent(0, `${"Long source. ".repeat(900)}END`));
+    yield* summarize;
+    const ranged = yield* onlySummary;
+    const describe = { ...scope, summaryId: ranged.id };
+    // The old codec accepts a ranged message after stripping its range, but cannot resolve
+    // the new citation key. The transport must prevent this silent misrepresentation too.
+    const unsafe = decodeLegacyRead(encodeSummaryReadWire(yield* service.describe(describe)));
+    if (unsafe.state !== "available") return yield* Effect.die("Expected current ranged evidence");
+    const oldIds = new Set<string>(unsafe.summary.sources.map((source) => source.messageId));
+    assert.isTrue(
+      unsafe.summary.statements.some((statement) =>
+        statement.citations.some((citation) => !oldIds.has(citation)),
+      ),
+    );
+    assertLegacyUpgradeError(
+      yield* rpc[WS_METHODS.conversationSummariesList](scope).pipe(Effect.flip),
+    );
+    assertLegacyUpgradeError(
+      yield* rpc[WS_METHODS.conversationSummariesDescribe](describe).pipe(Effect.flip),
+    );
+    assertLegacyUpgradeError(
+      yield* rpc[WS_METHODS.conversationSummariesExpand](describe).pipe(Effect.flip),
+    );
+    const modern = yield* rpc[WS_METHODS.conversationSummariesExpand]({
+      ...describe,
+      sourceFormat: 2,
+      maxChars: 257,
+    });
+    assert.equal(modern.summary.state, "available");
+    assert.equal(modern.nextOffset, 0);
+    assert.equal(modern.nextTextOffset, 257);
+    assert.isTrue(modern.sources.some((source) => source.ref.range !== undefined));
+    assert.equal(
+      (yield* rpc[WS_METHODS.conversationSummariesList]({ ...scope, sourceFormat: 2 })).summaries
+        .length,
+      1,
+    );
+    assert.equal(
+      (yield* rpc[WS_METHODS.conversationSummariesDescribe]({ ...describe, sourceFormat: 2 }))
+        .state,
+      "available",
+    );
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
+
+it.effect.each([60_000, 48_000])(
+  "rejects an incomplete legacy expansion page for a %s-character source",
+  (chars) => {
+    const model = citing();
+    return Effect.gen(function* () {
+      yield* seed;
+      const legacy = yield* persistSummary(40, [0, 1]);
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const text = "x".repeat(chars);
+      yield* projections.apply(messageEvent(0, text));
+      const crypto = yield* Crypto.Crypto;
+      const digest = Hex.encode(yield* crypto.digest("SHA-256", new TextEncoder().encode(text)));
+      const payload = {
+        ...legacy,
+        sources: legacy.sources.map((source, index) =>
+          index === 0 ? { ...source, digest } : source,
+        ),
+      };
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE conversation_summaries SET payload_json = ${yield* encodeSummary(payload)} WHERE summary_id = ${legacy.id}`;
+      const service = yield* ConversationSummaries.ConversationSummaries;
+      const rpc = conversationSummariesRpcHandlers(service);
+      const input = { ...scope, summaryId: legacy.id, limit: 2 };
+      const modern = yield* rpc[WS_METHODS.conversationSummariesExpand]({
+        ...input,
+        sourceFormat: 2,
+        maxChars: 48_000,
+      });
+      // At 60K the cursor stays inside the source; at 48K it stops exactly before source 2.
+      // Both decode on an old client, but neither fulfills its requested two-source page.
+      const unsafe = decodeLegacyExpansion(encodeSummaryExpansionWire(modern));
+      assert.equal(unsafe.sources.length, 1);
+      assert.equal(modern.nextOffset, chars === 60_000 ? 0 : 1);
+      assert.equal(modern.nextTextOffset, chars === 60_000 ? 48_000 : 0);
+      assertLegacyUpgradeError(
+        yield* rpc[WS_METHODS.conversationSummariesExpand](input).pipe(Effect.flip),
+      );
     }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
   },
 );
@@ -737,6 +932,33 @@ it.effect("does not offer tool-only evidence from a deleted project", () => {
     const summary = yield* onlySummary;
     assert.isTrue(summary.sources.every((source) => source.kind === "turn_item"));
     const service = yield* ConversationSummaries.ConversationSummaries;
+    const rpc = conversationSummariesRpcHandlers(service);
+    const modern = yield* rpc[WS_METHODS.conversationSummariesList]({ ...scope, sourceFormat: 2 });
+    assert.throws(() => decodeLegacyList(encodeSummaryListWire(modern)));
+    assertLegacyUpgradeError(
+      yield* rpc[WS_METHODS.conversationSummariesList](scope).pipe(Effect.flip),
+    );
+    assertLegacyUpgradeError(
+      yield* rpc[WS_METHODS.conversationSummariesDescribe]({
+        ...scope,
+        summaryId: summary.id,
+      }).pipe(Effect.flip),
+    );
+    assertLegacyUpgradeError(
+      yield* rpc[WS_METHODS.conversationSummariesExpand]({ ...scope, summaryId: summary.id }).pipe(
+        Effect.flip,
+      ),
+    );
+    const evidence = yield* rpc[WS_METHODS.conversationSummariesExpand]({
+      ...scope,
+      summaryId: summary.id,
+      sourceFormat: 2,
+    });
+    assert.isTrue(
+      evidence.sources.every(
+        (source) => source.result.state === "available" && source.result.role === "tool",
+      ),
+    );
     const input = {
       projectId,
       handoffs: [yield* prepareHandoff(6, [command])],

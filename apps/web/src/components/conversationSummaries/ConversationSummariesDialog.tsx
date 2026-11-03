@@ -265,45 +265,49 @@ function SummaryCard(props: Scope & { readonly read: ConversationSummaryRead }) 
   );
 }
 
-function SummaryList(props: Scope) {
+function SummaryList(props: Scope & { readonly searchSupported: boolean }) {
   const [cursors, setCursors] = useState<ReadonlyArray<ConversationSummaryId>>([]);
   const [searchText, setSearchText] = useState("");
   const [query, setQuery] = useState("");
   return (
     <div className="flex flex-col gap-3">
-      <form
-        className="flex items-center gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setQuery(searchText.trim());
-          setCursors([]);
-        }}
-      >
-        <Input
-          aria-label="Search summaries"
-          placeholder="Search summary text"
-          maxLength={256}
-          value={searchText}
-          onChange={(event) => setSearchText(event.target.value)}
-        />
-        <Button type="submit" variant="outline" size="sm">
-          Search
-        </Button>
-        {searchText || query ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setSearchText("");
-              setQuery("");
-              setCursors([]);
-            }}
-          >
-            Clear
+      {props.searchSupported ? (
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setQuery(searchText.trim());
+            setCursors([]);
+          }}
+        >
+          <Input
+            aria-label="Search summaries"
+            placeholder="Search summary text"
+            maxLength={256}
+            value={searchText}
+            onChange={(event) => setSearchText(event.target.value)}
+          />
+          <Button type="submit" variant="outline" size="sm">
+            Search
           </Button>
-        ) : null}
-      </form>
+          {searchText || query ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSearchText("");
+                setQuery("");
+                setCursors([]);
+              }}
+            >
+              Clear
+            </Button>
+          ) : null}
+        </form>
+      ) : (
+        <p className="text-muted-foreground text-xs">Update this server to search summaries.</p>
+      )}
       <SummaryListPage
         key={JSON.stringify([query, cursors.at(-1)])}
         {...props}
@@ -397,6 +401,8 @@ function SummaryListPage(
 export function ConversationSummariesDialog(
   props: Scope & { readonly open: boolean; readonly onOpenChange: (open: boolean) => void },
 ) {
+  const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
+  const searchSupported = config?.environment.capabilities.conversationSummarySourceFormat === 2;
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogPopup className="max-w-2xl">
@@ -413,8 +419,9 @@ export function ConversationSummariesDialog(
             <SummariesToggle {...props} />
             {props.open ? (
               <SummaryList
-                key={`${props.environmentId}:${props.projectId}:${props.threadId}`}
+                key={`${props.environmentId}:${props.projectId}:${props.threadId}:${searchSupported}`}
                 {...props}
+                searchSupported={searchSupported}
               />
             ) : null}
           </div>

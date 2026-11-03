@@ -24,6 +24,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import {
   conversationSummaries,
   conversationSummariesSupportedAtom,
+  conversationSummarySearchSupportedAtom,
 } from "../../state/conversationSummaries";
 import { useEnvironmentQuery } from "../../state/query";
 
@@ -44,6 +45,7 @@ export function ConversationSummariesRouteScreen(
   const projectId = ProjectId.make(props.route.params.projectId);
   const threadId = ThreadId.make(props.route.params.threadId);
   const supported = useAtomValue(conversationSummariesSupportedAtom(environmentId));
+  const searchSupported = useAtomValue(conversationSummarySearchSupportedAtom(environmentId));
   const focused = useIsFocused();
   const navigation = useNavigation();
   return (
@@ -52,10 +54,11 @@ export function ConversationSummariesRouteScreen(
       <ScreenContent>
         {supported && focused ? (
           <SummaryPages
-            key={`${environmentId}:${projectId}:${threadId}`}
+            key={`${environmentId}:${projectId}:${threadId}:${searchSupported}`}
             environmentId={environmentId}
             projectId={projectId}
             threadId={threadId}
+            searchSupported={searchSupported}
           />
         ) : !supported ? (
           <Text className="p-5 text-sm text-foreground-muted">
@@ -93,7 +96,7 @@ function SummaryText({ read }: { readonly read: ConversationSummaryRead }) {
   );
 }
 
-function SummaryPages(props: Scope) {
+function SummaryPages(props: Scope & { readonly searchSupported: boolean }) {
   const [cursors, setCursors] = useState<ReadonlyArray<ConversationSummaryId>>([]);
   const [selected, setSelected] = useState<ConversationSummaryId | null>(null);
   const [searchText, setSearchText] = useState("");
@@ -116,31 +119,37 @@ function SummaryPages(props: Scope) {
         </>
       ) : (
         <>
-          <View className="gap-2">
-            <AppTextInput
-              accessibilityLabel="Search summaries"
-              placeholder="Search summary text"
-              value={searchText}
-              onChangeText={setSearchText}
-              maxLength={256}
-              returnKeyType="search"
-              onSubmitEditing={search}
-            />
-            <View className="flex-row gap-2">
-              <Button label="Search" onPress={search} />
-              {searchText || query ? (
-                <Button
-                  label="Clear"
-                  tone="text"
-                  onPress={() => {
-                    setSearchText("");
-                    setQuery("");
-                    setCursors([]);
-                  }}
-                />
-              ) : null}
+          {props.searchSupported ? (
+            <View className="gap-2">
+              <AppTextInput
+                accessibilityLabel="Search summaries"
+                placeholder="Search summary text"
+                value={searchText}
+                onChangeText={setSearchText}
+                maxLength={256}
+                returnKeyType="search"
+                onSubmitEditing={search}
+              />
+              <View className="flex-row gap-2">
+                <Button label="Search" onPress={search} />
+                {searchText || query ? (
+                  <Button
+                    label="Clear"
+                    tone="text"
+                    onPress={() => {
+                      setSearchText("");
+                      setQuery("");
+                      setCursors([]);
+                    }}
+                  />
+                ) : null}
+              </View>
             </View>
-          </View>
+          ) : (
+            <Text className="text-xs text-foreground-muted">
+              Update this server to search summaries.
+            </Text>
+          )}
           <SummaryList
             key={JSON.stringify([query, cursors.at(-1)])}
             {...props}

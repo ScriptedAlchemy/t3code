@@ -21,6 +21,7 @@ import {
 
 const state = vi.hoisted(() => ({
   supported: null as unknown,
+  searchSupported: null as unknown,
   focused: true,
   list: null as ConversationSummaryList | null,
   lists: [] as { environmentId: EnvironmentId; input: ConversationSummaryListInput }[],
@@ -76,6 +77,7 @@ vi.mock("../../components/ui/Button", () => ({
 }));
 vi.mock("../../state/conversationSummaries", () => ({
   conversationSummariesSupportedAtom: () => state.supported,
+  conversationSummarySearchSupportedAtom: () => state.searchSupported,
   conversationSummaries: {
     list: (request: { environmentId: EnvironmentId; input: ConversationSummaryListInput }) => {
       state.lists.push(request);
@@ -128,6 +130,7 @@ function setup() {
   const supported = Atom.make(true);
   const registry = AtomRegistry.make();
   state.supported = supported;
+  state.searchSupported = Atom.make(true);
   state.focused = false;
   state.lists = [];
   state.expansions = [];

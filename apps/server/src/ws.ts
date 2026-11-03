@@ -2,6 +2,7 @@ import * as PstackPack from "./pstack/PstackPack.ts";
 import * as SkillsLibrary from "./skills/SkillsLibrary.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
+import { conversationSummariesRpcHandlers } from "./conversationSummariesRpc.ts";
 import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import * as FileHistory from "./project/knowledge/FileHistory.ts";
@@ -665,11 +666,7 @@ const layerConversationSummariesRpc = WsConversationSummariesRpcGroup.middleware
 ).toLayer(
   Effect.gen(function* () {
     const summaries = yield* ConversationSummaries.ConversationSummaries;
-    return {
-      [WS_METHODS.conversationSummariesList]: (input) => summaries.list(input),
-      [WS_METHODS.conversationSummariesDescribe]: (input) => summaries.describe(input),
-      [WS_METHODS.conversationSummariesExpand]: (input) => summaries.expand(input),
-    };
+    return conversationSummariesRpcHandlers(summaries);
   }),
 );
 const layerKnowledgeRpc = WsProjectKnowledgeRpcGroup.middleware(RpcInstrumentation).toLayer(

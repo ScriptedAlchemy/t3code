@@ -231,6 +231,7 @@ export const make = Effect.gen(function* () {
       projectKnowledgeDeliveries: true,
       projectKnowledgeAssistedLearning: true,
       conversationSummaries: true,
+      conversationSummarySourceFormat: 2,
       projectLoom: true,
       projectCode: true,
       projectCodeFreshness: true,

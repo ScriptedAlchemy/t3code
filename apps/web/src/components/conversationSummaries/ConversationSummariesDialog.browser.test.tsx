@@ -91,13 +91,22 @@ const summary: ConversationSummary = {
   createdAt: "2026-10-22T00:00:00.000Z",
 };
 
+const configFor = (searchSupported: boolean) => ({
+  environment: {
+    capabilities: {
+      conversationSummaries: true,
+      projectSettingsOverrides: true,
+      ...(searchSupported ? { conversationSummarySourceFormat: 2 as const } : {}),
+    },
+  },
+  settings: DEFAULT_SERVER_SETTINGS,
+});
+
 function setup() {
   const registry = AtomRegistry.make();
   state.lists = [];
-  state.config = Atom.make({
-    environment: { capabilities: { conversationSummaries: true, projectSettingsOverrides: true } },
-    settings: DEFAULT_SERVER_SETTINGS,
-  });
+  const config = Atom.make(configFor(true));
+  state.config = config;
   const list: ConversationSummaryList = {
     enabled: false,
     lastPass: {
@@ -160,11 +169,11 @@ function setup() {
   };
   state.expand = Atom.make(AsyncResult.success(expansion));
   state.updateSettings.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
-  return registry;
+  return { registry, config };
 }
 
 it("shows current summaries with their sources, hides outdated text, and opts the project in", async () => {
-  const registry = setup();
+  const { registry, config } = setup();
   await using _screen = await render(
     <RegistryContext.Provider value={registry}>
       <ConversationSummariesDialog {...scope} open onOpenChange={vi.fn()} />
@@ -209,4 +218,13 @@ it("shows current summaries with their sources, hides outdated text, and opts th
   });
   await userEvent.click(page.getByRole("button", { name: "Clear", exact: true }));
   expect(state.lists.at(-1)?.input.query).toBeUndefined();
+  await userEvent.fill(page.getByRole("textbox", { name: "Search summaries" }), "bundle");
+  await userEvent.click(page.getByRole("button", { name: "Search", exact: true }));
+  registry.set(config, configFor(false));
+  await expect.element(page.getByText("Update this server to search summaries.")).toBeVisible();
+  await expect
+    .element(page.getByRole("textbox", { name: "Search summaries" }))
+    .not.toBeInTheDocument();
+  expect(state.lists.at(-1)?.input.query).toBeUndefined();
+  expect(state.lists.at(-1)?.input.cursor).toBeUndefined();
 });

@@ -11,17 +11,21 @@ import { createEnvironmentRpcQueryAtomFamily } from "../state/runtime.ts";
 export function createConversationSummariesAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
+  const list = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "conversation-summaries:list",
+    tag: WS_METHODS.conversationSummariesList,
+    staleTimeMs: 0,
+  });
+  const expand = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "conversation-summaries:expand",
+    tag: WS_METHODS.conversationSummariesExpand,
+    staleTimeMs: 0,
+  });
   return {
-    list: createEnvironmentRpcQueryAtomFamily(runtime, {
-      label: "conversation-summaries:list",
-      tag: WS_METHODS.conversationSummariesList,
-      staleTimeMs: 0,
-    }),
-    expand: createEnvironmentRpcQueryAtomFamily(runtime, {
-      label: "conversation-summaries:expand",
-      tag: WS_METHODS.conversationSummariesExpand,
-      staleTimeMs: 0,
-    }),
+    list: (target: Parameters<typeof list>[0]) =>
+      list({ ...target, input: { ...target.input, sourceFormat: 2 } }),
+    expand: (target: Parameters<typeof expand>[0]) =>
+      expand({ ...target, input: { ...target.input, sourceFormat: 2 } }),
   };
 }
 

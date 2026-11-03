@@ -47,6 +47,10 @@ or the thread is deleted or archived, that summary is marked outdated, its text 
 no longer receive it; the changed stretch is summarized again from the current history. Summaries
 do not replace a provider's own compaction.
 
+For remote connections, update both the client and server to inspect tool evidence and the complete
+text of long sources. Search is available when the server supports it. Older clients can still read compatible
+message summaries, but may report that summaries could not be read when an update is needed.
+
 ## Context limits
 
 A handoff must leave room for existing provider context, your request and attachments, instructions,
