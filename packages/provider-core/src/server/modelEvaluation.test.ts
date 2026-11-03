@@ -114,6 +114,9 @@ function fixture() {
       output: {
         provider: "hidden-provider",
         usage: { tokens: 999 },
+        sessionValid: false,
+        totalCost: 12,
+        durationMs: 40,
         result: "solver.v2+LOCAL reported failure",
       },
     },
@@ -153,7 +156,7 @@ function verdict(): ModelEvaluationVerdict {
   };
 }
 
-it("separates anonymous evidence from identities and preserves objective failures", () => {
+it("separates identities from evidence and preserves tool outcomes and task data", () => {
   const result = buildModelEvaluationEvidence(fixture())!;
   const prompt = buildModelEvaluationPrompt(result.packet).prompt;
   for (const identity of [
@@ -165,7 +168,6 @@ it("separates anonymous evidence from identities and preserves objective failure
     "private-node",
     "hidden-provider",
     "hidden chain of thought",
-    "999",
   ]) {
     expect(prompt.toLowerCase()).not.toContain(identity.toLowerCase());
   }
@@ -174,6 +176,34 @@ it("separates anonymous evidence from identities and preserves objective failure
   expect(result.packet.evidence.map((entry) => entry.ref)).toEqual(["E1", "E2", "E3"]);
   expect(result.sourceMessageIds).toEqual([MessageId.make("request"), MessageId.make("result")]);
   expect(validateModelEvaluationVerdict(verdict(), result.packet)).toBe(true);
+  expect(JSON.parse(result.packet.evidence[1]!.text)).toMatchObject({
+    status: "completed",
+    output: {
+      provider: "[identity removed]",
+      usage: { tokens: 999 },
+      sessionValid: false,
+      totalCost: 12,
+      durationMs: 40,
+    },
+  });
+  const input = fixture();
+  const failedEdit = buildModelEvaluationEvidence({
+    ...input,
+    turnItems: [
+      ...input.turnItems,
+      {
+        ...itemBase("failed-edit", 4),
+        type: "file_change",
+        status: "failed",
+        fileName: "parser.ts",
+        oldStr: "return null;",
+        newStr: "return parse(value);",
+      },
+    ],
+  })!;
+  expect(
+    JSON.parse(failedEdit.packet.evidence.find((entry) => entry.kind === "file_change")!.text),
+  ).toMatchObject({ status: "failed", before: "return null;", after: "return parse(value);" });
 });
 
 it("keeps canonical requests without a run id and bounded prior context for followups", () => {
@@ -209,13 +239,14 @@ it("bounds the entire evidence packet, retains the final result, and labels trun
     ...itemBase(`tool-${index}`, index + 2),
     type: "command_execution",
     input: "check",
-    output: "x".repeat(10_000),
+    output: index === 99 ? "2 tests passed. FINAL COMMAND RESULT" : "x".repeat(10_000),
     exitCode: 0,
   }));
   const result = buildModelEvaluationEvidence({ ...input, turnItems })!;
   expect(result.metrics.evidenceChars).toBeLessThanOrEqual(24_000);
   expect(result.packet.truncated).toBe(true);
   expect(result.packet.omittedItems).toBeGreaterThan(0);
+  expect(result.packet.evidence.at(-2)?.text).toContain("FINAL COMMAND RESULT");
   expect(result.packet.evidence.at(-1)?.text).toContain("FINAL RESULT");
   expect(result.packet.request.text.isWellFormed()).toBe(true);
   expect(result.packet.evidence.at(-1)?.text.isWellFormed()).toBe(true);

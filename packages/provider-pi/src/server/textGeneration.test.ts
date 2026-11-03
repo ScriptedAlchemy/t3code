@@ -17,7 +17,7 @@ const encodeJsonLine = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const makeFakePi = (
   reply: string,
-  setModelError?: string,
+  requestErrors: { readonly set_model?: string; readonly set_thinking_level?: string } = {},
   turnEvents: ReadonlyArray<Record<string, unknown>> = [],
 ) =>
   Effect.gen(function* () {
@@ -42,8 +42,13 @@ const makeFakePi = (
             yield* emit({ type: "agent_settled" });
           } else if (record["type"] === "get_last_assistant_text") {
             yield* emit({ ...response, success: true, data: { text: reply } });
-          } else if (record["type"] === "set_model" && setModelError !== undefined) {
-            yield* emit({ ...response, success: false, error: setModelError });
+          } else if (record["type"] === "set_model" && requestErrors.set_model !== undefined) {
+            yield* emit({ ...response, success: false, error: requestErrors.set_model });
+          } else if (
+            record["type"] === "set_thinking_level" &&
+            requestErrors.set_thinking_level !== undefined
+          ) {
+            yield* emit({ ...response, success: false, error: requestErrors.set_thinking_level });
           } else {
             yield* emit({ ...response, success: true });
           }
@@ -73,7 +78,7 @@ const makeFakePi = (
 
 it.effect("names the model and the disabled extensions when Pi cannot load it", () =>
   Effect.gen(function* () {
-    const pi = yield* makeFakePi("", "Model not found: demo/demo-model");
+    const pi = yield* makeFakePi("", { set_model: "Model not found: demo/demo-model" });
     const textGeneration = yield* makePiTextGeneration(
       { enabled: true, binaryPath: "pi", launchArgs: "", customModels: [] },
       {},
@@ -124,7 +129,9 @@ it.effect(
       );
       const input = {
         cwd: "/isolated-evaluator",
-        modelSelection: createModelSelection(ProviderInstanceId.make("pi"), "default"),
+        modelSelection: createModelSelection(ProviderInstanceId.make("pi"), "demo/demo-model", [
+          { id: "thinking", value: "high" },
+        ]),
         packet: {
           scope: "turn" as const,
           runOutcome: "completed" as const,
@@ -138,6 +145,11 @@ it.effect(
       };
       assert.include(textGeneration.supportedOperations, "generateModelEvaluation");
       yield* textGeneration.generateModelEvaluation(input);
+      assert.deepEqual(
+        pi.received.map((request) => request["type"]),
+        ["set_model", "set_thinking_level", "prompt", "get_last_assistant_text"],
+      );
+      assert.equal(pi.received[1]?.["level"], "high");
       assert.equal(pi.launchArguments.length, 1);
       for (const flag of [
         "--no-tools",
@@ -164,6 +176,17 @@ it.effect(
         assert.include(error.detail, "cannot isolate");
       }
       assert.equal(pi.launchArguments.length, 1);
+
+      const rejected = yield* makeFakePi("", {
+        set_thinking_level: "Unsupported thinking level for this model",
+      });
+      const rejectingGeneration = yield* makePiTextGeneration(settings, {}).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, rejected.spawner),
+      );
+      const error = yield* rejectingGeneration.generateModelEvaluation(input).pipe(Effect.flip);
+      assert.equal(error._tag, "TextGenerationError");
+      assert.include(error.detail, "thinking level");
+      assert.isUndefined(rejected.received.find((request) => request["type"] === "prompt"));
     }),
 );
 

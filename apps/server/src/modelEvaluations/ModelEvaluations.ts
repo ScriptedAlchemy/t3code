@@ -224,6 +224,7 @@ const make = Effect.gen(function* () {
       WHERE message.thread_id = ${threadId} AND message.created_at < ${DateTime.formatIso(user.createdAt)}
         AND message.role IN ('user', 'assistant') AND message.streaming = 0
         AND (source_run.status IS NULL OR source_run.status <> 'rolled_back')
+        AND NOT (source_run.status IS 'cancelled' AND json_extract(source_run.payload_json, '$.startedAt') IS NULL)
       ORDER BY message.created_at DESC, message.message_id DESC LIMIT 8
     `;
     const context =
@@ -295,6 +296,7 @@ const make = Effect.gen(function* () {
           LEFT JOIN orchestration_v2_projection_runs AS source_run ON source_run.run_id = message.run_id
           WHERE message.message_id IS NULL OR message.thread_id <> evaluation.thread_id
             OR source_run.status = 'rolled_back'
+            OR (source_run.status = 'cancelled' AND json_extract(source_run.payload_json, '$.startedAt') IS NULL)
         )
       ORDER BY evaluation.evaluated_at DESC, evaluation.run_id DESC LIMIT ${WINDOW_LIMIT}
     `;

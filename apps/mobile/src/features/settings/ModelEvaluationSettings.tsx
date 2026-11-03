@@ -161,7 +161,7 @@ function EnvironmentEvaluationSettings(props: {
         }}
       />
       <EvaluationMenu
-        label="Evaluation judge"
+        label="Judge model"
         value={modelEvaluationSelectionLabel(selection)}
         disabled={disabledFor("modelEvaluationModelSelection")}
         actions={actions}

@@ -23,7 +23,10 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as CodeIntelligence from "../project/knowledge/CodeIntelligence.ts";
-import { ModelEvaluationRuntime } from "../modelEvaluations/modelEvaluationSchedule.ts";
+import {
+  ModelEvaluationPassError,
+  ModelEvaluationRuntime,
+} from "../modelEvaluations/modelEvaluationSchedule.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
@@ -75,9 +78,9 @@ it.effect("coalesces completed turns without starving later project refreshes", 
   }).pipe(Effect.provide(layer));
 });
 
-it.effect(
-  "enqueues evaluation after checkpoint capture even when the workspace refresh fails",
-  () => {
+it.effect.each(["workspace refresh", "evaluation enqueue"] as const)(
+  "preserves completed checkpoint finalization when %s fails",
+  (failure) => {
     const threadId = ThreadId.make("thread_refresh_failure");
     const runId = RunId.make("run_refresh_failure");
     const scopeId = CheckpointScopeId.make("scope_refresh_failure");
@@ -124,10 +127,11 @@ it.effect(
             refresh: () =>
               Effect.gen(function* () {
                 captured.push("refresh");
-                return yield* new RunFinalization.RunFinalizationRefreshError({
-                  cwd: "/repo",
-                  cause: new Error("Git command timed out"),
-                });
+                if (failure === "workspace refresh")
+                  return yield* new RunFinalization.RunFinalizationRefreshError({
+                    cwd: "/repo",
+                    cause: new Error("Git command timed out"),
+                  });
               }),
             refreshAfterTurn: () => Effect.void,
           }),
@@ -135,9 +139,14 @@ it.effect(
             evaluateRun: () => Effect.void,
             guidance: () => Effect.succeed([]),
             enqueueRun: (request) =>
-              Effect.sync(() => {
+              Effect.gen(function* () {
                 assert.deepEqual(request, { threadId, runId, runOutcome: "completed" });
                 captured.push("evaluation");
+                if (failure === "evaluation enqueue")
+                  return yield* new ModelEvaluationPassError({
+                    runId,
+                    cause: new Error("Could not enqueue evaluation"),
+                  });
               }),
           }),
         ),

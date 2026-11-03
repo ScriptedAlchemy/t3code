@@ -2,12 +2,16 @@
 
 Open **Settings → Labs → Model evaluations** and enable **Blind model evaluations** for the
 environment where your agents run. It starts off because evaluating a task uses an additional
-model call. Choose an evaluation judge, or leave it on the environment's text generation model.
+model call. Use **Judge model** to select the provider and model that scores tasks, independently
+of the model doing the work. **Use default** returns it to the environment's text generation model.
 Only providers that can judge without tools or access to the project are available.
 The evaluator uses the same background generation system as thread titles, with its own optional
 model choice. Claude and Pi can serve as judges when available. A supported judge can
 evaluate work from any harness, including Codex; the harness that produced the work does not need
 to support judging. Choose an available judge before enabling the setting.
+The selected judge is used for new evaluations. If it is unavailable, the evaluation fails visibly
+instead of switching to another model. Claude judges require a CLI that supports `--safe-mode`,
+which keeps account authentication while disabling custom instructions and extensions.
 
 After a task ends, T3 Code gives the judge the request, relevant conversation context, and available
 outcome evidence with model and provider labels removed. The same process covers subagent threads

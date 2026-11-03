@@ -34,8 +34,6 @@ const IDENTITY_NAMES = [
   "Muse",
   "Pi",
 ];
-const IDENTITY_FIELD =
-  /(?:model|provider|harness|session|thread|runid|instance|token|usage|cost|duration|timestamp|reasoning|thinking)/i;
 
 function identityRedactor(identities: ReadonlyArray<string>) {
   const aliases = [
@@ -72,7 +70,7 @@ function toolValue(value: unknown, redact: (text: string) => string, depth = 0):
       ...(value.length > 12 ? ["[nested content omitted]"] : []),
     ];
   if (typeof value === "object") {
-    const entries = Object.entries(value).filter(([key]) => !IDENTITY_FIELD.test(key));
+    const entries = Object.entries(value);
     return Object.fromEntries([
       ...entries
         .slice(0, 12)
@@ -89,10 +87,11 @@ function evidenceText(item: OrchestrationV2TurnItem, redact: (text: string) => s
       return {
         kind: "command" as const,
         text: JSON.stringify({
+          status: item.status,
           input: item.input,
           output: item.output ?? "[output unavailable]",
           exitCode: item.exitCode ?? null,
-          outputIndicatesFailure: item.outputIndicatesFailure ?? false,
+          outputIndicatesFailure: item.outputIndicatesFailure ?? null,
         }),
         missing: item.outputOmitted === true,
       };
@@ -100,6 +99,7 @@ function evidenceText(item: OrchestrationV2TurnItem, redact: (text: string) => s
       return {
         kind: "file_change" as const,
         text: JSON.stringify({
+          status: item.status,
           path: item.fileName,
           patch: item.diffStr ?? null,
           before: item.oldStr ?? null,
@@ -111,6 +111,7 @@ function evidenceText(item: OrchestrationV2TurnItem, redact: (text: string) => s
       return {
         kind: "tool" as const,
         text: JSON.stringify({
+          status: item.status,
           input: toolValue(item.input, redact),
           output: toolValue(item.output, redact),
         }),
@@ -119,7 +120,11 @@ function evidenceText(item: OrchestrationV2TurnItem, redact: (text: string) => s
     case "subagent":
       return {
         kind: "subagent" as const,
-        text: JSON.stringify({ request: item.prompt, reportedResult: item.result }),
+        text: JSON.stringify({
+          status: item.status,
+          request: item.prompt,
+          reportedResult: item.result,
+        }),
         missing: item.promptOmitted === true || item.resultOmitted === true,
       };
     default:
@@ -234,8 +239,8 @@ export function buildModelEvaluationEvidence(input: {
     });
     sourceMessageIds.add(message.id);
   }
-  const evidence: Array<BlindModelEvaluationPacket["evidence"][number]> = [];
-  for (const item of items) {
+  const excerpts: Array<Pick<BlindModelEvaluationPacket["evidence"][number], "kind" | "text">> = [];
+  for (const item of items.toReversed()) {
     if (
       item === requestItem ||
       item === finalItem ||
@@ -259,7 +264,7 @@ export function buildModelEvaluationEvidence(input: {
     }
     if (entry === null) continue;
     missingArtifacts ||= entry.missing;
-    if (remaining < 80 || evidence.length >= 31) {
+    if (remaining < 80 || excerpts.length >= 31) {
       omittedItems += 1;
       truncated = true;
       continue;
@@ -270,9 +275,12 @@ export function buildModelEvaluationEvidence(input: {
       excerpt.text.includes("[nested content omitted]") ||
       excerpt.text.includes("[excerpt omitted]");
     remaining -= excerpt.text.length;
-    evidence.push({ ref: `E${evidence.length + 1}`, kind: entry.kind, text: excerpt.text });
+    excerpts.push({ kind: entry.kind, text: excerpt.text });
     if (item.type === "user_message") sourceMessageIds.add(item.messageId);
   }
+  const evidence: Array<BlindModelEvaluationPacket["evidence"][number]> = excerpts
+    .toReversed()
+    .map((entry, index) => ({ ref: `E${index + 1}`, ...entry }));
   evidence.push({ ref: `E${evidence.length + 1}`, kind: "assistant", text: final.text });
   const packet: BlindModelEvaluationPacket = {
     scope: input.scope ?? "turn",

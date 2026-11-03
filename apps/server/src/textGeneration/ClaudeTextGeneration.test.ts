@@ -305,7 +305,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
     ),
   );
 
-  it.effect("isolates blind evaluation from project context and all tool customizations", () =>
+  it.effect("isolates blind evaluation without disabling subscription authentication", () =>
     withFakeClaudeEnv(
       {
         output: JSON.stringify({
@@ -326,7 +326,8 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
           },
         }),
         cwdMustNotBe: process.cwd(),
-        argsMustContain: "--bare --disallowedTools * --setting-sources",
+        argsMustContain: "--safe-mode --disallowedTools * --setting-sources",
+        argsMustNotContain: "--bare",
       },
       (textGeneration) =>
         textGeneration.generateModelEvaluation({

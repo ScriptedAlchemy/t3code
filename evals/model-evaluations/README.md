@@ -6,7 +6,7 @@ essential artifacts are missing. All cases are synthetic and contain no user con
 
 The runner imports the production prompt builder and verdict validator. Real runs call
 `makeClaudeTextGeneration().generateModelEvaluation`, including its isolated working directory,
-bare configuration, and disabled tools. It does not simulate the judge or copy the prompt.
+safe mode, and disabled tools. It does not simulate the judge or copy the prompt.
 
 ## Run
 
@@ -21,7 +21,7 @@ pnpm model-evaluations --model haiku --samples 3 --baseline runs/judge-baseline/
 
 `--dry-run` validates every selected packet and writes the real prompts, with **zero model calls**.
 It neither creates a provider client nor reports a quality pass. Real runs require an installed,
-authenticated Claude CLI that supports bare mode. `--model` defaults to the CLI's `haiku` alias;
+authenticated Claude CLI that supports `--safe-mode`. `--model` defaults to the CLI's `haiku` alias;
 use `sonnet` or a configured Claude model ID to compare another judge.
 
 `--case` accepts repeated flags or comma-separated IDs. `--samples` is 1–20 and defaults to 3.

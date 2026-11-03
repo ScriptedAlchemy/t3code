@@ -473,10 +473,10 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "model-evaluation-judge",
-    title: "Evaluation judge model",
+    title: "Judge model",
     to: "/settings/labs",
     scope: "environment",
-    searchTerms: ["blind evaluate scorer assessor model provider"],
+    searchTerms: ["blind evaluation evaluate scorer assessor model provider"],
   },
   {
     id: "boring-sidebar-multiline",

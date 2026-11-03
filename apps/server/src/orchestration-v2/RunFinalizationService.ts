@@ -19,7 +19,7 @@ export class RunFinalizationError extends Schema.TaggedError<RunFinalizationErro
     threadId: ThreadId,
     runId: RunId,
     scopeId: CheckpointScopeId,
-    operation: Schema.Literals(["capture-checkpoint", "refresh-workspace", "schedule-evaluation"]),
+    operation: Schema.Literals(["capture-checkpoint", "refresh-workspace"]),
     cause: Schema.Defect(),
   },
 ) {}
@@ -83,10 +83,13 @@ const make = Effect.gen(function* () {
       yield* modelEvaluations
         .enqueueRun({ threadId: input.threadId, runId: input.runId, runOutcome: run.status })
         .pipe(
-          Effect.mapError(
-            (cause) =>
-              new RunFinalizationError({ ...input, operation: "schedule-evaluation", cause }),
-          ),
+          Effect.catchTags({
+            ModelEvaluationPassError: (cause) =>
+              Effect.logWarning("Failed to schedule model evaluation after checkpoint capture", {
+                ...input,
+                cause,
+              }),
+          }),
         );
     }
     if (cwd !== undefined) {

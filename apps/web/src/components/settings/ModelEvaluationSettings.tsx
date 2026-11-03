@@ -71,14 +71,16 @@ export function ModelEvaluationSettings() {
   ]);
   const selectionIssue = disabledReason(selection.instanceId, selection.model);
   const entry = entries.find((candidate) => candidate.instanceId === selection.instanceId);
-  const mixedJudge = targets.some(
-    (target) =>
-      !Equal.equals(
-        selection,
-        target.settings.modelEvaluationModelSelection ??
-          target.settings.textGenerationModelSelection,
-      ),
-  );
+  const mixedJudge =
+    useScopedSettingsMixed(["modelEvaluationModelSelection"]) ||
+    targets.some(
+      (target) =>
+        !Equal.equals(
+          selection,
+          target.settings.modelEvaluationModelSelection ??
+            target.settings.textGenerationModelSelection,
+        ),
+    );
   const mixedEnabled = useScopedSettingsMixed(["enableModelEvaluations"]);
   const enablingIssue = targets.flatMap((target) => {
     const ownProviders = providersByEnvironment.get(target.environmentId) ?? EMPTY_SERVER_PROVIDERS;
@@ -193,8 +195,12 @@ export function ModelEvaluationSettings() {
               }
               getModelDisabledReason={disabledReason}
               triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-              triggerAriaLabel="Evaluation judge model"
-              {...(mixedJudge ? { triggerLabel: "Mixed" } : {})}
+              triggerAriaLabel="Judge model"
+              {...(mixedJudge
+                ? { triggerLabel: "Mixed" }
+                : selectionIssue
+                  ? { triggerLabel: selection.model }
+                  : {})}
               onInstanceModelChange={(instanceId, model) => {
                 const reason = disabledReason(instanceId, model);
                 if (reason) {

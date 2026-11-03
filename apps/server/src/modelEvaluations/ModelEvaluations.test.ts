@@ -559,6 +559,49 @@ it.effect("excludes a follow-up evaluation after its cited context is rolled bac
   ),
 );
 
+it.effect.each([false, true])(
+  "includes cancelled context only when the run started (%s)",
+  (started) =>
+    Effect.gen(function* () {
+      const seeded = yield* seed({ missingReply: true });
+      yield* persist({
+        id: EventId.make("cancelled-queued-request"),
+        type: "message.updated",
+        threadId,
+        runId,
+        occurredAt: at,
+        payload: { ...seeded.messages[0]!, runId, text: "Discard this queued request." },
+      });
+      yield* persist({
+        id: EventId.make("cancelled-queued-run"),
+        type: "run.updated",
+        threadId,
+        runId,
+        occurredAt: at,
+        payload: { ...seeded.run, status: "cancelled", startedAt: started ? at : null },
+      });
+      const followup = RunId.make("after-cancelled-queue");
+      yield* seed({
+        existingThread: seeded.thread,
+        run: followup,
+        requestedAt: DateTime.add(at, { seconds: 10 }),
+      });
+      const service = yield* ModelEvaluations.ModelEvaluations;
+      yield* service.evaluateRun({ ...input, runId: followup });
+      assert.equal((yield* service.list(scope)).records.length, 1);
+    }).pipe(
+      Effect.provide(
+        makeLayer((request) => {
+          assert.deepEqual(
+            request.packet.context,
+            started ? [{ ref: "C1", kind: "user", text: "Discard this queued request." }] : [],
+          );
+          return Effect.succeed(verdict(request.packet));
+        }),
+      ),
+    ),
+);
+
 it.effect.each(["default", "mixed"] as const)(
   "does not attribute ambiguous %s execution to one model",
   (kind) => {
