@@ -6,6 +6,11 @@ conversation summaries may stand in for older items when the project has opted i
 their sources are revalidated and every range of a replaced item is covered. These transfers do not
 reconstruct native provider session state, tool state, approvals, or attachments.
 
+Within a provider handoff payload, selected evidence is stored in `history.messages`. The
+`summaryText` field carries a compact coverage and recovery receipt, which also appears in the
+handoff activity item. It does not repeat the selected message or tool-output bodies. Delivery
+reads the intact evidence from `history`, preserving the same selection and context budget.
+
 Fork merge-back and side-chat fallback text use `compactText` for compact item descriptions. Its
 240-character prefix is a property of those fallback descriptions, not the provider handoff history
 budget. Omitted history remains discoverable through the handoff's thread and item references.
