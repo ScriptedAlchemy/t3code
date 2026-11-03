@@ -86,7 +86,7 @@ const make = Effect.gen(function* () {
       if (
         message.streaming ||
         message.attachments.length ||
-        message.context ||
+        message.context?.records.length ||
         message.notification ||
         message.delegatedCompletion ||
         (message.role === "user" && message.createdBy !== "user") ||

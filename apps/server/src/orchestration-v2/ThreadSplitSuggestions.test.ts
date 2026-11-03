@@ -76,9 +76,19 @@ it.effect("abstains for disabled, unsafe endpoints, truncated replies and stale 
       "wrong-model",
       "invalid",
       "stale",
+      "context",
+      "empty-context",
       "valid",
     ] as const) {
       const records = source();
+      if (scenario === "context" || scenario === "empty-context")
+        records.messages[0] = {
+          ...records.messages[0]!,
+          context: {
+            version: 1,
+            records: scenario === "context" ? [{ kind: "file", contextId: "file-1" }] : [],
+          } as unknown as OrchestrationV2ConversationMessage["context"],
+        };
       let requests = 0;
       const client = HttpClient.make((request) =>
         Effect.sync(() => {
@@ -123,8 +133,12 @@ it.effect("abstains for disabled, unsafe endpoints, truncated replies and stale 
       const result = yield* Effect.gen(function* () {
         return yield* (yield* Suggestions.ThreadSplitSuggestions).suggest(input);
       }).pipe(Effect.provide(layer));
-      assert.equal(result.suggest, scenario === "valid", scenario);
-      assert.equal(requests, scenario === "disabled" || scenario === "remote" ? 0 : 1);
+      assert.equal(result.suggest, scenario === "valid" || scenario === "empty-context", scenario);
+      assert.equal(
+        requests,
+        scenario === "disabled" || scenario === "remote" || scenario === "context" ? 0 : 1,
+        scenario,
+      );
     }
   }),
 );
