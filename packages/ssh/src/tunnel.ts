@@ -446,12 +446,9 @@ T3_RUNTIME_DIR="$HOME/.t3/runtime/versions/$T3_ARCHIVE_VERSION"
 t3_runtime_ready() {
   [ -x "$T3_RUNTIME_DIR/t3" ] && [ "$(cat "$T3_RUNTIME_DIR/.install-complete" 2>/dev/null)" = "$T3_ARCHIVE_VERSION" ]
 }
-# A wedged candidate (a hung CLI, or an executable FIFO whose read-as-script
-# fallback blocks on open) must not stall the launch until the SSH timeout;
-# bound each probe so a bad candidate falls through to the archive download.
-# Output goes through a file, not the caller's pipe, and the watchdog's sleeps
-# are detached too: orphaned children could otherwise hold the capture open
-# and block it for the full timeout.
+# Bound each probe so a hung candidate falls through to the archive download
+# instead of stalling until the SSH timeout. Output goes through a file and the
+# watchdog is detached: orphaned children holding a pipe would block the capture.
 t3_probe() {
   T3_PROBE_OUT="$(mktemp "\${TMPDIR:-/tmp}/t3-probe.XXXXXX")"
   "$@" >"$T3_PROBE_OUT" 2>/dev/null </dev/null &
