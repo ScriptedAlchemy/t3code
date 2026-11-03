@@ -81,7 +81,7 @@ function fixture() {
     message(
       "assistant",
       "result",
-      "I am DeepSeek/solver.v2+local in private-thread-id/private-run-id, session private-provider-thread-id. The parser is repaired. All tests passed.",
+      "I am DeepSeek/solver.v2+local in private-thread-id/private-run-id, session private-provider-thread-id. The parser is repaired. All tests passed. Previously I used Claude Sonnet, Haiku, and Opus.",
     ),
   ];
   const turnItems: OrchestrationV2TurnItem[] = [
@@ -166,6 +166,9 @@ it("separates identities from evidence and preserves tool outcomes and task data
     "private-node",
     "hidden-provider",
     "hidden chain of thought",
+    "Sonnet",
+    "Haiku",
+    "Opus",
   ]) {
     expect(prompt.toLowerCase()).not.toContain(identity.toLowerCase());
   }
