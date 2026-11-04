@@ -55,7 +55,7 @@ const makeFakePi = (
         }
       });
     const spawner = ChildProcessSpawner.make((command) => {
-      if (ChildProcess.isStandardCommand(command)) launchArguments.push(command.args);
+      if (ChildProcess.isStandardCommand(command)) launchArguments.push(command.args.map(String));
       return Effect.succeed(
         ChildProcessSpawner.makeHandle({
           // Outside the valid pid range, so PiRpc's process-group kill never lands.
