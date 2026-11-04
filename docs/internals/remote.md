@@ -57,6 +57,8 @@ learned route still has to answer as this environment before it is used. The
 server also reports its `.local` name as a LAN endpoint because an IPv4 address
 does not survive a subnet change, and clients already treat a `.local` host as
 LAN, so it follows the same plain HTTP token rule and route order as an address.
+A LAN credential route cannot use the name, because its proof binds the socket's
+IPv4 address.
 
 A background service with no configured host is what makes this work for
 headless machines. It listens on every IPv4 interface and closes each
