@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -39,7 +40,7 @@ import {
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { historyCost } from "@t3tools/provider-core/server/handoffBudget";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
@@ -200,7 +201,7 @@ const makeLayer = (generate: Generate, settings: Parameters<typeof ServerSetting
         getEnvironmentId: Effect.succeed(EnvironmentId.make("summary-environment")),
       }),
     ),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 
 const messageId = (index: number) => MessageId.make(`message-${index}`);
@@ -344,9 +345,9 @@ const persistSummary = Effect.fn("test.persistSummary")(function* (
   stale = false,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const sources = yield* Effect.forEach(sourceIndexes, (sourceIndex) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(rawText(sourceIndex))).pipe(
+    crypto.digest(Digest.sha256, new TextEncoder().encode(rawText(sourceIndex))).pipe(
       Effect.map((digest) => ({
         kind: "message" as const,
         threadId,
@@ -1584,7 +1585,7 @@ it.effect("returns canonical source text through MCP expand only to callers that
       ConversationSummariesToolkit,
       SummaryHandlers.layer,
     ).pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provide(
         Layer.mock(ThreadManagement.ThreadManagementService)({
           getThreadShell: (id) =>

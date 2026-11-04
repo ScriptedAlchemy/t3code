@@ -32,7 +32,7 @@ import {
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { createOrchestrationV2TurnItemVisibility } from "@t3tools/shared/orchestrationV2Timeline";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
@@ -121,14 +121,14 @@ const byConversationOrder = (left: FinalizedMessage, right: FinalizedMessage) =>
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const textGeneration = yield* TextGeneration.TextGeneration;
   const digest = (text: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(text)).pipe(Effect.map(Hex.encode));
+    crypto.digest(Digest.sha256, new TextEncoder().encode(text)).pipe(Effect.map(Hex.encode));
   // Several leaves of a long source share a timestamp. Its identity and range offset keep
   // those leaves in source order, independently of their content-addressed summary ids.
   const firstSourceId = sql`CASE json_extract(payload_json, '$.sources[0].kind')
