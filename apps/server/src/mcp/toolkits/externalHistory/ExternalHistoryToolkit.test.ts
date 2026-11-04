@@ -4,6 +4,8 @@ import {
   EnvironmentId,
   ExternalHistoryError,
   type ExternalHistoryRequest,
+  ProviderInstanceId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -65,7 +67,16 @@ it.effect(
       ).pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
-        Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: () =>
+              Effect.succeed({
+                deletedAt: null,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+              } as never),
+          }),
+        ),
         Layer.provide(service),
       );
       const call = (
@@ -84,6 +95,22 @@ it.effect(
       expect(result.isError).not.toBe(true);
       const denied = yield* call({ ...scope, capabilities: new Set() }, { operation: "sources" });
       expect(denied.isError).toBe(true);
+      const subagent = yield* call(
+        {
+          ...scope,
+          client: undefined,
+          thread: {
+            threadId: ThreadId.make("thread:history-child"),
+            providerSessionId: "history-child",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            subagent: true,
+          },
+          issuedAt: 0,
+        },
+        { operation: "sources" },
+      ).pipe(Effect.flip);
+      expect(subagent.message).toContain("t3_external_history' not found");
+      expect(received).toEqual([{ operation: "sources" }]);
       expect(received).toEqual([{ operation: "sources" }]);
       const failure = yield* call(scope, {
         operation: "search",

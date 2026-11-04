@@ -4,7 +4,7 @@ import {
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as Schema from "effect/Schema";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ExternalHistory from "../../../project/externalHistory/ExternalHistory.ts";
@@ -28,5 +28,6 @@ export const ExternalHistoryToolkit = Toolkit.make(
     ],
   })
     .annotate(Tool.Readonly, true)
-    .annotate(Tool.Destructive, false),
+    .annotate(Tool.Destructive, false)
+    .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromSubagents),
 );

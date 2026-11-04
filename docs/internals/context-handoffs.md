@@ -32,3 +32,8 @@ as recalling copies already sent to a provider.
 Legacy v1 continuation uses a separate algorithm. It considers only user and assistant messages,
 walks backward from the newest message, and builds a transcript suffix within a 32,000-character
 budget. Do not describe that migration budget as the limit for portable handoffs.
+
+Rolling back across this format is one-way for conversation summaries. An older server cannot decode
+summaries with `turn_item` sources, so its list, describe, and expand calls return storage errors and
+its background pass fails on those rows. Summaries are derived data that a current server regenerates,
+so this is accepted rather than guarded with a version check or a separate table.
