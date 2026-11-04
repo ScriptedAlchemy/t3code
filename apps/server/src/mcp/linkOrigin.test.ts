@@ -125,7 +125,7 @@ const layerTools = Layer.mergeAll(
       Layer.mock(ModelEvaluations.ModelEvaluations)({}),
     ),
   ),
-  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provide(layerLaunches),
   Layer.provide(NodeCrypto.layer),
   Layer.provide(

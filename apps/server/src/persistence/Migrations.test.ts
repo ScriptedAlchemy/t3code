@@ -17,7 +17,9 @@ const activeTurnItemMigration = [82, "ActiveTurnItemIndexes"] as const;
 const attachmentPlaceholderMigration = [83, "ExcludeAttachmentPlaceholdersFromSearch"] as const;
 const subagentDeliveryMigration = [84, "SubagentDeliveryState"] as const;
 const projectPinArchiveMigration = [85, "ProjectionProjectsPinArchive"] as const;
-const modelEvaluationMigration = [86, "ModelEvaluations"] as const;
+const settledOverrideMigration = [86, "RepairBooleanSettledOverride"] as const;
+const correlationIndexMigration = [87, "DropOrchestrationEventCorrelationIndex"] as const;
+const modelEvaluationMigration = [88, "ModelEvaluations"] as const;
 
 it.effect("upgrades attempt receipts atomically and preserves distinct steering messages", () =>
   Effect.gen(function* () {
@@ -38,6 +40,8 @@ it.effect("upgrades attempt receipts atomically and preserves distinct steering 
       attachmentPlaceholderMigration,
       subagentDeliveryMigration,
       projectPinArchiveMigration,
+      settledOverrideMigration,
+      correlationIndexMigration,
       modelEvaluationMigration,
     ]);
     assert.deepStrictEqual(yield* sql`SELECT * FROM project_knowledge_deliveries`, before);
@@ -280,6 +284,8 @@ describe("runMigrations", () => {
         attachmentPlaceholderMigration,
         subagentDeliveryMigration,
         projectPinArchiveMigration,
+        settledOverrideMigration,
+        correlationIndexMigration,
         modelEvaluationMigration,
       ]);
       assert.deepStrictEqual((yield* history).slice(0, before.length), before);
@@ -351,6 +357,8 @@ describe("runMigrations", () => {
             attachmentPlaceholderMigration,
             subagentDeliveryMigration,
             projectPinArchiveMigration,
+            settledOverrideMigration,
+            correlationIndexMigration,
             modelEvaluationMigration,
           ],
         );
@@ -388,6 +396,8 @@ describe("runMigrations", () => {
           attachmentPlaceholderMigration,
           subagentDeliveryMigration,
           projectPinArchiveMigration,
+          settledOverrideMigration,
+          correlationIndexMigration,
           modelEvaluationMigration,
         ],
       );
@@ -398,6 +408,8 @@ describe("runMigrations", () => {
         attachmentPlaceholderMigration,
         subagentDeliveryMigration,
         projectPinArchiveMigration,
+        settledOverrideMigration,
+        correlationIndexMigration,
         modelEvaluationMigration,
       ]);
       yield* assertConsolidatedSchema;
@@ -430,6 +442,8 @@ describe("runMigrations", () => {
           attachmentPlaceholderMigration,
           subagentDeliveryMigration,
           projectPinArchiveMigration,
+          settledOverrideMigration,
+          correlationIndexMigration,
           modelEvaluationMigration,
         ]);
 
@@ -532,6 +546,8 @@ describe("runMigrations", () => {
         attachmentPlaceholderMigration,
         subagentDeliveryMigration,
         projectPinArchiveMigration,
+        settledOverrideMigration,
+        correlationIndexMigration,
         modelEvaluationMigration,
       ]);
       yield* assertConsolidatedSchema;
@@ -583,6 +599,8 @@ describe("runMigrations", () => {
           attachmentPlaceholderMigration,
           subagentDeliveryMigration,
           projectPinArchiveMigration,
+          settledOverrideMigration,
+          correlationIndexMigration,
           modelEvaluationMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
@@ -639,6 +657,8 @@ describe("runMigrations", () => {
           attachmentPlaceholderMigration,
           subagentDeliveryMigration,
           projectPinArchiveMigration,
+          settledOverrideMigration,
+          correlationIndexMigration,
           modelEvaluationMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
@@ -726,6 +746,44 @@ describe("runMigrations", () => {
       assert.deepStrictEqual(yield* runMigrations(), v2Migrations);
       assert.deepStrictEqual(yield* history, migrationManifest);
       assert.isAbove(yield* v2TableCount, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("drops the unused correlation index and keeps correlation values", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 54 });
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
+        )
+        VALUES (
+          'event-1', 'thread', 'thread-1', 0, 'thread.created', '2026-01-01T00:00:00.000Z',
+          'command-1', NULL, 'correlation-1', 'client', '{}', '{}'
+        )
+      `;
+
+      yield* runMigrations();
+
+      const indexes = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master
+        WHERE type = 'index' AND tbl_name = 'orchestration_events' AND sql IS NOT NULL
+      `;
+      const indexNames = indexes.map((row) => row.name);
+      assert.notInclude(indexNames, "idx_orch_events_correlation_id");
+      for (const kept of [
+        "idx_orch_events_stream_version",
+        "idx_orch_events_stream_sequence",
+        "idx_orch_events_command_id",
+        "idx_orchestration_events_agent_stream_sequence",
+      ]) {
+        assert.include(indexNames, kept);
+      }
+      const events = yield* sql<{ readonly correlation_id: string | null }>`
+        SELECT correlation_id FROM orchestration_events WHERE event_id = 'event-1'
+      `;
+      assert.deepStrictEqual(events, [{ correlation_id: "correlation-1" }]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
