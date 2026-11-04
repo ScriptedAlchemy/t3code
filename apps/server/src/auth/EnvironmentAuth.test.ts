@@ -823,17 +823,19 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
         const url = `https://${host}/api/auth/lan-credential`;
         const iat = Math.floor((yield* DateTime.now).epochMilliseconds / 1_000);
         const mint = (authorization: string, dpop?: string) =>
-          serverAuth.issueLanCredential({
-            method: "POST",
-            url: "/api/auth/lan-credential",
-            cookies: {},
-            headers: {
-              host,
-              "x-forwarded-proto": "https",
-              authorization,
-              ...(dpop === undefined ? {} : { dpop }),
-            },
-          } as never);
+          serverAuth.issueLanCredential(
+            HttpServerRequest.fromWeb(
+              new Request(url, {
+                method: "POST",
+                headers: {
+                  host,
+                  "x-forwarded-proto": "https",
+                  authorization,
+                  ...(dpop === undefined ? {} : { dpop }),
+                },
+              }),
+            ),
+          );
         const parent = yield* sessions.issue({
           method: "bearer-access-token",
           subject: "paired-phone",

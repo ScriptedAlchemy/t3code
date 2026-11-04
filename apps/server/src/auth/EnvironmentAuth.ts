@@ -1056,7 +1056,7 @@ export const make = Effect.gen(function* () {
     }
     const proofKeyThumbprint = yield* verifyRequestDpopProof({ request }).pipe(
       Effect.provideService(ServerSecretStore.ServerSecretStore, secretStore),
-      Effect.provideService(Crypto.Crypto, crypto),
+      Effect.provideService(Digest.Digest, digest),
     );
     const now = yield* DateTime.now;
     const session = yield* sessions

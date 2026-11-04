@@ -261,6 +261,7 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
     Layer.succeed(
       ConnectionDriver.ConnectionDriver,
       ConnectionDriver.ConnectionDriver.of({
+        mintLanCredential: () => Effect.die("Unexpected LAN credential mint."),
         connect,
         preflight: (_entry, route) =>
           options?.preflight?.(route) ??
@@ -2122,7 +2123,7 @@ describe("EnvironmentSupervisor routes", () => {
           return;
         }
         if (discovery === "initial") {
-          yield* Deferred.await(discoveryProcessed);
+          yield* awaitState(supervisor.state, (state) => state.phase === "connected");
           expect((yield* SubscriptionRef.get(supervisor.state)).generation).toBe(1);
           expect(
             Option.getOrThrow(yield* SubscriptionRef.get(supervisor.prepared)).target._tag,
@@ -2145,7 +2146,7 @@ describe("EnvironmentSupervisor routes", () => {
           "BearerConnectionTarget",
         );
         expect(yield* Ref.get(learned)).toEqual([
-          `learned:${TARGET.environmentId}:${discovery !== "initial" ? "https://fixture.tail1234.ts.net" : "http://192.168.1.10:3773"}`,
+          `learned:${TARGET.environmentId}:https://fixture.tail1234.ts.net`,
         ]);
       }),
   );
