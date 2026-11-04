@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -147,7 +148,7 @@ const makeFixture = Effect.fn("ExternalHistory.test.fixture")(function* () {
   return { service, state, calls, instance, native };
 });
 
-it.layer(NodeServices.layer)("external history service", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history service", (it) => {
   it.effect("checks the environment opt-in before touching providers and on every read", () =>
     Effect.gen(function* () {
       const { service, state, calls } = yield* makeFixture();

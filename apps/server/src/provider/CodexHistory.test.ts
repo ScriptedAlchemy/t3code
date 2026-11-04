@@ -1,4 +1,6 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Layer from "effect/Layer";
 import { expect, it } from "@effect/vitest";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import type { ProviderNativeHistory } from "@t3tools/provider-core/server/nativeHistory";
@@ -105,7 +107,7 @@ const makeFixture = Effect.fn("CodexHistory.test.fixture")(function* (
   return { history, state, calls };
 });
 
-it.layer(NodeServices.layer)("Codex native history", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Codex native history", (it) => {
   it.effect("refuses an app-server that reports another history home", () =>
     Effect.gen(function* () {
       const { history, state, calls } = yield* makeFixture();

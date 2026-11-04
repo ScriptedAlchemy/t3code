@@ -4,7 +4,7 @@ import {
   type ExternalHistoryRequest,
   type ExternalHistoryResponse,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Hex from "effect/encoding/Hex";
@@ -173,9 +173,9 @@ type ReadRequest = Extract<ExternalHistoryRequest, { operation: "read" }>;
 
 export const makeChatGptExportHistory = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const digest = (text: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(text)).pipe(
+    crypto.digest(Digest.sha256, new TextEncoder().encode(text)).pipe(
       Effect.map(Hex.encode),
       Effect.mapError((cause) => new ExternalHistoryError({ reason: "unavailable", cause })),
     );

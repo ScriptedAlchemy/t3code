@@ -549,8 +549,10 @@ it.effect.each([60_000, 48_000])(
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       const text = "x".repeat(chars);
       yield* projections.apply(messageEvent(0, text));
-      const crypto = yield* Crypto.Crypto;
-      const digest = Hex.encode(yield* crypto.digest("SHA-256", new TextEncoder().encode(text)));
+      const crypto = yield* Digest.Digest;
+      const digest = Hex.encode(
+        yield* crypto.digest(Digest.sha256, new TextEncoder().encode(text)),
+      );
       const payload = {
         ...legacy,
         sources: legacy.sources.map((source, index) =>
@@ -739,8 +741,8 @@ it.effect("regenerates legacy prefix summaries while keeping their full source r
     const text = `${"Legacy text. ".repeat(1_000)}EXACT-TAIL`;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     yield* projections.apply(messageEvent(0, text));
-    const crypto = yield* Crypto.Crypto;
-    const digest = Hex.encode(yield* crypto.digest("SHA-256", new TextEncoder().encode(text)));
+    const crypto = yield* Digest.Digest;
+    const digest = Hex.encode(yield* crypto.digest(Digest.sha256, new TextEncoder().encode(text)));
     const legacy = {
       ...previous,
       sources: previous.sources.map((source, index) =>

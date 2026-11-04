@@ -1,4 +1,6 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Layer from "effect/Layer";
 import { expect, it } from "@effect/vitest";
 import type { ExternalHistoryResponse } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -31,7 +33,7 @@ const fixture = Effect.fn("ChatGptExportHistory.test.fixture")(function* (value:
   return { history: yield* makeChatGptExportHistory, fs, filePath };
 });
 
-it.layer(NodeServices.layer)("ChatGPT export history", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ChatGPT export history", (it) => {
   it.effect("finds suffix matches and pages digest-verified exact Unicode text", () =>
     Effect.gen(function* () {
       const text = "İ😀" + "a".repeat(3_000) + "NEEDLE [literal]";

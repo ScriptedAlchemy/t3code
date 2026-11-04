@@ -8,7 +8,7 @@ import type {
   ProviderNativeHistoryError,
 } from "@t3tools/provider-core/server/nativeHistory";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
@@ -93,11 +93,11 @@ const make = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const settings = yield* ServerSettings.ServerSettingsService;
   const config = yield* ServerConfig.ServerConfig;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const path = yield* Path.Path;
   const exports = yield* makeChatGptExportHistory;
   const digest = (text: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(text)).pipe(
+    crypto.digest(Digest.sha256, new TextEncoder().encode(text)).pipe(
       Effect.map(Hex.encode),
       Effect.mapError((cause) => new ExternalHistoryError({ reason: "unavailable", cause })),
     );

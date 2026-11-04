@@ -1,6 +1,6 @@
 import type * as CodexSchema from "effect-codex-app-server/schema";
 import * as CodexErrors from "effect-codex-app-server/errors";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
@@ -306,10 +306,10 @@ export const makeCodexNativeHistory = Effect.fn("CodexHistory.make")(function* <
     ) => Effect.Effect<A, ProviderNativeHistoryError | CodexErrors.CodexAppServerError>,
   ) => Effect.Effect<A, E>;
 }) {
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const fs = yield* FileSystem.FileSystem;
   const digest = (text: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(text)).pipe(
+    crypto.digest(Digest.sha256, new TextEncoder().encode(text)).pipe(
       Effect.map(Hex.encode),
       Effect.mapError((cause) => failure("items", "unavailable", cause)),
     );
