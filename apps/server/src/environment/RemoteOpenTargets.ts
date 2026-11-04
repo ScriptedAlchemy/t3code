@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-import { resolveMdnsHost } from "./mdnsHost.ts";
+import { makeCachedMdnsHost } from "./mdnsHost.ts";
 import { makeStaleWhileRevalidate } from "./staleWhileRevalidate.ts";
 
 const SSH_PORT = 22;
@@ -24,9 +24,7 @@ export class RemoteOpenTargets extends Context.Service<
 export const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const net = yield* NetService.NetService;
-  const mdnsHost = yield* Effect.cached(
-    resolveMdnsHost().pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
-  );
+  const mdnsHost = yield* makeCachedMdnsHost;
 
   const discoverTargets = Effect.gen(function* () {
     // Check both loopback families: sshd can be bound IPv6-only.

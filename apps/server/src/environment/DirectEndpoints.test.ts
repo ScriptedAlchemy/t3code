@@ -8,6 +8,7 @@ import * as Ref from "effect/Ref";
 import * as Layer from "effect/Layer";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -428,5 +429,56 @@ describe("DirectEndpoints Bonjour name", () => {
       Effect.provideService(HostProcess.Platform, "darwin"),
       Effect.provideService(HostProcess.Hostname, "dhcp-12.corp.example"),
     ),
+  );
+
+  effectIt.effect("reports the correct name again after a failed scutil lookup expires", () =>
+    Effect.gen(function* () {
+      const spawns = yield* Ref.make(0);
+      const service = yield* DirectEndpoints.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            layerServeConfig("192.168.1.10"),
+            layerServeProbe(200),
+            layerSpawnerStdout(
+              "Studio\n",
+              Ref.getAndUpdate(spawns, (count) => count + 1).pipe(
+                Effect.flatMap((count) =>
+                  count === 0 ? Effect.die("scutil failed") : Effect.void,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      const addresses = yield* service.resolveAvailable();
+      expect(addresses.at(-1)?.httpBaseUrl).toBe("http://dhcp-12.local:3773/");
+      yield* TestClock.adjust("5 minutes");
+      const recovered = yield* service.resolveAvailable();
+      expect(recovered.at(-1)?.httpBaseUrl).toBe("http://Studio.local:3773/");
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(HostProcess.Platform, "darwin"),
+      Effect.provideService(HostProcess.Hostname, "dhcp-12.corp.example"),
+    ),
+  );
+
+  effectIt.effect("does not run scutil on a loopback-only server", () =>
+    Effect.gen(function* () {
+      const spawns = yield* Ref.make(0);
+      const service = yield* DirectEndpoints.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            layerServeConfig("127.0.0.1"),
+            layerServeProbe(200),
+            layerSpawnerStdout(
+              "Studio\n",
+              Ref.update(spawns, (count) => count + 1),
+            ),
+          ),
+        ),
+      );
+      expect(yield* service.resolveAvailable()).toEqual([]);
+      expect(yield* Ref.get(spawns)).toBe(0);
+    }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "darwin")),
   );
 });

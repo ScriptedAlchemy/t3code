@@ -2,6 +2,7 @@ import { it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Ref from "effect/Ref";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -92,13 +93,17 @@ describe("resolveMdnsHost", () => {
 
   it.effect("never runs scutil off macOS", () =>
     Effect.gen(function* () {
+      const spawns = yield* Ref.make(0);
       expect(
         yield* resolveOn(
           "linux",
           "bb-1.corp",
-          ChildProcessSpawner.make(() => Effect.die("spawned")),
+          ChildProcessSpawner.make(() =>
+            Ref.update(spawns, (count) => count + 1).pipe(Effect.andThen(Effect.die("spawned"))),
+          ),
         ),
       ).toBe("bb-1.local");
+      expect(yield* Ref.get(spawns)).toBe(0);
     }),
   );
 });

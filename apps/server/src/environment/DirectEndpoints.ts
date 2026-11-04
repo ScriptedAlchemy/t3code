@@ -26,7 +26,7 @@ import {
   isWildcardHost,
   VIRTUAL_INTERFACE,
 } from "../startupAccess.ts";
-import { resolveMdnsHost } from "./mdnsHost.ts";
+import { makeCachedMdnsHost } from "./mdnsHost.ts";
 
 type NetworkInterfacesMap = ReturnType<typeof NodeOS.networkInterfaces>;
 
@@ -89,7 +89,6 @@ export function resolveBoundEndpoints(input: {
       kind: tailscaleAddresses.has(address) ? "tailnet" : "lan",
       httpBaseUrl: `http://${formatHostForUrl(address)}:${input.port}/`,
     }));
-  // An address dies with its subnet; the Bonjour name follows the machine onto the next network.
   return input.mdnsHost && endpoints.some((endpoint) => endpoint.kind === "lan")
     ? [...endpoints, { kind: "lan", httpBaseUrl: `http://${input.mdnsHost}:${input.port}/` }]
     : endpoints;
@@ -135,9 +134,7 @@ export const make = Effect.gen(function* () {
     ? yield* Effect.cached(probeCloudMetadata)
     : Effect.succeed(false);
   yield* Effect.forkDetach(onCloudVm);
-  const mdnsHost = yield* Effect.cached(
-    resolveMdnsHost().pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
-  );
+  const mdnsHost = yield* makeCachedMdnsHost;
 
   const servedEndpoint = yield* Ref.make<Option.Option<string>>(Option.none());
   const resolveAvailable = Effect.fn("DirectEndpoints.resolveAvailable")(function* () {
@@ -148,7 +145,7 @@ export const make = Effect.gen(function* () {
         port: config.port,
         interfaces: NodeOS.networkInterfaces(),
         onCloudVm: yield* onCloudVm,
-        mdnsHost: yield* mdnsHost,
+        mdnsHost: isLoopbackHost(config.host) ? null : yield* mdnsHost,
       }),
     ];
     const servedUrl = yield* Ref.get(servedEndpoint);
