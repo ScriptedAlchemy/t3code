@@ -39,6 +39,7 @@ import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as EventSink from "./EventSink.ts";
+import * as UsageAttemptStamps from "../usage/UsageAttemptStamps.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { isActiveRun } from "./CommandPolicy.ts";
@@ -161,6 +162,7 @@ export const layer: Layer.Layer<
     const pstack = yield* PstackPack.PstackPack;
     const eventSink = yield* EventSink.EventSinkV2;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
+    const attemptStamps = yield* UsageAttemptStamps.UsageAttemptStamps;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1545,6 +1547,13 @@ export const layer: Layer.Layer<
           payload: runningRootNode,
         },
       ];
+      // Retries return at the status gate once this commits, so a stamp written after it could be lost for good.
+      yield* attemptStamps.stamp({
+        attemptId: attempt.id,
+        threadId: projection.thread.id,
+        projectId: projection.thread.projectId,
+        message,
+      });
       const runningWrite = yield* eventSink.writeIfRunCurrent({
         threadId: projection.thread.id,
         runId: run.id,

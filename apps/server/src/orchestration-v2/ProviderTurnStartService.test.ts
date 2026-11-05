@@ -38,6 +38,7 @@ import {
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Deferred from "effect/Deferred";
@@ -69,6 +70,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
+import * as UsageAttemptStamps from "../usage/UsageAttemptStamps.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
@@ -310,6 +312,7 @@ function makeLocalCommandHarness(input: {
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
   readonly failReadsAfterRunning?: boolean;
+  readonly attemptStamps?: Context.Service.Shape<typeof UsageAttemptStamps.UsageAttemptStamps>;
   readonly previousTurn?: {
     readonly runStatus: "failed" | "completed";
     readonly turnStatus: "running" | "completed" | "interrupted";
@@ -1138,6 +1141,9 @@ function makeLocalCommandHarness(input: {
           turnCompleted: () => Effect.void,
           runSettled: (report) => Effect.sync(() => void settledRuns.push(report.status)),
         }),
+        input.attemptStamps === undefined
+          ? Layer.empty
+          : Layer.succeed(UsageAttemptStamps.UsageAttemptStamps, input.attemptStamps),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,
         }),
@@ -1756,6 +1762,56 @@ effectIt.effect("starts another provider in the same checkout while a turn is pe
     yield* Deferred.succeed(releaseTurn, undefined);
     yield* Fiber.join(pending);
   }),
+);
+
+effectIt.effect("stamps the attempt once, before it commits to running", () =>
+  Effect.gen(function* () {
+    const stamp = vi.fn((_: UsageAttemptStamps.UsageAttemptStampInput) => Effect.void);
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      failReadsAfterRunning: true,
+      attemptStamps: { stamp },
+    });
+    harness.writeIfRunCurrent.mockImplementationOnce((write) => {
+      expect(stamp).toHaveBeenCalledOnce();
+      return harness.writeIfRunCurrent.getMockImplementation()!(write);
+    });
+    yield* harness.start;
+    yield* harness.start;
+
+    expect(stamp).toHaveBeenCalledOnce();
+    expect(stamp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attemptId: harness.attemptId,
+        threadId: harness.projection().thread.id,
+        projectId: harness.projection().thread.projectId,
+        message: expect.objectContaining({ createdBy: "user" }),
+      }),
+    );
+  }),
+);
+
+effectIt.effect("starts the turn when the stamp cannot be written", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DROP TABLE usage_attempt_stamps`;
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      failReadsAfterRunning: true,
+      attemptStamps: yield* UsageAttemptStamps.UsageAttemptStamps,
+    });
+    yield* harness.start;
+
+    expect(harness.startRootRun).toHaveBeenCalledOnce();
+    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+  }).pipe(
+    Effect.provide(
+      UsageAttemptStamps.layer.pipe(
+        Layer.provideMerge(SqlitePersistence.layerMemory),
+        Layer.provideMerge(ServerSettings.layerTest()),
+      ),
+    ),
+  ),
 );
 
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>
