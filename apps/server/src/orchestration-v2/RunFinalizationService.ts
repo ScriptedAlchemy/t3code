@@ -100,11 +100,7 @@ const make = Effect.gen(function* () {
         Effect.flatMap((thread) =>
           // An exact match excludes project-root threads and nested-repo checkpoint scopes.
           thread?.worktreePath === cwd
-            ? worktreeBranches.sync({
-                worktreePath: cwd,
-                recorded: [thread.branch],
-                runId: input.runId,
-              })
+            ? worktreeBranches.sync({ worktreePath: cwd, runId: input.runId })
             : Effect.void,
         ),
         Effect.catchCause((cause) =>

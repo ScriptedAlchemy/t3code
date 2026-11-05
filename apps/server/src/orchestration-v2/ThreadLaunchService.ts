@@ -514,7 +514,6 @@ const make = Effect.gen(function* () {
           Effect.flatMap(() =>
             worktreeBranches.sync({
               worktreePath: worktreeCwd,
-              recorded: [oldBranch],
               ...(runId === null ? {} : { runId }),
             }),
           ),

@@ -68,7 +68,6 @@ const fixture = Effect.gen(function* () {
   yield* command(repo, ["worktree", "add", "-b", "feature", worktree]);
 
   let threads: OrchestrationV2ThreadShell[] = [];
-  let snapshotReads = 0;
   let onDispatch: (update: MetadataUpdate) => Effect.Effect<void> = () => Effect.void;
   const dispatched: MetadataUpdate[] = [];
   const context = yield* Layer.build(WorktreeBranches.layer).pipe(
@@ -78,7 +77,6 @@ const fixture = Effect.gen(function* () {
     Effect.provideService(Orchestrator.OrchestratorV2, {
       getShellSnapshot: (options: { readonly worktreePath: string }) =>
         Effect.sync(() => {
-          snapshotReads++;
           const members = threads.filter((thread) => thread.worktreePath === options.worktreePath);
           return {
             threads: members.filter((thread) => thread.archivedAt === null),
@@ -105,7 +103,6 @@ const fixture = Effect.gen(function* () {
     repo,
     worktree,
     dispatched,
-    snapshotReads: () => snapshotReads,
     threads: () => threads,
     setThreads: (next: OrchestrationV2ThreadShell[]) => {
       threads = next;
@@ -128,15 +125,15 @@ const run = <A, E>(
   >,
 ) => effect.pipe(Effect.provide(gitLayer), Effect.scoped);
 
-it.live("returns Bound without reading threads when every record matches HEAD", () =>
+it.live("returns Bound without writing when every thread matches HEAD", () =>
   run(
     Effect.gen(function* () {
-      const { service, worktree, snapshotReads, dispatched } = yield* fixture;
-      assert.deepEqual(yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }), {
+      const { service, worktree, dispatched, setThreads } = yield* fixture;
+      setThreads([member("thread", "feature", worktree)]);
+      assert.deepEqual(yield* service.sync({ worktreePath: worktree }), {
         _tag: "Bound",
         branch: "feature",
       });
-      assert.equal(snapshotReads(), 0);
       assert.deepEqual(dispatched, []);
     }),
   ),
@@ -157,7 +154,7 @@ it.live("writes every member oldest first, each with its own swap, and a repeat 
         member("parent", "feature", worktree, { createdAt: DateTime.makeUnsafe(1) }),
         member("elsewhere", "feature", `${worktree}-other`),
       ]);
-      assert.deepEqual(yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }), {
+      assert.deepEqual(yield* service.sync({ worktreePath: worktree }), {
         _tag: "Rebinding",
         branch: "agent/work",
       });
@@ -173,15 +170,10 @@ it.live("writes every member oldest first, each with its own swap, and a repeat 
       assert.isTrue(dispatched.every((update) => update.expectedWorktreePath === worktree));
       assert.equal(new Set(dispatched.map((update) => update.commandId)).size, 4);
       assert.equal(threads().find((thread) => thread.id === "elsewhere")?.branch, "feature");
-      assert.deepEqual(
-        yield* service.sync({
-          worktreePath: worktree,
-          recorded: ["parent", "child", "no-branch", "archived"].map(
-            (id) => threads().find((thread) => thread.id === id)!.branch,
-          ),
-        }),
-        { _tag: "Bound", branch: "agent/work" },
-      );
+      assert.deepEqual(yield* service.sync({ worktreePath: worktree }), {
+        _tag: "Bound",
+        branch: "agent/work",
+      });
     }),
   ),
 );
@@ -198,7 +190,7 @@ it.live.each([
       setThreads([member("thread", "feature", worktree)]);
       if (branch === "main") yield* command(repo, ["switch", "--detach"]);
       yield* command(worktree, [...checkout]);
-      assert.deepEqual(yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }), {
+      assert.deepEqual(yield* service.sync({ worktreePath: worktree }), {
         _tag: tag,
         ...(branch === undefined ? {} : { branch }),
       } as WorktreeBranches.WorktreeCheckout);
@@ -214,7 +206,7 @@ it.live("writes nothing for a branch another checkout holds", () =>
       setThreads([member("thread", "feature", worktree)]);
       yield* command(repo, ["switch", "-c", "trunk"]);
       yield* command(worktree, ["switch", "--ignore-other-worktrees", "trunk"]);
-      assert.deepEqual(yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }), {
+      assert.deepEqual(yield* service.sync({ worktreePath: worktree }), {
         _tag: "Unbound",
         branch: "trunk",
       });
@@ -236,7 +228,7 @@ it.live("writes nothing when another repository replaced the worktree", () =>
       yield* fs.rename(worktree, `${worktree}-original`);
       yield* command(other, ["worktree", "add", "-b", "other-work", worktree]);
       setThreads([member("thread", "feature", worktree)]);
-      assert.deepEqual(yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }), {
+      assert.deepEqual(yield* service.sync({ worktreePath: worktree }), {
         _tag: "Unavailable",
       });
       assert.deepEqual(dispatched, []);
@@ -258,16 +250,31 @@ it.live("reads the default branch from the primary remote before main or master"
         "refs/remotes/origin/trunk",
       ]);
       yield* command(worktree, ["switch", "trunk"]);
-      assert.equal(
-        (yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }))._tag,
-        "Unbound",
-      );
+      assert.equal((yield* service.sync({ worktreePath: worktree }))._tag, "Unbound");
       assert.deepEqual(dispatched, []);
       yield* command(repo, ["switch", "--detach"]);
       yield* command(worktree, ["switch", "main"]);
-      assert.equal(
-        (yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }))._tag,
-        "Rebinding",
+      assert.equal((yield* service.sync({ worktreePath: worktree }))._tag, "Rebinding");
+    }),
+  ),
+);
+
+it.live("asks the remote when no local HEAD ref says whether main is its default", () =>
+  run(
+    Effect.gen(function* () {
+      const { service, command, repo, worktree, dispatched, setThreads } = yield* fixture;
+      const fs = yield* FileSystem.FileSystem;
+      const remote = yield* fs.makeTempDirectoryScoped({ prefix: "worktree-sync-remote-" });
+      setThreads([member("thread", "feature", worktree)]);
+      yield* command(remote, ["init", "--bare", "-b", "trunk"]);
+      yield* command(repo, ["branch", "-m", "trunk"]);
+      yield* command(repo, ["remote", "add", "origin", remote]);
+      yield* command(repo, ["push", "origin", "trunk"]);
+      yield* command(worktree, ["switch", "-c", "main"]);
+      assert.equal((yield* service.sync({ worktreePath: worktree }))._tag, "Rebinding");
+      assert.deepEqual(
+        dispatched.map((update) => update.branch),
+        ["main"],
       );
     }),
   ),
@@ -279,7 +286,7 @@ it.live("reports a missing worktree as Unavailable", () =>
       const { service, worktree } = yield* fixture;
       const missing = `${worktree}-missing`;
       assert.deepEqual(yield* service.observe(missing), { _tag: "Unavailable" });
-      assert.deepEqual(yield* service.sync({ worktreePath: missing, recorded: ["feature"] }), {
+      assert.deepEqual(yield* service.sync({ worktreePath: missing }), {
         _tag: "Unavailable",
       });
     }),
@@ -296,7 +303,7 @@ it.live("defers to a sibling's active run but writes through the caller's own", 
         member("own", "feature", worktree, { activeRunId: runId }),
         member("sibling", "feature", worktree, { activeRunId: RunId.make("run-sibling") }),
       ]);
-      const sync = { worktreePath: worktree, recorded: ["feature"], runId };
+      const sync = { worktreePath: worktree, runId };
       assert.deepEqual(yield* service.sync(sync), { _tag: "Rebinding", branch: "agent/work" });
       assert.deepEqual(dispatched, []);
       setThreads([
@@ -319,10 +326,7 @@ it.live("logs a lost swap and still writes the next member", () =>
         member("second", "feature", worktree, { createdAt: DateTime.makeUnsafe(2) }),
       ]);
       onDispatch((update) => (update.threadId === "first" ? Effect.die("swap lost") : Effect.void));
-      assert.equal(
-        (yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }))._tag,
-        "Rebinding",
-      );
+      assert.equal((yield* service.sync({ worktreePath: worktree }))._tag, "Rebinding");
       assert.deepEqual(
         threads().map((thread) => thread.branch),
         ["feature", "agent/work"],
@@ -343,7 +347,7 @@ it.live("picks up a child created during the write when it rereads", () =>
             setThreads([...threads(), member("child", "feature", worktree)]);
         }),
       );
-      yield* service.sync({ worktreePath: worktree, recorded: ["feature"] });
+      yield* service.sync({ worktreePath: worktree });
       assert.deepEqual(
         threads().map((thread) => thread.branch),
         ["agent/work", "agent/work"],
@@ -359,10 +363,53 @@ it.live("terminates when every write is rejected", () =>
       yield* command(worktree, ["switch", "-c", "agent/work"]);
       setThreads([member("parent", "feature", worktree)]);
       onDispatch(() => Effect.die("rejected"));
-      assert.equal(
-        (yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }))._tag,
-        "Rebinding",
+      assert.equal((yield* service.sync({ worktreePath: worktree }))._tag, "Rebinding");
+    }),
+  ),
+);
+
+it.live("corrects a sibling whose write was deferred when another run ends", () =>
+  run(
+    Effect.gen(function* () {
+      const { service, command, worktree, threads, setThreads } = yield* fixture;
+      yield* command(worktree, ["branch", "-m", "feature", "t3/named"]);
+      const childRun = RunId.make("run-child");
+      setThreads([
+        member("parent", "t3/temp", worktree),
+        member("child", "t3/named", worktree, { activeRunId: childRun }),
+      ]);
+      const parentEnd = yield* service.sync({
+        worktreePath: worktree,
+        runId: RunId.make("run-parent"),
+      });
+      assert.equal(parentEnd._tag, "Rebinding");
+      assert.equal(threads().find((thread) => thread.id === "parent")?.branch, "t3/temp");
+      yield* service.sync({ worktreePath: worktree, runId: childRun });
+      assert.equal(threads().find((thread) => thread.id === "parent")?.branch, "t3/named");
+    }),
+  ),
+);
+
+it.live("rebinds while a Git command holds the index lock, which observe reports", () =>
+  run(
+    Effect.gen(function* () {
+      const { service, command, worktree, dispatched, setThreads } = yield* fixture;
+      const fs = yield* FileSystem.FileSystem;
+      yield* command(worktree, ["switch", "-c", "agent/work"]);
+      setThreads([member("own", "feature", worktree)]);
+      const index = yield* command(worktree, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "index",
+      ]);
+      yield* fs.writeFileString(`${index}.lock`, "");
+      assert.equal((yield* service.sync({ worktreePath: worktree }))._tag, "Rebinding");
+      assert.deepEqual(
+        dispatched.map((update) => update.threadId),
+        ["own"],
       );
+      assert.equal((yield* Effect.exit(service.observe(worktree)))._tag, "Failure");
     }),
   ),
 );
