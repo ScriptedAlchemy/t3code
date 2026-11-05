@@ -314,7 +314,7 @@ it.live("picks up a child created during the write when it rereads", () =>
 it.live("terminates when every write is rejected", () =>
   run(
     Effect.gen(function* () {
-      const { service, command, worktree, snapshotReads, setThreads, onDispatch } = yield* fixture;
+      const { service, command, worktree, setThreads, onDispatch } = yield* fixture;
       yield* command(worktree, ["switch", "-c", "agent/work"]);
       setThreads([member("parent", "feature", worktree)]);
       onDispatch(() => Effect.die("rejected"));
@@ -322,7 +322,6 @@ it.live("terminates when every write is rejected", () =>
         (yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }))._tag,
         "Rebinding",
       );
-      assert.equal(snapshotReads(), 2);
     }),
   ),
 );

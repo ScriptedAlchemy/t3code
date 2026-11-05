@@ -1203,6 +1203,32 @@ describe("deleted thread worktrees", () => {
       ...overrides,
     });
 
+  it.live("removes a deleted owner's worktree after rebinding its surviving subagent", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture({
+          ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+          worktreeAfterDays: null,
+          worktreeOnDelete: true,
+        });
+        const owner = parent(fixture.worktree);
+        fixture.setDeletedThreads([owner]);
+        fixture.setThreads([subagent(owner)]);
+        yield* fixture.command(fixture.worktree, ["switch", "-c", "agent/work"]);
+        expect((yield* fixture.service.runNow).entries[0]).toMatchObject({
+          outcome: "kept",
+          reason: "Branch updated, re-checked next pass",
+        });
+        expect(fixture.threads()[0]?.branch).toBe("agent/work");
+        expect((yield* fixture.service.runNow).entries[0]).toMatchObject({
+          outcome: "removed",
+          reason: "Thread was deleted",
+        });
+        yield* fixture.command(fixture.repo, ["rev-parse", "--verify", "refs/heads/agent/work"]);
+      }),
+    ),
+  );
+
   it.effect.each(["no subagents", "native subagent"] as const)(
     "removes a deleted thread's worktree with %s",
     (scenario) =>
