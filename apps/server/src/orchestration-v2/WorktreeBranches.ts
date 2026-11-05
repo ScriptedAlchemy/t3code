@@ -45,6 +45,8 @@ export class WorktreeBranches extends Context.Service<
       readonly threadPaths?: ReadonlyArray<string>;
       readonly runId?: RunId;
     }) => Effect.Effect<WorktreeCheckout, WorktreeBranchError>;
+    /** False when either side cannot be read, so a caller about to delete keeps what it found. */
+    readonly sameRepository: (worktreePath: string, projectRoot: string) => Effect.Effect<boolean>;
   }
 >()("t3/orchestration-v2/WorktreeBranches") {}
 
@@ -127,7 +129,7 @@ const make = Effect.gen(function* () {
     return snapshots.flatMap((snapshot) => [...snapshot.threads, ...snapshot.archivedThreads]);
   });
 
-  const gitCommonDir = Effect.fnUntraced(function* (cwd: string) {
+  const repositoryIdentity = Effect.fnUntraced(function* (cwd: string) {
     const physical = (path: string) => fs.realPath(path).pipe(Effect.orElseSucceed(() => path));
     const { stdout } = yield* git.execute({
       operation: "WorktreeBranches.sync",
@@ -135,8 +137,27 @@ const make = Effect.gen(function* () {
       args: ["rev-parse", "--git-common-dir"],
     });
     // Git prints this relative to the physical cwd, which can differ from a symlink.
-    return yield* physical(path.resolve(yield* physical(cwd), stdout.trim()));
+    const commonDir = yield* physical(path.resolve(yield* physical(cwd), stdout.trim()));
+    // By file, not by spelling: a case-insensitive disk accepts one folder under several names.
+    return yield* fs.stat(commonDir).pipe(
+      Effect.map(({ dev, ino }) =>
+        Option.match(ino, {
+          onNone: () => commonDir,
+          onSome: (value) => `${dev}:${value}`,
+        }),
+      ),
+      Effect.orElseSucceed(() => commonDir),
+    );
   });
+
+  const sameRepository: WorktreeBranches["Service"]["sameRepository"] = Effect.fn(
+    "WorktreeBranches.sameRepository",
+  )(
+    function* (worktreePath, projectRoot) {
+      return (yield* repositoryIdentity(worktreePath)) === (yield* repositoryIdentity(projectRoot));
+    },
+    Effect.orElseSucceed(() => false),
+  );
 
   // A replaced folder looks like a switched branch, but its branch means nothing to these threads.
   const inProjectRepository = Effect.fn("WorktreeBranches.inProjectRepository")(
@@ -145,12 +166,13 @@ const make = Effect.gen(function* () {
       if (member === undefined) return true;
       const project = yield* projects.getShell(member.projectId);
       if (Option.isNone(project)) return false;
-      return (
-        (yield* gitCommonDir(worktreePath)) === (yield* gitCommonDir(project.value.workspaceRoot))
-      );
+      return yield* sameRepository(worktreePath, project.value.workspaceRoot);
     },
     Effect.orElseSucceed(() => false),
   );
+
+  // Once per checkout: a thread left on the default branch syncs at the end of every turn.
+  const remoteDefaults = new Map<string, string | null>();
 
   const isDefaultBranch = Effect.fn("WorktreeBranches.isDefaultBranch")(function* (
     cwd: string,
@@ -159,20 +181,24 @@ const make = Effect.gen(function* () {
     const remote = yield* git.resolvePrimaryRemoteName(cwd).pipe(Effect.orElseSucceed(() => null));
     if (remote === null) return GitVcsDriver.isDefaultBranchName(branch, null);
     const known = yield* git.resolveDefaultBranchName(cwd, remote);
-    if (known !== null || !GitVcsDriver.isDefaultBranchName(branch, null))
-      return GitVcsDriver.isDefaultBranchName(branch, known);
-    // Without a local HEAD ref, only the remote can say whether a conventional name is its default.
-    const remoteHead = yield* git
-      .execute({
-        operation: "WorktreeBranches.isDefaultBranch",
-        cwd,
-        args: ["ls-remote", "--symref", "--", remote, "HEAD"],
-        timeoutMs: REMOTE_HEAD_TIMEOUT_MS,
-      })
-      .pipe(
-        Effect.map((result) => GitVcsDriver.parseRemoteHeadBranch(result.stdout)),
-        Effect.orElseSucceed(() => null),
-      );
+    if (known !== null) return GitVcsDriver.isDefaultBranchName(branch, known);
+    // Without a local HEAD ref, only the remote can name its default.
+    const key = `${cwd}\0${remote}`;
+    let remoteHead = remoteDefaults.get(key);
+    if (remoteHead === undefined) {
+      remoteHead = yield* git
+        .execute({
+          operation: "WorktreeBranches.isDefaultBranch",
+          cwd,
+          args: ["ls-remote", "--symref", "--", remote, "HEAD"],
+          timeoutMs: REMOTE_HEAD_TIMEOUT_MS,
+        })
+        .pipe(
+          Effect.map((result) => GitVcsDriver.parseRemoteHeadBranch(result.stdout)),
+          Effect.orElseSucceed(() => null),
+        );
+      remoteDefaults.set(key, remoteHead);
+    }
     return GitVcsDriver.isDefaultBranchName(branch, remoteHead);
   });
 
@@ -280,7 +306,7 @@ const make = Effect.gen(function* () {
     return { _tag: "Rebinding", branch };
   });
 
-  return WorktreeBranches.of({ observe, sync });
+  return WorktreeBranches.of({ observe, sync, sameRepository });
 });
 
 export const layer = Layer.effect(WorktreeBranches, make);

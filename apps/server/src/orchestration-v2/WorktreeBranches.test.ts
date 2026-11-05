@@ -280,6 +280,45 @@ it.live("asks the remote when no local HEAD ref says whether main is its default
   ),
 );
 
+it.live("treats the remote's default of any name as default, and asks once per checkout", () =>
+  run(
+    Effect.gen(function* () {
+      const { service, command, repo, worktree, dispatched, setThreads } = yield* fixture;
+      const fs = yield* FileSystem.FileSystem;
+      const remote = yield* fs.makeTempDirectoryScoped({ prefix: "worktree-sync-remote-" });
+      setThreads([member("thread", "feature", worktree)]);
+      yield* command(remote, ["init", "--bare", "-b", "develop"]);
+      yield* command(repo, ["branch", "-m", "develop"]);
+      yield* command(repo, ["remote", "add", "origin", remote]);
+      yield* command(repo, ["push", "origin", "develop"]);
+      yield* command(repo, ["switch", "--detach"]);
+      yield* command(worktree, ["switch", "develop"]);
+      assert.equal((yield* service.sync({ worktreePath: worktree }))._tag, "Unbound");
+      // Offline, a second question would fall back to main and master and call this a new branch.
+      yield* fs.remove(remote, { recursive: true });
+      assert.equal((yield* service.sync({ worktreePath: worktree }))._tag, "Unbound");
+      assert.deepEqual(dispatched, []);
+    }),
+  ),
+);
+
+it.live("recognizes the same repository however its path is spelled", () =>
+  run(
+    Effect.gen(function* () {
+      const { service, command, repo, worktree } = yield* fixture;
+      const fs = yield* FileSystem.FileSystem;
+      assert.isTrue(yield* service.sameRepository(worktree, repo));
+      const other = yield* fs.makeTempDirectoryScoped({ prefix: "worktree-sync-other-" });
+      yield* command(other, ["init", "-b", "main"]);
+      assert.isFalse(yield* service.sameRepository(worktree, other));
+      assert.isFalse(yield* service.sameRepository(worktree, `${repo}-missing`));
+      // Only a case-insensitive disk accepts the other spelling at all.
+      const upper = repo.toUpperCase();
+      if (yield* fs.exists(upper)) assert.isTrue(yield* service.sameRepository(worktree, upper));
+    }),
+  ),
+);
+
 it.live("reports a missing worktree as Unavailable", () =>
   run(
     Effect.gen(function* () {
