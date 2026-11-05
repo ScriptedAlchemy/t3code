@@ -33,7 +33,11 @@ import type {
   ProjectCodeUnresolvedReference,
 } from "@t3tools/contracts";
 
-import { clearCheckoutSources, linkCheckoutSources } from "./codeIndexLayout.ts";
+import {
+  CHECKOUT_CONFIG_ENTRIES,
+  clearCheckoutSources,
+  linkCheckoutSources,
+} from "./codeIndexLayout.ts";
 
 const CATALOG_REVISION = "@colbymchenry/codegraph@1.6.2";
 const MAX_RESULTS = 200;
@@ -219,6 +223,7 @@ interface IndexMeta {
   readonly skippedPaths: ReadonlyArray<string>;
   // Whether the build ranked an over-cap listing; older builds kept whatever sorted first.
   readonly ranked: boolean;
+  readonly configurationDigest: string | null;
 }
 
 function readIndexMeta(indexRoot: string, indexDirectory: string): IndexMeta {
@@ -227,9 +232,14 @@ function readIndexMeta(indexRoot: string, indexDirectory: string): IndexMeta {
       NodeFS.readFileSync(NodePath.join(indexRoot, indexDirectory, INDEX_META_FILE), "utf8"),
     );
     if (typeof raw !== "object" || raw === null) throw new Error("invalid");
-    const { commit, generation, indexedAt, skippedPaths, ranked } = raw as Record<string, unknown>;
+    const { commit, generation, indexedAt, skippedPaths, ranked, configurationDigest } =
+      raw as Record<string, unknown>;
     return {
       ranked: ranked === true,
+      configurationDigest:
+        typeof configurationDigest === "string" && /^[0-9a-f]{64}$/.test(configurationDigest)
+          ? configurationDigest
+          : null,
       commit: typeof commit === "string" && /^[0-9a-f]{7,64}$/.test(commit) ? commit : null,
       generation:
         typeof generation === "number" && Number.isSafeInteger(generation) && generation >= 0
@@ -244,8 +254,31 @@ function readIndexMeta(indexRoot: string, indexDirectory: string): IndexMeta {
           : [],
     };
   } catch {
-    return { commit: null, generation: 0, indexedAt: null, skippedPaths: [], ranked: false };
+    return {
+      commit: null,
+      generation: 0,
+      indexedAt: null,
+      skippedPaths: [],
+      ranked: false,
+      configurationDigest: null,
+    };
   }
+}
+
+function checkoutConfigurationDigest(checkoutPath: string): string {
+  const digest = NodeCrypto.createHash("sha256");
+  for (const name of CHECKOUT_CONFIG_ENTRIES) {
+    digest.update(name).update("\0");
+    try {
+      const contents = NodeFS.readFileSync(NodePath.join(checkoutPath, name));
+      digest.update("present\0").update(contents);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+      digest.update("missing\0");
+    }
+    digest.update("\0");
+  }
+  return digest.digest("hex");
 }
 
 function writeIndexMeta(indexRoot: string, indexDirectory: string, meta: IndexMeta): void {
@@ -646,13 +679,17 @@ export async function buildIndexInWorker(
   const isSupported = supportedPaths({ detectLanguage, getSupportedLanguages });
   const { paths: listedPaths } = authorizedListing(input, isSupported);
   const commit = headCommit(input.checkoutPath);
+  const configurationDigest = checkoutConfigurationDigest(input.checkoutPath);
   let from = input.from;
   if (from !== null) {
     useIndexDirectory(from);
+    const meta = readIndexMeta(input.indexRoot, from);
     if (
       !CodeGraph.isInitialized(input.indexRoot) ||
+      // Filtering changes must remove old entries as well as reconsider previously skipped files.
+      meta.configurationDigest !== configurationDigest ||
       // Successors keep every file they inherit, so one that spent the cap unranked never recovers.
-      (isListingTruncated(input) && !readIndexMeta(input.indexRoot, from).ranked)
+      (isListingTruncated(input) && !meta.ranked)
     )
       from = null;
   }
@@ -677,8 +714,6 @@ export async function buildIndexInWorker(
       published.close();
     }
   }
-  // Before the SDK opens anything: it reads `codegraph.json` from here, and a stale link or copy
-  // must not stand in for a source that moved.
   const target = NodePath.join(input.indexRoot, input.to);
   // Exclusive: a leftover entry, link or not, fails the build instead of being written through.
   NodeFS.mkdirSync(target);
@@ -713,8 +748,6 @@ export async function buildIndexInWorker(
       else if (!NodeFS.existsSync(NodePath.resolve(input.checkoutPath, file.path)))
         reconcilePaths.add(file.path);
     }
-    // Files the graph already holds can sit under a top-level entry the listing dropped; without
-    // its link the SDK would treat them as deleted.
     // From the reconcile set, not the listing: the cap can drop a top-level entry the graph still
     // holds files under, and the SDK would read those as deleted.
     clearCheckoutSources(input.indexRoot);
@@ -732,6 +765,7 @@ export async function buildIndexInWorker(
       // not newly added files that the next refresh can fix.
       skippedPaths: listedPaths.filter((path) => !indexedPaths.has(path)).toSorted(),
       ranked: true,
+      configurationDigest,
     });
   } finally {
     graph.close();
@@ -1181,12 +1215,18 @@ export async function inspectCodeInWorker(
       isSupported,
       meta.skippedPaths,
     );
+    const configurationChanged =
+      meta.configurationDigest !== checkoutConfigurationDigest(input.checkoutPath);
     if (changed.length > 0) {
       limitations.push(
         `${changed.length} source ${changed.length === 1 ? "file has" : "files have"} changed since this index generation was built.`,
       );
     }
-    const stale = changed.length > 0 || sourceDigests.some((source) => !source.verified);
+    if (configurationChanged) limitations.push("The checkout's index configuration has changed.");
+    const stale =
+      configurationChanged ||
+      changed.length > 0 ||
+      sourceDigests.some((source) => !source.verified);
     const coverage: ProjectCodeCoverage = {
       state: stale ? "stale" : coverageIncomplete ? "partial" : "complete",
       catalogRevision: CATALOG_REVISION,
@@ -1380,6 +1420,9 @@ function inspectFreshness(
     isSupported,
     meta.skippedPaths,
   );
+  const configurationChanged =
+    meta.configurationDigest !== checkoutConfigurationDigest(input.checkoutPath);
+  const stale = changed.length > 0 || configurationChanged;
   const { incomplete } = indexCoverage;
   const limitations = [
     ...(changed.length > 0
@@ -1388,12 +1431,13 @@ function inspectFreshness(
         ]
       : []),
     ...indexCoverage.limitations,
+    ...(configurationChanged ? ["The checkout's index configuration has changed."] : []),
   ];
   return emptyResult(
     input,
     {
       ...baseCoverage(input, languages),
-      state: changed.length > 0 ? "stale" : incomplete ? "partial" : "complete",
+      state: stale ? "stale" : incomplete ? "partial" : "complete",
       filesIndexed: indexCoverage.files.length,
       filesSkipped: indexCoverage.filesSkipped,
       filesUnsupported: indexCoverage.filesUnsupported,
@@ -1403,7 +1447,7 @@ function inspectFreshness(
       limitations,
     },
     {
-      state: changed.length > 0 ? "stale" : incomplete ? "partial" : "ready",
+      state: stale ? "stale" : incomplete ? "partial" : "ready",
       indexedCommit: meta.commit,
       headCommit: commit,
       generation: meta.generation,

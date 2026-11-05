@@ -906,7 +906,7 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
     if (state?.fiber != null) yield* Fiber.interrupt(state.fiber);
     checkouts.delete(path);
     const hadFiles = yield* Effect.sync(
-      () => NodeFS.existsSync(indexRootOf(path)) || hasLegacyIndexFiles(path),
+      () => listGenerations(indexRootOf(path)).length > 0 || hasLegacyIndexFiles(path),
     );
     const removal = yield* Effect.exit(
       Effect.sync(() => {
@@ -927,8 +927,14 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
   const hasCheckoutIndex: CodeIntelligence["Service"]["hasCheckoutIndex"] = Effect.fn(
     "CodeIntelligence.hasCheckoutIndex",
   )(function* (checkoutPath) {
+    const path = yield* workspacePaths
+      .normalizeWorkspaceRoot(checkoutPath)
+      .pipe(Effect.orElseSucceed(() => NodePath.resolve(checkoutPath)));
     return yield* Effect.sync(
-      () => NodeFS.existsSync(indexRootOf(checkoutPath)) || hasLegacyIndexFiles(checkoutPath),
+      () =>
+        listGenerations(indexRootOf(path)).length > 0 ||
+        isBuildRunning(indexRootOf(path)) ||
+        hasLegacyIndexFiles(path),
     );
   });
 

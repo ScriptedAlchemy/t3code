@@ -140,6 +140,14 @@ async function generationDirectories(indexRoot: string) {
     .toSorted();
 }
 
+function assertClearedIndex(indexRoot: string): void {
+  assert.deepEqual(NodeFS.readdirSync(indexRoot), [".codegraph-t3"]);
+  assert.deepEqual(NodeFS.readdirSync(NodePath.join(indexRoot, ".codegraph-t3")).toSorted(), [
+    "build.lock",
+    "building.lock",
+  ]);
+}
+
 /**
  * A server config whose data directory is outside the fixture, and the index root it implies for
  * a checkout.
@@ -1360,7 +1368,7 @@ it.effect("removes a checkout's index while a build is in flight", () =>
       yield* removeCheckoutIndex(fixture.root);
       assert.isFalse(isProcessAlive(pid), "the build process is gone once removal returns");
       yield* Fiber.await(building);
-      assert.isFalse(NodeFS.existsSync(indexRoot(fixture.root)));
+      assertClearedIndex(indexRoot(fixture.root));
       assert.deepEqual(
         yield* Effect.promise(() => generationDirectories(indexRoot(fixture.root))),
         [],
@@ -1393,7 +1401,7 @@ it.effect("keeps a generation a reader pins while removing the rest of the index
       yield* Effect.sync(pin.release);
       yield* removeCheckoutIndex(fixture.root);
       assert.deepEqual(yield* Effect.promise(() => generationDirectories(root)), []);
-      assert.isFalse(NodeFS.existsSync(root));
+      assertClearedIndex(root);
     }),
   ),
 );
@@ -1607,6 +1615,8 @@ it.effect("keeps the index out of the checkout's git status", () =>
       const before = (yield* Effect.promise(() => NodeFSP.readdir(fixture.root))).toSorted();
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
       assert.ok((yield* run({ operation: "symbols", name: "greet" })).nodes.length > 0);
+      // Drain the query's background refresh before holding a reader and editing its source.
+      yield* refresh();
 
       // Nothing the index owns is in the checkout: no new entries, and git sees nothing.
       assert.deepEqual(
@@ -1693,11 +1703,12 @@ it.effect("removes the index folders an older version left in the checkout", () 
       });
       const { refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"]);
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
-      // Only T3's folders go: every other top-level entry, file and link alike, is still there.
+      // Lock inodes stay stable for older servers; every source entry is still there.
       assert.deepEqual(
         (yield* Effect.promise(() => NodeFSP.readdir(fixture.root))).toSorted(),
-        before,
+        [...before, ".codegraph-t3"].toSorted(),
       );
+      assert.deepEqual(NodeFS.readdirSync(control).toSorted(), ["build.lock", "building.lock"]);
       assert.isTrue(NodeFS.lstatSync(NodePath.join(fixture.root, "alias")).isSymbolicLink());
       assert.equal(
         yield* Effect.promise(() =>
@@ -1727,7 +1738,7 @@ it.effect("finds and removes an older version's folders in a checkout with no in
 
       // Settling a thread takes this path, so a worktree nothing rebuilds is still cleaned up.
       yield* removeCheckoutIndex(fixture.root);
-      assert.isFalse(NodeFS.existsSync(control));
+      assert.deepEqual(NodeFS.readdirSync(control).toSorted(), ["build.lock", "building.lock"]);
       assert.isFalse(yield* hasCheckoutIndex(fixture.root));
       assert.isTrue(NodeFS.existsSync(NodePath.join(fixture.root, "src/defs.ts")));
     }),
@@ -1790,7 +1801,7 @@ it.effect("leaves legacy folders for later while another server builds", () =>
       assert.equal(yield* other.send("release"), "released");
       yield* editDefinition(fixture.root, "second");
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
-      assert.isFalse(NodeFS.existsSync(control));
+      assert.deepEqual(NodeFS.readdirSync(control).toSorted(), ["build.lock", "building.lock"]);
     }),
   ),
 );
@@ -1810,7 +1821,7 @@ it.effect("removes an index without touching the checkout's sources", () =>
       assert.isTrue(NodeFS.lstatSync(NodePath.join(root, "top.ts")).isSymbolicLink());
 
       yield* removeCheckoutIndex(fixture.root);
-      assert.isFalse(NodeFS.existsSync(root));
+      assertClearedIndex(root);
       // Every source is still there, byte for byte.
       assert.equal(
         yield* Effect.promise(() =>
@@ -1839,7 +1850,7 @@ it.effect("removes an orphaned index without touching a source checkout", () =>
       );
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
       yield* removeOrphanedIndexes(() => false);
-      assert.isFalse(NodeFS.existsSync(indexRoot(fixture.root)));
+      assertClearedIndex(indexRoot(fixture.root));
       assert.equal(
         yield* Effect.promise(() =>
           NodeFSP.readFile(NodePath.join(fixture.root, "src/defs.ts"), "utf8"),
@@ -1877,15 +1888,14 @@ it.effect("sweeps indexes for checkouts that are gone or no longer known", () =>
       assert.isTrue(NodeFS.existsSync(knownRoot));
       assert.isTrue(NodeFS.existsSync(NodePath.join(fixture.root, "src/defs.ts")));
       // A checkout `isKnown` rejects is removed, leaving its files intact.
-      assert.isFalse(NodeFS.existsSync(goneRoot));
+      assertClearedIndex(goneRoot);
       assert.equal(
         yield* Effect.promise(() =>
           NodeFSP.readFile(NodePath.join(fixture.worktree, "src/work.ts"), "utf8"),
         ),
         "export function workOnly() { return 2; }\n",
       );
-      // A root with no record is removed.
-      assert.isFalse(NodeFS.existsSync(orphanRoot));
+      assertClearedIndex(orphanRoot);
     }),
   ),
 );
@@ -1903,7 +1913,7 @@ it.effect("removes the index of a checkout that was deleted", () =>
       yield* Effect.promise(() => NodeFSP.rm(fixture.worktree, { recursive: true, force: true }));
       // The checkout is still known by path, but it no longer exists.
       yield* removeOrphanedIndexes(() => true);
-      assert.isFalse(NodeFS.existsSync(root));
+      assertClearedIndex(root);
     }),
   ),
 );
@@ -1971,26 +1981,47 @@ it.effect("keeps files the graph holds under a top-level entry a truncated listi
   ),
 );
 
-it.effect("honours a checkout's exclude patterns when the config was not listed", () =>
-  withFixture((fixture) =>
-    Effect.gen(function* () {
-      yield* Effect.promise(() =>
-        NodeFSP.writeFile(
-          NodePath.join(fixture.root, "codegraph.json"),
-          JSON.stringify({ exclude: ["src/use.ts"] }),
-        ),
-      );
-      // The listing never mentions the config file; only the link T3 plants reaches it.
-      const { run, refresh } = yield* checkoutService(fixture.root, () => [
-        "src/defs.ts",
-        "src/use.ts",
-      ]);
-      yield* refresh();
-      const status = yield* run({ operation: "status" });
-      assert.equal(status.stats?.files, 1);
-      assert.equal((yield* run({ operation: "symbols", name: "caller" })).nodes.length, 0);
-    }),
-  ),
+it.effect.each(["codegraph.json", ".gitignore"] as const)(
+  "honours changed exclude patterns in an unlisted %s",
+  (configName) =>
+    withFixture((fixture) =>
+      Effect.gen(function* () {
+        const configPath = NodePath.join(fixture.root, configName);
+        const excluded =
+          configName === "codegraph.json"
+            ? JSON.stringify({ exclude: ["src/use.ts"] })
+            : "src/use.ts\n";
+        yield* Effect.promise(() => NodeFSP.writeFile(configPath, excluded));
+        // The listing never mentions the config file; only the link T3 plants reaches it.
+        const { run, refresh } = yield* checkoutService(fixture.root, () => [
+          "src/defs.ts",
+          "src/use.ts",
+        ]);
+        yield* refresh();
+        const status = yield* run({ operation: "status" });
+        assert.equal(status.stats?.files, 1);
+        assert.equal((yield* run({ operation: "symbols", name: "caller" })).nodes.length, 0);
+        yield* refresh();
+
+        yield* Effect.promise(() =>
+          NodeFSP.writeFile(configPath, configName === "codegraph.json" ? "{}" : ""),
+        );
+        assert.equal((yield* run({ operation: "freshness" })).index?.state, "stale");
+        assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
+        assert.equal((yield* run({ operation: "status" })).stats?.files, 2);
+        assert.equal((yield* run({ operation: "symbols", name: "caller" })).nodes.length, 1);
+        yield* refresh();
+
+        yield* Effect.promise(() => NodeFSP.writeFile(configPath, excluded));
+        assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 3 });
+        assert.equal((yield* run({ operation: "status" })).stats?.files, 1);
+        assert.equal((yield* run({ operation: "symbols", name: "caller" })).nodes.length, 0);
+        yield* refresh();
+        yield* Effect.promise(() => NodeFSP.unlink(configPath));
+        assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 4 });
+        assert.equal((yield* run({ operation: "symbols", name: "caller" })).nodes.length, 1);
+      }),
+    ),
 );
 
 it.effect("answers from the published generation while its successor builds", () =>
@@ -2436,7 +2467,7 @@ it.effect("removes a checkout's index and asks a mounted reader to read again", 
       assert.deepEqual(yield* events.pipe(Stream.take(1), Stream.runCollect), [
         { outcome: "published", generation: null },
       ]);
-      assert.isFalse(NodeFS.existsSync(root));
+      assertClearedIndex(root);
       assert.deepEqual(yield* Effect.promise(() => generationDirectories(root)), []);
       const freshness = (yield* run({ operation: "freshness" })).index;
       assert.equal(freshness?.state, "unindexed");

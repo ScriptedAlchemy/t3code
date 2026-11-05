@@ -221,7 +221,7 @@ export function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | 
   return owner;
 }
 
-function worktreeSettlementChain(
+export function worktreeSettlementChain(
   thread: OrchestrationV2ThreadShell,
   byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell>,
   now: number,

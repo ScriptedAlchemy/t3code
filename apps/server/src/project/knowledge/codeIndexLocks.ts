@@ -25,6 +25,7 @@ const BUILDING_LOCK = "building.lock";
 const READERS_LOCK = "readers.lock";
 // Waits out the momentary locks of probes and failed deletion attempts, never a build or a read.
 const MOMENTARY_LOCK_WAIT_MS = 1_000;
+const isBuildLockFile = (name: string) => name === BUILD_LOCK || name === BUILDING_LOCK;
 
 const SQLITE_BUSY = 5;
 const SQLITE_CANTOPEN = 14;
@@ -133,13 +134,14 @@ export function removeGenerationUnlessRead(indexRoot: string, generation: number
   NodeFS.rmSync(directory, { recursive: true, force: true });
 }
 
-/**
- * Removes one index root: the published pointer first, so new readers see "unindexed", then every
- * generation a reader is not pinning, then the checkout's links. A build elsewhere leaves it all
- * for the next sweep.
- *
- * Nothing here may remove recursively from the root: its entries are links into a user's checkout.
- */
+function clearControlFiles(control: string, preserveGitignore = false): void {
+  for (const name of NodeFS.readdirSync(control)) {
+    if (isBuildLockFile(name) || (preserveGitignore && name === ".gitignore")) continue;
+    NodeFS.rmSync(NodePath.join(control, name), { recursive: true, force: true });
+  }
+}
+
+/** Removes index payload and checkout links, retaining the lock inodes that other builders open. */
 export function removeIndexRoot(indexRoot: string): void {
   if (!NodeFS.existsSync(indexRoot)) return;
   const control = NodePath.join(indexRoot, INDEX_DIRECTORY);
@@ -151,17 +153,9 @@ export function removeIndexRoot(indexRoot: string): void {
       removeGenerationUnlessRead(indexRoot, generation);
     }
     clearCheckoutSources(indexRoot);
+    clearControlFiles(control);
   } finally {
-    // Windows cannot delete an open lock file, so it goes after the lock is released.
     release();
-  }
-  NodeFS.rmSync(control, { recursive: true, force: true });
-  try {
-    // A generation a reader still pins stays behind, and so does the root.
-    NodeFS.rmdirSync(indexRoot);
-  } catch (cause) {
-    const code = (cause as NodeJS.ErrnoException).code;
-    if (code !== "ENOTEMPTY" && code !== "ENOENT") throw cause;
   }
 }
 
@@ -183,9 +177,22 @@ const isRealDirectory = (path: string): boolean => {
   }
 };
 
-/** A real directory holding at least one of `names`; a link to one is not a match. */
-const isT3Directory = (path: string, names: ReadonlyArray<string>): boolean =>
-  isRealDirectory(path) && names.some((name) => NodeFS.existsSync(NodePath.join(path, name)));
+/** Legacy lock paths are checkout-controlled, so none may follow a link or share an outside inode. */
+function isT3Directory(path: string, names: ReadonlyArray<string>): boolean {
+  if (!isRealDirectory(path)) return false;
+  try {
+    const entries = NodeFS.readdirSync(path);
+    return (
+      entries.some((name) => names.includes(name)) &&
+      entries.every((name) => {
+        const entry = NodeFS.lstatSync(NodePath.join(path, name));
+        return entry.isDirectory() || (entry.isFile() && entry.nlink === 1);
+      })
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The folders an older T3 left inside a checkout, when they are provably T3's. Anything else that
@@ -208,7 +215,10 @@ function legacyIndexFolders(
       LEGACY_GENERATION_MARKERS,
     ),
   );
-  return exists || generations.length > 0 ? { generations } : null;
+  const controlHasPayload =
+    exists &&
+    NodeFS.readdirSync(control).some((name) => !isBuildLockFile(name) && name !== ".gitignore");
+  return controlHasPayload || generations.length > 0 ? { generations } : null;
 }
 
 /** Whether a checkout still holds the folders an older T3 kept inside it, without throwing. */
@@ -233,10 +243,10 @@ export function removeLegacyIndexFromCheckout(checkoutPath: string): void {
     for (const generation of legacy.generations) {
       removeGenerationUnlessRead(checkoutPath, generation);
     }
+    clearControlFiles(control, true);
   } finally {
     release();
   }
-  NodeFS.rmSync(control, { recursive: true, force: true });
 }
 
 export interface GenerationPin {

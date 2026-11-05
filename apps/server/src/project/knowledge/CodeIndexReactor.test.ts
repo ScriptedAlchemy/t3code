@@ -145,6 +145,42 @@ describe("worktreeIndexReleasable", () => {
       expected,
     );
   });
+
+  it.each([
+    { name: "settled parent", parent: {}, child: {}, expected: true },
+    { name: "active parent", parent: { settledAt: null }, child: {}, expected: false },
+    { name: "running parent", parent: { status: "running" }, child: {}, expected: false },
+    { name: "pinned child", parent: {}, child: { pinnedAt: now }, expected: false },
+    {
+      name: "explicitly active child",
+      parent: {},
+      child: { settledOverride: "active" },
+      expected: false,
+    },
+    {
+      name: "other project",
+      parent: { projectId: ProjectId.make("other") },
+      child: {},
+      expected: false,
+    },
+  ] satisfies ReadonlyArray<{
+    name: string;
+    parent: Partial<OrchestrationV2ThreadShell>;
+    child: Partial<OrchestrationV2ThreadShell>;
+    expected: boolean;
+  }>)("handles a subagent in its own worktree with a $name", ({ parent, child, expected }) => {
+    const owner = settled({ worktreePath: null, ...parent });
+    const agent = subagent(child);
+    assert.equal(
+      CodeIndexReactor.worktreeIndexReleasable(
+        [agent],
+        NOW_MS,
+        DEFAULT_SERVER_SETTINGS,
+        new Map([owner, agent].map((thread) => [thread.id, thread])),
+      ),
+      expected,
+    );
+  });
 });
 
 function runEvent(runId: RunId, status: OrchestrationV2Run["status"]): ApplicationStoredEvent {
@@ -437,18 +473,35 @@ describe("CodeIndexReactor", () => {
     }),
   );
 
-  it.effect("sweeps the index of a worktree whose thread settled before this feature", () =>
-    Effect.gen(function* () {
-      const worktreePath = "/worktrees/settled";
-      const thread = shell({
-        worktreePath,
-        settledOverride: "settled",
-        settledAt: at(-60_000),
-      });
-      // Activation sweeps, so the removal arrives without any event.
-      const harness = yield* reactorHarness({ threads: [thread], indexed: [worktreePath] });
-      assert.equal(yield* harness.next, `remove:${worktreePath}`);
-    }),
+  it.effect.each(["thread", "subagent's parent"] as const)(
+    "sweeps the index of a worktree whose %s settled before this feature",
+    (settledOwner) =>
+      Effect.gen(function* () {
+        const worktreePath = "/worktrees/settled";
+        const thread = shell({
+          worktreePath,
+          settledOverride: "settled",
+          settledAt: at(-60_000),
+        });
+        const threads =
+          settledOwner === "thread"
+            ? [thread]
+            : [
+                { ...thread, worktreePath: null },
+                shell({
+                  id: ThreadId.make("thread-subagent"),
+                  worktreePath,
+                  lineage: {
+                    rootThreadId: thread.id,
+                    parentThreadId: thread.id,
+                    relationshipToParent: "subagent",
+                  },
+                }),
+              ];
+        // Activation sweeps, so the removal arrives without any event.
+        const harness = yield* reactorHarness({ threads, indexed: [worktreePath] });
+        assert.equal(yield* harness.next, `remove:${worktreePath}`);
+      }),
   );
 
   it.effect("skips a settled worktree that has no index", () =>

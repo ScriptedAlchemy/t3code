@@ -17,7 +17,11 @@ import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as OrchestrationEventStore from "../../persistence/OrchestrationEventStore.ts";
 import { forkParked } from "../../serverActivation.ts";
 import * as ServerSettings from "../../serverSettings.ts";
-import { storageCleanupThreadIdle, worktreeOwner } from "../../storageCleanup.ts";
+import {
+  storageCleanupThreadIdle,
+  worktreeOwner,
+  worktreeSettlementChain,
+} from "../../storageCleanup.ts";
 import * as CodeIntelligence from "./CodeIntelligence.ts";
 
 const SWEEP_INTERVAL = "1 hour";
@@ -30,12 +34,17 @@ export function worktreeIndexReleasable(
   group: ReadonlyArray<OrchestrationV2ThreadShell>,
   now: number,
   settings: Parameters<typeof storageCleanupThreadIdle>[2],
+  threadsById: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> = new Map(
+    group.map((thread) => [thread.id, thread]),
+  ),
 ): boolean {
   if (group.length === 0) return false;
   const owner = worktreeOwner(group);
   // A subagent or side-chat chain follows its owner; unrelated threads must all be settled.
   const settled =
-    owner !== undefined ? owner.settledAt !== null : group.every((t) => t.settledAt !== null);
+    owner !== undefined
+      ? worktreeSettlementChain(owner, threadsById, now, settings).length > 0
+      : group.every((t) => t.settledAt !== null);
   return settled && group.every((t) => storageCleanupThreadIdle(t, now, settings));
 }
 
@@ -68,9 +77,21 @@ const make = Effect.gen(function* () {
       entries.filter((entry) => path.resolve(entry.worktreePath) === target),
       (entry) => projections.getThreadShell(entry.threadId),
     )).filter((thread) => thread !== null);
+    const threadsById = new Map(group.map((thread) => [thread.id, thread]));
+    for (const thread of group) {
+      let current = thread;
+      while (current.settledAt === null && current.lineage.relationshipToParent === "subagent") {
+        const parentId = current.lineage.parentThreadId;
+        if (parentId === null || threadsById.has(parentId)) break;
+        const parent = yield* projections.getThreadShell(parentId);
+        if (parent === null) break;
+        threadsById.set(parent.id, parent);
+        current = parent;
+      }
+    }
     const settings = yield* settingsService.getSettings;
     const now = yield* Clock.currentTimeMillis;
-    if (!worktreeIndexReleasable(group, now, settings)) return;
+    if (!worktreeIndexReleasable(group, now, settings, threadsById)) return;
     // A worktree registered as its own project keeps its index.
     const projects = yield* projectStore.listShells();
     if (projects.some((project) => path.resolve(project.workspaceRoot) === target)) return;

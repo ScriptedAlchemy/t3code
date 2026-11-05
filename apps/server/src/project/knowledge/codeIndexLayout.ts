@@ -14,7 +14,7 @@ const GENERATION_NAME = /^\.codegraph-t3-g([1-9][0-9]{0,8})$/;
 export const PUBLISHED_FILE = "published";
 const INDEXED_CHECKOUT_FILE = "checkout";
 // Changes what the SDK indexes, and a truncated listing can drop them.
-const CHECKOUT_CONFIG_ENTRIES = ["codegraph.json", ".gitignore"];
+export const CHECKOUT_CONFIG_ENTRIES = ["codegraph.json", ".gitignore"];
 
 export const generationDirectory = (generation: number) => `${GENERATION_PREFIX}${generation}`;
 
