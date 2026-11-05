@@ -9,7 +9,6 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -18,6 +17,8 @@ import * as OrchestrationEventStore from "../../persistence/OrchestrationEventSt
 import { forkParked } from "../../serverActivation.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import {
+  StorageCleanup,
+  storageCleanupActivityAt,
   storageCleanupThreadIdle,
   worktreeOwner,
   worktreeSettlementChain,
@@ -25,11 +26,12 @@ import {
 import * as CodeIntelligence from "./CodeIntelligence.ts";
 import { checkoutPathKey } from "./codeIndexLayout.ts";
 
-const SWEEP_INTERVAL = "1 hour";
+// An index is a cache the next agent run rebuilds, so an unused one is not worth its disk.
+const UNUSED_INDEX_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Whether a worktree's index can go: every thread that lives in it is settled and idle, with a
- * subagent or side chat following its owner rather than holding the worktree open.
+ * Whether a worktree's index can go: its threads are idle, and either settled, with a subagent or
+ * side chat following its owner rather than holding the worktree open, or long unused.
  */
 export function worktreeIndexReleasable(
   group: ReadonlyArray<OrchestrationV2ThreadShell>,
@@ -41,25 +43,27 @@ export function worktreeIndexReleasable(
 ): boolean {
   if (group.length === 0) return false;
   const owner = worktreeOwner(group);
-  // A subagent or side-chat chain follows its owner unless someone kept that thread going;
-  // unrelated threads must all be settled.
+  const keptGoing = group.some(
+    (t) => t.settledAt === null && (t.settledOverride === "active" || t.pinnedAt != null),
+  );
+  // A subagent or side-chat chain follows its owner; unrelated threads must all be settled.
   const settled =
     owner !== undefined
-      ? worktreeSettlementChain(owner, threadsById, now, settings).length > 0 &&
-        group.every(
-          (t) => t.settledAt !== null || (t.settledOverride !== "active" && t.pinnedAt == null),
-        )
+      ? worktreeSettlementChain(owner, threadsById, now, settings).length > 0 && !keptGoing
       : group.every((t) => t.settledAt !== null);
-  return settled && group.every((t) => storageCleanupThreadIdle(t, now, settings));
+  const unused =
+    !keptGoing && group.every((t) => now - storageCleanupActivityAt(t) >= UNUSED_INDEX_MS);
+  return (settled || unused) && group.every((t) => storageCleanupThreadIdle(t, now, settings));
 }
 
 /**
  * Keeps the code index in step with the work happening in a checkout: a project indexes when it
  * is added, a worktree while an agent runs in it, and a worktree's index goes when its thread
- * settles. A sweep also drops indexes for checkouts that no longer exist, even while automatic
- * indexing is off.
+ * settles or goes unused. Each Maintenance run also sweeps, dropping indexes for checkouts that no
+ * longer exist even while automatic indexing is off.
  */
 const make = Effect.gen(function* () {
+  const storageCleanup = yield* StorageCleanup;
   const codeIntelligence = yield* CodeIntelligence.CodeIntelligence;
   const events = yield* OrchestrationEventStore.OrchestrationEventStore;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -206,11 +210,13 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  // Every Maintenance run, "Delete now" included. The stream starts with the latest report, so
+  // this also sweeps at activation.
   yield* forkParked(
-    sweep().pipe(
-      Effect.catchCause((cause) => Effect.logWarning("code index sweep failed", { cause })),
-      Effect.repeat(Schedule.spaced(SWEEP_INTERVAL)),
-      Effect.asVoid,
+    Stream.runForEach(storageCleanup.reports, () =>
+      sweep().pipe(
+        Effect.catchCause((cause) => Effect.logWarning("code index sweep failed", { cause })),
+      ),
     ),
   );
 

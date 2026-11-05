@@ -25,6 +25,7 @@ import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as OrchestrationEventStore from "../../persistence/OrchestrationEventStore.ts";
 import * as ServerSettingsService from "../../serverSettings.ts";
+import { StorageCleanup } from "../../storageCleanup.ts";
 import * as CodeIndexReactor from "./CodeIndexReactor.ts";
 import * as CodeIntelligence from "./CodeIntelligence.ts";
 
@@ -75,8 +76,8 @@ function shell(overrides: Partial<OrchestrationV2ThreadShell> = {}): Orchestrati
     latestRunStartedAt: null,
     latestRunCompletedAt: null,
     latestUserMessageAt: null,
-    createdAt: at(-30 * DAY_MS),
-    updatedAt: at(-10 * DAY_MS),
+    createdAt: at(-DAY_MS),
+    updatedAt: at(-DAY_MS),
     archivedAt: null,
     settledOverride: null,
     settledAt: null,
@@ -158,6 +159,41 @@ describe("worktreeIndexReleasable", () => {
     {
       name: "two unrelated threads, one unsettled",
       group: () => [settled(), unrelated()],
+      expected: false,
+    },
+    {
+      name: "an unsettled thread unused for 7 days",
+      group: () => [shell({ createdAt: at(-30 * DAY_MS), latestRunCompletedAt: at(-7 * DAY_MS) })],
+      expected: true,
+    },
+    {
+      name: "an unsettled thread unused for 6 days",
+      group: () => [shell({ createdAt: at(-30 * DAY_MS), latestRunCompletedAt: at(-6 * DAY_MS) })],
+      expected: false,
+    },
+    {
+      name: "a long unused thread that is pinned",
+      group: () => [shell({ createdAt: at(-30 * DAY_MS), pinnedAt: now })],
+      expected: false,
+    },
+    {
+      name: "a long unused thread kept active",
+      group: () => [shell({ createdAt: at(-30 * DAY_MS), settledOverride: "active" })],
+      expected: false,
+    },
+    {
+      name: "a long unused thread with a pending request",
+      group: () => [
+        shell({
+          createdAt: at(-30 * DAY_MS),
+          pendingBackgroundTasks: [{ taskId: "task", kind: "command" }],
+        }),
+      ],
+      expected: false,
+    },
+    {
+      name: "a long unused thread beside a recently used one",
+      group: () => [shell({ createdAt: at(-30 * DAY_MS) }), unrelated()],
       expected: false,
     },
     { name: "no threads", group: () => [], expected: false },
@@ -266,6 +302,9 @@ interface Harness {
   readonly orphansRejected: Effect.Effect<ReadonlyArray<string>>;
   /** The checkouts the activation sweep asked to clear of an older version's folders. */
   readonly legacyCheckouts: Effect.Effect<ReadonlyArray<string>>;
+  /** Resolves when the next sweep starts. */
+  readonly nextSweep: Effect.Effect<void>;
+  readonly finishMaintenanceRun: Effect.Effect<void>;
   /** Resolves once the sweep asks whether a worktree has an index. */
   readonly indexChecked: Effect.Effect<void>;
   readonly settings: PubSub.PubSub<ServerSettings>;
@@ -292,6 +331,9 @@ function reactorHarness(options: {
     const effects = yield* Queue.unbounded<string>();
     const orphansRejected = yield* Deferred.make<ReadonlyArray<string>>();
     const legacyCheckouts = yield* Deferred.make<ReadonlyArray<string>>();
+    const sweeps = yield* Queue.unbounded<void>();
+    const reports = yield* Queue.unbounded<null>();
+    yield* Queue.offer(reports, null);
     const indexChecked = yield* Deferred.make<void>();
     const settings = yield* PubSub.unbounded<ServerSettings>();
     const threadsById = new Map(options.threads.map((thread) => [thread.id, thread]));
@@ -315,7 +357,10 @@ function reactorHarness(options: {
                 Effect.as((options.indexed ?? []).includes(checkoutPath)),
               ),
             removeLegacyIndexes: (checkoutPaths) =>
-              Deferred.succeed(legacyCheckouts, checkoutPaths).pipe(Effect.asVoid),
+              Deferred.succeed(legacyCheckouts, checkoutPaths).pipe(
+                Effect.andThen(Queue.offer(sweeps, undefined)),
+                Effect.asVoid,
+              ),
             removeOrphanedIndexes: (isKnown) =>
               Deferred.succeed(
                 orphansRejected,
@@ -323,6 +368,7 @@ function reactorHarness(options: {
               ).pipe(Effect.asVoid),
             stopBuilds: Queue.offer(effects, "stop").pipe(Effect.asVoid),
           }),
+          Layer.mock(StorageCleanup)({ reports: Stream.fromQueue(reports) }),
           Layer.mock(OrchestrationEventStore.OrchestrationEventStore)({
             latestApplicationSequence: Effect.succeed(0),
             streamApplicationEvents: () => Stream.fromQueue(events),
@@ -371,6 +417,8 @@ function reactorHarness(options: {
       effects,
       orphansRejected: Deferred.await(orphansRejected),
       legacyCheckouts: Deferred.await(legacyCheckouts),
+      nextSweep: Queue.take(sweeps),
+      finishMaintenanceRun: Queue.offer(reports, null).pipe(Effect.asVoid),
       indexChecked: Deferred.await(indexChecked),
       settings,
       next: Queue.take(effects),
@@ -465,6 +513,15 @@ describe("CodeIndexReactor", () => {
       // A known worktree is kept; the deleted checkout is the only rejection.
       assert.deepEqual(yield* harness.orphansRejected, ["/worktrees/gone"]);
       assert.deepEqual(yield* harness.legacyCheckouts, [WORKTREE]);
+    }),
+  );
+
+  it.effect("sweeps again whenever a Maintenance run finishes", () =>
+    Effect.gen(function* () {
+      const harness = yield* reactorHarness({ threads: [shell()] });
+      yield* harness.nextSweep;
+      yield* harness.finishMaintenanceRun;
+      yield* harness.nextSweep;
     }),
   );
 

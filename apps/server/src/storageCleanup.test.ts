@@ -23,6 +23,7 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "./config.ts";
+import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as GitManager from "./git/GitManager.ts";
@@ -355,9 +356,16 @@ const cleanupFixture = (
     let terminalListener: ((event: TerminalMetadataStreamEvent) => Effect.Effect<void>) | undefined;
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
     const activated = yield* Deferred.make<void>();
+    const indexRemovals: string[] = [];
     const context = yield* Layer.build(
       StorageCleanup.layer.pipe(Layer.provide(WorktreeBranches.layer)),
     ).pipe(
+      Effect.provideService(CodeIntelligence.CodeIntelligence, {
+        removeCheckoutIndex: (checkoutPath: string) =>
+          Effect.sync(() => {
+            indexRemovals.push(checkoutPath);
+          }),
+      } as unknown as CodeIntelligence.CodeIntelligence["Service"]),
       Effect.provideService(GitVcsDriver.GitVcsDriver, {
         ...git,
         execute: (input) =>
@@ -595,6 +603,7 @@ const cleanupFixture = (
           },
         }) ?? Effect.void,
       fullStatusCalls: () => fullStatusCalls,
+      indexRemovals: () => indexRemovals,
       snapshotReads: () => snapshotReads,
       pullRequestLookups,
       activate: (domainEvents: Stream.Stream<OrchestrationV2DomainEvent>) => {
@@ -2465,6 +2474,19 @@ describe("storage cleanup reports and local file policies", () => {
           reason: "Outside the managed worktree folder",
         });
         expect(threads()[0]?.branch).toBeNull();
+      }),
+    ),
+  );
+  it.live("removes a worktree's code index with the worktree, not while keeping it", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, worktree, indexRemovals } = yield* cleanupFixture();
+        yield* fs.writeFileString(`${worktree}/tracked.txt`, "edited\n");
+        expect((yield* service.runNow).entries[0]?.outcome).toBe("kept");
+        expect(indexRemovals()).toEqual([]);
+        yield* fs.writeFileString(`${worktree}/tracked.txt`, "original\n");
+        expect((yield* service.runNow).entries[0]?.outcome).toBe("removed");
+        expect(indexRemovals()).toEqual([worktree]);
       }),
     ),
   );

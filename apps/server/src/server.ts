@@ -654,14 +654,16 @@ const layerProviderInstallationRefresh = Layer.effectDiscard(
   }),
 );
 
+const layerStorageCleanup = StorageCleanup.layer.pipe(
+  Layer.provide(Layer.merge(ProjectionStoreV2.layer, WorktreeBranches.layer)),
+);
+
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
-  StorageCleanup.layer.pipe(
-    Layer.provide(Layer.merge(ProjectionStoreV2.layer, WorktreeBranches.layer)),
-  ),
+  layerStorageCleanup,
   DatabaseStorage.layer.pipe(Layer.provide(ProjectionMaintenance.layer)),
   layerThreadPullRequestWorker,
   DelegatedTaskAnalytics.layer,
@@ -692,6 +694,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     }),
   ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
   CodeIndexReactor.layer.pipe(
+    Layer.provide(layerStorageCleanup),
     Layer.provide(ProjectionStoreV2.layer),
     Layer.provide(ProjectStore.layer),
     Layer.provide(layerServerSettings),

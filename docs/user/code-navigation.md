@@ -9,7 +9,9 @@ you open or run a thread in it. A worktree has its own index, built and kept cur
 works in it, or the first time something asks it a code question, such as expanding this section or
 an agent using the code graph. An idle worktree is not refreshed until an agent is active in it
 again. A worktree's index is removed when its thread settles, unless other unsettled threads share
-the worktree. Until an index is ready, the section says the checkout is not indexed yet. Folders
+the worktree. It is also removed when Maintenance removes the worktree, and after 7 days with no
+activity on the worktree's threads, unless one of them is pinned or marked active. The next agent
+run rebuilds it. Until an index is ready, the section says the checkout is not indexed yet. Folders
 outside a git repository index only on a code question.
 
 Indexes are stored in T3 Code's data directory, not in your repository. Folders an earlier version

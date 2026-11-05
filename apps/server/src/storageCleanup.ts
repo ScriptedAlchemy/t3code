@@ -43,6 +43,7 @@ import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementService.ts";
 import * as WorktreeBranches from "./orchestration-v2/WorktreeBranches.ts";
+import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -294,6 +295,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const worktreeBranches = yield* WorktreeBranches.WorktreeBranches;
+  const codeIntelligence = yield* CodeIntelligence.CodeIntelligence;
   const gitManager = yield* GitManager.GitManager;
   const terminals = yield* TerminalManager.TerminalManager;
   const fs = yield* FileSystem.FileSystem;
@@ -1171,6 +1173,8 @@ const make = Effect.gen(function* () {
         // Last, so nothing that runs after this can drop the ref that holds the commit.
         const finalUnbound = yield* checkUnbound();
         if (finalUnbound !== null) return keep(finalUnbound);
+        // While the folder exists: its path resolves, and a build stops before its sources go.
+        yield* codeIntelligence.removeCheckoutIndex(worktreePath);
         yield* removeLinkedWorktree({
           operation: "StorageCleanup.cleanupGit",
           cwd: project.workspaceRoot,
