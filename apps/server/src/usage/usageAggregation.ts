@@ -81,6 +81,8 @@ export interface AggregateOptions {
   readonly resolution?: UsageResolution;
   readonly sinceTimeMs?: number;
   readonly untilTimeMs?: number;
+  /** Called once per record the aggregator counts. */
+  readonly onPriced?: (priced: PricedUsage) => void;
 }
 
 export function resolveModelAliases(
@@ -171,7 +173,7 @@ export class UsageAggregator {
     }
   }
 
-  add(input: UsageRecord, sourcePath?: string): boolean {
+  add(input: UsageRecord, sourcePath?: string, transcriptPath?: string): boolean {
     if (!keepsUsageRecord(this.#options.modelFilter, input)) return false;
     const record = this.#mapModel(input);
     if (record.dedupeKey !== null) {
@@ -240,6 +242,12 @@ export class UsageAggregator {
     if (priced.costSource === "unpriced") bucket.unpricedRecords += 1;
     if (priced.costSource === "providerReported") bucket.providerReportedRecords += 1;
     if (record.sessionId.length > 0) bucket.sessions.add(record.sessionId);
+    this.#options.onPriced?.({
+      record,
+      costUsd: priced.costUsd,
+      unpriced: priced.costSource === "unpriced",
+      transcriptPath,
+    });
     return true;
   }
 

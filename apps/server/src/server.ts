@@ -207,6 +207,7 @@ import * as CursorAccountReader from "@t3tools/provider-cursor/server/CursorAcco
 import * as CursorKeychain from "@t3tools/provider-cursor/server/CursorKeychain";
 import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsageAccounts";
 import * as UsageAttemptStamps from "./usage/UsageAttemptStamps.ts";
+import * as UsageCohortReports from "./usage/UsageCohortReports.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as CodexUsageHistory from "./usage/CodexUsageHistory.ts";
 import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
@@ -789,6 +790,7 @@ const layerCodeIntelligence = Layer.mergeAll(CodeIntelligence.layer, FileHistory
 
 const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   Layer.provideMerge(layerCodeIntelligence),
+  Layer.provideMerge(UsageCohortReports.layer),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),

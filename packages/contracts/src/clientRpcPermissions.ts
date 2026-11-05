@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
 import {
   AuthAccessWriteScope,
+  AuthDiagnosticsReadScope,
   AuthOrchestrationOperateScope,
   AuthFilesystemReadScope,
   AuthProvidersManageScope,
@@ -21,6 +22,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.projectCodeQuery]: AuthFilesystemReadScope,
   [WS_METHODS.projectCodeFileHistory]: AuthOrchestrationReadScope,
   [WS_METHODS.projectKnowledgeMutate]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverGetUsageCohortReport]: AuthDiagnosticsReadScope,
   [WS_METHODS.modelEvaluationsClear]: AuthSettingsWriteScope,
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   // Stopping a server signals its processes, as closing a terminal does.

@@ -242,6 +242,7 @@ export const make = Effect.gen(function* () {
       projectCodeFileHistory: true,
       projectCodeIndexEvents: true,
       requiredWorktreeBootstrap: true,
+      usageCohortReports: 1,
       threadSettlement: true,
       threadAutoSettlement: true,
       storageCleanup: true,

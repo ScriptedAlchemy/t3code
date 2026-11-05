@@ -39,7 +39,12 @@ import type {
   TranscriptUsageFormat,
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
-import { canonicalModelFilter, resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
+import {
+  canonicalModelFilter,
+  resolveModelAliases,
+  UsageAggregator,
+  type PricedUsage,
+} from "./usageAggregation.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
   listTranscriptFiles,
@@ -143,6 +148,11 @@ export class UsageService extends Context.Service<
   UsageService,
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
+    /** Scans without joining an in-flight read, since a shared result has no visitor for `onPriced`. */
+    readonly scanPriced: (
+      input: UsageSummaryInput,
+      onPriced: (priced: PricedUsage) => void,
+    ) => Effect.Effect<UsageSummary, UsageReadError>;
     readonly refreshRates: Effect.Effect<UsagePricing>;
   }
 >()("t3/usage/UsageService") {}
@@ -660,6 +670,7 @@ export const make = Effect.gen(function* () {
   const scanSummary = Effect.fn("UsageService.scanSummary")(function* (
     input: UsageSummaryInput,
     settings: ServerSettingsValue,
+    onPriced?: (priced: PricedUsage) => void,
   ) {
     if (input.sinceDay > input.untilDay) {
       return yield* new UsageReadError({
@@ -725,6 +736,7 @@ export const make = Effect.gen(function* () {
       priceOverrides: createOverrideRateTable(settings.usagePriceOverrides),
       modelAliases: resolveModelAliases(settings.usageModelAliases),
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
+      ...(onPriced === undefined ? {} : { onPriced }),
     });
 
     const sources: UsageSource[] = [];
@@ -833,7 +845,7 @@ export const make = Effect.gen(function* () {
             eventOccurrences.set(key, occurrence);
             usageRecord = { ...record, dedupeKey: key + ":" + occurrence };
           }
-          if (aggregator.add(usageRecord, dir) && record.sessionId.length > 0) {
+          if (aggregator.add(usageRecord, dir, file.path) && record.sessionId.length > 0) {
             sessionIds.add(record.sessionId);
           }
         }
@@ -935,7 +947,18 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { readSummary, refreshRates, awaitPersisted } as const;
+  const scanPriced = Effect.fn("UsageService.scanPriced")(function* (
+    input: UsageSummaryInput,
+    onPriced: (priced: PricedUsage) => void,
+  ) {
+    const summary = yield* readSettings.pipe(
+      Effect.flatMap((settings) => scanSummary(input, settings, onPriced)),
+    );
+    yield* schedulePersist;
+    return summary;
+  });
+
+  return { readSummary, scanPriced, refreshRates, awaitPersisted } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

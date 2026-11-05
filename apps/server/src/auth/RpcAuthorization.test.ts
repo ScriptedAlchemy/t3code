@@ -102,6 +102,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("requires diagnostics read for the usage cohort report, like the usage summary", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverGetUsageCohortReport)).toBe(
+      requiredScopeForRpcMethod(WS_METHODS.serverGetUsageSummary),
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverGetUsageCohortReport)).toBe(
+      AuthDiagnosticsReadScope,
+    );
+  });
+
   it("requires thread read permission for file history, which joins files to threads", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.projectCodeFileHistory)).toBe(
       AuthOrchestrationReadScope,

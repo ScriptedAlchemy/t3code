@@ -5,11 +5,13 @@ import type {
   UsageProviderKind,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Schema from "effect/Schema";
 import type { UsageRecord, UsageSpeed } from "@t3tools/provider-core/server/usage";
 
 import type { PricedUsage } from "./usageAggregation.ts";
 
-export type UsageOrigin = "user" | "agent" | "server_dispatched" | "scheduled";
+export const UsageOrigin = Schema.Literals(["user", "agent", "server_dispatched", "scheduled"]);
+export type UsageOrigin = typeof UsageOrigin.Type;
 
 export interface AttemptStamp {
   readonly origin: UsageOrigin;

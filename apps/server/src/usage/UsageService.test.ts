@@ -554,6 +554,45 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("scanPriced hands every counted record to the visitor with its transcript path", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const subagent = NodePath.join(
+        NodePath.dirname(transcript),
+        "session-1",
+        "subagents",
+        "agent.jsonl",
+      );
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.dirname(subagent), { recursive: true });
+        await NodeFSP.writeFile(transcript, claudeLine(1, 5) + claudeLine(1, 5));
+        await NodeFSP.writeFile(subagent, claudeLine(2, 7));
+      });
+      const seen: Array<{ readonly path: string | undefined; readonly output: number }> = [];
+      const summary = yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        return yield* service.scanPriced(WINDOW, (priced) => {
+          seen.push({ path: priced.transcriptPath, output: priced.record.totals.outputTokens });
+        });
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(layerService({ prefix: "usage-scan-priced", home, settings })),
+      );
+
+      assert.deepStrictEqual(
+        seen.toSorted((a, b) => a.output - b.output),
+        [
+          { path: transcript, output: 5 },
+          { path: subagent, output: 7 },
+        ],
+      );
+      assert.strictEqual(
+        seen.reduce((sum, item) => sum + item.output, 0),
+        totalOutputTokens(summary),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live("keeps the first host identity across recreation and explicit override removal", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

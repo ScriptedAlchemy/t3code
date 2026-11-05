@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
+import { resolveModelAliases, UsageAggregator, type PricedUsage } from "./usageAggregation.ts";
 import type { RateTable } from "./usagePricing.ts";
 import type { UsageRecord } from "@t3tools/provider-core/server/usage";
 
@@ -47,6 +47,7 @@ function aggregate(
   records: readonly UsageRecord[],
   timeZone = "UTC",
   resolution: "day" | "hour" = "day",
+  onPriced?: (priced: PricedUsage) => void,
 ) {
   const hourlyBounds =
     resolution === "hour"
@@ -62,8 +63,10 @@ function aggregate(
     resolution,
     ...hourlyBounds,
     rates,
+    ...(onPriced === undefined ? {} : { onPriced }),
   });
-  for (const item of records) aggregator.add(item);
+  for (const item of records)
+    aggregator.add(item, undefined, `/transcripts/${item.sessionId}.jsonl`);
   return aggregator.finish();
 }
 
@@ -96,6 +99,35 @@ describe("UsageAggregator", () => {
     expect(result.buckets).toHaveLength(1);
     expect(result.buckets[0]?.records).toBe(1);
     expect(result.buckets[0]?.totals.outputTokens).toBe(50);
+  });
+
+  it("reports each counted record once, with the cost its bucket received", () => {
+    const seen: PricedUsage[] = [];
+    const result = aggregate(
+      [
+        record({ dedupeKey: "msg_1:" }),
+        record({ dedupeKey: "msg_1:" }),
+        record({ model: "claude-fable-5", speed: "fast", sessionId: "session-b" }),
+        record({ timestampMs: Date.parse("2026-09-07T00:00:00Z") }),
+        record({ model: "no-rate-model" }),
+      ],
+      "UTC",
+      "day",
+      (priced) => seen.push(priced),
+    );
+
+    expect(seen.map((item) => item.record.sessionId)).toEqual([
+      "session-a",
+      "session-b",
+      "session-a",
+    ]);
+    expect(seen.map((item) => item.unpriced)).toEqual([false, false, true]);
+    expect(seen[1]?.transcriptPath).toBe("/transcripts/session-b.jsonl");
+    expect(seen.reduce((sum, item) => sum + item.costUsd, 0)).toBeCloseTo(
+      result.buckets.reduce((sum, bucket) => sum + bucket.costUsd, 0),
+    );
+    expect(result.duplicatesDropped).toBe(1);
+    expect(result.outOfWindow).toBe(1);
   });
 
   it("buckets by the day in the requested time zone", () => {

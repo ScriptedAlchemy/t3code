@@ -9,6 +9,7 @@ import { vi } from "vite-plus/test";
 import {
   AuthAccessReadScope,
   AuthAccessWriteScope,
+  AuthDiagnosticsReadScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -124,6 +125,30 @@ describe("command permissions", () => {
         expect((yield* refresh.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
           "EnvironmentAuthorizationError",
         );
+      }),
+    ),
+  );
+
+  it.effect("requires the destination diagnostics grant to read the usage cohort report", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const report = createCommandPermissions(runtime, WS_METHODS.serverGetUsageCohortReport);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(report.permissionAtom(env))).toBe(false);
+        expect((yield* report.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthDiagnosticsReadScope],
+            permissions: [AuthDiagnosticsReadScope],
+          }),
+        );
+        expect(registry.get(report.permissionAtom(env))).toBe(true);
+        yield* report.authorize(registry, env);
       }),
     ),
   );

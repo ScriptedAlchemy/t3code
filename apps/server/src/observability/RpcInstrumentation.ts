@@ -108,6 +108,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverRefreshSkillsLibrary]: "server",
   [WS_METHODS.serverPrepareTriage]: "server",
   [WS_METHODS.serverGetUsageSummary]: "server",
+  [WS_METHODS.serverGetUsageCohortReport]: "server",
   [WS_METHODS.serverRefreshUsageRates]: "server",
   [WS_METHODS.serverSignalProcess]: "server",
   [WS_METHODS.serverReportClientActivity]: "server",
