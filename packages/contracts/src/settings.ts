@@ -55,6 +55,7 @@ import {
   providerPoolDriver,
 } from "./providerPool.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
+import { ExternalHistorySettings } from "./externalHistory.ts";
 
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
@@ -1308,6 +1309,9 @@ export const ServerSettings = Schema.Struct({
   modelEvaluationModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  externalHistory: ExternalHistorySettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(ExternalHistorySettings)({}))),
+  ),
   /**
    * Kept separate from agent access so enabling the user's Device panel does
    * not also grant providers control of simulators and emulators.
@@ -1751,6 +1755,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableModelEvaluations: Schema.optionalKey(Schema.Boolean),
   modelEvaluationModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
+  externalHistory: Schema.optionalKey(ExternalHistorySettings),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
   easDeviceHosts: Schema.optionalKey(EasDeviceHostConfigs),

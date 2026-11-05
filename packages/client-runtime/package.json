@@ -7,6 +7,10 @@
       "types": "./src/modelEvaluations/index.ts",
       "default": "./src/modelEvaluations/index.ts"
     },
+    "./externalHistory": {
+      "types": "./src/externalHistory/index.ts",
+      "default": "./src/externalHistory/index.ts"
+    },
     "./projectCode": {
       "types": "./src/projectCode/index.ts",
       "default": "./src/projectCode/index.ts"

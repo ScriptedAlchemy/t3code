@@ -6,6 +6,7 @@ import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as AssistedLearning from "./project/knowledge/AssistedLearning.ts";
 import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
 import * as ModelEvaluations from "./modelEvaluations/ModelEvaluations.ts";
+import * as ExternalHistory from "./project/externalHistory/ExternalHistory.ts";
 import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import * as FileHistory from "./project/knowledge/FileHistory.ts";
@@ -709,7 +710,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       ),
     ),
   ),
-  Layer.provideMerge(ProjectLoom.layer),
+  Layer.provideMerge(Layer.merge(ProjectLoom.layer, ExternalHistory.layer)),
   Layer.provideMerge(
     ProjectKnowledge.layer.pipe(
       Layer.provide(ProjectionStoreV2.layer),

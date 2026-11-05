@@ -16,6 +16,11 @@ import {
   ModelEvaluationReport,
 } from "./modelEvaluation.ts";
 import {
+  ExternalHistoryError,
+  ExternalHistoryRequest,
+  ExternalHistoryResponse,
+} from "./externalHistory.ts";
+import {
   ProjectKnowledgeError,
   ProjectKnowledgeMutation,
   ProjectKnowledgeListInput,
@@ -461,6 +466,7 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  externalHistoryQuery: "externalHistory.query",
   orchestrationSuggestThreadSplit: "orchestration.suggestThreadSplit",
   projectCodeQuery: "projectCode.query",
   projectCodeFileHistory: "projectCode.fileHistory",
@@ -2166,19 +2172,42 @@ export const WsProjectLoomRpcGroup = RpcGroup.make(
   }),
 ).middleware(RpcScopeAuthorization);
 
+// Transport opt-in: old protocol-2 clients cannot decode tool/range sources or follow
+// intra-source text cursors. MCP and the domain service always use the current format.
+const ConversationSummaryRpcSourceFormat = {
+  sourceFormat: Schema.optionalKey(Schema.Literal(2)),
+};
+
+export const WsExternalHistoryRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.externalHistoryQuery, {
+    payload: ExternalHistoryRequest,
+    success: ExternalHistoryResponse,
+    error: Schema.Union([ExternalHistoryError, EnvironmentAuthorizationError]),
+  }),
+).middleware(RpcScopeAuthorization);
+
 export const WsConversationSummariesRpcGroup = RpcGroup.make(
   Rpc.make(WS_METHODS.conversationSummariesList, {
-    payload: ConversationSummaryListInput,
+    payload: Schema.Struct({
+      ...ConversationSummaryListInput.fields,
+      ...ConversationSummaryRpcSourceFormat,
+    }),
     success: ConversationSummaryList,
     error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(WS_METHODS.conversationSummariesDescribe, {
-    payload: ConversationSummaryDescribeInput,
+    payload: Schema.Struct({
+      ...ConversationSummaryDescribeInput.fields,
+      ...ConversationSummaryRpcSourceFormat,
+    }),
     success: ConversationSummaryRead,
     error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(WS_METHODS.conversationSummariesExpand, {
-    payload: ConversationSummaryExpandInput,
+    payload: Schema.Struct({
+      ...ConversationSummaryExpandInput.fields,
+      ...ConversationSummaryRpcSourceFormat,
+    }),
     success: ConversationSummaryExpansion,
     error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
   }),
@@ -2429,5 +2458,6 @@ export const WsRpcGroup = RpcGroup.make(
   .merge(WsProjectKnowledgeRpcGroup)
   .merge(WsConversationSummariesRpcGroup)
   .merge(WsModelEvaluationsRpcGroup)
+  .merge(WsExternalHistoryRpcGroup)
   .merge(WsProjectLoomRpcGroup)
   .merge(WsProjectCodeRpcGroup);
