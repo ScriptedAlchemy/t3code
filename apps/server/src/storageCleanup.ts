@@ -42,6 +42,7 @@ import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementService.ts";
+import * as WorktreeBranches from "./orchestration-v2/WorktreeBranches.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -292,6 +293,7 @@ const make = Effect.gen(function* () {
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const sql = yield* SqlClient.SqlClient;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const worktreeBranches = yield* WorktreeBranches.WorktreeBranches;
   const gitManager = yield* GitManager.GitManager;
   const terminals = yield* TerminalManager.TerminalManager;
   const fs = yield* FileSystem.FileSystem;
@@ -552,62 +554,6 @@ const make = Effect.gen(function* () {
     }
   });
 
-  // Use two small Git reads: statusDetailsLocal also diffs and counts for every worktree.
-  const branchChanged = Effect.fn("StorageCleanup.branchChanged")(function* (
-    cwd: string,
-    branch: string | null,
-  ) {
-    const failure = (detail: string) =>
-      new GitCommandError({
-        operation: "StorageCleanup.branchChanged",
-        command: "git",
-        cwd,
-        detail,
-      });
-    // Return null for missing/non-repository cwd; force untranslated git diagnostics for matching.
-    const read = Effect.fnUntraced(function* (args: string[], allowedExitCode?: number) {
-      const result = yield* git
-        .execute({
-          operation: "StorageCleanup.branchChanged",
-          cwd,
-          args,
-          env: { LC_ALL: "C" },
-          allowNonZeroExit: true,
-        })
-        .pipe(
-          Effect.catch((error) =>
-            Effect.flatMap(fs.exists(cwd), (exists) =>
-              exists ? Effect.fail(error) : Effect.succeed(null),
-            ),
-          ),
-        );
-      if (result === null) return null;
-      if (result.exitCode === 0 || result.exitCode === allowedExitCode) return result;
-      const stderr = result.stderr.toLowerCase();
-      // Newer Git reports a dangling .git file as "gitfile does not point to a valid repository".
-      if (
-        stderr.includes("not a git repository") ||
-        stderr.includes("does not point to a valid repository")
-      )
-        return null;
-      return yield* failure(
-        result.stderr.trim().split(/\r?\n/)[0]?.slice(0, 1000) || "command failed",
-      );
-    });
-    const index = yield* read(["rev-parse", "--git-path", "index"]);
-    if (index === null) return true;
-    if (yield* fs.exists(`${path.resolve(cwd, index.stdout.trim())}.lock`))
-      return yield* failure(
-        "Git index is locked. Status will resume when the index lock is removed.",
-      );
-    // Detached HEAD exits 1; full refs avoid shortening when a tag shares the branch name.
-    const head = yield* read(["symbolic-ref", "--quiet", "HEAD"], 1);
-    if (head === null) return true;
-    const ref = head.exitCode === 0 ? head.stdout.trim() : "";
-    const name = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length).trim() : null;
-    return (name?.startsWith("(") ? null : name) !== branch;
-  });
-
   const localChangesReason = Effect.fn("StorageCleanup.localChangesReason")(function* (
     cwd: string,
     rules: WorktreeCleanupRules,
@@ -646,6 +592,28 @@ const make = Effect.gen(function* () {
       .split("\0")
       .find((entry) => entry !== "" && !/(^|\/)node_modules\/$/.test(entry));
     return file === undefined ? null : `has ignored files (${file})`;
+  });
+
+  // refs/t3 is excluded: a user cannot recover a commit only a checkpoint ref holds.
+  const commitHeldByRef = Effect.fn("StorageCleanup.commitHeldByRef")(function* (
+    cwd: string,
+    commitSha: string,
+  ) {
+    const refs = yield* git.execute({
+      operation: "StorageCleanup.commitHeldByRef",
+      cwd,
+      args: [
+        "for-each-ref",
+        "--contains",
+        commitSha,
+        "--count=1",
+        "--format=%(refname)",
+        "refs/heads",
+        "refs/remotes",
+        "refs/tags",
+      ],
+    });
+    return refs.stdout.trim() !== "";
   });
 
   const submoduleRemoval = Effect.fn("StorageCleanup.submoduleRemoval")(
@@ -892,8 +860,6 @@ const make = Effect.gen(function* () {
           !group.every((member) => storageCleanupThreadIdle(member, now, serverSettings))
         )
           return keep(waitForStop("thread is running or has pending work"));
-        if (group.some((member) => member.branch !== thread.branch))
-          return keep("a subagent thread's branch differs from this worktree's branch");
         if (hasTerminal(worktreePath)) return keep(waitForStop("open terminal"));
         // Compare canonical roots while allowing symlinked parents, never symlinked worktree directories.
         const realPath = yield* fs.realPath(worktreePath);
@@ -906,8 +872,14 @@ const make = Effect.gen(function* () {
           return keep("contains a project checkout");
         if ((yield* fs.stat(path.join(worktreePath, ".git"))).type !== "File")
           return keep("not a linked worktree");
-        if (yield* branchChanged(worktreePath, thread.branch))
-          return keep("repository or branch changed");
+        const checkout = yield* worktreeBranches.sync({
+          worktreePath,
+          recorded: group.map((member) => member.branch),
+        });
+        if (checkout._tag === "Unavailable") return keep("repository or branch changed");
+        if (checkout._tag === "Rebinding") return keep("branch updated, re-checked next pass");
+        if (group.some((member) => member.branch !== group[0]!.branch))
+          return keep("a subagent thread's branch differs from this worktree's branch");
         const changes = yield* localChangesReason(worktreePath, settings);
         if (changes !== null) return keep(changes);
         if (
@@ -920,6 +892,8 @@ const make = Effect.gen(function* () {
         )
           return keep(waitForStop("settled moments ago"));
         const head = yield* git.resolveCommit({ cwd: worktreePath, revision: "HEAD" });
+        if (checkout._tag === "Detached" && !(yield* commitHeldByRef(worktreePath, head.commitSha)))
+          return keep("detached HEAD has commits no branch or tag holds");
         const old =
           !deleted &&
           settings.worktreeAfterDays !== null &&
@@ -1019,13 +993,18 @@ const make = Effect.gen(function* () {
               remote === null
                 ? "no commits beyond the project branch"
                 : "no commits beyond the default branch";
-          if (!eligible && remote !== null && settings.worktreeOnMerge && thread.branch !== null) {
+          if (
+            !eligible &&
+            remote !== null &&
+            settings.worktreeOnMerge &&
+            checkout._tag === "Bound"
+          ) {
             const pullRequest = yield* gitManager.branchPullRequest(
-              { cwd: worktreePath, branch: thread.branch },
+              { cwd: worktreePath, branch: checkout.branch },
               { refresh: true },
             );
             eligible = storageCleanupPullRequestMerged(pullRequest, {
-              branch: thread.branch,
+              branch: checkout.branch,
               defaultBranch: branch,
               headSha: head.commitSha,
               integrated,
@@ -1079,12 +1058,11 @@ const make = Effect.gen(function* () {
           if (
             latestGroup.length !== group.length ||
             latestOwner?.id !== thread.id ||
-            latestOwner?.branch !== thread.branch ||
             latestGroup.some((shell) => {
               const previous = group.find((member) => member.id === shell.id);
               return (
                 previous === undefined ||
-                shell.branch !== thread.branch ||
+                shell.branch !== previous.branch ||
                 !Equal.equals(shell.settledAt, previous.settledAt) ||
                 (shell.settledAt !== null && !Equal.equals(shell.updatedAt, previous.updatedAt)) ||
                 !storageCleanupThreadIdle(shell, now, serverSettings) ||
@@ -1139,13 +1117,20 @@ const make = Effect.gen(function* () {
         const bytes = yield* measureWorktree(worktreePath);
         const blockedWhileMeasuring = yield* blockedSinceCheck();
         if (blockedWhileMeasuring !== null) return keep(blockedWhileMeasuring);
-        if (yield* branchChanged(worktreePath, thread.branch))
+        const observed = yield* worktreeBranches.observe(worktreePath);
+        if (
+          checkout._tag === "Detached"
+            ? observed._tag !== "Detached"
+            : observed._tag !== "Named" || observed.branch !== checkout.branch
+        )
           return keep("repository or branch changed since check");
         if (
           (yield* git.resolveCommit({ cwd: worktreePath, revision: "HEAD" })).commitSha !==
           head.commitSha
         )
           return keep("commit changed since check");
+        if (checkout._tag === "Detached" && !(yield* commitHeldByRef(worktreePath, head.commitSha)))
+          return keep("detached HEAD has commits no branch or tag holds");
         const finalChanges = yield* localChangesReason(worktreePath, settings);
         if (finalChanges !== null) return keep(finalChanges);
         const currentSettings = yield* settingsService.getSettings;

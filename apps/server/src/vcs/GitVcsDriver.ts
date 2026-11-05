@@ -301,6 +301,11 @@ export interface GitRemoteStatusOptions {
   readonly refreshUpstream?: boolean;
 }
 
+export const isDefaultBranchName = (branch: string | null, defaultBranch: string | null) =>
+  branch !== null &&
+  (branch === defaultBranch ||
+    (defaultBranch === null && (branch === "main" || branch === "master")));
+
 export class GitVcsDriver extends Context.Service<
   GitVcsDriver,
   {
