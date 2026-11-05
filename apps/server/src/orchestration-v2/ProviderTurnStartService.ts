@@ -136,6 +136,11 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
   ProviderTurnStartServiceV2Shape
 >()("t3/orchestration-v2/ProviderTurnStartService/ProviderTurnStartServiceV2") {}
 
+// Past both limits, a replay of real threads shows a fresh session repaying its uncached first
+// request: the cache has already expired, and the smaller prompt is cheaper on every later call.
+const COLD_RETURN_IDLE_MS = 60 * 60_000;
+const COLD_RETURN_MIN_CONTEXT_TOKENS = 100_000;
+
 export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
@@ -159,6 +164,7 @@ export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
     const pstack = yield* PstackPack.PstackPack;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const eventSink = yield* EventSink.EventSinkV2;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
@@ -1039,6 +1045,27 @@ export const layer: Layer.Layer<
           return retryHandoff;
         },
       );
+      const isColdReturn = Effect.fn("ProviderTurnStartService.isColdReturn")(function* () {
+        const enabled = yield* serverSettings.getSettings.pipe(
+          Effect.map((settings) => settings.freshSessionOnColdReturn),
+          Effect.orElseSucceed(() => false),
+        );
+        if (!enabled) return false;
+        const measured = latestNativeContextUsage(projection, providerThread);
+        if (measured === undefined) return false;
+        if (measured.usage.usedTokens < COLD_RETURN_MIN_CONTEXT_TOKENS) return false;
+        const reportedAt = DateTime.make(measured.reportedAt);
+        if (Option.isNone(reportedAt)) return false;
+        const idleMs =
+          DateTime.toEpochMillis(yield* DateTime.now) - DateTime.toEpochMillis(reportedAt.value);
+        if (idleMs < COLD_RETURN_IDLE_MS) return false;
+        const hasPendingWork = yield* (
+          session.hasPendingBackgroundWorkForThread?.(providerThread, { includeSubagents: true }) ??
+            session.hasPendingBackgroundWork ??
+            Effect.succeed(false)
+        );
+        return !hasPendingWork;
+      });
       const prepareRecoveryHandoff = Effect.fn("ProviderTurnStartService.prepareRecoveryHandoff")(
         function* () {
           const transferId = yield* idAllocator.allocate.contextTransfer({
@@ -1257,15 +1284,23 @@ export const layer: Layer.Layer<
               handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
               handoff.delivery?.status === "pending",
           );
+        const coldReturn =
+          !uncertainDelivery &&
+          message.createdBy === "user" &&
+          !isCompactionCommandMessage(message) &&
+          !goalCommand &&
+          (yield* isColdReturn());
         const resumed = yield* Effect.result(
-          uncertainDelivery
+          uncertainDelivery || coldReturn
             ? Effect.fail(
                 new ProviderAdapter.ProviderAdapterTurnStartError({
                   driver: session.driver,
                   threadId: projection.thread.id,
                   providerThreadId: providerThread.id,
                   runId,
-                  cause: "Uncertain native history injection",
+                  cause: coldReturn
+                    ? "Fresh session after a long idle"
+                    : "Uncertain native history injection",
                 }),
               )
             : session.resumeThread({
@@ -1343,11 +1378,13 @@ export const layer: Layer.Layer<
           driver: session.driver,
           providerThreadId: providerThread.id,
           runId,
-          reason: uncertainDelivery
-            ? "uncertain_history_delivery"
-            : resumed._tag === "Success"
-              ? "handoff_budget_exhausted"
-              : "resume_failed",
+          reason: coldReturn
+            ? "cold_return"
+            : uncertainDelivery
+              ? "uncertain_history_delivery"
+              : resumed._tag === "Success"
+                ? "handoff_budget_exhausted"
+                : "resume_failed",
           errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
         });
         const replacement = yield* loadFromProvider(
