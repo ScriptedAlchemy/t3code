@@ -1,4 +1,5 @@
 import * as ProjectKnowledge from "../../project/knowledge/ProjectKnowledge.ts";
+import * as ModelEvaluations from "../../modelEvaluations/ModelEvaluations.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -324,6 +325,7 @@ export function layerWithRegistry<Error>(
       ServerSettings.layerTest(
         {
           responseStreamingMode: "turn",
+          enableAgentGitHubReadGate: false,
           ...(options.continueThreadsAfterServerUpdate === undefined
             ? {}
             : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
@@ -354,8 +356,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-          // @effect-diagnostics-next-line effectSucceedWithVoid:off - Optional instances require undefined rather than void.
-          getInstance: () => Effect.succeed(undefined),
+          getInstance: () => Effect.undefined,
         }),
         layerStores,
         layerEventSinkProvided,
@@ -585,6 +586,7 @@ export function layerWithRegistry<Error>(
     layerContinuationWorkerProvided,
     layerCommandOutputHubProvided,
   ).pipe(
+    Layer.provide(Layer.mock(ModelEvaluations.ModelEvaluations)({ enqueueRun: () => Effect.void })),
     Layer.provide(ProviderTurnStartServiceTestkit.layer),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );

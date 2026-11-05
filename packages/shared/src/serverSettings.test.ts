@@ -38,24 +38,25 @@ describe("fallbackTextGenerationModelSelection", () => {
     ).toEqual({ instanceId: "opencode", model: "opencode/big-pickle" });
   });
 
-  it("replaces and clears the fallback without carrying model options", () => {
-    const fallbackModelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "new" };
-    const settings = applyServerSettingsPatch(
-      {
-        ...DEFAULT_SERVER_SETTINGS,
-        fallbackModelSelection: {
-          ...fallbackModelSelection,
-          model: "old",
-          options: [{ id: "effort", value: "high" }],
+  it.each(["fallbackModelSelection", "modelEvaluationModelSelection"] as const)(
+    "replaces and clears %s without carrying model options",
+    (key) => {
+      const fallbackModelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "new" };
+      const settings = applyServerSettingsPatch(
+        {
+          ...DEFAULT_SERVER_SETTINGS,
+          [key]: {
+            ...fallbackModelSelection,
+            model: "old",
+            options: [{ id: "effort", value: "high" }],
+          },
         },
-      },
-      { fallbackModelSelection },
-    );
-    expect(settings.fallbackModelSelection).toEqual(fallbackModelSelection);
-    expect(
-      applyServerSettingsPatch(settings, { fallbackModelSelection: null }).fallbackModelSelection,
-    ).toBeNull();
-  });
+        { [key]: fallbackModelSelection },
+      );
+      expect(settings[key]).toEqual(fallbackModelSelection);
+      expect(applyServerSettingsPatch(settings, { [key]: null })[key]).toBeNull();
+    },
+  );
   it("ignores a configured non-default instance at machine scope, matching no fallback", () => {
     const configured = ProviderInstanceId.make("codex_work");
     const providerInstances = {
@@ -125,6 +126,24 @@ describe("serverSettings helpers", () => {
       hosts: { "github.com": { enabled: false } },
       tokens: {},
     });
+  });
+
+  it("keeps a source control host's saved tokens when a patch sets another host's token", () => {
+    const reference = { provider: "vault", reference: "github/token" };
+    const saved = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      sourceControlHosts: { github: { tokens: { "github.com": reference } } },
+    });
+    const patched = applyServerSettingsPatch(saved, {
+      sourceControlHosts: { github: { tokens: { "ghe.example": "x" } } },
+    });
+    expect(patched.sourceControlHosts.github?.tokens).toEqual({
+      "github.com": reference,
+      "ghe.example": "x",
+    });
+    const recased = applyServerSettingsPatch(saved, {
+      sourceControlHosts: { github: { tokens: { " GitHub.com ": "ghp_new" } } },
+    });
+    expect(recased.sourceControlHosts.github?.tokens).toEqual({ "github.com": "ghp_new" });
   });
 
   it("inherits actions, preserves existing actions, and supports empty overrides and reset", () => {
@@ -253,6 +272,15 @@ describe("serverSettings helpers", () => {
       otlpMetricsUrl: "http://localhost:4318/v1/metrics",
       otlpLogsUrl: "http://localhost:4318/v1/logs",
     });
+    // The server still loads a file holding the retired token streaming mode.
+    expect(
+      parsePersistedServerObservabilitySettings(
+        JSON.stringify({
+          responseStreamingMode: "token",
+          observability: { otlpTracesUrl: "http://localhost:4318/v1/traces" },
+        }),
+      ).otlpTracesUrl,
+    ).toBe("http://localhost:4318/v1/traces");
   });
 
   it("falls back cleanly when persisted settings are invalid", () => {

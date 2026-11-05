@@ -1,6 +1,7 @@
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { assistedLearningEffects } from "../project/knowledge/assistedLearningSchedule.ts";
 import { conversationSummaryEffects } from "../project/conversationSummaries/conversationSummarySchedule.ts";
+import { modelEvaluationEffects } from "../modelEvaluations/modelEvaluationSchedule.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   isOrchestrationV2WorkActive,
@@ -789,6 +790,14 @@ export const layer: Layer.Layer<
               : []),
             ...assistedLearning,
             ...conversationSummaries,
+            ...(settings === null || input.terminal.status !== "failed"
+              ? []
+              : modelEvaluationEffects({
+                  settings,
+                  threadId: input.run.threadId,
+                  runId: input.run.id,
+                  runOutcome: input.terminal.status,
+                })),
           ],
           events: [
             ...cascadedSubagentEvents,
@@ -1126,7 +1135,33 @@ export const layer: Layer.Layer<
           if (resolution?.type === "failed_over") {
             // The orchestrator closed this attempt and opened the next on
             // another account; as after a steering restart, this attempt's
-            // ingestion stops writing.
+            // ingestion stops writing. Its children die with it unless their turns continue;
+            // the run now has a newer attempt, so a run-current gate would drop these.
+            if (!childTurnsContinue(reported)) {
+              const cascaded = yield* cascadeTerminalizeRunOwnedSubagents({
+                run: input.run,
+                open: yield* Ref.getAndSet(
+                  openRunOwnedSubagents,
+                  emptyOpenRunOwnedSubagentProjection(),
+                ),
+                status: "failed",
+                completedAt: yield* DateTime.now,
+                allocateEventId: () => idAllocator.allocate.event({ threadId: input.run.threadId }),
+              }).pipe(
+                Effect.mapError(
+                  (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
+                ),
+              );
+              if (cascaded.length > 0) {
+                yield* eventSink
+                  .writeWithEffects({ events: cascaded, effects: [] })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
+                    ),
+                  );
+              }
+            }
             yield* Ref.set(rootRunFinalized, true);
             return;
           }

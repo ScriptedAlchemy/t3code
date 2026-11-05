@@ -1,7 +1,11 @@
+import * as ThreadSplitSuggestions from "./orchestration-v2/ThreadSplitSuggestions.ts";
 import * as PstackPack from "./pstack/PstackPack.ts";
 import * as SkillsLibrary from "./skills/SkillsLibrary.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
+import * as ModelEvaluations from "./modelEvaluations/ModelEvaluations.ts";
+import * as ExternalHistory from "./project/externalHistory/ExternalHistory.ts";
+import { conversationSummariesRpcHandlers } from "./conversationSummariesRpc.ts";
 import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import * as FileHistory from "./project/knowledge/FileHistory.ts";
@@ -68,6 +72,8 @@ import {
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_V2_WS_METHODS,
   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+  CLIENT_CAPABILITIES_QUERY_PARAM,
+  SETTINGS_SECRET_REFERENCES_CAPABILITY,
   ORCHESTRATION_PROTOCOL_VERSION,
   OrchestrationV2DispatchCommandError,
   OrchestrationV2GetShellSnapshotError,
@@ -116,6 +122,8 @@ import {
   WsRpcGroup,
   WsProjectKnowledgeRpcGroup,
   WsConversationSummariesRpcGroup,
+  WsModelEvaluationsRpcGroup,
+  WsExternalHistoryRpcGroup,
   WsProjectLoomRpcGroup,
   WsProjectCodeRpcGroup,
 } from "@t3tools/contracts";
@@ -669,6 +677,9 @@ const ServerCoreWsRpcGroup = ServerWsRpcGroup.omit(
   WS_METHODS.conversationSummariesList,
   WS_METHODS.conversationSummariesDescribe,
   WS_METHODS.conversationSummariesExpand,
+  WS_METHODS.modelEvaluationsList,
+  WS_METHODS.modelEvaluationsClear,
+  WS_METHODS.externalHistoryQuery,
   WS_METHODS.projectReadLoomWindow,
 );
 const layerProjectLoomRpc = WsProjectLoomRpcGroup.middleware(RpcInstrumentation).toLayer(
@@ -682,10 +693,21 @@ const layerConversationSummariesRpc = WsConversationSummariesRpcGroup.middleware
 ).toLayer(
   Effect.gen(function* () {
     const summaries = yield* ConversationSummaries.ConversationSummaries;
+    return conversationSummariesRpcHandlers(summaries);
+  }),
+);
+const layerExternalHistoryRpc = WsExternalHistoryRpcGroup.middleware(RpcInstrumentation).toLayer(
+  Effect.gen(function* () {
+    const history = yield* ExternalHistory.ExternalHistory;
+    return { [WS_METHODS.externalHistoryQuery]: (input) => history.query(input) };
+  }),
+);
+const layerModelEvaluationsRpc = WsModelEvaluationsRpcGroup.middleware(RpcInstrumentation).toLayer(
+  Effect.gen(function* () {
+    const evaluations = yield* ModelEvaluations.ModelEvaluations;
     return {
-      [WS_METHODS.conversationSummariesList]: (input) => summaries.list(input),
-      [WS_METHODS.conversationSummariesDescribe]: (input) => summaries.describe(input),
-      [WS_METHODS.conversationSummariesExpand]: (input) => summaries.expand(input),
+      [WS_METHODS.modelEvaluationsList]: (input) => evaluations.list(input),
+      [WS_METHODS.modelEvaluationsClear]: (input) => evaluations.clear(input),
     };
   }),
 );
@@ -856,6 +878,11 @@ function hasCompatibleOrchestrationProtocol(url: URL): boolean {
   );
 }
 
+function readSettingsClient(url: URL) {
+  const capabilities = url.searchParams.get(CLIENT_CAPABILITIES_QUERY_PARAM)?.split(",") ?? [];
+  return { secretReferences: capabilities.includes(SETTINGS_SECRET_REFERENCES_CAPABILITY) };
+}
+
 function shouldUseBoundedThreadSnapshot(input: {
   readonly acceptBoundedSnapshot?: boolean;
   readonly acceptDeferredWork?: boolean;
@@ -941,6 +968,7 @@ const canReplayPersistedRange = Effect.fnUntraced(function* (
   if (replayGap < 0 || replayGap > maxGap) {
     return false;
   }
+  if (afterSequence < (yield* applicationEvents.prunedThroughSequence)) return false;
   const stats = yield* applicationEvents.getReplayStats({
     afterSequence,
     throughSequence: headSequence,
@@ -1129,7 +1157,21 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
             }),
         ),
       );
-      if (input.afterSequence > highWater) {
+      const prunedThrough = yield* applicationEvents.prunedThroughSequence.pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestrationV2GetThreadProjectionError({
+              threadId: input.threadId,
+              message: `Failed to prepare orchestration V2 thread ${input.threadId} replay`,
+              cause,
+            }),
+        ),
+      );
+      // An idle thread's cursor sits at its own high-water: nothing was missed, so replay nothing.
+      if (
+        input.afterSequence > highWater ||
+        (input.afterSequence < highWater && input.afterSequence < prunedThrough)
+      ) {
         return yield* snapshotThenLive();
       }
       const stats = yield* applicationEvents
@@ -1170,9 +1212,25 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
         // Retained creation events may describe deleted threads; replace replay only if a snapshot exists.
         if (shell !== null) return yield* snapshotThenLive();
       }
-      const replay = coalesceLiveUpdatedEvents(
-        yield* loadReplayThrough(input.afterSequence, highWater),
-      );
+      const replayed = yield* loadReplayThrough(input.afterSequence, highWater);
+      // Pruning publishes its boundary before deleting, so a pass during the read shows up here.
+      if (
+        input.afterSequence < highWater &&
+        input.afterSequence <
+          (yield* applicationEvents.prunedThroughSequence.pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationV2GetThreadProjectionError({
+                  threadId: input.threadId,
+                  message: `Failed to prepare orchestration V2 thread ${input.threadId} replay`,
+                  cause,
+                }),
+            ),
+          ))
+      ) {
+        return yield* snapshotThenLive();
+      }
+      const replay = coalesceLiveUpdatedEvents(replayed);
       const plan = decideThreadResume({
         afterSequence: input.afterSequence,
         highWater,
@@ -1406,31 +1464,38 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
         });
       }
 
-      const highWater = yield* applicationEvents.latestApplicationSequence;
-      if (!(yield* canReplayPersistedRange(input.afterSequence, highWater, SHELL_RESUME_MAX_GAP))) {
+      const fromSnapshot = Effect.gen(function* () {
         const loaded = yield* loadSnapshot();
         return composeShellStreamWithEnrichment({
           initial: initialSnapshotItems(loaded),
           tail: completionThenLive(loaded.snapshot.snapshotSequence),
           enrichment: enrichmentRefreshes,
         });
+      });
+      const highWater = yield* applicationEvents.latestApplicationSequence;
+      if (!(yield* canReplayPersistedRange(input.afterSequence, highWater, SHELL_RESUME_MAX_GAP))) {
+        return yield* fromSnapshot;
       }
 
       subagentThreadIds = new Set(yield* threadManagement.listActiveSubagentThreadIds());
 
       const loaded = yield* loadProjectMetadataSnapshot(highWater);
-      const replay = toShellStream(
-        applicationEvents
-          .readApplicationEvents({
-            afterSequence: input.afterSequence,
-            throughSequence: highWater,
-            // A row a newer build wrote (e.g. after a downgrade) must not fail
-            // every shell resubscribe. The live tail below resumes from
-            // highWater, so a dropped row never hides later events.
-            skipUnknownEventTypes: true,
-          })
-          .pipe(Stream.filter(filterSubagentTranscript)),
-      );
+      // Read before replying: the range is budgeted above, and a prune pass during the read
+      // publishes its boundary first, so the recheck below catches deleted rows.
+      const replayed = yield* applicationEvents
+        .readApplicationEvents({
+          afterSequence: input.afterSequence,
+          throughSequence: highWater,
+          // A row a newer build wrote (e.g. after a downgrade) must not fail
+          // every shell resubscribe. The live tail below resumes from
+          // highWater, so a dropped row never hides later events.
+          skipUnknownEventTypes: true,
+        })
+        .pipe(Stream.filter(filterSubagentTranscript), Stream.runCollect);
+      if (input.afterSequence < (yield* applicationEvents.prunedThroughSequence)) {
+        return yield* fromSnapshot;
+      }
+      const replay = toShellStream(Stream.fromIterable(replayed));
       return composeShellStreamWithEnrichment({
         initial: initialEnrichmentItems(loaded),
         tail: Stream.concat(Stream.concat(replay, completionMarker), liveFrom(highWater)),
@@ -1464,6 +1529,7 @@ export const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
   reportProfiles: ServerBrowser.ProfileReporter,
+  settingsClient: { readonly secretReferences: boolean },
 ) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -1485,6 +1551,7 @@ export const layerWsRpc = (
       const scratchThreadPromotion = yield* ScratchThreadPromotion.ScratchThreadPromotion;
       const eventLoopMonitor = yield* EventLoopMonitor.EventLoopMonitor;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
+      const threadSplitSuggestions = yield* ThreadSplitSuggestions.ThreadSplitSuggestions;
 
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const mcpAppRequests = yield* McpAppRequests.McpAppRequests;
@@ -1980,6 +2047,7 @@ export const layerWsRpc = (
           : commandProviders;
         const settings = ServerSettings.redactServerSettingsForClient(
           yield* serverSettings.getSettings,
+          settingsClient,
         );
         const pstackSkills = yield* pstack.catalog;
         const environment = yield* serverEnvironment.getDescriptor;
@@ -2428,6 +2496,8 @@ export const layerWsRpc = (
             Effect.andThen(scheduledTasks.getWebhookDelivery(input)),
           ),
         [WS_METHODS.serverProbe]: (_input) => Effect.succeed({}),
+        [WS_METHODS.orchestrationSuggestThreadSplit]: (input) =>
+          threadSplitSuggestions.suggest(input),
         [WS_METHODS.serverGetConfig]: (_input) =>
           loadServerConfig({
             usageLimitsCommand: false,
@@ -2543,12 +2613,12 @@ export const layerWsRpc = (
                 fresh: input.fresh,
               });
             }
+            if (input.reloadSecrets === true && input.instanceId === undefined) {
+              yield* invalidateSettingsSecrets(secretResolver, serverSettings.getSettings);
+            }
             // Await refresh; RPC scope closure would interrupt a fork before the hub answered.
             if (input.instanceId === undefined) {
               yield* usageLimitSources.refresh;
-            }
-            if (input.reloadSecrets === true && input.instanceId === undefined) {
-              yield* invalidateSettingsSecrets(secretResolver, serverSettings.getSettings);
             }
             let providers = yield* input.cwd !== undefined && input.instanceId !== undefined
               ? providerRegistry.refreshWorkspaceSnapshot({
@@ -2775,7 +2845,7 @@ export const layerWsRpc = (
             const settings = yield* providerInstanceMutation === undefined
               ? serverSettings.updateSettings(nextPatch)
               : serverSettings.updateProviderInstance(providerInstanceMutation, nextPatch);
-            return ServerSettings.redactServerSettingsForClient(settings);
+            return ServerSettings.redactServerSettingsForClient(settings, settingsClient);
           }),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) => sourceControlDiscovery.discover,
         [WS_METHODS.serverGetTraceDiagnostics]: (_input) =>
@@ -2935,6 +3005,7 @@ export const layerWsRpc = (
         [WS_METHODS.sourceControlSignInCancel]: (input) => sourceControlSignIn.cancel(input),
         [WS_METHODS.sourceControlAppAccess]: (input) => sourceControlSignIn.access(input),
         [WS_METHODS.sourceControlStarred]: (input) => sourceControlSignIn.starred(input),
+        [WS_METHODS.sourceControlStar]: (input) => sourceControlSignIn.star(input),
         [WS_METHODS.projectCloneStart]: (input) =>
           projectCloneTracker.start(input, {
             createProject: (project) =>
@@ -3444,13 +3515,21 @@ export const layerWsRpc = (
                     if (changed)
                       return {
                         type: "pstackUpdated" as const,
-                        settings: ServerSettings.redactServerSettingsForClient(settings),
+                        settings: ServerSettings.redactServerSettingsForClient(
+                          settings,
+                          settingsClient,
+                        ),
                         pstackSkills: yield* pstack.catalog,
                       };
                     return {
                       version: 1,
                       type: "settingsUpdated",
-                      payload: { settings: ServerSettings.redactServerSettingsForClient(settings) },
+                      payload: {
+                        settings: ServerSettings.redactServerSettingsForClient(
+                          settings,
+                          settingsClient,
+                        ),
+                      },
                     } satisfies ServerConfigStreamEvent;
                   }),
                 ),
@@ -3558,6 +3637,8 @@ export const layerWsRpc = (
   ).pipe(
     Layer.merge(layerKnowledgeRpc),
     Layer.merge(layerConversationSummariesRpc),
+    Layer.merge(layerModelEvaluationsRpc),
+    Layer.merge(layerExternalHistoryRpc),
     Layer.merge(layerProjectLoomRpc),
     Layer.merge(layerProjectCodeRpc),
   );
@@ -3640,7 +3721,13 @@ export const layer = Layer.unwrap(
           return httpEffect;
         }).pipe(
           Effect.provide(
-            layerWsRpc(session, clientAnalyticsProps, serverBrowser, reportProfiles).pipe(
+            layerWsRpc(
+              session,
+              clientAnalyticsProps,
+              serverBrowser,
+              reportProfiles,
+              readSettingsClient(url.value),
+            ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Handler-context reporters see only request defects, not server-wide defects.
               Layer.provide(DefectReporter.layer),

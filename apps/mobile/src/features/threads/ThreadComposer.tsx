@@ -1,3 +1,4 @@
+import { ThreadSplitSuggestion } from "./ThreadSplitSuggestion";
 import { ProjectKnowledgeEntry } from "../../components/ProjectKnowledgeEntry";
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
 import { Button } from "../../components/ui/Button";
@@ -109,6 +110,7 @@ import { offersLinkedEnvironments } from "@t3tools/client-runtime/link-request";
 import {
   ComposerDictationCancelAction,
   ComposerDictationDraftContent,
+  ComposerDictationError,
   ComposerDictationPrimaryAction,
   ComposerDictationStartAction,
   ComposerDictationStatus,
@@ -449,7 +451,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const composerOwnerKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
   const composerDraftKey = props.draftKey ?? composerOwnerKey;
-  const { text: draftMessage, attachments: draftAttachments } = useComposerDraft(composerDraftKey);
+  const {
+    text: draftMessage,
+    attachments: draftAttachments,
+    context: draftContext,
+  } = useComposerDraft(composerDraftKey);
   const queuedEdit = props.queuedEdit ?? null;
   const hasContent =
     draftMessage.trim().length > 0 ||
@@ -607,7 +613,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     voiceInput.state,
     voiceInput.elapsedSeconds,
   );
-  const isVoiceInputPresented = voicePresentation.statusLabel !== null;
+  const isVoiceInputPresented = voicePresentation.statusKind === "active";
   const isExpanded = isFocused || settingsSheetPresentation.keepsComposerExpanded;
   const { layout, setComposerEditing } = useAdaptiveWorkspaceLayout();
   const floatingSidebarComposer = useAndroidFloatingTabs() && layout.usesSplitView;
@@ -903,6 +909,28 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
           />
         ) : null}
 
+        <ThreadSplitSuggestion
+          key={composerOwnerKey}
+          environmentId={props.environmentId}
+          threadId={props.selectedThread.id}
+          projectId={props.selectedThread.projectId}
+          draftKey={composerDraftKey}
+          message={draftMessage}
+          enabled={
+            props.serverConfig?.settings.threadSplitSuggestionsEnabled === true &&
+            Boolean(props.serverConfig.settings.threadSplitModelEndpoint) &&
+            !props.isDraft &&
+            !props.hidden &&
+            !props.activeThreadBusy &&
+            props.canOperateThread &&
+            props.connectionState === "connected" &&
+            props.queueCount === 0 &&
+            queuedEdit === null &&
+            draftAttachments.length === 0 &&
+            !draftContext
+          }
+        />
+
         <ComposerSurface
           animateLayout={false}
           style={{
@@ -912,6 +940,10 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
             paddingVertical: surfacePaddingVertical,
           }}
         >
+          <ComposerDictationError
+            error={voiceInput.state.phase === "error" ? voiceInput.state.error : null}
+            onDismiss={voiceInput.cancel}
+          />
           {isExpanded ? editingAttachments : null}
           <View
             onLayout={(event) => {
@@ -1176,7 +1208,6 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                   elapsedSeconds={voiceInput.elapsedSeconds}
                   phase={voiceInput.state.phase}
                   presentation={voicePresentation}
-                  onDismissError={voiceInput.cancel}
                 />
                 <View className="shrink-0 flex-row items-center">
                   <ComposerDictationPrimaryAction

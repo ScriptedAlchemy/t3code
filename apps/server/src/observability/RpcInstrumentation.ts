@@ -11,10 +11,14 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
 // Trace queries and dashboards depend on these labels, including deviations from method prefixes.
 const RPC_AGGREGATES = {
+  [WS_METHODS.orchestrationSuggestThreadSplit]: "orchestration",
   [WS_METHODS.projectKnowledgeSearch]: "projectKnowledge",
   [WS_METHODS.conversationSummariesList]: "conversationSummaries",
   [WS_METHODS.conversationSummariesDescribe]: "conversationSummaries",
   [WS_METHODS.conversationSummariesExpand]: "conversationSummaries",
+  [WS_METHODS.modelEvaluationsList]: "modelEvaluations",
+  [WS_METHODS.modelEvaluationsClear]: "modelEvaluations",
+  [WS_METHODS.externalHistoryQuery]: "externalHistory",
   [WS_METHODS.projectReadLoomWindow]: "projectLoom",
   [WS_METHODS.projectKnowledgeList]: "projectKnowledge",
   [WS_METHODS.projectKnowledgeMutate]: "projectKnowledge",
@@ -161,6 +165,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.sourceControlSignInCancel]: "source-control",
   [WS_METHODS.sourceControlAppAccess]: "source-control",
   [WS_METHODS.sourceControlStarred]: "source-control",
+  [WS_METHODS.sourceControlStar]: "source-control",
   [WS_METHODS.projectCloneStart]: "source-control",
   [WS_METHODS.projectCloneCancel]: "source-control",
   [WS_METHODS.projectCloneRetry]: "source-control",

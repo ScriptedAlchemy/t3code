@@ -1,9 +1,12 @@
+import * as ThreadSplitSuggestions from "./orchestration-v2/ThreadSplitSuggestions.ts";
 import * as SkillsLibrary from "./skills/SkillsLibrary.ts";
 import * as PstackPack from "./pstack/PstackPack.ts";
 import * as HolographicMemory from "./project/knowledge/HolographicMemory.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as AssistedLearning from "./project/knowledge/AssistedLearning.ts";
 import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
+import * as ModelEvaluations from "./modelEvaluations/ModelEvaluations.ts";
+import * as ExternalHistory from "./project/externalHistory/ExternalHistory.ts";
 import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
 import * as CodeIndexReactor from "./project/knowledge/CodeIndexReactor.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
@@ -11,6 +14,8 @@ import * as FileHistory from "./project/knowledge/FileHistory.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
+import * as EnvironmentKeys from "./cloud/environmentKeys.ts";
+import * as AssetSigner from "./assets/AssetSigner.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
@@ -211,7 +216,7 @@ import * as ThreadSettlementService from "./orchestration-v2/ThreadSettlementSer
 import * as IdleCompactionService from "./orchestration-v2/IdleCompactionService.ts";
 import * as ThreadPullRequestService from "./orchestration-v2/ThreadPullRequestService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
-import * as EventStoreV2 from "./orchestration-v2/EventStore.ts";
+import * as EffectOutboxV2 from "./orchestration-v2/EffectOutbox.ts";
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
 import { makePersistedServerRuntimeState } from "./serverRuntimeState.ts";
@@ -654,12 +659,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
-  DatabaseStorage.layer.pipe(
-    Layer.provide(ProjectionMaintenance.layer),
-    Layer.provide(
-      Layer.merge(EventStoreV2.layerFromOrchestrationEventStore, ProjectionStoreV2.layer),
-    ),
-  ),
+  DatabaseStorage.layer.pipe(Layer.provide(ProjectionMaintenance.layer)),
   layerThreadPullRequestWorker,
   DelegatedTaskAnalytics.layer,
   Layer.effectDiscard(
@@ -696,6 +696,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
   ReplayMarkers.layer,
+  ThreadSplitSuggestions.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
@@ -705,11 +706,13 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(SkillsLibrary.layer),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(
-    ConversationSummaries.layer.pipe(
-      Layer.provide(Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer)),
+    Layer.merge(ConversationSummaries.layer, ModelEvaluations.layer).pipe(
+      Layer.provide(
+        Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer, EffectOutboxV2.layer),
+      ),
     ),
   ),
-  Layer.provideMerge(ProjectLoom.layer),
+  Layer.provideMerge(Layer.merge(ProjectLoom.layer, ExternalHistory.layer)),
   Layer.provideMerge(
     ProjectKnowledge.layer.pipe(
       Layer.provide(ProjectionStoreV2.layer),
@@ -771,6 +774,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   Layer.provideMerge(CodexManagedTokenBroker.layer),
   Layer.provideMerge(layerServerEnvironment),
   Layer.provideMerge(layerAuth),
+  Layer.provideMerge(Layer.mergeAll(AssetSigner.layer, EnvironmentKeys.layer)),
   Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(
     Layer.mergeAll(

@@ -1,3 +1,4 @@
+import * as AssetSigner from "../../assets/AssetSigner.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -41,6 +42,7 @@ import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as ModelEvaluations from "../../modelEvaluations/ModelEvaluations.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -67,6 +69,7 @@ import * as PeerLinkRequests from "../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(Layer.mock(ModelEvaluations.ModelEvaluations)({})),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
 );
@@ -1087,7 +1090,7 @@ it.effect("only the caller that prepared a pending upload can discard it", () =>
       McpHttpServer.layerAttachmentToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
-        Layer.provide(ServerSecretStore.layer),
+        Layer.provide(AssetSigner.layer.pipe(Layer.provideMerge(ServerSecretStore.layer))),
         Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-attachment-" })),
         Layer.provide(
           DocumentText.layer.pipe(

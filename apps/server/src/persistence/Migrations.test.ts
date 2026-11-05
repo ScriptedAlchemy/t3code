@@ -19,6 +19,8 @@ const subagentDeliveryMigration = [84, "SubagentDeliveryState"] as const;
 const projectPinArchiveMigration = [85, "ProjectionProjectsPinArchive"] as const;
 const settledOverrideMigration = [86, "RepairBooleanSettledOverride"] as const;
 const correlationIndexMigration = [87, "DropOrchestrationEventCorrelationIndex"] as const;
+const modelEvaluationMigration = [88, "ModelEvaluations"] as const;
+const delegatedRecoveryMigration = [89, "DelegatedRecoveryIndexes"] as const;
 
 it.effect("upgrades attempt receipts atomically and preserves distinct steering messages", () =>
   Effect.gen(function* () {
@@ -41,6 +43,8 @@ it.effect("upgrades attempt receipts atomically and preserves distinct steering 
       projectPinArchiveMigration,
       settledOverrideMigration,
       correlationIndexMigration,
+      modelEvaluationMigration,
+      delegatedRecoveryMigration,
     ]);
     assert.deepStrictEqual(yield* sql`SELECT * FROM project_knowledge_deliveries`, before);
     yield* sql`INSERT INTO project_knowledge_deliveries (
@@ -284,6 +288,8 @@ describe("runMigrations", () => {
         projectPinArchiveMigration,
         settledOverrideMigration,
         correlationIndexMigration,
+        modelEvaluationMigration,
+        delegatedRecoveryMigration,
       ]);
       assert.deepStrictEqual((yield* history).slice(0, before.length), before);
       const indexes = yield* sql`
@@ -356,6 +362,8 @@ describe("runMigrations", () => {
             projectPinArchiveMigration,
             settledOverrideMigration,
             correlationIndexMigration,
+            modelEvaluationMigration,
+            delegatedRecoveryMigration,
           ],
         );
         yield* assertConsolidatedSchema;
@@ -394,6 +402,8 @@ describe("runMigrations", () => {
           projectPinArchiveMigration,
           settledOverrideMigration,
           correlationIndexMigration,
+          modelEvaluationMigration,
+          delegatedRecoveryMigration,
         ],
       );
       assert.deepStrictEqual(yield* runMigrations(), [
@@ -405,6 +415,8 @@ describe("runMigrations", () => {
         projectPinArchiveMigration,
         settledOverrideMigration,
         correlationIndexMigration,
+        modelEvaluationMigration,
+        delegatedRecoveryMigration,
       ]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(
@@ -438,6 +450,8 @@ describe("runMigrations", () => {
           projectPinArchiveMigration,
           settledOverrideMigration,
           correlationIndexMigration,
+          modelEvaluationMigration,
+          delegatedRecoveryMigration,
         ]);
 
         yield* assertConsolidatedSchema;
@@ -541,6 +555,8 @@ describe("runMigrations", () => {
         projectPinArchiveMigration,
         settledOverrideMigration,
         correlationIndexMigration,
+        modelEvaluationMigration,
+        delegatedRecoveryMigration,
       ]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(yield* sql`SELECT secret_name, fenced FROM peer_environment_links`, [
@@ -593,6 +609,8 @@ describe("runMigrations", () => {
           projectPinArchiveMigration,
           settledOverrideMigration,
           correlationIndexMigration,
+          modelEvaluationMigration,
+          delegatedRecoveryMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(
@@ -650,6 +668,8 @@ describe("runMigrations", () => {
           projectPinArchiveMigration,
           settledOverrideMigration,
           correlationIndexMigration,
+          modelEvaluationMigration,
+          delegatedRecoveryMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, routes);

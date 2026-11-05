@@ -20,7 +20,6 @@ import {
   handoffTokenCapConfig,
   handoffCoverage,
   historicalMessage,
-  renderHistory,
   selectHistory,
 } from "@t3tools/provider-core/server/handoffBudget";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -213,7 +212,7 @@ function summarizeDeltaItem(item: OrchestrationV2TurnItem): string | null {
     case "command_execution":
       return `- Command: ${compactText(item.input)}`;
     case "file_change":
-      return `- File change: ${item.fileName}`;
+      return `- File change: ${compactText(item.changes?.map((change) => change.path).join(", ") ?? item.fileName)}`;
     case "checkpoint":
       return `- Checkpoint: ${item.files.length} files`;
     case "handoff":
@@ -548,7 +547,8 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
         strategy: input.strategy,
         status: "ready",
         summaryMessageId: null,
-        summaryText: renderHistory(selected.messages, selected.context),
+        // This also becomes an activity item; replay reads the intact bodies from history.
+        summaryText: selected.context,
         history: {
           messages: selected.messages,
           coverage,

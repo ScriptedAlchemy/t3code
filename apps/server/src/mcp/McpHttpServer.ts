@@ -1,5 +1,7 @@
 import { ConversationSummariesToolkit } from "./toolkits/conversationSummaries/tools.ts";
 import * as ConversationSummariesHandlers from "./toolkits/conversationSummaries/handlers.ts";
+import { ExternalHistoryToolkit } from "./toolkits/externalHistory/tools.ts";
+import * as ExternalHistoryHandlers from "./toolkits/externalHistory/handlers.ts";
 import { KnowledgeToolkit } from "./toolkits/knowledge/tools.ts";
 import * as KnowledgeHandlers from "./toolkits/knowledge/handlers.ts";
 import { ProjectCodeToolkit } from "./toolkits/projectCode/tools.ts";
@@ -264,8 +266,12 @@ const MAX_SNAPSHOT_IDENTIFIER_CHARS = 2_048;
 
 const encodeJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const utf8Length = (text: string) => Buffer.byteLength(text, "utf8");
-const cutText = (text: string, max: number) =>
-  text.length > max ? `${text.slice(0, max)}…` : text;
+const cutText = (text: string, max: number) => {
+  if (text.length <= max) return text;
+  // Half an emoji serializes to a lone surrogate escape, which provider JSON parsers reject.
+  const last = text.charCodeAt(max - 1);
+  return `${text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max)}…`;
+};
 
 const cutEntryStrings = <A>(entry: A): A =>
   typeof entry === "object" && entry !== null
@@ -1143,6 +1149,10 @@ const layerConversationSummariesRegistration = toolkitRegistration(
   ConversationSummariesToolkit,
   ConversationSummariesHandlers.layer,
 );
+const layerExternalHistoryRegistration = toolkitRegistration(
+  ExternalHistoryToolkit,
+  ExternalHistoryHandlers.layer,
+);
 export const layerProjectCodeToolkit = toolkitRegistration(
   ProjectCodeToolkit,
   ProjectCodeHandlers.layer,
@@ -1213,6 +1223,7 @@ export const layerTools = Layer.mergeAll(
   layerProjectRegistration,
   layerKnowledgeRegistration,
   layerConversationSummariesRegistration,
+  layerExternalHistoryRegistration,
   layerProjectCodeToolkit,
   layerEnvironmentToolkit,
   layerPreviewControlsRegistration,

@@ -1,7 +1,10 @@
+import * as ThreadSplitSuggestions from "./orchestration-v2/ThreadSplitSuggestions.ts";
 import * as PstackPack from "./pstack/PstackPack.ts";
 import * as SkillsLibrary from "./skills/SkillsLibrary.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
 import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
+import * as ModelEvaluations from "./modelEvaluations/ModelEvaluations.ts";
+import * as ExternalHistory from "./project/externalHistory/ExternalHistory.ts";
 import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import * as FileHistory from "./project/knowledge/FileHistory.ts";
@@ -30,6 +33,8 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Cause from "effect/Cause";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
@@ -40,7 +45,9 @@ import * as TestClock from "effect/testing/TestClock";
 import { Headers } from "effect/http";
 import { RpcGroup, RpcMessage, RpcServer } from "effect/rpc";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 
+import * as AssetSigner from "./assets/AssetSigner.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as AcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/server/AcpRegistryRuntimeCoordinator";
@@ -127,9 +134,6 @@ import * as Keybindings from "./keybindings.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 
-import * as EventStore from "./orchestration-v2/EventStore.ts";
-import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
-import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as OrchestrationEventStore from "./persistence/OrchestrationEventStore.ts";
@@ -740,6 +744,8 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ThreadSearch.ThreadSearch)({}),
   Layer.mock(ProjectKnowledge.ProjectKnowledge)({}),
   Layer.mock(ConversationSummaries.ConversationSummaries)({}),
+  Layer.mock(ModelEvaluations.ModelEvaluations)({}),
+  Layer.mock(ExternalHistory.ExternalHistory)({}),
   Layer.mock(ProjectLoom.ProjectLoom)({}),
   Layer.mock(UsageService.UsageService)({}),
   Layer.mock(VcsProvisioningService.VcsProvisioningService)({}),
@@ -751,6 +757,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
 
 const layerConfigSources = Layer.mergeAll(
   Keybindings.layer,
+  AssetSigner.layer.pipe(Layer.provide(ServerSecretStore.layer)),
   ServerSettings.layer.pipe(
     Layer.provide(Layer.merge(ServerSecretStore.layer, ManagedPolicy.layerTest())),
   ),
@@ -813,8 +820,7 @@ it.effect.each([
               Effect.andThen(Deferred.await(finishDiscovery)),
               Effect.as([]),
             ),
-          // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
-          resolveFileManagerRevealKind: () => Effect.succeed(undefined),
+          resolveFileManagerRevealKind: () => Effect.undefined,
         }),
         Layer.mock(SkillsLibrary.SkillsLibrary)({}),
         Layer.mock(PstackPack.PstackPack)({
@@ -928,7 +934,15 @@ it.effect.each([
             {},
             yield* ServerBrowser.ServerBrowser,
             () => Effect.void,
-          ).pipe(Layer.provide(configRpcServices)),
+            { secretReferences: true },
+          ).pipe(
+            Layer.provide(configRpcServices),
+            Layer.provide(
+              Layer.succeed(ThreadSplitSuggestions.ThreadSplitSuggestions, {
+                suggest: () => Effect.succeed({ suggest: false }),
+              }),
+            ),
+          ),
         ),
       );
       const requestId = RpcMessage.RequestId("config");
@@ -972,8 +986,8 @@ it.effect.each([
         key: "mod+alt+z",
         command: "terminal.split",
       });
-      const expectedSettings = [duringDiscovery, latestSettings].map(
-        ServerSettings.redactServerSettingsForClient,
+      const expectedSettings = [duringDiscovery, latestSettings].map((value) =>
+        ServerSettings.redactServerSettingsForClient(value, { secretReferences: true }),
       );
       const expectedKeybindings = [duringAck.keybindings, latestKeybindings.keybindings];
       // The two sources can interleave, but each must retain its own publication order.
@@ -1016,7 +1030,7 @@ it.effect.each([
         assert.deepEqual(resolved.config.remoteOpenTargets, targets);
         assert.deepEqual(
           resolved.config.settings,
-          ServerSettings.redactServerSettingsForClient(latestSettings),
+          ServerSettings.redactServerSettingsForClient(latestSettings, { secretReferences: true }),
         );
         assert.deepEqual(resolved.config.keybindings, latestKeybindings.keybindings);
         yield* acknowledge;
@@ -1031,7 +1045,9 @@ it.effect.each([
           assert.deepEqual(resolved.config.directEndpoints, endpoints);
           assert.deepEqual(
             resolved.config.settings,
-            ServerSettings.redactServerSettingsForClient(latestSettings),
+            ServerSettings.redactServerSettingsForClient(latestSettings, {
+              secretReferences: true,
+            }),
           );
           assert.deepEqual(resolved.config.keybindings, latestKeybindings.keybindings);
           yield* acknowledge;
@@ -1142,8 +1158,7 @@ it.effect(
         layerUnusedConfigRpcServices,
         Layer.mock(ExternalLauncher.ExternalLauncher)({
           resolveAvailableEditors: () => Effect.succeed([]),
-          // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
-          resolveFileManagerRevealKind: () => Effect.succeed(undefined),
+          resolveFileManagerRevealKind: () => Effect.undefined,
         }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Ref.get(providers),
@@ -1222,7 +1237,15 @@ it.effect(
             {},
             yield* ServerBrowser.ServerBrowser,
             () => Effect.void,
-          ).pipe(Layer.provide(configRpcServices)),
+            { secretReferences: true },
+          ).pipe(
+            Layer.provide(configRpcServices),
+            Layer.provide(
+              Layer.succeed(ThreadSplitSuggestions.ThreadSplitSuggestions, {
+                suggest: () => Effect.succeed({ suggest: false }),
+              }),
+            ),
+          ),
         ),
       );
       const configRequest = RpcMessage.RequestId("config");
@@ -1331,93 +1354,176 @@ it.effect(
     ),
 );
 
-// Compaction keeps the oldest and newest event per message, so a cursor older
-// than the deleted rows still replays each message where the client would
-// first have seen it (reducers append on first sight) and reaches the same
-// final state. No snapshot fallback is needed.
-it.effect("thread resume across compacted history keeps message order and final state", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
-    const now = "2026-10-13T00:00:00.000Z";
-    const threadId = ThreadId.make("thread:compacted");
-    const insertMessage = (version: number, id: string, text: string) => sql<{
-      sequence: number;
-    }>`
-      INSERT INTO orchestration_events (
-        event_id, aggregate_kind, stream_id, stream_version, event_type,
-        occurred_at, actor_kind, payload_json, metadata_json, application_event_version
-      ) VALUES (
-        ${`compacted:${version}`}, 'thread', ${threadId}, ${version}, 'message.updated',
-        ${now}, 'server', ${JSON.stringify({
-          createdBy: "user",
-          creationSource: "web",
-          id,
-          threadId,
-          runId: null,
-          nodeId: null,
-          role: "user",
-          text,
-          attachments: [],
-          streaming: false,
-          createdAt: now,
-          updatedAt: now,
-        })}, '{}', 2
-      ) RETURNING sequence
-    `;
-    const [first] = yield* insertMessage(0, "message:a", "a created");
-    const [second] = yield* insertMessage(1, "message:b", "b created");
-    yield* insertMessage(2, "message:a", "a superseded");
-    const [head] = yield* insertMessage(3, "message:a", "a final");
-    // thread.deleted is never superseded: clients switch on the event type.
-    for (const version of [0, 1]) {
-      yield* sql`
+// Pruned history cannot be replayed: a cursor below the boundary must resync from a snapshot.
+it.effect.each(["thread", "shell"] as const)(
+  "%s resume from a cursor below the pruned boundary loads a snapshot",
+  (scope) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-10-13T00:00:00.000Z";
+      const threadId = ThreadId.make("thread:pruned");
+      const insert = (version: number) => sql<{ sequence: number }>`
         INSERT INTO orchestration_events (
           event_id, aggregate_kind, stream_id, stream_version, event_type,
           occurred_at, actor_kind, payload_json, metadata_json, application_event_version
         ) VALUES (
-          ${`deleted:${version}`}, 'thread', 'thread:deleted-twice', ${version}, 'thread.deleted',
-          ${now}, 'server', '{}', '{}', 2
-        )
+          ${`pruned:${version}`}, 'thread', ${threadId}, ${version}, 'provider-session.detached',
+          ${now}, 'server', ${JSON.stringify({ providerSessionId: "session:pruned", detachedAt: now })},
+          '{}', 2
+        ) RETURNING sequence
       `;
-    }
-    assert.equal((yield* maintenance.compactEventStore()).deletedEventCount, 1);
-
-    const items = yield* subscribeOrchestrationV2Thread({
-      threadId,
-      afterSequence: first!.sequence - 1,
-      requestCompletionMarker: true,
-    }).pipe(
-      Effect.flatMap((stream) =>
-        stream.pipe(
-          Stream.takeUntil((item) => item.kind === "synchronized"),
-          Stream.runCollect,
+      const [first] = yield* insert(0);
+      const [second] = yield* insert(1);
+      yield* insert(2);
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_metadata (
+          projection_name, schema_version, last_sequence, updated_at
+        ) VALUES (${OrchestrationEventStore.EVENT_LOG_PRUNED_THROUGH}, 2, ${second!.sequence}, ${now})
+      `;
+      const subscription = Effect.gen(function* () {
+        const stream =
+          scope === "thread"
+            ? yield* subscribeOrchestrationV2Thread({ threadId, afterSequence: first!.sequence })
+            : yield* subscribeOrchestrationV2Shell({ afterSequence: first!.sequence });
+        return stream;
+      });
+      const exit = yield* subscription.pipe(
+        Effect.provideService(ThreadManagement.ThreadManagementService, {
+          ensureLegacyTranscript: () => Effect.void,
+          getThreadSnapshot: () => Effect.die("snapshot"),
+          listActiveShellIndex: () => Effect.die("snapshot"),
+          readShellSnapshot: () => Effect.die("snapshot"),
+          listActiveSubagentThreadIds: () => Effect.die("replay"),
+        } as unknown as ThreadManagement.ThreadManagementService["Service"]),
+        Effect.provideService(ProjectStore.ProjectStoreV2, {
+          listShells: () => Effect.succeed([]),
+        } as unknown as ProjectStore.ProjectStoreV2["Service"]),
+        Effect.provideService(
+          ProjectService.ProjectService,
+          {} as ProjectService.ProjectService["Service"],
         ),
-      ),
+        Effect.provideService(ProjectEnrichment.ProjectEnrichmentService, {
+          subscribeChanges: PubSub.subscribe(yield* PubSub.unbounded()),
+        } as ProjectEnrichment.ProjectEnrichmentService["Service"]),
+        Effect.exit,
+      );
+      assert.deepEqual(Exit.isFailure(exit) ? Cause.squash(exit.cause) : exit, "snapshot");
+    }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
+);
+
+// A prune pass can delete replayed rows after the boundary check; the read must not be trusted.
+it.effect.each(["thread", "shell"] as const)(
+  "%s resume loads a snapshot when pruning advances during the replay read",
+  (scope) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-10-13T00:00:00.000Z";
+      const threadId = ThreadId.make("thread:prune-race");
+      const insert = (version: number) => sql<{ sequence: number }>`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type,
+          occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+        ) VALUES (
+          ${`prune-race:${version}`}, 'thread', ${threadId}, ${version}, 'provider-session.detached',
+          ${now}, 'server', ${JSON.stringify({ providerSessionId: "session:race", detachedAt: now })},
+          '{}', 2
+        ) RETURNING sequence
+      `;
+      const [first] = yield* insert(0);
+      const [second] = yield* insert(1);
+      yield* insert(2);
+
+      const readStarted = yield* Deferred.make<void>();
+      const releaseRead = yield* Deferred.make<void>();
+      let gated = false;
+      const gateReplayRead: Statement.Transformer = (statement) => {
+        const [query] = statement.compile();
+        // The paged replay read (readApplicationRows), not the stats or high-water queries.
+        if (!gated && /^\s*SELECT\s+sequence,\s+event_id,/.test(query)) {
+          gated = true;
+          return Deferred.succeed(readStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseRead)),
+            Effect.as(statement),
+          );
+        }
+        return Effect.succeed(statement);
+      };
+      const subscription = Effect.gen(function* () {
+        const stream =
+          scope === "thread"
+            ? yield* subscribeOrchestrationV2Thread({ threadId, afterSequence: first!.sequence })
+            : yield* subscribeOrchestrationV2Shell({ afterSequence: first!.sequence });
+        return stream;
+      }).pipe(
+        Effect.provideService(Statement.CurrentTransformer, gateReplayRead),
+        Effect.provideService(ThreadManagement.ThreadManagementService, {
+          ensureLegacyTranscript: () => Effect.void,
+          getThreadSnapshot: () => Effect.die("snapshot"),
+          listActiveShellIndex: () => Effect.die("snapshot"),
+          readShellSnapshot: () => Effect.die("snapshot"),
+          listActiveSubagentThreadIds: () => Effect.succeed([]),
+        } as unknown as ThreadManagement.ThreadManagementService["Service"]),
+        Effect.provideService(ProjectStore.ProjectStoreV2, {
+          listShells: () => Effect.succeed([]),
+        } as unknown as ProjectStore.ProjectStoreV2["Service"]),
+        Effect.provideService(
+          ProjectService.ProjectService,
+          {} as ProjectService.ProjectService["Service"],
+        ),
+        Effect.provideService(ProjectEnrichment.ProjectEnrichmentService, {
+          subscribeChanges: PubSub.subscribe(yield* PubSub.unbounded()),
+        } as ProjectEnrichment.ProjectEnrichmentService["Service"]),
+        Effect.exit,
+        Effect.forkChild,
+      );
+      const fiber = yield* subscription;
+      yield* Deferred.await(readStarted);
+      // A pass publishes its boundary, then deletes the rows it covers.
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_metadata (
+          projection_name, schema_version, last_sequence, updated_at
+        ) VALUES (${OrchestrationEventStore.EVENT_LOG_PRUNED_THROUGH}, 2, ${second!.sequence}, ${now})
+      `;
+      yield* sql`DELETE FROM orchestration_events WHERE sequence = ${second!.sequence}`;
+      yield* Deferred.succeed(releaseRead, undefined);
+      const exit = yield* Fiber.join(fiber);
+      assert.deepEqual(Exit.isFailure(exit) ? Cause.squash(exit.cause) : exit, "snapshot");
+    }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
+);
+
+// A thread idle since before the boundary missed nothing; resuming must not resend its body.
+it.effect("thread resume at its own high-water below the pruned boundary skips the snapshot", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const now = "2026-10-13T00:00:00.000Z";
+    const threadId = ThreadId.make("thread:idle");
+    const [last] = yield* sql<{ sequence: number }>`
+      INSERT INTO orchestration_events (
+        event_id, aggregate_kind, stream_id, stream_version, event_type,
+        occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+      ) VALUES (
+        'idle:0', 'thread', ${threadId}, 0, 'provider-session.detached',
+        ${now}, 'server', ${JSON.stringify({ providerSessionId: "session:idle", detachedAt: now })},
+        '{}', 2
+      ) RETURNING sequence
+    `;
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_metadata (
+        projection_name, schema_version, last_sequence, updated_at
+      ) VALUES (${OrchestrationEventStore.EVENT_LOG_PRUNED_THROUGH}, 2, ${last!.sequence + 10}, ${now})
+    `;
+    const exit = yield* subscribeOrchestrationV2Thread({
+      threadId,
+      afterSequence: last!.sequence,
+    }).pipe(
       Effect.provideService(ThreadManagement.ThreadManagementService, {
         ensureLegacyTranscript: () => Effect.void,
-        streamStoredEventsFrom: () => Stream.never,
+        getThreadSnapshot: () => Effect.die("snapshot"),
+        streamStoredEventsFrom: () => Stream.empty,
       } as unknown as ThreadManagement.ThreadManagementService["Service"]),
+      Effect.exit,
     );
-    assert.deepEqual(
-      Array.from(items, (item) =>
-        item.kind === "event"
-          ? [item.sequence, item.event.type === "message.updated" ? item.event.payload.text : null]
-          : [item.kind],
-      ),
-      [
-        [first!.sequence, "a created"],
-        [second!.sequence, "b created"],
-        [head!.sequence, "a final"],
-        ["synchronized"],
-      ],
-    );
-  }).pipe(
-    Effect.provide(
-      ProjectionMaintenance.layer.pipe(
-        Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
-        Layer.provideMerge(ReplayTestLayer),
-      ),
-    ),
-  ),
+    // A snapshot load dies with "snapshot", so success means the resume replayed nothing.
+    assert.isTrue(Exit.isSuccess(exit));
+  }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
 );

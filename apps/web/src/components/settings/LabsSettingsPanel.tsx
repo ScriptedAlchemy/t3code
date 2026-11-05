@@ -13,11 +13,13 @@ import { LegacyFeaturesSection } from "./SettingsPanels";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
 import { firstManagedDenial, usePrimaryManagedPolicy } from "~/state/managedPolicy";
+import { ZackSettings } from "./ZackSettings";
 
 /** Features still settling in, and legacy behavior kept for people who rely on it. */
 export function LabsSettingsPanel() {
   return (
     <SettingsPageContainer>
+      <ZackSettings />
       <SettingsSection id="beta" title="Beta">
         <BoringSidebarRow />
         <BoringSidebarMultilineRow />

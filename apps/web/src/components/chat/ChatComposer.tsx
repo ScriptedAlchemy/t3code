@@ -1,3 +1,4 @@
+import { ThreadSplitSuggestion } from "./ThreadSplitSuggestion";
 import type { ProjectKnowledgeContextRecord } from "@t3tools/contracts";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
@@ -6,7 +7,7 @@ import { BackgroundThreadContext } from "./backgroundThread";
 import {
   resolveCompatibleRuntimeMode,
   runtimeModeConfig,
-  runtimeModeOptions as runtimeModes,
+  resolveRuntimeModeOptions,
 } from "./runtimeModeConfig";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
 import { usePrimaryEnvironmentId } from "../../state/environments";
@@ -288,8 +289,6 @@ function consumePasteAsTextShortcut(deadline: { current: number }): boolean {
   deadline.current = 0;
   return armed;
 }
-
-const runtimeModeOptions = runtimeModes.map((mode) => ({ mode, ...runtimeModeConfig[mode] }));
 
 export interface ChatComposerHandle {
   focusAtEnd: () => void;
@@ -927,12 +926,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
   // Modes above an administrator's ceiling stay listed, disabled with the reason.
   const managedPolicy = useManagedPolicy(environmentId);
-  const compatibleRuntimeModeOptions = runtimeModeOptions
-    .filter((option) => compatibleRuntimeModes.includes(option.mode))
-    .map((option) => {
-      const disabledReason = managedRuntimeModeDenial(managedPolicy, option.mode);
-      return disabledReason === undefined ? option : { ...option, disabledReason };
-    });
+  const compatibleRuntimeModeOptions = resolveRuntimeModeOptions(
+    compatibleRuntimeModes,
+    managedPolicy,
+  );
   // A thread or draft already above the ceiling would be refused; offer the broadest mode left.
   const runtimeModeCeilingDenial = managedRuntimeModeDenial(managedPolicy, compatibleRuntimeMode);
   const runtimeModeCeilingFallback =
@@ -3239,6 +3236,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       data-chat-composer-form="true"
       {...threadContextDropTargetProps()}
     >
+      {routeKind === "server" && activeThread && typeof composerDraftTarget !== "string" && (
+        <ThreadSplitSuggestion
+          key={`${environmentId}:${activeThread.id}`}
+          threadRef={composerDraftTarget}
+          projectId={activeThread.projectId}
+          idle={
+            canOperateThread &&
+            phase !== "running" &&
+            !isSendBusy &&
+            !canInterrupt &&
+            !isCompacting &&
+            pendingUserInputs.length === 0 &&
+            pendingApprovals.length === 0
+          }
+        />
+      )}
       <ComposerBanner.Dock>
         <ComposerBanner.Column>
           <ComposerBannerStack items={shelfItems} />

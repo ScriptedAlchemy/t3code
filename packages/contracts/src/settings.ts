@@ -22,6 +22,7 @@ import {
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { UsageModelFilter } from "./usage.ts";
 import { SecretProviderId, SecretProviderSlug } from "./secretReference.ts";
+import { SettingsSecretValue } from "./settingsSecretValue.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
 import {
@@ -55,6 +56,7 @@ import {
   providerPoolDriver,
 } from "./providerPool.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
+import { ExternalHistorySettings } from "./externalHistory.ts";
 
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
@@ -911,7 +913,10 @@ export const UsageLimitSourceConfig = Schema.Struct({
   kind: Schema.Literal("cliproxy"),
   label: Schema.optional(TrimmedNonEmptyString),
   url: TrimmedNonEmptyString,
-  managementKey: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("")), secretSetting),
+  managementKey: SettingsSecretValue.pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+    secretSetting,
+  ),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type UsageLimitSourceConfig = typeof UsageLimitSourceConfig.Type;
@@ -1304,6 +1309,13 @@ export const ServerSettings = Schema.Struct({
   enableConversationSummaries: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
+  enableModelEvaluations: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  modelEvaluationModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  externalHistory: ExternalHistorySettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(ExternalHistorySettings)({}))),
+  ),
   /**
    * Kept separate from agent access so enabling the user's Device panel does
    * not also grant providers control of simulators and emulators.
@@ -1327,6 +1339,10 @@ export const ServerSettings = Schema.Struct({
   snoozePresets: SnoozePresetSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SNOOZE_PRESETS)),
   ),
+  threadSplitSuggestionsEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  threadSplitModelEndpoint: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** Clients hide threads with these tags while `hideTaggedThreads` is on. Bad entries drop alone, so a hand edit cannot reset settings. */
   hiddenThreadTags: Schema.Array(Schema.Unknown).pipe(
     Schema.decodeTo(
@@ -1745,7 +1761,10 @@ export const ServerSettingsPatch = Schema.Struct({
   skillsLibraryEnabled: Schema.optionalKey(Schema.Boolean),
   enableAssistedLearning: Schema.optionalKey(Schema.Boolean),
   enableConversationSummaries: Schema.optionalKey(Schema.Boolean),
+  enableModelEvaluations: Schema.optionalKey(Schema.Boolean),
+  modelEvaluationModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
+  externalHistory: Schema.optionalKey(ExternalHistorySettings),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
   easDeviceHosts: Schema.optionalKey(EasDeviceHostConfigs),
@@ -1760,6 +1779,8 @@ export const ServerSettingsPatch = Schema.Struct({
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   snoozePresets: Schema.optionalKey(SnoozePresetSettings),
+  threadSplitSuggestionsEnabled: Schema.optionalKey(Schema.Boolean),
+  threadSplitModelEndpoint: Schema.optionalKey(Schema.String),
   hiddenThreadTags: Schema.optionalKey(Schema.Array(Schema.String)),
   hideTaggedThreads: Schema.optionalKey(Schema.Boolean),
   guestSharingEnabled: Schema.optionalKey(Schema.Boolean),
@@ -1805,7 +1826,7 @@ export const ServerSettingsPatch = Schema.Struct({
       otlpLogsUrl: Schema.optionalKey(TrimmedString),
     }),
   ),
-  /** Merges per host, replacing patched fields whole; redaction markers retain secrets, empty or omitted secrets remove them. */
+  /** Merges per host, replacing patched fields whole; redaction markers retain secrets, empty secrets remove them. A non-empty token map keeps the saved tokens of hosts it omits; an empty map clears them all. */
   sourceControlHosts: Schema.optionalKey(Schema.Record(Schema.String, SourceControlHostSettings)),
   // Replace whole maps to avoid half-merged driver configs.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),

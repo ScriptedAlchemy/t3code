@@ -24,12 +24,14 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as AuthHttp from "../auth/http.ts";
 import * as McpOAuth from "../auth/McpOAuth.ts";
 import * as McpOAuthHttp from "../auth/mcpOAuthHttp.ts";
+import type * as SqlClient from "effect/sql/SqlClient";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerHttp from "../http.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as ModelEvaluations from "../modelEvaluations/ModelEvaluations.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -39,6 +41,8 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 class PeerTestApi extends HttpApi.make("environment")
   .add(EnvironmentHttpApi.groups.metadata)
   .add(EnvironmentHttpApi.groups.mcpOAuth) {}
+
+const layerModelEvaluations = Layer.mock(ModelEvaluations.ModelEvaluations)({});
 
 export const descriptorOf = (
   environmentId: string,
@@ -107,11 +111,10 @@ export const servePeer = <E, R>(
         Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
         Layer.provide(AuthHttp.layerAuthenticatedAuth),
       ),
-      McpHttpServer.layerMcpTransport(tools).pipe(
+      McpHttpServer.layerMcpTransport(tools.pipe(Layer.provide(layerModelEvaluations))).pipe(
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-            // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
-            resolve: () => Effect.succeed(undefined),
+            resolve: () => Effect.undefined,
           }),
         ),
         Layer.provide(McpOAuth.layerMcpClientAuthenticator),
@@ -157,12 +160,17 @@ export type ServedPeer = Effect.Success<ReturnType<typeof servePeer>>;
  * The environment that links: its own database and secret store, reaching
  * peers over plain HTTP. Provide it to anything built on its links.
  */
-export const layerLinkingEnvironment = (
+export const layerLinkingEnvironment = <E = never>(
   descriptor: ExecutionEnvironmentDescriptor,
   secrets: typeof ServerSecretStore.layer = ServerSecretStore.layer,
   ssh?: SshTunnel.SshEnvironmentManager["Service"],
+  database: Layer.Layer<
+    SqlClient.SqlClient,
+    E | Layer.Error<typeof Sqlite.layerMemory>
+  > = Sqlite.layerMemory,
 ) =>
   PeerMcpClient.layer.pipe(
+    Layer.provideMerge(layerModelEvaluations),
     Layer.provideMerge(
       PeerLinks.layer.pipe(
         Layer.provide(
@@ -177,7 +185,7 @@ export const layerLinkingEnvironment = (
       ),
     ),
     Layer.provideMerge(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
-    Layer.provideMerge(Sqlite.layerMemory),
+    Layer.provideMerge(database),
     Layer.provide(Layer.mergeAll(secrets, FetchHttpClient.layer)),
     // Services that act for this environment, such as delegation, name it too.
     Layer.provideMerge(
