@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  USAGE_COHORT_MAX_WINDOW_DAYS,
   type EnvironmentId,
   type UsageCohortComparison,
   type UsageCohortReport,
@@ -22,11 +23,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 
 const UNMATCHED_LABELS = {
   no_session_id: "Record has no session id",
-  no_attempt_here: "Session was not run from this environment",
+  no_attempt_here: "No run on this environment matches the session",
   outside_attempt: "Record falls outside every attempt on its session",
 } as const;
 
 const NO_BOUNDARY = "none";
+const NO_BOUNDARY_LABEL = "No build comparison";
 
 const segmentLabel = (
   segment: Pick<UsageCohortSegment, "providerInstanceId" | "model" | "speed">,
@@ -46,7 +48,11 @@ function VerdictCell({ verdict }: { readonly verdict: UsageCohortVerdict }) {
               ? "Each side needs at least 30 threads."
               : "The range is too wide to call a 15% change."}
             {verdict.threadsPerArmFor15Percent !== null && verdict.daysAtCurrentRate !== null
-              ? ` About ${formatCount(verdict.threadsPerArmFor15Percent)} threads per side, about ${formatCount(verdict.daysAtCurrentRate)} days at this rate.`
+              ? ` About ${formatCount(verdict.threadsPerArmFor15Percent)} threads per side, ${
+                  verdict.daysAtCurrentRate > USAGE_COHORT_MAX_WINDOW_DAYS
+                    ? `more than the ${USAGE_COHORT_MAX_WINDOW_DAYS} days this report can cover`
+                    : `about ${formatCount(verdict.daysAtCurrentRate)} days at this rate`
+                }.`
               : null}
           </span>
         </span>
@@ -98,13 +104,12 @@ function ComparisonCard({ comparison }: { readonly comparison: UsageCohortCompar
         </h4>
         <Badge variant="outline">Self-selected</Badge>
       </div>
-      <p className="text-muted-foreground">
-        Nobody assigned these sides at random, so a difference can come from who turned a setting on
-        or when a build was used. It is not proof of cause.
-        {subject._tag === "experiment" && subject.spendsOutsideTranscripts
-          ? " This setting also makes model calls that provider transcripts do not record, so dollars here understate its cost."
-          : null}
-      </p>
+      {subject._tag === "experiment" && subject.spendsOutsideTranscripts ? (
+        <p className="text-muted-foreground">
+          This setting also makes model calls that provider transcripts do not record, so dollars
+          here understate its cost.
+        </p>
+      ) : null}
       <div className="space-y-0.5 text-muted-foreground">
         <ArmTotals label={comparison.baseLabel} totals={comparison.base} />
         <ArmTotals label={comparison.testLabel} totals={comparison.test} />
@@ -282,10 +287,10 @@ function EnvironmentReport({
             onValueChange={(value) => setBoundary(value === NO_BOUNDARY ? null : value)}
           >
             <SelectTrigger size="sm" aria-label="Build to compare from">
-              <SelectValue />
+              <SelectValue>{boundary ?? NO_BOUNDARY_LABEL}</SelectValue>
             </SelectTrigger>
             <SelectPopup>
-              <SelectItem value={NO_BOUNDARY}>No build comparison</SelectItem>
+              <SelectItem value={NO_BOUNDARY}>{NO_BOUNDARY_LABEL}</SelectItem>
               {builds.map((build) => (
                 <SelectItem key={build} value={build}>
                   {build}
@@ -295,6 +300,12 @@ function EnvironmentReport({
           </Select>
           <span>against it and later</span>
         </div>
+      ) : null}
+      {report.comparisons.length > 0 ? (
+        <p className="text-xs text-muted-foreground">
+          Nobody assigned these sides at random, so a difference can come from who turned a setting
+          on or when a build was used. It is not proof of cause.
+        </p>
       ) : null}
       {report.comparisons.map((comparison) => (
         <ComparisonCard

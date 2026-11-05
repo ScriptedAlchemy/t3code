@@ -294,7 +294,7 @@ function UsageCostRow() {
   return (
     <SettingsRow
       title="Cost by build and setting"
-      description="See token burn and cost for each T3 build, and whether turning a setting on here moved them. Open Usage and expand Cost by build and setting."
+      description="See token burn and cost for each T3 build, and whether turning a setting on here moved them. Open Usage, choose Cost or Tokens, and expand Cost by build and setting."
       control={
         <Button size="sm" variant="outline" render={<Link to="/usage" />}>
           Open Usage

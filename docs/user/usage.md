@@ -114,9 +114,9 @@ setting removes it from `settings.json`.
 
 ## See cost by build and setting
 
-On web and desktop, **Usage** ends with **Cost by build and setting** for one environment. Choose
-one environment in the dropdown, then expand it. It reads that environment's runs and transcripts,
-so it can take a few seconds.
+On web and desktop, the **Cost** and **Tokens** views of **Usage** end with **Cost by build and
+setting** for one environment. Choose one environment in the dropdown, then expand it. It reads
+that environment's runs and transcripts, so it can take a few seconds.
 
 It first shows where the money went: priced spend matched to a run's attempt, native subagent work
 (left out of comparisons because its owner is uncertain), and spend T3 could not match to any run
