@@ -141,6 +141,12 @@ async function generationDirectories(indexRoot: string) {
     .toSorted();
 }
 
+// Windows has no SIGABRT; SIGKILL ends the process just as abruptly there.
+const abortProcess = (pid: number) =>
+  Effect.map(HostProcess.isWindows, (windows) =>
+    process.kill(pid, windows ? "SIGKILL" : "SIGABRT"),
+  );
+
 function assertClearedIndex(indexRoot: string): void {
   assert.isFalse(NodeFS.existsSync(indexRoot));
 }
@@ -1639,7 +1645,7 @@ it.effect("fails the build, not the server, when the analysis process aborts", (
       const building = yield* refresh().pipe(Effect.forkScoped);
       const pid = yield* Deferred.await(held.entered);
       assert.notEqual(pid, process.pid, "analysis runs outside the server process");
-      process.kill(pid, "SIGABRT");
+      yield* abortProcess(pid);
       assert.deepEqual(yield* Fiber.join(building), { _tag: "Failed", reason: "worker-failed" });
       assert.deepEqual(
         yield* Effect.promise(() => generationDirectories(indexRoot(fixture.root))),
@@ -2200,7 +2206,7 @@ it.effect("keeps the previous generation serving when a build fails, and says so
       yield* Effect.promise(() => rewriteGeneratedSources(fixture.root, files));
       const held = yield* gate.holdNext;
       const building = yield* refresh().pipe(Effect.forkScoped);
-      process.kill(yield* Deferred.await(held.entered), "SIGABRT");
+      yield* abortProcess(yield* Deferred.await(held.entered));
       assert.deepEqual(yield* Fiber.join(building), { _tag: "Failed", reason: "worker-failed" });
 
       const freshness = yield* run({ operation: "freshness" });
