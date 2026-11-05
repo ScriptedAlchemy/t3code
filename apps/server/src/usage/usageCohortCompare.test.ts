@@ -16,7 +16,7 @@ const cell = (arm: Arm, index: number, overrides: Partial<CompareCell> = {}): Co
   providerInstanceId: "codex",
   model: "gpt-6.1-sol",
   speed: "standard",
-  runs: 1,
+  runIds: [`run-${arm}-${index}`],
   modelCalls: 10,
   promptTokens: 1000,
   outputTokens: 50,
@@ -40,6 +40,18 @@ describe("compareArms verdicts", () => {
     });
     expect(result.usdPerRun).toMatchObject({ _tag: "not_enough_data", reason: "too_few_threads" });
     expect(result.base).toMatchObject({ threads: 29, usd: 29 });
+  });
+
+  it("counts a run on two models once in the arm totals", () => {
+    const result = run({
+      ...base,
+      cells: [
+        cell("base", 0, { runIds: ["shared-run"] }),
+        cell("base", 0, { runIds: ["shared-run"], model: "gpt-6-luna" }),
+      ],
+    });
+
+    expect(result.base).toMatchObject({ threads: 1, runs: 1, usd: 2 });
   });
 
   it("gives null estimates when an arm is empty", () => {

@@ -181,7 +181,7 @@ export interface CompareCell {
   readonly providerInstanceId: string;
   readonly model: string;
   readonly speed: UsageSpeed;
-  readonly runs: number;
+  readonly runIds: readonly string[];
   readonly modelCalls: number;
   readonly promptTokens: number;
   readonly outputTokens: number;
@@ -195,7 +195,9 @@ export function comparisonCells(
 ): CompareCell[] {
   const merged = new Map<
     string,
-    { -readonly [K in keyof CompareCell]: CompareCell[K] } & { readonly runIds: Set<string> }
+    { -readonly [K in keyof Omit<CompareCell, "runIds">]: CompareCell[K] } & {
+      readonly runIds: Set<string>;
+    }
   >();
   for (const cell of cells) {
     const { stamp } = cell.attempt;
@@ -218,7 +220,6 @@ export function comparisonCells(
         providerInstanceId,
         model: cell.model,
         speed: cell.speed,
-        runs: 0,
         modelCalls: 0,
         promptTokens: 0,
         outputTokens: 0,
@@ -233,7 +234,7 @@ export function comparisonCells(
     target.outputTokens += cell.outputTokens;
     target.usd += cell.usd;
   }
-  return [...merged.values()].map(({ runIds, ...rest }) => ({ ...rest, runs: runIds.size }));
+  return [...merged.values()].map(({ runIds, ...rest }) => ({ ...rest, runIds: [...runIds] }));
 }
 
 type BuildRow = UsageCohortReport["builds"][number];

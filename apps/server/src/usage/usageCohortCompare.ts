@@ -7,12 +7,14 @@ import type {
 import type { Arm, CompareCell } from "./usageCohortJoin.ts";
 
 const MIN_THREADS_PER_ARM = 30;
-const BOOTSTRAP_RESAMPLES = 1000;
+const BOOTSTRAP_RESAMPLES = 4000;
 const MAX_SEGMENTS_PER_COMPARISON = 12;
 const RESAMPLES_PER_YIELD = 50;
 const MATERIAL_RATIO = 1.15;
 const LOG_MATERIAL = Math.log(MATERIAL_RATIO);
-const TAIL = 0.005;
+// Spend is heavy-tailed, so the bootstrap runs narrow. A nominal 99% interval flagged 2.75% of
+// random splits of real threads, and a report holds up to 14 verdicts. This tail flagged 0.57%.
+const TAIL = 0.001;
 
 export interface CompareInput {
   /** Seeds the bootstrap, so the same comparison always returns the same verdict. */
@@ -165,7 +167,7 @@ function verdictFrom(
 
 const totalsOf = (cells: readonly CompareCell[]): UsageCohortTotals => ({
   threads: new Set(cells.map((cell) => cell.threadId)).size,
-  runs: cells.reduce((sum, cell) => sum + cell.runs, 0),
+  runs: new Set(cells.flatMap((cell) => cell.runIds)).size,
   modelCalls: cells.reduce((sum, cell) => sum + cell.modelCalls, 0),
   promptTokens: cells.reduce((sum, cell) => sum + cell.promptTokens, 0),
   outputTokens: cells.reduce((sum, cell) => sum + cell.outputTokens, 0),
@@ -204,7 +206,7 @@ export function* compareArms(input: CompareInput): Generator<void, CompareResult
       promptTokens: cell.promptTokens,
       modelCalls: cell.modelCalls,
       usd: cell.usd,
-      runs: cell.runs,
+      runs: cell.runIds.length,
     });
     grouped[cell.arm].set(cell.threadId, thread);
   }

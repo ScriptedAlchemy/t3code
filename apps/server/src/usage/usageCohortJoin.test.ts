@@ -203,7 +203,8 @@ describe("comparisonCells", () => {
     const compared = comparisonCells(cells, (s) => enabled(s.settings));
 
     expect(compared).toHaveLength(1);
-    expect(compared[0]).toMatchObject({ runs: 1, modelCalls: 2, usd: 2, arm: "base" });
+    expect(compared[0]).toMatchObject({ modelCalls: 2, usd: 2, arm: "base" });
+    expect(compared[0]!.runIds).toHaveLength(1);
   });
 
   it("assigns arms from the stamp and leaves out attempts that belong to neither", () => {

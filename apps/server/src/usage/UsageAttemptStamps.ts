@@ -5,6 +5,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -26,11 +27,11 @@ export interface UsageAttemptStampInput {
   >;
 }
 
-/** Observational, so the default does nothing and turn start tests do not need a layer. */
 const encodeSettings = Schema.encodeEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Boolean)),
 );
 
+/** Observational, so the default does nothing and turn start tests do not need a layer. */
 export class UsageAttemptStamps extends Context.Reference<{
   readonly stamp: (input: UsageAttemptStampInput) => Effect.Effect<void>;
 }>("t3/usage/UsageAttemptStamps", {
@@ -74,11 +75,13 @@ export const layer = Layer.effect(
       },
       (effect, input) =>
         effect.pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("usage.attempt-stamp.failed", {
-              attemptId: input.attemptId,
-              error: error._tag,
-            }),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("usage.attempt-stamp.failed", {
+                  attemptId: input.attemptId,
+                  cause: Cause.pretty(cause),
+                }),
           ),
         ),
     );

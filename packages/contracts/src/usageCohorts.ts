@@ -3,6 +3,9 @@ import * as Schema from "effect/Schema";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { UsageDay } from "./usage.ts";
 
+/** Matches the usage scan cache's retention, past which transcripts are gone. */
+export const USAGE_COHORT_MAX_WINDOW_DAYS = 92;
+
 export const UsageCohortReportInput = Schema.Struct({
   sinceDay: UsageDay,
   untilDay: UsageDay,
@@ -95,7 +98,7 @@ export const UsageCohortReport = Schema.Struct({
   untilDay: UsageDay,
   timeZone: TrimmedNonEmptyString,
   scanDurationMs: NonNegativeInt,
-  intervalConfidence: Schema.Literal(0.99),
+  intervalConfidence: Schema.Literal(0.998),
   ledger: Schema.Struct({
     totalUsd: Schema.Number,
     attributedUsd: Schema.Number,

@@ -80,6 +80,29 @@ it.effect("does not fail the caller when the write fails", () =>
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("does not fail the caller when reading settings dies", () =>
+  Effect.gen(function* () {
+    yield* (yield* UsageAttemptStamps.UsageAttemptStamps).stamp(input);
+
+    assert.deepStrictEqual(yield* rows, []);
+  }).pipe(
+    Effect.provide(
+      UsageAttemptStamps.layer.pipe(
+        Layer.provideMerge(SqlitePersistence.layerMemory),
+        Layer.provideMerge(
+          Layer.effect(
+            ServerSettings.ServerSettingsService,
+            Effect.gen(function* () {
+              const settings = yield* ServerSettings.ServerSettingsService;
+              return { ...settings, getSettings: Effect.die("settings blew up") };
+            }),
+          ).pipe(Layer.provide(ServerSettings.layerTest({}))),
+        ),
+      ),
+    ),
+  ),
+);
+
 it("derives the origin a comparison uses", () => {
   const origin = UsageAttemptStamps.originOf;
   assert.strictEqual(origin({ createdBy: "user", creationSource: "web" }), "user");

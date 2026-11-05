@@ -1,4 +1,5 @@
 import {
+  USAGE_COHORT_MAX_WINDOW_DAYS,
   UsageReadError,
   type UsageCohortComparison,
   type UsageCohortReport,
@@ -24,8 +25,6 @@ import {
 } from "./usageCohortJoin.ts";
 import { USAGE_EXPERIMENTS, type UsageExperimentDefinition } from "./usageExperiments.ts";
 
-/** Matches the scan cache's retention, past which transcripts are gone. */
-const MAX_WINDOW_DAYS = 92;
 const DAY_MS = 24 * 60 * 60 * 1000;
 // An attempt older than this loses its records to "no_attempt_here", which the ledger shows.
 const ATTEMPT_LOOKBACK_MS = 30 * DAY_MS;
@@ -72,9 +71,9 @@ export const layer = Layer.effect(
           return yield* invalidWindow("Cohort report needs valid days, in order.");
         }
         const windowDays = Math.round((untilMs.value - sinceMs.value) / DAY_MS) + 1;
-        if (windowDays > MAX_WINDOW_DAYS) {
+        if (windowDays > USAGE_COHORT_MAX_WINDOW_DAYS) {
           return yield* invalidWindow(
-            `Cohort report window must be at most ${MAX_WINDOW_DAYS} days.`,
+            `Cohort report window must be at most ${USAGE_COHORT_MAX_WINDOW_DAYS} days.`,
           );
         }
 
@@ -158,7 +157,7 @@ export const layer = Layer.effect(
           untilDay: input.untilDay,
           timeZone: input.timeZone,
           scanDurationMs: summary.scanDurationMs,
-          intervalConfidence: 0.99,
+          intervalConfidence: 0.998,
           ledger: {
             ...ledger,
             incompleteSources: summary.sources.filter(
