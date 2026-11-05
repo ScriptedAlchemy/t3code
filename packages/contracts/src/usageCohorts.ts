@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { UsageDay } from "./usage.ts";
 
 /** Matches the usage scan cache's retention, past which transcripts are gone. */
@@ -82,7 +82,7 @@ export const UsageCohortComparison = Schema.Struct({
   threadsSpanningArms: NonNegativeInt,
   promptTokensPerCall: UsageCohortVerdict,
   usdPerRun: UsageCohortVerdict,
-  segments: Schema.Array(
+  segments: ForwardCompatibleArray(
     Schema.Struct({
       ...UsageCohortSegmentKey,
       base: UsageCohortTotals,
@@ -98,7 +98,7 @@ export const UsageCohortReport = Schema.Struct({
   untilDay: UsageDay,
   timeZone: TrimmedNonEmptyString,
   scanDurationMs: NonNegativeInt,
-  intervalConfidence: Schema.Literal(0.998),
+  intervalConfidence: Schema.Number,
   ledger: Schema.Struct({
     totalUsd: Schema.Number,
     attributedUsd: Schema.Number,
@@ -108,15 +108,15 @@ export const UsageCohortReport = Schema.Struct({
     unpricedRecords: NonNegativeInt,
     incompleteSources: NonNegativeInt,
     stampingSince: Schema.NullOr(Schema.String),
-    unmatched: Schema.Array(UsageCohortUnmatched),
+    unmatched: ForwardCompatibleArray(UsageCohortUnmatched),
   }),
-  builds: Schema.Array(
+  builds: ForwardCompatibleArray(
     Schema.Struct({
       build: Schema.NullOr(TrimmedNonEmptyString),
       firstSeenAt: Schema.NullOr(Schema.String),
-      segments: Schema.Array(UsageCohortSegment),
+      segments: ForwardCompatibleArray(UsageCohortSegment),
     }),
   ),
-  comparisons: Schema.Array(UsageCohortComparison),
+  comparisons: ForwardCompatibleArray(UsageCohortComparison),
 });
 export type UsageCohortReport = typeof UsageCohortReport.Type;

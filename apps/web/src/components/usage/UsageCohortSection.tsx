@@ -1,4 +1,4 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   USAGE_COHORT_MAX_WINDOW_DAYS,
   type EnvironmentId,
@@ -16,6 +16,7 @@ import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
 import type { EnvironmentUsageStatus } from "../../state/usage";
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Skeleton } from "../ui/skeleton";
@@ -251,21 +252,26 @@ function EnvironmentReport({
   readonly window: UsageSummaryInput;
 }) {
   const [boundary, setBoundary] = useState<string | null>(null);
-  const result = useAtomValue(
-    serverEnvironment.usageCohortReport({
-      environmentId,
-      input: {
-        sinceDay: window.sinceDay,
-        untilDay: window.untilDay,
-        timeZone: window.timeZone,
-        ...(boundary === null ? {} : { boundaryBuild: boundary }),
-      },
-    }),
-  );
+  const reportAtom = serverEnvironment.usageCohortReport({
+    environmentId,
+    input: {
+      sinceDay: window.sinceDay,
+      untilDay: window.untilDay,
+      timeZone: window.timeZone,
+      ...(boundary === null ? {} : { boundaryBuild: boundary }),
+    },
+  });
+  const result = useAtomValue(reportAtom);
+  const refresh = useAtomRefresh(reportAtom);
   const report = AsyncResult.getOrElse(result, () => null);
   if (report === null) {
     return result._tag === "Failure" ? (
-      <p className="text-xs text-muted-foreground">This environment could not build the report.</p>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span>This environment could not build the report.</span>
+        <Button size="sm" variant="outline" onClick={refresh}>
+          Retry
+        </Button>
+      </div>
     ) : (
       <Skeleton className="h-24 w-full" />
     );
