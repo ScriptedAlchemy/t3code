@@ -185,7 +185,7 @@ export function storageCleanupActivityAt(thread: OrchestrationV2ThreadShell): nu
 }
 
 /** Only a complete subagent or side chat chain within this worktree shares ownership. */
-function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | "lineage">>(
+export function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | "lineage">>(
   threads: ReadonlyArray<T>,
 ) {
   if (threads.length === 1) return threads[0];

@@ -55,6 +55,15 @@ describe("skills library setting", () => {
   });
 });
 
+describe("automatic code indexing setting", () => {
+  it("defaults on and patches like any server setting", () => {
+    expect(decodeServerSettings({}).autoCodeIndexEnabled).toBe(true);
+    expect(decodeServerSettingsPatch({ autoCodeIndexEnabled: false })).toEqual({
+      autoCodeIndexEnabled: false,
+    });
+  });
+});
+
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();

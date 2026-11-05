@@ -1,0 +1,465 @@
+import {
+  DEFAULT_SERVER_SETTINGS,
+  EventId,
+  ProjectId,
+  ProviderInstanceId,
+  RunId,
+  ThreadId,
+  type ApplicationStoredEvent,
+  type OrchestrationV2Run,
+  type OrchestrationV2ThreadShell,
+  type ServerSettings,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+import { assert, describe, it } from "@effect/vitest";
+
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
+import * as OrchestrationEventStore from "../../persistence/OrchestrationEventStore.ts";
+import * as ServerSettingsService from "../../serverSettings.ts";
+import * as CodeIndexReactor from "./CodeIndexReactor.ts";
+import * as CodeIntelligence from "./CodeIntelligence.ts";
+
+const NOW_MS = Date.parse("2026-06-10T12:00:00.000Z");
+const DAY_MS = 86_400_000;
+const PROJECT_ID = ProjectId.make("project-index-reactor");
+const WORKTREE = "/worktrees/feature";
+const now = DateTime.makeUnsafe(NOW_MS);
+
+function at(offsetMs: number): DateTime.Utc {
+  return DateTime.makeUnsafe(NOW_MS + offsetMs);
+}
+
+function shell(overrides: Partial<OrchestrationV2ThreadShell> = {}): OrchestrationV2ThreadShell {
+  return {
+    id: ThreadId.make("thread-1"),
+    projectId: PROJECT_ID,
+    title: "Thread",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    worktreePath: WORKTREE,
+    branch: "feature",
+    activeProviderThreadId: null,
+    lineage: {
+      rootThreadId: ThreadId.make("thread-1"),
+      parentThreadId: null,
+      relationshipToParent: null,
+    },
+    forkedFrom: null,
+    createdBy: "user",
+    creationSource: "web",
+    activeRunId: null,
+    latestVisibleMessage: null,
+    hasActionableProposedPlan: false,
+    itemCount: 0,
+    visibleItemCount: 0,
+    lastVisitedAt: null,
+    deletedAt: null,
+    linkedPullRequest: null,
+    status: "idle",
+    activityRunStatus: null,
+    pendingRuntimeRequest: null,
+    pendingBackgroundTasks: [],
+    latestRunId: null,
+    latestRunRequestedAt: null,
+    latestRunStartedAt: null,
+    latestRunCompletedAt: null,
+    latestUserMessageAt: null,
+    createdAt: at(-30 * DAY_MS),
+    updatedAt: at(-10 * DAY_MS),
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    snoozedUntil: null,
+    snoozedAt: null,
+    pinnedAt: null,
+    ...overrides,
+  };
+}
+
+describe("worktreeIndexReleasable", () => {
+  const settled = (overrides: Partial<OrchestrationV2ThreadShell> = {}) =>
+    shell({ settledOverride: "settled", settledAt: at(-60_000), ...overrides });
+  const subagent = (overrides: Partial<OrchestrationV2ThreadShell> = {}) =>
+    shell({
+      id: ThreadId.make("thread-subagent"),
+      lineage: {
+        rootThreadId: ThreadId.make("thread-1"),
+        parentThreadId: ThreadId.make("thread-1"),
+        relationshipToParent: "subagent",
+      },
+      ...overrides,
+    });
+  const unrelated = (overrides: Partial<OrchestrationV2ThreadShell> = {}) =>
+    shell({
+      id: ThreadId.make("thread-2"),
+      lineage: {
+        rootThreadId: ThreadId.make("thread-2"),
+        parentThreadId: null,
+        relationshipToParent: null,
+      },
+      ...overrides,
+    });
+
+  it.each([
+    { name: "one settled thread", group: () => [settled()], expected: true },
+    { name: "one unsettled thread", group: () => [shell()], expected: false },
+    {
+      name: "a settled parent with an idle subagent",
+      group: () => [settled(), subagent({ settledOverride: "settled", settledAt: at(-30_000) })],
+      expected: true,
+    },
+    {
+      name: "a settled parent with an idle subagent nobody settled",
+      group: () => [settled(), subagent()],
+      expected: true,
+    },
+    {
+      name: "a settled parent with a running subagent",
+      group: () => [settled(), subagent({ status: "running", activeRunId: RunId.make("run-1") })],
+      expected: false,
+    },
+    {
+      name: "two unrelated threads, both settled",
+      group: () => [settled(), unrelated({ settledOverride: "settled", settledAt: at(-90_000) })],
+      expected: true,
+    },
+    {
+      name: "two unrelated threads, one unsettled",
+      group: () => [settled(), unrelated()],
+      expected: false,
+    },
+    { name: "no threads", group: () => [], expected: false },
+  ])("$name", ({ group, expected }) => {
+    assert.equal(
+      CodeIndexReactor.worktreeIndexReleasable(group(), NOW_MS, DEFAULT_SERVER_SETTINGS),
+      expected,
+    );
+  });
+});
+
+function runEvent(runId: RunId, status: OrchestrationV2Run["status"]): ApplicationStoredEvent {
+  return {
+    sequence: 1,
+    commandId: null,
+    event: {
+      type: "run.updated",
+      occurredAt: now,
+      payload: {
+        id: runId,
+        threadId: ThreadId.make("thread-1"),
+        ordinal: 1,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        providerThreadId: null,
+        userMessageId: "message-1",
+        rootNodeId: null,
+        activeAttemptId: null,
+        status,
+        requestedAt: now,
+        startedAt: null,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      },
+    },
+  } as unknown as ApplicationStoredEvent;
+}
+
+function settledEvent(thread: OrchestrationV2ThreadShell): ApplicationStoredEvent {
+  return {
+    sequence: 2,
+    commandId: null,
+    event: { type: "thread.settled", occurredAt: now, payload: thread },
+  } as unknown as ApplicationStoredEvent;
+}
+
+/** A project event whose effect marks the end of the queue, proving earlier ones were skipped. */
+function sentinelEvent(projectId: ProjectId): ApplicationStoredEvent {
+  return {
+    sequence: 3,
+    eventId: EventId.make("event-sentinel"),
+    aggregateKind: "project",
+    aggregateId: projectId,
+    occurredAt: now,
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "project.created",
+    payload: { projectId },
+  } as unknown as ApplicationStoredEvent;
+}
+
+interface Harness {
+  readonly send: (event: ApplicationStoredEvent) => Effect.Effect<void>;
+  /** Effects the reactor asked for, in order. */
+  readonly effects: Queue.Queue<string>;
+  /** The owners the activation sweep's orphan pass rejected. */
+  readonly orphansRejected: Effect.Effect<ReadonlyArray<string>>;
+  /** Resolves once the sweep asks whether a worktree has an index. */
+  readonly indexChecked: Effect.Effect<void>;
+  readonly settings: PubSub.PubSub<ServerSettings>;
+  /** The next effect the reactor asks for, waiting for it if needed. */
+  readonly next: Effect.Effect<string>;
+  /** Sends a sentinel and returns every effect recorded before it. */
+  readonly effectsBeforeSentinel: Effect.Effect<ReadonlyArray<string>>;
+}
+
+const SENTINEL = ProjectId.make("project-sentinel");
+const SENTINEL_EFFECT = `ensure:${SENTINEL}`;
+
+function reactorHarness(options: {
+  readonly threads: ReadonlyArray<OrchestrationV2ThreadShell>;
+  readonly projectRoots?: ReadonlyArray<string>;
+  readonly autoCodeIndexEnabled?: boolean;
+  /** Worktrees the mocked service reports an index for. */
+  readonly indexed?: ReadonlyArray<string>;
+  /** Checkouts the mocked orphan sweep would find an index for. */
+  readonly orphanOwners?: ReadonlyArray<string>;
+}): Effect.Effect<Harness, never, import("effect/Scope").Scope> {
+  return Effect.gen(function* () {
+    const events = yield* Queue.unbounded<ApplicationStoredEvent>();
+    const effects = yield* Queue.unbounded<string>();
+    const orphansRejected = yield* Deferred.make<ReadonlyArray<string>>();
+    const indexChecked = yield* Deferred.make<void>();
+    const settings = yield* PubSub.unbounded<ServerSettings>();
+    const threadsById = new Map(options.threads.map((thread) => [thread.id, thread]));
+    const initial = {
+      ...DEFAULT_SERVER_SETTINGS,
+      autoCodeIndexEnabled: options.autoCodeIndexEnabled ?? true,
+    };
+
+    const layer = CodeIndexReactor.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(CodeIntelligence.CodeIntelligence)({
+            ensureProjectIndexed: (projectId) =>
+              Queue.offer(effects, `ensure:${projectId}`).pipe(Effect.asVoid),
+            refreshForActiveAgent: (target) =>
+              Queue.offer(effects, `refresh:${target.threadId}`).pipe(Effect.asVoid),
+            removeCheckoutIndex: (checkoutPath) =>
+              Queue.offer(effects, `remove:${checkoutPath}`).pipe(Effect.asVoid),
+            hasCheckoutIndex: (checkoutPath) =>
+              Deferred.succeed(indexChecked, undefined).pipe(
+                Effect.as((options.indexed ?? []).includes(checkoutPath)),
+              ),
+            removeOrphanedIndexes: (isKnown) =>
+              Deferred.succeed(
+                orphansRejected,
+                (options.orphanOwners ?? []).filter((owner) => !isKnown(owner)),
+              ).pipe(Effect.asVoid),
+            stopBuilds: Queue.offer(effects, "stop").pipe(Effect.asVoid),
+          }),
+          Layer.mock(OrchestrationEventStore.OrchestrationEventStore)({
+            latestApplicationSequence: Effect.succeed(0),
+            streamApplicationEvents: () => Stream.fromQueue(events),
+          }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThreadWorktreePaths: () =>
+              Effect.succeed(
+                options.threads.flatMap((thread) =>
+                  thread.worktreePath === null
+                    ? []
+                    : [{ threadId: thread.id, worktreePath: thread.worktreePath }],
+                ),
+              ),
+            getThreadShell: (threadId) => Effect.succeed(threadsById.get(threadId) ?? null),
+          }),
+          Layer.mock(ProjectStore.ProjectStoreV2)({
+            listShells: () =>
+              Effect.succeed(
+                (options.projectRoots ?? []).map((workspaceRoot) => ({ workspaceRoot })),
+              ) as unknown as ReturnType<ProjectStore.ProjectStoreV2["Service"]["listShells"]>,
+          }),
+          Layer.mock(ServerSettingsService.ServerSettingsService)({
+            getSettings: Effect.succeed(initial),
+            subscribeChanges: PubSub.subscribe(settings).pipe(
+              Effect.map((subscription) => Stream.fromSubscription(subscription)),
+            ),
+          }),
+          Path.layer,
+        ),
+      ),
+    );
+    yield* Layer.build(layer).pipe(Effect.orDie);
+
+    const untilSentinel = (
+      collected: ReadonlyArray<string>,
+    ): Effect.Effect<ReadonlyArray<string>> =>
+      Queue.take(effects).pipe(
+        Effect.flatMap((effect) =>
+          effect === SENTINEL_EFFECT
+            ? Effect.succeed(collected)
+            : untilSentinel([...collected, effect]),
+        ),
+      );
+    return {
+      send: (event) => Queue.offer(events, event).pipe(Effect.asVoid),
+      effects,
+      orphansRejected: Deferred.await(orphansRejected),
+      indexChecked: Deferred.await(indexChecked),
+      settings,
+      next: Queue.take(effects),
+      // Events process in order, so the sentinel's effect proves every earlier one finished.
+      effectsBeforeSentinel: Queue.offer(events, sentinelEvent(SENTINEL)).pipe(
+        Effect.andThen(untilSentinel([])),
+      ),
+    };
+  });
+}
+
+/** Records the checkouts a sweep's `known` predicate rejected, for its orphan pass. */
+
+describe("CodeIndexReactor", () => {
+  it.effect("requests an index once per run, and again for a new run", () =>
+    Effect.gen(function* () {
+      const harness = yield* reactorHarness({ threads: [shell()] });
+      const run = RunId.make("run-1");
+      yield* harness.send(runEvent(RunId.make("run-0"), "waiting"));
+      // A run's status flips through `running` during approvals; each request can spawn a process.
+      yield* harness.send(runEvent(run, "running"));
+      yield* harness.send(runEvent(run, "waiting"));
+      yield* harness.send(runEvent(run, "running"));
+      yield* harness.send(runEvent(RunId.make("run-2"), "running"));
+      yield* harness.send(runEvent(RunId.make("run-2"), "running"));
+      yield* harness.send(runEvent(RunId.make("run-2"), "completed"));
+      assert.deepEqual(yield* harness.effectsBeforeSentinel, [
+        `refresh:${ThreadId.make("thread-1")}`,
+        `refresh:${ThreadId.make("thread-1")}`,
+      ]);
+    }),
+  );
+
+  it.effect("removes a settled worktree's index", () =>
+    Effect.gen(function* () {
+      const thread = shell({ settledOverride: "settled", settledAt: at(-60_000) });
+      const harness = yield* reactorHarness({ threads: [thread] });
+      yield* harness.send(settledEvent(thread));
+      assert.deepEqual(yield* harness.effectsBeforeSentinel, [`remove:${WORKTREE}`]);
+    }),
+  );
+
+  it.effect("keeps a worktree's index while another thread in it is unsettled", () =>
+    Effect.gen(function* () {
+      const settled = shell({ settledOverride: "settled", settledAt: at(-60_000) });
+      const unrelated = shell({
+        id: ThreadId.make("thread-2"),
+        lineage: {
+          rootThreadId: ThreadId.make("thread-2"),
+          parentThreadId: null,
+          relationshipToParent: null,
+        },
+      });
+      const harness = yield* reactorHarness({ threads: [settled, unrelated] });
+      yield* harness.send(settledEvent(settled));
+      assert.deepEqual(yield* harness.effectsBeforeSentinel, []);
+    }),
+  );
+
+  it.effect("keeps the index of a worktree that is a project root", () =>
+    Effect.gen(function* () {
+      const thread = shell({ settledOverride: "settled", settledAt: at(-60_000) });
+      const harness = yield* reactorHarness({ threads: [thread], projectRoots: [WORKTREE] });
+      yield* harness.send(settledEvent(thread));
+      assert.deepEqual(yield* harness.effectsBeforeSentinel, []);
+    }),
+  );
+
+  it.effect("removes nothing when automatic indexing is off", () =>
+    Effect.gen(function* () {
+      const worktreePath = "/worktrees/idle";
+      const thread = shell({ worktreePath, settledOverride: "settled", settledAt: at(-60_000) });
+      const harness = yield* reactorHarness({
+        threads: [thread],
+        indexed: [worktreePath],
+        autoCodeIndexEnabled: false,
+      });
+      yield* harness.send(settledEvent(thread));
+      assert.deepEqual(yield* harness.effectsBeforeSentinel, []);
+      // The activation sweep is its own fiber, scheduled by the time a second round trip ends.
+      assert.deepEqual(yield* harness.effectsBeforeSentinel, []);
+    }),
+  );
+
+  it.effect("removes orphaned indexes even while automatic indexing is off", () =>
+    Effect.gen(function* () {
+      const harness = yield* reactorHarness({
+        threads: [shell()],
+        autoCodeIndexEnabled: false,
+        orphanOwners: ["/worktrees/gone", WORKTREE],
+      });
+      // A known worktree is kept; the deleted checkout is the only rejection.
+      assert.deepEqual(yield* harness.orphansRejected, ["/worktrees/gone"]);
+    }),
+  );
+
+  it.effect("treats project roots and thread worktrees as known checkouts", () =>
+    Effect.gen(function* () {
+      const harness = yield* reactorHarness({
+        threads: [shell()],
+        projectRoots: ["/projects/one"],
+        orphanOwners: ["/projects/one", WORKTREE],
+      });
+      assert.deepEqual(yield* harness.orphansRejected, []);
+    }),
+  );
+
+  it.effect("does not count a deleted project as a known checkout", () =>
+    Effect.gen(function* () {
+      // `listShells` omits deleted projects, so its roots are absent from the known set.
+      const harness = yield* reactorHarness({
+        threads: [shell()],
+        projectRoots: [],
+        orphanOwners: ["/projects/deleted"],
+      });
+      assert.deepEqual(yield* harness.orphansRejected, ["/projects/deleted"]);
+    }),
+  );
+
+  it.effect("stops running builds when automatic indexing is turned off", () =>
+    Effect.gen(function* () {
+      const harness = yield* reactorHarness({ threads: [shell()] });
+      yield* PubSub.publish(harness.settings, {
+        ...DEFAULT_SERVER_SETTINGS,
+        autoCodeIndexEnabled: false,
+      });
+      assert.equal(yield* harness.next, "stop");
+    }),
+  );
+
+  it.effect("sweeps the index of a worktree whose thread settled before this feature", () =>
+    Effect.gen(function* () {
+      const worktreePath = "/worktrees/settled";
+      const thread = shell({
+        worktreePath,
+        settledOverride: "settled",
+        settledAt: at(-60_000),
+      });
+      // Activation sweeps, so the removal arrives without any event.
+      const harness = yield* reactorHarness({ threads: [thread], indexed: [worktreePath] });
+      assert.equal(yield* harness.next, `remove:${worktreePath}`);
+    }),
+  );
+
+  it.effect("skips a settled worktree that has no index", () =>
+    Effect.gen(function* () {
+      const thread = shell({ settledOverride: "settled", settledAt: at(-60_000) });
+      // The sweep asks the service whether an index exists, rather than checking the checkout.
+      const harness = yield* reactorHarness({ threads: [thread], indexed: [] });
+      yield* harness.indexChecked;
+      assert.deepEqual(yield* harness.effectsBeforeSentinel, []);
+      // The sweep is its own fiber, scheduled by the time a second round trip ends.
+      assert.deepEqual(yield* harness.effectsBeforeSentinel, []);
+    }),
+  );
+});

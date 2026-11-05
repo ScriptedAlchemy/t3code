@@ -5,15 +5,16 @@ import * as NodeSqlite from "node:sqlite";
 
 import {
   INDEX_DIRECTORY,
+  PUBLISHED_FILE,
+  clearCheckoutSources,
   generationDirectory,
-  ignoreIndexDirectory,
+  listGenerations,
   readPublishedGeneration,
-  validateIndexDirectory,
 } from "./codeIndexLayout.ts";
 
 /**
- * Servers on one machine share a checkout's index, so its builder and readers coordinate through
- * SQLite's file locks (fcntl on POSIX, LockFileEx on Windows) on empty lock databases. The kernel
+ * Servers sharing a data directory share a checkout's index, so its builder and readers coordinate
+ * through SQLite's file locks (fcntl on POSIX, LockFileEx on Windows) on empty lock databases. The kernel
  * drops those locks when their process exits, however it exits, so a crashed server leaves no
  * record for a PID check to judge, and a recycled PID holds nothing.
  */
@@ -70,12 +71,10 @@ function lockShared(path: string, role: "reader" | "probe") {
   }
 }
 
-/** Takes the checkout's build lock and returns its release, or null while another builder holds it. */
-export function tryLockBuild(checkoutPath: string): (() => void) | null {
-  const control = NodePath.join(checkoutPath, INDEX_DIRECTORY);
+/** Takes the index root's build lock and returns its release, or null while another builder holds it. */
+export function tryLockBuild(indexRoot: string): (() => void) | null {
+  const control = NodePath.join(indexRoot, INDEX_DIRECTORY);
   NodeFS.mkdirSync(control, { recursive: true });
-  validateIndexDirectory(checkoutPath, INDEX_DIRECTORY);
-  ignoreIndexDirectory(checkoutPath, INDEX_DIRECTORY);
   const build = lockExclusive(NodePath.join(control, BUILD_LOCK), 0);
   if (build === null) return null;
   try {
@@ -95,10 +94,10 @@ const closeLock = (lock: ReturnType<typeof lockShared>) => {
   if (lock !== null && lock !== "missing") lock.close();
 };
 
-/** Whether any process, this one included, is building the checkout's index now. */
-export function isBuildRunning(checkoutPath: string): boolean {
+/** Whether any process, this one included, is building the index now. */
+export function isBuildRunning(indexRoot: string): boolean {
   try {
-    const probe = lockShared(NodePath.join(checkoutPath, INDEX_DIRECTORY, BUILDING_LOCK), "probe");
+    const probe = lockShared(NodePath.join(indexRoot, INDEX_DIRECTORY, BUILDING_LOCK), "probe");
     closeLock(probe);
     return probe === null;
   } catch {
@@ -111,16 +110,8 @@ export function isBuildRunning(checkoutPath: string): boolean {
  * instead. Callers ensure no build writes it: the builder holds the build lock, and a reader
  * removes only generations older than the published one.
  */
-export function removeGenerationUnlessRead(checkoutPath: string, generation: number): void {
-  const name = generationDirectory(generation);
-  const directory = NodePath.join(checkoutPath, name);
-  try {
-    validateIndexDirectory(checkoutPath, name);
-  } catch {
-    // Nothing reads a generation that fails validation; `rm` unlinks a planted link unfollowed.
-    NodeFS.rmSync(directory, { recursive: true, force: true });
-    return;
-  }
+export function removeGenerationUnlessRead(indexRoot: string, generation: number): void {
+  const directory = NodePath.join(indexRoot, generationDirectory(generation));
   let lock: NodeSqlite.DatabaseSync | null;
   try {
     lock = lockExclusive(NodePath.join(directory, READERS_LOCK), 0);
@@ -142,6 +133,112 @@ export function removeGenerationUnlessRead(checkoutPath: string, generation: num
   NodeFS.rmSync(directory, { recursive: true, force: true });
 }
 
+/**
+ * Removes one index root: the published pointer first, so new readers see "unindexed", then every
+ * generation a reader is not pinning, then the checkout's links. A build elsewhere leaves it all
+ * for the next sweep.
+ *
+ * Nothing here may remove recursively from the root: its entries are links into a user's checkout.
+ */
+export function removeIndexRoot(indexRoot: string): void {
+  if (!NodeFS.existsSync(indexRoot)) return;
+  const control = NodePath.join(indexRoot, INDEX_DIRECTORY);
+  const release = tryLockBuild(indexRoot);
+  if (release === null) return;
+  try {
+    NodeFS.rmSync(NodePath.join(control, PUBLISHED_FILE), { force: true });
+    for (const generation of listGenerations(indexRoot)) {
+      removeGenerationUnlessRead(indexRoot, generation);
+    }
+    clearCheckoutSources(indexRoot);
+  } finally {
+    // Windows cannot delete an open lock file, so it goes after the lock is released.
+    release();
+  }
+  NodeFS.rmSync(control, { recursive: true, force: true });
+  try {
+    // A generation a reader still pins stays behind, and so does the root.
+    NodeFS.rmdirSync(indexRoot);
+  } catch (cause) {
+    const code = (cause as NodeJS.ErrnoException).code;
+    if (code !== "ENOTEMPTY" && code !== "ENOENT") throw cause;
+  }
+}
+
+// Files an older T3 left in a checkout when the index lived beside its sources.
+const LEGACY_CONTROL_MARKERS = [
+  PUBLISHED_FILE,
+  BUILD_LOCK,
+  BUILDING_LOCK,
+  "codegraph.db",
+  "t3-index.json",
+];
+const LEGACY_GENERATION_MARKERS = ["t3-index.json", "codegraph.db"];
+
+const isRealDirectory = (path: string): boolean => {
+  try {
+    return NodeFS.lstatSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/** A real directory holding at least one of `names`; a link to one is not a match. */
+const isT3Directory = (path: string, names: ReadonlyArray<string>): boolean =>
+  isRealDirectory(path) && names.some((name) => NodeFS.existsSync(NodePath.join(path, name)));
+
+/**
+ * The folders an older T3 left inside a checkout, when they are provably T3's. Anything else that
+ * happens to share a name belongs to the user.
+ */
+function legacyIndexFolders(
+  checkoutPath: string,
+): { readonly generations: ReadonlyArray<number> } | null {
+  const control = NodePath.join(checkoutPath, INDEX_DIRECTORY);
+  let exists: boolean;
+  try {
+    exists = NodeFS.lstatSync(control, { throwIfNoEntry: false }) !== undefined;
+  } catch {
+    return null;
+  }
+  if (exists && !isT3Directory(control, LEGACY_CONTROL_MARKERS)) return null;
+  const generations = listGenerations(checkoutPath).filter((generation) =>
+    isT3Directory(
+      NodePath.join(checkoutPath, generationDirectory(generation)),
+      LEGACY_GENERATION_MARKERS,
+    ),
+  );
+  return exists || generations.length > 0 ? { generations } : null;
+}
+
+/** Whether a checkout still holds the folders an older T3 kept inside it, without throwing. */
+export function hasLegacyIndexFiles(checkoutPath: string): boolean {
+  try {
+    return legacyIndexFolders(checkoutPath) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Removes the index folders an older T3 left inside a checkout, and nothing else there. */
+export function removeLegacyIndexFromCheckout(checkoutPath: string): void {
+  const legacy = legacyIndexFolders(checkoutPath);
+  if (legacy === null) return;
+  const control = NodePath.join(checkoutPath, INDEX_DIRECTORY);
+  // An older server may still be building; it finishes and this runs on a later build.
+  const release = tryLockBuild(checkoutPath);
+  if (release === null) return;
+  try {
+    NodeFS.rmSync(NodePath.join(control, PUBLISHED_FILE), { force: true });
+    for (const generation of legacy.generations) {
+      removeGenerationUnlessRead(checkoutPath, generation);
+    }
+  } finally {
+    release();
+  }
+  NodeFS.rmSync(control, { recursive: true, force: true });
+}
+
 export interface GenerationPin {
   readonly generation: number | null;
   readonly release: () => void;
@@ -157,15 +254,14 @@ const unpinned = (generation: number | null): GenerationPin => ({
  * lock is held: a generation is deleted only after it stops being published, and never published
  * again, so a pin that still finds it published holds a lock its deleter has to wait for.
  */
-export function pinPublishedGeneration(checkoutPath: string): GenerationPin {
-  let generation = readPublishedGeneration(checkoutPath);
+export function pinPublishedGeneration(indexRoot: string): GenerationPin {
+  let generation = readPublishedGeneration(indexRoot);
   while (generation !== null) {
     const name = generationDirectory(generation);
-    validateIndexDirectory(checkoutPath, name);
-    const lock = lockShared(NodePath.join(checkoutPath, name, READERS_LOCK), "reader");
+    const lock = lockShared(NodePath.join(indexRoot, name, READERS_LOCK), "reader");
     let current: number | null;
     try {
-      current = readPublishedGeneration(checkoutPath);
+      current = readPublishedGeneration(indexRoot);
     } catch (cause) {
       closeLock(lock);
       throw cause;
@@ -179,7 +275,7 @@ export function pinPublishedGeneration(checkoutPath: string): GenerationPin {
         generation: pinned,
         release: () => {
           lock.close();
-          retireIfSuperseded(checkoutPath, pinned);
+          retireIfSuperseded(indexRoot, pinned);
         },
       };
     }
@@ -189,12 +285,12 @@ export function pinPublishedGeneration(checkoutPath: string): GenerationPin {
   return unpinned(null);
 }
 
-function retireIfSuperseded(checkoutPath: string, generation: number): void {
+function retireIfSuperseded(indexRoot: string, generation: number): void {
   try {
-    const published = readPublishedGeneration(checkoutPath);
+    const published = readPublishedGeneration(indexRoot);
     // Builds write only generations newer than the published one.
     if (published !== null && generation < published) {
-      removeGenerationUnlessRead(checkoutPath, generation);
+      removeGenerationUnlessRead(indexRoot, generation);
     }
   } catch {
     // The next build sweeps a generation left behind.
