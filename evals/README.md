@@ -11,7 +11,6 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 | [thread-split](thread-split/)           | Offline local-model evaluation of whether a message can start an independent thread.                                                       |
 | [model-evaluations](model-evaluations/) | Whether blind judges use outcome evidence, respect task scope, ignore injected scoring instructions, and abstain when evidence is missing. |
 | [test-signal](test-signal/)             | Whether a cheap model running the test-signal check flags low-signal tests.                                                                |
-| [cache-snip](cache-snip/)               | Whether trimming stale thread history saves money after the cache rebuild. Replays only, no model.                                         |
 
 ## Run an eval
 
