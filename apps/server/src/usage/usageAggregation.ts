@@ -62,6 +62,14 @@ interface MutableBucket {
   sessions: Set<string>;
 }
 
+/** One record as the aggregator counted it, after filter, alias, dedupe, window, and pricing. */
+export interface PricedUsage {
+  readonly record: UsageRecord;
+  readonly costUsd: number;
+  readonly unpriced: boolean;
+  readonly transcriptPath: string | undefined;
+}
+
 export interface AggregateOptions {
   readonly timeZone: string;
   readonly sinceDay: string;
