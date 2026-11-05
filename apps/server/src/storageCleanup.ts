@@ -923,6 +923,7 @@ const make = Effect.gen(function* () {
           checkout._tag !== "Bound" &&
           snapshot.threads.some(
             (other) =>
+              other.projectId === thread.projectId &&
               other.worktreePath !== null &&
               path.resolve(other.worktreePath) !== worktreePath &&
               group.some((member) => member.branch !== null && member.branch === other.branch),

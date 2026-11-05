@@ -1372,6 +1372,44 @@ describe("deleted thread worktrees", () => {
     ),
   );
 
+  it.live("does not keep a detached worktree for a same-named branch in another project", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, repo, worktree, command, config, setThreads, setProjectRoots } =
+          yield* cleanupFixture();
+        const other = yield* fs.realPath(
+          yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-unrelated-" }),
+        );
+        yield* command(other, ["init", "-b", "main"]);
+        yield* command(other, ["config", "user.email", "other@example.test"]);
+        yield* command(other, ["config", "user.name", "Other"]);
+        yield* command(other, ["commit", "--allow-empty", "-m", "other repo"]);
+        const otherWorktree = `${config.worktreesDir}/unrelated-feature`;
+        yield* command(other, ["worktree", "add", "-b", "feature", otherWorktree]);
+        setProjectRoots([repo, other]);
+        yield* command(worktree, ["switch", "--detach"]);
+        setThreads([
+          shell({ branch: "feature", worktreePath: worktree }),
+          shell({
+            id: ThreadId.make("thread-2"),
+            projectId: ProjectId.make("project-2"),
+            branch: "feature",
+            worktreePath: otherWorktree,
+            lineage: {
+              rootThreadId: ThreadId.make("thread-2"),
+              parentThreadId: null,
+              relationshipToParent: null,
+            },
+          }),
+        ]);
+        const report = yield* service.runNow;
+        expect(report.entries.find((entry) => entry.threadId === "thread-1")).toMatchObject({
+          outcome: "removed",
+        });
+      }),
+    ),
+  );
+
   it.live("rebinds a thread that stores its worktree path with a trailing slash", () =>
     runCleanupTest(
       Effect.gen(function* () {
