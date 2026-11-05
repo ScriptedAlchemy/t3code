@@ -42,6 +42,39 @@ describe("compareArms verdicts", () => {
     expect(result.base).toMatchObject({ threads: 29, usd: 29 });
   });
 
+  it.each([
+    [
+      "most threads ran a model the other side never did",
+      (arm: Arm, i: number) => (i === 0 ? "shared" : `${arm}-only`),
+    ],
+    [
+      "each model sits almost entirely on one side",
+      (arm: Arm, i: number) => ((i === 0) === (arm === "base") ? "model-a" : "model-b"),
+    ],
+  ])("is not enough data when %s", (_name, modelAt) => {
+    const side = (arm: Arm, usd: number) =>
+      cells(arm, 30, (i) => ({ model: modelAt(arm, i), usd }));
+    const result = run({ ...base, cells: [...side("base", 1), ...side("test", 2)] });
+
+    expect(result.usdPerRun).toMatchObject({ _tag: "not_enough_data", reason: "too_few_threads" });
+    expect(result.base.threads).toBe(30);
+  });
+
+  it("does not let one thread speak for a model the other side ran heavily", () => {
+    const balanced = (arm: Arm) => cells(arm, 200, () => ({ model: "balanced" }));
+    const heavy = cells("base", 200, (i) => ({ model: "thin", threadId: `heavy-${i}` }));
+    const thin = cell("test", 0, { model: "thin", threadId: "thin", usd: 8 });
+    const result = run({
+      ...base,
+      cells: [...balanced("base"), ...balanced("test"), ...heavy, thin],
+    });
+
+    expect(result.usdPerRun).toMatchObject({
+      _tag: "no_detectable_change",
+      ratio: expect.closeTo(8 ** (1 / 201), 5),
+    });
+  });
+
   it("counts a run on two models once in the arm totals", () => {
     const result = run({
       ...base,
@@ -113,7 +146,7 @@ describe("compareArms policy", () => {
       ...cells(arm, aThreads, () => a),
       ...cells(arm, bThreads, (i) => ({ ...b, threadId: `${arm}-b-${i}` })),
     ];
-    const result = run({ ...base, cells: [...mix("base", 60, 10), ...mix("test", 10, 60)] });
+    const result = run({ ...base, cells: [...mix("base", 90, 20), ...mix("test", 20, 90)] });
 
     expect(result.usdPerRun).toMatchObject({ _tag: "no_detectable_change", ratio: 1 });
     expect(result.test.usd).toBeGreaterThan(result.base.usd * 3);

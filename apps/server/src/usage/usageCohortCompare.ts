@@ -73,15 +73,15 @@ function seededRandom(key: string): () => number {
 }
 
 /** Weighted mean of per-stratum log ratios over strata present in both arms, or null when none. */
-function logRatio(
+function stratifiedRatio(
   metric: Metric,
   base: readonly Quantities[],
   test: readonly Quantities[],
   baseThreads: ArrayLike<number>,
   testThreads: ArrayLike<number>,
-): number | null {
+): { readonly logRatio: number; readonly comparableThreads: number } | null {
   let weighted = 0;
-  let weights = 0;
+  let comparableThreads = 0;
   for (let stratum = 0; stratum < base.length; stratum += 1) {
     const b = base[stratum]!;
     const t = test[stratum]!;
@@ -92,12 +92,15 @@ function logRatio(
     if (baseDenominator <= 0 || testDenominator <= 0 || baseNumerator <= 0 || testNumerator <= 0) {
       continue;
     }
-    const weight = baseThreads[stratum]! + testThreads[stratum]!;
+    // A stratum is only as precise as its smaller side, however many threads the other holds.
+    const weight = Math.min(baseThreads[stratum]!, testThreads[stratum]!);
     weighted +=
       weight * Math.log(testNumerator / testDenominator / (baseNumerator / baseDenominator));
-    weights += weight;
+    comparableThreads += weight;
   }
-  return weights === 0 ? null : weighted / weights;
+  return comparableThreads === 0
+    ? null
+    : { logRatio: weighted / comparableThreads, comparableThreads };
 }
 
 function sumArm(threads: readonly Thread[], strata: number) {
@@ -123,28 +126,27 @@ function quantile(sorted: readonly number[], p: number): number {
 function verdictFrom(
   point: number | null,
   interval: { readonly low: number; readonly high: number } | null,
-  threads: { readonly base: number; readonly test: number },
+  comparableThreads: number,
   windowDays: number,
 ): UsageCohortVerdict {
-  const smaller = Math.min(threads.base, threads.test);
   const estimate = (): Pick<
     Extract<UsageCohortVerdict, { _tag: "not_enough_data" }>,
     "threadsPerArmFor15Percent" | "daysAtCurrentRate"
   > => {
-    if (interval === null || smaller === 0) {
+    if (interval === null || comparableThreads === 0) {
       return { threadsPerArmFor15Percent: null, daysAtCurrentRate: null };
     }
     const halfWidth = (Math.log(interval.high) - Math.log(interval.low)) / 2;
     const needed = Math.max(
       MIN_THREADS_PER_ARM,
-      Math.ceil(smaller * (halfWidth / LOG_MATERIAL) ** 2),
+      Math.ceil(comparableThreads * (halfWidth / LOG_MATERIAL) ** 2),
     );
     return {
       threadsPerArmFor15Percent: needed,
-      daysAtCurrentRate: Math.ceil((windowDays * needed) / smaller),
+      daysAtCurrentRate: Math.ceil((windowDays * needed) / comparableThreads),
     };
   };
-  if (smaller < MIN_THREADS_PER_ARM) {
+  if (comparableThreads < MIN_THREADS_PER_ARM) {
     return { _tag: "not_enough_data", reason: "too_few_threads", ...estimate() };
   }
   if (point === null || interval === null) {
@@ -220,9 +222,9 @@ export function* compareArms(input: CompareInput): Generator<void, CompareResult
   const points = Object.fromEntries(
     metricNames.map((name) => [
       name,
-      logRatio(METRICS[name], baseSum.sums, testSum.sums, baseSum.present, testSum.present),
+      stratifiedRatio(METRICS[name], baseSum.sums, testSum.sums, baseSum.present, testSum.present),
     ]),
-  ) as Record<MetricName, number | null>;
+  ) as Record<MetricName, ReturnType<typeof stratifiedRatio>>;
 
   const samples: Record<MetricName, number[]> = { promptTokensPerCall: [], usdPerRun: [] };
   if (baseThreads.length > 0 && testThreads.length > 0) {
@@ -236,21 +238,32 @@ export function* compareArms(input: CompareInput): Generator<void, CompareResult
       const base = draw(baseThreads);
       const test = draw(testThreads);
       for (const name of metricNames) {
-        const value = logRatio(METRICS[name], base.sums, test.sums, base.present, test.present);
-        if (value !== null && Number.isFinite(value)) samples[name].push(value);
+        const value = stratifiedRatio(
+          METRICS[name],
+          base.sums,
+          test.sums,
+          base.present,
+          test.present,
+        )?.logRatio;
+        if (value !== undefined && Number.isFinite(value)) samples[name].push(value);
       }
       if ((resample + 1) % RESAMPLES_PER_YIELD === 0) yield;
     }
   }
 
-  const threads = { base: baseThreads.length, test: testThreads.length };
   const verdict = (name: MetricName): UsageCohortVerdict => {
     const sorted = samples[name].toSorted((a, b) => a - b);
     const interval =
       sorted.length < 2
         ? null
         : { low: Math.exp(quantile(sorted, TAIL)), high: Math.exp(quantile(sorted, 1 - TAIL)) };
-    return verdictFrom(points[name], interval, threads, input.windowDays);
+    const point = points[name];
+    return verdictFrom(
+      point?.logRatio ?? null,
+      interval,
+      point?.comparableThreads ?? 0,
+      input.windowDays,
+    );
   };
 
   const byArm = (arm: Arm) => cells.filter((cell) => cell.arm === arm);

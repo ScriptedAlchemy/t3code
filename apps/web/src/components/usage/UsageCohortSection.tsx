@@ -46,10 +46,10 @@ function VerdictCell({ verdict }: { readonly verdict: UsageCohortVerdict }) {
           <Badge variant="outline">Not enough data</Badge>
           <span className="text-muted-foreground">
             {verdict.reason === "too_few_threads"
-              ? "Each side needs at least 30 threads."
+              ? "Each side needs at least 30 threads on the same provider, model, and speed."
               : "The range is too wide to call a 15% change."}
             {verdict.threadsPerArmFor15Percent !== null && verdict.daysAtCurrentRate !== null
-              ? ` About ${formatCount(verdict.threadsPerArmFor15Percent)} threads per side, ${
+              ? ` About ${formatCount(verdict.threadsPerArmFor15Percent)} comparable threads per side, ${
                   verdict.daysAtCurrentRate > USAGE_COHORT_MAX_WINDOW_DAYS
                     ? `more than the ${USAGE_COHORT_MAX_WINDOW_DAYS} days this report can cover`
                     : `about ${formatCount(verdict.daysAtCurrentRate)} days at this rate`
