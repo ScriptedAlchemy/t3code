@@ -2319,6 +2319,26 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
+  it.live.each([
+    ["a remote branch a prune can drop", "agent", "kept"],
+    ["the remote default branch", "main", "removed"],
+  ] as const)("judges a detached commit held only by %s", ([, remoteBranch, outcome]) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, repo, worktree, command } = yield* cleanupFixture();
+        const remote = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-remote-" });
+        yield* command(remote, ["init", "--bare", "-b", "main"]);
+        yield* command(repo, ["remote", "add", "origin", remote]);
+        yield* command(repo, ["push", "origin", "main"]);
+        yield* command(repo, ["remote", "set-head", "origin", "main"]);
+        yield* command(worktree, ["switch", "--detach"]);
+        yield* command(worktree, ["commit", "--allow-empty", "-m", "detached work"]);
+        yield* command(worktree, ["push", "origin", `HEAD:refs/heads/${remoteBranch}`]);
+        expect((yield* service.runNow).entries[0]).toMatchObject({ outcome });
+        expect(yield* fs.exists(worktree)).toBe(outcome === "kept");
+      }),
+    ),
+  );
   it.live("follows a branch the agent switched to and removes the worktree next pass", () =>
     runCleanupTest(
       Effect.gen(function* () {

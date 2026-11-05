@@ -594,11 +594,14 @@ const make = Effect.gen(function* () {
     return file === undefined ? null : `has ignored files (${file})`;
   });
 
-  // refs/t3 is excluded: a user cannot recover a commit only a checkpoint ref holds.
+  // Only refs that stay count. A user cannot recover from refs/t3, and a routine
+  // `git fetch --prune` drops any remote branch except the default one.
   const commitHeldByRef = Effect.fn("StorageCleanup.commitHeldByRef")(function* (
     cwd: string,
     commitSha: string,
   ) {
+    const remote = yield* git.resolvePrimaryRemoteName(cwd).pipe(Effect.orElseSucceed(() => null));
+    const defaultBranch = remote === null ? null : yield* git.resolveDefaultBranchName(cwd, remote);
     const refs = yield* git.execute({
       operation: "StorageCleanup.commitHeldByRef",
       cwd,
@@ -609,8 +612,8 @@ const make = Effect.gen(function* () {
         "--count=1",
         "--format=%(refname)",
         "refs/heads",
-        "refs/remotes",
         "refs/tags",
+        ...(defaultBranch === null ? [] : [`refs/remotes/${remote}/${defaultBranch}`]),
       ],
     });
     return refs.stdout.trim() !== "";
