@@ -22,6 +22,8 @@ pnpm cache-snip:relevance-rows <dir> 30 # what was knowable about each old tool 
 python3 cache-snip/relevance.py <dir>  # still-needed model, then rerun simulate to rank seeds with it
 pnpm cache-snip:relevance-sample <dir> # old tool outputs with the message they faced. Holds chat text, keep it local
 <mlx-decision venv>/bin/python cache-snip/relevanceScore.py <dir> <name> <model path> # one GPU job at a time
+<mlx-decision venv>/bin/python cache-snip/relevanceFit.py <training fit arguments> # fine-tune, with a one-row batch workaround
+python3 cache-snip/relevanceReport.py <dir> [split] # models against recency on the same rows
 ```
 
 `learn.py` needs numpy, pandas, and scikit-learn.
