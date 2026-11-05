@@ -38,6 +38,7 @@ import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
 import {
   INDEX_DIRECTORY,
+  checkoutPathKey,
   generationDirectory,
   indexRootFor,
   isIndexPath,
@@ -464,7 +465,7 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
   const serviceScope = yield* Effect.scope;
   const checkouts = new Map<string, CheckoutIndex>();
   const stateOf = (checkoutPath: string) => {
-    const existing = checkouts.get(checkoutPath);
+    const existing = checkouts.get(checkoutPathKey(checkoutPath));
     if (existing !== undefined) return existing;
     const created: CheckoutIndex = {
       running: null,
@@ -473,7 +474,7 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
       fiber: null,
       firstBuildAnnounced: false,
     };
-    checkouts.set(checkoutPath, created);
+    checkouts.set(checkoutPathKey(checkoutPath), created);
     return created;
   };
   // Off, only a code query indexes a checkout; every proactive path reads this per call.
@@ -801,7 +802,7 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
         },
       }).pipe(Effect.mapError((cause) => toQueryError(cause.reason)));
       if (!("result" in reply)) return yield* toQueryError("invalid-result");
-      const state = checkouts.get(checkoutPath);
+      const state = checkouts.get(checkoutPathKey(checkoutPath));
       const needsRefresh =
         reply.result.index?.state === "unindexed" ||
         reply.result.index?.state === "indexing" ||
@@ -850,7 +851,7 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
     if (!(yield* autoIndexEnabled)) return;
     const checkoutPath = yield* resolveCheckout({ projectId }).pipe(Effect.option);
     if (Option.isNone(checkoutPath)) return;
-    const state = checkouts.get(checkoutPath.value);
+    const state = checkouts.get(checkoutPathKey(checkoutPath.value));
     // A failed build waits for a code query; retrying here would repeat a persistent failure each
     // time a client looked at the project.
     if (state?.running != null || state?.lastFailed === true) return;
@@ -900,11 +901,11 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
     const path = yield* workspacePaths
       .normalizeWorkspaceRoot(checkoutPath)
       .pipe(Effect.orElseSucceed(() => NodePath.resolve(checkoutPath)));
-    const state = checkouts.get(path);
+    const state = checkouts.get(checkoutPathKey(path));
     const hadBuild = state?.fiber != null && state.running !== null;
     // The interrupt returns only after the build process is killed and its lock released.
     if (state?.fiber != null) yield* Fiber.interrupt(state.fiber);
-    checkouts.delete(path);
+    checkouts.delete(checkoutPathKey(path));
     const hadFiles = yield* Effect.sync(
       () => listGenerations(indexRootOf(path)).length > 0 || hasLegacyIndexFiles(path),
     );
@@ -988,7 +989,9 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
     const subscription = yield* PubSub.subscribe(indexChanges);
     yield* ensureProjectIndexed(input.projectId);
     return Stream.fromSubscription(subscription).pipe(
-      Stream.filter((change) => change.checkoutPath === checkoutPath),
+      Stream.filter(
+        (change) => checkoutPathKey(change.checkoutPath) === checkoutPathKey(checkoutPath),
+      ),
       Stream.map((change) => change.event),
     );
   });

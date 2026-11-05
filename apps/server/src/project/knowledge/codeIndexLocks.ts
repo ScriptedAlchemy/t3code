@@ -38,8 +38,10 @@ const sqliteCode = (cause: unknown) =>
 function lockExclusive(path: string, waitMs: number): NodeSqlite.DatabaseSync | null {
   const database = new NodeSqlite.DatabaseSync(path);
   try {
-    // With no journal the lock never creates a -journal file beside it.
-    database.exec(`PRAGMA busy_timeout = ${waitMs}; PRAGMA journal_mode = OFF; BEGIN EXCLUSIVE;`);
+    // Defensive SQLite ignores OFF; MEMORY avoids an open journal that Windows cannot delete.
+    database.exec(
+      `PRAGMA busy_timeout = ${waitMs}; PRAGMA journal_mode = MEMORY; BEGIN EXCLUSIVE;`,
+    );
     return database;
   } catch (cause) {
     database.close();

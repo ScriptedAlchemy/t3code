@@ -31,8 +31,16 @@ export function isIndexPath(relativePath: string): boolean {
 
 /** The index root one checkout's index lives under. */
 export function indexRootFor(codeIndexDir: string, checkoutPath: string): string {
-  const digest = NodeCrypto.createHash("sha256").update(checkoutPath).digest("hex");
+  const digest = NodeCrypto.createHash("sha256")
+    .update(checkoutPathKey(checkoutPath))
+    .digest("hex");
   return NodePath.join(codeIndexDir, digest.slice(0, 32));
+}
+
+/** Identity only: keep the original path when opening files or recording the checkout owner. */
+export function checkoutPathKey(checkoutPath: string): string {
+  const resolved = NodePath.resolve(checkoutPath);
+  return NodePath.sep === "\\" ? resolved.toLowerCase() : resolved;
 }
 
 /** Generation directories present in the index root, whatever their state. */
@@ -91,6 +99,11 @@ export function linkCheckoutSources(
   checkoutPath: string,
   paths: ReadonlyArray<string>,
 ): void {
+  if (
+    NodePath.sep === "\\" &&
+    NodePath.toNamespacedPath(checkoutPath).toUpperCase().startsWith("\\\\?\\UNC\\")
+  )
+    throw new Error("Windows junctions cannot target a network checkout.");
   const names = new Set(CHECKOUT_CONFIG_ENTRIES);
   for (const path of paths) names.add(path.split("/", 1)[0]!);
   for (const name of names) {

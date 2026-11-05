@@ -10,6 +10,7 @@ import {
   type OrchestrationV2ThreadShell,
   type ServerSettings,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -460,6 +461,40 @@ describe("CodeIndexReactor", () => {
       });
       assert.deepEqual(yield* harness.orphansRejected, ["/projects/deleted"]);
     }),
+  );
+
+  it.effect("keeps known Windows checkouts through drive-letter and case differences", (context) =>
+    Effect.gen(function* () {
+      if (!(yield* HostProcess.isWindows)) return context.skip();
+      const harness = yield* reactorHarness({
+        threads: [shell({ worktreePath: "c:\\worktrees\\Feature" })],
+        projectRoots: ["c:\\projects\\App"],
+        autoCodeIndexEnabled: false,
+        orphanOwners: ["C:\\PROJECTS\\APP", "C:\\WORKTREES\\FEATURE"],
+      });
+      assert.deepEqual(yield* harness.orphansRejected, []);
+    }),
+  );
+
+  it.effect(
+    "keeps a settled Windows worktree while a differently cased thread is unsettled",
+    (context) =>
+      Effect.gen(function* () {
+        if (!(yield* HostProcess.isWindows)) return context.skip();
+        const settled = shell({
+          worktreePath: "c:\\worktrees\\Feature",
+          settledOverride: "settled",
+          settledAt: at(-60_000),
+        });
+        const harness = yield* reactorHarness({
+          threads: [
+            settled,
+            shell({ id: ThreadId.make("thread-2"), worktreePath: "C:\\WORKTREES\\FEATURE" }),
+          ],
+        });
+        yield* harness.send(settledEvent(settled));
+        assert.deepEqual(yield* harness.effectsBeforeSentinel, []);
+      }),
   );
 
   it.effect("stops running builds when automatic indexing is turned off", () =>

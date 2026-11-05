@@ -8,11 +8,61 @@ import { expect, it } from "vite-plus/test";
 
 import {
   hasLegacyIndexFiles,
+  pinPublishedGeneration,
   removeIndexRoot,
   removeLegacyIndexFromCheckout,
   tryLockBuild,
 } from "./codeIndexLocks.ts";
-import { publishGeneration, readPublishedGeneration } from "./codeIndexLayout.ts";
+import {
+  linkCheckoutSources,
+  publishGeneration,
+  readPublishedGeneration,
+  writeIndexedCheckout,
+} from "./codeIndexLayout.ts";
+
+it("removes checkout links while preserving a pinned generation and its source files", () => {
+  const temporary = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-index-cleanup-"));
+  const checkout = NodePath.join(temporary, "checkout");
+  const root = NodePath.join(temporary, "index");
+  let pin: ReturnType<typeof pinPublishedGeneration> | undefined;
+  try {
+    NodeFS.mkdirSync(NodePath.join(checkout, "src"), { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(checkout, "src/main.ts"), "export const main = 1;");
+    NodeFS.writeFileSync(NodePath.join(checkout, "top.ts"), "export const top = 1;");
+    writeIndexedCheckout(root, checkout);
+    linkCheckoutSources(root, checkout, ["src/main.ts", "top.ts"]);
+    publishGeneration(root, 1);
+    const generation = NodePath.join(root, ".codegraph-t3-g1");
+    NodeFS.mkdirSync(generation);
+    NodeFS.writeFileSync(NodePath.join(generation, "codegraph.db"), "index payload");
+    pin = pinPublishedGeneration(root);
+
+    removeIndexRoot(root);
+
+    expect(readPublishedGeneration(root)).toBeNull();
+    expect(NodeFS.existsSync(generation)).toBe(true);
+    expect(NodeFS.existsSync(NodePath.join(root, "src"))).toBe(false);
+    expect(NodeFS.existsSync(NodePath.join(root, "top.ts"))).toBe(false);
+    expect(NodeFS.readFileSync(NodePath.join(checkout, "src/main.ts"), "utf8")).toBe(
+      "export const main = 1;",
+    );
+    expect(NodeFS.readFileSync(NodePath.join(checkout, "top.ts"), "utf8")).toBe(
+      "export const top = 1;",
+    );
+
+    pin.release();
+    pin = undefined;
+    removeIndexRoot(root);
+    expect(NodeFS.existsSync(generation)).toBe(false);
+    expect(NodeFS.readdirSync(NodePath.join(root, ".codegraph-t3")).toSorted()).toEqual([
+      "build.lock",
+      "building.lock",
+    ]);
+  } finally {
+    pin?.release();
+    NodeFS.rmSync(temporary, { recursive: true, force: true });
+  }
+});
 
 it.each([
   ["external index", removeIndexRoot],

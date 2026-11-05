@@ -23,6 +23,7 @@ import {
   worktreeSettlementChain,
 } from "../../storageCleanup.ts";
 import * as CodeIntelligence from "./CodeIntelligence.ts";
+import { checkoutPathKey } from "./codeIndexLayout.ts";
 
 const SWEEP_INTERVAL = "1 hour";
 
@@ -74,7 +75,9 @@ const make = Effect.gen(function* () {
     const target = path.resolve(worktreePath);
     const entries = yield* projections.getThreadWorktreePaths({ includeArchived: true });
     const group = (yield* Effect.forEach(
-      entries.filter((entry) => path.resolve(entry.worktreePath) === target),
+      entries.filter(
+        (entry) => checkoutPathKey(path.resolve(entry.worktreePath)) === checkoutPathKey(target),
+      ),
       (entry) => projections.getThreadShell(entry.threadId),
     )).filter((thread) => thread !== null);
     const threadsById = new Map(group.map((thread) => [thread.id, thread]));
@@ -94,7 +97,13 @@ const make = Effect.gen(function* () {
     if (!worktreeIndexReleasable(group, now, settings, threadsById)) return;
     // A worktree registered as its own project keeps its index.
     const projects = yield* projectStore.listShells();
-    if (projects.some((project) => path.resolve(project.workspaceRoot) === target)) return;
+    if (
+      projects.some(
+        (project) =>
+          checkoutPathKey(path.resolve(project.workspaceRoot)) === checkoutPathKey(target),
+      )
+    )
+      return;
     yield* codeIntelligence.removeCheckoutIndex(target);
   });
 
@@ -106,17 +115,22 @@ const make = Effect.gen(function* () {
       [
         ...projects.map((project) => project.workspaceRoot),
         ...entries.map((e) => e.worktreePath),
-      ].map((knownPath) => path.resolve(knownPath)),
+      ].map((knownPath) => checkoutPathKey(path.resolve(knownPath))),
     );
     // Even with automatic indexing off: this only cleans T3's own data for things that are gone.
     yield* codeIntelligence.removeOrphanedIndexes((checkoutPath) =>
-      known.has(path.resolve(checkoutPath)),
+      known.has(checkoutPathKey(path.resolve(checkoutPath))),
     );
     if (!(yield* autoIndexEnabled)) return;
     // De-duplicated first: hundreds of threads share a path, and each check hits the disk.
-    const candidates = [...new Set(entries.map((entry) => path.resolve(entry.worktreePath)))];
+    const candidates = new Map(
+      entries.map((entry) => {
+        const resolved = path.resolve(entry.worktreePath);
+        return [checkoutPathKey(resolved), resolved];
+      }),
+    );
     // Sequentially: each release waits on the checkout's build lock.
-    for (const worktreePath of candidates) {
+    for (const worktreePath of candidates.values()) {
       if (!(yield* codeIntelligence.hasCheckoutIndex(worktreePath))) continue;
       yield* releaseWorktreeIndex(worktreePath).pipe(
         Effect.catchCause((cause) =>

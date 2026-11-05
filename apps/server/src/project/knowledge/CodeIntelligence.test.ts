@@ -21,6 +21,7 @@ import {
   type ProjectCodeIndexEvent,
   type VcsListWorkspaceFilesResult,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -45,7 +46,7 @@ import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
 import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 import * as CodeIntelligence from "./CodeIntelligence.ts";
-import { indexRootFor } from "./codeIndexLayout.ts";
+import { indexRootFor, linkCheckoutSources } from "./codeIndexLayout.ts";
 import { pinPublishedGeneration } from "./codeIndexLocks.ts";
 import { rankListing } from "./codeIntelligenceWorker.ts";
 import * as FileHistory from "./FileHistory.ts";
@@ -1349,6 +1350,69 @@ it.effect("indexes only when something asks while automatic indexing is off", ()
       // A code question always works.
       const answer = yield* run({ operation: "symbols", name: "greet" });
       assert.ok(answer.nodes.some((node) => node.path === "src/defs.ts"));
+    }),
+  ),
+);
+
+it.effect("rejects Windows network checkouts before creating partial source links", (context) =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      if (!(yield* HostProcess.isWindows)) return context.skip();
+      for (const checkout of [
+        "\\\\server\\share\\repo",
+        "//server/share/repo",
+        "\\\\?\\UNC\\server\\share\\repo",
+      ]) {
+        assert.throws(
+          () => linkCheckoutSources(fixture.worktree, checkout, ["src/defs.ts"]),
+          /network checkout/,
+        );
+      }
+      assert.deepEqual(NodeFS.readdirSync(fixture.worktree), ["src"]);
+    }),
+  ),
+);
+
+it.effect("shares one index between Windows project and thread path case variants", (context) =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      if (!(yield* HostProcess.isWindows)) return context.skip();
+      const { refresh, indexRoot, codeIndexDir } = yield* checkoutService(
+        fixture.root.toLowerCase(),
+        () => ["src/defs.ts"],
+        {
+          worktree: {
+            threadId: worktreeThreadId,
+            path: fixture.root.toUpperCase().replaceAll("\\", "/"),
+          },
+        },
+      );
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      assert.deepEqual(yield* refresh(worktreeThreadId), { _tag: "Unchanged" });
+      assert.equal(indexRoot(fixture.root.toLowerCase()), indexRoot(fixture.root.toUpperCase()));
+      assert.lengthOf(NodeFS.readdirSync(codeIndexDir), 1);
+    }),
+  ),
+);
+
+it.effect("stops a Windows build removed through a different path case", (context) =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      if (!(yield* HostProcess.isWindows)) return context.skip();
+      const gate = buildGate();
+      const { refresh, removeCheckoutIndex, indexRoot } = yield* checkoutService(
+        fixture.root.toLowerCase(),
+        () => ["src/defs.ts"],
+        gate,
+      );
+      const held = yield* gate.holdNext;
+      const building = yield* refresh().pipe(Effect.forkScoped);
+      const pid = yield* Deferred.await(held.entered);
+      yield* removeCheckoutIndex(fixture.root.toUpperCase());
+      assert.isFalse(isProcessAlive(pid));
+      yield* Fiber.await(building);
+      assertClearedIndex(indexRoot(fixture.root.toLowerCase()));
+      assert.isTrue(NodeFS.existsSync(NodePath.join(fixture.root, "src/defs.ts")));
     }),
   ),
 );
