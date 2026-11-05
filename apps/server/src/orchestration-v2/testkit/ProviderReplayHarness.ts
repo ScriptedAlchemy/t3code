@@ -61,6 +61,7 @@ import * as McpAppModelContext from "../../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../../preview/PreviewAgentActivity.ts";
 import * as RunExecutionService from "../RunExecutionService.ts";
 import * as RunFinalizationService from "../RunFinalizationService.ts";
+import * as WorktreeBranches from "../WorktreeBranches.ts";
 import * as ThreadTitleRegenerationService from "../ThreadTitleRegenerationService.ts";
 import * as RuntimePolicy from "../RuntimePolicy.ts";
 import * as TurnItemPositionStore from "../TurnItemPositionStore.ts";
@@ -349,6 +350,10 @@ export function layerWithRegistry<Error>(
   const layerCommandReceiptStoreProvided = CommandReceiptStore.layer.pipe(
     Layer.provide(layerDatabase),
   );
+  const layerGitVcsDriver = GitVcsDriver.layer.pipe(
+    Layer.provide(layerServerConfig),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
   const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -359,10 +364,7 @@ export function layerWithRegistry<Error>(
         layerEventSinkProvided,
         IdAllocator.layer,
         ThreadCommandExecutor.layer,
-        GitVcsDriver.layer.pipe(
-          Layer.provide(layerServerConfig),
-          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-        ),
+        layerGitVcsDriver,
       ),
     ),
   );
@@ -447,9 +449,6 @@ export function layerWithRegistry<Error>(
       ),
     ),
   );
-  const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(
-    Layer.provide(Layer.merge(layerCheckpointCaptureServiceProvided, layerStores)),
-  );
   const layerThreadTitleRegenerationTest = Layer.succeed(
     ThreadTitleRegenerationService.ThreadTitleRegenerationService,
     ThreadTitleRegenerationService.ThreadTitleRegenerationService.of({
@@ -473,6 +472,17 @@ export function layerWithRegistry<Error>(
         layerServerSettings,
         layerPoolCatalog,
         ThreadForkService.layer,
+      ),
+    ),
+  );
+  const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerCheckpointCaptureServiceProvided,
+        layerStores,
+        WorktreeBranches.layer.pipe(
+          Layer.provide(Layer.merge(layerOrchestratorProvided, layerGitVcsDriver)),
+        ),
       ),
     ),
   );
