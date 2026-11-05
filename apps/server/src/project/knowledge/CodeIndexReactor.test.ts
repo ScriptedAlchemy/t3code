@@ -125,6 +125,27 @@ describe("worktreeIndexReleasable", () => {
       expected: true,
     },
     {
+      name: "a settled parent with a pinned subagent",
+      group: () => [settled(), subagent({ pinnedAt: now })],
+      expected: false,
+    },
+    {
+      name: "a settled parent with a side chat kept active",
+      group: () => [
+        settled(),
+        subagent({
+          settledOverride: "active",
+          lineage: {
+            rootThreadId: ThreadId.make("thread-1"),
+            parentThreadId: ThreadId.make("thread-1"),
+            relationshipToParent: null,
+            sideChat: true,
+          },
+        }),
+      ],
+      expected: false,
+    },
+    {
       name: "a settled parent with a running subagent",
       group: () => [settled(), subagent({ status: "running", activeRunId: RunId.make("run-1") })],
       expected: false,
@@ -243,6 +264,8 @@ interface Harness {
   readonly effects: Queue.Queue<string>;
   /** The owners the activation sweep's orphan pass rejected. */
   readonly orphansRejected: Effect.Effect<ReadonlyArray<string>>;
+  /** The checkouts the activation sweep asked to clear of an older version's folders. */
+  readonly legacyCheckouts: Effect.Effect<ReadonlyArray<string>>;
   /** Resolves once the sweep asks whether a worktree has an index. */
   readonly indexChecked: Effect.Effect<void>;
   readonly settings: PubSub.PubSub<ServerSettings>;
@@ -268,6 +291,7 @@ function reactorHarness(options: {
     const events = yield* Queue.unbounded<ApplicationStoredEvent>();
     const effects = yield* Queue.unbounded<string>();
     const orphansRejected = yield* Deferred.make<ReadonlyArray<string>>();
+    const legacyCheckouts = yield* Deferred.make<ReadonlyArray<string>>();
     const indexChecked = yield* Deferred.make<void>();
     const settings = yield* PubSub.unbounded<ServerSettings>();
     const threadsById = new Map(options.threads.map((thread) => [thread.id, thread]));
@@ -290,6 +314,8 @@ function reactorHarness(options: {
               Deferred.succeed(indexChecked, undefined).pipe(
                 Effect.as((options.indexed ?? []).includes(checkoutPath)),
               ),
+            removeLegacyIndexes: (checkoutPaths) =>
+              Deferred.succeed(legacyCheckouts, checkoutPaths).pipe(Effect.asVoid),
             removeOrphanedIndexes: (isKnown) =>
               Deferred.succeed(
                 orphansRejected,
@@ -344,6 +370,7 @@ function reactorHarness(options: {
       send: (event) => Queue.offer(events, event).pipe(Effect.asVoid),
       effects,
       orphansRejected: Deferred.await(orphansRejected),
+      legacyCheckouts: Deferred.await(legacyCheckouts),
       indexChecked: Deferred.await(indexChecked),
       settings,
       next: Queue.take(effects),
@@ -428,7 +455,7 @@ describe("CodeIndexReactor", () => {
     }),
   );
 
-  it.effect("removes orphaned indexes even while automatic indexing is off", () =>
+  it.effect("removes orphaned indexes and old folders even while automatic indexing is off", () =>
     Effect.gen(function* () {
       const harness = yield* reactorHarness({
         threads: [shell()],
@@ -437,6 +464,7 @@ describe("CodeIndexReactor", () => {
       });
       // A known worktree is kept; the deleted checkout is the only rejection.
       assert.deepEqual(yield* harness.orphansRejected, ["/worktrees/gone"]);
+      assert.deepEqual(yield* harness.legacyCheckouts, [WORKTREE]);
     }),
   );
 
@@ -448,6 +476,7 @@ describe("CodeIndexReactor", () => {
         orphanOwners: ["/projects/one", WORKTREE],
       });
       assert.deepEqual(yield* harness.orphansRejected, []);
+      assert.deepEqual(yield* harness.legacyCheckouts, ["/projects/one", WORKTREE]);
     }),
   );
 

@@ -40,6 +40,8 @@ import {
 } from "./codeIndexLayout.ts";
 
 const CATALOG_REVISION = "@colbymchenry/codegraph@1.6.2";
+// Programming languages outside the SDK's catalog, which it reports as unknown like any asset.
+const UNREADABLE_SOURCE = /\.(?:clj|cljs|cr|elm|ex|exs|fs|fsx|gd|hs|jl|ml|mli|nim|pl|pm|rkt|zig)$/i;
 const MAX_RESULTS = 200;
 const MAX_FILES_FOR_UNRESOLVED = 50;
 const MAX_LISTED_FILES = 10_000;
@@ -273,8 +275,10 @@ function checkoutConfigurationDigest(checkoutPath: string): string {
       const contents = NodeFS.readFileSync(NodePath.join(checkoutPath, name));
       digest.update("present\0").update(contents);
     } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
-      digest.update("missing\0");
+      // Anything unreadable, such as a folder of that name, configures nothing.
+      digest.update(
+        (cause as NodeJS.ErrnoException).code === "ENOENT" ? "missing\0" : "unreadable\0",
+      );
     }
     digest.update("\0");
   }
@@ -1286,7 +1290,8 @@ export async function inspectCodeInWorker(
 /**
  * How much of the listed checkout the index covers, counted the same way for a query and for
  * freshness. Every limitation but unsupported files makes coverage partial: docs, data and assets
- * fill any repository, so they are a gap only when nothing else could be indexed.
+ * fill any repository, so they are a gap only when nothing else could be indexed. Source the SDK
+ * cannot read is a gap once it is a real share of the code, not for one stray script.
  */
 function classifyIndexCoverage(
   input: CheckoutListing,
@@ -1318,7 +1323,13 @@ function classifyIndexCoverage(
     );
   if (buildState !== null && buildState !== "complete")
     limitations.push(`The last full index run reported '${buildState}'.`);
-  const incomplete = limitations.length > 0 || (filesUnsupported > 0 && files.length === 0);
+  const unreadableSource = listedPaths.filter(
+    (path) => UNREADABLE_SOURCE.test(path) && !isSupported(path) && !indexedPaths.has(path),
+  ).length;
+  const incomplete =
+    limitations.length > 0 ||
+    (filesUnsupported > 0 && files.length === 0) ||
+    unreadableSource * 20 > files.length + unreadableSource;
   if (filesUnsupported > 0)
     limitations.push(
       `${filesUnsupported} listed files use languages outside the SDK runtime catalog.`,

@@ -165,6 +165,8 @@ export class CodeIntelligence extends Context.Service<
      * a reader still pins to the next sweep.
      */
     readonly removeCheckoutIndex: (checkoutPath: string) => Effect.Effect<void>;
+    /** Clears an older version's folders from each checkout, leaving its current index alone. */
+    readonly removeLegacyIndexes: (checkoutPaths: ReadonlyArray<string>) => Effect.Effect<void>;
     /** Whether the checkout has an index, current or left by an older version. */
     readonly hasCheckoutIndex: (checkoutPath: string) => Effect.Effect<boolean>;
     /**
@@ -448,6 +450,15 @@ export interface CodeIntelligenceOptions {
   readonly beforeBuildCommand?: (analysisPid: number) => Effect.Effect<void>;
 }
 
+const removeLegacyIndexFiles = (checkoutPath: string) =>
+  Effect.sync(() => {
+    if (hasLegacyIndexFiles(checkoutPath)) removeLegacyIndexFromCheckout(checkoutPath);
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("failed to remove a checkout's old index files", { checkoutPath, cause }),
+    ),
+  );
+
 const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntelligenceOptions) {
   const projects = yield* ProjectStore.ProjectStoreV2;
   const threads = yield* ProjectionStore.ProjectionStoreV2;
@@ -616,16 +627,7 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
           ? Effect.succeed({ _tag: "BuildingElsewhere" } as const)
           : Effect.gen(function* () {
               // Folders an older version left in the checkout go on the first build that sees them.
-              yield* Effect.sync(() => {
-                if (hasLegacyIndexFiles(checkoutPath)) removeLegacyIndexFromCheckout(checkoutPath);
-              }).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("failed to remove a checkout's old index files", {
-                    checkoutPath,
-                    cause,
-                  }),
-                ),
-              );
+              yield* removeLegacyIndexFiles(checkoutPath);
               return yield* buildGeneration(checkoutPath);
             }),
       (release) => Effect.sync(() => release?.()),
@@ -925,6 +927,12 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
     if (hadFiles || hadBuild) yield* publishReRead(path);
   });
 
+  const removeLegacyIndexes: CodeIntelligence["Service"]["removeLegacyIndexes"] = Effect.fn(
+    "CodeIntelligence.removeLegacyIndexes",
+  )(function* (checkoutPaths) {
+    yield* Effect.forEach(checkoutPaths, removeLegacyIndexFiles, { discard: true });
+  });
+
   const hasCheckoutIndex: CodeIntelligence["Service"]["hasCheckoutIndex"] = Effect.fn(
     "CodeIntelligence.hasCheckoutIndex",
   )(function* (checkoutPath) {
@@ -1003,6 +1011,7 @@ const make = Effect.fn("CodeIntelligence.make")(function* (options: CodeIntellig
     ensureProjectIndexed,
     refreshForActiveAgent,
     removeCheckoutIndex,
+    removeLegacyIndexes,
     hasCheckoutIndex,
     removeOrphanedIndexes,
     stopBuilds,

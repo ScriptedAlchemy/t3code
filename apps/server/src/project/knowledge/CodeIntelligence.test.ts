@@ -142,11 +142,7 @@ async function generationDirectories(indexRoot: string) {
 }
 
 function assertClearedIndex(indexRoot: string): void {
-  assert.deepEqual(NodeFS.readdirSync(indexRoot), [".codegraph-t3"]);
-  assert.deepEqual(NodeFS.readdirSync(NodePath.join(indexRoot, ".codegraph-t3")).toSorted(), [
-    "build.lock",
-    "building.lock",
-  ]);
+  assert.isFalse(NodeFS.existsSync(indexRoot));
 }
 
 /**
@@ -944,6 +940,8 @@ function checkoutService(
         }),
       refreshIfIndexed: (cwd: string) => intelligence.refreshIfIndexed(cwd),
       removeCheckoutIndex: (checkoutPath: string) => intelligence.removeCheckoutIndex(checkoutPath),
+      removeLegacyIndexes: (checkoutPaths: ReadonlyArray<string>) =>
+        intelligence.removeLegacyIndexes(checkoutPaths),
       stopBuilds: intelligence.stopBuilds,
     };
   });
@@ -1114,6 +1112,22 @@ it.effect("reports freshness coverage with the same classification as a query", 
       const docsOnlyFreshness = yield* docsOnly.run({ operation: "freshness" });
       assert.equal(docsOnlyFreshness.coverage.state, "partial");
       assert.equal(docsOnlyFreshness.index?.state, "partial");
+
+      // Source in a language the SDK cannot read is a gap, however much else is indexed.
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(NodePath.join(fixture.root, "worker.ex"), "defmodule Worker do\nend\n"),
+      );
+      const mixed = yield* checkoutService(fixture.root, () => ["src/defs.ts", "worker.ex"]);
+      yield* mixed.refresh();
+      const mixedFreshness = yield* mixed.run({ operation: "freshness" });
+      assert.equal(mixedFreshness.coverage.state, "partial");
+      assert.equal(mixedFreshness.index?.state, "partial");
+
+      // One stray script among many sources is not.
+      const sources = yield* Effect.promise(() => writeGeneratedSources(fixture.root, 20));
+      const stray = yield* checkoutService(fixture.root, () => [...sources, "worker.ex"]);
+      yield* stray.refresh();
+      assert.equal((yield* stray.run({ operation: "freshness" })).index?.state, "ready");
     }),
   ),
 );
@@ -1767,12 +1781,11 @@ it.effect("removes the index folders an older version left in the checkout", () 
       });
       const { refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"]);
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
-      // Lock inodes stay stable for older servers; every source entry is still there.
+      // Every source entry is still there, and nothing of T3's is.
       assert.deepEqual(
         (yield* Effect.promise(() => NodeFSP.readdir(fixture.root))).toSorted(),
-        [...before, ".codegraph-t3"].toSorted(),
+        before,
       );
-      assert.deepEqual(NodeFS.readdirSync(control).toSorted(), ["build.lock", "building.lock"]);
       assert.isTrue(NodeFS.lstatSync(NodePath.join(fixture.root, "alias")).isSymbolicLink());
       assert.equal(
         yield* Effect.promise(() =>
@@ -1802,9 +1815,36 @@ it.effect("finds and removes an older version's folders in a checkout with no in
 
       // Settling a thread takes this path, so a worktree nothing rebuilds is still cleaned up.
       yield* removeCheckoutIndex(fixture.root);
-      assert.deepEqual(NodeFS.readdirSync(control).toSorted(), ["build.lock", "building.lock"]);
+      assert.isFalse(NodeFS.existsSync(control));
       assert.isFalse(yield* hasCheckoutIndex(fixture.root));
       assert.isTrue(NodeFS.existsSync(NodePath.join(fixture.root, "src/defs.ts")));
+    }),
+  ),
+);
+
+it.effect("clears an older version's folders from checkouts and leaves their indexes", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      const control = NodePath.join(fixture.root, ".codegraph-t3");
+      const broken = NodePath.join(fixture.root, "broken");
+      const { refresh, removeLegacyIndexes, hasCheckoutIndex } = yield* checkoutService(
+        fixture.root,
+        () => ["src/defs.ts"],
+      );
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(control);
+        await NodeFSP.writeFile(NodePath.join(control, "published"), "1");
+        // Removing this one fails, which must not stop the sweep reaching the next checkout.
+        await NodeFSP.mkdir(NodePath.join(broken, ".codegraph-t3/codegraph.db"), {
+          recursive: true,
+        });
+      });
+
+      yield* removeLegacyIndexes([broken, fixture.root]);
+
+      assert.isFalse(NodeFS.existsSync(control));
+      assert.isTrue(yield* hasCheckoutIndex(fixture.root));
     }),
   ),
 );
@@ -1865,7 +1905,7 @@ it.effect("leaves legacy folders for later while another server builds", () =>
       assert.equal(yield* other.send("release"), "released");
       yield* editDefinition(fixture.root, "second");
       assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 2 });
-      assert.deepEqual(NodeFS.readdirSync(control).toSorted(), ["build.lock", "building.lock"]);
+      assert.isFalse(NodeFS.existsSync(control));
     }),
   ),
 );
@@ -2084,6 +2124,19 @@ it.effect.each(["codegraph.json", ".gitignore"] as const)(
         yield* Effect.promise(() => NodeFSP.unlink(configPath));
         assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 4 });
         assert.equal((yield* run({ operation: "symbols", name: "caller" })).nodes.length, 1);
+      }),
+    ),
+);
+
+it.effect.each(["codegraph.json", ".gitignore"] as const)(
+  "keeps indexing when %s cannot be read as a file",
+  (configName) =>
+    withFixture((fixture) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => NodeFSP.mkdir(NodePath.join(fixture.root, configName)));
+        const { run, refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"]);
+        assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+        assert.equal((yield* run({ operation: "freshness" })).index?.state, "ready");
       }),
     ),
 );

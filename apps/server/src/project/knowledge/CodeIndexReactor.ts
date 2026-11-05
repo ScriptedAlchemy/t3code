@@ -41,10 +41,14 @@ export function worktreeIndexReleasable(
 ): boolean {
   if (group.length === 0) return false;
   const owner = worktreeOwner(group);
-  // A subagent or side-chat chain follows its owner; unrelated threads must all be settled.
+  // A subagent or side-chat chain follows its owner unless someone kept that thread going;
+  // unrelated threads must all be settled.
   const settled =
     owner !== undefined
-      ? worktreeSettlementChain(owner, threadsById, now, settings).length > 0
+      ? worktreeSettlementChain(owner, threadsById, now, settings).length > 0 &&
+        group.every(
+          (t) => t.settledAt !== null || (t.settledOverride !== "active" && t.pinnedAt == null),
+        )
       : group.every((t) => t.settledAt !== null);
   return settled && group.every((t) => storageCleanupThreadIdle(t, now, settings));
 }
@@ -111,13 +115,17 @@ const make = Effect.gen(function* () {
     const entries = yield* projections.getThreadWorktreePaths({ includeArchived: true });
     // `listShells` omits deleted projects, so a deleted project is not a known checkout.
     const projects = yield* projectStore.listShells();
-    const known = new Set(
+    const known = new Map(
       [
         ...projects.map((project) => project.workspaceRoot),
         ...entries.map((e) => e.worktreePath),
-      ].map((knownPath) => checkoutPathKey(path.resolve(knownPath))),
+      ].map((knownPath) => {
+        const resolved = path.resolve(knownPath);
+        return [checkoutPathKey(resolved), resolved];
+      }),
     );
-    // Even with automatic indexing off: this only cleans T3's own data for things that are gone.
+    // Even with automatic indexing off: these only clean up T3's own data.
+    yield* codeIntelligence.removeLegacyIndexes([...known.values()]);
     yield* codeIntelligence.removeOrphanedIndexes((checkoutPath) =>
       known.has(checkoutPathKey(path.resolve(checkoutPath))),
     );

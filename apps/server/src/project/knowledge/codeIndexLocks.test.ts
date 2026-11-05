@@ -2,7 +2,6 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeSqlite from "node:sqlite";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import { expect, it } from "vite-plus/test";
 
@@ -53,47 +52,97 @@ it("removes checkout links while preserving a pinned generation and its source f
     pin.release();
     pin = undefined;
     removeIndexRoot(root);
-    expect(NodeFS.existsSync(generation)).toBe(false);
-    expect(NodeFS.readdirSync(NodePath.join(root, ".codegraph-t3")).toSorted()).toEqual([
-      "build.lock",
-      "building.lock",
-    ]);
+    expect(NodeFS.existsSync(root)).toBe(false);
   } finally {
     pin?.release();
     NodeFS.rmSync(temporary, { recursive: true, force: true });
   }
 });
 
+// Windows refuses to delete a file another handle has open, so there the first lock simply stands.
 it.each([
-  ["external index", removeIndexRoot],
-  ["legacy index", removeLegacyIndexFromCheckout],
-] as const)("keeps a waiting builder exclusive after %s removal", (_name, remove) => {
+  ["deleted", () => null],
+  ["deleted and taken by another builder", tryLockBuild],
+] as const)("never lets two builders hold a lock %s before it landed", (_name, afterRemoval) => {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-index-lock-"));
-  let waitingBuilder: NodeSqlite.DatabaseSync | undefined;
-  let contender: (() => void) | null = null;
+  const holders: Array<(() => void) | null> = [];
   try {
-    publishGeneration(root, 1);
-    const generation = NodePath.join(root, ".codegraph-t3-g1");
-    NodeFS.mkdirSync(generation);
-    NodeFS.writeFileSync(NodePath.join(generation, "codegraph.db"), "index payload");
-    waitingBuilder = new NodeSqlite.DatabaseSync(NodePath.join(root, ".codegraph-t3/build.lock"));
-
-    remove(root);
-    expect(readPublishedGeneration(root)).toBeNull();
-    expect(NodeFS.existsSync(generation)).toBe(false);
-    expect(hasLegacyIndexFiles(root)).toBe(false);
-
-    waitingBuilder.exec("PRAGMA journal_mode = OFF; BEGIN EXCLUSIVE;");
-    contender = tryLockBuild(root);
-    expect(contender).toBeNull();
-    waitingBuilder.close();
-    waitingBuilder = undefined;
-    contender = tryLockBuild(root);
-    expect(contender).not.toBeNull();
+    holders.push(
+      tryLockBuild(root, () => {
+        removeIndexRoot(root);
+        holders.push(afterRemoval(root));
+      }),
+    );
+    holders.push(tryLockBuild(root));
+    expect(holders.filter((holder) => holder !== null)).toHaveLength(1);
   } finally {
-    contender?.();
-    waitingBuilder?.close();
+    for (const holder of holders) holder?.();
     NodeFS.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const legacyCheckout = (files: ReadonlyArray<string>) => {
+  const checkout = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-index-legacy-"));
+  NodeFS.writeFileSync(NodePath.join(checkout, "keep.txt"), "mine");
+  for (const file of files) {
+    NodeFS.mkdirSync(NodePath.dirname(NodePath.join(checkout, file)), { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(checkout, file), "");
+  }
+  return checkout;
+};
+
+it.each([
+  [
+    "a published index",
+    [
+      ".codegraph-t3/.gitignore",
+      ".codegraph-t3/published",
+      ".codegraph-t3/build.lock",
+      ".codegraph-t3/building.lock",
+      ".codegraph-t3-g3/.gitignore",
+      ".codegraph-t3-g3/codegraph.db",
+      ".codegraph-t3-g3/codegraph.db-shm",
+      ".codegraph-t3-g3/codegraph.db-wal",
+      ".codegraph-t3-g3/readers.lock",
+      ".codegraph-t3-g3/t3-index.json",
+    ],
+  ],
+  ["only lock files", [".codegraph-t3/.gitignore", ".codegraph-t3/build.lock"]],
+  ["a generation with no control folder", [".codegraph-t3-g3/codegraph.db"]],
+])("leaves nothing of T3's in a checkout holding %s", (_name, files) => {
+  const checkout = legacyCheckout(files);
+  try {
+    expect(hasLegacyIndexFiles(checkout)).toBe(true);
+    removeLegacyIndexFromCheckout(checkout);
+    expect(NodeFS.readdirSync(checkout)).toEqual(["keep.txt"]);
+    expect(hasLegacyIndexFiles(checkout)).toBe(false);
+  } finally {
+    NodeFS.rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+it("keeps the user's files in an older version's control folder", () => {
+  const checkout = legacyCheckout([
+    ".codegraph-t3/.gitignore",
+    ".codegraph-t3/published",
+    ".codegraph-t3/build.lock",
+    ".codegraph-t3/notes.txt",
+    ".codegraph-t3/mine/a.txt",
+    ".codegraph-t3-g3/codegraph.db",
+    ".codegraph-t3-g3/notes.txt",
+  ]);
+  try {
+    removeLegacyIndexFromCheckout(checkout);
+    expect(
+      NodeFS.readdirSync(NodePath.join(checkout, ".codegraph-t3"), { recursive: true }).toSorted(),
+    ).toEqual(["mine", NodePath.join("mine", "a.txt"), "notes.txt"]);
+    expect(NodeFS.readdirSync(NodePath.join(checkout, ".codegraph-t3-g3")).toSorted()).toEqual([
+      "codegraph.db",
+      "notes.txt",
+    ]);
+    expect(hasLegacyIndexFiles(checkout)).toBe(false);
+  } finally {
+    NodeFS.rmSync(checkout, { recursive: true, force: true });
   }
 });
 

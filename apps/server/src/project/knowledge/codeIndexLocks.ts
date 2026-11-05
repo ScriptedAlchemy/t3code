@@ -34,14 +34,28 @@ const sqliteCode = (cause: unknown) =>
     ? cause.errcode & 0xff
     : undefined;
 
+const fileIdentity = (path: string) =>
+  NodeFS.statSync(path, { bigint: true, throwIfNoEntry: false })?.ino;
+
 /** The connection holding `path`'s exclusive lock, or null while another connection holds a lock. */
-function lockExclusive(path: string, waitMs: number): NodeSqlite.DatabaseSync | null {
+function lockExclusive(
+  path: string,
+  waitMs: number,
+  onOpened?: () => void,
+): NodeSqlite.DatabaseSync | null {
   const database = new NodeSqlite.DatabaseSync(path);
   try {
+    const opened = fileIdentity(path);
+    onOpened?.();
     // Defensive SQLite ignores OFF; MEMORY avoids an open journal that Windows cannot delete.
     database.exec(
       `PRAGMA busy_timeout = ${waitMs}; PRAGMA journal_mode = MEMORY; BEGIN EXCLUSIVE;`,
     );
+    // A removal can delete this file before the lock lands, and a lock on it then excludes nobody.
+    if (opened === undefined || fileIdentity(path) !== opened) {
+      database.close();
+      return null;
+    }
     return database;
   } catch (cause) {
     database.close();
@@ -75,10 +89,13 @@ function lockShared(path: string, role: "reader" | "probe") {
 }
 
 /** Takes the index root's build lock and returns its release, or null while another builder holds it. */
-export function tryLockBuild(indexRoot: string): (() => void) | null {
+export function tryLockBuild(
+  indexRoot: string,
+  onBuildLockOpened?: () => void,
+): (() => void) | null {
   const control = NodePath.join(indexRoot, INDEX_DIRECTORY);
   NodeFS.mkdirSync(control, { recursive: true });
-  const build = lockExclusive(NodePath.join(control, BUILD_LOCK), 0);
+  const build = lockExclusive(NodePath.join(control, BUILD_LOCK), 0, onBuildLockOpened);
   if (build === null) return null;
   try {
     const building = lockExclusive(NodePath.join(control, BUILDING_LOCK), MOMENTARY_LOCK_WAIT_MS);
@@ -136,29 +153,73 @@ export function removeGenerationUnlessRead(indexRoot: string, generation: number
   NodeFS.rmSync(directory, { recursive: true, force: true });
 }
 
-function clearControlFiles(control: string, preserveGitignore = false): void {
+function clearControlFiles(control: string): void {
   for (const name of NodeFS.readdirSync(control)) {
-    if (isBuildLockFile(name) || (preserveGitignore && name === ".gitignore")) continue;
+    if (isBuildLockFile(name)) continue;
     NodeFS.rmSync(NodePath.join(control, name), { recursive: true, force: true });
   }
 }
 
-/** Removes index payload and checkout links, retaining the lock inodes that other builders open. */
+/** False while a process holds one open: Windows refuses to delete an open file. */
+function removeBuildLockFiles(control: string): boolean {
+  try {
+    for (const name of [BUILDING_LOCK, BUILD_LOCK]) {
+      NodeFS.rmSync(NodePath.join(control, name), { force: true });
+    }
+    return true;
+  } catch (cause) {
+    const code = (cause as NodeJS.ErrnoException).code;
+    if (code === "EBUSY" || code === "EPERM" || code === "EACCES") return false;
+    throw cause;
+  }
+}
+
+const removeIfEmpty = (directory: string) => {
+  try {
+    NodeFS.rmdirSync(directory);
+  } catch {
+    // What remains is in use or the user's; a later sweep retries.
+  }
+};
+
+/**
+ * Runs `clear` under the build lock, then removes the lock files and their folder. The files go
+ * while held where the OS allows it: a later builder gets a new file, and an earlier one that had
+ * only opened its file finds it gone. Elsewhere they go on release, which an open file refuses.
+ */
+function clearUnderBuildLock(root: string, clear: (control: string) => void): void {
+  const control = NodePath.join(root, INDEX_DIRECTORY);
+  const release = tryLockBuild(root);
+  if (release === null) return;
+  let removed = false;
+  try {
+    clear(control);
+    removed = removeBuildLockFiles(control);
+  } finally {
+    release();
+  }
+  if (!removed) removeBuildLockFiles(control);
+  removeIfEmpty(control);
+}
+
+/**
+ * Removes one index root: the published pointer first, so new readers see "unindexed", then every
+ * generation a reader is not pinning, then the checkout's links. A build elsewhere leaves it all
+ * for the next sweep.
+ *
+ * Nothing here may remove recursively from the root: its entries are links into a user's checkout.
+ */
 export function removeIndexRoot(indexRoot: string): void {
   if (!NodeFS.existsSync(indexRoot)) return;
-  const control = NodePath.join(indexRoot, INDEX_DIRECTORY);
-  const release = tryLockBuild(indexRoot);
-  if (release === null) return;
-  try {
+  clearUnderBuildLock(indexRoot, (control) => {
     NodeFS.rmSync(NodePath.join(control, PUBLISHED_FILE), { force: true });
     for (const generation of listGenerations(indexRoot)) {
       removeGenerationUnlessRead(indexRoot, generation);
     }
     clearCheckoutSources(indexRoot);
     clearControlFiles(control);
-  } finally {
-    release();
-  }
+  });
+  removeIfEmpty(indexRoot);
 }
 
 // Files an older T3 left in a checkout when the index lived beside its sources.
@@ -170,6 +231,18 @@ const LEGACY_CONTROL_MARKERS = [
   "t3-index.json",
 ];
 const LEGACY_GENERATION_MARKERS = ["t3-index.json", "codegraph.db"];
+// Everything T3 and the SDK wrote to an old index folder; anything else there is the user's.
+const LEGACY_INDEX_FILES = [
+  ...LEGACY_CONTROL_MARKERS,
+  READERS_LOCK,
+  ".gitignore",
+  "codegraph.db-shm",
+  "codegraph.db-wal",
+  "codegraph.lock",
+  "daemon.pid",
+  "rebuild.pid",
+  "writer.pid",
+];
 
 const isRealDirectory = (path: string): boolean => {
   try {
@@ -180,12 +253,17 @@ const isRealDirectory = (path: string): boolean => {
 };
 
 /** Legacy lock paths are checkout-controlled, so none may follow a link or share an outside inode. */
-function isT3Directory(path: string, names: ReadonlyArray<string>): boolean {
+function isT3Directory(
+  path: string,
+  names: ReadonlyArray<string>,
+  allowed?: ReadonlyArray<string>,
+): boolean {
   if (!isRealDirectory(path)) return false;
   try {
     const entries = NodeFS.readdirSync(path);
     return (
       entries.some((name) => names.includes(name)) &&
+      (allowed === undefined || entries.every((name) => allowed.includes(name))) &&
       entries.every((name) => {
         const entry = NodeFS.lstatSync(NodePath.join(path, name));
         return entry.isDirectory() || (entry.isFile() && entry.nlink === 1);
@@ -215,12 +293,10 @@ function legacyIndexFolders(
     isT3Directory(
       NodePath.join(checkoutPath, generationDirectory(generation)),
       LEGACY_GENERATION_MARKERS,
+      LEGACY_INDEX_FILES,
     ),
   );
-  const controlHasPayload =
-    exists &&
-    NodeFS.readdirSync(control).some((name) => !isBuildLockFile(name) && name !== ".gitignore");
-  return controlHasPayload || generations.length > 0 ? { generations } : null;
+  return exists || generations.length > 0 ? { generations } : null;
 }
 
 /** Whether a checkout still holds the folders an older T3 kept inside it, without throwing. */
@@ -236,19 +312,16 @@ export function hasLegacyIndexFiles(checkoutPath: string): boolean {
 export function removeLegacyIndexFromCheckout(checkoutPath: string): void {
   const legacy = legacyIndexFolders(checkoutPath);
   if (legacy === null) return;
-  const control = NodePath.join(checkoutPath, INDEX_DIRECTORY);
-  // An older server may still be building; it finishes and this runs on a later build.
-  const release = tryLockBuild(checkoutPath);
-  if (release === null) return;
-  try {
+  // An older server may still be building; it finishes and this runs on a later sweep.
+  clearUnderBuildLock(checkoutPath, (control) => {
     NodeFS.rmSync(NodePath.join(control, PUBLISHED_FILE), { force: true });
     for (const generation of legacy.generations) {
       removeGenerationUnlessRead(checkoutPath, generation);
     }
-    clearControlFiles(control, true);
-  } finally {
-    release();
-  }
+    for (const name of LEGACY_INDEX_FILES) {
+      if (!isBuildLockFile(name)) NodeFS.rmSync(NodePath.join(control, name), { force: true });
+    }
+  });
 }
 
 export interface GenerationPin {

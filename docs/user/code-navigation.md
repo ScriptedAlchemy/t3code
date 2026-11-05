@@ -12,9 +12,8 @@ again. A worktree's index is removed when its thread settles, unless other unset
 the worktree. Until an index is ready, the section says the checkout is not indexed yet. Folders
 outside a git repository index only on a code question.
 
-Indexes are stored in T3 Code's data directory. Index databases an earlier version left in a
-checkout are removed the next time that checkout is indexed. An existing `.codegraph-t3` folder
-can retain small lock files so concurrent servers can continue coordinating safely.
+Indexes are stored in T3 Code's data directory, not in your repository. Folders an earlier version
+left in a project or worktree are removed automatically when T3 Code starts.
 
 Turn automatic indexing off in **Settings → Labs → Automatic code indexing**. Then a checkout only
 indexes when something asks it a code question.
