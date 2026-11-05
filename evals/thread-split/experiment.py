@@ -15,7 +15,15 @@ LABELS = {'NEW_TASK', 'CONTINUE', 'NO_TASK', 'UNCERTAIN'}
 MIN_CALIBRATION_NEGATIVES = 100
 MIN_CALIBRATION_DETECTIONS = 5
 PROMPTS = {
-    'baseline': QUESTION,
+    'baseline': {
+        'type': 'noul',
+        'instructions': (
+            'Could the agent handle the new user message independently of all earlier thread context, '
+            'without reusing any earlier result, file, decision, or instruction? Answer yes only if independent.'
+        ),
+        'criteria': {'true': 'No earlier thread result, file, decision, or instruction is needed.',
+                     'false': 'Handling relies on an earlier thread result, file, decision, or instruction.'},
+    },
     'actionable': {
         'type': 'noul',
         'instructions': (
@@ -29,19 +37,7 @@ PROMPTS = {
         'criteria': {'true': 'Actionable new task; all necessary task-specific context is in the new message.',
                      'false': 'Continuation, non-task, unresolved reference, or uncertain dependence.'},
     },
-    'contextual': {
-        'type': 'noul',
-        'instructions': (
-            'Should this message be offered a fresh thread? Check three conditions: it asks for '
-            'substantive work, it is a separate task rather than the next step of the current task, '
-            'and it can be understood without prior thread-specific entities, constraints, results, '
-            'or decisions. Answer yes only when all three hold. Greetings, acknowledgements, '
-            'pause/resume messages, status requests and ambiguous references are no. The fresh thread '
-            'keeps the same project, environment, tools and standing project instructions.'
-        ),
-        'criteria': {'true': 'A self-contained actionable new task warrants a fresh thread.',
-                     'false': 'Earlier context matters, no new task is requested, or the distinction is unclear.'},
-    },
+    'contextual': QUESTION,
 }
 
 

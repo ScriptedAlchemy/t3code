@@ -78,6 +78,9 @@ it.effect("abstains for disabled, unsafe endpoints, truncated replies and stale 
       "stale",
       "context",
       "empty-context",
+      "short-message",
+      "below-threshold",
+      "at-threshold",
       "valid",
     ] as const) {
       const records = source();
@@ -103,7 +106,19 @@ it.effect("abstains for disabled, unsafe endpoints, truncated replies and stale 
             Response.json(
               {
                 model: scenario === "wrong-model" ? "other" : "pplx-decider-flash-v1.2",
-                answers: { q: { type: "noul", noul: scenario === "invalid" ? 2 : 0.98 } },
+                answers: {
+                  q: {
+                    type: "noul",
+                    noul:
+                      scenario === "invalid"
+                        ? 2
+                        : scenario === "below-threshold"
+                          ? 0.6537
+                          : scenario === "at-threshold"
+                            ? 0.6538
+                            : 0.98,
+                  },
+                },
                 truncated: scenario === "body",
               },
               { headers: scenario === "header" ? { "x-mlx-decision-truncated": "true" } : {} },
@@ -131,12 +146,23 @@ it.effect("abstains for disabled, unsafe endpoints, truncated replies and stale 
         ),
       );
       const result = yield* Effect.gen(function* () {
-        return yield* (yield* Suggestions.ThreadSplitSuggestions).suggest(input);
+        return yield* (yield* Suggestions.ThreadSplitSuggestions).suggest(
+          scenario === "short-message" ? { threadId, message: "run every test now" } : input,
+        );
       }).pipe(Effect.provide(layer));
-      assert.equal(result.suggest, scenario === "valid" || scenario === "empty-context", scenario);
+      assert.equal(
+        result.suggest,
+        scenario === "valid" || scenario === "empty-context" || scenario === "at-threshold",
+        scenario,
+      );
       assert.equal(
         requests,
-        scenario === "disabled" || scenario === "remote" || scenario === "context" ? 0 : 1,
+        scenario === "disabled" ||
+          scenario === "remote" ||
+          scenario === "context" ||
+          scenario === "short-message"
+          ? 0
+          : 1,
         scenario,
       );
     }
