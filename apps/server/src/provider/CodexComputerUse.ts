@@ -86,6 +86,8 @@ export const resolveCodexComputerUse = Effect.fn("CodexComputerUse.resolve")(fun
     const env = record(node.env);
     if (
       node.enabled === false ||
+      (Array.isArray(node.enabled_tools) && !node.enabled_tools.includes("js")) ||
+      (Array.isArray(node.disabled_tools) && node.disabled_tools.includes("js")) ||
       typeof node.command !== "string" ||
       !path.isAbsolute(node.command)
     )

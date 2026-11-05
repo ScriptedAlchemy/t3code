@@ -225,6 +225,21 @@ it.effect.each([
   }),
 );
 
+it.effect.each([
+  ["empty allowlist", { enabled_tools: [] }, unavailable],
+  ["allowlist without js", { enabled_tools: ["reset"] }, unavailable],
+  ["js denied", { disabled_tools: ["js"] }, unavailable],
+  ["denylist takes precedence", { enabled_tools: ["js"], disabled_tools: ["js"] }, unavailable],
+  ["js allowed", { enabled_tools: ["js"] }, available],
+  ["unrelated tool denied", { disabled_tools: ["reset"] }, available],
+] as const)("respects node tool selection: %s", ([_name, selection, expected]) =>
+  Effect.gen(function* () {
+    const config = configured();
+    config.mcp_servers.node_repl = { ...config.mcp_servers.node_repl, ...selection };
+    assert.deepEqual(yield* fixture({ config }).resolve, expected);
+  }),
+);
+
 it.effect("uses effective project disablement even when the user layer enables the plugin", () =>
   Effect.gen(function* () {
     const config = configured();
