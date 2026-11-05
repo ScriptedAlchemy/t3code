@@ -382,6 +382,14 @@ const cleanupFixture = (
       } as unknown as Settings.ServerSettingsService["Service"]),
       Effect.provideService(ProjectStore.ProjectStoreV2, {
         list: () => Effect.sync(() => projectRoots.map((workspaceRoot) => ({ workspaceRoot }))),
+        getShell: (projectId: ProjectId) =>
+          Effect.sync(() => {
+            const index = Number(projectId.replace("project-", "")) - 1;
+            const workspaceRoot = projectRoots[index];
+            return workspaceRoot === undefined
+              ? Option.none()
+              : Option.some({ id: projectId, workspaceRoot });
+          }),
         listShells: () =>
           Effect.sync(() =>
             projectRoots.map((workspaceRoot, index) => ({
@@ -2401,6 +2409,39 @@ describe("storage cleanup reports and local file policies", () => {
         if (change === "the branch switches") yield* command(worktree, ["switch", "-c", "late"]);
         yield* Deferred.succeed(fixture.resume, undefined);
         expect((yield* Fiber.join(run)).entries[0]).toMatchObject({ outcome: "kept", reason });
+        expect(yield* fixture.fs.exists(worktree)).toBe(true);
+      }),
+    ),
+  );
+  it.live("keeps a detached worktree when its holding ref goes during the final checks", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const git = yield* GitVcsDriver.GitVcsDriver;
+        let localChangeChecks = 0;
+        let repo = "";
+        const { service, command, worktree, ...fixture } = yield* cleanupFixture().pipe(
+          Effect.provideService(GitVcsDriver.GitVcsDriver, {
+            ...git,
+            execute: (input) =>
+              Effect.gen(function* () {
+                if (input.operation === "StorageCleanup.localChanges" && ++localChangeChecks === 2)
+                  yield* git.execute({
+                    operation: "test",
+                    cwd: repo,
+                    args: ["tag", "--delete", "keeper"],
+                  });
+                return yield* git.execute(input);
+              }),
+          }),
+        );
+        repo = fixture.repo;
+        yield* command(worktree, ["switch", "--detach"]);
+        yield* command(worktree, ["commit", "--allow-empty", "-m", "detached work"]);
+        yield* command(worktree, ["tag", "keeper"]);
+        expect((yield* service.runNow).entries[0]).toMatchObject({
+          outcome: "kept",
+          reason: "Detached HEAD has commits no branch or tag holds",
+        });
         expect(yield* fixture.fs.exists(worktree)).toBe(true);
       }),
     ),

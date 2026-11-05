@@ -481,7 +481,7 @@ export function layerWithRegistry<Error>(
         layerCheckpointCaptureServiceProvided,
         layerStores,
         WorktreeBranches.layer.pipe(
-          Layer.provide(Layer.merge(layerOrchestratorProvided, layerGitVcsDriver)),
+          Layer.provide(Layer.mergeAll(layerOrchestratorProvided, layerGitVcsDriver, layerStores)),
         ),
       ),
     ),

@@ -1129,8 +1129,6 @@ const make = Effect.gen(function* () {
           head.commitSha
         )
           return keep("commit changed since check");
-        if (checkout._tag === "Detached" && !(yield* commitHeldByRef(worktreePath, head.commitSha)))
-          return keep("detached HEAD has commits no branch or tag holds");
         const finalChanges = yield* localChangesReason(worktreePath, settings);
         if (finalChanges !== null) return keep(finalChanges);
         const currentSettings = yield* settingsService.getSettings;
@@ -1153,6 +1151,9 @@ const make = Effect.gen(function* () {
           const changes = yield* localChangesReason(worktreePath, settings);
           if (changes !== null) return keep(changes);
         }
+        // Last, so nothing that runs after this can drop the ref that holds the commit.
+        if (checkout._tag === "Detached" && !(yield* commitHeldByRef(worktreePath, head.commitSha)))
+          return keep("detached HEAD has commits no branch or tag holds");
         yield* removeLinkedWorktree({
           operation: "StorageCleanup.cleanupGit",
           cwd: project.workspaceRoot,

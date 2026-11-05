@@ -5,11 +5,13 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type { PlatformError } from "effect/PlatformError";
 
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import * as ProjectStore from "./ProjectStore.ts";
 
 export type WorktreeHead =
   | { readonly _tag: "Unavailable" }
@@ -19,8 +21,8 @@ export type WorktreeHead =
 export type WorktreeCheckout =
   | { readonly _tag: "Unavailable" }
   | { readonly _tag: "Detached" }
-  /** HEAD is on the default branch and records differ. Its own ref holds HEAD, so nothing is written. */
-  | { readonly _tag: "Default"; readonly branch: string }
+  /** Records differ, but a thread could not recreate its worktree on this branch: the default branch or one another checkout holds. Its own ref holds HEAD, so nothing is written. */
+  | { readonly _tag: "Unbound"; readonly branch: string }
   | { readonly _tag: "Bound"; readonly branch: string }
   /** Records differ, and a write was attempted or deferred. The caller's thread data is stale. */
   | { readonly _tag: "Rebinding"; readonly branch: string };
@@ -42,6 +44,7 @@ export class WorktreeBranches extends Context.Service<
 
 const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const projects = yield* ProjectStore.ProjectStoreV2;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -103,6 +106,32 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const gitCommonDir = Effect.fnUntraced(function* (cwd: string) {
+    const physical = (path: string) => fs.realPath(path).pipe(Effect.orElseSucceed(() => path));
+    const { stdout } = yield* git.execute({
+      operation: "WorktreeBranches.sync",
+      cwd,
+      args: ["rev-parse", "--git-common-dir"],
+    });
+    // Git prints this relative to the physical cwd, which can differ from a symlink.
+    return yield* physical(path.resolve(yield* physical(cwd), stdout.trim()));
+  });
+
+  // A replaced folder looks like a switched branch, but its branch means nothing to these threads.
+  const inProjectRepository = Effect.fn("WorktreeBranches.inProjectRepository")(
+    function* (worktreePath: string) {
+      const snapshot = yield* orchestrator.getShellSnapshot({ worktreePath });
+      const member = snapshot.threads[0] ?? snapshot.archivedThreads[0];
+      if (member === undefined) return true;
+      const project = yield* projects.getShell(member.projectId);
+      if (Option.isNone(project)) return false;
+      return (
+        (yield* gitCommonDir(worktreePath)) === (yield* gitCommonDir(project.value.workspaceRoot))
+      );
+    },
+    Effect.orElseSucceed(() => false),
+  );
+
   const isDefaultBranch = Effect.fn("WorktreeBranches.isDefaultBranch")(function* (
     cwd: string,
     branch: string,
@@ -112,6 +141,22 @@ const make = Effect.gen(function* () {
       branch,
       remote === null ? null : yield* git.resolveDefaultBranchName(cwd, remote),
     );
+  });
+
+  // Git refuses to recreate a worktree on a branch another checkout holds.
+  const heldByAnotherCheckout = Effect.fn("WorktreeBranches.heldByAnotherCheckout")(function* (
+    cwd: string,
+    branch: string,
+  ) {
+    const { stdout } = yield* git.execute({
+      operation: "WorktreeBranches.sync",
+      cwd,
+      args: ["worktree", "list", "--porcelain"],
+    });
+    const holders = stdout
+      .split("\n")
+      .filter((line) => line.trim() === `branch refs/heads/${branch}`);
+    return holders.length > 1;
   });
 
   const writeMembers = Effect.fn("WorktreeBranches.writeMembers")(function* (input: {
@@ -177,7 +222,12 @@ const make = Effect.gen(function* () {
       allowNonZeroExit: true,
     });
     if (born.exitCode !== 0) return { _tag: "Unavailable" };
-    if (yield* isDefaultBranch(worktreePath, branch)) return { _tag: "Default", branch };
+    if (!(yield* inProjectRepository(worktreePath))) return { _tag: "Unavailable" };
+    if (
+      (yield* isDefaultBranch(worktreePath, branch)) ||
+      (yield* heldByAnotherCheckout(worktreePath, branch))
+    )
+      return { _tag: "Unbound", branch };
     yield* writeMembers({ worktreePath, branch, runId }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("worktree branch sync could not read its threads", {

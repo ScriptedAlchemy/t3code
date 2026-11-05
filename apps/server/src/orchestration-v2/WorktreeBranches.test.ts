@@ -18,6 +18,7 @@ import type * as Scope from "effect/Scope";
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import * as ProjectStore from "./ProjectStore.ts";
 import * as WorktreeBranches from "./WorktreeBranches.ts";
 
 interface MetadataUpdate {
@@ -71,6 +72,9 @@ const fixture = Effect.gen(function* () {
   let onDispatch: (update: MetadataUpdate) => Effect.Effect<void> = () => Effect.void;
   const dispatched: MetadataUpdate[] = [];
   const context = yield* Layer.build(WorktreeBranches.layer).pipe(
+    Effect.provideService(ProjectStore.ProjectStoreV2, {
+      getShell: () => Effect.succeedSome({ workspaceRoot: repo }),
+    } as unknown as ProjectStore.ProjectStoreV2["Service"]),
     Effect.provideService(Orchestrator.OrchestratorV2, {
       getShellSnapshot: (options: { readonly worktreePath: string }) =>
         Effect.sync(() => {
@@ -186,7 +190,7 @@ it.live.each([
   ["a detached HEAD", ["switch", "--detach"], "Detached", undefined],
   ["an unborn branch", ["switch", "--orphan", "unborn"], "Unavailable", undefined],
   ["a parenthesized name", ["switch", "-c", "(feature)"], "Unavailable", undefined],
-  ["the default branch", ["switch", "main"], "Default", "main"],
+  ["the default branch", ["switch", "main"], "Unbound", "main"],
 ] as const)("writes nothing for %s", ([, checkout, tag, branch]) =>
   run(
     Effect.gen(function* () {
@@ -198,6 +202,43 @@ it.live.each([
         _tag: tag,
         ...(branch === undefined ? {} : { branch }),
       } as WorktreeBranches.WorktreeCheckout);
+      assert.deepEqual(dispatched, []);
+    }),
+  ),
+);
+
+it.live("writes nothing for a branch another checkout holds", () =>
+  run(
+    Effect.gen(function* () {
+      const { service, command, repo, worktree, dispatched, setThreads } = yield* fixture;
+      setThreads([member("thread", "feature", worktree)]);
+      yield* command(repo, ["switch", "-c", "trunk"]);
+      yield* command(worktree, ["switch", "--ignore-other-worktrees", "trunk"]);
+      assert.deepEqual(yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }), {
+        _tag: "Unbound",
+        branch: "trunk",
+      });
+      assert.deepEqual(dispatched, []);
+    }),
+  ),
+);
+
+it.live("writes nothing when another repository replaced the worktree", () =>
+  run(
+    Effect.gen(function* () {
+      const { service, command, worktree, dispatched, setThreads } = yield* fixture;
+      const fs = yield* FileSystem.FileSystem;
+      const other = yield* fs.makeTempDirectoryScoped({ prefix: "worktree-sync-other-" });
+      yield* command(other, ["init", "-b", "main"]);
+      yield* command(other, ["config", "user.email", "other@example.test"]);
+      yield* command(other, ["config", "user.name", "Other"]);
+      yield* command(other, ["commit", "--allow-empty", "-m", "unrelated"]);
+      yield* fs.rename(worktree, `${worktree}-original`);
+      yield* command(other, ["worktree", "add", "-b", "other-work", worktree]);
+      setThreads([member("thread", "feature", worktree)]);
+      assert.deepEqual(yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }), {
+        _tag: "Unavailable",
+      });
       assert.deepEqual(dispatched, []);
     }),
   ),
@@ -219,7 +260,7 @@ it.live("reads the default branch from the primary remote before main or master"
       yield* command(worktree, ["switch", "trunk"]);
       assert.equal(
         (yield* service.sync({ worktreePath: worktree, recorded: ["feature"] }))._tag,
-        "Default",
+        "Unbound",
       );
       assert.deepEqual(dispatched, []);
       yield* command(repo, ["switch", "--detach"]);

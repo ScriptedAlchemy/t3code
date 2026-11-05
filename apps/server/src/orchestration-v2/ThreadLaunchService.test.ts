@@ -185,12 +185,21 @@ function makeHarness(options: HarnessOptions = {}) {
     Layer.provide(Layer.fresh(WorktreeBranches.layer)),
     Layer.provide(layerOrchestrator),
     Layer.provide(
+      Layer.mock(ProjectStore.ProjectStoreV2)({
+        getShell: () => Effect.succeedSome({ workspaceRoot: "/repo" }) as never,
+      }),
+    ),
+    Layer.provide(
       Layer.mock(GitVcsDriver.GitVcsDriver)({
         execute: (input) =>
           Effect.succeed({
             exitCode: ChildProcessSpawner.ExitCode(0),
             stdout:
-              input.args[0] === "symbolic-ref" ? `refs/heads/${checkedOutBranch}\n` : "index\n",
+              input.args[0] === "symbolic-ref"
+                ? `refs/heads/${checkedOutBranch}\n`
+                : input.args.includes("--git-common-dir")
+                  ? "/repo/.git\n"
+                  : "index\n",
             stderr: "",
             stdoutTruncated: false,
             stderrTruncated: false,

@@ -209,7 +209,7 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
 );
 
 const layerWorktreeBranchesProvided = WorktreeBranches.layer.pipe(
-  Layer.provide(Layer.merge(layerOrchestratorProvided, GitVcsDriver.layer)),
+  Layer.provide(Layer.mergeAll(layerOrchestratorProvided, GitVcsDriver.layer, ProjectStore.layer)),
 );
 
 const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(

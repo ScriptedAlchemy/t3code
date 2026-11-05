@@ -352,6 +352,9 @@ it.live.each(
       Layer.provide(
         Layer.mergeAll(
           projections,
+          Layer.mock(ProjectStore.ProjectStoreV2)({
+            getShell: () => Effect.succeedSome({ workspaceRoot: repo }) as never,
+          }),
           Layer.mock(ModelEvaluations.ModelEvaluations)({}),
           Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({ execute: () => Effect.void }),
           Layer.mock(Orchestrator.OrchestratorV2)({
