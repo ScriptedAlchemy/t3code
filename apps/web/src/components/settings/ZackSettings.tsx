@@ -32,6 +32,7 @@ export function ZackSettings() {
         <AgentGitHubReadGateRow />
         <ThreadSplitRows />
         <AccountPoolsRow />
+        <UsageCostRow />
       </SettingsSection>
       <ModelEvaluationSettings />
     </>
@@ -274,6 +275,29 @@ function AccountPoolsRow() {
       control={
         <Button size="sm" variant="outline" render={<Link to="/settings/account-pools" />}>
           Open
+        </Button>
+      }
+    />
+  );
+}
+
+/** The report lives in Usage because it reads one environment's transcripts and runs. */
+function UsageCostRow() {
+  const { environments } = useEnvironments();
+  if (
+    !environments.some(
+      (environment) => environment.serverConfig?.environment.capabilities.usageCohortReports === 1,
+    )
+  ) {
+    return null;
+  }
+  return (
+    <SettingsRow
+      title="Cost by build and setting"
+      description="See token burn and cost for each T3 build, and whether turning a setting on here moved them. Open Usage and expand Cost by build and setting."
+      control={
+        <Button size="sm" variant="outline" render={<Link to="/usage" />}>
+          Open Usage
         </Button>
       }
     />

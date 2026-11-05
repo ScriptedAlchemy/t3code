@@ -112,6 +112,25 @@ show every model again.
 If the setting is invalid, Usage ignores it and shows every model, and the next save of any other
 setting removes it from `settings.json`.
 
+## See cost by build and setting
+
+On web and desktop, **Usage** ends with **Cost by build and setting** for one environment. Choose
+one environment in the dropdown, then expand it. It reads that environment's runs and transcripts,
+so it can take a few seconds.
+
+It first shows where the money went: priced spend matched to a run's attempt, native subagent work
+(left out of comparisons because its owner is uncertain), and spend T3 could not match to any run
+here. Spend from before T3 began recording builds shows as **Before tracking**. Recording starts
+with the version that includes this report, so older history has no build or setting.
+
+Each Labs setting, and a build you choose, is compared with its other side on prompt tokens per
+call and dollars per run. Only Claude Code and Codex runs started by you or an agent count, and
+only against runs on the same provider, model, and speed. Nobody assigns the sides at random, so
+a result is a difference between people and times, not proof of cause. A verdict says **Changed**
+or **No detectable change** only when the threads recorded support it. Otherwise it says **Not
+enough data**, with roughly how many threads and days it would take. Assisted learning, summaries,
+and evaluations also call models that leave no transcript, so their dollars here are understated.
+
 ## Track subscription limits
 
 **Usage → Limits** pools every subscription account it can see per provider, so with several Codex

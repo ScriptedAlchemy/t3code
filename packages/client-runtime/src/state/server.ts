@@ -33,6 +33,7 @@ import {
   createAtomCommandScheduler,
   createEnvironmentRpcCommand,
   createEnvironmentQueryAtomFamily,
+  createEnvironmentGuardedRpcQueryAtomFamily,
   createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
@@ -1405,6 +1406,13 @@ export function createServerEnvironmentAtoms<R, E>(
               ),
           ),
         ),
+    }),
+    // One scan plus a bootstrap per comparison, so a reopened section reuses the last report.
+    usageCohortReport: createEnvironmentGuardedRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:usage-cohort-report",
+      tag: WS_METHODS.serverGetUsageCohortReport,
+      staleTimeMs: 5 * 60_000,
+      execute: (input) => requestGuarded(WS_METHODS.serverGetUsageCohortReport, input),
     }),
     resourceTelemetry: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:resource-telemetry",
