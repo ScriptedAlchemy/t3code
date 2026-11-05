@@ -1045,13 +1045,15 @@ export const layer: Layer.Layer<
           return retryHandoff;
         },
       );
-      const isColdReturn = Effect.fn("ProviderTurnStartService.isColdReturn")(function* () {
+      const isColdReturn = Effect.fn("ProviderTurnStartService.isColdReturn")(function* (
+        resumedThread: OrchestrationV2ProviderThread,
+      ) {
         const enabled = yield* serverSettings.getSettings.pipe(
           Effect.map((settings) => settings.freshSessionOnColdReturn),
           Effect.orElseSucceed(() => false),
         );
         if (!enabled) return false;
-        const measured = latestNativeContextUsage(projection, providerThread);
+        const measured = latestNativeContextUsage(projection, resumedThread);
         if (measured === undefined) return false;
         if (measured.usage.usedTokens < COLD_RETURN_MIN_CONTEXT_TOKENS) return false;
         const reportedAt = DateTime.make(measured.reportedAt);
@@ -1060,7 +1062,7 @@ export const layer: Layer.Layer<
           DateTime.toEpochMillis(yield* DateTime.now) - DateTime.toEpochMillis(reportedAt.value);
         if (idleMs < COLD_RETURN_IDLE_MS) return false;
         const hasPendingWork = yield* (
-          session.hasPendingBackgroundWorkForThread?.(providerThread, { includeSubagents: true }) ??
+          session.hasPendingBackgroundWorkForThread?.(resumedThread, { includeSubagents: true }) ??
             session.hasPendingBackgroundWork ??
             Effect.succeed(false)
         );
@@ -1284,23 +1286,15 @@ export const layer: Layer.Layer<
               handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
               handoff.delivery?.status === "pending",
           );
-        const coldReturn =
-          !uncertainDelivery &&
-          message.createdBy === "user" &&
-          !isCompactionCommandMessage(message) &&
-          !goalCommand &&
-          (yield* isColdReturn());
         const resumed = yield* Effect.result(
-          uncertainDelivery || coldReturn
+          uncertainDelivery
             ? Effect.fail(
                 new ProviderAdapter.ProviderAdapterTurnStartError({
                   driver: session.driver,
                   threadId: projection.thread.id,
                   providerThreadId: providerThread.id,
                   runId,
-                  cause: coldReturn
-                    ? "Fresh session after a long idle"
-                    : "Uncertain native history injection",
+                  cause: "Uncertain native history injection",
                 }),
               )
             : session.resumeThread({
@@ -1310,7 +1304,14 @@ export const layer: Layer.Layer<
                 runtimePolicy: resolvedRuntimePolicy,
               }),
         );
-        if (resumed._tag === "Success") {
+        // Resume checks native ownership and refreshes background work before a fresh session.
+        const coldReturn =
+          resumed._tag === "Success" &&
+          message.createdBy === "user" &&
+          !isCompactionCommandMessage(message) &&
+          !goalCommand &&
+          (yield* isColdReturn(resumed.success));
+        if (resumed._tag === "Success" && !coldReturn) {
           const context = handoffContextForThread(resumed.success);
           context.budget = yield* Effect.cached(context.budget);
           resumedHandoffContext = context;
@@ -1385,7 +1386,12 @@ export const layer: Layer.Layer<
               : resumed._tag === "Success"
                 ? "handoff_budget_exhausted"
                 : "resume_failed",
-          errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
+          ...(coldReturn
+            ? {}
+            : {
+                errorTag:
+                  resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
+              }),
         });
         const replacement = yield* loadFromProvider(
           session.ensureThread({

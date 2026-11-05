@@ -619,6 +619,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "fresh-session-on-cold-return",
     title: "Fresh session after a long break",
     to: "/settings/labs",
+    scope: "environment-defaults",
     searchTerms: ["zack cached input cost tokens long thread idle context handoff trim"],
   },
   {

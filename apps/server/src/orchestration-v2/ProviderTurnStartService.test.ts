@@ -311,6 +311,7 @@ function makeLocalCommandHarness(input: {
   readonly ensureThreadFailure?: unknown;
   readonly historyReadFailureAfterFallback?: unknown;
   readonly resumeFailure?: ProviderAdapter.ProviderAdapterV2Error;
+  readonly pendingBackgroundWorkOnResume?: boolean;
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
@@ -789,7 +790,20 @@ function makeLocalCommandHarness(input: {
   const nativeStart = vi.fn<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>(
     () => Effect.void,
   );
-  const fallbackEnsureThread = vi.fn(() => Effect.succeed(providerThread));
+  const fallbackEnsureThread = vi.fn(() =>
+    Effect.succeed(
+      input.recoveryNativeId === undefined
+        ? providerThread
+        : {
+            ...providerThread,
+            nativeThreadRef: {
+              driver: providerThread.driver,
+              nativeId: input.recoveryNativeId,
+              strength: "strong" as const,
+            },
+          },
+    ),
+  );
   const resumeFallbackSession = {
     driver: providerThread.driver,
     resumeThread: () =>
@@ -835,13 +849,18 @@ function makeLocalCommandHarness(input: {
     forkThread,
     startTurn,
   };
+  let resumedNativeThread = false;
   const open = vi.fn(() =>
     input.sideChat !== undefined
       ? Effect.succeed(sideChatSession as never)
       : input.interruptOpen === true
         ? Effect.interrupt
         : "historyReadFailureAfterFallback" in input || "resumeFailure" in input
-          ? Effect.succeed(resumeFallbackSession as never)
+          ? Effect.succeed({
+              ...resumeFallbackSession,
+              providerSession,
+              startTurn: nativeStart,
+            } as never)
           : "ensureThreadFailure" in input
             ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
             : "openFailure" in input
@@ -873,7 +892,15 @@ function makeLocalCommandHarness(input: {
                           strength: "strong" as const,
                         },
                       }),
-                    resumeThread: () => Effect.succeed(projection.providerThreads.at(-1)),
+                    resumeThread: () =>
+                      Effect.sync(() => {
+                        resumedNativeThread = true;
+                        return projection.providerThreads.at(-1);
+                      }),
+                    hasPendingBackgroundWorkForThread: () =>
+                      Effect.sync(
+                        () => input.pendingBackgroundWorkOnResume === true && resumedNativeThread,
+                      ),
                   } as never)
                 : Effect.die("A local command must not open a native session."),
   );
@@ -2391,6 +2418,22 @@ effectIt.effect.each([
   { name: "a recent turn", enabled: true, usedTokens: 120_000, idleMinutes: 59, fresh: false },
   { name: "a small thread", enabled: true, usedTokens: 99_999, idleMinutes: 61, fresh: false },
   {
+    name: "a native thread held by another client",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    threadInUse: true,
+    fresh: false,
+  },
+  {
+    name: "background work discovered while resuming",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    pendingBackgroundWorkOnResume: true,
+    fresh: false,
+  },
+  {
     name: "a command message",
     enabled: true,
     usedTokens: 120_000,
@@ -2413,6 +2456,19 @@ effectIt.effect.each([
       text: "text" in scenario ? scenario.text : "Keep going on the migration",
       previousTurn: { runStatus: "completed", turnStatus: "completed" },
       recoveryNativeId: "fresh-native-conversation",
+      ...("threadInUse" in scenario
+        ? {
+            resumeFailure: new ProviderAdapter.ProviderAdapterThreadInUseError({
+              driver: ProviderDriverKind.make("codex"),
+              providerThreadId: ProviderThreadId.make("new-provider-thread"),
+              detail: "This conversation is open in another Codex client.",
+              cause: new Error("thread existing-native-conversation already has an active writer"),
+            }),
+          }
+        : {}),
+      ...("pendingBackgroundWorkOnResume" in scenario
+        ? { pendingBackgroundWorkOnResume: scenario.pendingBackgroundWorkOnResume }
+        : {}),
     });
     const projection = harness.projection();
     const previousAt = "2026-09-04T12:00:00.000Z";
@@ -2444,6 +2500,11 @@ effectIt.effect.each([
 
     yield* harness.start;
 
+    if ("threadInUse" in scenario) {
+      expect(harness.fallbackEnsureThread).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
+    }
     // Commands run without a root run, which also means no fresh session.
     const nativeId =
       harness.startRootRun.mock.calls[0]?.[0].providerThread.nativeThreadRef?.nativeId;
@@ -2451,6 +2512,9 @@ effectIt.effect.each([
     expect(harness.events.some((event) => event.type === "context-handoff.updated")).toBe(
       scenario.fresh,
     );
+    if ("pendingBackgroundWorkOnResume" in scenario) {
+      expect(nativeId).toBe("existing-native-conversation");
+    }
   }),
 );
 
