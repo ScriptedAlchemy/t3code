@@ -1058,8 +1058,26 @@ export const layer: Layer.Layer<
         if (measured.usage.usedTokens < COLD_RETURN_MIN_CONTEXT_TOKENS) return false;
         const reportedAt = DateTime.make(measured.reportedAt);
         if (Option.isNone(reportedAt)) return false;
-        const idleMs =
-          DateTime.toEpochMillis(yield* DateTime.now) - DateTime.toEpochMillis(reportedAt.value);
+        // Token telemetry can arrive before a long tool run finishes. Count accepted root
+        // turn activity on this native conversation, including turns without usage reports.
+        let lastActivityMs = DateTime.toEpochMillis(reportedAt.value);
+        const attempts = new Map(projection.attempts.map((attempt) => [attempt.id, attempt]));
+        for (const turn of projection.providerTurns) {
+          if (turn.providerThreadId !== resumedThread.id || turn.runAttemptId === null) continue;
+          const attempt = attempts.get(turn.runAttemptId);
+          if (
+            attempt === undefined ||
+            attempt.nativeThreadId !== resumedThread.nativeThreadRef?.nativeId ||
+            attempt.providerThreadId !== resumedThread.id ||
+            attempt.rootNodeId !== turn.nodeId
+          )
+            continue;
+          const activityAt = turn.completedAt ?? turn.startedAt;
+          if (activityAt !== null) {
+            lastActivityMs = Math.max(lastActivityMs, DateTime.toEpochMillis(activityAt));
+          }
+        }
+        const idleMs = DateTime.toEpochMillis(yield* DateTime.now) - lastActivityMs;
         if (idleMs < COLD_RETURN_IDLE_MS) return false;
         const hasPendingWork = yield* (
           session.hasPendingBackgroundWorkForThread?.(resumedThread, { includeSubagents: true }) ??
@@ -1311,7 +1329,7 @@ export const layer: Layer.Layer<
           !isCompactionCommandMessage(message) &&
           !goalCommand &&
           (yield* isColdReturn(resumed.success));
-        if (resumed._tag === "Success" && !coldReturn) {
+        if (resumed._tag === "Success") {
           const context = handoffContextForThread(resumed.success);
           context.budget = yield* Effect.cached(context.budget);
           resumedHandoffContext = context;
@@ -1327,7 +1345,7 @@ export const layer: Layer.Layer<
             Effect.as(true),
             Effect.catchTags({ ContextHandoffBudgetError: () => Effect.succeed(false) }),
           );
-          if (fits) return resumed.success;
+          if (fits && !coldReturn) return resumed.success;
           const freshThread = { ...resumed.success, nativeThreadRef: null };
           const freshContext = handoffContextForThread(freshThread);
           const { handoff } = yield* recoveryHandoff;
@@ -1350,6 +1368,7 @@ export const layer: Layer.Layer<
               Effect.succeed(false)
           );
           if (hasPendingWork) {
+            if (fits) return resumed.success;
             return yield* loadFromProvider(
               Effect.fail(
                 new ProviderAdapter.ProviderAdapterTurnStartError({

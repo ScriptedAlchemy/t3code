@@ -312,6 +312,7 @@ function makeLocalCommandHarness(input: {
   readonly historyReadFailureAfterFallback?: unknown;
   readonly resumeFailure?: ProviderAdapter.ProviderAdapterV2Error;
   readonly pendingBackgroundWorkOnResume?: boolean;
+  readonly pendingBackgroundWorkAfterHandoff?: boolean;
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
@@ -850,6 +851,7 @@ function makeLocalCommandHarness(input: {
     startTurn,
   };
   let resumedNativeThread = false;
+  let preparedRecoveryHandoff = false;
   const open = vi.fn(() =>
     input.sideChat !== undefined
       ? Effect.succeed(sideChatSession as never)
@@ -899,7 +901,10 @@ function makeLocalCommandHarness(input: {
                       }),
                     hasPendingBackgroundWorkForThread: () =>
                       Effect.sync(
-                        () => input.pendingBackgroundWorkOnResume === true && resumedNativeThread,
+                        () =>
+                          (input.pendingBackgroundWorkOnResume === true && resumedNativeThread) ||
+                          (input.pendingBackgroundWorkAfterHandoff === true &&
+                            preparedRecoveryHandoff),
                       ),
                   } as never)
                 : Effect.die("A local command must not open a native session."),
@@ -1092,7 +1097,13 @@ function makeLocalCommandHarness(input: {
                   summaryText: input.sideChat ? "PARENT_HISTORY" : "Recovered history",
                   createdByProviderInstanceId: input.sideChat ? request.toProviderInstanceId : null,
                   updatedAt: request.createdAt,
-                } as OrchestrationV2ContextHandoff),
+                } as OrchestrationV2ContextHandoff).pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      preparedRecoveryHandoff = true;
+                    }),
+                  ),
+                ),
         }),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
@@ -2418,6 +2429,22 @@ effectIt.effect.each([
   { name: "a recent turn", enabled: true, usedTokens: 120_000, idleMinutes: 59, fresh: false },
   { name: "a small thread", enabled: true, usedTokens: 99_999, idleMinutes: 61, fresh: false },
   {
+    name: "recent completion after an old token report",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    turnCompletedMinutes: 60,
+    fresh: false,
+  },
+  {
+    name: "insufficient room for a fresh handoff",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    modelContextWindow: 16_000,
+    fresh: false,
+  },
+  {
     name: "a native thread held by another client",
     enabled: true,
     usedTokens: 120_000,
@@ -2431,6 +2458,14 @@ effectIt.effect.each([
     usedTokens: 120_000,
     idleMinutes: 61,
     pendingBackgroundWorkOnResume: true,
+    fresh: false,
+  },
+  {
+    name: "background work discovered while preparing the handoff",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    pendingBackgroundWorkAfterHandoff: true,
     fresh: false,
   },
   {
@@ -2456,6 +2491,9 @@ effectIt.effect.each([
       text: "text" in scenario ? scenario.text : "Keep going on the migration",
       previousTurn: { runStatus: "completed", turnStatus: "completed" },
       recoveryNativeId: "fresh-native-conversation",
+      ...("modelContextWindow" in scenario
+        ? { modelContextWindow: scenario.modelContextWindow }
+        : {}),
       ...("threadInUse" in scenario
         ? {
             resumeFailure: new ProviderAdapter.ProviderAdapterThreadInUseError({
@@ -2468,6 +2506,9 @@ effectIt.effect.each([
         : {}),
       ...("pendingBackgroundWorkOnResume" in scenario
         ? { pendingBackgroundWorkOnResume: scenario.pendingBackgroundWorkOnResume }
+        : {}),
+      ...("pendingBackgroundWorkAfterHandoff" in scenario
+        ? { pendingBackgroundWorkAfterHandoff: scenario.pendingBackgroundWorkAfterHandoff }
         : {}),
     });
     const projection = harness.projection();
@@ -2494,6 +2535,13 @@ effectIt.effect.each([
       providerTurns: projection.providerTurns.map((turn) => ({
         ...turn,
         tokenUsage: { usedTokens: scenario.usedTokens, updatedAt: previousAt },
+        ...("turnCompletedMinutes" in scenario
+          ? {
+              completedAt: DateTime.makeUnsafe(
+                Date.parse(previousAt) + scenario.turnCompletedMinutes * 60_000,
+              ),
+            }
+          : {}),
       })),
     });
     yield* TestClock.setTime(Date.parse(previousAt) + scenario.idleMinutes * 60_000);
@@ -2512,8 +2560,16 @@ effectIt.effect.each([
     expect(harness.events.some((event) => event.type === "context-handoff.updated")).toBe(
       scenario.fresh,
     );
-    if ("pendingBackgroundWorkOnResume" in scenario) {
+    if (
+      "pendingBackgroundWorkOnResume" in scenario ||
+      "pendingBackgroundWorkAfterHandoff" in scenario
+    ) {
       expect(nativeId).toBe("existing-native-conversation");
+    }
+    if ("modelContextWindow" in scenario) {
+      yield* dispatchKnowledge(harness.startRootRun.mock.calls[0]![0]);
+      expect(nativeId).toBe("existing-native-conversation");
+      expect(harness.nativeStart).toHaveBeenCalledOnce();
     }
   }),
 );
