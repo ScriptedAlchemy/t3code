@@ -1,7 +1,15 @@
+from contextlib import redirect_stdout
+import io
+import json
+from pathlib import Path
+import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from detector import score_response, summarize
+from run import main
 
 
 class DetectorTest(unittest.TestCase):
@@ -26,6 +34,36 @@ class DetectorTest(unittest.TestCase):
             summarize(rows + rows[:1], 0.94)
         with self.assertRaises(ValueError):
             summarize([dict(id='bad', label='UNKNOWN', score=0.8)], 0.94)
+
+    def test_runner_abstains_before_scoring_short_drafts_only_when_requested(self):
+        cases = [dict(id=str(i), session='session', label='INDEPENDENT',
+                      state=dict(prior_thread=[], new_message=message))
+                 for i, message in enumerate(('run every test now',
+                                              'add coverage for cache invalidation',
+                                              'add\ufeffcoverage\u00a0for cache invalidation'))]
+        for minimum, calls in ((0, 3), (5, 2)):
+            with self.subTest(minimum=minimum), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source, output = root / 'cases.json', root / 'output'
+                source.write_text(json.dumps(cases))
+                model = SimpleNamespace(decide_request=Mock(return_value=SimpleNamespace(
+                    truncated=False, answers={'q': SimpleNamespace(noul=.98)})))
+                argv = ['run.py', '--cases', str(source), '--model', str(root / 'model'),
+                        '--threshold', '.6538', '--out', str(output)]
+                if minimum:
+                    argv += ['--min-message-words', str(minimum)]
+                with patch.object(sys, 'argv', argv), patch.dict(sys.modules, {
+                    'mlx_decision': SimpleNamespace(load=Mock(return_value=model)),
+                }), redirect_stdout(io.StringIO()):
+                    main()
+                rows = [json.loads(line) for line in (output / 'scores.jsonl').read_text().splitlines()]
+                self.assertEqual(model.decide_request.call_count, calls)
+                self.assertEqual(rows[0]['score'], None if minimum else .98)
+                if minimum:
+                    self.assertEqual(rows[0]['abstention'], 'short_message')
+                report = json.loads((output / 'summary.json').read_text())
+                self.assertEqual(report['counts']['tp'], calls)
+                self.assertEqual(report['counts']['abstained'], len(cases) - calls)
 
 
 if __name__ == '__main__':

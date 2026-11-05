@@ -9,7 +9,7 @@ from pathlib import Path
 import random
 import time
 
-from detector import QUESTION, score_response
+from detector import QUESTION, message_word_count, score_response
 
 LABELS = {'NEW_TASK', 'CONTINUE', 'NO_TASK', 'UNCERTAIN'}
 MIN_CALIBRATION_NEGATIVES = 100
@@ -174,7 +174,7 @@ def metrics(rows, threshold, full_path):
                 false_suggestion_rate=ratio(fp, fp + tn))
 
 
-def joined(data, truth, scores, prompt, split):
+def joined(data, truth, scores, prompt, split, min_message_words=0):
     result = []
     for case in data:
         if case['split'] != split:
@@ -187,7 +187,12 @@ def joined(data, truth, scores, prompt, split):
             raise ValueError('Score does not belong to this packet state/session')
         if score['prompt_sha256'] != digest(PROMPTS[prompt]):
             raise ValueError('Prompt changed after scoring')
-        result.append(dict(score, label=truth[case['id']], eligible=case['eligibility']['eligible'],
+        too_short = prompt != 'baseline' and message_word_count(case['state']['new_message']) < min_message_words
+        reasons = list(case['eligibility']['reasons'])
+        if too_short and 'short_message' not in reasons:
+            reasons.append('short_message')
+        result.append(dict(score, label=truth[case['id']], eligible=case['eligibility']['eligible'] and not too_short,
+                           eligibility_reasons=reasons,
                            session_group=case.get('session_group', case['session'])))
     return result
 
@@ -245,13 +250,18 @@ def main():
     parser.add_argument('--selection', type=Path)
     parser.add_argument('--max-fpr', type=float, default=.01)
     parser.add_argument('--min-evaluation-cases', type=int, default=100)
+    parser.add_argument('--min-message-words', type=int, default=0,
+                        help='Minimum draft words for candidate prompts; the original baseline is unchanged')
     args = parser.parse_args()
     data = packets(args.packets)
     if args.min_evaluation_cases < 1:
         parser.error('--min-evaluation-cases must be positive')
+    if args.min_message_words < 0:
+        parser.error('--min-message-words must be nonnegative')
     if sum(c['split'] == 'evaluation' for c in data) < args.min_evaluation_cases:
         raise ValueError('Insufficient session-held-out evaluation packets for declared minimum')
     artifact = {'packets_sha256': digest(data), 'source_sha256': source_fingerprints(),
+                'min_message_words': args.min_message_words,
                 'minimum_evaluation_cases': args.min_evaluation_cases}
     if args.operation == 'score':
         if not args.model or not args.split:
@@ -273,6 +283,8 @@ def main():
                 raise ValueError('Corpus changed after calibration')
             if selection['source_sha256'] != artifact['source_sha256'] or selection['model_identity'] != model_identity:
                 raise ValueError('Source or model changed after calibration')
+            if selection['min_message_words'] != args.min_message_words:
+                raise ValueError('Minimum word count changed after calibration')
             selected = list(dict.fromkeys(['baseline', selection['prompt']]))
             if selection['prompt_sha256'] != digest(PROMPTS[selection['prompt']]):
                 raise ValueError('Selected prompt changed')
@@ -341,11 +353,11 @@ def main():
             raise ValueError('Calibration cannot read evaluation or unknown scores')
         if any(case_id not in calibration_ids for case_id in truth):
             raise ValueError('Calibration requires calibration-only labels')
-        baseline = joined(data, truth, scores, 'baseline', 'calibration')
+        baseline = joined(data, truth, scores, 'baseline', 'calibration', args.min_message_words)
         baseline_failures = sum(r['eligible'] and r['score'] is None for r in baseline)
         candidates = []
         for prompt in args.prompts:
-            rows = joined(data, truth, scores, prompt, 'calibration')
+            rows = joined(data, truth, scores, prompt, 'calibration', args.min_message_words)
             failures = sum(r['eligible'] and r['score'] is None for r in rows)
             threshold = choose(rows, args.max_fpr) if failures <= baseline_failures else None
             candidates.append(dict(prompt=prompt, threshold=threshold,
@@ -368,10 +380,12 @@ def main():
             raise ValueError('Corpus changed after calibration')
         if selection['source_sha256'] != artifact['source_sha256'] or selection['model_identity'] != artifact['model_identity']:
             raise ValueError('Source or model changed after calibration')
+        if selection['min_message_words'] != args.min_message_words:
+            raise ValueError('Minimum word count changed after calibration')
         if args.split == 'evaluation' and receipt.get('selection_sha256') != digest(selection):
             raise ValueError('Selection changed after evaluation')
-        rows = joined(data, truth, scores, selection['prompt'], args.split)
-        baseline_rows = joined(data, truth, scores, 'baseline', args.split)
+        rows = joined(data, truth, scores, selection['prompt'], args.split, args.min_message_words)
+        baseline_rows = joined(data, truth, scores, 'baseline', args.split, args.min_message_words)
         threshold = selection['threshold']
         if threshold is not None and not 0 <= threshold <= 1:
             raise ValueError('Invalid frozen threshold')
@@ -388,7 +402,7 @@ def main():
                         classifier_ci95=session_intervals(rows, threshold, False),
                         reconstructed_path_ci95=session_intervals(rows, threshold, True),
                         eligible=sum(r['eligible'] for r in rows),
-                        exclusions=dict(Counter(reason for c in data if c['split'] == args.split for reason in c['eligibility']['reasons'])),
+                        exclusions=dict(Counter(reason for row in rows for reason in row['eligibility_reasons'])),
                         failures=dict(Counter(r.get('abstention') for r in rows if r['score'] is None)),
                         latency_seconds=dict(median=percentile(elapsed, .5), p95=percentile(elapsed, .95)))
     with args.out.open('x') as output:

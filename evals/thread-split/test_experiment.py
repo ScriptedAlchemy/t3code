@@ -73,6 +73,14 @@ class ExperimentTest(unittest.TestCase):
                        prompt_sha256=digest(PROMPTS['baseline']), score=.1)
         rows = joined(data[:1], {'a': 'NO_TASK'}, {('a', 'baseline'): receipt}, 'baseline', 'calibration')
         self.assertEqual(len(rows), 1)
+        contextual = dict(receipt, prompt_sha256=digest(PROMPTS['contextual']))
+        scores = {('a', 'baseline'): receipt, ('a', 'contextual'): contextual}
+        for prompt in ('baseline', 'contextual'):
+            rows = joined(data[:1], {'a': 'NO_TASK'}, scores, prompt, 'calibration', min_message_words=5)
+            self.assertEqual(rows[0]['eligible'], prompt == 'baseline')
+            self.assertEqual(rows[0]['eligibility_reasons'], [] if prompt == 'baseline' else ['short_message'])
+        rows = joined(data[:1], {'a': 'NO_TASK'}, scores, 'contextual', 'calibration')
+        self.assertTrue(rows[0]['eligible'])
         receipt['state_sha256'] = 'wrong'
         with self.assertRaisesRegex(ValueError, 'packet state'):
             joined(data[:1], {'a': 'NO_TASK'}, {('a', 'baseline'): receipt}, 'baseline', 'calibration')
@@ -80,7 +88,8 @@ class ExperimentTest(unittest.TestCase):
             joined(data[:1], {'a': 'NO_TASK'}, {}, 'baseline', 'calibration')
 
     def test_frozen_receipt_rejects_changed_labels_sources_and_split(self):
-        artifact = dict(packets_sha256='packet-digest', source_sha256={'detector.py': 'source-digest'})
+        artifact = dict(packets_sha256='packet-digest', source_sha256={'detector.py': 'source-digest'},
+                        min_message_words=5)
         truth = {'a': 'CONTINUE'}
         receipt = dict(artifact, split='evaluation', prompts={'baseline': PROMPTS['baseline']},
                        labels_sha256=digest(truth))
@@ -89,6 +98,8 @@ class ExperimentTest(unittest.TestCase):
             verify_receipt(receipt, artifact, 'evaluation', {'a': 'NEW_TASK'})
         with self.assertRaisesRegex(ValueError, 'source_sha256'):
             verify_receipt(receipt, dict(artifact, source_sha256={'detector.py': 'new'}), 'evaluation', truth)
+        with self.assertRaisesRegex(ValueError, 'min_message_words'):
+            verify_receipt(receipt, dict(artifact, min_message_words=0), 'evaluation', truth)
         with self.assertRaisesRegex(ValueError, 'split mismatch'):
             verify_receipt(receipt, artifact, 'calibration', truth)
         receipt['prompts'] = {'baseline': {'instructions': 'changed'}}

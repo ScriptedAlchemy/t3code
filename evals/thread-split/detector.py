@@ -2,11 +2,17 @@ import math
 
 import json
 from pathlib import Path
+import re
 
 QUESTION = json.loads(
     (Path(__file__).resolve().parents[2] / 'packages/shared/src/threadSplitPrompt.json').read_text()
 )
 PROMPT = QUESTION['instructions']
+
+
+def message_word_count(message):
+    # Match JavaScript's whitespace, including BOMs, for the service's word gate.
+    return len(re.findall(r'[^\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+', message))
 
 
 def request(state):
