@@ -594,16 +594,17 @@ const make = Effect.gen(function* () {
     return file === undefined ? null : `has ignored files (${file})`;
   });
 
-  // Removing a checkout no thread record names can lose its reflog, the last path to earlier work,
-  // and a thread can resume only if `git worktree add` can still check out its recorded branch.
-  const unboundCheckoutBlocker = Effect.fn("StorageCleanup.unboundCheckoutBlocker")(function* (
+  // Removing a worktree loses its reflog, the last path to commits no branch holds. Rewritten
+  // commits land there too, but gc expires them, so that only delays removal. A thread can resume
+  // only if `git worktree add` can still check out its recorded branch.
+  const checkoutBlocker = Effect.fn("StorageCleanup.checkoutBlocker")(function* (
     cwd: string,
     head: string,
     checkedOut: string | null,
     recorded: ReadonlyArray<string | null>,
   ) {
     const reflog = yield* git.execute({
-      operation: "StorageCleanup.unboundCheckoutBlocker",
+      operation: "StorageCleanup.checkoutBlocker",
       cwd,
       args: ["reflog", "show", "--format=%H", "HEAD"],
       maxOutputBytes: 16 * 1024 * 1024,
@@ -611,14 +612,14 @@ const make = Effect.gen(function* () {
     // Only refs that stay count. A user cannot recover from refs/t3, and a routine
     // `git fetch --prune` can drop any remote branch, even one a stale local HEAD calls the default.
     const unheld = yield* git.execute({
-      operation: "StorageCleanup.unboundCheckoutBlocker",
+      operation: "StorageCleanup.checkoutBlocker",
       cwd,
       args: ["rev-list", "-n", "1", "--ignore-missing", "--stdin", "--not", "--branches", "--tags"],
       stdin: `${head}\n${reflog.stdout}`,
     });
     if (unheld.stdout.trim() !== "") return "worktree history has commits no branch or tag holds";
     const worktrees = yield* git.execute({
-      operation: "StorageCleanup.unboundCheckoutBlocker",
+      operation: "StorageCleanup.checkoutBlocker",
       cwd,
       args: ["worktree", "list", "--porcelain"],
     });
@@ -883,6 +884,9 @@ const make = Effect.gen(function* () {
           return keep("contains a project checkout");
         if ((yield* fs.stat(path.join(worktreePath, ".git"))).type !== "File")
           return keep("not a linked worktree");
+        // Before anything reads the checkout: another repository's worktree here is not ours to judge.
+        if (!(yield* worktreeBranches.sameRepository(worktreePath, project.workspaceRoot)))
+          return keep("repository or branch changed");
         const checkout = yield* worktreeBranches.sync({
           worktreePath,
           // `groups` matches resolved paths, but a thread can store another spelling of one.
@@ -903,17 +907,26 @@ const make = Effect.gen(function* () {
         )
           return keep(waitForStop("settled moments ago"));
         const head = yield* git.resolveCommit({ cwd: worktreePath, revision: "HEAD" });
-        const checkUnbound = () =>
-          checkout._tag === "Bound"
-            ? Effect.succeed(null)
-            : unboundCheckoutBlocker(
-                worktreePath,
-                head.commitSha,
-                checkout._tag === "Unbound" ? checkout.branch : null,
-                group.map((member) => member.branch),
-              );
-        const unbound = yield* checkUnbound();
-        if (unbound !== null) return keep(unbound);
+        const checkCheckout = () =>
+          checkoutBlocker(
+            worktreePath,
+            head.commitSha,
+            checkout._tag === "Detached" ? null : checkout.branch,
+            group.map((member) => member.branch),
+          );
+        const blocker = yield* checkCheckout();
+        if (blocker !== null) return keep(blocker);
+        // Only one checkout can hold a branch, so a second thread could not resume on it.
+        if (
+          checkout._tag !== "Bound" &&
+          snapshot.threads.some(
+            (other) =>
+              other.worktreePath !== null &&
+              path.resolve(other.worktreePath) !== worktreePath &&
+              group.some((member) => member.branch !== null && member.branch === other.branch),
+          )
+        )
+          return keep("a thread in another worktree records the same branch");
         const old =
           !deleted &&
           settings.worktreeAfterDays !== null &&
@@ -1169,8 +1182,8 @@ const make = Effect.gen(function* () {
           if (changes !== null) return keep(changes);
         }
         // Last, so nothing that runs after this can drop the ref that holds the commit.
-        const finalUnbound = yield* checkUnbound();
-        if (finalUnbound !== null) return keep(finalUnbound);
+        const finalBlocker = yield* checkCheckout();
+        if (finalBlocker !== null) return keep(finalBlocker);
         yield* removeLinkedWorktree({
           operation: "StorageCleanup.cleanupGit",
           cwd: project.workspaceRoot,
