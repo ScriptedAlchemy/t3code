@@ -240,9 +240,12 @@ describe("settings search targets", () => {
     expect(isSettingsSearchScopeAvailable(coldReturn.scope, "all")).toBe(true);
     expect(isSettingsSearchScopeAvailable(coldReturn.scope, "project")).toBe(false);
     expect(isSettingsSearchScopeAvailable(coldReturn.scope, "checkout")).toBe(false);
-    const streaming = getSettingsSearchTargetScope("response-streaming")!;
-    expect(streaming.scope).toBe("project-defaults");
-    expect(isSettingsSearchScopeAvailable(streaming.scope, "project")).toBe(true);
+    for (const id of ["response-streaming", "speech-project-dictionary"]) {
+      expect(getSettingsSearchTargetScope(id)?.scope).toBe("project-defaults");
+    }
+    for (const scope of ["all", "environment", "project"] as const) {
+      expect(isSettingsSearchScopeAvailable("project-defaults", scope)).toBe(true);
+    }
     for (const id of ["legacy-plan-mode", "legacy-context-window-indicator", "boring-sidebar"]) {
       expect(getSettingsSearchTargetScope(id)!.scope).toBeNull();
     }
