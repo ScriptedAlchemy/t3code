@@ -2557,6 +2557,10 @@ describe("storage cleanup reports and local file policies", () => {
           }),
         );
         const root = yield* fs.realPath(fixture.worktree);
+        const sizes = yield* Effect.forEach(yield* fs.readDirectory(root), (name) =>
+          allocatedBytes(fs, fixture.path.join(root, name)),
+        );
+        const expectedBytes = sizes.reduce((sum, size) => sum + size, 0);
         fixture.setOpenSessionCwd(fixture.worktree);
         const kept = yield* fixture.service.runNow;
         expect(kept.entries[0]).toMatchObject({
@@ -2567,8 +2571,8 @@ describe("storage cleanup reports and local file policies", () => {
         expect(walked.filter((directory) => directory.startsWith(root))).toEqual([]);
         fixture.setSessionLive(false);
         const removed = yield* fixture.service.runNow;
-        expect(removed.entries[0]).toMatchObject({ outcome: "removed" });
-        expect(removed.entries[0]?.bytes).toBeGreaterThan(0);
+        expect(removed.entries[0]).toMatchObject({ outcome: "removed", bytes: expectedBytes });
+        expect(removed.bytesFreed).toBe(expectedBytes);
         expect(walked).toContain(root);
       }),
     ),
@@ -2611,10 +2615,14 @@ describe("storage cleanup reports and local file policies", () => {
         expect(locked?.reason).toContain("Git index is locked");
         expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("original\n");
         yield* fs.remove(`${index.trim()}.lock`);
-        const gitFile = yield* fs.readFileString(`${worktree}/.git`);
-        yield* fs.writeFileString(`${worktree}/.git`, "gitdir: /missing-git-directory\n");
+        const gitFile = `${worktree}/.git`;
+        const savedGitFile = `${worktree}/.git-original`;
+        // Git marks this file hidden on Windows, where overwriting it fails with EPERM.
+        yield* fs.rename(gitFile, savedGitFile);
+        yield* fs.writeFileString(gitFile, "gitdir: /missing-git-directory\n");
         expect((yield* service.runNow).entries[0]).toMatchObject(changed);
-        yield* fs.writeFileString(`${worktree}/.git`, gitFile);
+        yield* fs.remove(gitFile);
+        yield* fs.rename(savedGitFile, gitFile);
         expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "removed" });
         expect(fullStatusCalls()).toBe(0);
       }),
@@ -2997,7 +3005,11 @@ describe("storage cleanup reports and local file policies", () => {
   it.live("caps entries while preserving totals and prioritizing removals", () =>
     runCleanupTest(
       Effect.gen(function* () {
-        const { service, fs, worktree, setThreads } = yield* cleanupFixture();
+        const { service, fs, path, worktree, setThreads } = yield* cleanupFixture();
+        const sizes = yield* Effect.forEach(yield* fs.readDirectory(worktree), (name) =>
+          allocatedBytes(fs, path.join(worktree, name)),
+        );
+        const expectedBytes = sizes.reduce((sum, size) => sum + size, 0);
         const threads = [];
         for (let i = 0; i < 205; i++) {
           const worktreePath = `${worktree}-${i}`;
@@ -3017,9 +3029,8 @@ describe("storage cleanup reports and local file policies", () => {
         expect(report.entries).toHaveLength(200);
         expect(report.omittedCount).toBe(6);
         expect(report.counts).toEqual({ removed: 1, kept: 205, failed: 0 });
-        expect(report.entries[0]?.outcome).toBe("removed");
-        expect(report.entries[0]?.bytes).toBeGreaterThan(0);
-        expect(report.bytesFreed).toBe(report.entries[0]?.bytes);
+        expect(report.entries[0]).toMatchObject({ outcome: "removed", bytes: expectedBytes });
+        expect(report.bytesFreed).toBe(expectedBytes);
       }),
     ),
   );
