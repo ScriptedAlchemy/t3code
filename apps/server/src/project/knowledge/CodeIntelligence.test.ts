@@ -1658,16 +1658,17 @@ it.effect("fails the build, not the server, when the analysis process aborts", (
 it.effect("answers queries when the server itself runs under node --watch", () =>
   withFixture((fixture) =>
     Effect.gen(function* () {
-      const previous = process.env.WATCH_REPORT_DEPENDENCIES;
-      process.env.WATCH_REPORT_DEPENDENCIES = "1";
+      const hostEnv = yield* HostProcess.Environment;
+      const previous = hostEnv.WATCH_REPORT_DEPENDENCIES;
+      hostEnv.WATCH_REPORT_DEPENDENCIES = "1";
       const { run, refresh } = yield* checkoutService(fixture.root, () => ["src/defs.ts"]);
       const result = yield* Effect.result(
         refresh().pipe(Effect.andThen(run({ operation: "status" }))),
       ).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            if (previous === undefined) delete process.env.WATCH_REPORT_DEPENDENCIES;
-            else process.env.WATCH_REPORT_DEPENDENCIES = previous;
+            if (previous === undefined) delete hostEnv.WATCH_REPORT_DEPENDENCIES;
+            else hostEnv.WATCH_REPORT_DEPENDENCIES = previous;
           }),
         ),
       );

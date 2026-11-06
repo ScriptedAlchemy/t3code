@@ -294,6 +294,7 @@ export const CodexDriver: ProviderDriver<
         config,
       },
       {
+        enableComputerUse: true,
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         compatibility: installation.compatibility,
         resolveRuntime,
@@ -431,6 +432,11 @@ export const CodexDriver: ProviderDriver<
             protect("generateModelEvaluation", nativeGeneration.generateModelEvaluation(input)),
           generateReviewGuide: (input) =>
             protect("generateReviewGuide", nativeGeneration.generateReviewGuide(input)),
+          generateTranscriptionPostProcessing: (input) =>
+            protect(
+              "generateTranscriptionPostProcessing",
+              nativeGeneration.generateTranscriptionPostProcessing(input),
+            ),
           generateKnowledgeCandidates: (input) =>
             protect(
               "generateKnowledgeCandidates",
