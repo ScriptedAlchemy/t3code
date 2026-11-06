@@ -184,7 +184,8 @@ export function buildComposerModelItems(
       .filter(
         (provider) =>
           provider.installed &&
-          provider.status === "ready" &&
+          provider.status !== "error" &&
+          provider.status !== "disabled" &&
           provider.auth.status !== "unauthenticated" &&
           provider.availability !== "unavailable",
       )
@@ -201,6 +202,7 @@ export function buildComposerModelItems(
     query,
     (option) => ({
       name: option.label,
+      ...(option.shortName ? { shortName: option.shortName } : {}),
       ...(option.subtitle ? { subProvider: option.subtitle } : {}),
       driverKind: option.providerDriver,
       providerDisplayName: option.providerLabel,
