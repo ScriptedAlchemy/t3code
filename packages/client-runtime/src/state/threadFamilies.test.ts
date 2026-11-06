@@ -125,8 +125,12 @@ describe("createThreadFamilyAtoms", () => {
           yield* Queue.unbounded<
             Effect.Effect<OrchestrationV2ThreadFamily, OrchestrationV2GetShellSnapshotError>
           >();
+        const requests: ThreadId[] = [];
         const client = {
-          [ORCHESTRATION_V2_WS_METHODS.getThreadFamily]: () => Effect.flatten(Queue.take(replies)),
+          [ORCHESTRATION_V2_WS_METHODS.getThreadFamily]: ({ threadId }: { threadId: ThreadId }) =>
+            Effect.sync(() => requests.push(threadId)).pipe(
+              Effect.andThen(Effect.flatten(Queue.take(replies))),
+            ),
         } as unknown as WsRpcProtocolClient;
         const session = {
           client,
@@ -230,6 +234,91 @@ describe("createThreadFamilyAtoms", () => {
         yield* Queue.offer(replies, Effect.succeed({ snapshotSequence: 5, threads: [child] }));
         yield* settle;
         expect(threadFamilyRead(registry.get(family))).toBe("settled");
+        expect(mergedIds()).toEqual(["parent", "idle-child"]);
+
+        const visible = row("visible-citation");
+        const omitted = row("omitted-citation");
+        registry.set(
+          shellState,
+          AsyncResult.success({
+            ...shellAt(2),
+            snapshot: Option.some({ ...shellSnapshot, threads: [parent, visible] }),
+          }),
+        );
+        const releaseVisible = families.mount(registry, TARGET.environmentId, visible.id, {
+          onlyWhenMissing: true,
+        });
+        const releaseOmitted = families.mount(registry, TARGET.environmentId, omitted.id, {
+          onlyWhenMissing: true,
+        });
+        yield* Queue.offerAll(replies, [
+          Effect.succeed({ snapshotSequence: 5, threads: [omitted] }),
+          Effect.succeed({ snapshotSequence: 5, threads: [visible] }),
+        ]);
+        yield* AtomRegistry.getResult(
+          registry,
+          families.familyAtom(TARGET.environmentId, omitted.id),
+          { suspendOnWaiting: true },
+        );
+        expect(requests).toEqual([parent.id, parent.id, parent.id, omitted.id]);
+        expect(mergedIds()).toEqual([
+          "parent",
+          "visible-citation",
+          "idle-child",
+          "omitted-citation",
+        ]);
+
+        registry.set(shellState, AsyncResult.success(shellAt(2)));
+        yield* AtomRegistry.getResult(
+          registry,
+          families.familyAtom(TARGET.environmentId, visible.id),
+          { suspendOnWaiting: true },
+        );
+        expect(requests).toEqual([parent.id, parent.id, parent.id, omitted.id, visible.id]);
+        expect(mergedIds()).toEqual([
+          "parent",
+          "idle-child",
+          "visible-citation",
+          "omitted-citation",
+        ]);
+        releaseVisible();
+        releaseOmitted();
+        expect(mergedIds()).toEqual(["parent", "idle-child"]);
+
+        const unavailable = row("cached-failure");
+        const unavailableFamily = families.familyAtom(TARGET.environmentId, unavailable.id);
+        const releaseFailed = families.mount(registry, TARGET.environmentId, unavailable.id);
+        yield* Queue.offer(
+          replies,
+          Effect.fail(new OrchestrationV2GetShellSnapshotError({ message: "read failed" })),
+        );
+        yield* AtomRegistry.getResult(registry, unavailableFamily, {
+          suspendOnWaiting: true,
+        }).pipe(Effect.ignore);
+        expect(threadFamilyRead(registry.get(unavailableFamily))).toBe("failed");
+        releaseFailed();
+        registry.set(
+          shellState,
+          AsyncResult.success({
+            ...shellAt(2),
+            snapshot: Option.some({ ...shellSnapshot, threads: [parent, unavailable] }),
+          }),
+        );
+        const releaseRetry = families.mount(registry, TARGET.environmentId, unavailable.id, {
+          onlyWhenMissing: true,
+        });
+        expect(requests.filter((id) => id === unavailable.id)).toHaveLength(1);
+        registry.set(shellState, AsyncResult.success(shellAt(2)));
+        yield* settle;
+        expect(threadFamilyRead(registry.get(unavailableFamily))).toBe("pending");
+        yield* Queue.offer(
+          replies,
+          Effect.succeed({ snapshotSequence: 5, threads: [unavailable] }),
+        );
+        yield* AtomRegistry.getResult(registry, unavailableFamily, { suspendOnWaiting: true });
+        expect(requests.filter((id) => id === unavailable.id)).toHaveLength(2);
+        expect(mergedIds()).toEqual(["parent", "idle-child", "cached-failure"]);
+        releaseRetry();
         expect(mergedIds()).toEqual(["parent", "idle-child"]);
       }),
     ),

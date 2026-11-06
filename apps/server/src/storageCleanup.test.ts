@@ -8,7 +8,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type * as Path from "effect/Path";
+import * as Path from "effect/Path";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { SCAN_CACHE_FILE_NAME } from "./usage/usageScanCache.ts";
@@ -321,6 +321,7 @@ const cleanupFixture = (
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const config = yield* ServerConfig.ServerConfig;
     const git = yield* GitVcsDriver.GitVcsDriver;
     const repo = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-repo-" }));
@@ -334,7 +335,7 @@ const cleanupFixture = (
     yield* command(repo, ["add", "."]);
     yield* command(repo, ["commit", "-m", "initial"]);
     yield* fs.makeDirectory(config.worktreesDir, { recursive: true });
-    const worktree = `${config.worktreesDir}/feature`;
+    const worktree = path.join(config.worktreesDir, "feature");
     yield* command(repo, ["worktree", "add", "-b", "feature", worktree]);
     let settings: import("@t3tools/contracts").ServerSettings = {
       ...DEFAULT_SERVER_SETTINGS,
@@ -522,6 +523,7 @@ const cleanupFixture = (
         editBeforeRemoval = true;
       },
       fs,
+      path,
       worktree,
       config,
       command,
@@ -1272,6 +1274,35 @@ describe("deleted thread worktrees", () => {
       ),
   );
 
+  it.live.each([
+    ["reflog", "Worktree history exceeds the inspection limit"],
+    ["worktree", "Worktree list exceeds the inspection limit"],
+  ] as const)("keeps a worktree when its %s inspection is truncated", ([command, reason]) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const git = yield* GitVcsDriver.GitVcsDriver;
+        const { service, fs, worktree } = yield* cleanupFixture().pipe(
+          Effect.provideService(GitVcsDriver.GitVcsDriver, {
+            ...git,
+            execute: (input) =>
+              git
+                .execute(input)
+                .pipe(
+                  Effect.map((result) =>
+                    input.operation === "StorageCleanup.checkoutBlocker" &&
+                    input.args[0] === command
+                      ? { ...result, stdoutTruncated: true }
+                      : result,
+                  ),
+                ),
+          }),
+        );
+        expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "kept", reason });
+        expect(yield* fs.exists(worktree)).toBe(true);
+      }),
+    ),
+  );
+
   it.live("keeps a deleted owner's worktree while only its reflog holds a commit", () =>
     runCleanupTest(
       Effect.gen(function* () {
@@ -1850,8 +1881,8 @@ describe("orphan worktree reports", () => {
         for (let index = 0; index < 205; index++) {
           yield* fixture.fs.makeDirectory(`${fixture.config.worktreesDir}/busy-${index}`);
         }
-        const orphans = ["one", "two"].map(
-          (name) => `${fixture.config.worktreesDir}/repository/${name}`,
+        const orphans = ["one", "two"].map((name) =>
+          fixture.path.join(fixture.config.worktreesDir, "repository", name),
         );
         for (const orphan of orphans) {
           yield* fixture.fs.makeDirectory(orphan, { recursive: true });
@@ -1907,7 +1938,7 @@ describe("orphan worktree reports", () => {
         const loop = `${fixture.repo}/loop`;
         yield* fixture.fs.symlink(loop, loop);
         fixture.setProjectRoots([fixture.repo, loop]);
-        const orphan = `${fixture.config.worktreesDir}/repository/orphan`;
+        const orphan = fixture.path.join(fixture.config.worktreesDir, "repository", "orphan");
         yield* fixture.fs.makeDirectory(orphan, { recursive: true });
         yield* fixture.fs.utimes(orphan, 1, 1);
         expect((yield* fixture.service.runNow).entries).toEqual([
@@ -1924,7 +1955,11 @@ describe("orphan worktree reports", () => {
         Effect.gen(function* () {
           const fixture = yield* cleanupFixture();
           fixture.setThreads([]);
-          const orphan = `${fixture.config.worktreesDir}/${location === "nested" ? "repository/" : ""}orphan`;
+          const orphan = fixture.path.join(
+            fixture.config.worktreesDir,
+            location === "nested" ? "repository" : "",
+            "orphan",
+          );
           yield* fixture.command(fixture.repo, ["worktree", "add", "-b", "orphan", orphan]);
           const sizes = yield* Effect.forEach(yield* fixture.fs.readDirectory(orphan), (name) =>
             allocatedBytes(fixture.fs, `${orphan}/${name}`),
@@ -2044,13 +2079,13 @@ describe("orphan worktree reports", () => {
         fixture.setThreads([]);
         const outside = yield* fixture.fs.makeTempDirectoryScoped();
         yield* fixture.fs.makeDirectory(`${outside}/checkout`);
-        const projectDirectory = `${fixture.config.worktreesDir}/repository`;
+        const projectDirectory = fixture.path.join(fixture.config.worktreesDir, "repository");
         yield* fixture.fs.makeDirectory(projectDirectory);
         yield* fixture.fs.symlink(outside, `${fixture.config.worktreesDir}/linked-project`);
         yield* fixture.fs.symlink(`${outside}/checkout`, `${projectDirectory}/linked-checkout`);
         yield* fixture.fs.symlink(`${outside}/missing`, `${projectDirectory}/dangling-link`);
         expect((yield* fixture.service.runNow).entries).toEqual([]);
-        const orphan = `${projectDirectory}/orphan`;
+        const orphan = fixture.path.join(projectDirectory, "orphan");
         yield* fixture.fs.makeDirectory(orphan);
         fixture.disable();
         expect((yield* fixture.service.runNow).entries).toEqual([]);
@@ -2064,7 +2099,7 @@ describe("orphan worktree reports", () => {
       Effect.gen(function* () {
         const fixture = yield* cleanupFixture();
         fixture.setThreads([]);
-        const folder = `${fixture.config.worktreesDir}/repository/leftover`;
+        const folder = fixture.path.join(fixture.config.worktreesDir, "repository", "leftover");
         yield* fixture.fs.makeDirectory(folder, { recursive: true });
         yield* fixture.fs.writeFileString(`${folder}/payload`, "leftover data");
         yield* fixture.fs.utimes(folder, 1, 1);
@@ -2091,7 +2126,7 @@ describe("orphan worktree reports", () => {
         const fixture = yield* cleanupFixture();
         fixture.setThreads([]);
         const blocked = `${fixture.config.worktreesDir}/a-inaccessible`;
-        const orphan = `${fixture.config.worktreesDir}/z-repository/orphan`;
+        const orphan = fixture.path.join(fixture.config.worktreesDir, "z-repository", "orphan");
         yield* fixture.fs.makeDirectory(blocked);
         yield* fixture.fs.makeDirectory(orphan, { recursive: true });
         yield* fixture.fs.writeFileString(`${orphan}/file`, "x");
@@ -2121,10 +2156,10 @@ describe("orphan worktree reports", () => {
             Effect.provideService(HostProcess.Platform, platform),
           );
           fixture.setThreads([]);
-          const parent = `${fixture.config.worktreesDir}/repository`;
-          const referenced = `${parent}/Referenced`;
-          const project = `${parent}/Project`;
-          const nested = `${parent}/Nested`;
+          const parent = fixture.path.join(fixture.config.worktreesDir, "repository");
+          const referenced = fixture.path.join(parent, "Referenced");
+          const project = fixture.path.join(parent, "Project");
+          const nested = fixture.path.join(parent, "Nested");
           for (const folder of [referenced, project, nested]) {
             yield* fixture.fs.makeDirectory(`${folder}/child`, { recursive: true });
             yield* fixture.fs.utimes(folder, 1, 1);
@@ -2133,7 +2168,9 @@ describe("orphan worktree reports", () => {
           fixture.setProjectRoots([fixture.repo, project, `${nested}/child`]);
           const report = yield* fixture.service.runNow;
           expect(report.entries.map((entry) => entry.path).sort()).toEqual(
-            platform === "win32" ? [] : [referenced],
+            platform === "win32" || (yield* fixture.fs.exists(referenced.toUpperCase()))
+              ? []
+              : [referenced],
           );
         }),
       ),

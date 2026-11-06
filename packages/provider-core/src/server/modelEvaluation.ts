@@ -50,6 +50,17 @@ const IDENTITY_NAMES = [
 ];
 const escapePattern = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+function hasOmittedMessageArtifacts(
+  message:
+    | {
+        readonly attachments?: ReadonlyArray<unknown> | undefined;
+        readonly context?: { readonly records: ReadonlyArray<unknown> } | undefined;
+      }
+    | undefined,
+): boolean {
+  return (message?.attachments?.length ?? 0) > 0 || (message?.context?.records.length ?? 0) > 0;
+}
+
 function familyTokens(model: string) {
   return model.split("/").flatMap((segment) => segment.match(/^\p{L}{3,}/u) ?? []);
 }
@@ -234,11 +245,12 @@ export function buildModelEvaluationEvidence(input: {
   let truncated = request.truncated || final.truncated;
   let omittedItems = 0;
   let missingArtifacts =
-    (requestMessage?.attachments.length ??
-      (requestItem?.type === "user_message" ? requestItem.attachments.length : 0)) > 0 ||
-    (finalMessage?.attachments.length ??
-      (finalItem?.type === "assistant_message" ? finalItem.attachments?.length : 0) ??
-      0) > 0;
+    hasOmittedMessageArtifacts(
+      requestMessage ?? (requestItem?.type === "user_message" ? requestItem : undefined),
+    ) ||
+    hasOmittedMessageArtifacts(
+      finalMessage ?? (finalItem?.type === "assistant_message" ? finalItem : undefined),
+    );
   const sourceMessageIds = new Set([input.run.userMessageId]);
   if (finalMessage !== undefined) sourceMessageIds.add(finalMessage.id);
   const context: Array<BlindModelEvaluationPacket["context"][number]> = [];
@@ -257,7 +269,7 @@ export function buildModelEvaluationEvidence(input: {
   for (const message of earlier.slice(-4)) {
     const excerpt = clip(redact(message.text), 1_000);
     truncated ||= excerpt.truncated;
-    missingArtifacts ||= message.attachments.length > 0;
+    missingArtifacts ||= hasOmittedMessageArtifacts(message);
     remaining -= excerpt.text.length;
     context.push({
       ref: `C${context.length + 1}`,
@@ -280,11 +292,12 @@ export function buildModelEvaluationEvidence(input: {
       continue;
     let entry;
     if (item.type === "user_message") {
-      const text = messageById.get(item.messageId)?.text ?? (!item.textOmitted ? item.text : "");
+      const message = messageById.get(item.messageId);
+      const text = message?.text ?? (!item.textOmitted ? item.text : "");
       entry = {
         kind: "user" as const,
         text,
-        missing: text.length === 0 || item.attachments.length > 0,
+        missing: text.length === 0 || hasOmittedMessageArtifacts(message ?? item),
       };
     } else {
       entry = evidenceText(item, redact);

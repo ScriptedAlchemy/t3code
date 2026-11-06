@@ -623,6 +623,8 @@ const make = Effect.gen(function* () {
       args: ["reflog", "show", "--format=%H", "HEAD"],
       maxOutputBytes: 16 * 1024 * 1024,
     });
+    if (reflog.stdoutTruncated || reflog.stderrTruncated)
+      return "worktree history exceeds the inspection limit";
     // Only refs that stay count. A user cannot recover from refs/t3, and a routine
     // `git fetch --prune` can drop any remote branch, even one a stale local HEAD calls the default.
     const unheld = yield* git.execute({
@@ -637,6 +639,8 @@ const make = Effect.gen(function* () {
       cwd,
       args: ["worktree", "list", "--porcelain"],
     });
+    if (worktrees.stdoutTruncated || worktrees.stderrTruncated)
+      return "worktree list exceeds the inspection limit";
     const held = new Set(
       [...worktrees.stdout.matchAll(/^branch refs\/heads\/(.+?)\r?$/gm)].map((match) => match[1]),
     );
