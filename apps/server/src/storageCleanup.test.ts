@@ -2222,6 +2222,7 @@ describe("orphan worktree reports", () => {
     (platform) =>
       runCleanupTest(
         Effect.gen(function* () {
+          const hostIsWindows = yield* HostProcess.isWindows;
           const fixture = yield* cleanupFixture().pipe(
             Effect.provideService(HostProcess.Platform, platform),
           );
@@ -2238,9 +2239,8 @@ describe("orphan worktree reports", () => {
           fixture.setProjectRoots([fixture.repo, project, `${nested}/child`]);
           const report = yield* fixture.service.runNow;
           expect(report.entries.map((entry) => entry.path).sort()).toEqual(
-            platform === "win32" || (yield* fixture.fs.exists(referenced.toUpperCase()))
-              ? []
-              : [referenced],
+            // The real Windows path layer folds case whatever platform the service is told it runs on.
+            platform === "win32" || hostIsWindows ? [] : [referenced],
           );
         }),
       ),
