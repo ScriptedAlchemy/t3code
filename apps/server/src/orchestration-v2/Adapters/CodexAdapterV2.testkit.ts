@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { CodexSettings, type ProviderReplayTranscript } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
@@ -11,6 +12,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../../config.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import {
@@ -52,6 +54,12 @@ export function withCodexReplayChildMetadata(
   ) => Effect.Effect<unknown, CodexError.CodexAppServerError> = (threadId) =>
     Effect.succeed({ thread: { id: threadId }, model: null }),
 ): CodexClient.CodexAppServerClient["Service"] {
+  const recordsConfigReads = transcript.entries.some(
+    (entry) =>
+      entry.type === "expect_outbound" &&
+      Predicate.isObject(entry.frame) &&
+      entry.frame.method === "config/read",
+  );
   const childThreadIds = new Set(
     transcript.entries.flatMap((entry) => {
       if (entry.type !== "emit_inbound" || !Predicate.isObject(entry.frame)) return [];
@@ -71,13 +79,23 @@ export function withCodexReplayChildMetadata(
     raw: {
       ...client.raw,
       request: (method, params) =>
-        (method === "thread/read" || method === "thread/resume") &&
-        Predicate.isObject(params) &&
-        (method === "thread/read" ? params.includeTurns === false : params.excludeTurns === true) &&
-        typeof params.threadId === "string" &&
-        childThreadIds.has(params.threadId)
-          ? readMetadata(params.threadId, method)
-          : client.raw.request(method, params),
+        method === "config/read" && !recordsConfigReads
+          ? Effect.succeed({
+              config: {
+                model_provider: null,
+                shell_environment_policy: { set: { PATH: "/replay/bin" } },
+              },
+              origins: {},
+            })
+          : (method === "thread/read" || method === "thread/resume") &&
+              Predicate.isObject(params) &&
+              (method === "thread/read"
+                ? params.includeTurns === false
+                : params.excludeTurns === true) &&
+              typeof params.threadId === "string" &&
+              childThreadIds.has(params.threadId)
+            ? readMetadata(params.threadId, method)
+            : client.raw.request(method, params),
     },
   };
 }
@@ -124,7 +142,7 @@ export function layer(input: {
   const layerServerConfig = Layer.effect(
     ServerConfig.ServerConfig,
     makeReplayServerConfig(input.transcript.scenario).pipe(Effect.orDie),
-  ).pipe(Layer.provide(NodeServices.layer));
+  ).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
   const layerRegistry = ProviderAdapterRegistry.layerFromAdaptersEffect(
     CodexAdapterV2.createCodexAdapterV2({
       instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
@@ -139,7 +157,12 @@ export function layer(input: {
         layerReplayClientFactory,
         layerServerConfig,
         NodeServices.layer,
+        NodeCrypto.layer,
         IdAllocator.layer,
+        Layer.succeed(HostProcess.Environment, {
+          ...process.env,
+          T3_GH_SHIM_DIR: undefined,
+        }),
       ),
     ),
   );

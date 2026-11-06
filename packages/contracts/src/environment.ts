@@ -15,6 +15,11 @@ export const ORCHESTRATION_PROTOCOL_VERSION_TEXT = "2";
 export const ORCHESTRATION_PROTOCOL_QUERY_PARAM = "orchestrationProtocol";
 export const ORCHESTRATION_PROTOCOL_HEADER = "x-t3-orchestration-protocol";
 
+/** Wire shapes a client understands, comma-separated; a client that omits one gets the older shape. */
+export const CLIENT_CAPABILITIES_QUERY_PARAM = "clientCapabilities";
+/** Secret fields may hold a secret provider reference instead of a string. */
+export const SETTINGS_SECRET_REFERENCES_CAPABILITY = "settingsSecretReferences";
+
 export const ExecutionEnvironmentPlatformOs = Schema.Literals([
   "darwin",
   "linux",
@@ -70,6 +75,7 @@ export const ServerSelfUpdateCapability = Schema.Literals([
 export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  modelEvaluations: Schema.optionalKey(Schema.Boolean),
   projectKnowledge: Schema.optionalKey(Schema.Boolean),
   /** projectKnowledge.readFact, projectKnowledge.status and the supersede mutation. */
   projectKnowledgeHistory: Schema.optionalKey(Schema.Boolean),
@@ -88,6 +94,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectCodeIndexEvents: Schema.optionalKey(Schema.Boolean),
   /** conversationSummaries.* reads and the enableConversationSummaries project setting. */
   conversationSummaries: Schema.optionalKey(Schema.Boolean),
+  /** Ranged/tool sources, literal summary search and intra-source expansion cursors. */
+  conversationSummarySourceFormat: Schema.optionalKey(Schema.Literal(2)),
+  externalHistory: Schema.optionalKey(Schema.Literal(1)),
   /** project.readLoomWindow and the project Loom view. */
   projectLoom: Schema.optionalKey(Schema.Boolean),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -186,6 +195,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   triage: Schema.optionalKey(Schema.Boolean),
   /** Server accepts `{ type: "once" }` scheduled tasks; older servers reject them on save. */
   oneTimeSchedules: Schema.optionalKey(Schema.Boolean),
+  /** Server honors `freshContext` on sends; older servers ignore it and keep the old context. */
+  freshContext: Schema.optionalKey(Schema.Boolean),
+  /** Server saves and runs scheduled task `threadMode`; older servers ignore it. */
+  scheduledTaskThreadModes: Schema.optionalKey(Schema.Boolean),
+  /** Server can transcribe 16 kHz mono PCM audio on the environment machine. */
+  voiceTranscription: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

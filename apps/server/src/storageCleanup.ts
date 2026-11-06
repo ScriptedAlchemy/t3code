@@ -14,6 +14,7 @@ import type {
   WorktreeCleanupRules,
   StorageCleanupReport,
   StorageCleanupReportEntry,
+  ThreadId,
 } from "@t3tools/contracts";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -41,6 +42,7 @@ import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementService.ts";
+import * as WorktreeBranches from "./orchestration-v2/WorktreeBranches.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -65,6 +67,15 @@ const decodePnpmModulesManifest = Schema.decodeUnknownEffect(
     virtualStoreDir: Schema.optional(Schema.String),
   }),
 );
+
+class PnpmModulesManifestParseError extends Schema.TaggedError<PnpmModulesManifestParseError>()(
+  "PnpmModulesManifestParseError",
+  { cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "Could not parse the pnpm modules manifest.";
+  }
+}
 
 const DAY_MS = 86_400_000;
 // Give settle scripts time to open terminals that protect the worktree.
@@ -125,8 +136,15 @@ export function storageCleanupThreadIdle(
   now: number,
   settings: LimitRecoverySettings,
 ): boolean {
+  return thread.worktreePath !== null && threadIdle(thread, now, settings);
+}
+
+function threadIdle(
+  thread: OrchestrationV2ThreadShell,
+  now: number,
+  settings: LimitRecoverySettings,
+): boolean {
   return (
-    thread.worktreePath !== null &&
     thread.activeRunId === null &&
     (thread.status === "idle" ||
       thread.status === "completed" ||
@@ -213,6 +231,36 @@ function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | "lineag
   return owner;
 }
 
+function worktreeSettlementChain(
+  thread: OrchestrationV2ThreadShell,
+  byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell>,
+  now: number,
+  settings: LimitRecoverySettings,
+) {
+  const chain = [thread];
+  let current = thread;
+  while (current.settledAt === null) {
+    if (
+      current.lineage.relationshipToParent !== "subagent" ||
+      current.settledOverride === "active" ||
+      current.pinnedAt != null
+    )
+      return [];
+    const parent = byId.get(current.lineage.parentThreadId!);
+    if (
+      parent === undefined ||
+      chain.some((member) => member.id === parent.id) ||
+      parent.projectId !== thread.projectId ||
+      parent.lineage.rootThreadId !== thread.lineage.rootThreadId ||
+      !threadIdle(parent, now, settings)
+    )
+      return [];
+    chain.push(parent);
+    current = parent;
+  }
+  return chain;
+}
+
 /** Squash/rebase merges require the merged PR to name this exact head commit. */
 export function storageCleanupPullRequestMerged(
   pullRequest: Pick<
@@ -254,6 +302,7 @@ const make = Effect.gen(function* () {
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const sql = yield* SqlClient.SqlClient;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const worktreeBranches = yield* WorktreeBranches.WorktreeBranches;
   const gitManager = yield* GitManager.GitManager;
   const terminals = yield* TerminalManager.TerminalManager;
   const fs = yield* FileSystem.FileSystem;
@@ -303,7 +352,12 @@ const make = Effect.gen(function* () {
     function* (root: string) {
       const nodeModules = path.join(root, "node_modules");
       const text = yield* fs.readFileString(path.join(nodeModules, ".modules.yaml"));
-      const manifest = yield* decodePnpmModulesManifest(yield* Effect.try(() => parseYaml(text)));
+      const manifest = yield* decodePnpmModulesManifest(
+        yield* Effect.try({
+          try: () => parseYaml(text),
+          catch: (cause) => new PnpmModulesManifestParseError({ cause }),
+        }),
+      );
       // An agent can write this manifest, and statting a network path makes
       // Windows sign in to its host with the user's NTLM credentials.
       if (isNetworkPath(manifest.storeDir) || isNetworkPath(manifest.virtualStoreDir ?? "")) {
@@ -514,62 +568,6 @@ const make = Effect.gen(function* () {
     }
   });
 
-  // Use two small Git reads: statusDetailsLocal also diffs and counts for every worktree.
-  const branchChanged = Effect.fn("StorageCleanup.branchChanged")(function* (
-    cwd: string,
-    branch: string | null,
-  ) {
-    const failure = (detail: string) =>
-      new GitCommandError({
-        operation: "StorageCleanup.branchChanged",
-        command: "git",
-        cwd,
-        detail,
-      });
-    // Return null for missing/non-repository cwd; force untranslated git diagnostics for matching.
-    const read = Effect.fnUntraced(function* (args: string[], allowedExitCode?: number) {
-      const result = yield* git
-        .execute({
-          operation: "StorageCleanup.branchChanged",
-          cwd,
-          args,
-          env: { LC_ALL: "C" },
-          allowNonZeroExit: true,
-        })
-        .pipe(
-          Effect.catch((error) =>
-            Effect.flatMap(fs.exists(cwd), (exists) =>
-              exists ? Effect.fail(error) : Effect.succeed(null),
-            ),
-          ),
-        );
-      if (result === null) return null;
-      if (result.exitCode === 0 || result.exitCode === allowedExitCode) return result;
-      const stderr = result.stderr.toLowerCase();
-      // Newer Git reports a dangling .git file as "gitfile does not point to a valid repository".
-      if (
-        stderr.includes("not a git repository") ||
-        stderr.includes("does not point to a valid repository")
-      )
-        return null;
-      return yield* failure(
-        result.stderr.trim().split(/\r?\n/)[0]?.slice(0, 1000) || "command failed",
-      );
-    });
-    const index = yield* read(["rev-parse", "--git-path", "index"]);
-    if (index === null) return true;
-    if (yield* fs.exists(`${path.resolve(cwd, index.stdout.trim())}.lock`))
-      return yield* failure(
-        "Git index is locked. Status will resume when the index lock is removed.",
-      );
-    // Detached HEAD exits 1; full refs avoid shortening when a tag shares the branch name.
-    const head = yield* read(["symbolic-ref", "--quiet", "HEAD"], 1);
-    if (head === null) return true;
-    const ref = head.exitCode === 0 ? head.stdout.trim() : "";
-    const name = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length).trim() : null;
-    return (name?.startsWith("(") ? null : name) !== branch;
-  });
-
   const localChangesReason = Effect.fn("StorageCleanup.localChangesReason")(function* (
     cwd: string,
     rules: WorktreeCleanupRules,
@@ -608,6 +606,43 @@ const make = Effect.gen(function* () {
       .split("\0")
       .find((entry) => entry !== "" && !/(^|\/)node_modules\/$/.test(entry));
     return file === undefined ? null : `has ignored files (${file})`;
+  });
+
+  // Removing a worktree loses its reflog, the last path to commits no branch holds. Rewritten
+  // commits land there too, but gc expires them, so that only delays removal. A thread can resume
+  // only if `git worktree add` can still check out its recorded branch.
+  const checkoutBlocker = Effect.fn("StorageCleanup.checkoutBlocker")(function* (
+    cwd: string,
+    head: string,
+    checkedOut: string | null,
+    recorded: ReadonlyArray<string | null>,
+  ) {
+    const reflog = yield* git.execute({
+      operation: "StorageCleanup.checkoutBlocker",
+      cwd,
+      args: ["reflog", "show", "--format=%H", "HEAD"],
+      maxOutputBytes: 16 * 1024 * 1024,
+    });
+    // Only refs that stay count. A user cannot recover from refs/t3, and a routine
+    // `git fetch --prune` can drop any remote branch, even one a stale local HEAD calls the default.
+    const unheld = yield* git.execute({
+      operation: "StorageCleanup.checkoutBlocker",
+      cwd,
+      args: ["rev-list", "-n", "1", "--ignore-missing", "--stdin", "--not", "--branches", "--tags"],
+      stdin: `${head}\n${reflog.stdout}`,
+    });
+    if (unheld.stdout.trim() !== "") return "worktree history has commits no branch or tag holds";
+    const worktrees = yield* git.execute({
+      operation: "StorageCleanup.checkoutBlocker",
+      cwd,
+      args: ["worktree", "list", "--porcelain"],
+    });
+    const held = new Set(
+      [...worktrees.stdout.matchAll(/^branch refs\/heads\/(.+?)\r?$/gm)].map((match) => match[1]),
+    );
+    return recorded.some((name) => name !== null && name !== checkedOut && held.has(name))
+      ? "another checkout holds the branch a thread here resumes on"
+      : null;
   });
 
   const submoduleRemoval = Effect.fn("StorageCleanup.submoduleRemoval")(
@@ -781,6 +816,7 @@ const make = Effect.gen(function* () {
       ),
     )).filter((thread) => thread.worktreePath !== null && thread.branch !== null);
     const snapshot = yield* readThreads();
+    const threadsById = new Map(snapshot.threads.map((thread) => [thread.id, thread]));
     const refreshedDefaultRefs = new Map<string, Set<string>>();
     const defaultBranches = new Map<string, string | null>();
     const groups = Map.groupBy(
@@ -814,6 +850,10 @@ const make = Effect.gen(function* () {
       const group = groups.get(worktreePath) ?? [];
       const activityAt = Math.max(...group.map(storageCleanupActivityAt));
       const deleted = "workspaceRoot" in thread;
+      const settlementChain = deleted
+        ? []
+        : worktreeSettlementChain(thread, threadsById, now, serverSettings);
+      const settledThread = settlementChain.at(-1);
       const members = deleted ? [thread, ...group] : group;
       const project = deleted
         ? { workspaceRoot: thread.workspaceRoot }
@@ -844,13 +884,8 @@ const make = Effect.gen(function* () {
         if (members.length > 1 && worktreeOwner(members) === undefined)
           return keep(`shared by ${members.length} threads`);
         if (project === undefined) return keep("project is unavailable");
-        if (
-          thread.branch === null ||
-          !group.every((member) => storageCleanupThreadIdle(member, now, serverSettings))
-        )
+        if (!group.every((member) => storageCleanupThreadIdle(member, now, serverSettings)))
           return keep(waitForStop("thread is running or has pending work"));
-        if (group.some((member) => member.branch !== thread.branch))
-          return keep("a subagent thread's branch differs from this worktree's branch");
         if (hasTerminal(worktreePath)) return keep(waitForStop("open terminal"));
         // Compare canonical roots while allowing symlinked parents, never symlinked worktree directories.
         const realPath = yield* fs.realPath(worktreePath);
@@ -863,12 +898,21 @@ const make = Effect.gen(function* () {
           return keep("contains a project checkout");
         if ((yield* fs.stat(path.join(worktreePath, ".git"))).type !== "File")
           return keep("not a linked worktree");
-        if (yield* branchChanged(worktreePath, thread.branch))
+        // Before anything reads the checkout: another repository's worktree here is not ours to judge.
+        if (!(yield* worktreeBranches.sameRepository(worktreePath, project.workspaceRoot)))
           return keep("repository or branch changed");
+        const checkout = yield* worktreeBranches.sync({
+          worktreePath,
+          // `groups` matches resolved paths, but a thread can store another spelling of one.
+          threadPaths: [...new Set(group.map((member) => member.worktreePath!))],
+        });
+        if (checkout._tag === "Unavailable") return keep("repository or branch changed");
+        if (checkout._tag === "Rebinding") return keep("branch updated, re-checked next pass");
+        if (thread.branch === null) return keep("thread has no branch to resume on");
         const changes = yield* localChangesReason(worktreePath, settings);
         if (changes !== null) return keep(changes);
         if (
-          group.some(
+          [...group, ...settlementChain.slice(1)].some(
             (member) =>
               member.settledAt !== null &&
               now - Math.max(DateTime.toEpochMillis(member.updatedAt), activityAt) <
@@ -877,14 +921,34 @@ const make = Effect.gen(function* () {
         )
           return keep(waitForStop("settled moments ago"));
         const head = yield* git.resolveCommit({ cwd: worktreePath, revision: "HEAD" });
+        const checkCheckout = () =>
+          checkoutBlocker(
+            worktreePath,
+            head.commitSha,
+            checkout._tag === "Detached" ? null : checkout.branch,
+            group.map((member) => member.branch),
+          );
+        const blocker = yield* checkCheckout();
+        if (blocker !== null) return keep(blocker);
+        // Only one checkout can hold a branch, so a second thread could not resume on it.
+        if (
+          checkout._tag !== "Bound" &&
+          snapshot.threads.some(
+            (other) =>
+              other.worktreePath !== null &&
+              path.resolve(other.worktreePath) !== worktreePath &&
+              group.some((member) => member.branch !== null && member.branch === other.branch),
+          )
+        )
+          return keep("a thread in another worktree records the same branch");
         const old =
           !deleted &&
           settings.worktreeAfterDays !== null &&
           activityAt < now - settings.worktreeAfterDays * DAY_MS;
         const settledFor =
-          deleted || thread.settledAt === null
+          settledThread?.settledAt == null
             ? null
-            : now - Math.max(DateTime.toEpochMillis(thread.settledAt), activityAt);
+            : now - Math.max(DateTime.toEpochMillis(settledThread.settledAt), activityAt);
         const settledDays = settledFor === null ? null : Math.floor(settledFor / DAY_MS);
         const settled =
           settledFor !== null &&
@@ -937,10 +1001,7 @@ const make = Effect.gen(function* () {
                     timeoutMs: 20_000,
                   })
                   .pipe(
-                    Effect.map(
-                      (result) =>
-                        /^ref: refs\/heads\/(.+)\tHEAD\r?$/m.exec(result.stdout)?.[1] ?? null,
-                    ),
+                    Effect.map((result) => GitVcsDriver.parseRemoteHeadBranch(result.stdout)),
                     Effect.orElseSucceed(() => null),
                   );
               }
@@ -976,13 +1037,18 @@ const make = Effect.gen(function* () {
               remote === null
                 ? "no commits beyond the project branch"
                 : "no commits beyond the default branch";
-          if (!eligible && remote !== null && settings.worktreeOnMerge && thread.branch !== null) {
+          if (
+            !eligible &&
+            remote !== null &&
+            settings.worktreeOnMerge &&
+            checkout._tag === "Bound"
+          ) {
             const pullRequest = yield* gitManager.branchPullRequest(
-              { cwd: worktreePath, branch: thread.branch },
+              { cwd: worktreePath, branch: checkout.branch },
               { refresh: true },
             );
             eligible = storageCleanupPullRequestMerged(pullRequest, {
-              branch: thread.branch,
+              branch: checkout.branch,
               defaultBranch: branch,
               headSha: head.commitSha,
               integrated,
@@ -1036,12 +1102,11 @@ const make = Effect.gen(function* () {
           if (
             latestGroup.length !== group.length ||
             latestOwner?.id !== thread.id ||
-            latestOwner?.branch !== thread.branch ||
             latestGroup.some((shell) => {
               const previous = group.find((member) => member.id === shell.id);
               return (
                 previous === undefined ||
-                shell.branch !== thread.branch ||
+                shell.branch !== previous.branch ||
                 !Equal.equals(shell.settledAt, previous.settledAt) ||
                 (shell.settledAt !== null && !Equal.equals(shell.updatedAt, previous.updatedAt)) ||
                 !storageCleanupThreadIdle(shell, now, serverSettings) ||
@@ -1051,6 +1116,27 @@ const make = Effect.gen(function* () {
             })
           )
             return waitForStop("thread activity or shared worktree changed since check");
+          if (settlementChain.length > 1) {
+            const ancestors = yield* Effect.forEach(settlementChain.slice(1), (ancestor) =>
+              projections.getThreadShell(ancestor.id),
+            );
+            const latestSettlement = worktreeSettlementChain(
+              latestGroup.find((shell) => shell.id === thread.id)!,
+              new Map(
+                [...latestGroup, ...ancestors.filter((ancestor) => ancestor !== null)].map(
+                  (ancestor) => [ancestor.id, ancestor],
+                ),
+              ),
+              now,
+              serverSettings,
+            ).at(-1);
+            if (
+              latestSettlement?.id !== settledThread?.id ||
+              !Equal.equals(latestSettlement?.settledAt, settledThread?.settledAt) ||
+              !Equal.equals(latestSettlement?.updatedAt, settledThread?.updatedAt)
+            )
+              return "parent settlement changed since check";
+          }
           // Sessions can outlive their run and can be shared across app threads.
           const sessionRows = yield* sql<{ payload_json: string }>`
             SELECT payload_json FROM orchestration_v2_projection_provider_sessions
@@ -1075,7 +1161,12 @@ const make = Effect.gen(function* () {
         const bytes = yield* measureWorktree(worktreePath);
         const blockedWhileMeasuring = yield* blockedSinceCheck();
         if (blockedWhileMeasuring !== null) return keep(blockedWhileMeasuring);
-        if (yield* branchChanged(worktreePath, thread.branch))
+        const observed = yield* worktreeBranches.observe(worktreePath);
+        if (
+          checkout._tag === "Detached"
+            ? observed._tag !== "Detached"
+            : observed._tag !== "Named" || observed.branch !== checkout.branch
+        )
           return keep("repository or branch changed since check");
         if (
           (yield* git.resolveCommit({ cwd: worktreePath, revision: "HEAD" })).commitSha !==
@@ -1104,6 +1195,9 @@ const make = Effect.gen(function* () {
           const changes = yield* localChangesReason(worktreePath, settings);
           if (changes !== null) return keep(changes);
         }
+        // Last, so nothing that runs after this can drop the ref that holds the commit.
+        const finalBlocker = yield* checkCheckout();
+        if (finalBlocker !== null) return keep(finalBlocker);
         yield* removeLinkedWorktree({
           operation: "StorageCleanup.cleanupGit",
           cwd: project.workspaceRoot,

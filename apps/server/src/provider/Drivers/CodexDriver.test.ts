@@ -3,6 +3,7 @@ import * as CodexManagedTokenBroker from "../CodexManagedTokenBroker.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
@@ -46,7 +47,7 @@ import * as ProviderHostLive from "../ProviderHostLive.ts";
 const layerDeps = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-codex-driver-maintenance-",
 }).pipe(
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   Layer.provideMerge(IdAllocator.layer),
   Layer.provideMerge(McpProviderSessions.layer),
   Layer.provideMerge(
@@ -162,6 +163,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
         const launches: Array<
           Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
         > = [];
+        const processLaunches: Array<ChildProcess.Command> = [];
 
         let interruptedChecks = 0;
         let failAcquire = false;
@@ -211,8 +213,9 @@ it.layer(layerTest)("CodexDriver", (it) => {
           ),
           Effect.provideService(
             ChildProcessSpawner.ChildProcessSpawner,
-            ChildProcessSpawner.make(() =>
+            ChildProcessSpawner.make((command) =>
               Effect.gen(function* () {
+                processLaunches.push(command);
                 if (replacementTiming === "during-probe") {
                   yield* Deferred.succeed(probeEntered, undefined);
                   yield* Deferred.await(resumeProbe);
@@ -256,7 +259,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(restored.auth.email).toBe("account@example.test");
         expect(restored.runtimePaths?.homePath).toBe(sharedHome);
         expect(restored.runtimePaths?.shadowHomePath).toContain(
-          `providers/codex/${instanceId}/shadow`,
+          NodePath.join("providers", "codex", instanceId, "shadow"),
         );
         const scan = yield* instance.snapshotForCwd!(serverConfig.stateDir).pipe(Effect.exit);
         expect(Exit.isFailure(scan)).toBe(true);
@@ -267,6 +270,20 @@ it.layer(layerTest)("CodexDriver", (it) => {
         failAcquire = false;
         expect(Exit.isFailure(runtimeScan)).toBe(true);
         yield* Deferred.await(observedAccount);
+
+        const history = instance.nativeHistory!;
+        const historyRead = yield* history.list({ cwd: serverConfig.stateDir }).pipe(Effect.flip);
+        expect(historyRead.reason).toBe("unavailable");
+        const historyLaunch = processLaunches.at(-1)!;
+        expect(ChildProcess.isStandardCommand(historyLaunch)).toBe(true);
+        if (!ChildProcess.isStandardCommand(historyLaunch))
+          return yield* Effect.die("Expected a single Codex app-server process");
+        expect(historyLaunch.options.cwd).toBe(serverConfig.stateDir);
+        expect(historyLaunch.options.env?.CODEX_HOME).toBe(sharedHome);
+        expect(historyLaunch.options.env?.OPENAI_API_KEY).toBeUndefined();
+        expect(historyLaunch.args).toContain("app-server");
+        expect(historyLaunch.args.join(" ")).toContain("__managed-chatgpt-token");
+        expect(instance.continuationIdentity.continuationKey).toBe(`codex:home:${sharedHome}`);
 
         const threadId = ThreadId.make("managed-account-thread");
         yield* instance.orchestrationAdapter
@@ -301,6 +318,11 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(Option.isNone(yield* store.get)).toBe(true);
         const signedOutScan = yield* instance.snapshotForCwd!(serverConfig.stateDir);
         expect(signedOutScan.skills).toEqual([]);
+        const launchesBeforeSignedOutRead = processLaunches.length;
+        expect((yield* history.list({ cwd: serverConfig.stateDir }).pipe(Effect.flip)).reason).toBe(
+          "unavailable",
+        );
+        expect(processLaunches).toHaveLength(launchesBeforeSignedOutRead);
       }).pipe(
         Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
         Effect.provideService(
@@ -708,7 +730,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
           if (!ChildProcess.isStandardCommand(command) || command.command !== brewPath) {
             return Effect.die("Provider resolution must not execute a provider or updater");
           }
-          probes.push(command.args);
+          probes.push(command.args.map(String));
           const stdout =
             command.args[0] === "--prefix"
               ? brewPrefix

@@ -1,6 +1,8 @@
 import { CodexSettings, ProviderDriverKind, TextGenerationError } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
 import { resolveCommandPath } from "@t3tools/shared/shell";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import type * as Signature from "effect/crypto/Signature";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -58,6 +60,7 @@ import * as CodexManagedTokenBroker from "../CodexManagedTokenBroker.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { makeCodexNativeHistory } from "../CodexHistory.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -118,7 +121,9 @@ export type CodexDriverEnv =
   | ProviderHost.ProviderHost
   | ChildProcessSpawner.ChildProcessSpawner
   | ResetCreditCoordinator.ResetCreditCoordinator
-  | Crypto.Crypto
+  | Digest.Digest
+  | SecureRandom.SecureRandom
+  | Signature.Signature
   | FileSystem.FileSystem
   | HttpClient.HttpClient
   | ProviderLatestVersions.ProviderLatestVersions
@@ -289,6 +294,7 @@ export const CodexDriver: ProviderDriver<
         config,
       },
       {
+        enableComputerUse: true,
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         compatibility: installation.compatibility,
         resolveRuntime,
@@ -422,8 +428,15 @@ export const CodexDriver: ProviderDriver<
             protect("generateBranchName", nativeGeneration.generateBranchName(input)),
           generateThreadTitle: (input) =>
             protect("generateThreadTitle", nativeGeneration.generateThreadTitle(input)),
+          generateModelEvaluation: (input) =>
+            protect("generateModelEvaluation", nativeGeneration.generateModelEvaluation(input)),
           generateReviewGuide: (input) =>
             protect("generateReviewGuide", nativeGeneration.generateReviewGuide(input)),
+          generateTranscriptionPostProcessing: (input) =>
+            protect(
+              "generateTranscriptionPostProcessing",
+              nativeGeneration.generateTranscriptionPostProcessing(input),
+            ),
           generateKnowledgeCandidates: (input) =>
             protect(
               "generateKnowledgeCandidates",
@@ -535,6 +548,53 @@ export const CodexDriver: ProviderDriver<
           ),
         );
 
+    const nativeHistory = yield* makeCodexNativeHistory({
+      enabled,
+      homePath: homeLayout.sharedHomePath,
+      identity: continuationIdentity,
+      withClient: (cwd, use) =>
+        withAccess(
+          resolveRuntime.pipe(
+            Effect.flatMap((effective) =>
+              withCodexAppServerClient({
+                binaryPath: effective.config.binaryPath,
+                // External history belongs to the shared store, not T3's isolated auth runtime.
+                homePath: homeLayout.sharedHomePath,
+                launchArgs: resolveCodexLaunchArgs(
+                  effective.config.launchArgs,
+                  effective.environment,
+                ),
+                environment: { ...effective.environment, CODEX_HOME: homeLayout.sharedHomePath },
+                cwd,
+                ...(cliAccount ? { extendEnv: false } : {}),
+              }),
+            ),
+            Effect.flatMap(({ client, initialize }) =>
+              use({
+                homePath: initialize.codexHome,
+                list: (params) => client.request("thread/list", params),
+                read: (params) => client.request("thread/read", params),
+                items: (params) => client.request("thread/items/list", params),
+              }),
+            ),
+          ),
+        ).pipe(
+          Effect.scoped,
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, pathService),
+        ),
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: "Could not prepare Codex history.",
+            cause,
+          }),
+      ),
+    );
     return {
       instanceId,
       driverKind: DRIVER_KIND,
@@ -554,6 +614,7 @@ export const CodexDriver: ProviderDriver<
       consumeResetCredit,
       orchestrationAdapter,
       textGeneration,
+      nativeHistory,
       ...(auth ? { auth } : {}),
     } satisfies ProviderInstance;
   }),

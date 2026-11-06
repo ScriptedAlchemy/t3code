@@ -1,3 +1,4 @@
+import { ThreadSplitSuggestionInput, ThreadSplitSuggestionResult } from "./threadSplit.ts";
 import {
   ConversationSummaryDescribeInput,
   ConversationSummaryError,
@@ -8,6 +9,17 @@ import {
   ConversationSummaryRead,
 } from "./conversationSummaries.ts";
 import { LoomWindow, LoomWindowInput, ProjectLoomError } from "./projectLoom.ts";
+import {
+  ModelEvaluationClearInput,
+  ModelEvaluationError,
+  ModelEvaluationListInput,
+  ModelEvaluationReport,
+} from "./modelEvaluation.ts";
+import {
+  ExternalHistoryError,
+  ExternalHistoryRequest,
+  ExternalHistoryResponse,
+} from "./externalHistory.ts";
 import {
   ProjectKnowledgeError,
   ProjectKnowledgeMutation,
@@ -267,6 +279,7 @@ import {
 import {
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationGetWorkflowScriptError,
+  OrchestrationV2GetNativeChildWorkError,
   OrchestrationV2StopWorkflowError,
   OrchestrationV2ForceStopThreadError,
   OrchestrationV2DispatchCommandError,
@@ -453,6 +466,8 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  externalHistoryQuery: "externalHistory.query",
+  orchestrationSuggestThreadSplit: "orchestration.suggestThreadSplit",
   projectCodeQuery: "projectCode.query",
   projectCodeFileHistory: "projectCode.fileHistory",
   projectCodeSubscribeIndex: "projectCode.subscribeIndex",
@@ -467,6 +482,8 @@ export const WS_METHODS = {
   conversationSummariesList: "conversationSummaries.list",
   conversationSummariesDescribe: "conversationSummaries.describe",
   conversationSummariesExpand: "conversationSummaries.expand",
+  modelEvaluationsList: "modelEvaluations.list",
+  modelEvaluationsClear: "modelEvaluations.clear",
   projectReadLoomWindow: "project.readLoomWindow",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -664,6 +681,7 @@ export const WS_METHODS = {
   sourceControlSignInCancel: "sourceControl.signInCancel",
   sourceControlAppAccess: "sourceControl.appAccess",
   sourceControlStarred: "sourceControl.starred",
+  sourceControlStar: "sourceControl.star",
   projectCloneStart: "projectClone.start",
   projectCloneCancel: "projectClone.cancel",
   projectCloneRetry: "projectClone.retry",
@@ -1214,7 +1232,8 @@ const WsPullRequestsSetFilesViewedRpc = Rpc.make(WS_METHODS.pullRequestsSetFiles
 
 const WsPullRequestsRunActionRpc = Rpc.make(WS_METHODS.pullRequestsRunAction, {
   payload: PullRequestActionInput,
-  success: Schema.Void,
+  // Undefined unless asked for with replyWithSummary, or when the host's reply lacked it.
+  success: Schema.UndefinedOr(PullRequestSummary),
   error: PullRequestRpcError,
 });
 
@@ -1345,6 +1364,13 @@ const WsSourceControlAppAccessRpc = Rpc.make(WS_METHODS.sourceControlAppAccess, 
 
 // False when the server's forge account has not starred the repository or the forge cannot say.
 const WsSourceControlStarredRpc = Rpc.make(WS_METHODS.sourceControlStarred, {
+  payload: SourceControlStarredInput,
+  success: Schema.Boolean,
+  error: EnvironmentAuthorizationError,
+});
+
+// Stars the repository as the server's forge account. False when the forge refused or cannot star.
+const WsSourceControlStarRpc = Rpc.make(WS_METHODS.sourceControlStar, {
   payload: SourceControlStarredInput,
   success: Schema.Boolean,
   error: EnvironmentAuthorizationError,
@@ -1867,6 +1893,12 @@ const WsOrchestrationV2GetThreadFamilyRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS
   error: Schema.Union([OrchestrationV2GetShellSnapshotError, EnvironmentAuthorizationError]),
 });
 
+const WsOrchestrationV2GetThreadTitlesRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getThreadTitles, {
+  payload: OrchestrationV2RpcSchemas.getThreadTitles.input,
+  success: OrchestrationV2RpcSchemas.getThreadTitles.output,
+  error: Schema.Union([OrchestrationV2GetShellSnapshotError, EnvironmentAuthorizationError]),
+});
+
 const WsOrchestrationV2GetWorktreeThreadIdsRpc = Rpc.make(
   ORCHESTRATION_V2_WS_METHODS.getWorktreeThreadIds,
   {
@@ -1912,6 +1944,15 @@ const WsOrchestrationV2GetWorkflowScriptRpc = Rpc.make(
     payload: OrchestrationV2RpcSchemas.getWorkflowScript.input,
     success: OrchestrationV2RpcSchemas.getWorkflowScript.output,
     error: Schema.Union([OrchestrationGetWorkflowScriptError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2GetNativeChildWorkRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getNativeChildWork,
+  {
+    payload: OrchestrationV2RpcSchemas.getNativeChildWork.input,
+    success: OrchestrationV2RpcSchemas.getNativeChildWork.output,
+    error: Schema.Union([OrchestrationV2GetNativeChildWorkError, EnvironmentAuthorizationError]),
   },
 );
 
@@ -2146,21 +2187,57 @@ export const WsProjectLoomRpcGroup = RpcGroup.make(
   }),
 ).middleware(RpcScopeAuthorization);
 
+// Transport opt-in: old protocol-2 clients cannot decode tool/range sources or follow
+// intra-source text cursors. MCP and the domain service always use the current format.
+const ConversationSummaryRpcSourceFormat = {
+  sourceFormat: Schema.optionalKey(Schema.Literal(2)),
+};
+
+export const WsExternalHistoryRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.externalHistoryQuery, {
+    payload: ExternalHistoryRequest,
+    success: ExternalHistoryResponse,
+    error: Schema.Union([ExternalHistoryError, EnvironmentAuthorizationError]),
+  }),
+).middleware(RpcScopeAuthorization);
+
 export const WsConversationSummariesRpcGroup = RpcGroup.make(
   Rpc.make(WS_METHODS.conversationSummariesList, {
-    payload: ConversationSummaryListInput,
+    payload: Schema.Struct({
+      ...ConversationSummaryListInput.fields,
+      ...ConversationSummaryRpcSourceFormat,
+    }),
     success: ConversationSummaryList,
     error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(WS_METHODS.conversationSummariesDescribe, {
-    payload: ConversationSummaryDescribeInput,
+    payload: Schema.Struct({
+      ...ConversationSummaryDescribeInput.fields,
+      ...ConversationSummaryRpcSourceFormat,
+    }),
     success: ConversationSummaryRead,
     error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(WS_METHODS.conversationSummariesExpand, {
-    payload: ConversationSummaryExpandInput,
+    payload: Schema.Struct({
+      ...ConversationSummaryExpandInput.fields,
+      ...ConversationSummaryRpcSourceFormat,
+    }),
     success: ConversationSummaryExpansion,
     error: Schema.Union([ConversationSummaryError, EnvironmentAuthorizationError]),
+  }),
+).middleware(RpcScopeAuthorization);
+
+export const WsModelEvaluationsRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.modelEvaluationsList, {
+    payload: ModelEvaluationListInput,
+    success: ModelEvaluationReport,
+    error: Schema.Union([ModelEvaluationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.modelEvaluationsClear, {
+    payload: ModelEvaluationClearInput,
+    success: Schema.Void,
+    error: Schema.Union([ModelEvaluationError, EnvironmentAuthorizationError]),
   }),
 ).middleware(RpcScopeAuthorization);
 
@@ -2170,7 +2247,14 @@ export const WsProjectCodeRpcGroup = RpcGroup.make(
   WsProjectCodeSubscribeIndexRpc,
 ).middleware(RpcScopeAuthorization);
 
+const WsThreadSplitSuggestionRpc = Rpc.make(WS_METHODS.orchestrationSuggestThreadSplit, {
+  payload: ThreadSplitSuggestionInput,
+  success: ThreadSplitSuggestionResult,
+  error: EnvironmentAuthorizationError,
+});
+
 export const WsRpcGroup = RpcGroup.make(
+  WsThreadSplitSuggestionRpc,
   WsGuestShareCreateRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
@@ -2285,6 +2369,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSourceControlSignInCancelRpc,
   WsSourceControlAppAccessRpc,
   WsSourceControlStarredRpc,
+  WsSourceControlStarRpc,
   WsProjectCloneStartRpc,
   WsProjectCloneCancelRpc,
   WsProjectCloneRetryRpc,
@@ -2366,6 +2451,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeResourceTelemetryRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
+  WsOrchestrationV2GetNativeChildWorkRpc,
   WsOrchestrationV2StopWorkflowRpc,
   WsOrchestrationV2ForceStopThreadRpc,
   WsOrchestrationV2GetTurnItemRpc,
@@ -2376,6 +2462,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SearchThreadStreamRpc,
   WsOrchestrationV2GetArchivedShellSnapshotRpc,
   WsOrchestrationV2GetThreadFamilyRpc,
+  WsOrchestrationV2GetThreadTitlesRpc,
   WsOrchestrationV2GetWorktreeThreadIdsRpc,
   WsOrchestrationV2GetOlderSettledThreadsRpc,
   WsOrchestrationV2GetThreadProjectionRpc,
@@ -2387,5 +2474,7 @@ export const WsRpcGroup = RpcGroup.make(
   .middleware(RpcScopeAuthorization)
   .merge(WsProjectKnowledgeRpcGroup)
   .merge(WsConversationSummariesRpcGroup)
+  .merge(WsModelEvaluationsRpcGroup)
+  .merge(WsExternalHistoryRpcGroup)
   .merge(WsProjectLoomRpcGroup)
   .merge(WsProjectCodeRpcGroup);

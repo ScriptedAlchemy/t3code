@@ -73,6 +73,8 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.conversationSummariesList,
       WS_METHODS.conversationSummariesDescribe,
       WS_METHODS.conversationSummariesExpand,
+      WS_METHODS.modelEvaluationsList,
+      WS_METHODS.externalHistoryQuery,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
     }
@@ -331,6 +333,12 @@ describe("settings mutation authorization", () => {
         yield* client[WS_METHODS.serverUpdateSettings]({
           patch: { defaultRuntimeMode: "full-access" },
           providerInstanceMutation,
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+      // Removing a secret provider clears settings fields that read from it.
+      expect(
+        yield* client[WS_METHODS.serverUpdateSettings]({
+          patch: { secretProviders: { [SecretProviderId.make("personal")]: null } },
         }).pipe(Effect.flip),
       ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
       expect(handled).toBe(2);

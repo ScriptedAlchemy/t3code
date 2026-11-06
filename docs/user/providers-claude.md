@@ -30,6 +30,9 @@ For API keys, custom endpoints, and routers, choose **Use existing Claude Code**
 and configure its **Environment variables**. Independent subscription accounts
 use their own Claude login and ignore credential and endpoint overrides.
 
+On mobile, tap **Add Claude account** in **Settings > Providers** and enter a name and
+the config folder of an account already signed in on the environment's machine.
+
 Claude Code's verbose mode can stay enabled when you use Claude for text generation, including
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
 T3 Code uses the Claude configuration on the connected server.
@@ -37,7 +40,7 @@ T3 Code uses the Claude configuration on the connected server.
 ## Account pools
 
 With two or more Claude accounts, you can offer them as one. In **Settings >
-Account pools**, tick the Claude accounts to share and turn on **Pool these
+Labs > Zack > Account pools**, tick the Claude accounts to share and turn on **Pool these
 accounts**. The model picker then shows a single Claude entry in place of the
 ticked accounts. Each turn runs on an account that still has usage left. If an
 account reaches its usage limit mid-turn, the turn continues on another account,
@@ -68,7 +71,8 @@ When you return to a large thread after Claude's prompt cache expires, a
 **Compact** chip with the thread's token count shows
 next to the send button. While it is on, Enter summarizes the history first, then
 sends your message. Click the chip to switch it to **Keep** and keep the full
-history for that message. The cache lasts about an hour on a Claude
+history for that message. The mobile app shows no chip: an eligible message sent
+from it summarizes first. The cache lasts about an hour on a Claude
 subscription and 5 minutes with an API key, Bedrock, or Vertex. See [commands and skills](./composer.md#commands-and-skills) for using
 composer commands.
 

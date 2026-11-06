@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import { none, type Many } from "stream-chain/defs.js";
 import { Assembler } from "stream-json/core/assembler.js";
@@ -40,12 +41,18 @@ export function createTranscriptJsonSelector(schema: { readonly ast: SchemaAST.A
   return (path: JsonPath) => includes(ast, path, 0);
 }
 
-export class TranscriptJsonLimitError extends Error {}
+export class TranscriptJsonLimitError extends Schema.TaggedError<TranscriptJsonLimitError>()(
+  "TranscriptJsonLimitError",
+  { message: Schema.String },
+) {}
 
 export function createTranscriptJsonReader(
   reserve: (bytes: number) => void,
   selectPath: (path: JsonPath) => boolean,
-  options?: { readonly maxDepth?: number },
+  options?: {
+    readonly maxDepth?: number;
+    readonly onArrayItem?: (index: number, value: unknown) => boolean;
+  },
 ) {
   // 3.6.0 omits the synchronous tokenizer from types; parser() adds an unnecessary async generator.
   const { jsonParser } = StreamJson as typeof StreamJson & {
@@ -60,6 +67,7 @@ export function createTranscriptJsonReader(
   let depth = 0;
   let complete = false;
   let malformed = false;
+  let stopped = false;
 
   const assemble = (token: Token) => {
     reserve(
@@ -100,6 +108,14 @@ export function createTranscriptJsonReader(
   };
   const endValue = () => {
     const parent = stack.at(-1);
+    if (
+      options?.onArrayItem &&
+      stack.length === 1 &&
+      typeof parent?.key === "number" &&
+      Array.isArray(assembler.current)
+    ) {
+      stopped = !options.onArrayItem(parent.key, assembler.current.pop());
+    }
     if (parent && typeof parent.key === "number") parent.key++;
   };
   const selectToken = (token: Token | typeof none) => {
@@ -143,14 +159,17 @@ export function createTranscriptJsonReader(
     }
   };
   const consume = (input: string | typeof none) => {
-    if (malformed) return;
+    if (malformed || stopped) return;
     try {
       const tokens = tokenize(input);
       if (tokens === none) return;
       for (const token of tokens.values) {
+        if (stopped) break;
         if (token.name === "startObject" || token.name === "startArray") {
           if (++depth > (options?.maxDepth ?? 128))
-            throw new TranscriptJsonLimitError("Transcript JSON nesting exceeds the depth limit");
+            throw new TranscriptJsonLimitError({
+              message: "Transcript JSON nesting exceeds the depth limit",
+            });
         } else if (token.name === "endObject" || token.name === "endArray") {
           if (--depth === 0) complete = true;
         }
@@ -175,6 +194,9 @@ export function createTranscriptJsonReader(
     }
   };
   return {
+    get stopped() {
+      return stopped;
+    },
     write: (chunk: string) => consume(chunk),
     finish: (): unknown => {
       consume(none);

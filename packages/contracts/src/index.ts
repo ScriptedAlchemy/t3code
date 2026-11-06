@@ -1,4 +1,5 @@
 export * from "./baseSchemas.ts";
+export * from "./externalHistory.ts";
 export * from "./assistantCitations.ts";
 export * from "./composerContext.ts";
 export * from "./composerContextClipboard.ts";
@@ -25,6 +26,7 @@ export * from "./providerUsageLimits.ts";
 export * from "./usageLimitSourceId.ts";
 export * from "./providerPolicy.ts";
 export * from "./modelSelection.ts";
+export * from "./modelEvaluation.ts";
 export * from "./chatAttachment.ts";
 export * from "./checkpointDiff.ts";
 export * from "./model.ts";
@@ -36,6 +38,7 @@ export * from "./git.ts";
 export * from "./vcs.ts";
 export * from "./sourceControl.ts";
 export * from "./projectClone.ts";
+export * from "./speech.ts";
 export * from "./pullRequest.ts";
 export * from "./pullRequestMcp.ts";
 export * from "./pullRequestReviewGuide.ts";
@@ -50,6 +53,7 @@ export * from "./peerLink.ts";
 export * from "./threadMetadataMcp.ts";
 export * from "./threadPullRequest.ts";
 export * from "./threadSearch.ts";
+export * from "./threadTags.ts";
 export * from "./threadTitle.ts";
 export * from "./t3ProjectFile.ts";
 export * from "./editor.ts";
@@ -82,3 +86,5 @@ export * from "./projectKnowledge.ts";
 export * from "./conversationSummaries.ts";
 
 export * from "./projectLoom.ts";
+
+export * from "./threadSplit.ts";

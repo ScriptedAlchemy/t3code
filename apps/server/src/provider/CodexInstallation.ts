@@ -12,7 +12,7 @@ import * as GitHubCredentials from "@t3tools/source-control-github/server/GitHub
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -31,6 +31,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeCrypto from "node:crypto";
 import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ModelManifest from "./ModelManifest.ts";
 import { resolveProviderCompatibility } from "./providerCompatibility.ts";
 
@@ -209,9 +210,10 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
   options: CodexInstallationOptions,
 ) {
   const manifestService = yield* ModelManifest.ModelManifest;
+  const settingsService = yield* ServerSettings.ServerSettingsService;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const http = yield* HttpClient.HttpClient;
   const githubCredentials = yield* GitHubCredentials.GitHubCredentials;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -814,16 +816,14 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
           ) {
             return yield* SubscriptionRef.get(state);
           }
-          const operationId = yield* crypto.randomUUIDv4();
+          const operationId = yield* random.uuidV4();
           const next: ProviderInstallState = {
-            driver: DRIVER,
+            ...current,
             operationId,
             phase: "downloading",
             downloadedBytes: 0,
             totalBytes: release.archiveBytes,
             version: release.version,
-            installedVersion: current.installedVersion,
-            canRemove: current.canRemove,
             message: "Downloading Codex.",
           };
           yield* SubscriptionRef.set(state, next);
@@ -968,6 +968,14 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
           source: "managed",
         }) satisfies ProviderInstallState,
     );
+    const checkForUpdates = yield* settingsService.getSettings.pipe(
+      Effect.map((settings) => settings.enableProviderUpdateChecks),
+      Effect.orElseSucceed(() => false),
+    );
+    if (!checkForUpdates) return;
+    yield* refresh().pipe(Effect.ignore);
+    if (asset && compareSemverVersions(installed.version, asset.version) < 0)
+      yield* start().pipe(Effect.ignore);
   }).pipe(
     Effect.catch(() =>
       SubscriptionRef.update(

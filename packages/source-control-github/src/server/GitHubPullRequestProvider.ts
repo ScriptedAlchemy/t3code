@@ -116,6 +116,7 @@ function gitHubProviderFailure(
       return { reason: "missing-tool" };
     case "GitHubNotSignedInError":
     case "GitHubHostDisabledError":
+    case "SettingsSecretUnresolvedError":
     case "GitHubApiAuthenticationError":
       return { reason: "unauthenticated" };
     case "GitHubApiRateLimitError":
@@ -133,6 +134,15 @@ function gitHubProviderFailure(
         ...(error.resource === undefined ? {} : { resource: error.resource }),
         ...(error.remaining === undefined ? {} : { remaining: error.remaining }),
         ...(error.limit === undefined ? {} : { limit: error.limit }),
+      };
+    case "GitHubApiResponseError":
+      return {
+        reason:
+          error.status === 403 ||
+          (error.githubErrorTypes?.includes("FORBIDDEN") &&
+            error.githubErrorTypes.every((type) => type === "FORBIDDEN" || type === "NOT_FOUND"))
+            ? "forbidden"
+            : "failed",
       };
     case "GitHubApiNotFoundError":
       return error.credential === undefined || error.credential === "app"

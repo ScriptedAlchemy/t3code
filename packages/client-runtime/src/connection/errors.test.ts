@@ -1,3 +1,4 @@
+import { EnvironmentAuthInvalidError } from "@t3tools/contracts";
 import {
   RelayAuthInvalidError,
   RelayEnvironmentConnectNotAuthorizedError,
@@ -93,12 +94,51 @@ describe("mapRemoteDpopEnvironmentError", () => {
       message: "Failed to fetch remote environment endpoint.",
       cause: new TypeError("Failed to fetch"),
     }),
-    new RemoteEnvironmentAuthTimeoutError("https://environment.example.test", 10_000),
+    new RemoteEnvironmentAuthTimeoutError({
+      requestUrl: "https://environment.example.test",
+      timeoutMs: 10_000,
+    }),
   ])("suggests another network when the relay endpoint cannot be reached: $_tag", (error) => {
     const mapped = mapRemoteDpopEnvironmentError(error);
     expect(mapped).toMatchObject({
       _tag: "ConnectionTransientError",
       detail: `${error.message} ${NETWORK_BLOCKING_HINT}`,
+    });
+  });
+
+  it("names a direct LAN failure without the tunnel hint", () => {
+    const error = new RemoteEnvironmentAuthFetchError({
+      message: "Failed to fetch remote environment endpoint.",
+      cause: new TypeError("Failed to fetch"),
+    });
+    expect(mapRemoteDpopEnvironmentError(error, "direct")).toMatchObject({
+      _tag: "ConnectionTransientError",
+      hop: "server",
+      via: "direct",
+      detail: error.message,
+    });
+    expect(mapRemoteDpopEnvironmentError(error, "direct").message).not.toContain(
+      NETWORK_BLOCKING_HINT,
+    );
+  });
+
+  it("keeps a direct DPoP clock failure classified", () => {
+    expect(
+      mapRemoteDpopEnvironmentError(
+        new EnvironmentAuthInvalidError({
+          code: "auth_invalid",
+          reason: "invalid_credential",
+          traceId: "trace-clock",
+          dpopFailureReason: "time_window",
+        }),
+        "direct",
+      ),
+    ).toMatchObject({
+      _tag: "ConnectionBlockedError",
+      hop: "server",
+      via: "direct",
+      failureCause: "clock_skew",
+      dpopFailureReason: "time_window",
     });
   });
 });

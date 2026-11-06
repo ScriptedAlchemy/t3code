@@ -41,6 +41,8 @@ export type {
   ReviewGuideGenerationResult,
   ThreadTitleGenerationInput,
   ThreadTitleGenerationResult,
+  TranscriptionPostProcessingInput,
+  TranscriptionPostProcessingResult,
 } from "@t3tools/provider-core/server/textGeneration";
 
 export class TextGeneration extends Context.Service<TextGeneration, ProviderTextGeneration>()(
@@ -64,6 +66,23 @@ const resolveInstance = Effect.fn("TextGeneration.resolveInstance")(function* (
       operation,
       detail: `Provider '${instanceId}' does not support this text generation operation. Choose a model from a provider that supports it.`,
     });
+  }
+  if (operation === "generateModelEvaluation") {
+    const snapshot = yield* instance.snapshot.getSnapshot;
+    if (
+      !instance.enabled ||
+      !snapshot.enabled ||
+      !snapshot.installed ||
+      snapshot.auth.status === "unauthenticated" ||
+      !isProviderAvailable(snapshot) ||
+      !isProviderTextGenerationCapable(snapshot, operation)
+    ) {
+      return yield* new TextGenerationError({
+        operation,
+        detail:
+          "The selected evaluator is unavailable. Choose an enabled, installed, authenticated provider that supports blind evaluation.",
+      });
+    }
   }
   return instance.textGeneration;
 });
@@ -131,6 +150,13 @@ export const make = Effect.gen(function* () {
     );
   });
   return TextGeneration.of({
+    generateModelEvaluation: Effect.fn("TextGeneration.generateModelEvaluation")(function (input) {
+      return resolveInstance(
+        registry,
+        "generateModelEvaluation",
+        input.modelSelection.instanceId,
+      ).pipe(Effect.flatMap((textGeneration) => textGeneration.generateModelEvaluation(input)));
+    }),
     generateCommitMessage: Effect.fn("TextGeneration.generateCommitMessage")(function (input) {
       return generate("generateCommitMessage", input.modelSelection, (service, modelSelection) =>
         service.generateCommitMessage({ ...input, modelSelection }),
@@ -173,6 +199,16 @@ export const make = Effect.gen(function* () {
         );
       },
     ),
+    generateTranscriptionPostProcessing: Effect.fn(
+      "TextGeneration.generateTranscriptionPostProcessing",
+    )(function (input) {
+      return generate(
+        "generateTranscriptionPostProcessing",
+        input.modelSelection,
+        (service, modelSelection) =>
+          service.generateTranscriptionPostProcessing({ ...input, modelSelection }),
+      );
+    }),
     generateThreadTitle: Effect.fn("TextGeneration.generateThreadTitle")(function (input) {
       return generate(
         "generateThreadTitle",

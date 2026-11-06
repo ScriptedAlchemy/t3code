@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
 import * as Deferred from "effect/Deferred";
@@ -8,6 +9,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -18,6 +20,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as SshAuth from "./auth.ts";
 import { SshCommandError, SshPasswordPromptError } from "./errors.ts";
 import * as SshTunnel from "./tunnel.ts";
+
+const isSshCommandError = Schema.is(SshCommandError);
 
 const makeSuccessfulProcess = (stdout: string) => {
   const stdoutStream = Stream.make(new TextEncoder().encode(stdout));
@@ -77,22 +81,35 @@ const testNetService = NetService.NetService.of({
 });
 
 function commandArgs(command: ChildProcess.Command): ReadonlyArray<string> {
-  return command._tag === "StandardCommand" ? command.args : [];
+  return command._tag === "StandardCommand" ? command.args.map(String) : [];
 }
 
 const ARCHIVE = { archiveVersion: "1.2.3-preview.20260911.4" } as const;
 
 const runArchiveRunner = Effect.fn("test.runArchiveRunner")(
-  function* (installedVersion: string) {
+  function* (
+    installedVersion: string,
+    installDirectory = ".local/bin",
+    options?: { readonly cliScript?: string; readonly fifo?: boolean },
+  ) {
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectoryScoped();
-    yield* fs.makeDirectory(`${root}/.local/bin`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/${installDirectory}`, { recursive: true });
     yield* fs.makeDirectory(`${root}/bin`);
-    yield* fs.writeFileString(
-      `${root}/.local/bin/t3`,
-      `#!/bin/sh\ncase "$1" in\n--version) echo 't3 v${installedVersion}';;\n__ssh-helper) exit 0;;\n*) printf 'installed:%s\\n' "$*";;\nesac\n`,
-    );
-    yield* fs.chmod(`${root}/.local/bin/t3`, 0o700);
+    if (options?.fifo) {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const mkfifo = yield* spawner.spawn(
+        ChildProcess.make("mkfifo", ["-m", "700", `${root}/${installDirectory}/t3`]),
+      );
+      yield* mkfifo.exitCode;
+    } else {
+      yield* fs.writeFileString(
+        `${root}/${installDirectory}/t3`,
+        options?.cliScript ??
+          `#!/bin/sh\ncase "$1" in\n--version) echo 't3 v${installedVersion}';;\n__ssh-helper) exit 0;;\n*) printf 'installed:%s\\n' "$*";;\nesac\n`,
+      );
+      yield* fs.chmod(`${root}/${installDirectory}/t3`, 0o700);
+    }
     yield* fs.writeFileString(`${root}/bin/curl`, '#!/bin/sh\necho "HTTP 404" >&2\nexit 22\n');
     yield* fs.chmod(`${root}/bin/curl`, 0o700);
     yield* fs.writeFileString(`${root}/runner.sh`, SshTunnel.buildRemoteT3RunnerScript(ARCHIVE));
@@ -142,6 +159,7 @@ describe("ssh tunnel scripts", () => {
         });
         const layer = Layer.mergeAll(
           NodeServices.layer,
+          NodeCrypto.layer,
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Layer.succeed(HttpClient.HttpClient, testHttpClient),
           Layer.succeed(NetService.NetService, testNetService),
@@ -161,13 +179,15 @@ describe("ssh tunnel scripts", () => {
       }),
   );
 
-  it.live("reuses an installed CLI only when it matches the exact requested release", () =>
-    Effect.gen(function* () {
-      const result = yield* runArchiveRunner(ARCHIVE.archiveVersion);
-      assert.equal(result.exitCode, 0, result.stderr);
-      assert.equal(result.stdout, "installed:pair --json\n");
-      assert.isFalse(result.runtimeExists);
-    }),
+  it.live.each([".local/bin", ".t3/bin"])(
+    "reuses an exact-release installed CLI in %s",
+    (installDirectory) =>
+      Effect.gen(function* () {
+        const result = yield* runArchiveRunner(ARCHIVE.archiveVersion, installDirectory);
+        assert.equal(result.exitCode, 0, result.stderr);
+        assert.equal(result.stdout, "installed:pair --json\n");
+        assert.isFalse(result.runtimeExists);
+      }),
   );
 
   it.live.each(["1.2.2", "1.2.3", "1.2.3-nightly.20260911.4", "1.2.3-preview.20260911.3"])(
@@ -183,6 +203,28 @@ describe("ssh tunnel scripts", () => {
         assert.include(result.stderr, `Install the exact T3 CLI (${ARCHIVE.archiveVersion})`);
         assert.isFalse(result.runtimeExists);
       }),
+  );
+
+  it.live(
+    "skips an installed CLI whose probes hang and falls through to the archive download",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* runArchiveRunner(ARCHIVE.archiveVersion, ".t3/bin", {
+          cliScript: `#!/bin/sh\ncase "$1" in\n--version) sleep 300;;\n__ssh-helper) sleep 300;;\n*) printf 'installed:%s\\n' "$*";;\nesac\n`,
+        });
+        assert.notEqual(result.exitCode, 0);
+        assert.include(result.stderr, `v${ARCHIVE.archiveVersion}/SHA256SUMS`);
+        assert.isFalse(result.runtimeExists);
+      }),
+  );
+
+  it.live("skips a non-regular file at the desktop CLI path", () =>
+    Effect.gen(function* () {
+      const result = yield* runArchiveRunner(ARCHIVE.archiveVersion, ".t3/bin", { fifo: true });
+      assert.notEqual(result.exitCode, 0);
+      assert.include(result.stderr, `v${ARCHIVE.archiveVersion}/SHA256SUMS`);
+      assert.isFalse(result.runtimeExists);
+    }),
   );
 
   it("rejects archive versions that are not a single exact version segment", () => {
@@ -222,7 +264,10 @@ describe("ssh tunnel scripts", () => {
       }),
     );
     const layerSpawner = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
-    const layerProcess = Layer.merge(NodeServices.layer, layerSpawner);
+    const layerProcess = Layer.merge(
+      Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+      layerSpawner,
+    );
 
     return Effect.gen(function* () {
       const result = yield* SshTunnel.launchOrReuseRemoteServer(target, undefined, ARCHIVE);
@@ -252,7 +297,10 @@ describe("ssh tunnel scripts", () => {
       ),
     );
     const layerSpawner = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
-    const layerProcess = Layer.merge(NodeServices.layer, layerSpawner);
+    const layerProcess = Layer.merge(
+      Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+      layerSpawner,
+    );
     return Effect.gen(function* () {
       const result = yield* SshTunnel.issueRemotePairingToken(target, undefined, ARCHIVE);
       assert.equal(result.credential, "LCL4R2TPHDKQ");
@@ -278,6 +326,7 @@ describe("ssh tunnel scripts", () => {
       );
       const layer = Layer.mergeAll(
         NodeServices.layer,
+        NodeCrypto.layer,
         Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Layer.succeed(HttpClient.HttpClient, hangingHttpClient),
         Layer.succeed(NetService.NetService, testNetService),
@@ -297,7 +346,7 @@ describe("ssh tunnel scripts", () => {
         assert.isTrue(Result.isFailure(result));
         if (Result.isFailure(result)) {
           assert.instanceOf(result.failure, SshCommandError);
-          if (result.failure instanceof SshCommandError) {
+          if (isSshCommandError(result.failure)) {
             assert.equal(result.failure.exitCode, 1);
             assert.equal(result.failure.stderr.length, 16_384);
             assert.isTrue(result.failure.stderr.endsWith(diagnostic));
@@ -335,6 +384,7 @@ describe("ssh tunnel scripts", () => {
       );
       const layer = Layer.mergeAll(
         NodeServices.layer,
+        NodeCrypto.layer,
         Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Layer.succeed(HttpClient.HttpClient, hangingHttpClient),
         Layer.succeed(NetService.NetService, testNetService),
@@ -354,7 +404,7 @@ describe("ssh tunnel scripts", () => {
         assert.isTrue(Result.isFailure(result));
         if (Result.isFailure(result)) {
           assert.instanceOf(result.failure, SshCommandError);
-          if (result.failure instanceof SshCommandError) {
+          if (isSshCommandError(result.failure)) {
             assert.equal(result.failure.exitCode, 255);
             assert.equal(result.failure.stderr, diagnostic);
           }
@@ -386,6 +436,7 @@ describe("ssh tunnel scripts", () => {
         );
         const layer = Layer.mergeAll(
           NodeServices.layer,
+          NodeCrypto.layer,
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Layer.succeed(HttpClient.HttpClient, testHttpClient),
           Layer.succeed(NetService.NetService, testNetService),
@@ -428,6 +479,7 @@ describe("ssh tunnel scripts", () => {
       );
       const layer = Layer.mergeAll(
         NodeServices.layer,
+        NodeCrypto.layer,
         Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Layer.succeed(HttpClient.HttpClient, testHttpClient),
         Layer.succeed(NetService.NetService, testNetService),
@@ -481,6 +533,7 @@ describe("ssh tunnel scripts", () => {
       );
       const layer = Layer.mergeAll(
         NodeServices.layer,
+        NodeCrypto.layer,
         Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Layer.succeed(HttpClient.HttpClient, testHttpClient),
         Layer.succeed(NetService.NetService, testNetService),
@@ -512,8 +565,7 @@ describe("ssh tunnel scripts", () => {
         if (Result.isFailure(result)) {
           if (expectedPromptAttempts.length === 0) {
             assert.instanceOf(result.failure, SshCommandError);
-            if (result.failure instanceof SshCommandError)
-              assert.equal(result.failure.stderr, stderr);
+            if (isSshCommandError(result.failure)) assert.equal(result.failure.stderr, stderr);
           } else {
             assert.instanceOf(result.failure, SshPasswordPromptError);
           }
@@ -584,6 +636,7 @@ describe("ssh tunnel scripts", () => {
         );
         const layer = Layer.mergeAll(
           NodeServices.layer,
+          NodeCrypto.layer,
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Layer.succeed(HttpClient.HttpClient, testHttpClient),
           Layer.succeed(NetService.NetService, testNetService),

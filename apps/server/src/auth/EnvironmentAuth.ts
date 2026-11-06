@@ -3,6 +3,7 @@ import {
   AuthAccessWriteScope,
   AuthFilesystemReadScope,
   AuthOrchestrationOperateScope,
+  AuthRelayWriteScope,
   AuthStandardClientScopes,
   type AuthAccessTokenResult,
   type AuthBrowserSessionResult,
@@ -27,7 +28,7 @@ import {
 import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
 import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -49,6 +50,7 @@ import { DESKTOP_RENDERER_ORIGINS } from "../httpCors.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedLimits from "../policy/managedLimits.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import { requestUrl } from "../requestUrl.ts";
 
 const DEFAULT_SESSION_SUBJECT = "cli-issued-session";
 export const INTERNAL_ADMINISTRATIVE_BOOTSTRAP_SUBJECT = "administrative-bootstrap";
@@ -442,6 +444,15 @@ export class ServerAuthMcpApprovalCodeError extends Schema.TaggedError<ServerAut
   }
 }
 
+export class ServerAuthLanCredentialNotAllowedError extends Schema.TaggedError<ServerAuthLanCredentialNotAllowedError>()(
+  "ServerAuthLanCredentialNotAllowedError",
+  {},
+) {
+  override get message(): string {
+    return "Only a paired bearer session can mint a LAN credential.";
+  }
+}
+
 export class ServerAuthForbiddenOperationError extends Schema.TaggedError<ServerAuthForbiddenOperationError>()(
   "ServerAuthForbiddenOperationError",
   {},
@@ -481,6 +492,12 @@ export class EnvironmentAuth extends Context.Service<
     ) => Effect.Effect<
       AuthAccessTokenResult,
       ServerAuthInvalidCredentialError | ServerAuthInvalidRequestError | ServerAuthInternalError
+    >;
+    readonly issueLanCredential: (
+      request: HttpServerRequest.HttpServerRequest,
+    ) => Effect.Effect<
+      AuthAccessTokenResult,
+      ServerAuthLanCredentialNotAllowedError | ServerAuthCredentialError | ServerAuthInternalError
     >;
     readonly createPairingLink: (input?: {
       readonly ttl?: Duration.Duration;
@@ -715,7 +732,7 @@ export const make = Effect.gen(function* () {
   const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
   const sessions = yield* SessionStore.SessionStore;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
-  const crypto = yield* Crypto.Crypto;
+  const digest = yield* Digest.Digest;
   const descriptor = yield* policy.getDescriptor();
   const config = yield* ServerConfig.ServerConfig;
   const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
@@ -807,7 +824,7 @@ export const make = Effect.gen(function* () {
             expectedAccessToken: dpopToken,
           }).pipe(
             Effect.provideService(ServerSecretStore.ServerSecretStore, secretStore),
-            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(Digest.Digest, digest),
             Effect.as(session),
           );
         }
@@ -1015,6 +1032,61 @@ export const make = Effect.gen(function* () {
         Effect.withSpan("EnvironmentAuth.exchangeBootstrapCredentialForAccessToken"),
       );
     };
+
+  const issueLanCredential: EnvironmentAuth["Service"]["issueLanCredential"] = Effect.fn(
+    "EnvironmentAuth.issueLanCredential",
+  )(function* (request) {
+    const authenticated = yield* authenticateRequest(request);
+    const token = resolveRequestCredential(request)?.token;
+    if (authenticated.method !== "bearer-access-token" || token === undefined) {
+      return yield* new ServerAuthLanCredentialNotAllowedError({});
+    }
+    const parent = yield* sessions.verify(token).pipe(mapSessionVerificationErrors);
+    if (parent.peerLink === true) {
+      return yield* new ServerAuthLanCredentialNotAllowedError({});
+    }
+    const scopes = parent.scopes.filter(
+      (scope) =>
+        scope !== AuthAccessWriteScope &&
+        scope !== AuthRelayWriteScope &&
+        (AuthStandardClientScopes as ReadonlyArray<AuthEnvironmentScope>).includes(scope),
+    );
+    if (scopes.length === 0 || parent.expiresAt === undefined) {
+      return yield* new ServerAuthLanCredentialNotAllowedError({});
+    }
+    const proofKeyThumbprint = yield* verifyRequestDpopProof({ request }).pipe(
+      Effect.provideService(ServerSecretStore.ServerSecretStore, secretStore),
+      Effect.provideService(Digest.Digest, digest),
+    );
+    const now = yield* DateTime.now;
+    const session = yield* sessions
+      .issue({
+        method: "dpop-access-token",
+        subject: SessionStore.lanCredentialSubject(parent.sessionId),
+        scopes,
+        proofKeyThumbprint,
+        ttl: Duration.millis(parent.expiresAt.epochMilliseconds - now.epochMilliseconds),
+        replaceActiveForSubjectAndMethod: true,
+        client: {
+          ...parent.client,
+          label: `${parent.client.label ?? "Client"} (local network)`,
+        },
+        ...(parent.runtimeModeCeiling ? { runtimeModeCeiling: parent.runtimeModeCeiling } : {}),
+      })
+      .pipe(
+        Effect.mapError((cause) => new ServerAuthAuthenticatedAccessTokenIssueError({ cause })),
+      );
+    return {
+      access_token: session.token,
+      issued_token_type: AuthAccessTokenType,
+      token_type: "DPoP",
+      expires_in: Math.max(
+        0,
+        Math.floor((session.expiresAt.epochMilliseconds - now.epochMilliseconds) / 1000),
+      ),
+      scope: encodeOAuthScope(session.scopes),
+    } satisfies AuthAccessTokenResult;
+  });
 
   const toPairingCredential = (issued: IssuedPairingLink): AuthPairingCredentialResult => ({
     id: issued.id,
@@ -1244,10 +1316,10 @@ export const make = Effect.gen(function* () {
 
   const authenticateWebSocketUpgrade: EnvironmentAuth["Service"]["authenticateWebSocketUpgrade"] =
     Effect.fn("EnvironmentAuth.authenticateWebSocketUpgrade")(function* (request, use) {
-      const requestUrl = HttpServerRequest.toURL(request);
-      if (Option.isSome(requestUrl)) {
+      const url = requestUrl(request);
+      if (Option.isSome(url)) {
         const query = yield* decodeWebSocketUpgradeQuery(
-          Object.fromEntries(requestUrl.value.searchParams),
+          Object.fromEntries(url.value.searchParams),
         ).pipe(Effect.orDie);
         const websocketTicket = query.wsTicket && Redacted.value(query.wsTicket);
         if (websocketTicket && websocketTicket.trim().length > 0) {
@@ -1277,7 +1349,7 @@ export const make = Effect.gen(function* () {
               expectedAccessToken: websocketTicket,
             }).pipe(
               Effect.provideService(ServerSecretStore.ServerSecretStore, secretStore),
-              Effect.provideService(Crypto.Crypto, crypto),
+              Effect.provideService(Digest.Digest, digest),
             );
           }
           return {
@@ -1390,6 +1462,7 @@ export const make = Effect.gen(function* () {
     getSessionState,
     createBrowserSession,
     exchangeBootstrapCredentialForAccessToken,
+    issueLanCredential,
     createPairingLink,
     issuePairingCredential,
     issueStartupPairingCredential,

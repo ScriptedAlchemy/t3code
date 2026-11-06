@@ -49,6 +49,7 @@ export class PullRequestProviderError extends Schema.TaggedError<PullRequestProv
     reason: Schema.Literals([
       "missing-tool",
       "unauthenticated",
+      "forbidden",
       "rate-limited",
       "not-found",
       "failed",
@@ -132,6 +133,9 @@ export interface ProviderChangeRequestSummary {
   readonly mergeability?: PullRequestMergeability | undefined;
   /** Null means no stack; absent means not requested. */
   readonly stack?: PullRequestStackMembership | null | undefined;
+  /** Absent means the read did not report auto-merge state, not that it is off. */
+  readonly autoMergeEnabled?: boolean | undefined;
+  readonly autoMergeMethod?: PullRequestMergeMethod | undefined;
 }
 
 export interface ProviderChangeRequestStackLayer {
@@ -489,6 +493,7 @@ export interface PullRequestProviderApi {
     },
   ) => Effect.Effect<ProviderFileRevisions, PullRequestProviderError>;
 
+  /** Returns the change request as the host's reply left it, or void when the reply lacks it. */
   readonly runAction: (
     input: ProviderRepositoryRef & {
       readonly number: number;
@@ -499,7 +504,7 @@ export interface PullRequestProviderApi {
       readonly mergeMethod?: PullRequestMergeMethod;
       readonly updateMethod?: PullRequestUpdateMethod;
     },
-  ) => Effect.Effect<void, PullRequestProviderError>;
+  ) => Effect.Effect<ProviderChangeRequestSummary | void, PullRequestProviderError>;
 
   /** Requires edit capability and at least one field. */
   readonly updateChangeRequest?: (

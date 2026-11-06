@@ -1,6 +1,7 @@
 import { CheckpointScopeId, ProjectId, RunId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -9,8 +10,10 @@ import * as CodeIntelligence from "../project/knowledge/CodeIntelligence.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
+import * as ModelEvaluations from "../modelEvaluations/ModelEvaluations.ts";
 import * as CheckpointCapture from "./CheckpointCaptureService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as WorktreeBranches from "./WorktreeBranches.ts";
 
 export class RunFinalizationError extends Schema.TaggedError<RunFinalizationError>()(
   "RunFinalizationError",
@@ -54,6 +57,8 @@ const make = Effect.gen(function* () {
   const checkpointCapture = yield* CheckpointCapture.CheckpointCaptureServiceV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const observer = yield* RunFinalizationObserver;
+  const modelEvaluations = yield* ModelEvaluations.ModelEvaluations;
+  const worktreeBranches = yield* WorktreeBranches.WorktreeBranches;
 
   const finalize: RunFinalizationService["Service"]["finalize"] = Effect.fn(
     "RunFinalizationService.finalize",
@@ -73,7 +78,38 @@ const make = Effect.gen(function* () {
         ),
       );
     const cwd = projection.checkpointScopes.find((scope) => scope.id === input.scopeId)?.cwd;
+    const run = projection.runs.find((candidate) => candidate.id === input.runId);
+    if (
+      run !== undefined &&
+      (run.status === "completed" || run.status === "interrupted" || run.status === "cancelled")
+    ) {
+      yield* modelEvaluations
+        .enqueueRun({ threadId: input.threadId, runId: input.runId, runOutcome: run.status })
+        .pipe(
+          Effect.catchTags({
+            ModelEvaluationPassError: (cause) =>
+              Effect.logWarning("Failed to schedule model evaluation after checkpoint capture", {
+                ...input,
+                cause,
+              }),
+          }),
+        );
+    }
     if (cwd !== undefined) {
+      yield* projections.getThreadShell(input.threadId).pipe(
+        Effect.flatMap((thread) =>
+          // An exact match excludes project-root threads and nested-repo checkpoint scopes.
+          thread?.worktreePath === cwd
+            ? worktreeBranches.sync({ worktreePath: cwd, runId: input.runId })
+            : Effect.void,
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to sync worktree branch after checkpoint capture", {
+            ...input,
+            cause,
+          }),
+        ),
+      );
       // Retrying a display refresh after the checkpoint is durable blocks the next turn.
       yield* observer.refresh({ cwd, threadId: input.threadId, runId: input.runId }).pipe(
         Effect.catchTags({
@@ -127,6 +163,7 @@ export const layerObserver = Layer.effect(
         ),
       );
     }).pipe(Effect.forever, Effect.forkScoped);
+    const pullRequestLookups = yield* FiberMap.make<string>();
     return {
       refreshAfterTurn,
       refresh: Effect.fn("RunFinalizationService.refresh")(
@@ -141,6 +178,8 @@ export const layerObserver = Layer.effect(
           const thread = yield* projections.getThreadShell(threadId);
           if (!thread || thread.branch !== local.refName) return;
           if (thread.activeRunId !== null && thread.activeRunId !== runId) return;
+          // The forge CLI can take minutes, so the next turn must not wait for it. A newer
+          // turn's lookup replaces a running one instead of queueing behind the cwd's lock.
           yield* vcsStatus.refreshPullRequestStatus(cwd).pipe(
             Effect.catch((error) =>
               Effect.logWarning("failed to refresh pull request status after run completion", {
@@ -149,6 +188,7 @@ export const layerObserver = Layer.effect(
                 detail: error.message,
               }),
             ),
+            FiberMap.run(pullRequestLookups, cwd),
           );
         },
         (effect, { cwd }) =>

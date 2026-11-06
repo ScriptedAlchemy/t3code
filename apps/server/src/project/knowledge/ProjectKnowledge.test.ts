@@ -22,6 +22,7 @@ import {
   type OrchestrationV2DomainEvent,
   type ProjectKnowledgeMutation,
 } from "@t3tools/contracts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -51,7 +52,7 @@ import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as TurnItemPositionStore from "../../orchestration-v2/TurnItemPositionStore.ts";
 import { deliveryScrubEffect } from "./deliveryScrubSchedule.ts";
-import * as ProjectionMaintenance from "../../orchestration-v2/ProjectionMaintenance.ts";
+import * as ProjectionReplay from "../../orchestration-v2/testkit/ProjectionReplay.ts";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as ProjectKnowledge from "./ProjectKnowledge.ts";
@@ -67,7 +68,7 @@ const knowledgeTestLayer = (scoring: typeof HolographicMemory.layer = Holographi
         ProjectStore.layer,
         ProjectionStore.layer,
         ThreadSearch.layer,
-        ProjectionMaintenance.layer.pipe(
+        ProjectionReplay.layer.pipe(
           Layer.provideMerge(EventStore.layer),
           Layer.provide(ProjectionStore.layer),
         ),
@@ -79,7 +80,7 @@ const knowledgeTestLayer = (scoring: typeof HolographicMemory.layer = Holographi
         getEnvironmentId: Effect.succeed(environmentId),
       }),
     ),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 
 const layerTest = knowledgeTestLayer();
@@ -736,7 +737,7 @@ it.effect("reopens durable project facts without another content authority", () 
           getEnvironmentId: Effect.succeed(environmentId),
         }),
       ),
-      Layer.provide(NodeServices.layer),
+      Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     );
     const projectId = ProjectId.make("durable-project");
     const saved = yield* Effect.gen(function* () {
@@ -749,7 +750,7 @@ it.effect("reopens durable project facts without another content authority", () 
       return yield* knowledge.list({ projectId });
     }).pipe(Effect.provide(layerFile));
     assert.deepEqual(reopened.facts, [saved]);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -1620,7 +1621,7 @@ it.effect.each(["rolled", "edited", "deleted", "project-deleted", "archive"] as 
           [],
         );
       if (removal === "edited" || removal === "deleted") return;
-      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      const maintenance = yield* ProjectionReplay.ProjectionReplay;
       yield* maintenance.rebuild;
       assert.deepEqual(
         (yield* search.search({ projectId, query: "tenant IDs in cache keys" })).matches,
@@ -2588,7 +2589,7 @@ it.effect(
               getEnvironmentId: Effect.succeed(environmentId),
             }),
           ),
-          Layer.provide(NodeServices.layer),
+          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         );
       const projectId = ProjectId.make("restart-delivery-project");
       const threadId = ThreadId.make("restart-delivery-thread");
@@ -2657,5 +2658,5 @@ it.effect(
           assert.equal(yield* knowledge.nativeDeliveryEstimate(receipt), 777);
         }).pipe(Effect.provide(reopened())),
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

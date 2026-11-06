@@ -45,6 +45,8 @@ vi.mock("../../state/preferences", () => ({
   mobilePreferencesAtom: {},
   updateMobilePreferencesAtom: {},
 }));
+vi.mock("./ModelEvaluationSettings", () => ({ ModelEvaluationSettings: () => null }));
+vi.mock("./SkillsLibrarySettings", () => ({ SkillsLibrarySettings: () => null }));
 vi.mock("./components/AutoSettleDaysField", () => ({ AutoSettleDaysField: () => null }));
 vi.mock("./components/SourceControlSignInSection", () => ({
   SourceControlSignInSection: () => null,
@@ -88,8 +90,11 @@ vi.mock("../../components/ui/Button", () => ({
 }));
 vi.mock("./components/SettingsScreen", () => ({ SettingsScreen: Children }));
 vi.mock("./components/SettingsEnvironmentFilterHeader", () => ({
-  AndroidSettingsEnvironmentFilter: () => null,
-  SettingsEnvironmentFilterHeader: () => null,
+  useSettingsEnvironmentMenu: () => ({
+    title: "Filter",
+    icon: "line.3.horizontal.decrease.circle",
+    items: [],
+  }),
 }));
 vi.mock("./components/DatabaseStorageNotice", () => ({ DatabaseStorageNotice: () => null }));
 vi.mock("./components/SettingsSection", () => ({ SettingsSection: Children }));
@@ -152,6 +157,7 @@ vi.mock("./settings-environment-filter", () => ({
 
 import {
   SettingsThreadsRouteScreen,
+  SettingsZackRouteScreen,
   SettingsWorktreesRouteScreen,
 } from "./SettingsServerControlsRouteScreen";
 
@@ -203,7 +209,7 @@ describe("SettingsServerControlsRouteScreen", () => {
     "blocks assisted learning when the targeted server capability is %s",
     (capability) => {
       mocks.targets = [environment("old", "Old server", capability)];
-      act(() => root.render(<SettingsThreadsRouteScreen />));
+      act(() => root.render(<SettingsZackRouteScreen />));
       const toggle = Array.from(
         container.querySelectorAll<HTMLButtonElement>('[role="switch"]'),
       ).find((button) => button.textContent === "Suggest facts from finished runs")!;
@@ -219,7 +225,7 @@ describe("SettingsServerControlsRouteScreen", () => {
   it("blocks assisted learning and explains mixed environment support for a grouped project", () => {
     mocks.targets = [environment("new", "New server", true), environment("old", "Old server")];
     mocks.projectSelected = true;
-    act(() => root.render(<SettingsThreadsRouteScreen />));
+    act(() => root.render(<SettingsZackRouteScreen />));
     const toggle = Array.from(
       container.querySelectorAll<HTMLButtonElement>('[role="switch"]'),
     ).find((button) => button.textContent === "Suggest facts from finished runs")!;
@@ -238,7 +244,7 @@ describe("SettingsServerControlsRouteScreen", () => {
     mocks.targets = [environment("new", "New server", true), environment("old", "Old server")];
     mocks.projectSelected = true;
     mocks.projectEnvironmentIds = ["new"];
-    act(() => root.render(<SettingsThreadsRouteScreen />));
+    act(() => root.render(<SettingsZackRouteScreen />));
     const toggle = Array.from(
       container.querySelectorAll<HTMLButtonElement>('[role="switch"]'),
     ).find((button) => button.textContent === "Suggest facts from finished runs")!;

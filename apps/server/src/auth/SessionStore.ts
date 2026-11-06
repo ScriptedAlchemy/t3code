@@ -10,7 +10,7 @@ import {
   type ServerAuthSessionMethod,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -24,6 +24,7 @@ import * as Option from "effect/Option";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as PayloadSigner from "./PayloadSigner.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import {
   REUSABLE_DEV_SESSION_EXPIRES_AT,
@@ -35,8 +36,6 @@ import {
   base64UrlEncode,
   resolveLegacySessionCookieName,
   resolveSessionCookieName,
-  signPayload,
-  timingSafeEqualBase64Url,
 } from "./utils.ts";
 
 export interface IssuedSession {
@@ -426,6 +425,13 @@ export class SessionStore extends Context.Service<
 >()("t3/auth/SessionStore") {}
 
 export const SIGNING_SECRET_NAME = "server-signing-key";
+const LAN_CREDENTIAL_SUBJECT_PREFIX = "lan-credential:";
+export const lanCredentialSubject = (parentSessionId: AuthSessionId) =>
+  `${LAN_CREDENTIAL_SUBJECT_PREFIX}${parentSessionId}`;
+const lanCredentialParent = (subject: string) =>
+  subject.startsWith(LAN_CREDENTIAL_SUBJECT_PREFIX)
+    ? AuthSessionId.make(subject.slice(LAN_CREDENTIAL_SUBJECT_PREFIX.length))
+    : undefined;
 const DEFAULT_SESSION_TTL = Duration.days(30);
 const DEFAULT_WEBSOCKET_TOKEN_TTL = Duration.minutes(5);
 
@@ -491,12 +497,14 @@ function toAuthClientSession(input: Omit<AuthClientSession, "current">): AuthCli
 }
 
 const make = Effect.gen(function* () {
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const serverConfig = yield* ServerConfig.ServerConfig;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const authSessions = yield* AuthSessions.AuthSessionRepository;
-  const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
+  const signer = yield* PayloadSigner.fromSecret(
+    yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32),
+  );
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
   // Newest session per DPoP key. A live socket moves to it at expiry, so a
@@ -639,12 +647,42 @@ const make = Effect.gen(function* () {
       Effect.withSpan("SessionStore.markDisconnected"),
     );
 
+  const revokeLanCredentials = Effect.fn("SessionStore.revokeLanCredentials")(
+    function* (parentSessionIds: ReadonlyArray<AuthSessionId>) {
+      if (parentSessionIds.length === 0) return;
+      const subjects = new Set(parentSessionIds.map(lanCredentialSubject));
+      const connected = yield* Ref.get(connectedSessionsRef);
+      const rows = yield* authSessions.listActive({
+        now: yield* DateTime.now,
+        connectedSessionIds: Array.from(connected.keys()),
+      });
+      yield* Effect.forEach(
+        rows.filter((row) => subjects.has(row.subject)),
+        (row) => revoke(row.sessionId),
+        { discard: true },
+      );
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Failed to revoke LAN credentials of a revoked session.", { cause }),
+    ),
+  );
+
+  const lanCredentialParentRevokedAt = Effect.fnUntraced(function* (subject: string) {
+    const parentSessionId = lanCredentialParent(subject);
+    if (parentSessionId === undefined) return null;
+    const parent = yield* authSessions.getById({ sessionId: parentSessionId });
+    if (Option.isSome(parent) && parent.value.revokedAt === null) return null;
+    return Option.isSome(parent) && parent.value.revokedAt !== null
+      ? parent.value.revokedAt
+      : yield* DateTime.now;
+  });
+
   const encodeClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
   const issue: SessionStore["Service"]["issue"] = Effect.fn("SessionStore.issue")(
     function* (input) {
       const sessionId = AuthSessionId.make(
-        yield* crypto
-          .randomUUIDv4()
+        yield* random
+          .uuidV4()
           .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause }))),
       );
       const issuedAt = yield* DateTime.now;
@@ -679,7 +717,7 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
-      const signature = signPayload(encodedPayload, signingSecret);
+      const signature = yield* signer.sign(encodedPayload);
       const client = input?.client ?? createDefaultClientMetadata();
       const sessionRecord = {
         sessionId,
@@ -721,6 +759,7 @@ const make = Effect.gen(function* () {
           concurrency: "unbounded",
           discard: true,
         });
+        yield* revokeLanCredentials(replacedSessionIds);
       }
       yield* emitUpsert(
         toAuthClientSession({
@@ -791,8 +830,7 @@ const make = Effect.gen(function* () {
         return yield* new MalformedSessionTokenError({});
       }
 
-      const expectedSignature = signPayload(encodedPayload, signingSecret);
-      if (!timingSafeEqualBase64Url(signature, expectedSignature)) {
+      if (!(yield* signer.verify(encodedPayload, signature))) {
         return yield* new InvalidSessionTokenSignatureError({});
       }
 
@@ -830,6 +868,17 @@ const make = Effect.gen(function* () {
         return yield* new SessionTokenRevokedError({
           sessionId: claims.sid,
           revokedAt: row.value.revokedAt,
+        });
+      }
+      const parentRevokedAt = yield* lanCredentialParentRevokedAt(row.value.subject).pipe(
+        Effect.mapError(
+          (cause) => new SessionCredentialVerificationError({ sessionId: claims.sid, cause }),
+        ),
+      );
+      if (parentRevokedAt !== null) {
+        return yield* new SessionTokenRevokedError({
+          sessionId: claims.sid,
+          revokedAt: parentRevokedAt,
         });
       }
 
@@ -879,7 +928,7 @@ const make = Effect.gen(function* () {
           }),
       ),
     );
-    const signature = signPayload(encodedPayload, signingSecret);
+    const signature = yield* signer.sign(encodedPayload);
     return {
       token: `${encodedPayload}.${signature}`,
       expiresAt,
@@ -894,8 +943,7 @@ const make = Effect.gen(function* () {
       return yield* new MalformedWebSocketTokenError({});
     }
 
-    const expectedSignature = signPayload(encodedPayload, signingSecret);
-    if (!timingSafeEqualBase64Url(signature, expectedSignature)) {
+    if (!(yield* signer.verify(encodedPayload, signature))) {
       return yield* new InvalidWebSocketTokenSignatureError({});
     }
 
@@ -943,6 +991,17 @@ const make = Effect.gen(function* () {
       return yield* new WebSocketSessionRevokedError({
         sessionId: claims.sid,
         revokedAt: row.value.revokedAt,
+      });
+    }
+    const parentRevokedAt = yield* lanCredentialParentRevokedAt(row.value.subject).pipe(
+      Effect.mapError(
+        (cause) => new WebSocketTokenVerificationError({ sessionId: claims.sid, cause }),
+      ),
+    );
+    if (parentRevokedAt !== null) {
+      return yield* new WebSocketSessionRevokedError({
+        sessionId: claims.sid,
+        revokedAt: parentRevokedAt,
       });
     }
 
@@ -1001,6 +1060,7 @@ const make = Effect.gen(function* () {
           return next;
         });
         yield* emitRemoved(sessionId);
+        yield* revokeLanCredentials([sessionId]);
       }
       return revoked;
     },
@@ -1061,7 +1121,8 @@ const make = Effect.gen(function* () {
         // Revoking any session the socket has used closes it. Events only wake this loop
         // and the rows decide: revocations are written before they are published, and
         // clientRemoved also reports an expired session losing its last socket.
-        const chain = [sessionId];
+        const parentSessionId = lanCredentialParent(original.value.subject);
+        const chain = parentSessionId === undefined ? [sessionId] : [sessionId, parentSessionId];
         const nextRemoval = Effect.gen(function* () {
           while (true) {
             const change = yield* PubSub.take(subscription);

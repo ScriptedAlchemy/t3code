@@ -1,4 +1,4 @@
-import { ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
+import { ProviderInstanceId, settingsSecretLiteral, TextGenerationError } from "@t3tools/contracts";
 import { OpenCodeSettings } from "../settings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
@@ -18,7 +18,7 @@ import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import * as OpenCodeServerOwner from "./OpenCodeServerOwner.ts";
 import * as OpenCodeTextGeneration from "./textGeneration.ts";
-import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
+import type { ProviderTextGenerationRuntime } from "@t3tools/provider-core/server/textGeneration";
 
 const runtimeMock = {
   state: {
@@ -220,14 +220,16 @@ const EXTERNAL_SERVER_WITHOUT_AUTH_OPENCODE_SETTINGS = Schema.decodeSync(OpenCod
 
 function withOpenCodeTextGeneration<A, E, R>(
   settings: OpenCodeSettings,
-  effectFn: (textGeneration: ProviderTextGeneration) => Effect.Effect<A, E, R>,
+  effectFn: (textGeneration: ProviderTextGenerationRuntime) => Effect.Effect<A, E, R>,
   environment?: NodeJS.ProcessEnv,
 ) {
   return Effect.gen(function* () {
     const serverOwner = yield* OpenCodeServerOwner.make({
       binaryPath: settings.binaryPath,
       directory: process.cwd(),
-      ...(settings.serverPassword ? { serverPassword: settings.serverPassword } : {}),
+      ...(settingsSecretLiteral(settings.serverPassword)
+        ? { serverPassword: settingsSecretLiteral(settings.serverPassword) }
+        : {}),
       ...(environment ? { environment } : {}),
     });
     const textGeneration = yield* OpenCodeTextGeneration.makeOpenCodeTextGeneration(settings).pipe(
@@ -383,6 +385,34 @@ it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
     ),
   );
 
+  it.effect(
+    "rejects blind evaluation before opening a server session with inherited configuration",
+    () =>
+      withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
+        Effect.gen(function* () {
+          const error = yield* textGeneration
+            .generateModelEvaluation({
+              cwd: "/isolated-evaluator",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              packet: {
+                scope: "turn",
+                runOutcome: "completed",
+                request: { ref: "U1", text: "Fix the issue." },
+                context: [],
+                evidence: [{ ref: "E1", kind: "assistant", text: "Fixed." }],
+                truncated: false,
+                omittedItems: 0,
+                missingArtifacts: false,
+              },
+            })
+            .pipe(Effect.flip);
+          expect(error.detail).toContain("cannot isolate");
+          expect(textGeneration.supportedOperations).not.toContain("generateModelEvaluation");
+          expect(runtimeMock.state.sessionCreateCalls).toBe(0);
+        }),
+      ),
+  );
+
   it.effect("gives up and aborts the session when a prompt never settles", () =>
     withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
       Effect.gen(function* () {
@@ -454,6 +484,67 @@ it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
         expect(runtimeMock.state.sessionCalls).toEqual(["delete http://127.0.0.1:4301/session"]);
       }),
     ),
+  );
+
+  it.effect(
+    "maps OpenCode prompt errors to fixed details and keeps provider text in the cause",
+    () =>
+      Effect.forEach(
+        [
+          {
+            error: {
+              name: "APIError",
+              data: {
+                message: "Org quota secret-org exceeded",
+                statusCode: 429,
+                isRetryable: true,
+              },
+            },
+            rawText: "secret-org",
+            detail: "The model provider's usage or rate limit was reached. Try again later.",
+          },
+          {
+            error: {
+              name: "APIError",
+              data: {
+                message: "<none>",
+                statusCode: 503,
+                isRetryable: true,
+                responseBody: "<title>Upstream gateway secret-host</title>",
+              },
+            },
+            rawText: "secret-host",
+            detail: "The model provider failed the request (HTTP 503).",
+          },
+          {
+            error: { name: "UnknownError", data: { message: "Provider stack trace secret-token" } },
+            rawText: "secret-token",
+            detail: "OpenCode could not generate the text.",
+          },
+        ],
+        (testCase) =>
+          withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
+            Effect.gen(function* () {
+              runtimeMock.state.promptResult = {
+                data: { info: { error: testCase.error }, parts: [] },
+              };
+
+              const error = yield* textGeneration
+                .generateCommitMessage(DEFAULT_COMMIT_MESSAGE_INPUT)
+                .pipe(Effect.flip);
+
+              expect(error.detail).toBe(testCase.detail);
+              expect(error.message).not.toContain(testCase.rawText);
+              expect(error.cause).toMatchObject({
+                _tag: "OpenCodeTextGenerationPromptResponseError",
+                providerErrorName: testCase.error.name,
+                cause: testCase.error,
+              });
+              expect((error.cause as Error).message).not.toContain(testCase.rawText);
+            }),
+          ),
+        { discard: true },
+      ),
   );
 
   it.effect("deletes the session when the prompt request rejects", () =>

@@ -66,7 +66,7 @@ from the thread's model picker. Compatible accounts can continue the same thread
 Connecting accounts through T3 Code leaves your CLI login unchanged.
 
 To show your accounts as one entry in the model picker, pool them in **Settings >
-Account pools**. Pooled ChatGPT accounts that share a Codex home resume the same
+Labs > Zack > Account pools**. Pooled ChatGPT accounts that share a Codex home resume the same
 thread natively when a turn moves between them. An account with its own Codex home,
 such as Traex, continues from a summary of the conversation instead.
 
@@ -123,6 +123,13 @@ another turn if Codex has finished. Unanswered questions survive reconnects.
 If you do not want to answer, dismiss the question from its panel. Dismissing
 closes it without sending anything to Codex. This requires a Codex version that
 supports async questions.
+
+## Use Mac apps
+
+If your Codex instance already has native Computer Use configured and enabled,
+ask it to work in a Mac app, such as Calculator. Computer Use controls the server
+environment's Mac, even when you connect from another computer or your phone.
+Native permissions and confirmation requests still apply.
 
 ## Approve app access
 

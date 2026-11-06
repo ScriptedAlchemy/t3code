@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ModelEvaluations from "../modelEvaluations/ModelEvaluations.ts";
 import * as CodeIntelligence from "../project/knowledge/CodeIntelligence.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -22,6 +23,7 @@ import * as RunFinalization from "./RunFinalizationService.ts";
 import * as RuntimeRequests from "./RuntimeRequestService.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitles from "./ThreadTitleRegenerationService.ts";
+import * as WorktreeBranches from "./WorktreeBranches.ts";
 
 it.effect.each([
   ["starts the next turn after a post-capture Git status failure", false],
@@ -72,6 +74,7 @@ it.effect.each([
       Layer.mergeAll(
         projections,
         observer,
+        Layer.mock(WorktreeBranches.WorktreeBranches)({}),
         Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({
           execute: () =>
             Effect.gen(function* () {
@@ -100,7 +103,10 @@ it.effect.each([
     ),
   );
   const outbox = EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory));
-  const worker = EffectWorker.layer.pipe(Layer.provideMerge(Layer.merge(executor, outbox)));
+  const worker = EffectWorker.layer.pipe(
+    Layer.provideMerge(Layer.merge(executor, outbox)),
+    Layer.provide(Layer.mock(ModelEvaluations.ModelEvaluations)({ enqueueRun: () => Effect.void })),
+  );
 
   return Effect.gen(function* () {
     const queue = yield* EffectOutbox.EffectOutboxV2;

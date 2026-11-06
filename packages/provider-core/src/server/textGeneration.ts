@@ -1,7 +1,9 @@
 import type {
   BranchNamingOptions,
+  BlindModelEvaluationPacket,
   ChatAttachment,
   ModelSelection,
+  ModelEvaluationVerdict,
   PullRequestReviewGuide,
   TextGenerationError,
   TextGenerationOperation,
@@ -121,11 +123,12 @@ export interface KnowledgeCandidatesGenerationResult {
 
 export interface ConversationSummaryGenerationInput {
   cwd: string;
-  /** Consecutive finalized messages, oldest first; `ref` is what citations name. */
+  /** Consecutive finalized source ranges, oldest first; `ref` is what citations name. */
   messages: ReadonlyArray<{
     readonly ref: string;
-    readonly role: "user" | "assistant";
+    readonly role: "user" | "assistant" | "tool";
     readonly text: string;
+    readonly range?: { readonly start: number; readonly end: number; readonly total: number };
   }>;
   modelSelection: ModelSelection;
 }
@@ -137,7 +140,27 @@ export interface ConversationSummaryGenerationResult {
   }>;
 }
 
+export interface TranscriptionPostProcessingInput {
+  cwd: string;
+  prompt: string;
+  modelSelection: ModelSelection;
+}
+
+export interface TranscriptionPostProcessingResult {
+  transcription: string;
+}
+
 export interface ProviderTextGeneration {
+  readonly generateModelEvaluation: (input: {
+    readonly cwd: string;
+    readonly modelSelection: ModelSelection;
+    readonly packet: BlindModelEvaluationPacket;
+  }) => Effect.Effect<ModelEvaluationVerdict, TextGenerationError>;
+
+  readonly generateTranscriptionPostProcessing: (
+    input: TranscriptionPostProcessingInput,
+  ) => Effect.Effect<TranscriptionPostProcessingResult, TextGenerationError>;
+
   readonly generateCommitMessage: (
     input: CommitMessageGenerationInput,
   ) => Effect.Effect<CommitMessageGenerationResult, TextGenerationError>;

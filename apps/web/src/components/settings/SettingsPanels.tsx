@@ -554,6 +554,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
       ? ["Add project base directory"]
       : []),
+    ...(settings.ghqCloneLayout !== DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout
+      ? ["Clone into host folders"]
+      : []),
     ...(settings.confirmThreadUnpin !== DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin
       ? ["Unpin confirmation"]
       : []),
@@ -668,6 +671,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+      ghqCloneLayout: DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
       confirmThreadUnpin: DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin,
@@ -1160,9 +1164,7 @@ export function ChatSettingsPanel() {
             </Select>
           }
         />
-        <AdvancedSettings
-          targetIds={[searchableSetting("skills-in-slash-menu").id, searchableSetting("pstack").id]}
-        >
+        <AdvancedSettings targetIds={[searchableSetting("skills-in-slash-menu").id]}>
           <SettingsRow
             {...searchableSetting("skills-in-slash-menu")}
             description="Also include skills in the / command menu. Skills always appear when you type $."
@@ -1185,30 +1187,6 @@ export function ChatSettingsPanel() {
                   updateSettings({ showSkillsInSlashMenu: Boolean(checked) })
                 }
                 aria-label="Show skills in slash menu"
-              />
-            }
-          />
-          <SettingsRow
-            serverScoped
-            settingKeys={["pstackEnabled"]}
-            {...searchableSetting("pstack")}
-            description="Offer Lauren Tan's pstack workflows as skills in every provider. Run $pstack:setup-pstack once to choose models."
-            resetAction={
-              settings.pstackEnabled !== DEFAULT_UNIFIED_SETTINGS.pstackEnabled ? (
-                <SettingResetButton
-                  label="pstack"
-                  onClick={() =>
-                    updateSettings({ pstackEnabled: DEFAULT_UNIFIED_SETTINGS.pstackEnabled })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <ScopedSwitch
-                settingKeys={["pstackEnabled"]}
-                checked={settings.pstackEnabled}
-                onCheckedChange={(checked) => updateSettings({ pstackEnabled: Boolean(checked) })}
-                aria-label="pstack"
               />
             }
           />
@@ -1623,6 +1601,30 @@ export function ThreadsSettingsPanel() {
               placeholder={mixedAddProjectBaseDirectory ? "Mixed" : "~/"}
               spellCheck={false}
               aria-label="Add project base directory"
+            />
+          }
+        />
+        <SettingsRow
+          serverScoped
+          settingKeys={["ghqCloneLayout"]}
+          {...searchableSetting("ghq-clone-layout")}
+          description="Clones go to github.com/owner/repo under the folder above, like ghq."
+          resetAction={
+            settings.ghqCloneLayout !== DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout ? (
+              <SettingResetButton
+                label="clone into host folders"
+                onClick={() =>
+                  updateSettings({ ghqCloneLayout: DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout })
+                }
+              />
+            ) : null
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["ghqCloneLayout"]}
+              checked={settings.ghqCloneLayout}
+              onCheckedChange={(checked) => updateSettings({ ghqCloneLayout: Boolean(checked) })}
+              aria-label="Clone into host folders"
             />
           }
         />

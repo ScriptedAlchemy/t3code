@@ -6,6 +6,7 @@ import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { OpencodeClient, ToolPart } from "@opencode-ai/sdk/v2";
+import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import {
   CheckpointId,
   EnvironmentId,
@@ -42,6 +43,7 @@ import type * as ProviderEventLoggers from "@t3tools/provider-core/server/Provid
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import { T3_CODE_BROWSER_TOOL_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
 
 import {
   advanceOpenCodePromptAdmission,
@@ -812,6 +814,30 @@ describe("OpenCodeAdapterV2", () => {
             properties: {
               sessionID: nativeSessionId,
               part: {
+                id: "part-exit",
+                sessionID: nativeSessionId,
+                messageID: "late-assistant",
+                type: "tool",
+                callID: "call-exit",
+                tool: "bash",
+                state: {
+                  status: "completed",
+                  input: { command: "vp test" },
+                  output: "1 failed\n",
+                  title: "Run tests",
+                  metadata: { output: "1 failed\n", exit: 1, truncated: false },
+                  time: { start: 4, end: 5 },
+                },
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          nativeEvents.push({
+            type: "message.part.updated",
+            properties: {
+              sessionID: nativeSessionId,
+              part: {
                 id: "part-read",
                 sessionID: nativeSessionId,
                 messageID: "late-assistant",
@@ -880,14 +906,21 @@ describe("OpenCodeAdapterV2", () => {
         const commands = items.filter((item) => item.type === "command_execution");
         assert.deepEqual(
           commands.map((item) => item.status),
-          ["pending", "running", "completed", "failed"],
+          ["pending", "running", "completed", "failed", "failed"],
         );
         assert.deepEqual(
           commands.map((item) => item.input),
-          ["pwd", "pwd", "pwd", "pwd"],
+          ["pwd", "pwd", "pwd", "pwd", "vp test"],
         );
         assert.equal(commands[2]?.output, "/repo\n");
         assert.equal(commands[3]?.output, "Command failed");
+        assert.equal(commands[4]?.exitCode, 1);
+        assert.equal(
+          events
+            .flatMap((event) => (event.type === "node.updated" ? [event.node] : []))
+            .findLast((node) => node.id === commands[4]?.nodeId)?.status,
+          "failed",
+        );
         assert.isTrue(
           events.some(
             (event) =>
@@ -1185,112 +1218,121 @@ describe("OpenCodeAdapterV2", () => {
     ),
   );
 
-  it.effect("checks native MCP status before advertising tools and reconnects on later turns", () =>
-    Effect.gen(function* () {
-      const suffix = "mcp-availability";
-      const threadId = ThreadId.make(`thread-opencode-${suffix}`);
-      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
-      yield* mcpSessions.set({
-        environmentId: EnvironmentId.make("environment:opencode-adapter"),
-        threadId,
-        providerSessionId: "mcp:opencode-adapter",
-        providerInstanceId: ProviderInstanceId.make(`opencode-${suffix}`),
-        endpoint: "http://127.0.0.1:3773/mcp",
-        authorizationHeader: "Bearer thread-credential",
-        browserToolsAvailable: false,
-      });
-      const nativeEvents = asyncEventStream();
-      const nativeSessionId = "native-opencode-mcp-availability";
-      const systems: string[] = [];
-      const operations: string[] = [];
-      let connectionStatus: "failed" | "connected" | "needs_auth" = "failed";
-      const statusMap = () => ({
-        data: {
-          "t3-code": {
-            status: connectionStatus,
-            ...(connectionStatus === "connected" ? {} : { error: "Unavailable" }),
-          },
-        },
-      });
-      const harness = yield* makeOpenCodeRuntimeHarness(
-        suffix,
-        nativeSessionId,
-        {
-          event: {
-            subscribe: async (_input: unknown, options: { signal?: AbortSignal }) => {
-              options.signal?.addEventListener("abort", () => nativeEvents.close(), { once: true });
-              return { stream: nativeEvents.stream };
+  it.effect.each([false, true])(
+    "checks native MCP status before advertising tools and reconnects on later turns (browser=%s)",
+    (browserToolsAvailable) =>
+      Effect.gen(function* () {
+        const suffix = "mcp-availability";
+        const threadId = ThreadId.make(`thread-opencode-${suffix}`);
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        yield* mcpSessions.set({
+          environmentId: EnvironmentId.make("environment:opencode-adapter"),
+          threadId,
+          providerSessionId: "mcp:opencode-adapter",
+          providerInstanceId: ProviderInstanceId.make(`opencode-${suffix}`),
+          endpoint: "http://127.0.0.1:3773/mcp",
+          authorizationHeader: "Bearer thread-credential",
+          browserToolsAvailable,
+        });
+        const nativeEvents = asyncEventStream();
+        const nativeSessionId = "native-opencode-mcp-availability";
+        const systems: string[] = [];
+        const operations: string[] = [];
+        let connectionStatus: "failed" | "connected" | "needs_auth" = "failed";
+        const statusMap = () => ({
+          data: {
+            "t3-code": {
+              status: connectionStatus,
+              ...(connectionStatus === "connected" ? {} : { error: "Unavailable" }),
             },
           },
-          session: {
-            create: async () => ({
-              data: { id: nativeSessionId, time: { created: 1, updated: 1 } },
-            }),
-            promptAsync: async (input: { system: string; messageID: string }) => {
-              systems.push(input.system);
-              await nativeEvents.push({
-                type: "message.updated",
-                properties: {
-                  sessionID: nativeSessionId,
-                  info: {
-                    id: input.messageID,
+        });
+        const harness = yield* makeOpenCodeRuntimeHarness(
+          suffix,
+          nativeSessionId,
+          {
+            event: {
+              subscribe: async (_input: unknown, options: { signal?: AbortSignal }) => {
+                options.signal?.addEventListener("abort", () => nativeEvents.close(), {
+                  once: true,
+                });
+                return { stream: nativeEvents.stream };
+              },
+            },
+            session: {
+              create: async () => ({
+                data: { id: nativeSessionId, time: { created: 1, updated: 1 } },
+              }),
+              promptAsync: async (input: { system: string; messageID: string }) => {
+                systems.push(input.system);
+                await nativeEvents.push({
+                  type: "message.updated",
+                  properties: {
                     sessionID: nativeSessionId,
-                    role: "user",
-                    time: { created: 1 },
+                    info: {
+                      id: input.messageID,
+                      sessionID: nativeSessionId,
+                      role: "user",
+                      time: { created: 1 },
+                    },
                   },
-                },
-              });
-              return { data: true };
+                });
+                return { data: true };
+              },
+            },
+            mcp: {
+              add: async () => {
+                operations.push("add");
+                return statusMap();
+              },
+              status: async () => {
+                operations.push("status");
+                return statusMap();
+              },
+              connect: async () => {
+                operations.push("connect");
+                if (connectionStatus === "failed") connectionStatus = "connected";
+                // Native connect also acknowledges an unsuccessful authentication handshake.
+                return { data: true };
+              },
             },
           },
-          mcp: {
-            add: async () => {
-              operations.push("add");
-              return statusMap();
-            },
-            status: async () => {
-              operations.push("status");
-              return statusMap();
-            },
-            connect: async () => {
-              operations.push("connect");
-              if (connectionStatus === "failed") connectionStatus = "connected";
-              // Native connect also acknowledges an unsuccessful authentication handshake.
-              return { data: true };
-            },
-          },
-        },
-        {},
-        {},
-        { external: false },
-      );
-      for (let index = 0; index < 3; index++) {
-        if (index === 2) connectionStatus = "needs_auth";
-        yield* harness.startTurn(`turn ${index + 1}`);
-        if (index === 1) {
-          assert.include(systems[index]!, "## T3 Code orchestration");
-          assert.include(systems[index]!, "native OpenCode subagents do not inherit");
-        } else {
-          assert.notInclude(systems[index]!, "## T3 Code orchestration");
-          assert.notInclude(systems[index]!, "native OpenCode subagents");
-        }
-        yield* Effect.promise(() =>
-          nativeEvents.push({ type: "session.idle", properties: { sessionID: nativeSessionId } }),
+          {},
+          {},
+          { external: false },
         );
-      }
-      assert.deepEqual(operations, [
-        "add",
-        "status",
-        "connect",
-        "status",
-        "status",
-        "connect",
-        "status",
-      ]);
-    }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
-      Effect.scoped,
-    ),
+        for (let index = 0; index < 3; index++) {
+          if (index === 2) connectionStatus = "needs_auth";
+          yield* harness.startTurn(`turn ${index + 1}`);
+          if (index === 1) {
+            assert.include(systems[index]!, "## T3 Code orchestration");
+            assert.include(systems[index]!, "native OpenCode subagents do not inherit");
+            assert.equal(
+              systems[index]!.includes(T3_CODE_BROWSER_TOOL_INSTRUCTIONS.trim()),
+              browserToolsAvailable,
+            );
+          } else {
+            assert.notInclude(systems[index]!, "## T3 Code orchestration");
+            assert.notInclude(systems[index]!, "native OpenCode subagents");
+            assert.notInclude(systems[index]!, T3_CODE_BROWSER_TOOL_INSTRUCTIONS.trim());
+          }
+          yield* Effect.promise(() =>
+            nativeEvents.push({ type: "session.idle", properties: { sessionID: nativeSessionId } }),
+          );
+        }
+        assert.deepEqual(operations, [
+          "add",
+          "status",
+          "connect",
+          "status",
+          "status",
+          "connect",
+          "status",
+        ]);
+      }).pipe(
+        Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+        Effect.scoped,
+      ),
   );
 
   it.effect("presents OpenCode MCP calls without treating remote tools as local edits", () =>
@@ -1353,6 +1395,13 @@ describe("OpenCodeAdapterV2", () => {
                   title: "Edit remote document",
                   metadata: {},
                   output,
+                  attachments: [
+                    {
+                      type: "file",
+                      mime: "image/png",
+                      url: "data:image/png;base64,iVBORw0KGgo=",
+                    },
+                  ],
                   error: "failed",
                   time: { start: 1, end: 2 },
                 },
@@ -1445,7 +1494,9 @@ describe("OpenCodeAdapterV2", () => {
         });
         assert.deepEqual(item.input, { document: "remote-doc" });
       }
-      assert.equal(items[1]?.output, output);
+      assert.deepEqual(toolOutputImages(items[1]?.output), [
+        { mimeType: "image/png", data: "iVBORw0KGgo=" },
+      ]);
       assert.equal(items[3]?.toolName, "ambiguous_server_edit_document");
       assert.isUndefined(items[3]?.toolSource);
       assert.equal(statusReads, 1);
@@ -1474,7 +1525,7 @@ describe("OpenCodeAdapterV2", () => {
             return { stream: nativeEvents.stream };
           },
         },
-        command: { list: async () => ({ data: [{ name: "review" }] }) },
+        command: { list: async () => ({ data: [{ name: "git/review" }] }) },
         session: {
           create: async () => ({ data: { id: sessionId, time: { created: 1, updated: 1 } } }),
           command: async (input: {
@@ -1493,9 +1544,9 @@ describe("OpenCodeAdapterV2", () => {
           },
         },
       });
-      const start = yield* harness.startTurn("/review staged changes").pipe(Effect.forkScoped);
+      const start = yield* harness.startTurn("/git/review staged changes").pipe(Effect.forkScoped);
       const call = yield* Queue.take(calls);
-      assert.equal(call.command, "review");
+      assert.equal(call.command, "git/review");
       assert.equal(call.arguments, "staged changes");
       assert.equal(call.model, "anthropic/claude-sonnet");
       yield* Effect.promise(() =>
@@ -2618,7 +2669,14 @@ describe("OpenCodeAdapterV2", () => {
         method: "session.prompt",
         payload: { prompt: secret, nested: { token: secret } },
       });
+      yield* logProtocolEvent({
+        direction: "incoming",
+        messageKind: "notification",
+        method: "message.part.delta",
+        payload: { type: "message.part.delta", properties: { delta: secret } },
+      });
 
+      assert.lengthOf(records, 1);
       const serialized = encodeUnknownJson(records);
       assert.notInclude(serialized, secret);
       assert.include(serialized, '"protocol":"opencode-sdk.sse"');

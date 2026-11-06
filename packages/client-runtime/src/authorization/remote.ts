@@ -13,6 +13,7 @@ import { hashTelemetryId } from "@t3tools/shared/telemetryId";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
 import { environmentEndpointUrl } from "../environment/endpoint.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
 import {
@@ -26,6 +27,7 @@ export { RemoteEnvironmentAuthUndeclaredStatusError } from "../rpc/http.ts";
 export type RemoteEnvironmentAuthError = RemoteEnvironmentRequestError;
 
 const DEFAULT_REMOTE_REQUEST_TIMEOUT_MS = 10_000;
+const isUndeclaredStatusError = Schema.is(RemoteEnvironmentAuthUndeclaredStatusError);
 
 const clientMetadataTokenExchangeFields = (
   clientMetadata: AuthClientPresentationMetadata | undefined,
@@ -167,6 +169,24 @@ export const bootstrapRemoteBearerSession = Effect.fn(
   );
 });
 
+export const issueRemoteLanCredential = Effect.fn(
+  "clientRuntime.authorization.issueRemoteLanCredential",
+)(function* (input: {
+  readonly httpBaseUrl: string;
+  readonly bearerToken: string;
+  readonly dpopProof: string;
+  readonly timeoutMs?: number;
+}) {
+  const client = yield* makeEnvironmentHttpApiGroupClient(input.httpBaseUrl, "auth");
+  return yield* executeEnvironmentHttpRequest(
+    environmentEndpointUrl(input.httpBaseUrl, "/api/auth/lan-credential"),
+    input.timeoutMs ?? DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+    client.lanCredential({
+      headers: { authorization: `Bearer ${input.bearerToken}`, dpop: input.dpopProof },
+    }),
+  );
+});
+
 export const fetchRemoteSessionState = Effect.fn(
   "clientRuntime.authorization.fetchRemoteSessionState",
 )(function* (input: {
@@ -205,8 +225,7 @@ const issueWebSocketTicketWithFallback = <E, R>(
     ? issue(use)
     : issue(use).pipe(
         Effect.catchIf(
-          (error) =>
-            error instanceof RemoteEnvironmentAuthUndeclaredStatusError && error.status === 404,
+          (error) => isUndeclaredStatusError(error) && error.status === 404,
           () => issue(undefined),
         ),
       );
