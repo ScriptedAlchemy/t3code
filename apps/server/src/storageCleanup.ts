@@ -625,6 +625,8 @@ const make = Effect.gen(function* () {
       args: ["reflog", "show", "--format=%H", "HEAD"],
       maxOutputBytes: 16 * 1024 * 1024,
     });
+    if (reflog.stdoutTruncated || reflog.stderrTruncated)
+      return "worktree history exceeds the inspection limit";
     // Only refs that stay count. A user cannot recover from refs/t3, and a routine
     // `git fetch --prune` can drop any remote branch, even one a stale local HEAD calls the default.
     const unheld = yield* git.execute({
@@ -639,6 +641,8 @@ const make = Effect.gen(function* () {
       cwd,
       args: ["worktree", "list", "--porcelain"],
     });
+    if (worktrees.stdoutTruncated || worktrees.stderrTruncated)
+      return "worktree list exceeds the inspection limit";
     const held = new Set(
       [...worktrees.stdout.matchAll(/^branch refs\/heads\/(.+?)\r?$/gm)].map((match) => match[1]),
     );
@@ -1162,8 +1166,10 @@ const make = Effect.gen(function* () {
         const blocked = yield* blockedSinceCheck();
         if (blocked !== null) return keep(blocked);
         const bytes = yield* measureWorktree(worktreePath);
-        const blockedWhileMeasuring = yield* blockedSinceCheck();
-        if (blockedWhileMeasuring !== null) return keep(blockedWhileMeasuring);
+        // Stop builds while their sources still exist, then recheck activity and checkout safety.
+        yield* codeIntelligence.removeCheckoutIndex(worktreePath);
+        const blockedBeforeRemoval = yield* blockedSinceCheck();
+        if (blockedBeforeRemoval !== null) return keep(blockedBeforeRemoval);
         const observed = yield* worktreeBranches.observe(worktreePath);
         if (
           checkout._tag === "Detached"
@@ -1198,11 +1204,9 @@ const make = Effect.gen(function* () {
           const changes = yield* localChangesReason(worktreePath, settings);
           if (changes !== null) return keep(changes);
         }
-        // Last, so nothing that runs after this can drop the ref that holds the commit.
+        // Recheck recovery refs immediately before removal.
         const finalBlocker = yield* checkCheckout();
         if (finalBlocker !== null) return keep(finalBlocker);
-        // While the folder exists: its path resolves, and a build stops before its sources go.
-        yield* codeIntelligence.removeCheckoutIndex(worktreePath);
         yield* removeLinkedWorktree({
           operation: "StorageCleanup.cleanupGit",
           cwd: project.workspaceRoot,
