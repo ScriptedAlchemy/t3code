@@ -443,9 +443,19 @@ const LenientThreadOpens = Schema.NullOr(OrchestrationV2ThreadOpens).pipe(
   Schema.catchDecoding(() => Effect.succeedSome(null)),
 );
 
-/** Peers on a visible thread. The primary is `thread.modelSelection`, so it never appears here. */
+/** One participant in a thread group. `primary` is whatever `thread.modelSelection` names. */
+export const OrchestrationV2ThreadGroupMember = Schema.Union([Schema.Literal("primary"), ThreadId]);
+export type OrchestrationV2ThreadGroupMember = typeof OrchestrationV2ThreadGroupMember.Type;
+
+/** Peers on a visible thread. The primary is `thread.modelSelection`, so it never appears in `seats`. */
 export const OrchestrationV2ThreadGroup = Schema.Struct({
   status: Schema.Literals(["active", "ended"]),
+  /** Display snapshot for the model that was primary at invite. Peers address it by `handle`. */
+  primary: Schema.Struct({
+    model: TrimmedNonEmptyString,
+    label: TrimmedNonEmptyString,
+    handle: TrimmedNonEmptyString,
+  }),
   seats: Schema.Array(
     Schema.Struct({
       /** The seat's hidden side chat. */
@@ -453,15 +463,21 @@ export const OrchestrationV2ThreadGroup = Schema.Struct({
       handle: TrimmedNonEmptyString,
       label: TrimmedNonEmptyString,
       status: Schema.Literals(["seated", "left"]),
+      /** The parent's turn item ordinal at invite. Runs delivered at or below it never publish. */
+      joinedThrough: NonNegativeInt,
     }),
   ),
   discussion: Schema.NullOr(
     Schema.Struct({
       mode: Schema.Literals(["everyone", "direct"]),
       turnsLeft: NonNegativeInt,
+      /** Members told to start whose runs may not exist yet, so the barrier still holds. */
+      delivering: Schema.Array(OrchestrationV2ThreadGroupMember),
     }),
   ),
   closedBecause: Schema.NullOr(Schema.Literals(["settled", "budget", "stopped"])),
+  /** When the last discussion closed. It marks the thread unread, as a finished turn does. */
+  closedAt: Schema.NullOr(IsoDateTime),
 });
 export type OrchestrationV2ThreadGroup = typeof OrchestrationV2ThreadGroup.Type;
 
@@ -1343,6 +1359,7 @@ export const OrchestrationV2NotificationSource = kindUnionWithFallback(
     Schema.Struct({ kind: Schema.Literal("monitor") }),
     Schema.Struct({ kind: Schema.Literal("background_task") }),
     Schema.Struct({ kind: Schema.Literal("system") }),
+    Schema.Struct({ kind: Schema.Literal("group") }),
   ],
   (kind) => Schema.Struct({ kind }),
   () => ({ kind: "background_task" }),
@@ -1363,6 +1380,8 @@ export type OrchestrationV2IdleCompaction = typeof OrchestrationV2IdleCompaction
 
 export const OrchestrationV2ConversationMessage = Schema.Struct({
   notification: Schema.optional(OrchestrationV2Notification),
+  /** Seat threads only: the run's `groupThrough` this message advances once a provider accepts it. */
+  groupThrough: Schema.optional(NonNegativeInt),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   senderThreadId: Schema.optional(ThreadId),
@@ -1970,6 +1989,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.model-selection-updated",
       "thread.provider-switched",
       "thread.guest-share-updated",
+      "thread.group-updated",
     ]),
     payload: OrchestrationV2AppThread,
   }),
@@ -2857,6 +2877,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.model-selection-updated",
       "thread.provider-switched",
       "thread.guest-share-updated",
+      "thread.group-updated",
     ]),
     payload: OrchestrationV2AppThreadJson,
   }),
@@ -3233,6 +3254,10 @@ export const OrchestrationV2Command = Schema.Union([
     notification: Schema.optional(OrchestrationV2Notification),
     /** Sends this pending guest message; the server uses the guest's text, not `text`. */
     guestMessageId: Schema.optional(GuestMessageId),
+    /** Who a message reaches while a group is active. Absent means everyone. */
+    groupAudience: Schema.optional(
+      Schema.Union([Schema.Literal("everyone"), Schema.Array(OrchestrationV2ThreadGroupMember)]),
+    ),
     ...OrchestrationV2CreationFields,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),
@@ -3392,6 +3417,8 @@ export const OrchestrationV2Command = Schema.Union([
     sourcePoint: OrchestrationV2ThreadForkSourcePoint,
     title: Schema.optional(TrimmedNonEmptyString),
     sideChat: Schema.optional(Schema.Boolean),
+    /** The forked thread's model, when it should not inherit the source's. */
+    modelSelection: Schema.optional(ModelSelection),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({
@@ -3482,8 +3509,56 @@ const OrchestrationV2InternalCommand = Schema.Union([
         seatThreadIds: Schema.Array(ThreadId),
         messageId: MessageId,
         attachments: Schema.Array(ChatAttachment),
+        context: Schema.optional(OrchestrationMessageContext),
       }),
     ]),
+  }),
+  // Seats a side chat already forked from this thread, or makes an ended group active again.
+  Schema.Struct({
+    type: Schema.Literal("thread.group.invite"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    seat: Schema.Struct({ threadId: ThreadId, label: TrimmedNonEmptyString }),
+    primaryLabel: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.group.remove"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    seatThreadId: ThreadId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.group.end"),
+    commandId: CommandId,
+    threadId: ThreadId,
+  }),
+  // Plans the next wave once a member settles. Safe at any time: it reads who is running.
+  Schema.Struct({
+    type: Schema.Literal("thread.group.advance"),
+    commandId: CommandId,
+    threadId: ThreadId,
+  }),
+  // Hands one member what it has not seen. `threadId` is the member's own thread.
+  Schema.Struct({
+    type: Schema.Literal("thread.group.deliver"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    parentThreadId: ThreadId,
+    /** The user message this delivers. Absent for a reaction turn. */
+    messageId: Schema.optional(MessageId),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.group.delivered"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    member: OrchestrationV2ThreadGroupMember,
+  }),
+  // The provider took a steer, so the seat has seen what that message carried.
+  Schema.Struct({
+    type: Schema.Literal("thread.group.steer-accepted"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
   }),
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
@@ -3710,6 +3785,10 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getWorkflowScript: "orchestration.getWorkflowScript",
   getNativeChildWork: "orchestration.getNativeChildWork",
   stopWorkflow: "orchestration.stopWorkflow",
+  threadGroupInvite: "orchestration.threadGroupInvite",
+  threadGroupRemove: "orchestration.threadGroupRemove",
+  threadGroupEnd: "orchestration.threadGroupEnd",
+  threadGroupStop: "orchestration.threadGroupStop",
   forceStopThread: "orchestration.forceStopThread",
   getTurnItem: "orchestration.getTurnItem",
   launchThread: "orchestration.launchThread",
@@ -4082,6 +4161,28 @@ export const OrchestrationV2StopWorkflowInput = Schema.Struct({
 });
 export type OrchestrationV2StopWorkflowInput = typeof OrchestrationV2StopWorkflowInput.Type;
 
+export class ThreadGroupDisabledError extends Schema.TaggedError<ThreadGroupDisabledError>()(
+  "ThreadGroupDisabledError",
+  { threadId: ThreadId },
+) {
+  override get message(): string {
+    return "Group conversations are off. Turn them on in Settings, then invite again.";
+  }
+}
+
+export class ThreadGroupCommandError extends Schema.TaggedError<ThreadGroupCommandError>()(
+  "ThreadGroupCommandError",
+  {
+    operation: Schema.String,
+    threadId: ThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Could not ${this.operation} on the group for thread ${this.threadId}.`;
+  }
+}
+
 export class OrchestrationV2StopWorkflowError extends Schema.TaggedError<OrchestrationV2StopWorkflowError>()(
   "OrchestrationV2StopWorkflowError",
   {
@@ -4376,6 +4477,22 @@ export const OrchestrationV2RpcSchemas = {
   stopWorkflow: {
     input: OrchestrationV2StopWorkflowInput,
     output: Schema.Void,
+  },
+  threadGroupInvite: {
+    input: Schema.Struct({ threadId: ThreadId, modelSelection: ModelSelection }),
+    output: OrchestrationV2ThreadGroup,
+  },
+  threadGroupRemove: {
+    input: Schema.Struct({ threadId: ThreadId, seatThreadId: ThreadId }),
+    output: OrchestrationV2ThreadGroup,
+  },
+  threadGroupEnd: {
+    input: Schema.Struct({ threadId: ThreadId }),
+    output: OrchestrationV2ThreadGroup,
+  },
+  threadGroupStop: {
+    input: Schema.Struct({ threadId: ThreadId }),
+    output: OrchestrationV2ThreadGroup,
   },
   forceStopThread: {
     input: OrchestrationV2ForceStopThreadInput,

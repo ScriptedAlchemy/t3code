@@ -116,11 +116,19 @@ describe("orchestration V2 contracts", () => {
 
     const group = {
       status: "active" as const,
+      primary: { model: "fable", label: "Fable", handle: "fable" },
       seats: [
-        { threadId: "thread:seat", handle: "astra", label: "Astra", status: "seated" as const },
+        {
+          threadId: "thread:seat",
+          handle: "astra",
+          label: "Astra",
+          status: "seated" as const,
+          joinedThrough: 3,
+        },
       ],
-      discussion: { mode: "everyone" as const, turnsLeft: 4 },
+      discussion: { mode: "everyone" as const, turnsLeft: 4, delivering: ["primary"] },
       closedBecause: null,
+      closedAt: null,
     };
     expect(encodeOrchestrationV2ThreadGroup(decodeOrchestrationV2ThreadGroup(group))).toEqual(
       group,
