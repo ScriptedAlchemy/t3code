@@ -22,6 +22,7 @@ import {
 } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -40,6 +41,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import { ClaudeProviderCapabilitiesV2 } from "../Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "../Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "../CommandReceiptStore.ts";
+import * as EffectOutbox from "../EffectOutbox.ts";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as EventSink from "../EventSink.ts";
 import * as GroupReactor from "../GroupReactor.ts";
@@ -47,6 +49,7 @@ import * as Orchestrator from "../Orchestrator.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
 import * as ProjectStore from "../ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
+import * as ProviderRuntimeRecovery from "../ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "../ProviderSessionManager.ts";
 import * as ThreadGroupService from "../ThreadGroupService.ts";
 import * as ThreadManagementService from "../ThreadManagementService.ts";
@@ -2080,6 +2083,53 @@ describe("group conversations", () => {
             { label: "Astra", text: "FINISHED_DURING_SWEEP" },
           ]);
         }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("publishes a seat's answer when a restart continues its turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("restart");
+        const threadId = ThreadId.make("thread:group:restart");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+              Effect.provide(Layer.mergeAll(IdAllocator.layer, EffectOutbox.layer)),
+            );
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            const seatHold = yield* hold(harness.control, seat, "half way");
+            yield* script(harness.control, seat, ["cut short", "CONTINUED final answer"]);
+            yield* say(threadId, "question", "Ask the seat", [seat]);
+            yield* Deferred.await(seatHold.started);
+            yield* until(
+              orchestrator
+                .getThreadProjection(seat)
+                .pipe(Effect.map((row) => row.providerTurns.some((t) => t.status === "running"))),
+            );
+            yield* recovery.reconcile("startup");
+            yield* Deferred.succeed(seatHold.release, "completed");
+            yield* until(
+              orchestrator
+                .getThreadProjection(threadId)
+                .pipe(
+                  Effect.map((row) =>
+                    publishedRows(row).some((reply) => reply.text === "CONTINUED final answer"),
+                  ),
+                ),
+            );
+            const seatRuns = (yield* orchestrator.getThreadProjection(seat)).runs;
+            assert.isDefined(seatRuns.at(-1)?.restartContinuationOfRunId);
+            assert.equal(seatRuns.at(-1)?.groupThrough, seatRuns[0]?.groupThrough);
+            const after = yield* settle(threadId);
+            assert.deepEqual(
+              publishedRows(after).map((row) => row.text),
+              ["CONTINUED final answer"],
+            );
+          }),
+        ).pipe(Effect.provide(harness.layer));
       }),
     ),
   );

@@ -7028,9 +7028,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return;
     }
     // A steer that came too late starts its own turn, and that turn still delivers the same delta.
+    // A continuation answers what the run it continues was told, so it publishes the same way.
+    const continuedRunId =
+      command.restartContinuationOfRunId ??
+      command.usageLimitContinuationOfRunId ??
+      command.manualContinuationOfRunId;
     const groupThrough =
       group.groupThrough ??
-      projection.messages.find((message) => message.id === command.messageId)?.groupThrough;
+      projection.messages.find((message) => message.id === command.messageId)?.groupThrough ??
+      projection.runs.find((run) => run.id === continuedRunId)?.groupThrough;
     const groupThroughField = groupThrough === undefined ? {} : { groupThrough };
     const routedSelection = yield* routeSelection({
       commandId: command.commandId,
