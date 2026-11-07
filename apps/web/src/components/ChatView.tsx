@@ -410,6 +410,8 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       /** A side chat in its parent's right panel; the parent keeps the keyboard and workspace UI. */
       embedded?: SideChatParentPanel;
+      /** A seated group member's work: read it here, talk to it from the thread's own composer. */
+      composerHidden?: boolean;
       routeKind: "server";
       draftId?: never;
     }
@@ -420,6 +422,7 @@ type ChatViewProps =
       reserveTitleBarControlInset?: boolean;
       forceExpandedMobileComposer?: boolean;
       embedded?: never;
+      composerHidden?: never;
       routeKind: "draft";
       draftId: DraftId;
     };
@@ -1744,7 +1747,7 @@ export default function ChatView(props: ChatViewProps) {
   const isGitRepo = liveIsGitRepo ?? recallCheckoutIsRepo(environmentId, gitStatusCwd) ?? true;
   // Provider-native subagents cannot take messages; approvals and questions go to the top-level parent.
   const showProviderSubagentBar = isProviderSubagent;
-  const composerMounted = !showProviderSubagentBar;
+  const composerMounted = !showProviderSubagentBar && props.composerHidden !== true;
   const providerSubagentModels = selectedProviderEntry?.models ?? EMPTY_PROVIDER_MODELS;
   // Providers can report dated model ids or aliases.
   const providerSubagentModelSlug = selectedProviderEntry
