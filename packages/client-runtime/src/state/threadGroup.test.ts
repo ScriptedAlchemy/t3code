@@ -53,6 +53,15 @@ describe("groupAudienceForPrompt", () => {
     ],
     ["a name that is not a member", group, "@README.md please ", "everyone"],
     ["a peer that left", group, "@opus hello ", "everyone"],
+    ["a peer at the end of the prompt", group, "what do you think @astra", [astra]],
+    ["only a peer", group, "@astra", [astra]],
+    ["a peer before a comma", group, "@astra, what do you think?", [astra]],
+    ["a peer before a colon", group, "@astra: what do you think?", [astra]],
+    ["a peer before a question mark", group, "thoughts, @astra?", [astra]],
+    ["a peer in parentheses", group, "(@astra) what do you think?", [astra]],
+    ["an email address", group, "mail me@astra.com about it", "everyone"],
+    ["a bare email address", group, "me@astra", "everyone"],
+    ["a file mention", group, "look at @astra.ts please", "everyone"],
   ])("%s", (_name, thread, prompt, expected) => {
     expect(groupAudienceForPrompt(thread, prompt)).toEqual(expected);
   });

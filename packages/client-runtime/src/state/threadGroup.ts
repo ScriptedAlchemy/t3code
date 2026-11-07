@@ -6,7 +6,6 @@ import type {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
-import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineTokens";
 
 import { threadRuntimeIsActive, type ThreadStructureTurnItem } from "./models.ts";
 
@@ -64,6 +63,11 @@ const participantForHandle = (
 ): ThreadGroupParticipant | undefined =>
   groupParticipants(group).find((participant) => sameHandle(participant.handle, handle));
 
+// Clients trim before sending, so an address may end the prompt. The lookbehind keeps `me@astra`
+// an email address, and `@astra.ts` stays a file mention because only trailing punctuation goes.
+const ADDRESS_TOKEN = /(?<=^|[\s(])@(\S+)/g;
+const TRAILING_PUNCTUATION = /[.,:;!?)\]}'"]+$/;
+
 /**
  * Who a composer prompt addresses. `@handle` tokens naming a seated member pick them, anything
  * else reaches everyone. Absent while no group is active, so an ordinary thread sends as before.
@@ -74,9 +78,9 @@ export function groupAudienceForPrompt(
 ): "everyone" | ReadonlyArray<ThreadGroupMember> | undefined {
   if (!isGroupActive(group)) return undefined;
   const addressed = new Set<ThreadGroupMember>();
-  for (const token of collectComposerInlineTokens(prompt)) {
-    if (token.type !== "mention") continue;
-    const participant = participantForHandle(group, token.value);
+  for (const [, token] of prompt.matchAll(ADDRESS_TOKEN)) {
+    const handle = token?.replace(TRAILING_PUNCTUATION, "") ?? "";
+    const participant = participantForHandle(group, handle);
     if (participant !== undefined) addressed.add(participant.member);
   }
   return addressed.size === 0 ? "everyone" : [...addressed];
