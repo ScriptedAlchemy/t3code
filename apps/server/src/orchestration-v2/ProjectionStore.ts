@@ -469,6 +469,11 @@ export interface ProjectionStoreV2Shape {
   readonly listAppOwnedChildThreadIds: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionStoreV2Error>;
+  /** Every live thread whose group is active, for resuming after a restart. */
+  readonly getActiveGroupThreadIds: () => Effect.Effect<
+    ReadonlyArray<ThreadId>,
+    ProjectionStoreV2Error
+  >;
   readonly getNextTurnItemOrdinal: (
     threadId: ThreadId,
   ) => Effect.Effect<number, ProjectionStoreV2Error>;
@@ -854,6 +859,7 @@ export function applyToProjection(
     case "thread.model-selection-updated":
     case "thread.provider-switched":
     case "thread.guest-share-updated":
+    case "thread.group-updated":
       return {
         ...base,
         thread: event.payload,
@@ -2042,7 +2048,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             case "thread.interaction-mode-updated":
             case "thread.model-selection-updated":
             case "thread.provider-switched":
-            case "thread.guest-share-updated": {
+            case "thread.guest-share-updated":
+            case "thread.group-updated": {
               const payloadJson = yield* encodeThreadPayload(event.payload);
               const payload = parseEncodedPayload(payloadJson);
               yield* sql`
@@ -2857,7 +2864,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             event.type !== "thread.interaction-mode-updated" &&
             event.type !== "thread.model-selection-updated" &&
             event.type !== "thread.provider-switched" &&
-            event.type !== "thread.guest-share-updated"
+            event.type !== "thread.guest-share-updated" &&
+            event.type !== "thread.group-updated"
           ) {
             const updatedAt = yield* encodeThreadUpdatedAt(event.occurredAt);
             yield* sql`
@@ -5566,6 +5574,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError(controlReadError(threadId)),
       );
 
+    const getActiveGroupThreadIds: ProjectionStoreV2Shape["getActiveGroupThreadIds"] = () =>
+      sql<{ thread_id: ThreadId }>`SELECT thread_id
+        FROM orchestration_v2_projection_threads
+        WHERE deleted_at IS NULL
+          AND json_extract(payload_json, '$.group.status') = 'active'`.pipe(
+        Effect.map((rows) => rows.map((row) => row.thread_id)),
+        Effect.mapError(controlReadError(ThreadId.make("group-sweep"))),
+      );
+
     const getTurnItem: ProjectionStoreV2Shape["getTurnItem"] = ({ threadId, itemId }) =>
       sql<{ payload_json: string }>`SELECT payload_json
         FROM orchestration_v2_projection_turn_items
@@ -7523,6 +7540,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getSubagentCount: readOnReader(getSubagentCount),
       listAppOwnedChildThreadIds: readOnReader(listAppOwnedChildThreadIds),
       getNextTurnItemOrdinal: readOnReader(getNextTurnItemOrdinal),
+      getActiveGroupThreadIds: readOnReader(getActiveGroupThreadIds),
       getTurnItem: readOnReader(getTurnItem),
       getMessagesById: readOnReader(getMessagesById),
       getThreadRecords: (threadId, fields, filter) =>

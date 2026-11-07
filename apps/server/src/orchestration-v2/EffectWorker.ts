@@ -66,6 +66,77 @@ function isNonRetryableProviderTurnControlFailure(effectType: string, errorText:
   );
 }
 
+/**
+ * A seat that cannot start, such as one whose provider was removed, must not take the others with
+ * it, so each member's failure stays with that member.
+ */
+const runGroupEffect = Effect.fn("OrchestrationEffectExecutorV2.groupEffect")(function* (
+  threads: ThreadManagementService.ThreadManagementService["Service"],
+  effect: EffectOutbox.OrchestrationEffectV2,
+) {
+  const { request } = effect;
+  if (request.type === "thread-group.deliver") {
+    yield* threads
+      .dispatch({
+        type: "thread.group.deliver",
+        commandId: CommandId.make(`server:group-deliver:${effect.id}`),
+        threadId: request.member === "primary" ? effect.threadId : request.member,
+        parentThreadId: effect.threadId,
+        ...(request.messageId === undefined ? {} : { messageId: request.messageId }),
+      })
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("a group member could not start", {
+            threadId: effect.threadId,
+            member: request.member,
+            cause,
+          }),
+        ),
+      );
+    yield* threads.dispatch({
+      type: "thread.group.delivered",
+      commandId: CommandId.make(`server:group-delivered:${effect.id}`),
+      threadId: effect.threadId,
+      member: request.member,
+    });
+    return;
+  }
+  if (request.type !== "thread-group.stop-seats") return;
+  yield* Effect.forEach(
+    request.seatThreadIds,
+    (seatThreadId) =>
+      Effect.gen(function* () {
+        yield* threads.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make(`server:group-stop:${effect.id}:${seatThreadId}`),
+          threadId: seatThreadId,
+          reason: "Stopped with the group",
+        });
+        const { runs } = yield* threads.getThreadRecords(seatThreadId, ["runs"]);
+        yield* Effect.forEach(
+          runs.filter((run) => run.status === "queued"),
+          (run) =>
+            threads.dispatch({
+              type: "queued-run.cancel",
+              commandId: CommandId.make(`server:group-stop-queued:${effect.id}:${run.id}`),
+              threadId: seatThreadId,
+              runId: run.id,
+            }),
+          { discard: true },
+        );
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("a group seat could not stop", {
+            threadId: effect.threadId,
+            seatThreadId,
+            cause,
+          }),
+        ),
+      ),
+    { discard: true },
+  );
+});
+
 export interface OrchestrationEffectExecutorV2Shape {
   readonly execute: (
     effect: EffectOutbox.OrchestrationEffectV2,
@@ -266,6 +337,14 @@ export const layerExecutor: Layer.Layer<
                       { messageIds: [effect.request.messageId] },
                     );
                     const message = projection.messages.find((row) => row.id === messageId);
+                    if (message?.groupThrough !== undefined) {
+                      yield* threads.dispatch({
+                        type: "thread.group.steer-accepted",
+                        commandId: CommandId.make(`command:group-steer-accepted:${effect.id}`),
+                        threadId: effect.threadId,
+                        messageId,
+                      });
+                    }
                     if (message?.delegatedCompletion === undefined) return;
                     yield* threads.dispatch({
                       type: "notification.delivery.accept",
@@ -650,6 +729,18 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "thread-group.deliver":
+          case "thread-group.stop-seats":
+            return runGroupEffect(threads, effect).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "delegated-tasks.stop":
             return threads
               .stopDelegatedTasks({
