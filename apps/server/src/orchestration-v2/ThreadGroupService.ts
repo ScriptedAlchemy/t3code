@@ -11,6 +11,7 @@ import {
   ThreadGroupDisabledError,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { resolveProjectProviderInstanceEnabled } from "@t3tools/contracts/settings";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
@@ -123,17 +124,25 @@ const make = Effect.gen(function* () {
   const invite: ThreadGroupService["Service"]["invite"] = Effect.fn("ThreadGroupService.invite")(
     function* (input) {
       const { threadId, modelSelection } = input;
-      const enabled = yield* settings.getSettings.pipe(
-        Effect.map((current) => current.groupConversationsEnabled),
-        Effect.mapError(failed("invite", threadId)),
-      );
-      if (!enabled) return yield* new ThreadGroupDisabledError({ threadId });
+      const current = yield* settings.getSettings.pipe(Effect.mapError(failed("invite", threadId)));
+      if (!current.groupConversationsEnabled) {
+        return yield* new ThreadGroupDisabledError({ threadId });
+      }
       const thread = yield* readThread("invite", threadId);
       if (thread.lineage.sideChat === true || thread.lineage.relationshipToParent === "subagent") {
         return yield* new ThreadGroupCommandError({
           operation: "invite",
           threadId,
           reason: "A side chat or a subagent cannot host a group.",
+        });
+      }
+      if (
+        !resolveProjectProviderInstanceEnabled(current, thread.projectId, modelSelection.instanceId)
+      ) {
+        return yield* new ThreadGroupCommandError({
+          operation: "invite",
+          threadId,
+          reason: "That model's provider is turned off for this project.",
         });
       }
       const providers = yield* registry.getProviders;

@@ -59,6 +59,15 @@ const STEERLESS: ModelSelection = {
   model: "steerless-peer",
 };
 
+/** Invite refuses a provider the settings do not enable, so the fakes need entries like real ones. */
+const CONFIGURED_INSTANCES = {
+  [STEERLESS.instanceId]: { driver: ProviderDriverKind.make("cursor"), enabled: true },
+  [ProviderInstanceId.make("removed-provider")]: {
+    driver: ProviderDriverKind.make("cursor"),
+    enabled: true,
+  },
+};
+
 interface CapturedTurn {
   readonly threadId: ThreadId;
   readonly text: string;
@@ -361,7 +370,12 @@ const catalog = [
 
 const makeHarness = Effect.fn("GroupConversationTest.makeHarness")(function* (
   name: string,
-  options: { readonly enabled?: boolean; readonly runEffectWorker?: boolean } = {},
+  options: {
+    readonly enabled?: boolean;
+    readonly runEffectWorker?: boolean;
+    /** The orchestrator reads its own settings, so a seat can be turned off after its invite. */
+    readonly orchestratorInstances?: typeof CONFIGURED_INSTANCES;
+  } = {},
 ) {
   const cwd = yield* checkpointWorkspace(`group-conversation-${name}`);
   const control: Control = {
@@ -399,6 +413,7 @@ const makeHarness = Effect.fn("GroupConversationTest.makeHarness")(function* (
     ProjectionStore.layer,
     ServerSettings.ServerSettingsService.layerTest({
       groupConversationsEnabled: options.enabled ?? true,
+      providerInstances: CONFIGURED_INSTANCES,
     }),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
       getProviders: Effect.succeed(catalog as never),
@@ -423,6 +438,7 @@ const makeHarness = Effect.fn("GroupConversationTest.makeHarness")(function* (
         registry,
         {
           databaseLayer: database,
+          settings: { providerInstances: options.orchestratorInstances ?? CONFIGURED_INSTANCES },
           ...(options.runEffectWorker === undefined
             ? {}
             : { runEffectWorker: options.runEffectWorker }),
@@ -603,6 +619,9 @@ const publishedRows = (projection: Pick<OrchestrationV2ThreadProjection, "turnIt
       : [],
   );
 
+const noticesOf = (projection: Pick<OrchestrationV2ThreadProjection, "turnItems">) =>
+  projection.turnItems.flatMap((item) => (item.type === "system_notice" ? [item.message] : []));
+
 describe("group conversations", () => {
   it.live.each([
     ["cross-instance", ASTRA, "Astra"],
@@ -762,6 +781,65 @@ describe("group conversations", () => {
               0,
               "a seat that cannot start takes nobody with it",
             );
+            const notices = noticesOf(after);
+            assert.isTrue(
+              notices.some((notice) => notice.startsWith("Astra could not reply.")),
+              `a failed seat says so on the thread, got ${notices.join(" | ")}`,
+            );
+            assert.include(notices, "removed-model could not start.");
+            assert.isFalse(
+              notices.some((notice) => notice.startsWith("Opus")),
+              "control: a seat that replied has no notice",
+            );
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("holds seats to the providers enabled for the project", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const astraOff = {
+          ...CONFIGURED_INSTANCES,
+          [ASTRA.instanceId]: { driver: ProviderDriverKind.make("claudeAgent"), enabled: false },
+        };
+        const harness = yield* makeHarness("disabled-provider", {
+          orchestratorInstances: astraOff,
+        });
+        const threadId = ThreadId.make("thread:group:disabled-provider");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const service = yield* ThreadGroupService.ThreadGroupService;
+            const settings = yield* ServerSettings.ServerSettingsService;
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            const healthy = yield* invite(threadId, STEERLESS);
+            yield* settings.updateSettings({ providerInstances: astraOff });
+            const refused = yield* service
+              .invite({
+                threadId,
+                modelSelection: { instanceId: ASTRA.instanceId, model: "another-model" },
+                createdBy: "user",
+                creationSource: "web",
+              })
+              .pipe(Effect.flip);
+            assert.equal(refused._tag, "ThreadGroupCommandError");
+            assert.lengthOf((yield* readGroup(threadId))!.seats, 2, "the refusal seats nobody");
+
+            yield* say(threadId, "question", "Go");
+            const after = yield* settle(threadId);
+            assert.lengthOf(
+              yield* turnsOf(harness.control, seat),
+              0,
+              "a turned off provider never runs",
+            );
+            assert.isAbove(
+              (yield* turnsOf(harness.control, healthy)).length,
+              0,
+              "control: the enabled seat ran",
+            );
+            assert.include(noticesOf(after), "Astra could not start.");
           }),
         ).pipe(Effect.provide(harness.layer));
       }),

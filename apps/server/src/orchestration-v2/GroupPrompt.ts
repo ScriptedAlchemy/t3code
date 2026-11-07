@@ -95,6 +95,16 @@ export function renderPrimaryWakePrompt(input: {
 export const primaryWakeSummary = (from: ReadonlyArray<string>) =>
   `${from.join(", ")} replied in the group`;
 
+const NOTICE_REASON_LIMIT = 240;
+
+/** A failed seat publishes nothing, so this line is how the user learns why it went silent. */
+export function groupSeatFailedNotice(label: string, reason: string | undefined): string {
+  const compact = reason?.replace(/\s+/g, " ").trim().slice(0, NOTICE_REASON_LIMIT);
+  return compact ? `${label} could not reply. ${compact}` : `${label} could not reply.`;
+}
+
+export const groupSeatCouldNotStartNotice = (label: string) => `${label} could not start.`;
+
 /** The quiet line End writes on the visible thread. */
 export function groupEndedNotice(primaryLabel: string, unseenCount: number): string {
   if (unseenCount === 0) return "Group ended.";

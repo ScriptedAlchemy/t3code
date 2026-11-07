@@ -13,8 +13,11 @@ import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import { latestRootProviderFailure } from "@t3tools/shared/orchestrationV2ThreadError";
+
 import { forkParked } from "../serverActivation.ts";
 import { finalReplyText, seatForThread, seatRunPublishes } from "./GroupConversation.ts";
+import { groupSeatFailedNotice } from "./GroupPrompt.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -72,14 +75,26 @@ const make = Effect.gen(function* () {
       seat.threadId,
       ["runs", "turnItems"],
       {
-        turnItemTypes: ["assistant_message"],
+        turnItemTypes: ["assistant_message", "error"],
         ...(runId === undefined ? {} : { turnItemRunIds: [runId] }),
       },
     );
     for (const run of runs) {
       if ((runId !== undefined && run.id !== runId) || !seatRunPublishes(seat, run)) continue;
       const text = finalReplyText(turnItems, run.id);
-      if (text !== null) yield* publishSeatRun(parent, seat, run, text);
+      if (text !== null) {
+        yield* publishSeatRun(parent, seat, run, text);
+      } else if (run.status === "failed") {
+        yield* engine.dispatch({
+          type: "thread.group.notice",
+          commandId: CommandId.make(`server:group-seat-failed:${run.id}`),
+          threadId: parent.id,
+          message: groupSeatFailedNotice(
+            seat.label,
+            latestRootProviderFailure(run, turnItems)?.message,
+          ),
+        });
+      }
     }
   });
 

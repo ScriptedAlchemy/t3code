@@ -597,6 +597,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.group.deliver":
     case "thread.group.delivered":
     case "thread.group.steer-accepted":
+    case "thread.group.notice":
     case "thread.guest-share.open":
     case "thread.guest-share.redeem":
     case "thread.guest-share.close":
@@ -4999,6 +5000,47 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
+  const emitGroupNotice = Effect.fn("orchestrationV2.dispatch.emitGroupNotice")(function* (
+    command: OrchestrationV2ServerCommand,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs">,
+    message: string,
+    now: DateTime.Utc,
+  ) {
+    // The timeline shows a row only through its run. A thread with no runs has nothing to report.
+    const anchorRun = projection.runs.findLast((run) => run.status !== "queued");
+    if (anchorRun === undefined) return;
+    const { thread } = projection;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      threadId: thread.id,
+      runId: anchorRun.id,
+      providerInstanceId: thread.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        id: TurnItemId.make(`turn-item:group-notice:${command.commandId}`),
+        threadId: thread.id,
+        runId: anchorRun.id,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: yield* nextTurnItemOrdinal(projection),
+        status: "completed",
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "system_notice",
+        message,
+      },
+    });
+  });
+
   const groupDeliverEffect = (
     command: { readonly commandId: CommandId },
     threadId: ThreadId,
@@ -5073,42 +5115,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ]);
     }
     if (command.type !== "thread.group.end") return;
-    // The timeline shows a row only through its run. A thread with no runs has nothing to report.
-    const anchorRun = projection.runs.findLast((run) => run.status !== "queued");
-    if (anchorRun === undefined) return;
     // A turn still running already took everything published before it started.
     const primaryCursor = primaryWakeCursor(projection.runs);
     const unseen = projection.runs.filter(
       (run) => run.publication?.type === "peer_reply" && run.ordinal > primaryCursor,
     );
-    yield* emit(
-      events,
+    yield* emitGroupNotice(
       command,
-    )({
-      type: "turn-item.updated",
-      threadId: thread.id,
-      runId: anchorRun.id,
-      providerInstanceId: thread.providerInstanceId,
-      occurredAt: now,
-      payload: {
-        id: TurnItemId.make(`turn-item:group-ended:${command.commandId}`),
-        threadId: thread.id,
-        runId: anchorRun.id,
-        nodeId: null,
-        providerThreadId: null,
-        providerTurnId: null,
-        nativeItemRef: null,
-        parentItemId: null,
-        ordinal: yield* nextTurnItemOrdinal(projection),
-        status: "completed",
-        title: null,
-        startedAt: now,
-        completedAt: now,
-        updatedAt: now,
-        type: "system_notice",
-        message: groupEndedNotice(group.primary.label, unseen.length),
-      },
-    });
+      events,
+      projection,
+      groupEndedNotice(group.primary.label, unseen.length),
+      now,
+    );
+  });
+
+  const dispatchGroupNotice = Effect.fn("orchestrationV2.dispatch.groupNotice")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.group.notice" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(command.threadId, ["runs"])
+      .pipe(mapDispatchError(command));
+    if (projection.thread.deletedAt !== null) return;
+    yield* emitGroupNotice(command, events, projection, command.message, yield* DateTime.now);
   });
 
   /** Reads under the parent's lock. Seat runs can only move from open to settled meanwhile. */
@@ -5288,6 +5317,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       })
       .pipe(mapDispatchError(command));
     if (member.thread.deletedAt !== null) return undefined;
+    // A seat runs on its own thread, so the check a user's own message gets never sees it.
+    const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+    if (
+      !resolveProjectProviderInstanceEnabled(
+        settings,
+        member.thread.projectId,
+        member.thread.modelSelection.instanceId,
+      )
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Provider instance ${member.thread.modelSelection.instanceId} is turned off for this project.`,
+      });
+    }
     const seatMessageId = (source: MessageId | string) =>
       MessageId.make(`message:group:${command.threadId}:${source}`);
     const handed = new Set(member.messages.map((message) => message.id));
@@ -14986,6 +15030,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.group.steer-accepted":
         yield* dispatchGroupSteerAccepted(command, events);
         break;
+      case "thread.group.notice":
+        yield* dispatchGroupNotice(command, events);
+        break;
       case "thread.fork":
         yield* dispatchThreadFork(command, events);
         break;
@@ -15141,6 +15188,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "thread.group.delivered" ||
           command.type === "thread.group.end" ||
           command.type === "thread.group.steer-accepted" ||
+          command.type === "thread.group.notice" ||
           (command.type === "thread.delete" && command.onlyIfUnused === true),
         (_planned) =>
           new OrchestratorDispatchError({

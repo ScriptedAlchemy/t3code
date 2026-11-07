@@ -3560,6 +3560,13 @@ const OrchestrationV2InternalCommand = Schema.Union([
     threadId: ThreadId,
     messageId: MessageId,
   }),
+  // A quiet line on the visible thread about the group, which no member said.
+  Schema.Struct({
+    type: Schema.Literal("thread.group.notice"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    message: TrimmedNonEmptyString,
+  }),
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),

@@ -26,6 +26,8 @@ import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import { seatForThread } from "./GroupConversation.ts";
+import { groupSeatCouldNotStartNotice } from "./GroupPrompt.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 import {
@@ -76,21 +78,43 @@ const runGroupEffect = Effect.fn("OrchestrationEffectExecutorV2.groupEffect")(fu
 ) {
   const { request } = effect;
   if (request.type === "thread-group.deliver") {
+    const { member } = request;
     yield* threads
       .dispatch({
         type: "thread.group.deliver",
         commandId: CommandId.make(`server:group-deliver:${effect.id}`),
-        threadId: request.member === "primary" ? effect.threadId : request.member,
+        threadId: member === "primary" ? effect.threadId : member,
         parentThreadId: effect.threadId,
         ...(request.messageId === undefined ? {} : { messageId: request.messageId }),
       })
       .pipe(
         Effect.catch((cause) =>
-          Effect.logWarning("a group member could not start", {
-            threadId: effect.threadId,
-            member: request.member,
-            cause,
-          }),
+          Effect.gen(function* () {
+            yield* Effect.logWarning("a group member could not start", {
+              threadId: effect.threadId,
+              member,
+              cause,
+            });
+            if (member === "primary") return;
+            const { thread } = yield* threads.getThreadRecords(effect.threadId, []);
+            const seat = seatForThread(thread.group, member);
+            if (seat === undefined) return;
+            yield* threads.dispatch({
+              type: "thread.group.notice",
+              commandId: CommandId.make(`server:group-could-not-start:${effect.id}`),
+              threadId: effect.threadId,
+              message: groupSeatCouldNotStartNotice(seat.label),
+            });
+          }).pipe(
+            // A lost notice must not hold the barrier below.
+            Effect.catch((noticeCause) =>
+              Effect.logWarning("a group notice could not be written", {
+                threadId: effect.threadId,
+                member,
+                cause: noticeCause,
+              }),
+            ),
+          ),
         ),
       );
     yield* threads.dispatch({
