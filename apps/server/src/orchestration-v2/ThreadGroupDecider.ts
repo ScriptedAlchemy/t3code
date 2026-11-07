@@ -1,4 +1,5 @@
 import type {
+  OrchestrationV2Actor,
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
   OrchestrationV2Run,
@@ -276,20 +277,52 @@ export function resolveGroupAudience(
   };
 }
 
-/** A user message refills the budget, sets the mode, and pays for the members it reaches. */
-export function groupAfterUserMessage(
+type GroupAudience = ReturnType<typeof resolveGroupAudience>;
+
+const turnsSpent = (audience: GroupAudience) =>
+  audience.seats.length + (audience.includesPrimary ? 1 : 0);
+
+/** What a message may spend. Only a user refills an open discussion, so agents cannot extend it. */
+const availableTurns = (group: OrchestrationV2ThreadGroup, createdBy: OrchestrationV2Actor) =>
+  createdBy !== "user" && group.discussion !== null
+    ? group.discussion.turnsLeft
+    : groupTurnBudget(group);
+
+export const groupCanAffordMessage = (
   group: OrchestrationV2ThreadGroup,
-  audience: ReturnType<typeof resolveGroupAudience>,
+  audience: GroupAudience,
+  createdBy: OrchestrationV2Actor,
+): boolean => turnsSpent(audience) <= availableTurns(group, createdBy) || createdBy === "user";
+
+/** A message sets the mode and pays for the members it reaches. */
+export function groupAfterMessage(
+  group: OrchestrationV2ThreadGroup,
+  audience: GroupAudience,
+  createdBy: OrchestrationV2Actor,
+  nextRunOrdinal: number,
 ): OrchestrationV2ThreadGroup {
-  const spent = audience.seats.length + (audience.includesPrimary ? 1 : 0);
   return {
     ...group,
     discussion: {
       mode: audience.mode,
-      turnsLeft: Math.max(0, groupTurnBudget(group) - spent),
+      turnsLeft: Math.max(0, availableTurns(group, createdBy) - turnsSpent(audience)),
       delivering: audience.seats,
+      since: nextRunOrdinal,
     },
     closedBecause: null,
+  };
+}
+
+/** The picker moved the primary. No catalog here, so the slug names it until the next invite. */
+export function groupWithPrimaryModel(
+  group: OrchestrationV2ThreadGroup,
+  model: string,
+): OrchestrationV2ThreadGroup {
+  if (group.primary.model === model) return group;
+  const taken = new Set(group.seats.map((seat) => seat.handle));
+  return {
+    ...group,
+    primary: { model, label: model, handle: uniqueHandle(handleFromLabel(model), taken) },
   };
 }
 

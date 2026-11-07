@@ -204,9 +204,10 @@ import {
   seatForThread,
   seatWakeCursor,
   unseenFor,
-  wakeFloorRunOrdinal,
   finalReplyText,
   type GroupMember,
+  groupSenderLabel,
+  isAfterWakeFloor,
   seatRunPublishes,
 } from "./GroupConversation.ts";
 import {
@@ -221,7 +222,9 @@ import {
   decideGroupMembership,
   groupAfterDelivered,
   groupAfterStop,
-  groupAfterUserMessage,
+  groupAfterMessage,
+  groupCanAffordMessage,
+  groupWithPrimaryModel,
   groupAfterWave,
   planGroupPublication,
   resolveGroupAudience,
@@ -4059,6 +4062,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             archivedAt: now,
             titleRegeneration: null,
             guestShare: null,
+            ...(thread.group == null ? {} : { group: groupAfterStop(thread.group) }),
             pullRequests: thread.pullRequests?.map((link) => withPullRequestWatch(link, undefined)),
             updatedAt: now,
           };
@@ -5172,8 +5176,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     const parent = yield* projectionStore
-      .getThreadRecords(command.threadId, ["runs", "turnItems"], {
+      .getThreadRecords(command.threadId, ["runs", "turnItems", "messages"], {
         turnItemTypes: ["user_message", "assistant_message"],
+        messageRoles: ["user"],
       })
       .pipe(mapDispatchError(command));
     const { thread } = parent;
@@ -5182,9 +5187,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       stored === null ||
       stored.status !== "active" ||
       stored.discussion === null ||
-      thread.deletedAt !== null ||
-      thread.archivedAt !== null
+      thread.deletedAt !== null
     ) {
+      return;
+    }
+    // An archived thread starts no new turns, so nothing could ever close this discussion.
+    if (thread.archivedAt !== null) {
+      yield* emitThreadGroup(command, events, thread, groupAfterStop(stored), yield* DateTime.now);
       return;
     }
     const seats = yield* Effect.forEach(
@@ -5229,9 +5238,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : seat,
       ),
     };
-    const { entries } = groupEntries({ group, runs: parent.runs, turnItems: parent.turnItems });
-    const floor = wakeFloorRunOrdinal(entries);
-    const current = entries.filter((entry) => entry.runOrdinal >= floor);
+    const { entries, wakeFloorRun } = groupEntries({
+      group,
+      runs: parent.runs,
+      turnItems: parent.turnItems,
+      messages: parent.messages,
+    });
+    const since = stored.discussion.since ?? 0;
+    const current = entries.filter((entry) => isAfterWakeFloor(entry, wakeFloorRun, since));
     const primaryCursor = primaryWakeCursor(parent.runs);
     const cursorFor = (member: GroupMember) => {
       if (member === "primary") return primaryCursor;
@@ -5306,7 +5320,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const parent = yield* projectionStore
       .getThreadRecords(command.parentThreadId, ["runs", "turnItems", "messages"], {
         turnItemTypes: ["user_message", "assistant_message"],
-        messageIds: command.messageId === undefined ? [] : [command.messageId],
+        messageRoles: ["user"],
       })
       .pipe(mapDispatchError(command));
     const group = parent.thread.group ?? null;
@@ -5319,10 +5333,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       return undefined;
     }
-    const { entries, settledThrough } = groupEntries({
+    const {
+      entries,
+      settledThrough,
+      wakeFloorRun: floorRun,
+    } = groupEntries({
       group,
       runs: parent.runs,
       turnItems: parent.turnItems,
+      messages: parent.messages,
     });
     const participants = groupParticipants(group);
     if (command.threadId === command.parentThreadId) {
@@ -5384,7 +5403,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const handed = new Set(member.messages.map((message) => message.id));
     const delivered = seatDeliveredCursor(member);
     // A first turn gets the side chat digest for history, so it only needs the current exchange.
-    const floorRun = wakeFloorRunOrdinal(entries);
     const unseen = entries.filter(
       (entry) =>
         (delivered === undefined ? entry.runOrdinal >= floorRun : entry.ordinal > delivered) &&
@@ -5406,14 +5424,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       !handed.has(seatMessageId(addressed.id)) &&
       !unseen.some((entry) => entry.messageId === addressed.id)
     ) {
-      delta.push({ label: "User", model: null, text: addressed.text });
+      delta.push({
+        label: groupSenderLabel(addressed.createdBy),
+        model: null,
+        text: addressed.text,
+      });
     }
     if (delta.length === 0) return undefined;
     const through = Math.max(delivered ?? 0, settledThrough);
     const reaction = command.messageId === undefined;
     const others = participants.filter((person) => person.handle !== seat.handle);
-    // Seats run under the thread's current permissions, not the ones it had at invite.
-    const seatThread = member.thread;
+    // Seats run under the thread's current permissions and checkout, not the ones it had at invite.
+    // A turn already running keeps its session, so a move waits for the next one.
+    const { branch, worktreePath } = parent.thread;
+    const seatMoved =
+      !hasOpenRun(member.runs) &&
+      (member.thread.worktreePath !== worktreePath || member.thread.branch !== branch);
+    if (seatMoved) {
+      yield* dispatchThreadMutation(
+        {
+          type: "thread.metadata.update",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          branch,
+          worktreePath,
+        },
+        events,
+        effects,
+      );
+    }
+    const seatThread = seatMoved ? { ...member.thread, branch, worktreePath } : member.thread;
     if (
       seatThread.runtimeMode !== parent.thread.runtimeMode ||
       seatThread.interactionMode !== parent.thread.interactionMode
@@ -14864,14 +14904,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
         }
         if (audience !== null && thread.group != null) {
+          if (!groupCanAffordMessage(thread.group, audience, dispatched.createdBy)) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "This discussion has no turns left for that audience.",
+            });
+          }
           const now = yield* DateTime.now;
+          const primaryModel = audience.includesPrimary
+            ? (dispatched.modelSelection ?? thread.modelSelection).model
+            : thread.modelSelection.model;
           // Emitted first, so `dispatchMessage`, which reads pending events, keeps the group.
           const current = yield* getProjectionWithPendingEvents(command.threadId, events);
           yield* emitThreadGroup(
             command,
             events,
             current.thread,
-            groupAfterUserMessage(thread.group, audience),
+            groupAfterMessage(
+              groupWithPrimaryModel(thread.group, primaryModel),
+              audience,
+              dispatched.createdBy,
+              nextRunOrdinal(current),
+            ),
             now,
           );
           yield* Ref.update(effects, (existing) => [

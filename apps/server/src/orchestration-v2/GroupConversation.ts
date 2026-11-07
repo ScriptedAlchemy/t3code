@@ -1,5 +1,6 @@
 import type {
   MessageId,
+  OrchestrationV2ConversationMessage,
   OrchestrationV2Run,
   OrchestrationV2ThreadGroup,
   OrchestrationV2ThreadGroupMember,
@@ -122,7 +123,17 @@ type RunRow = Pick<
   | "modelSelection"
   | "groupThrough"
   | "activeAttemptId"
+  | "userMessageId"
 >;
+
+/** Who a non-member's words came from. Automatic wakes are not messages anyone sent. */
+type GroupMessageRow = Pick<
+  OrchestrationV2ConversationMessage,
+  "id" | "createdBy" | "notification" | "delegatedCompletion"
+>;
+
+export const groupSenderLabel = (createdBy: OrchestrationV2ConversationMessage["createdBy"]) =>
+  createdBy === "user" ? "User" : "Agent";
 
 const isSettledStatus = (status: OrchestrationV2Run["status"]) =>
   status === "completed" || status === "failed" || status === "interrupted";
@@ -144,9 +155,15 @@ export function groupEntries(input: {
   readonly group: OrchestrationV2ThreadGroup;
   readonly runs: ReadonlyArray<RunRow>;
   readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
-}): { readonly entries: ReadonlyArray<GroupEntry>; readonly settledThrough: number } {
+  readonly messages: ReadonlyArray<GroupMessageRow>;
+}): {
+  readonly entries: ReadonlyArray<GroupEntry>;
+  readonly settledThrough: number;
+  readonly wakeFloorRun: number;
+} {
   const { group } = input;
   const runs = new Map(input.runs.map((run) => [run.id, run]));
+  const messages = new Map(input.messages.map((message) => [message.id, message]));
   const finalPrimaryRows = new Map<OrchestrationV2Run["id"], OrchestrationV2TurnItem>();
   const entries: Array<GroupEntry> = [];
   const openRunOrdinal = input.runs.reduce(
@@ -158,6 +175,7 @@ export function groupEntries(input: {
   );
   let highest = 0;
   let lowestOpen = Number.POSITIVE_INFINITY;
+  let wakeFloorRun = 0;
   const noteSettled = (ordinal: number, runOrdinal: number) => {
     if (runOrdinal <= openRunOrdinal) highest = Math.max(highest, ordinal);
   };
@@ -168,11 +186,12 @@ export function groupEntries(input: {
     if (item.type === "user_message") {
       if (run.status === "queued") continue;
       noteSettled(item.ordinal, run.ordinal);
+      wakeFloorRun = Math.max(wakeFloorRun, run.ordinal);
       entries.push({
         ordinal: item.ordinal,
         runOrdinal: run.ordinal,
         speaker: "user",
-        label: "User",
+        label: groupSenderLabel(messages.get(item.messageId)?.createdBy ?? item.createdBy),
         model: null,
         text: item.text,
         messageId: item.messageId,
@@ -220,16 +239,33 @@ export function groupEntries(input: {
       messageId: null,
     });
   }
+  // A queued message already reached the seats, but its row appears only when its run starts.
+  for (const run of input.runs) {
+    if (run.status !== "queued") continue;
+    const message = messages.get(run.userMessageId);
+    if (message === undefined) continue;
+    if (message.notification !== undefined || message.delegatedCompletion !== undefined) continue;
+    wakeFloorRun = Math.max(wakeFloorRun, run.ordinal);
+  }
   return {
     entries: entries.toSorted((left, right) => left.ordinal - right.ordinal),
     settledThrough: Math.min(highest, lowestOpen - 1),
+    wakeFloorRun,
   };
 }
 
-/** Words before the latest user message are history. They inform a delta but wake nobody. */
-export function wakeFloorRunOrdinal(entries: ReadonlyArray<GroupEntry>): number {
-  return entries.findLast((entry) => entry.speaker === "user")?.runOrdinal ?? 0;
-}
+/**
+ * Words before the latest message are history: they inform a delta but wake nobody. A message
+ * steered into a running turn belongs to that older run, and the replies already published above
+ * it are older than the message, so those only `since` can rule out.
+ */
+export const isAfterWakeFloor = (
+  entry: Pick<GroupEntry, "runOrdinal">,
+  wakeFloorRun: number,
+  since: number,
+): boolean =>
+  entry.runOrdinal === wakeFloorRun ||
+  (entry.runOrdinal > wakeFloorRun && entry.runOrdinal >= since);
 
 const countsAsAttempt = (run: Pick<RunRow, "status">) =>
   run.status !== "rolled_back" && run.status !== "cancelled";

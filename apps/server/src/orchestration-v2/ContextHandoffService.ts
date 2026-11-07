@@ -246,6 +246,12 @@ function makeForkDeltaSummary(input: {
 
 const SIDE_CHAT_CONTEXT_MAX_CHARS = 8_000;
 
+/** Another member's message may have come from an agent, and a seat must not read it as the user. */
+const summarizeSideChatItem = (item: OrchestrationV2TurnItem, seat: boolean) =>
+  seat && item.type === "user_message" && item.createdBy !== undefined && item.createdBy !== "user"
+    ? `- Agent: ${compactText(item.text)}`
+    : summarizeDeltaItem(item);
+
 /** Oldest first; raw parent items are summarized only until the context cap is reached. */
 export function makeSideChatContext(input: {
   readonly parentThreadId: ThreadId;
@@ -277,7 +283,7 @@ export function makeSideChatContext(input: {
     SIDE_CHAT_CONTEXT_MAX_CHARS - joinBlocks([framing, [header, truncated], footer]).length;
   for (let index = input.digest.length - 1; index >= 0; index--) {
     const item = input.digest[index]!;
-    const line = typeof item === "string" ? item : summarizeDeltaItem(item);
+    const line = typeof item === "string" ? item : summarizeSideChatItem(item, input.seat === true);
     if (line === null) continue;
     if (line.length + 1 > remaining) {
       omitted = true;

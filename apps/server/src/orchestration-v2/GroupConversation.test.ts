@@ -14,7 +14,13 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Result from "effect/Result";
 
-import { decideGroupMembership, handleFromLabel } from "./ThreadGroupDecider.ts";
+import {
+  decideGroupMembership,
+  groupAfterMessage,
+  groupCanAffordMessage,
+  groupWithPrimaryModel,
+  handleFromLabel,
+} from "./ThreadGroupDecider.ts";
 import {
   GROUP_PARALLEL,
   type GroupEntry,
@@ -25,8 +31,8 @@ import {
   seatDeliveredCursor,
   seatRunPublishes,
   seatWakeCursor,
+  isAfterWakeFloor,
   unseenFor,
-  wakeFloorRunOrdinal,
   wakes,
 } from "./GroupConversation.ts";
 
@@ -298,6 +304,8 @@ const assistant = (
   ...(speaker === undefined ? {} : { speaker }),
 });
 
+const sent = (id: string, createdBy: "user" | "agent") => ({ id: MessageId.make(id), createdBy });
+
 const user = (runId: string, ordinal: number, text: string): OrchestrationV2TurnItem => ({
   ...itemBase(runId, ordinal),
   type: "user_message",
@@ -327,6 +335,7 @@ describe("groupEntries", () => {
         assistant("run:1", 3, "Answer"),
         assistant("run:2", 4, "Peer answer", { label: "Astra", model: "astra-model" }),
       ],
+      messages: [],
     });
     expect(entries.map((row) => [row.ordinal, row.speaker, row.label, row.text])).toEqual([
       [1, "user", "User", "Question"],
@@ -352,6 +361,7 @@ describe("groupEntries", () => {
         assistant("run:2", 3, "Streaming"),
         user("run:3", 4, "To the peers"),
       ],
+      messages: [],
     });
     expect(entries.map((row) => row.text)).toEqual(["Question", "To the peers"]);
     expect(settledThrough).toBe(2);
@@ -370,6 +380,7 @@ describe("groupEntries", () => {
         user("run:1", 1_000_001, "Question"),
         assistant("run:2", 2_000_001, "Peer answer", { label: "Astra", model: "astra-model" }),
       ],
+      messages: [],
     });
     expect(entries.map((row) => row.text)).toEqual(["Question", "Peer answer"]);
     expect(settledThrough).toBe(1_000_001);
@@ -384,8 +395,62 @@ describe("groupEntries", () => {
         }),
       ],
       turnItems: [assistant("run:1", 1, "Answer")],
+      messages: [],
     });
     expect(entries[0]).toMatchObject({ label: "other-model", model: "other-model" });
+  });
+
+  it("names an agent's message as an agent's, and a user's as the user's", () => {
+    const { entries } = groupEntries({
+      group,
+      runs: [run("run:1", 1, "completed"), run("run:2", 2, "completed")],
+      turnItems: [user("run:1", 1, "From a person"), user("run:2", 2, "From an agent")],
+      messages: [sent("message:1", "user"), sent("message:2", "agent")],
+    });
+    expect(entries.map((row) => row.label)).toEqual(["User", "Agent"]);
+  });
+
+  const queued = (id: string, ordinal: number) =>
+    run(id, ordinal, "queued", { userMessageId: MessageId.make(`queued:${id}`) });
+  it.each<[string, number, number, number, boolean]>([
+    ["a run after the floor", 3, 2, 3, true],
+    ["a reply in the run the message was steered into", 2, 2, 5, true],
+    ["a reply published before a steered message", 3, 2, 5, false],
+    ["a reply published after a steered message", 5, 2, 5, true],
+    ["an older run", 1, 2, 3, false],
+  ])("wakes on %s: run %i, floor %i, since %i", (_name, runOrdinal, floor, since, expected) => {
+    expect(isAfterWakeFloor({ runOrdinal }, floor, since)).toBe(expected);
+  });
+
+  it("moves the floor for a queued message, not for an automatic wake", () => {
+    const floor = (messages: Parameters<typeof groupEntries>[0]["messages"]) =>
+      groupEntries({
+        group,
+        runs: [run("run:1", 1, "running"), queued("run:2", 2)],
+        turnItems: [user("run:1", 10, "Old")],
+        messages,
+      }).wakeFloorRun;
+    expect(floor([sent("queued:run:2", "user")])).toBe(2);
+    expect(
+      floor([
+        {
+          ...sent("queued:run:2", "agent"),
+          notification: { source: { kind: "group" }, outcome: "updated", summary: "s" },
+        },
+      ]),
+    ).toBe(1);
+  });
+
+  it("counts a queued message for the floor without delivering it", () => {
+    const { entries, settledThrough, wakeFloorRun } = groupEntries({
+      group,
+      runs: [run("run:1", 1, "completed"), queued("run:2", 2)],
+      turnItems: [user("run:1", 10, "Old")],
+      messages: [sent("queued:run:2", "user")],
+    });
+    expect(wakeFloorRun).toBe(2);
+    expect(entries.map((row) => row.text)).toEqual(["Old"]);
+    expect(settledThrough).toBe(10);
   });
 });
 
@@ -399,12 +464,6 @@ describe("what each member has not seen", () => {
     expect(unseenFor(astra, entries, 1).map((row) => row.text)).toEqual(["p"]);
     expect(unseenFor("primary", entries, 1).map((row) => row.text)).toEqual(["a"]);
     expect(unseenFor(opus, entries, 2).map((row) => row.text)).toEqual(["a"]);
-  });
-
-  it("treats words before the latest user message as history", () => {
-    const entries = [entry(astra, "old", 1), entry("user", "new", 2), entry(astra, "fresh", 3)];
-    expect(wakeFloorRunOrdinal(entries)).toBe(2);
-    expect(wakeFloorRunOrdinal([])).toBe(0);
   });
 
   it("wakes from attempts but delivers from what a provider took", () => {
@@ -435,5 +494,35 @@ describe("what each member has not seen", () => {
         run("f", 5, "completed", { groupThrough: 1 }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("the discussion budget", () => {
+  const audience = { mode: "everyone", includesPrimary: true, seats: [astra] } as const;
+
+  it("refills for a user and spends what remains for anyone else", () => {
+    const open = groupOf(discussion("everyone", 3));
+    expect(groupAfterMessage(open, audience, "user", 1).discussion?.turnsLeft).toBe(4);
+    expect(groupAfterMessage(open, audience, "agent", 1).discussion?.turnsLeft).toBe(1);
+    expect(groupAfterMessage(groupOf(null), audience, "agent", 1).discussion?.turnsLeft).toBe(4);
+  });
+
+  it("refuses an agent's message the open discussion cannot pay for", () => {
+    const low = groupOf(discussion("everyone", 1));
+    expect(groupCanAffordMessage(low, audience, "agent")).toBe(false);
+    expect(groupCanAffordMessage(low, audience, "user")).toBe(true);
+    expect(groupCanAffordMessage(groupOf(null), audience, "agent")).toBe(true);
+  });
+});
+
+describe("groupWithPrimaryModel", () => {
+  it("names a new model by its slug, with a handle no seat holds", () => {
+    const group = groupOf(null);
+    expect(groupWithPrimaryModel(group, "fable-model")).toBe(group);
+    expect(groupWithPrimaryModel(group, "claude-opus-5").primary).toEqual({
+      model: "claude-opus-5",
+      label: "claude-opus-5",
+      handle: "opus-2",
+    });
   });
 });

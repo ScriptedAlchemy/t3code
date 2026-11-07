@@ -532,6 +532,7 @@ const say = Effect.fn("GroupConversationTest.say")(function* (
   tag: string,
   text: string,
   groupAudience?: "everyone" | ReadonlyArray<ThreadId | "primary">,
+  delivery: "auto" | "queue" = "auto",
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   return yield* orchestrator.dispatch({
@@ -545,7 +546,7 @@ const say = Effect.fn("GroupConversationTest.say")(function* (
     attachments: [],
     ...(groupAudience === undefined ? {} : { groupAudience }),
     dispatchMode: { type: "queue_after_active" },
-    deliveryIntent: "auto",
+    ...(delivery === "auto" ? { deliveryIntent: "auto" as const } : {}),
   });
 });
 
@@ -2127,6 +2128,280 @@ describe("group conversations", () => {
             assert.deepEqual(
               publishedRows(after).map((row) => row.text),
               ["CONTINUED final answer"],
+            );
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live.each([
+    ["queued behind the running primary", "queue" as const],
+    ["steered into the running primary", "auto" as const],
+  ])("keeps a new discussion open past an older @user when the message is %s", ([, delivery]) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(`floor-${delivery}`);
+        const threadId = ThreadId.make(`thread:group:floor-${delivery}`);
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            const publishedCount = (count: number) =>
+              until(
+                orchestrator
+                  .getThreadProjection(threadId)
+                  .pipe(
+                    Effect.map(
+                      (row) =>
+                        row.runs.filter((run) => run.publication?.type === "peer_reply").length >=
+                        count,
+                    ),
+                  ),
+              );
+            yield* startThread(threadId);
+            yield* say(threadId, "warm", "Warm up");
+            yield* until(
+              orchestrator
+                .getThreadProjection(threadId)
+                .pipe(Effect.map((row) => row.runs.at(-1)?.status === "completed")),
+            );
+            const seat = yield* invite(threadId, ASTRA);
+            const other = yield* invite(threadId, STEERLESS);
+            const primaryHold = yield* hold(harness.control, threadId, "long");
+            yield* script(harness.control, seat, ["Done here.\n@user", "Second view"]);
+            yield* script(harness.control, other, ["First plain", "Second plain"]);
+            yield* say(threadId, "first", "First question");
+            yield* Deferred.await(primaryHold.started);
+            yield* until(
+              orchestrator
+                .getThreadProjection(threadId)
+                .pipe(Effect.map((row) => row.providerTurns.at(-1)?.status === "running")),
+            );
+            yield* publishedCount(2);
+            yield* worker.drain();
+            assert.equal((yield* readGroup(threadId))?.closedBecause, "settled");
+            yield* say(threadId, "second", "Second question", undefined, delivery);
+            const { runs } = yield* orchestrator.getThreadProjection(threadId);
+            assert.equal(
+              runs.some((run) => run.status === "queued"),
+              delivery === "queue",
+            );
+            yield* publishedCount(4);
+            yield* worker.drain();
+            const group = yield* readGroup(threadId);
+            assert.isNotNull(group?.discussion, "the new message still has the primary to hear");
+            assert.isNull(group?.closedBecause);
+            yield* Deferred.succeed(primaryHold.release, "completed");
+            yield* settle(threadId);
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("closes the discussion when the thread is archived, running or not", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("archive");
+        const threadId = ThreadId.make("thread:group:archive");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            const seatHold = yield* hold(harness.control, seat, "busy");
+            yield* say(threadId, "question", "Ask the seat", [seat]);
+            yield* Deferred.await(seatHold.started);
+            yield* orchestrator.dispatch({
+              type: "thread.archive",
+              commandId: CommandId.make("command:group:archive"),
+              threadId,
+            });
+            const archived = yield* readGroup(threadId);
+            assert.isNull(archived?.discussion);
+            assert.equal(archived?.closedBecause, "stopped");
+            yield* Deferred.succeed(seatHold.release, "completed");
+            yield* until(
+              orchestrator
+                .getThreadProjection(seat)
+                .pipe(Effect.map((row) => row.runs.at(-1)?.status === "completed")),
+            );
+            yield* worker.drain();
+            yield* orchestrator.dispatch({
+              type: "thread.unarchive",
+              commandId: CommandId.make("command:group:unarchive"),
+              threadId,
+            });
+            assert.isNull((yield* readGroup(threadId))?.discussion);
+            assert.lengthOf(yield* turnsOf(harness.control, seat), 1, "nothing new started");
+
+            const { thread } = yield* orchestrator.getThreadProjection(threadId);
+            yield* (yield* ProjectionStore.ProjectionStoreV2).apply({
+              id: EventId.make("event:group:left-open"),
+              type: "thread.group-updated",
+              threadId,
+              providerInstanceId: thread.providerInstanceId,
+              occurredAt: thread.updatedAt,
+              commandId: CommandId.make("command:group:left-open"),
+              causationEventId: null,
+              correlationId: null,
+              actor: "system",
+              metadata: {},
+              payload: {
+                ...thread,
+                archivedAt: thread.updatedAt,
+                group: {
+                  ...thread.group!,
+                  discussion: { mode: "direct", turnsLeft: 1, delivering: [] },
+                },
+              },
+            } as never);
+            yield* orchestrator.dispatch({
+              type: "thread.group.advance",
+              commandId: CommandId.make("command:group:advance-archived"),
+              threadId,
+            });
+            assert.isNull(
+              (yield* readGroup(threadId))?.discussion,
+              "a discussion an earlier build left open on an archived thread closes",
+            );
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("moves a seat to the thread's checkout on its next turn, with a new session", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("move");
+        const threadId = ThreadId.make("thread:group:move");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const sink = yield* EventSink.EventSinkV2;
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            yield* say(threadId, "first", "First", [seat]);
+            yield* settle(threadId);
+            yield* orchestrator.dispatch({
+              type: "thread.metadata.update",
+              commandId: CommandId.make("command:group:move"),
+              threadId,
+              branch: "feature/moved",
+              worktreePath: "/work/moved",
+            });
+            yield* say(threadId, "second", "Second", [seat]);
+            yield* settle(threadId);
+            const after = yield* orchestrator.getThreadProjection(seat);
+            assert.equal(after.thread.worktreePath, "/work/moved");
+            assert.equal(after.thread.branch, "feature/moved");
+            const detached = yield* sink
+              .stream({
+                threadId: seat,
+                afterSequence: 0,
+                eventType: "provider-session.detached",
+              })
+              .pipe(Stream.take(1), Stream.runCollect);
+            assert.deepEqual(
+              Array.from(detached).map(({ event }) =>
+                event.type === "provider-session.detached" ? event.payload.reason : null,
+              ),
+              ["Workspace changed."],
+              "the old checkout's session is released, as for any thread that moves",
+            );
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("names the model the primary is running once the picker moves it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("switched-primary");
+        const threadId = ThreadId.make("thread:group:switched-primary");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            yield* orchestrator.dispatch({
+              type: "thread.model-selection.set",
+              commandId: CommandId.make("command:group:switch"),
+              threadId,
+              modelSelection: OPUS,
+            });
+            yield* say(threadId, "question", "Thoughts?");
+            yield* settle(threadId);
+            const group = yield* readGroup(threadId);
+            assert.deepEqual(group?.primary, {
+              model: OPUS.model,
+              label: OPUS.model,
+              handle: "opus",
+            });
+            const seatPrompt = (yield* turnsOf(harness.control, seat))[0]!.text.split("\n")[0]!;
+            assert.include(seatPrompt, `${OPUS.model} (@opus)`);
+            assert.notInclude(seatPrompt, "Fable");
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("spends what an open discussion has left on an agent's message, and labels it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("agent-discuss");
+        const threadId = ThreadId.make("thread:group:agent-discuss");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const service = yield* ThreadGroupService.ThreadGroupService;
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            const fresh = yield* service.discuss({
+              threadId,
+              text: "AGENTWORDS one",
+              createdBy: "agent",
+              creationSource: "mcp",
+            });
+            assert.equal(
+              fresh.discussion?.turnsLeft,
+              2,
+              "no discussion was open, so a fresh budget",
+            );
+            yield* settle(threadId);
+            const told = (yield* turnsOf(harness.control, seat))[0]!.text;
+            assert.include(told, "[Agent]\nAGENTWORDS one");
+            assert.notInclude(told, "[User]");
+
+            const seatHold = yield* hold(harness.control, seat);
+            yield* say(threadId, "question", "One question", [seat]);
+            yield* Deferred.await(seatHold.started);
+            assert.equal((yield* readGroup(threadId))!.discussion!.turnsLeft, 3);
+            const spent = yield* service.discuss({
+              threadId,
+              text: "AGENTWORDS two",
+              createdBy: "agent",
+              creationSource: "mcp",
+            });
+            assert.equal(spent.discussion?.turnsLeft, 1, "an open discussion is not refilled");
+            const refused = yield* service
+              .discuss({
+                threadId,
+                text: "AGENTWORDS three",
+                createdBy: "agent",
+                creationSource: "mcp",
+              })
+              .pipe(Effect.flip);
+            assert.equal(refused._tag, "ThreadGroupCommandError");
+            yield* Deferred.succeed(seatHold.release, "completed");
+            const parent = yield* settle(threadId);
+            assert.notInclude(
+              parent.turnItems.flatMap((item) => (item.type === "user_message" ? [item.text] : [])),
+              "AGENTWORDS three",
             );
           }),
         ).pipe(Effect.provide(harness.layer));

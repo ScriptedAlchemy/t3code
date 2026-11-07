@@ -395,6 +395,43 @@ it.effect("caps the side chat context block without summarizing discarded parent
     });
     assert.include(withPeer, "- Astra: Use an event log");
 
+    const agentRow: OrchestrationV2TurnItem = {
+      id: TurnItemId.make("turn-item:agent"),
+      threadId: parentThreadId,
+      runId: null,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 2,
+      status: "completed",
+      title: null,
+      startedAt: null,
+      completedAt: null,
+      updatedAt: DateTime.makeUnsafe("2026-07-20T00:00:00.000Z"),
+      type: "user_message",
+      messageId: MessageId.make("message:agent"),
+      inputIntent: "turn_start",
+      text: "From an agent",
+      attachments: [],
+      createdBy: "agent",
+      creationSource: "mcp",
+    };
+    assert.include(
+      ContextHandoffService.makeSideChatContext({
+        parentThreadId,
+        digest: [agentRow],
+        seat: true,
+      }),
+      "- Agent: From an agent",
+    );
+    assert.include(
+      ContextHandoffService.makeSideChatContext({ parentThreadId, digest: [agentRow] }),
+      "- User: From an agent",
+      "an ordinary side chat keeps its text",
+    );
+
     const multiFilePatch = ContextHandoffService.makeSideChatContext({
       parentThreadId,
       digest: [

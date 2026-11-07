@@ -473,6 +473,8 @@ export const OrchestrationV2ThreadGroup = Schema.Struct({
       turnsLeft: NonNegativeInt,
       /** Members told to start whose runs may not exist yet, so the barrier still holds. */
       delivering: Schema.Array(OrchestrationV2ThreadGroupMember),
+      /** The next run ordinal when the latest message was sent. Peers' words before it are history. */
+      since: Schema.optional(NonNegativeInt),
     }),
   ),
   closedBecause: Schema.NullOr(Schema.Literals(["settled", "budget", "stopped"])),
