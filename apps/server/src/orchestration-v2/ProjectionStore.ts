@@ -195,15 +195,19 @@ export type ProjectionThreadPullRequests = Pick<
 
 /**
  * A discussion finishing reads as a turn finishing, so a user who walked away sees it unread. Peer
- * replies alone cannot do this, since the shell skips publication runs.
+ * replies alone cannot do this, since the shell skips publication runs. A presented run with no
+ * completion is still going, and a thread whose primary never ran has only the discussion to go by.
  */
 function shellCompletedAt(
+  latestRunId: RunId | null,
   completedAt: DateTime.Utc | null,
   group: OrchestrationV2AppThread["group"],
 ): DateTime.Utc | null {
-  if (completedAt === null || group == null || group.closedAt === null) return completedAt;
+  if (group == null || group.closedAt === null) return completedAt;
+  if (latestRunId !== null && completedAt === null) return null;
   const closedAt = DateTime.makeUnsafe(group.closedAt);
-  return DateTime.toEpochMillis(closedAt) > DateTime.toEpochMillis(completedAt)
+  return completedAt === null ||
+    DateTime.toEpochMillis(closedAt) > DateTime.toEpochMillis(completedAt)
     ? closedAt
     : completedAt;
 }
@@ -1668,7 +1672,11 @@ export function threadShellFromProjection(
     latestRunId: latestRun?.id ?? null,
     latestRunRequestedAt: latestRun?.requestedAt ?? null,
     latestRunStartedAt: latestRun?.startedAt ?? null,
-    latestRunCompletedAt: shellCompletedAt(latestRun?.completedAt ?? null, projection.thread.group),
+    latestRunCompletedAt: shellCompletedAt(
+      latestRun?.id ?? null,
+      latestRun?.completedAt ?? null,
+      projection.thread.group,
+    ),
     latestRunStopRequested:
       latestRun != null &&
       projection.turnItems.some(
@@ -1952,6 +1960,7 @@ function shellFromState(input: {
     latestRunRequestedAt: input.state.latestRunRequestedAt,
     latestRunStartedAt: input.state.latestRunStartedAt,
     latestRunCompletedAt: shellCompletedAt(
+      input.state.latestRunId,
       input.state.latestRunCompletedAt,
       input.state.thread.group,
     ),

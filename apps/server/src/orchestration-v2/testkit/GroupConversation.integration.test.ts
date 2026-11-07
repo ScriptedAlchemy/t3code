@@ -2460,4 +2460,33 @@ describe("group conversations", () => {
       }),
     ),
   );
+
+  it.live("marks a discussion finished when only peers have spoken on the thread", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("peer-only-unread");
+        const threadId = ThreadId.make("thread:group:peer-only-unread");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            yield* say(threadId, "question", "Astra, answer this", [seat]);
+            const running = yield* orchestrator.getThreadShell(threadId);
+            assert.isNull(running?.latestRunCompletedAt ?? null, "still open");
+            const parent = yield* settle(threadId);
+            const closedAt = DateTime.makeUnsafe(parent.thread.group!.closedAt!);
+            const shell = yield* orchestrator.getThreadShell(threadId);
+            const { threads } = yield* projections.getShellSnapshot();
+            const listed = threads.find((row) => row.id === threadId);
+            for (const row of [shell, listed]) {
+              assert.isNull(row?.latestRunId ?? null, "publication runs still present as no run");
+              assert.deepEqual(row?.latestRunCompletedAt, closedAt);
+            }
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
 });
