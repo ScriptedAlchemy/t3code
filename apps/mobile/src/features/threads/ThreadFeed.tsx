@@ -3,6 +3,7 @@ import {
   isQuietPass,
   quietPassLine,
   type ThreadGroup,
+  withoutCloseLine,
 } from "@t3tools/client-runtime/state/thread-group";
 import { useQuietThreadStructure } from "../../state/use-thread-detail";
 import type { OrchestrationV2Run } from "@t3tools/contracts";
@@ -1920,7 +1921,9 @@ function renderFeedEntry(
       );
     }
     const presentation = resolveUserMessagePresentation(message);
-    const renderedText = renderAssistantCitationsAsText(presentation.text);
+    const renderedText = renderAssistantCitationsAsText(
+      speaker === null ? presentation.text : withoutCloseLine(presentation.text),
+    );
     const styles = isUser ? markdownStyles.user : markdownStyles.assistant;
     const timestampLabel = formatMessageTime(isUser ? message.createdAt : message.updatedAt);
     const attachments = message.attachments ?? [];
@@ -2760,7 +2763,7 @@ export const ThreadFeed = memo(function ThreadFeed({
   const guestShare = useThreadGuestShare(props.detailRef);
   const deviceType = useDeviceType();
   const duoColumns = useNativeWorkspaceColumnsSupported() && isDuoDevice(deviceType);
-  const structure = useQuietThreadStructure(props.detailRef);
+  const structure = useQuietThreadStructure(props.group == null ? null : props.detailRef);
   const openPullRequest = useOpenPullRequest();
   const navigation = useNavigation();
   const openLinkedThread = useOpenLinkedThread();

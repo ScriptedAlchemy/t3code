@@ -10,6 +10,7 @@ import { Menu } from "../../components/ui/Menu";
 import { useEnvironmentServerConfig } from "../../state/entities";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { alertGroupCommandFailure } from "./groupCommandFailure";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
 
 export function ThreadGroupBar({ thread }: { readonly thread: EnvironmentThreadShell }) {
@@ -67,7 +68,9 @@ export function ThreadGroupBar({ thread }: { readonly thread: EnvironmentThreadS
                         void remove({
                           environmentId,
                           input: { threadId: thread.id, seatThreadId: seat.threadId },
-                        });
+                        }).then((result) =>
+                          alertGroupCommandFailure(`Could not remove ${seat.label}`, result),
+                        );
                     }}
                   >
                     <Pressable
@@ -98,7 +101,11 @@ export function ThreadGroupBar({ thread }: { readonly thread: EnvironmentThreadS
               size="compact"
               tone="text"
               disabled={!canEnd}
-              onPress={() => void end({ environmentId, input: { threadId: thread.id } })}
+              onPress={() =>
+                void end({ environmentId, input: { threadId: thread.id } }).then((result) =>
+                  alertGroupCommandFailure("Could not end the group", result),
+                )
+              }
             />
           ) : null}
         </View>

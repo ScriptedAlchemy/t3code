@@ -377,11 +377,20 @@ describe("buildThreadFeed", () => {
       type: "system_notice",
       message: "Group ended",
     };
+    const wake: OrchestrationV2TurnItem = {
+      ...base("group-wake", "2026-06-20T00:00:05.000Z", 4),
+      type: "notification",
+      source: { kind: "group" },
+      outcome: "updated",
+      summary: "Astra replied in the group",
+    };
     const feed = buildThreadFeed([
       projected({ ...assistantMessage(), speaker }, 0),
       projected(notice, 1),
+      projected(wake, 2),
     ]);
     expect(feed[0]).toMatchObject({ type: "message", message: { speaker } });
+    expect(JSON.stringify(feed)).not.toContain("replied in the group");
     const presented = deriveThreadFeedPresentation(feed, null, new Set());
     expect(presented).toContainEqual(
       expect.objectContaining({

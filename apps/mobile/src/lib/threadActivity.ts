@@ -546,7 +546,7 @@ function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
     case "run_interrupt_result":
       return "stop";
     case "system_notice":
-      return "warning";
+      return item.quiet ? "check" : "warning";
     case "error":
       return item.failure.class === "usage_limit"
         ? item.status === "completed"
@@ -2235,6 +2235,8 @@ export function buildThreadFeed(
   for (let index = restart?.row ?? 0; index < visibleTurnItems.length; index += 1) {
     const row = visibleTurnItems[index]!;
     const item = row.item;
+    // The peer's reply sits right above the turn this woke, so this row would only repeat it.
+    if (item.type === "notification" && item.source.kind === "group") continue;
     if (turnItemIsWorkspacePreparation(item) && !item.deferredWork) continue;
     if (item.type === "todo_list" || item.type === "checkpoint") continue;
     if (

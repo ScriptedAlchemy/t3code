@@ -10,6 +10,7 @@ import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
 import { useEnvironmentServerConfig, useQuietThreadShell } from "../../state/entities";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { alertGroupCommandFailure } from "./groupCommandFailure";
 import { ThreadSettingsPickerScreen } from "./ThreadSettingsSheet";
 
 export function ThreadGroupInviteScreen({
@@ -56,7 +57,7 @@ export function ThreadGroupInviteScreen({
         void invite({
           environmentId: ref.environmentId,
           input: { threadId: ref.threadId, modelSelection: option.selection },
-        })
+        }).then((result) => alertGroupCommandFailure("Could not invite that model", result))
       }
       optionDescriptors={[]}
       onUpdateOptionSelections={() => {}}
