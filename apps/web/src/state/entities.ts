@@ -165,6 +165,18 @@ export function useQuietThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
   return useAtomValue(environmentThreadShells.quietThreadShellsAtom);
 }
 
+const EMPTY_RUNNING_SEATS_ATOM = Atom.make<ReadonlyArray<ThreadId>>([]).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("empty-running-group-seats"),
+);
+
+/** The seats of `ref`'s group whose own thread has an open run. Empty while no group exists. */
+export function useRunningGroupSeats(ref: ScopedThreadRef | null): ReadonlyArray<ThreadId> {
+  return useAtomValue(
+    ref === null ? EMPTY_RUNNING_SEATS_ATOM : environmentThreadShells.runningGroupSeatsAtom(ref),
+  );
+}
+
 export function useChildThreadInputs(ref: ScopedThreadRef | null) {
   return useAtomValue(
     ref === null ? EMPTY_THREAD_SHELLS_ATOM : environmentThreadShells.childThreadInputsAtom(ref),

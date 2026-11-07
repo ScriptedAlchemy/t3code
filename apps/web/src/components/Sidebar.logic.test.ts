@@ -526,6 +526,17 @@ describe("resolveThreadStatusPill", () => {
     });
   });
 
+  it("shows Working while a group discussion runs on its seats' threads", () => {
+    const idle = { ...baseThread, runtime: { ...baseThread.runtime, status: "idle" as const } };
+    expect(resolveThreadStatusPill({ thread: idle })).toBeNull();
+    const discussing = { ...idle, groupDiscussionOpen: true };
+    expect(resolveSidebarThreadStatus(discussing)).toBe("working");
+    expect(resolveThreadStatusPill({ thread: discussing })).toMatchObject({
+      label: "Working",
+      pulse: true,
+    });
+  });
+
   it("shows waiting for an idle thread with pending background tasks", () => {
     expect(
       resolveThreadStatusPill({
