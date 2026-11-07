@@ -36,80 +36,85 @@ export function ThreadGroupBar({ thread }: { readonly thread: EnvironmentThreadS
   if (!active && !inviteAvailable) return null;
 
   return (
-    <View className="gap-1 px-4 pb-2">
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View className="flex-row items-center gap-2">
-          {active ? (
-            <>
-              <Text
-                accessibilityLabel={`${group.primary.label}, primary`}
-                className="text-xs font-t3-medium text-foreground"
-              >
-                ★ {group.primary.label}
-              </Text>
-              {group.seats
-                .filter((seat) => seat.status === "seated")
-                .map((seat) => (
-                  <Menu
-                    key={seat.threadId}
-                    actions={[
-                      { id: "work", title: "Open work", image: "arrow.up.right" },
-                      {
-                        id: "remove",
-                        title: "Remove",
-                        image: "person.fill.xmark",
-                        attributes: { destructive: true, disabled: !canRemove },
-                      },
-                    ]}
-                    onPressAction={({ nativeEvent }) => {
-                      if (nativeEvent.event === "work")
-                        openWork({ environmentId, threadId: seat.threadId });
-                      if (nativeEvent.event === "remove")
-                        void remove({
-                          environmentId,
-                          input: { threadId: thread.id, seatThreadId: seat.threadId },
-                        }).then((result) =>
-                          alertGroupCommandFailure(`Could not remove ${seat.label}`, result),
-                        );
-                    }}
-                  >
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${seat.label}, group member actions`}
-                      className="rounded-full bg-subtle px-3 py-2"
+    // The feed scrolls beneath the composer dock, so text here needs its own surface.
+    <View className="mx-3 mb-2 gap-1 rounded-2xl bg-card px-3 py-1.5">
+      <View className="flex-row items-center gap-2">
+        <ScrollView className="min-w-0 flex-1" horizontal showsHorizontalScrollIndicator={false}>
+          <View className="flex-row items-center gap-2">
+            {active ? (
+              <>
+                <Text
+                  accessibilityLabel={`${group.primary.label}, primary`}
+                  className="text-xs font-t3-medium text-foreground"
+                >
+                  ★ {group.primary.label}
+                </Text>
+                {group.seats
+                  .filter((seat) => seat.status === "seated")
+                  .map((seat) => (
+                    <Menu
+                      key={seat.threadId}
+                      actions={[
+                        { id: "work", title: "Open work", image: "arrow.up.right" },
+                        {
+                          id: "remove",
+                          title: "Remove",
+                          image: "person.fill.xmark",
+                          attributes: { destructive: true, disabled: !canRemove },
+                        },
+                      ]}
+                      onPressAction={({ nativeEvent }) => {
+                        if (nativeEvent.event === "work")
+                          openWork({ environmentId, threadId: seat.threadId });
+                        if (nativeEvent.event === "remove")
+                          void remove({
+                            environmentId,
+                            input: { threadId: thread.id, seatThreadId: seat.threadId },
+                          }).then((result) =>
+                            alertGroupCommandFailure(`Could not remove ${seat.label}`, result),
+                          );
+                      }}
                     >
-                      <Text className="text-xs text-foreground">{seat.label}</Text>
-                    </Pressable>
-                  </Menu>
-                ))}
-            </>
-          ) : null}
-          {inviteAvailable ? (
-            <Button
-              label="Invite a model"
-              size="compact"
-              tone="text"
-              onPress={() =>
-                navigation.navigate("ThreadGroupInvite", { environmentId, threadId: thread.id })
-              }
-            />
-          ) : null}
-          {active ? (
-            <Button
-              label="End group"
-              accessibilityLabel={`End group and continue with ${group.primary.label}`}
-              size="compact"
-              tone="text"
-              disabled={!canEnd}
-              onPress={() =>
-                void end({ environmentId, input: { threadId: thread.id } }).then((result) =>
-                  alertGroupCommandFailure("Could not end the group", result),
-                )
-              }
-            />
-          ) : null}
-        </View>
-      </ScrollView>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`${seat.label}, group member actions`}
+                        className="rounded-full bg-subtle px-3 py-2"
+                      >
+                        <Text className="text-xs text-foreground">{seat.label}</Text>
+                      </Pressable>
+                    </Menu>
+                  ))}
+              </>
+            ) : null}
+            {inviteAvailable ? (
+              <Button
+                label="Invite"
+                accessibilityLabel="Invite a model"
+                size="compact"
+                tone="text"
+                onPress={() =>
+                  navigation.navigate("ThreadGroupInvite", { environmentId, threadId: thread.id })
+                }
+              />
+            ) : null}
+          </View>
+        </ScrollView>
+        {/* The way out stays on screen however many members the row scrolls past. */}
+        {active ? (
+          <Button
+            label="End group"
+            accessibilityLabel={`End group and continue with ${group.primary.label}`}
+            size="compact"
+            tone="text"
+            disabled={!canEnd}
+            onPress={() =>
+              void end({ environmentId, input: { threadId: thread.id } }).then((result) =>
+                alertGroupCommandFailure("Could not end the group", result),
+              )
+            }
+          />
+        ) : null}
+      </View>
       {active && group.discussion === null && group.closedBecause === "budget" ? (
         <Text accessibilityRole="text" className="text-xs text-foreground-muted">
           A member has unanswered replies. Any message continues.

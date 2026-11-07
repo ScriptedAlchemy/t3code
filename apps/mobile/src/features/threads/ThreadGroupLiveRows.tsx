@@ -45,7 +45,7 @@ function SeatLiveRow(props: {
   );
   const now = useVisibleSecondClock(true);
   return (
-    <View className="flex-row items-center gap-2 px-4 py-1">
+    <View className="mx-3 mb-2 flex-row items-center gap-2 rounded-2xl bg-card px-3 py-1.5">
       <View className="min-w-0 flex-1">
         <Text className="text-xs text-foreground" numberOfLines={1}>
           {seat.label} · {activity}
