@@ -17,7 +17,7 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 
 ## Run an eval
 
-1. Run `vp i` at the repo root.
+1. Run `vp i` at the repo root. Use the Node version pinned in the root `package.json`, since `mcp-tool-use` fails to parse on older ones.
 2. Put the API keys the eval needs in the repo root `.env`. It is gitignored, and the eval scripts load it. Never print or commit a key.
 3. From `evals/`, run `pnpm <eval> --out runs/<name>`. `runs/` is gitignored.
 

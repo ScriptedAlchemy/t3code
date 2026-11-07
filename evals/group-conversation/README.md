@@ -13,6 +13,12 @@ Keep `GROUP_PARALLEL = true` unless all of these conditions hold.
 
 Missing pairings, errors, truncated answers, or fewer trials make the decision inconclusive. Keep parallel for independent replies, isolation, and interjection. This is a conservative product rule, not a statistical significance claim. Do not change the rule after seeing results.
 
+## Status
+
+No real model has run these cases yet, so the rule above has not been applied and `GROUP_PARALLEL = true` is only a default. The routing cases in `mcp-tool-use/cases/group-conversation.ndjson` have not run either. `primary-first-reply` has no failing baseline. Replace this section when a run lands.
+
+## Judge criteria
+
 The four judge criteria are distinct useful ideas, explicit engagement with a peer's reasoning, surviving reasoned disagreement, and redundancy. Each uses 0–4 anchors in `grade.ts`. One judge scores both transcripts together on one scale. Random A/B order, neutral speaker names, and removal of model names hide the arm and provider. The judge sees no timing, cost, scheduling trace, or answer key. Candidates see organic requests and real product text, never the rubric or case metadata.
 
 ## Run
@@ -36,7 +42,7 @@ pnpm group-conversation --out runs/group-dry --model claude-opus-5-5,gpt-6-astra
 
 `--out` is required. `--model` accepts one model for behavior cases, or a comma-separated primary/seat pair for design cases. Repeat it for the two pairings. `--case` accepts comma-separated IDs. `--baseline <results.json>` compares behavior rates only with identical models, cases, settings, and grader hashes. Prompt hashes may differ because the purpose is to measure text changes. `--samples` defaults to 3. `--effort` defaults to high. The fixed reply budget is 220 words. Each API call has a 120-second deadline and no retries. Errors stay out of pass rates but prevent promotion. Existing output directories with results are rejected to prevent accidental overwrites.
 
-Start with one case and one sample, inspect all requests and outputs, then run the small set. The default set has three design cases and twelve behavior cases. Three samples and both pairings cost at most 288 participant turns and 150 judge calls before tool continuations. PASS and early closure can reduce design calls. File operations and delegation are simulated in memory. No real agent, file write, or child task is launched by a participant. Tools in the simulation can still fail the case. A behavior case passes only when a strict majority of its samples pass; errors make it incomplete.
+Start with one case and one sample, inspect all requests and outputs, then run the small set. The default set has three design cases and fourteen behavior cases. Three samples and both pairings cost at most 312 participant turns and 174 judge calls before tool continuations. PASS and early closure can reduce design calls. File operations and delegation are simulated in memory. No real agent, file write, or child task is launched by a participant. Tools in the simulation can still fail the case. A behavior case passes only when a strict majority of its samples pass; errors make it incomplete.
 
 ## What the comparison simulates
 
