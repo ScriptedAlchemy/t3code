@@ -6,6 +6,13 @@ function completed(input: unknown, output?: unknown): T3ToolSummaryCall {
   return { input, output, outcome: "completed" };
 }
 
+const handoffFailed = completed({}, { isError: true, structuredContent: {} });
+const handoffUnfinished: T3ToolSummaryCall = {
+  input: {},
+  output: undefined,
+  outcome: "unfinished",
+};
+
 describe("summarizeT3ToolCalls", () => {
   it("reads provider result envelopes without treating JSON in the message as result data", () => {
     const result = { messageId: "message-1", threadId: "actual-thread" };
@@ -72,6 +79,27 @@ describe("summarizeT3ToolCalls", () => {
       label: "Tried to send 1 message to 1 thread",
       failedCount: 1,
     });
+  });
+
+  it.each([
+    {
+      calls: [completed({}, { worktreePath: "/w" })],
+      label: "Handed off to 1 worktree",
+    },
+    {
+      calls: [handoffFailed],
+      label: "Tried to hand off to 1 worktree",
+    },
+    {
+      calls: [handoffUnfinished],
+      label: "Started a handoff to 1 worktree",
+    },
+    {
+      calls: [handoffFailed, handoffUnfinished],
+      label: "Started a handoff to 1 worktree",
+    },
+  ])("words a worktree handoff as $label", ({ calls, label }) => {
+    expect(summarizeT3ToolCalls("worktree-handoff", calls).label).toBe(label);
   });
 
   it("summarizes project code graph queries", () => {

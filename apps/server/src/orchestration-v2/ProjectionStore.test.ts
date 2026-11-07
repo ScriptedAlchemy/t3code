@@ -540,6 +540,39 @@ it.effect("record reads restrict provider histories to delivery identities", () 
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("finds the thread behind a provider's native thread id", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = yield* addRolledBackRecoveryCandidate("native-thread-lookup");
+    const now = yield* DateTime.now;
+    yield* store.apply({
+      id: EventId.make("event:native-thread-lookup"),
+      type: "provider-thread.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: ProviderThreadId.make("provider-thread:native-thread-lookup"),
+        appThreadId: threadId,
+        driver,
+        providerInstanceId,
+        providerSessionId: null,
+        ownerNodeId: null,
+        nativeThreadRef: { driver, nativeId: "native-session-1", strength: "strong" },
+        nativeConversationHeadRef: null,
+        lastRunOrdinal: null,
+        handoffIds: [],
+        forkedFrom: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    assert.equal(yield* store.findThreadIdByNativeThreadId("native-session-1"), threadId);
+    assert.equal(yield* store.findThreadIdByNativeThreadId("native-session-2"), null);
+  }).pipe(Effect.provide(ProjectionStore.layer.pipe(Layer.provideMerge(layerReaderDatabase)))),
+);
+
 it.effect("idle compaction filters keep the latest run, live work and the newest usage", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;

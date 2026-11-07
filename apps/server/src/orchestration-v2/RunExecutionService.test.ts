@@ -2636,6 +2636,29 @@ it.effect.each([
     }),
 );
 
+it.each([
+  { request: "Stopped by user", bound: false, expected: "Stopped by user" },
+  { request: undefined, bound: false, expected: RunExecutionService.SESSION_DETACHED_REASON },
+  { request: undefined, bound: true, expected: undefined },
+])("reads the interrupt reason %#", ({ request, bound, expected }) => {
+  const providerThreadId = ProviderThreadId.make("provider-thread:reason");
+  const providerSessionId = ProviderSessionId.make("provider-session:reason");
+  assert.equal(
+    RunExecutionService.runInterruptReason(
+      {
+        turnItems:
+          request === undefined
+            ? []
+            : [{ type: "run_interrupt_request", message: request } as OrchestrationV2TurnItem],
+        providerThreads: [{ id: providerThreadId, providerSessionId }],
+        providerSessions: bound ? [{ id: providerSessionId }] : [],
+      },
+      providerThreadId,
+    ),
+    expected,
+  );
+});
+
 it.effect("records a finished run as failed when its ownership check cannot be read", () =>
   Effect.gen(function* () {
     const { observed } = yield* captureRootRunTermination({
@@ -2696,6 +2719,39 @@ it.effect("refreshes pull requests after a provider stream exits with an error",
     );
     const error = written.find((item) => item.type === "error");
     assert.include(error?.failure.message ?? "", "provider event stream closed unexpectedly");
+  }),
+);
+
+it.effect.each([
+  { reason: RunExecutionService.SESSION_DETACHED_REASON, run: "run:interrupted" },
+  { reason: "Stopped by user", run: "run:failed" },
+])("ends a run whose stream closes with $reason as $run", ({ reason, run }) =>
+  Effect.gen(function* () {
+    const { written, observed } = yield* captureRootRunTermination({
+      key: `detached-stream:${run}`,
+      shouldFinalizeRun: () => Effect.succeed(true),
+      loadRunInterruptReason: () => Effect.succeed(reason),
+      loadRunOpenItems: () =>
+        Effect.succeed([{ type: "dynamic_tool", status: "running" } as OrchestrationV2TurnItem]),
+      events: () =>
+        Stream.fail(
+          new ProviderAdapter.ProviderAdapterEventStreamError({
+            driver,
+            providerSessionId: ProviderSessionId.make("session:detached"),
+            cause: "Workspace changed.",
+          }),
+        ),
+    });
+    assert.equal(observed[0], run);
+    if (run === "run:failed") return;
+    assert.deepEqual(
+      written.map((item) => [item.type, item.status]),
+      [
+        ["dynamic_tool", "interrupted"],
+        ["run_interrupt_result", "interrupted"],
+      ],
+    );
+    assert.equal(written[1]?.type === "run_interrupt_result" ? written[1].message : null, reason);
   }),
 );
 
@@ -3168,6 +3224,7 @@ function captureRootRunTermination(input: {
   readonly rejectTerminalWrite?: boolean;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
+  readonly loadRunOpenItems?: () => Effect.Effect<ReadonlyArray<OrchestrationV2TurnItem>, never>;
   readonly hasPendingBackgroundWorkForThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["hasPendingBackgroundWorkForThread"];
   readonly seedOpenSubagent?: boolean;
   readonly events?: (
@@ -3358,6 +3415,9 @@ function captureRootRunTermination(input: {
         ...(input.loadRunInterruptReason === undefined
           ? {}
           : { loadRunInterruptReason: input.loadRunInterruptReason }),
+        ...(input.loadRunOpenItems === undefined
+          ? {}
+          : { loadRunOpenItems: input.loadRunOpenItems }),
         ...(input.shouldStartProviderTurn === undefined
           ? {}
           : { shouldStartProviderTurn: input.shouldStartProviderTurn }),
