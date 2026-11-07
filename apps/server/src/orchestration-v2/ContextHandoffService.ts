@@ -94,6 +94,7 @@ export interface ContextHandoffServiceV2Shape {
     readonly toProviderInstanceId: ProviderInstanceId;
     readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
     readonly parentItems: ReadonlyArray<OrchestrationV2TurnItem>;
+    readonly seat?: boolean;
     readonly createdAt: DateTime.Utc;
   }) => Effect.Effect<OrchestrationV2ContextHandoff, ContextHandoffServiceV2Error>;
 }
@@ -208,7 +209,7 @@ function summarizeDeltaItem(item: OrchestrationV2TurnItem): string | null {
     case "user_message":
       return `- User: ${compactText(item.text)}`;
     case "assistant_message":
-      return `- Assistant: ${compactText(item.text)}`;
+      return `- ${item.speaker?.label ?? "Assistant"}: ${compactText(item.text)}`;
     case "command_execution":
       return `- Command: ${compactText(item.input)}`;
     case "file_change":
@@ -245,24 +246,44 @@ function makeForkDeltaSummary(input: {
 
 const SIDE_CHAT_CONTEXT_MAX_CHARS = 8_000;
 
+/** Another member's message may have come from an agent, and a seat must not read it as the user. */
+const summarizeSideChatItem = (item: OrchestrationV2TurnItem, seat: boolean) =>
+  seat && item.type === "user_message" && item.createdBy !== undefined && item.createdBy !== "user"
+    ? `- Agent: ${compactText(item.text)}`
+    : summarizeDeltaItem(item);
+
 /** Oldest first; raw parent items are summarized only until the context cap is reached. */
 export function makeSideChatContext(input: {
   readonly parentThreadId: ThreadId;
   readonly digest: ReadonlyArray<string | OrchestrationV2TurnItem>;
+  /** A group seat takes part in the conversation, and others' words reach it directly. */
+  readonly seat?: boolean;
 }): string {
-  const framing =
-    "You are in a side chat beside the main thread. The main thread may still be running in the same worktree. Answer the user's questions; do not continue or redo the main thread's task.";
-  const header = "Main thread activity since this side chat's starting point:";
+  const framing = input.seat
+    ? []
+    : [
+        "You are in a side chat beside the main thread. The main thread may still be running in the same worktree. Answer the user's questions; do not continue or redo the main thread's task.",
+      ];
+  const header = input.seat
+    ? "Said in this conversation since you joined:"
+    : "Main thread activity since this side chat's starting point:";
   const truncated = "- Earlier items truncated.";
-  const footer = `Use t3_thread_read on thread ${input.parentThreadId} to see the main thread's live state.`;
+  const footer = input.seat
+    ? []
+    : [`Use t3_thread_read on thread ${input.parentThreadId} to see the main thread's live state.`];
+  const joinBlocks = (blocks: ReadonlyArray<ReadonlyArray<string>>) =>
+    blocks
+      .filter((block) => block.length > 0)
+      .map((block) => block.join("\n"))
+      .join("\n\n");
   const kept: Array<string> = [];
   let omitted = false;
   // The cap covers the whole block, so the fixed lines are reserved before any digest line.
   let remaining =
-    SIDE_CHAT_CONTEXT_MAX_CHARS - [framing, "", header, truncated, "", footer].join("\n").length;
+    SIDE_CHAT_CONTEXT_MAX_CHARS - joinBlocks([framing, [header, truncated], footer]).length;
   for (let index = input.digest.length - 1; index >= 0; index--) {
     const item = input.digest[index]!;
-    const line = typeof item === "string" ? item : summarizeDeltaItem(item);
+    const line = typeof item === "string" ? item : summarizeSideChatItem(item, input.seat === true);
     if (line === null) continue;
     if (line.length + 1 > remaining) {
       omitted = true;
@@ -271,12 +292,8 @@ export function makeSideChatContext(input: {
     kept.unshift(line);
     remaining -= line.length + 1;
   }
-  return [
-    framing,
-    ...(kept.length === 0 ? [] : ["", header, ...(omitted ? [truncated] : []), ...kept]),
-    "",
-    footer,
-  ].join("\n");
+  const activity = kept.length === 0 ? [] : [header, ...(omitted ? [truncated] : []), ...kept];
+  return joinBlocks([framing, activity, footer]);
 }
 
 /** Side chat context is prepended to the provider prompt, never replayed as budgeted history. */
@@ -596,6 +613,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
         summaryText: makeSideChatContext({
           parentThreadId: input.parentThreadId,
           digest: input.parentItems,
+          ...(input.seat ? { seat: true } : {}),
         }),
         createdByProviderInstanceId: null,
         createdAt: input.createdAt,

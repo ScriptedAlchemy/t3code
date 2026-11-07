@@ -20,6 +20,7 @@ import {
   withLinkedComposerPullRequestsFirst,
 } from "@t3tools/shared/composerPullRequestMatches";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
+import type { ThreadGroupParticipant } from "@t3tools/client-runtime/state/thread-group";
 
 import type { ComposerTrigger } from "../../composer-logic";
 import type { DraftId } from "../../composerDraftStore";
@@ -79,6 +80,8 @@ export function useComposerMenuItems({
   workspaceSkillsScanning,
   questionAttachmentTarget,
   modelMentions,
+  groupParticipants,
+  groupInviteAvailable,
 }: {
   readonly composerTrigger: ComposerTrigger | null;
   readonly environmentId: EnvironmentId;
@@ -99,6 +102,9 @@ export function useComposerMenuItems({
   readonly showSkillsInSlashMenu: boolean;
   readonly workspaceSkillsScanning: boolean;
   readonly questionAttachmentTarget: DraftId | null;
+  /** Who `@` can address while a group is active; empty otherwise. */
+  readonly groupParticipants: ReadonlyArray<ThreadGroupParticipant>;
+  readonly groupInviteAvailable: boolean;
   /** Null while the provider catalog is still loading. */
   readonly modelMentions: {
     readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
@@ -199,7 +205,23 @@ export function useComposerMenuItems({
   const items = ((): ComposerCommandItem[] => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
+      const memberQuery = composerTrigger.query.toLowerCase();
       return [
+        ...groupParticipants
+          .filter(
+            (participant) =>
+              participant.handle.toLowerCase().startsWith(memberQuery) ||
+              participant.label.toLowerCase().startsWith(memberQuery),
+          )
+          .map((participant) => ({
+            id: `group-member:${participant.handle}`,
+            type: "group-member" as const,
+            handle: participant.handle,
+            label: `@${participant.handle}`,
+            description: participant.isPrimary
+              ? `${participant.label} · primary`
+              : participant.label,
+          })),
         ...matchComposerThreadItems({
           shells: environmentThreadShells,
           environmentId,
@@ -272,6 +294,17 @@ export function useComposerMenuItems({
                 command: "btw",
                 label: "/btw",
                 description: sideChatDisabledReason ?? "Same as /side",
+              },
+            ] as const)
+          : []),
+        ...(groupInviteAvailable
+          ? ([
+              {
+                id: "slash:invite",
+                type: "slash-command",
+                command: "invite",
+                label: "/invite",
+                description: "Invite a model into this thread",
               },
             ] as const)
           : []),

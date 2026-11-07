@@ -93,6 +93,8 @@ function shouldPublishAgentAwarenessEvent(
     case "thread.settled":
     case "thread.model-selection-updated":
     case "thread.provider-switched":
+    // A discussion ending is the moment a user who walked away wants to hear about.
+    case "thread.group-updated":
     case "run.created":
     case "run.updated":
     case "runtime-request.updated":

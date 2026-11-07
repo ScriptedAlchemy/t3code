@@ -259,6 +259,7 @@ it.effect(
           getSubagentCount: () => Effect.die("unused subagent count"),
           listAppOwnedChildThreadIds: () => Effect.die("unused listAppOwnedChildThreadIds"),
           getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),
+          getActiveGroupThreadIds: () => Effect.die("unused group read"),
           getTurnItem: () => Effect.die("unused turn item read"),
           getMessagesById: () => Effect.die("unused getMessagesById"),
           getThreadRecords: () => Effect.die("unused record read"),

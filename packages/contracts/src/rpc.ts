@@ -282,6 +282,8 @@ import {
   OrchestrationGetWorkflowScriptError,
   OrchestrationV2GetNativeChildWorkError,
   OrchestrationV2StopWorkflowError,
+  ThreadGroupCommandError,
+  ThreadGroupDisabledError,
   OrchestrationV2ForceStopThreadError,
   OrchestrationV2DispatchCommandError,
   OrchestrationV2GetShellSnapshotError,
@@ -1941,6 +1943,40 @@ const WsOrchestrationV2StopWorkflowRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.st
   error: Schema.Union([OrchestrationV2StopWorkflowError, EnvironmentAuthorizationError]),
 });
 
+const WsOrchestrationV2ThreadGroupInviteRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.threadGroupInvite,
+  {
+    payload: OrchestrationV2RpcSchemas.threadGroupInvite.input,
+    success: OrchestrationV2RpcSchemas.threadGroupInvite.output,
+    error: Schema.Union([
+      ThreadGroupDisabledError,
+      ThreadGroupCommandError,
+      EnvironmentAuthorizationError,
+    ]),
+  },
+);
+
+const WsOrchestrationV2ThreadGroupRemoveRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.threadGroupRemove,
+  {
+    payload: OrchestrationV2RpcSchemas.threadGroupRemove.input,
+    success: OrchestrationV2RpcSchemas.threadGroupRemove.output,
+    error: Schema.Union([ThreadGroupCommandError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2ThreadGroupEndRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.threadGroupEnd, {
+  payload: OrchestrationV2RpcSchemas.threadGroupEnd.input,
+  success: OrchestrationV2RpcSchemas.threadGroupEnd.output,
+  error: Schema.Union([ThreadGroupCommandError, EnvironmentAuthorizationError]),
+});
+
+const WsOrchestrationV2ThreadGroupStopRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.threadGroupStop, {
+  payload: OrchestrationV2RpcSchemas.threadGroupStop.input,
+  success: OrchestrationV2RpcSchemas.threadGroupStop.output,
+  error: Schema.Union([ThreadGroupCommandError, EnvironmentAuthorizationError]),
+});
+
 const WsOrchestrationV2ForceStopThreadRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.forceStopThread, {
   payload: OrchestrationV2RpcSchemas.forceStopThread.input,
   success: OrchestrationV2RpcSchemas.forceStopThread.output,
@@ -2457,6 +2493,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2GetNativeChildWorkRpc,
   WsOrchestrationV2StopWorkflowRpc,
+  WsOrchestrationV2ThreadGroupInviteRpc,
+  WsOrchestrationV2ThreadGroupRemoveRpc,
+  WsOrchestrationV2ThreadGroupEndRpc,
+  WsOrchestrationV2ThreadGroupStopRpc,
   WsOrchestrationV2ForceStopThreadRpc,
   WsOrchestrationV2GetTurnItemRpc,
   WsOrchestrationV2GetTurnDiffRpc,

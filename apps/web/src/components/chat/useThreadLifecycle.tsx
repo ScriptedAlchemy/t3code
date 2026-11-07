@@ -53,6 +53,7 @@ import { composerDraftHasUserContent, useComposerDraftStore } from "../../compos
 import { useEnvironmentScope } from "~/state/session";
 import { threadEnvironment } from "../../state/threads";
 import { vcsEnvironment } from "../../state/vcs";
+import { isSeatedSeatThread } from "@t3tools/client-runtime/state/thread-group";
 import { useChildThreadInputs } from "../../state/entities";
 import { ThreadStatusLine } from "./ThreadStatusLine";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -457,7 +458,10 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     activeThreadRef,
   });
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);
-  const childThreadInputs = useChildThreadInputs(activeThreadRef);
+  // A seat's own row already says it is waiting, and it is not a side chat to the user.
+  const childThreadInputs = useChildThreadInputs(activeThreadRef).filter(
+    (child) => !isSeatedSeatThread(activeThreadShell?.group, child.id),
+  );
   const childInputNow = childInputNowItem({
     childThreadInputs,
     parentAwaitingUser: Boolean(

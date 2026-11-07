@@ -44,6 +44,8 @@ export interface ComposerEditorProps {
     > &
       Partial<Pick<ServerProviderSkill, "path">>
   >;
+  /** Lowercase handles of the thread's group, whose `@` mentions are not files. */
+  readonly groupHandles?: ReadonlyArray<string>;
   readonly selection?: ComposerEditorSelection;
   readonly placeholder?: string;
   readonly autoFocus?: boolean;

@@ -253,6 +253,9 @@ export function summarizeT3ToolCalls(
     case "thread-organize":
       label = phrase("Organized", "organize", `threads ${times}`);
       break;
+    case "thread-group":
+      label = phrase("Updated", "update", `a thread group ${times}`);
+      break;
     case "thread-update":
       label = phrase("Updated", "update", quantity(countEntities(threadIds), "thread"));
       break;

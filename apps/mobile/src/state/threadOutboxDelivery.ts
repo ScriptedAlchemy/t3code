@@ -934,6 +934,9 @@ export function createThreadOutboxDelivery(): {
         interactionMode: sendSettings.interactionMode,
         createdAt: queuedMessage.createdAt,
         dispatchMode: queuedMessage.dispatchMode ?? "start",
+        ...(queuedMessage.groupAudience === undefined
+          ? {}
+          : { groupAudience: queuedMessage.groupAudience }),
         ...(queuedMessage.freshContext ? { freshContext: true } : {}),
       },
     });
