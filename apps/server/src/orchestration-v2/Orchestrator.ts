@@ -5280,6 +5280,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         messageRoles: ["user"],
       })
       .pipe(mapDispatchError(command));
+    if (member.thread.deletedAt !== null) return undefined;
     const seatMessageId = (source: MessageId | string) =>
       MessageId.make(`message:group:${command.threadId}:${source}`);
     const handed = new Set(member.messages.map((message) => message.id));
@@ -14527,6 +14528,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }),
     );
 
+  /** A seat holds the files of the messages it was handed, and those files stay with the parent. */
+  const attachmentsOnlyThisThreadHolds = Effect.fn("orchestrationV2.dispatch.ownAttachments")(
+    function* (thread: OrchestrationV2AppThread) {
+      const own = yield* projectionStore.getThreadAttachmentIds(thread.id);
+      const parentId = thread.lineage.sideChat === true ? thread.lineage.parentThreadId : null;
+      if (parentId === null || own.length === 0) return own;
+      const held = new Set(yield* projectionStore.getThreadAttachmentIds(parentId));
+      return own.filter((id) => !held.has(id));
+    },
+  );
+
   const dispatchOnce = Effect.fn("orchestrationV2.dispatch.once")(function* (
     command: OrchestrationV2ServerCommand,
     sideChatIds: ReadonlyArray<ThreadId>,
@@ -14618,9 +14630,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             planThreadDeletion({
               command: deletion,
               projection,
-              attachmentIds: yield* projectionStore
-                .getThreadAttachmentIds(deletion.threadId)
-                .pipe(mapDispatchError(command)),
+              attachmentIds: yield* attachmentsOnlyThisThreadHolds(projection.thread).pipe(
+                mapDispatchError(command),
+              ),
               now,
               idAllocator,
             }),
@@ -14819,9 +14831,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const group = thread?.group;
         // The composer's one Stop stops every member, and a seat's own stop stops only that seat.
         if (thread != null && group?.status === "active") {
-          const now = yield* DateTime.now;
-          const stopped = groupAfterStop(group, now);
-          if (stopped !== group) yield* emitThreadGroup(command, events, thread, stopped, now);
+          const stopped = groupAfterStop(group);
+          if (stopped !== group) {
+            yield* emitThreadGroup(command, events, thread, stopped, yield* DateTime.now);
+          }
           const seated = group.seats.flatMap((seat) =>
             seat.status === "seated" ? [seat.threadId] : [],
           );

@@ -14,6 +14,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   type ProviderOptionDescriptor,
   type ServerProvider,
   ThreadId,
@@ -701,6 +702,40 @@ describe("orchestrator MCP toolkit", () => {
           );
           expect(capabilities.isError).not.toBe(true);
           expect(messageReads).toHaveLength(messageReadsBeforeCapabilities);
+
+          const speaker = { label: "Astra", model: "gpt-6-astra" };
+          yield* orchestrator.dispatch({
+            type: "thread.group.publish",
+            commandId: CommandId.make("command:mcp-read:peer-reply"),
+            threadId: parentThreadId,
+            status: "completed",
+            text: "Peer reply",
+            entry: {
+              type: "peer_reply",
+              seatThreadId: ThreadId.make("thread:mcp-read:seat"),
+              seatRunId: RunId.make("run:mcp-read:seat"),
+              speaker,
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: speaker.model,
+              },
+            },
+          });
+          const parentRead = yield* invoke("t3_thread_read", {
+            threadId: parentThreadId,
+            view: "messages",
+            limit: 100,
+          }).pipe(Effect.withTracer(tracer));
+          const rows = (
+            parentRead.structuredContent as {
+              readonly items: ReadonlyArray<{
+                readonly text: string | null;
+                readonly speaker?: unknown;
+              }>;
+            }
+          ).items;
+          expect(rows.find((row) => row.text === "Peer reply")?.speaker).toEqual(speaker);
+          expect(rows.filter((row) => row.speaker !== undefined)).toHaveLength(1);
         }).pipe(Effect.provide(layerTest));
       }),
     ),

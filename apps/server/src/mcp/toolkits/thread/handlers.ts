@@ -19,6 +19,7 @@ import {
   readThread,
   unavailable,
 } from "../../threadAccess.ts";
+import * as ThreadGroupService from "../../../orchestration-v2/ThreadGroupService.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
@@ -86,6 +87,8 @@ const required = <A>(value: A | undefined, name: string) =>
         }),
       )
     : Effect.succeed(value);
+const groupFailure = (error: { readonly message: string }) =>
+  new OrchestratorMcpFailure({ code: "invalid_request", message: error.message });
 const writesThread = <P extends { readonly threadId?: ThreadId | undefined }, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
 ) => McpToolAccess.writesThreads((params: P) => [params.threadId], handle);
@@ -145,6 +148,59 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         })),
       };
     }),
+  ),
+  t3_thread_group: McpToolAccess.either(
+    (input) => input.action === "status",
+    McpToolAccess.reads((input) =>
+      Effect.gen(function* () {
+        const { projection } = yield* readThread(input.threadId);
+        return projection.thread.group ?? null;
+      }),
+    ),
+    writesThread((input) =>
+      Effect.gen(function* () {
+        const { projection } = yield* readThread(input.threadId);
+        const threadId = projection.thread.id;
+        const groups = yield* ThreadGroupService.ThreadGroupService;
+        const actor = { createdBy: "agent" as const, creationSource: "mcp" as const };
+        switch (input.action) {
+          case "invite":
+            return yield* groups
+              .invite({
+                ...actor,
+                threadId,
+                modelSelection: yield* required(input.modelSelection, "modelSelection"),
+              })
+              .pipe(Effect.mapError(groupFailure));
+          case "remove": {
+            const handle = yield* required(input.handle, "handle");
+            const seat = projection.thread.group?.seats.find((row) => row.handle === handle);
+            if (seat === undefined) {
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: `Nobody in this group goes by ${handle}.`,
+              });
+            }
+            return yield* groups
+              .remove({ threadId, seatThreadId: seat.threadId })
+              .pipe(Effect.mapError(groupFailure));
+          }
+          case "discuss":
+            return yield* groups
+              .discuss({
+                ...actor,
+                threadId,
+                text: yield* required(input.message, "message"),
+                to: input.to,
+              })
+              .pipe(Effect.mapError(groupFailure));
+          case "end":
+            return yield* groups.end({ threadId }).pipe(Effect.mapError(groupFailure));
+          case "status":
+            return projection.thread.group ?? null;
+        }
+      }),
+    ),
   ),
   t3_thread_transfer: McpToolAccess.either(
     (input) => input.action === "status",

@@ -15,10 +15,13 @@ import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+
+const isDispatchError = Schema.is(Orchestrator.OrchestratorDispatchError);
 
 interface Actor {
   readonly createdBy: OrchestrationV2Actor;
@@ -78,8 +81,14 @@ const make = Effect.gen(function* () {
   const registry = yield* ProviderRegistry.ProviderRegistry;
   const random = yield* SecureRandom.SecureRandom;
 
+  // A refused command already says why in words a user can act on.
   const failed = (operation: string, threadId: ThreadId) => (cause: unknown) =>
-    new ThreadGroupCommandError({ operation, threadId, cause });
+    new ThreadGroupCommandError({
+      operation,
+      threadId,
+      cause,
+      ...(isDispatchError(cause) && typeof cause.cause === "string" ? { reason: cause.cause } : {}),
+    });
 
   const newCommandId = (operation: string, threadId: ThreadId) =>
     random.uuidV4().pipe(
@@ -99,7 +108,7 @@ const make = Effect.gen(function* () {
       return yield* new ThreadGroupCommandError({
         operation,
         threadId,
-        cause: "This thread has no group.",
+        reason: "This thread has no group.",
       });
     }
     return thread.group;
@@ -124,7 +133,7 @@ const make = Effect.gen(function* () {
         return yield* new ThreadGroupCommandError({
           operation: "invite",
           threadId,
-          cause: "A side chat or a subagent cannot host a group.",
+          reason: "A side chat or a subagent cannot host a group.",
         });
       }
       const providers = yield* registry.getProviders;
@@ -225,7 +234,7 @@ const make = Effect.gen(function* () {
         return yield* new ThreadGroupCommandError({
           operation: "discuss",
           threadId,
-          cause: "This group has ended. Invite someone to start it again.",
+          reason: "This group has ended. Invite someone to start it again.",
         });
       }
       const members = to?.map((handle) => {
@@ -238,7 +247,7 @@ const make = Effect.gen(function* () {
         return yield* new ThreadGroupCommandError({
           operation: "discuss",
           threadId,
-          cause: `Nobody in this group goes by ${to?.[members.indexOf(undefined)]}.`,
+          reason: `Nobody in this group goes by ${to?.[members.indexOf(undefined)]}.`,
         });
       }
       const commandId = yield* newCommandId("discuss", threadId);

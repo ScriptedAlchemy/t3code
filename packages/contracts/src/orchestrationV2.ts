@@ -4175,11 +4175,13 @@ export class ThreadGroupCommandError extends Schema.TaggedError<ThreadGroupComma
   {
     operation: Schema.String,
     threadId: ThreadId,
+    /** A refusal the user can act on. Absent when the failure is an unexpected one in `cause`. */
+    reason: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return `Could not ${this.operation} on the group for thread ${this.threadId}.`;
+    return this.reason ?? `Could not ${this.operation} on the group for thread ${this.threadId}.`;
   }
 }
 

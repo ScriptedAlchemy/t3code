@@ -317,10 +317,6 @@ export const groupAfterDelivered = (
         },
       };
 
-export const groupAfterStop = (
-  group: OrchestrationV2ThreadGroup,
-  now: DateTime.Utc,
-): OrchestrationV2ThreadGroup =>
-  group.discussion === null
-    ? group
-    : { ...group, discussion: null, closedBecause: "stopped", closedAt: DateTime.formatIso(now) };
+/** Someone pressed Stop, so unlike a discussion that finished, there is nothing unread to flag. */
+export const groupAfterStop = (group: OrchestrationV2ThreadGroup): OrchestrationV2ThreadGroup =>
+  group.discussion === null ? group : { ...group, discussion: null, closedBecause: "stopped" };

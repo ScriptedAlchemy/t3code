@@ -197,6 +197,20 @@ describe("idleCompactionWindow", () => {
       },
     ];
     expect(idleCompactionWindow(published, NOW_MS)?.runId).toBe(runId);
+    // Members have turns coming while a discussion is open, so the thread is not idle.
+    const discussing = records(cache);
+    discussing.thread = {
+      ...discussing.thread,
+      group: {
+        status: "active",
+        primary: { model: "fable", label: "Fable", handle: "fable" },
+        seats: [],
+        discussion: { mode: "everyone", turnsLeft: 2, delivering: [] },
+        closedBecause: null,
+        closedAt: null,
+      },
+    };
+    expect(idleCompactionWindow(discussing, NOW_MS)).toBeNull();
     const archived = records(cache);
     archived.thread = { ...archived.thread, archivedAt: at() };
     expect(idleCompactionWindow(archived, NOW_MS)).toBeNull();

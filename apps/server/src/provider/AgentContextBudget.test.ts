@@ -24,6 +24,7 @@ import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadLaunchService } from "../orchestration-v2/ThreadLaunchService.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadGroupService from "../orchestration-v2/ThreadGroupService.ts";
 import { ThreadSearch } from "../orchestration-v2/ThreadSearch.ts";
 import { PeerForwarding } from "../peer/PeerForwarding.ts";
 import { PeerLinkRequests } from "../peer/PeerLinkRequests.ts";
@@ -56,6 +57,7 @@ import budget from "./agentContextBudget.json" with { type: "json" };
 // Registration only stores tool definitions, so the handlers' services are never called.
 const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ModelEvaluations.ModelEvaluations)({}),
+  Layer.mock(ThreadGroupService.ThreadGroupService)({}),
   Layer.mock(CodeIntelligence)({}),
   Layer.mock(FileHistory)({}),
   Layer.mock(ProjectKnowledge)({}),

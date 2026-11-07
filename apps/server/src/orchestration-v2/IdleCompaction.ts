@@ -55,6 +55,8 @@ export function idleCompactionWindow(
   if (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs)
     return null;
   if (!isListedThreadLineage(thread.lineage)) return null;
+  // Members still have turns coming, and each would pay to rebuild a compacted context.
+  if (thread.group?.discussion != null) return null;
   // A removed or steered queued message leaves a cancelled run that never started.
   const latestRun = runs
     .filter(

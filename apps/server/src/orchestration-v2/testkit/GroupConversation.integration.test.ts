@@ -1292,6 +1292,174 @@ describe("group conversations", () => {
     ),
   );
 
+  it.live(
+    "refuses a rewind during a discussion, and a discussion's end reads as a turn's end",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness("rewind");
+          const threadId = ThreadId.make("thread:group:rewind");
+          yield* withReactor(
+            Effect.gen(function* () {
+              const orchestrator = yield* Orchestrator.OrchestratorV2;
+              yield* startThread(threadId);
+              yield* say(threadId, "warm", "Warm up");
+              yield* until(
+                orchestrator
+                  .getThreadProjection(threadId)
+                  .pipe(Effect.map((p) => p.runs.at(-1)?.status === "completed")),
+              );
+              const warmed = yield* orchestrator.getThreadProjection(threadId);
+              const checkpoint = warmed.checkpoints.at(-1)!;
+              const rollback = (tag: string) =>
+                orchestrator.dispatch({
+                  type: "checkpoint.rollback",
+                  restoreFiles: false,
+                  commandId: CommandId.make(`command:group-rewind:${tag}`),
+                  threadId,
+                  scopeId: checkpoint.scopeId,
+                  checkpointId: checkpoint.id,
+                });
+
+              const seat = yield* invite(threadId, ASTRA);
+              const seatHold = yield* hold(harness.control, seat);
+              yield* say(threadId, "peer", "Ask Astra", [seat]);
+              yield* Deferred.await(seatHold.started);
+              const refused = yield* rollback("during").pipe(Effect.flip);
+              assert.include(String(refused.cause), "Stop the group's discussion");
+              yield* Deferred.succeed(seatHold.release, "completed");
+              yield* settle(threadId);
+
+              const closed = (yield* readGroup(threadId))!;
+              assert.isNotNull(closed.closedAt);
+              const shell = yield* orchestrator.getThreadShell(threadId);
+              const primaryRun = warmed.runs.at(-1)!;
+              assert.equal(
+                shell?.latestRunId,
+                primaryRun.id,
+                "the shell still names the primary's run",
+              );
+              assert.equal(
+                shell?.latestRunCompletedAt == null
+                  ? null
+                  : DateTime.formatIso(shell.latestRunCompletedAt),
+                closed.closedAt,
+                "a user who walked away sees the discussion finished",
+              );
+
+              yield* rollback("after");
+              const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+              yield* worker.drain();
+              yield* until(
+                orchestrator
+                  .getThreadProjection(threadId)
+                  .pipe(Effect.map((p) => p.runs.some((run) => run.status === "rolled_back"))),
+              );
+              const rewound = yield* orchestrator.getThreadProjection(threadId);
+              const seatRun = (yield* orchestrator.getThreadProjection(seat)).runs.at(-1)!;
+              const replay = yield* orchestrator.dispatch({
+                type: "thread.group.publish",
+                commandId: CommandId.make("command:group-rewind:republish"),
+                threadId,
+                status: "completed",
+                text: "The same words again",
+                entry: {
+                  type: "peer_reply",
+                  seatThreadId: seat,
+                  seatRunId: seatRun.id,
+                  speaker: { label: "Astra", model: ASTRA.model },
+                  modelSelection: ASTRA,
+                },
+              });
+              assert.lengthOf(replay.storedEvents, 0, "a rewound reply stays rewound");
+              assert.deepEqual(
+                (yield* orchestrator.getThreadProjection(threadId)).runs,
+                rewound.runs,
+              );
+            }),
+          ).pipe(Effect.provide(harness.layer));
+        }),
+      ),
+  );
+
+  it.live(
+    "deletes seats with their thread, and a seat's own deletion leaves the group working",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness("delete");
+          const threadId = ThreadId.make("thread:group:delete");
+          yield* withReactor(
+            Effect.gen(function* () {
+              const orchestrator = yield* Orchestrator.OrchestratorV2;
+              yield* startThread(threadId);
+              const kept = yield* invite(threadId, ASTRA);
+              const gone = yield* invite(threadId, OPUS);
+              yield* orchestrator.dispatch({
+                type: "thread.delete",
+                commandId: CommandId.make("command:group-delete:seat"),
+                threadId: gone,
+              });
+              yield* script(harness.control, kept, ["Plain reply"]);
+              yield* say(threadId, "go", "Go");
+              const after = yield* settle(threadId);
+              assert.isTrue(
+                publishedRows(after).some((row) => row.label === "Astra"),
+                "control: the remaining seat answered",
+              );
+              assert.lengthOf(
+                yield* turnsOf(harness.control, gone),
+                0,
+                "a deleted seat never runs",
+              );
+              assert.equal(
+                (yield* readGroup(threadId))!.seats.find((row) => row.threadId === gone)?.status,
+                "left",
+                "the roster stops listing it",
+              );
+
+              yield* orchestrator.dispatch({
+                type: "thread.delete",
+                commandId: CommandId.make("command:group-delete:parent"),
+                threadId,
+              });
+              const seat = yield* orchestrator.getThreadProjection(kept);
+              assert.isNotNull(seat.thread.deletedAt, "a seat goes with its thread");
+            }),
+          ).pipe(Effect.provide(harness.layer));
+        }),
+      ),
+  );
+
+  it.live("keeps seats on the thread's current modes and titles, and no seat writes a title", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("modes");
+        const threadId = ThreadId.make("thread:group:modes");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            yield* orchestrator.dispatch({
+              type: "thread.runtime-mode.set",
+              commandId: CommandId.make("command:group-modes:set"),
+              threadId,
+              runtimeMode: "approval-required",
+            });
+            yield* say(threadId, "go", "Go", [seat]);
+            yield* settle(threadId);
+            const projection = yield* orchestrator.getThreadProjection(seat);
+            assert.equal(projection.thread.runtimeMode, "approval-required");
+            assert.equal(projection.thread.title, "Astra");
+            assert.isNull(projection.thread.titleRegeneration ?? null);
+            assert.equal(projection.thread.lineage.sideChat, true);
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
   it.live("refuses an invite while the flag is off and still lets a group end", () =>
     Effect.scoped(
       Effect.gen(function* () {

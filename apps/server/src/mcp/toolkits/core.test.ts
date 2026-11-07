@@ -17,6 +17,7 @@ import {
   ScheduledTaskError,
   ScheduledTask,
   RuntimeRequestId,
+  ThreadGroupDisabledError,
   ThreadId,
   TurnItemId,
   type OrchestrationV2ProjectedTurnItem,
@@ -46,6 +47,7 @@ import * as ModelEvaluations from "../../modelEvaluations/ModelEvaluations.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
+import * as ThreadGroupService from "../../orchestration-v2/ThreadGroupService.ts";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import * as PreviewBrowser from "../../preview/PreviewBrowser.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -83,12 +85,15 @@ import { htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
 const decodeMcpAttachmentInput = Schema.decodeUnknownEffect(McpAttachmentInput);
 const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
 
-const layerThreadToolkit = McpHttpServer.layerThreadToolkit.pipe(
+const layerThreadToolkitNeedingGroups = McpHttpServer.layerThreadToolkit.pipe(
   Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
   Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
   Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
   Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+);
+const layerThreadToolkit = layerThreadToolkitNeedingGroups.pipe(
+  Layer.provide(Layer.mock(ThreadGroupService.ThreadGroupService)({})),
 );
 const layerProjectCodeToolkit = McpHttpServer.layerProjectCodeToolkit.pipe(
   Layer.provide(Layer.mock(CodeIntelligence.CodeIntelligence)({})),
@@ -633,6 +638,101 @@ it.effect("a client caller targets any thread within its ceiling and cannot act 
   ),
 );
 
+it.effect("t3_thread_group speaks in handles, and a read-only client can only read it", () => {
+  const seatThreadId = ThreadId.make("seat-thread");
+  const group = {
+    status: "active" as const,
+    primary: { model: "gpt-5", label: "Fable", handle: "fable" },
+    seats: [
+      {
+        threadId: seatThreadId,
+        handle: "astra",
+        label: "Astra",
+        status: "seated" as const,
+        joinedThrough: 0,
+      },
+    ],
+    discussion: null,
+    closedBecause: null,
+    closedAt: null,
+  };
+  const threadId = ThreadId.make("other-project-thread");
+  const removed: Array<ThreadId> = [];
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const call = (
+      args: Record<string, unknown>,
+      scope: "full-access" | "read-only" = "full-access",
+    ) =>
+      server
+        .callTool({ name: "t3_thread_group", arguments: { threadId, ...args } })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, clientScope(scope)),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+
+    expect((yield* call({ action: "status" }, "read-only")).structuredContent).toMatchObject({
+      status: "active",
+    });
+    expect(declaredFailure(yield* call({ action: "end" }, "read-only"))).toMatchObject({
+      code: "capability_denied",
+    });
+
+    yield* call({ action: "remove", handle: "astra" });
+    expect(removed).toEqual([seatThreadId]);
+    expect(declaredFailure(yield* call({ action: "remove", handle: "nobody" }))).toMatchObject({
+      code: "invalid_request",
+      message: "Nobody in this group goes by nobody.",
+    });
+    expect(declaredFailure(yield* call({ action: "invite" }))).toMatchObject({
+      code: "invalid_request",
+      message: "This action needs `modelSelection`.",
+    });
+    expect(
+      declaredFailure(
+        yield* call({
+          action: "invite",
+          modelSelection: { instanceId: "codex", model: "gpt-5" },
+        }),
+      ),
+    ).toMatchObject({
+      code: "invalid_request",
+      message: "Group conversations are off. Turn them on in Settings, then invite again.",
+    });
+  }).pipe(
+    Effect.provide(
+      layerThreadToolkitNeedingGroups.pipe(
+        Layer.provide(
+          Layer.mock(ThreadGroupService.ThreadGroupService)({
+            remove: ({ seatThreadId: seat }) =>
+              Effect.sync(() => {
+                removed.push(seat);
+                return group;
+              }),
+            invite: () => Effect.fail(new ThreadGroupDisabledError({ threadId })),
+          }),
+        ),
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: () =>
+              Effect.succeed({
+                id: threadId,
+                projectId: "other-project",
+                deletedAt: null,
+              } as never),
+            getProjectThreadRecords: () =>
+              Effect.succeed({
+                thread: { id: threadId, projectId: "other-project", group, deletedAt: null },
+              } as never),
+          }),
+        ),
+      ),
+    ),
+  );
+});
+
 it.effect("a read-only client reads threads and is refused every write before it runs", () =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
@@ -729,6 +829,7 @@ it.effect("refuses act-as-caller tools to a client caller", () =>
         Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
         Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
         Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+        Layer.provide(Layer.mock(ThreadGroupService.ThreadGroupService)({})),
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
         Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
         Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
@@ -845,6 +946,7 @@ it.effect.each([
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+        Layer.provide(Layer.mock(ThreadGroupService.ThreadGroupService)({})),
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
         Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
         Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
@@ -936,6 +1038,7 @@ it.effect.each(["t3_thread_interrupt", "t3_workflow_stop"])(
           Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
           Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
           Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+          Layer.provide(Layer.mock(ThreadGroupService.ThreadGroupService)({})),
           Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
           Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
           Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
@@ -1032,6 +1135,7 @@ it.effect("discovers workflow stop targets and requires orchestration capability
         Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
         Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
         Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+        Layer.provide(Layer.mock(ThreadGroupService.ThreadGroupService)({})),
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
         Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
         Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
@@ -1143,6 +1247,7 @@ it.effect("thread search preserves citations and pagination and returns a thread
           }),
         ),
         Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+        Layer.provide(Layer.mock(ThreadGroupService.ThreadGroupService)({})),
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
         Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
         Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
@@ -1196,6 +1301,7 @@ it.effect(
           Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
           Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
           Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+          Layer.provide(Layer.mock(ThreadGroupService.ThreadGroupService)({})),
           Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
           Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
           Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),

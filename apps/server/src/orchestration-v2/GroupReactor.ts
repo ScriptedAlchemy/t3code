@@ -107,8 +107,30 @@ const make = Effect.gen(function* () {
     function* (event) {
       if (event.type === "run.updated") {
         const { status } = event.payload;
-        if (status !== "completed" && status !== "failed" && status !== "interrupted") return;
+        // A cancelled run says nothing to publish, but it may be the last thing a wave waited on.
+        if (
+          status !== "completed" &&
+          status !== "failed" &&
+          status !== "interrupted" &&
+          status !== "cancelled"
+        ) {
+          return;
+        }
         yield* onRunSettled(event.threadId, event.payload.id, event.id);
+        return;
+      }
+      if (event.type === "thread.deleted") {
+        const parentId = event.payload.lineage.parentThreadId;
+        if (parentId === null || event.payload.lineage.sideChat !== true) return;
+        const parent = yield* projections.getThread(parentId);
+        if (parent.deletedAt !== null) return;
+        if (seatForThread(parent.group, event.threadId)?.status !== "seated") return;
+        yield* engine.dispatch({
+          type: "thread.group.remove",
+          commandId: CommandId.make(`server:group-remove:${event.id}`),
+          threadId: parentId,
+          seatThreadId: event.threadId,
+        });
         return;
       }
       if (event.type !== "thread.group-updated") return;

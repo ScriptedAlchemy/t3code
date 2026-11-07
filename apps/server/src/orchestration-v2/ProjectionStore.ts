@@ -193,6 +193,21 @@ export type ProjectionThreadPullRequests = Pick<
   "id" | "projectId" | "lineage" | "settledOverride" | "settledAt" | "pullRequests"
 >;
 
+/**
+ * A discussion finishing reads as a turn finishing, so a user who walked away sees it unread. Peer
+ * replies alone cannot do this, since the shell skips publication runs.
+ */
+function shellCompletedAt(
+  completedAt: DateTime.Utc | null,
+  group: OrchestrationV2AppThread["group"],
+): DateTime.Utc | null {
+  if (completedAt === null || group == null || group.closedAt === null) return completedAt;
+  const closedAt = DateTime.makeUnsafe(group.closedAt);
+  return DateTime.toEpochMillis(closedAt) > DateTime.toEpochMillis(completedAt)
+    ? closedAt
+    : completedAt;
+}
+
 export type ProjectionSettlementCandidate = Pick<
   OrchestrationV2ThreadShell,
   | "id"
@@ -221,6 +236,7 @@ export type ProjectionSettlementCandidate = Pick<
   | "pendingRuntimeRequest"
   | "pendingBackgroundTasks"
   | "pendingGuestMessageCount"
+  | "group"
 > &
   Pick<OrchestrationV2AppThread, "lastSnoozeWakeAt"> & {
     readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
@@ -1652,7 +1668,7 @@ export function threadShellFromProjection(
     latestRunId: latestRun?.id ?? null,
     latestRunRequestedAt: latestRun?.requestedAt ?? null,
     latestRunStartedAt: latestRun?.startedAt ?? null,
-    latestRunCompletedAt: latestRun?.completedAt ?? null,
+    latestRunCompletedAt: shellCompletedAt(latestRun?.completedAt ?? null, projection.thread.group),
     latestRunStopRequested:
       latestRun != null &&
       projection.turnItems.some(
@@ -1935,7 +1951,10 @@ function shellFromState(input: {
     latestRunId: input.state.latestRunId,
     latestRunRequestedAt: input.state.latestRunRequestedAt,
     latestRunStartedAt: input.state.latestRunStartedAt,
-    latestRunCompletedAt: input.state.latestRunCompletedAt,
+    latestRunCompletedAt: shellCompletedAt(
+      input.state.latestRunCompletedAt,
+      input.state.thread.group,
+    ),
     latestRunStopRequested: input.state.latestRunStopRequested,
     activeRunId: input.state.activeRunId,
     blockedOnThreadWait: input.state.blockedOnThreadWait,
