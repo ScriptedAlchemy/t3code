@@ -260,8 +260,12 @@ import {
   useThreadStatus,
   useThreadHistory,
   useQuietThreadShell,
+  useRunningGroupSeats,
   useThreadCheckpointSummaries,
 } from "../state/entities";
+import { groupIsWorking } from "@t3tools/client-runtime/state/thread-group";
+import { useCanInviteToGroup } from "./chat/groupAvailability";
+import { GroupLiveRow } from "./chat/GroupLiveRow";
 import { useEnvironmentShellHasSnapshot } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -992,6 +996,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const browserAvailable = isPreviewSupportedInRuntime() || activeEnvironmentServerBrowser;
   const activeThreadShell = serverThread;
+  const threadGroup = activeThreadShell?.source.group ?? null;
   const limitRecoveryRun =
     serverRuntime?.status === "failed" && serverRuntime.lastErrorClass === "usage_limit"
       ? (activeThreadShell?.latestRun ?? null)
@@ -1830,8 +1835,12 @@ export default function ChatView(props: ChatViewProps) {
     composerRef.current?.focusAtEnd();
   };
   const focusComposerStable = useStableCallback(focusComposer);
+  const runningGroupSeats = useRunningGroupSeats(isServerThread ? activeThreadRef : null);
+  const groupWorking = groupIsWorking(threadGroup, runningGroupSeats.length);
+  // Stop covers every member: a seat can run while the thread's own model is idle.
   const canInterruptRunningThread =
-    canOperateThread && deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime);
+    canOperateThread &&
+    (groupWorking || deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime));
   const onInterrupt = async () => {
     if (
       !activeThread ||
@@ -2815,6 +2824,13 @@ export default function ChatView(props: ChatViewProps) {
     activeThread?.lineage.sideChat !== true &&
     !isSubagentThread &&
     serverConfig?.environment.capabilities.sideChats === true;
+  const canInviteToGroup = useCanInviteToGroup(environmentId);
+  const groupInviteOffered =
+    canInviteToGroup &&
+    !embedded &&
+    isServerThread &&
+    activeThread?.lineage.sideChat !== true &&
+    !isSubagentThread;
   const sideChat = useSideChat({
     threadRef: sideChatsOffered && isServerThread ? activeThreadRef : null,
     onError: (message) => {
@@ -3012,6 +3028,7 @@ export default function ChatView(props: ChatViewProps) {
     handleInteractionModeChange,
     onSideChat: sideChat.available ? sendSideChatStable : undefined,
     sideChatDisabledReason,
+    threadGroup,
     handleNewThreadInActiveProject,
     persistThreadSettingsForNextTurn,
   });
@@ -3160,6 +3177,7 @@ export default function ChatView(props: ChatViewProps) {
     !hasThreadNow &&
     threadStatusLine === null &&
     pendingGuestMessageCount === 0 &&
+    runningGroupSeats.length === 0 &&
     !hasQueuedTurns ? null : (
       <>
         {pendingHandoff === null ? null : (
@@ -3180,6 +3198,9 @@ export default function ChatView(props: ChatViewProps) {
           goal={goalNow}
         />
         {threadStatusLine}
+        {threadGroup !== null && activeThreadRef !== null ? (
+          <GroupLiveRow threadRef={activeThreadRef} group={threadGroup} />
+        ) : null}
         {pendingGuestMessageCount > 0 && isServerThread && activeThread ? (
           <GuestPendingMessages
             threadRef={scopeThreadRef(activeThread.environmentId, activeThread.id)}
@@ -3698,6 +3719,8 @@ export default function ChatView(props: ChatViewProps) {
                                 resumeCompactionTokens={resumeCompactionTokens}
                                 keepFullHistory={keepFullHistory}
                                 onToggleKeepFullHistory={toggleKeepFullHistoryStable}
+                                threadGroup={threadGroup}
+                                groupInviteOffered={groupInviteOffered}
                                 sideChatAvailable={sideChat.available}
                                 sideChatDisabledReason={sideChatDisabledReason}
                                 onFreshSession={
