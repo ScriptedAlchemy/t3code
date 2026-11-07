@@ -208,7 +208,7 @@ function summarizeDeltaItem(item: OrchestrationV2TurnItem): string | null {
     case "user_message":
       return `- User: ${compactText(item.text)}`;
     case "assistant_message":
-      return `- Assistant: ${compactText(item.text)}`;
+      return `- ${item.speaker?.label ?? "Assistant"}: ${compactText(item.text)}`;
     case "command_execution":
       return `- Command: ${compactText(item.input)}`;
     case "file_change":

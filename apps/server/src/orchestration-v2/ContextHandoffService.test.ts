@@ -348,6 +348,34 @@ it.effect("caps the side chat context block without summarizing discarded parent
     assert.isTrue(framingOnly.startsWith("You are in a side chat beside the main thread."));
     assert.notInclude(framingOnly, "Main thread activity");
 
+    const withPeer = ContextHandoffService.makeSideChatContext({
+      parentThreadId,
+      digest: [
+        {
+          id: TurnItemId.make("turn-item:peer"),
+          threadId: parentThreadId,
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "completed",
+          title: null,
+          startedAt: null,
+          completedAt: null,
+          updatedAt: DateTime.makeUnsafe("2026-07-20T00:00:00.000Z"),
+          type: "assistant_message",
+          messageId: MessageId.make("message:peer"),
+          text: "Use an event log",
+          streaming: false,
+          speaker: { label: "Astra", model: "gpt-6-astra" },
+        },
+      ],
+    });
+    assert.include(withPeer, "- Astra: Use an event log");
+
     const multiFilePatch = ContextHandoffService.makeSideChatContext({
       parentThreadId,
       digest: [

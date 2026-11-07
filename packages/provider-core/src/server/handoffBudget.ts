@@ -271,20 +271,27 @@ export function historicalMessage(
       text = evidence;
     }
   }
+  const speaker = item.type === "assistant_message" ? item.speaker : undefined;
   return {
-    role: item.type === "user_message" ? "user" : "assistant",
+    // A peer's words are input to this model, never its own, so it cannot claim them.
+    role: item.type === "user_message" || speaker !== undefined ? "user" : "assistant",
     text,
+    ...(speaker === undefined ? {} : { speaker }),
     threadId: item.threadId,
     runId: item.runId,
     itemId: item.id,
     providerThreadId: item.providerThreadId ?? null,
     status: item.status,
-    kind: item.type,
+    kind: speaker === undefined ? item.type : "peer_reply",
   };
 }
 
 function renderHistoricalMessage(message: OrchestrationV2HistoricalMessage): string {
-  return `[Historical ${message.role}; ${message.kind}; thread=${message.threadId}; run=${message.runId ?? "imported"}; item=${message.itemId}; provider-thread=${message.providerThreadId ?? "none"}; status=${message.status}${message.runStatus === undefined ? "" : `; run-status=${message.runStatus}`}]\n${message.text}`;
+  const source =
+    message.speaker === undefined
+      ? `${message.role}; ${message.kind}`
+      : `${message.kind}; speaker=${message.speaker.label} (${message.speaker.model})`;
+  return `[Historical ${source}; thread=${message.threadId}; run=${message.runId ?? "imported"}; item=${message.itemId}; provider-thread=${message.providerThreadId ?? "none"}; status=${message.status}${message.runStatus === undefined ? "" : `; run-status=${message.runStatus}`}]\n${message.text}`;
 }
 
 export function historyResponseItems(

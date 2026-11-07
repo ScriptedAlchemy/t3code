@@ -9,6 +9,7 @@ import {
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2ThreadProjection,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -21,6 +22,7 @@ import {
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import { latestExecutedRun, latestUnheldRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -32,6 +34,8 @@ import * as Stream from "effect/Stream";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { ClaudeProviderCapabilitiesV2 } from "../Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "../Adapters/CodexAdapterV2.ts";
+import * as EffectWorker from "../EffectWorker.ts";
+import * as EventSink from "../EventSink.ts";
 import * as Orchestrator from "../Orchestrator.ts";
 import * as ProjectStore from "../ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
@@ -41,6 +45,11 @@ import * as ProviderReplayHarness from "./ProviderReplayHarness.ts";
 
 const projectId = ProjectId.make("project:group-publication");
 const PEER_TEXT = "PEERMARK prefers an event log";
+const PEERS = [
+  ["cross-instance", CLAUDE_MODEL_SELECTION],
+  ["same-instance", CODEX_MODEL_SELECTION],
+] as const;
+
 interface CapturedTurn {
   readonly driver: ProviderDriverKind;
   readonly threadId: ThreadId;
@@ -331,6 +340,30 @@ const startThread = Effect.fn("GroupPublicationTest.startThread")(function* (thr
   });
 });
 
+const say = Effect.fn("GroupPublicationTest.say")(function* (
+  threadId: ThreadId,
+  tag: string,
+  text: string,
+  options: {
+    readonly modelSelection?: ModelSelection;
+    readonly queue?: boolean;
+  } = {},
+) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  yield* orchestrator.dispatch({
+    type: "message.dispatch",
+    commandId: CommandId.make(`command:${threadId}:${tag}`),
+    threadId,
+    messageId: MessageId.make(`message:${threadId}:${tag}`),
+    createdBy: "user",
+    creationSource: "web",
+    text,
+    attachments: [],
+    modelSelection: options.modelSelection ?? CODEX_MODEL_SELECTION,
+    dispatchMode: options.queue ? { type: "queue_after_active" } : { type: "start_immediately" },
+  });
+});
+
 const publishPeerReply = Effect.fn("GroupPublicationTest.publishPeerReply")(function* (
   threadId: ThreadId,
   tag: string,
@@ -358,6 +391,41 @@ const publishPeerReply = Effect.fn("GroupPublicationTest.publishPeerReply")(func
     },
   });
 });
+
+const isIdle = (projection: OrchestrationV2ThreadProjection) =>
+  projection.runs.every(
+    (run) => !["queued", "starting", "running", "waiting"].includes(run.status),
+  );
+
+const awaitProjection = Effect.fn("GroupPublicationTest.awaitProjection")(function* (
+  threadId: ThreadId,
+  ready: (projection: OrchestrationV2ThreadProjection) => boolean,
+) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const eventSink = yield* EventSink.EventSinkV2;
+  const afterSequence = yield* eventSink.latestSequence();
+  const current = yield* orchestrator.getThreadProjection(threadId);
+  if (ready(current)) return current;
+  const [next] = yield* eventSink.stream({ afterSequence }).pipe(
+    Stream.mapEffect(() => orchestrator.getThreadProjection(threadId)),
+    Stream.filter(ready),
+    Stream.take(1),
+    Stream.runCollect,
+  );
+  return next ?? (yield* Effect.die(new Error("Event stream ended before the awaited state")));
+});
+
+const settle = Effect.fn("GroupPublicationTest.settle")(function* (threadId: ThreadId) {
+  const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+  yield* worker.drain();
+  return yield* awaitProjection(threadId, isIdle);
+});
+
+const hasText = (texts: ReadonlyArray<string>, needle: string) =>
+  texts.some((text) => text.includes(needle));
+
+const lastTurnText = (turns: Ref.Ref<ReadonlyArray<CapturedTurn>>) =>
+  Ref.get(turns).pipe(Effect.map((captured) => captured.at(-1)?.text ?? ""));
 
 describe("group publication runs", () => {
   it.live("records words said elsewhere as a run with no provider turn, once", () =>
@@ -421,5 +489,200 @@ describe("group publication runs", () => {
         }).pipe(Effect.provide(harness.layer));
       }),
     ),
+  );
+
+  it.live.each(PEERS)(
+    "delivers a %s peer reply on the primary's next turn, once, on the same native session",
+    ([kind, peer]) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness(`delivery-${kind}`);
+          yield* Effect.gen(function* () {
+            const threadId = ThreadId.make(`thread:group-publication:delivery:${kind}`);
+            yield* startThread(threadId);
+            yield* say(threadId, "first", "Should sync be CRDT or event log?");
+            const before = yield* settle(threadId);
+            yield* publishPeerReply(threadId, "reply", { modelSelection: peer });
+            yield* Ref.set(harness.injected, []);
+
+            yield* say(threadId, "second", "Continue with the primary");
+            const after = yield* settle(threadId);
+            const delivered = yield* Ref.get(harness.injected);
+            const peerItem = delivered.find((item) => item.content[0]?.text.includes(PEER_TEXT));
+            assert.equal(peerItem?.role, "user");
+            assert.include(peerItem?.content[0]?.text ?? "", `speaker=Astra (${peer.model})`);
+            assert.notInclude(yield* lastTurnText(harness.turns), PEER_TEXT);
+
+            const turns = yield* Ref.get(harness.turns);
+            assert.equal(turns[0]?.nativeThreadId, turns[1]?.nativeThreadId);
+            assert.equal(turns[1]?.driver, ProviderDriverKind.make("codex"));
+            assert.equal(after.thread.activeProviderThreadId, before.thread.activeProviderThreadId);
+            assert.deepEqual(after.thread.modelSelection, before.thread.modelSelection);
+            assert.lengthOf(after.providerThreads, 1);
+            assert.deepEqual(
+              after.contextHandoffs.at(-1)?.history?.messages.map((message) => message.speaker),
+              [{ label: "Astra", model: peer.model }],
+            );
+
+            yield* Ref.set(harness.injected, []);
+            yield* say(threadId, "third", "And again");
+            const final = yield* settle(threadId);
+            assert.deepEqual(yield* Ref.get(harness.injected), []);
+            assert.notInclude(yield* lastTurnText(harness.turns), PEER_TEXT);
+            assert.equal(final.runs.at(-1)?.contextHandoffId, null);
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      ),
+  );
+
+  it.live("delivers inline to a provider that declares no handoff support", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("inline", {
+          inlineOnly: true,
+          primaryCapabilities: {
+            ...CodexProviderCapabilitiesV2,
+            context: {
+              ...CodexProviderCapabilitiesV2.context,
+              acceptsSyntheticUserContext: false,
+              canConsumeHandoffSummaries: false,
+              supportsDeltaHandoff: false,
+            },
+          },
+        });
+        yield* Effect.gen(function* () {
+          const threadId = ThreadId.make("thread:group-publication:inline");
+          yield* startThread(threadId);
+          yield* say(threadId, "first", "Question");
+          yield* settle(threadId);
+          yield* publishPeerReply(threadId, "reply");
+
+          yield* say(threadId, "second", "Continue");
+          const after = yield* settle(threadId);
+          assert.equal(after.runs.at(-1)?.status, "completed");
+          const text = yield* lastTurnText(harness.turns);
+          assert.include(text, PEER_TEXT);
+          assert.include(text, "speaker=Astra");
+          assert.include(text, "Continue");
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("reaches a first primary turn when only peers have spoken", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("first-turn");
+        yield* Effect.gen(function* () {
+          const threadId = ThreadId.make("thread:group-publication:first-turn");
+          yield* startThread(threadId);
+          yield* publishPeerReply(threadId, "reply");
+
+          yield* say(threadId, "first", "Now you");
+          const after = yield* settle(threadId);
+          assert.equal(after.runs.at(-1)?.status, "completed");
+          const delivered = hasText(
+            (yield* Ref.get(harness.injected)).flatMap((item) =>
+              item.content.map((part) => part.text),
+            ),
+            PEER_TEXT,
+          );
+          assert.isTrue(delivered || (yield* lastTurnText(harness.turns)).includes(PEER_TEXT));
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("labels peer text with role user when the thread later switches provider", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("switch");
+        yield* Effect.gen(function* () {
+          const threadId = ThreadId.make("thread:group-publication:switch");
+          yield* startThread(threadId);
+          yield* say(threadId, "first", "Question");
+          yield* settle(threadId);
+          yield* publishPeerReply(threadId, "reply", { modelSelection: CODEX_MODEL_SELECTION });
+          yield* Ref.set(harness.injected, []);
+
+          yield* say(threadId, "switch", "Over to Claude", {
+            modelSelection: CLAUDE_MODEL_SELECTION,
+          });
+          const after = yield* settle(threadId);
+          assert.equal(after.runs.at(-1)?.status, "completed");
+          const delivered = yield* Ref.get(harness.injected);
+          const textOf = (item: HistoryItem) => item.content[0]?.text ?? "";
+          const peer = delivered.find((item) => textOf(item).includes(PEER_TEXT));
+          assert.equal(peer?.role, "user");
+          assert.include(peer === undefined ? "" : textOf(peer), "speaker=Astra");
+          const own = delivered.find((item) => textOf(item).includes("Primary reply 1"));
+          assert.equal(own?.role, "assistant");
+          assert.notInclude(own === undefined ? "" : textOf(own), "speaker=");
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live.each(PEERS)(
+    "keeps the primary running while a %s peer publishes, and the queue delivers",
+    ([kind, peer]) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness(`concurrent-${kind}`, { holdRunOrdinal: 2 });
+          yield* Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const threadId = ThreadId.make(`thread:group-publication:concurrent:${kind}`);
+            yield* startThread(threadId);
+            yield* say(threadId, "first", "Question");
+            yield* settle(threadId);
+            yield* say(threadId, "held", "Primary is working");
+            yield* Deferred.await(harness.started);
+            yield* publishPeerReply(threadId, "reply", { modelSelection: peer });
+
+            const during = yield* orchestrator.getThreadProjection(threadId);
+            const primary = during.runs.find((run) => run.status === "running");
+            assert.equal(primary?.ordinal, 2);
+            assert.isDefined(during.runs.find((run) => run.publication !== undefined));
+            assert.equal(latestUnheldRun(during.runs)?.id, primary?.id);
+            assert.equal(latestExecutedRun(during.runs)?.id, primary?.id);
+            const shell = yield* orchestrator.getThreadShell(threadId);
+            assert.equal(shell?.latestRunId, primary?.id);
+            assert.equal(shell?.activeRunId, primary?.id);
+            assert.equal(shell?.status, "running");
+
+            yield* say(threadId, "queued-before", "Queued before", { queue: true });
+            yield* publishPeerReply(threadId, "second", { modelSelection: peer });
+            yield* say(threadId, "queued-after", "Queued after", { queue: true });
+            yield* Ref.set(harness.injected, []);
+            yield* Deferred.succeed(harness.release, undefined);
+            const after = yield* settle(threadId);
+            assert.isTrue(
+              after.runs.every((run) => run.status === "completed"),
+              "every run finished",
+            );
+            const turns = yield* Ref.get(harness.turns);
+            assert.deepEqual(
+              turns.slice(-2).map((turn) => turn.text),
+              ["Queued before", "Queued after"],
+            );
+            const peerItems = (yield* Ref.get(harness.injected)).filter((item) =>
+              item.content[0]?.text.includes(PEER_TEXT),
+            );
+            assert.lengthOf(peerItems, 2, "the first queued turn delivers each reply, once");
+            assert.deepEqual(
+              peerItems.map((item) => item.role),
+              ["user", "user"],
+            );
+            const handoffRuns = after.runs.filter((run) => run.contextHandoffId !== null);
+            assert.deepEqual(
+              handoffRuns.map(
+                (run) => after.messages.find((m) => m.id === run.userMessageId)?.text,
+              ),
+              ["Queued before"],
+            );
+            assert.equal(after.thread.activeProviderThreadId, during.thread.activeProviderThreadId);
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      ),
   );
 });
