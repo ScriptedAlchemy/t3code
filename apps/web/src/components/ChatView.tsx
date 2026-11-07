@@ -63,6 +63,7 @@ import {
   isProviderNativeSubagentThread,
   orchestrationV2WorktreePending,
   type EnvironmentId,
+  isOrchestrationV2PublicationRun,
   type MessageId,
   type ModelSelection,
   type PreviewAnnotationPayload,
@@ -1614,6 +1615,9 @@ export default function ChatView(props: ChatViewProps) {
   );
   const turnDiffSummaries = useThreadCheckpointSummaries(routeThreadDetailRef);
   const availableRevertTurnCounts = deriveAvailableRevertTurnCounts(serverProjection);
+  const publicationRunIds = new Set(
+    serverProjection?.runs.filter(isOrchestrationV2PublicationRun).map((run) => run.id),
+  );
   // A paged history window cannot identify the first loaded run as the thread start.
   const threadStartCheckpointReady =
     !serverThreadHistory.hasMoreHistory &&
@@ -3511,6 +3515,7 @@ export default function ChatView(props: ChatViewProps) {
                   supportsConversationRollback={supportsConversationRollback}
                   threadStartCheckpointReady={threadStartCheckpointReady}
                   availableRevertTurnCounts={availableRevertTurnCounts}
+                  publicationRunIds={publicationRunIds}
                   onRevertToTurnCount={onRevertTimelineTurnStable}
                   onUseArtifactTemplate={insertArtifactTemplateStable}
                   onSendAppMessage={sendAppMessageStable}

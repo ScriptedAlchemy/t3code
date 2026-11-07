@@ -1060,6 +1060,8 @@ export function deriveRevertTurnCountByUserMessageId(input: {
   readonly threadStartCheckpointReady: boolean;
   readonly availableRevertTurnCounts?: ReadonlySet<number> | undefined;
   readonly unsettledRunId?: RunId | null;
+  /** These never capture a checkpoint, so the next turn rewinds past them. */
+  readonly publicationRunIds?: ReadonlySet<RunId> | undefined;
 }): Map<ChatMessage["id"], number> {
   const readyTurnCountByRunId = new Map<RunId, number>();
   for (const checkpoint of input.checkpoints) {
@@ -1092,7 +1094,7 @@ export function deriveRevertTurnCountByUserMessageId(input: {
             : undefined
           : readyTurnCountByRunId.get(previousRunId),
       );
-      previousRunId = runId;
+      if (!input.publicationRunIds?.has(runId)) previousRunId = runId;
     }
     if (entry.kind !== "message") continue;
     const { message } = entry;
