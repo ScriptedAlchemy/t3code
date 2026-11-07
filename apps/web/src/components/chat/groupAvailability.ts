@@ -1,10 +1,16 @@
 import { useAtomValue } from "@effect/atom-react";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+  type AtomCommandResult,
+} from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { environmentPresentations } from "~/state/presentation";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 
 /**
  * Whether this environment offers Invite: the user may invite there and Group conversations is on
@@ -34,4 +40,20 @@ export const groupInviteRequestAtom = Atom.make<ScopedThreadRef | null>(null).pi
 
 export function requestGroupInvite(threadRef: ScopedThreadRef): void {
   appAtomRegistry.set(groupInviteRequestAtom, threadRef);
+}
+
+/** A refusal says what the user can do about it, so it is shown rather than only logged. */
+export function reportGroupCommandFailure(
+  title: string,
+  result: AtomCommandResult<unknown, unknown>,
+) {
+  if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
+  const error = squashAtomCommandFailure(result);
+  toastManager.add(
+    stackedThreadToast({
+      type: "error",
+      title,
+      description: error instanceof Error ? error.message : "An error occurred.",
+    }),
+  );
 }

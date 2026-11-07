@@ -5,6 +5,7 @@ import { useRef, type ComponentProps } from "react";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Dialog, DialogDescription, DialogPopup, DialogTitle } from "../ui/dialog";
+import { reportGroupCommandFailure } from "./groupAvailability";
 import { ModelPickerContent } from "./ModelPickerContent";
 
 /** The existing model picker in a dialog: the model chosen takes a seat in the thread. */
@@ -42,7 +43,7 @@ export function GroupInviteDialog(
                 threadId: threadRef.threadId,
                 modelSelection: createModelSelection(instanceId, model),
               },
-            });
+            }).then((result) => reportGroupCommandFailure("Could not invite that model", result));
           }}
         />
       </DialogPopup>

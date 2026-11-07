@@ -9,7 +9,11 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { ComposerBanner } from "./ComposerBanner";
-import { requestGroupInvite, useCanInviteToGroup } from "./groupAvailability";
+import {
+  reportGroupCommandFailure,
+  requestGroupInvite,
+  useCanInviteToGroup,
+} from "./groupAvailability";
 
 function SeatChip(props: { threadRef: ScopedThreadRef; seat: ThreadGroupSeat }) {
   const { threadRef, seat } = props;
@@ -38,7 +42,7 @@ function SeatChip(props: { threadRef: ScopedThreadRef; seat: ThreadGroupSeat }) 
             void removeFromGroup({
               environmentId: threadRef.environmentId,
               input: { threadId: threadRef.threadId, seatThreadId: seat.threadId },
-            })
+            }).then((result) => reportGroupCommandFailure(`Could not remove ${seat.label}`, result))
           }
         >
           Remove
@@ -96,7 +100,7 @@ export function GroupRosterBar(props: { threadRef: ScopedThreadRef; group: Threa
               void endGroup({
                 environmentId: threadRef.environmentId,
                 input: { threadId: threadRef.threadId },
-              })
+              }).then((result) => reportGroupCommandFailure("Could not end the group", result))
             }
           >
             End group · Continue with {group.primary.label}
