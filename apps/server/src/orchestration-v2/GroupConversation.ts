@@ -305,7 +305,7 @@ export function finalReplyText(
   return latest?.text ?? null;
 }
 
-/** Whether this settled seat run should appear on the visible thread. */
+/** A settled seat run appears on the visible thread only if the seat is still seated. */
 export function seatRunPublishes(
   seat: OrchestrationV2ThreadGroup["seats"][number],
   run: Pick<RunRow, "status" | "groupThrough" | "ordinal">,

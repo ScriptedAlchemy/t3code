@@ -162,17 +162,23 @@ export function decideGroupMembership(input: {
   switch (command.type) {
     case "thread.group.invite": {
       const primaryHandle = handleFromLabel(command.primaryLabel);
-      const base: OrchestrationV2ThreadGroup = group ?? {
+      const seatHandles = (group?.seats ?? []).map((seat) => seat.handle);
+      // The composer's picker may have moved the primary since the last invite.
+      const primary = {
+        model: thread.modelSelection.model,
+        label: command.primaryLabel,
+        handle:
+          group !== null && seatHandles.includes(primaryHandle)
+            ? group.primary.handle
+            : primaryHandle,
+      };
+      const base: OrchestrationV2ThreadGroup = {
         status: "active",
-        primary: {
-          model: thread.modelSelection.model,
-          label: command.primaryLabel,
-          handle: primaryHandle,
-        },
-        seats: [],
-        discussion: null,
-        closedBecause: null,
-        closedAt: null,
+        primary,
+        seats: group?.seats ?? [],
+        discussion: group?.discussion ?? null,
+        closedBecause: group?.status === "ended" ? null : (group?.closedBecause ?? null),
+        closedAt: group?.closedAt ?? null,
       };
       const existing = base.seats.find((seat) => seat.threadId === command.seat.threadId);
       const taken = new Set([
@@ -191,7 +197,6 @@ export function decideGroupMembership(input: {
       return Result.succeed({
         group: {
           ...base,
-          status: "active",
           seats:
             existing === undefined
               ? [...base.seats, seat]

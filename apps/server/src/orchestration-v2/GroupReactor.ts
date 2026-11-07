@@ -93,8 +93,7 @@ const make = Effect.gen(function* () {
     if (parentId !== null) {
       const parent = yield* projections.getThread(parentId);
       const seat = seatForThread(parent.group, threadId);
-      // After End or Remove the seat's words stay in its side chat. Nothing else may restart.
-      if (seat === undefined || parent.group?.status !== "active") return;
+      if (seat === undefined) return;
       yield* publishPending(parent, seat, runId);
       yield* advance(parent.id, cause);
       return;

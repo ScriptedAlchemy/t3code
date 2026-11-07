@@ -361,7 +361,7 @@ const catalog = [
 
 const makeHarness = Effect.fn("GroupConversationTest.makeHarness")(function* (
   name: string,
-  options: { readonly enabled?: boolean } = {},
+  options: { readonly enabled?: boolean; readonly runEffectWorker?: boolean } = {},
 ) {
   const cwd = yield* checkpointWorkspace(`group-conversation-${name}`);
   const control: Control = {
@@ -421,7 +421,12 @@ const makeHarness = Effect.fn("GroupConversationTest.makeHarness")(function* (
           },
         },
         registry,
-        { databaseLayer: database },
+        {
+          databaseLayer: database,
+          ...(options.runEffectWorker === undefined
+            ? {}
+            : { runEffectWorker: options.runEffectWorker }),
+        },
       ),
     ),
     Layer.provideMerge(
@@ -721,6 +726,10 @@ describe("group conversations", () => {
             yield* startThread(threadId);
             const broken = yield* invite(threadId, ASTRA);
             const healthy = yield* invite(threadId, OPUS);
+            const unreachable = yield* invite(threadId, {
+              instanceId: ProviderInstanceId.make("removed-provider"),
+              model: "removed-model",
+            });
             yield* Ref.set(harness.control.failing, new Set([broken]));
             const healthyHold = yield* hold(harness.control, healthy);
             yield* say(threadId, "question", "Go");
@@ -747,6 +756,11 @@ describe("group conversations", () => {
             assert.isFalse(
               rows.some((row) => row.label === "Astra"),
               "a failure has no text",
+            );
+            assert.lengthOf(
+              yield* turnsOf(harness.control, unreachable),
+              0,
+              "a seat that cannot start takes nobody with it",
             );
           }),
         ).pipe(Effect.provide(harness.layer));
@@ -1349,6 +1363,178 @@ describe("group conversations", () => {
             yield* Deferred.succeed(primaryHold.release, "completed");
             const after = yield* settle(threadId);
             assert.isTrue(publishedRows(after).some((row) => row.text.includes("MIDTURNMARK")));
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("reads the primary's words as the primary's when a seat shares its instance", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("portable");
+        const threadId = ThreadId.make("thread:group:portable");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            yield* startThread(threadId);
+            yield* script(harness.control, threadId, ["PRIMARYMARK thinks CRDT"]);
+            yield* say(threadId, "warm", "Warm up");
+            yield* until(
+              orchestrator
+                .getThreadProjection(threadId)
+                .pipe(Effect.map((p) => p.runs.at(-1)?.status === "completed")),
+            );
+            const seat = yield* invite(threadId, OPUS);
+            yield* Ref.set(harness.control.injected, []);
+            yield* say(threadId, "peer", "Opus, what did you recommend?", [seat]);
+            yield* settle(threadId);
+
+            const seatRun = (yield* orchestrator.getThreadProjection(seat)).runs.at(-1);
+            assert.equal(seatRun?.status, "completed", "a native fork would fail this adapter");
+            const primaryWords = (yield* Ref.get(harness.control.injected)).filter((item) =>
+              item.content[0]?.text.includes("PRIMARYMARK"),
+            );
+            assert.lengthOf(primaryWords, 1);
+            assert.equal(primaryWords[0]?.role, "user");
+            assert.include(primaryWords[0]?.content[0]?.text ?? "", "speaker=Fable");
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("wakes nobody on words older than the latest user message", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("stale");
+        const threadId = ThreadId.make("thread:group:stale");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const service = yield* ThreadGroupService.ThreadGroupService;
+            yield* startThread(threadId);
+            const astra = yield* invite(threadId, ASTRA);
+            const opus = yield* invite(threadId, OPUS);
+            const astraHold = yield* hold(harness.control, astra, "Over to you.\n@opus");
+            yield* say(threadId, "first", "Astra, go", [astra]);
+            yield* Deferred.await(astraHold.started);
+            yield* until(
+              orchestrator
+                .getThreadProjection(astra)
+                .pipe(Effect.map((p) => p.providerTurns.some((turn) => turn.status === "running"))),
+            );
+            yield* service.stop({ threadId });
+            yield* settle(threadId);
+            const stopped = yield* orchestrator.getThreadProjection(threadId);
+            assert.isTrue(
+              publishedRows(stopped).some((row) => row.text.endsWith("@opus")),
+              "control: the stale hand-off is on the record",
+            );
+
+            yield* script(harness.control, astra, ["PASS"]);
+            yield* say(threadId, "second", "Astra, again", [astra]);
+            yield* settle(threadId);
+            assert.lengthOf(yield* turnsOf(harness.control, astra), 2);
+            assert.lengthOf(yield* turnsOf(harness.control, opus), 0);
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("holds a discussion open while a member is being told to start", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("delivering", { runEffectWorker: false });
+        const threadId = ThreadId.make("thread:group:delivering");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* startThread(threadId);
+          const seat = yield* invite(threadId, ASTRA);
+          yield* say(threadId, "peer", "Astra, go", [seat]);
+          const advance = (tag: string) =>
+            orchestrator.dispatch({
+              type: "thread.group.advance",
+              commandId: CommandId.make(`command:group-delivering:${tag}`),
+              threadId,
+            });
+          yield* advance("pending");
+          const pending = (yield* readGroup(threadId))!;
+          assert.deepEqual(pending.discussion?.delivering, [seat], "the seat has no run yet");
+          assert.isNull(pending.closedBecause);
+
+          yield* orchestrator.dispatch({
+            type: "thread.group.delivered",
+            commandId: CommandId.make("command:group-delivering:delivered"),
+            threadId,
+            member: seat,
+          });
+          yield* advance("after");
+          assert.equal((yield* readGroup(threadId))!.closedBecause, "settled", "control");
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("starts no turn on a seat deleted before the reactor heard about it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("delete-race");
+        const threadId = ThreadId.make("thread:group:delete-race");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          yield* startThread(threadId);
+          const kept = yield* invite(threadId, ASTRA);
+          const gone = yield* invite(threadId, OPUS);
+          yield* orchestrator.dispatch({
+            type: "thread.delete",
+            commandId: CommandId.make("command:group-delete-race:seat"),
+            threadId: gone,
+          });
+          yield* say(threadId, "go", "Both of you", [kept, gone]);
+          yield* until(
+            orchestrator
+              .getThreadProjection(kept)
+              .pipe(Effect.map((p) => p.runs.at(-1)?.status === "completed")),
+          );
+          yield* worker.drain();
+          assert.lengthOf(yield* turnsOf(harness.control, kept), 1, "control");
+          assert.lengthOf(yield* turnsOf(harness.control, gone), 0);
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("names a thread from its first message even when that message skips the primary", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("title");
+        const threadId = ThreadId.make("thread:group:title");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("command:group-title:first"),
+              threadId,
+              messageId: MessageId.make("message:group-title:first"),
+              createdBy: "user",
+              creationSource: "web",
+              text: "Astra, what do you think?",
+              titleSeed: "Astra asked first",
+              attachments: [],
+              groupAudience: [seat],
+              dispatchMode: { type: "start_immediately" },
+            });
+            const after = yield* settle(threadId);
+            assert.equal(after.thread.title, "Astra asked first");
+            assert.isDefined(
+              after.messages.find((row) => row.text === "Astra, what do you think?"),
+            );
           }),
         ).pipe(Effect.provide(harness.layer));
       }),
