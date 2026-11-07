@@ -2136,68 +2136,70 @@ describe("group conversations", () => {
   );
 
   it.live.each([
-    ["queued behind the running primary", "queue" as const],
-    ["steered into the running primary", "auto" as const],
-  ])("keeps a new discussion open past an older @user when the message is %s", ([, delivery]) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const harness = yield* makeHarness(`floor-${delivery}`);
-        const threadId = ThreadId.make(`thread:group:floor-${delivery}`);
-        yield* withReactor(
-          Effect.gen(function* () {
-            const orchestrator = yield* Orchestrator.OrchestratorV2;
-            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-            const publishedCount = (count: number) =>
-              until(
+    ["queued behind the running primary", "queue"],
+    ["steered into the running primary", "auto"],
+  ] as const)(
+    "keeps a new discussion open past an older @user when the message is %s",
+    ([, delivery]) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness(`floor-${delivery}`);
+          const threadId = ThreadId.make(`thread:group:floor-${delivery}`);
+          yield* withReactor(
+            Effect.gen(function* () {
+              const orchestrator = yield* Orchestrator.OrchestratorV2;
+              const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+              const publishedCount = (count: number) =>
+                until(
+                  orchestrator
+                    .getThreadProjection(threadId)
+                    .pipe(
+                      Effect.map(
+                        (row) =>
+                          row.runs.filter((run) => run.publication?.type === "peer_reply").length >=
+                          count,
+                      ),
+                    ),
+                );
+              yield* startThread(threadId);
+              yield* say(threadId, "warm", "Warm up");
+              yield* until(
                 orchestrator
                   .getThreadProjection(threadId)
-                  .pipe(
-                    Effect.map(
-                      (row) =>
-                        row.runs.filter((run) => run.publication?.type === "peer_reply").length >=
-                        count,
-                    ),
-                  ),
+                  .pipe(Effect.map((row) => row.runs.at(-1)?.status === "completed")),
               );
-            yield* startThread(threadId);
-            yield* say(threadId, "warm", "Warm up");
-            yield* until(
-              orchestrator
-                .getThreadProjection(threadId)
-                .pipe(Effect.map((row) => row.runs.at(-1)?.status === "completed")),
-            );
-            const seat = yield* invite(threadId, ASTRA);
-            const other = yield* invite(threadId, STEERLESS);
-            const primaryHold = yield* hold(harness.control, threadId, "long");
-            yield* script(harness.control, seat, ["Done here.\n@user", "Second view"]);
-            yield* script(harness.control, other, ["First plain", "Second plain"]);
-            yield* say(threadId, "first", "First question");
-            yield* Deferred.await(primaryHold.started);
-            yield* until(
-              orchestrator
-                .getThreadProjection(threadId)
-                .pipe(Effect.map((row) => row.providerTurns.at(-1)?.status === "running")),
-            );
-            yield* publishedCount(2);
-            yield* worker.drain();
-            assert.equal((yield* readGroup(threadId))?.closedBecause, "settled");
-            yield* say(threadId, "second", "Second question", undefined, delivery);
-            const { runs } = yield* orchestrator.getThreadProjection(threadId);
-            assert.equal(
-              runs.some((run) => run.status === "queued"),
-              delivery === "queue",
-            );
-            yield* publishedCount(4);
-            yield* worker.drain();
-            const group = yield* readGroup(threadId);
-            assert.isNotNull(group?.discussion, "the new message still has the primary to hear");
-            assert.isNull(group?.closedBecause);
-            yield* Deferred.succeed(primaryHold.release, "completed");
-            yield* settle(threadId);
-          }),
-        ).pipe(Effect.provide(harness.layer));
-      }),
-    ),
+              const seat = yield* invite(threadId, ASTRA);
+              const other = yield* invite(threadId, STEERLESS);
+              const primaryHold = yield* hold(harness.control, threadId, "long");
+              yield* script(harness.control, seat, ["Done here.\n@user", "Second view"]);
+              yield* script(harness.control, other, ["First plain", "Second plain"]);
+              yield* say(threadId, "first", "First question");
+              yield* Deferred.await(primaryHold.started);
+              yield* until(
+                orchestrator
+                  .getThreadProjection(threadId)
+                  .pipe(Effect.map((row) => row.providerTurns.at(-1)?.status === "running")),
+              );
+              yield* publishedCount(2);
+              yield* worker.drain();
+              assert.equal((yield* readGroup(threadId))?.closedBecause, "settled");
+              yield* say(threadId, "second", "Second question", undefined, delivery);
+              const { runs } = yield* orchestrator.getThreadProjection(threadId);
+              assert.equal(
+                runs.some((run) => run.status === "queued"),
+                delivery === "queue",
+              );
+              yield* publishedCount(4);
+              yield* worker.drain();
+              const group = yield* readGroup(threadId);
+              assert.isNotNull(group?.discussion, "the new message still has the primary to hear");
+              assert.isNull(group?.closedBecause);
+              yield* Deferred.succeed(primaryHold.release, "completed");
+              yield* settle(threadId);
+            }),
+          ).pipe(Effect.provide(harness.layer));
+        }),
+      ),
   );
 
   it.live("closes the discussion when the thread is archived, running or not", () =>
