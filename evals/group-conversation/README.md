@@ -52,7 +52,7 @@ This measures text behavior and the scheduler's information flow. It does not me
 
 Latency starts before each API request and ends after consuming its response. Discussion wall time includes the participant calls and excludes the judge. Serial sums its reaction calls; parallel waits for the slowest call in each wave. Tokens include input, cached input, output, and reasoning when the API exposes it. Cache hits, truncation, invalid judge JSON, refusals, and provider errors must be checked before interpreting a result. The timing limiter is the remote model/API, which this runner cannot profile. Treat timings as descriptive observations, not a measured product speedup.
 
-USD estimates use the existing MCP eval's Claude input/output/cache rates. GPT and proxy billing are not priced by this repository. The report gives their tokens and says that dollar cost is unavailable. Do not report unknown billing as $0. With no successful calls the measured API spend is $0.
+USD estimates use the existing MCP eval's input/output/cache rates for the two listed Claude models. Other models and proxy billing are unpriced. The report gives their tokens and says that dollar cost is unavailable. Do not report unknown billing as $0. With no requests sent the measured API spend is $0. An incomplete API request can still incur unreported charges.
 
 ## Add a case
 

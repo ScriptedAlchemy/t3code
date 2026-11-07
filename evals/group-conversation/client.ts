@@ -215,10 +215,13 @@ export function makeClient(options: { readonly proxy: boolean; readonly effort: 
     const elapsedMs = NodePerfHooks.performance.now() - start;
     const usage = parsed.usage;
     const truncated = parsed.status === "incomplete" || parsed.stop_reason === "max_tokens";
-    const rates = model.includes("opus")
-      ? { input: 4, output: 20, write: 5, read: 0.2 }
-      : { input: 2, output: 10, write: 2.5, read: 0.2 };
-    const usd = claude
+    const rates =
+      model === "claude-opus-5-5"
+        ? { input: 4, output: 20, write: 5, read: 0.2 }
+        : model === "claude-sonnet-5-5"
+          ? { input: 2, output: 10, write: 2.5, read: 0.2 }
+          : null;
+    const usd = rates
       ? (usage.input_tokens * rates.input +
           usage.output_tokens * rates.output +
           (usage.cache_creation_input_tokens ?? 0) * rates.write +

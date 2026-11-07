@@ -448,7 +448,7 @@ if (values["dry-run"]) {
     JSON.stringify(decision, null, 2),
     "```",
     "",
-    `Estimated Claude API spend: $${priced.toFixed(4)}. ${unknown ? "Additional dollar cost unavailable; inspect GPT/proxy tokens and incomplete requests in calls.json." : client.attempts.length === 0 ? "Measured API spend: $0. No requests were sent." : "Estimate uses the MCP eval's rates; actual billing is external."}`,
+    `Estimated Claude API spend: $${priced.toFixed(4)}. ${unknown ? "Additional dollar cost unavailable; inspect unpriced model usage and incomplete requests in calls.json." : client.attempts.length === 0 ? "Measured API spend: $0. No requests were sent." : "Estimate uses the MCP eval's rates; actual billing is external."}`,
     "",
     "Timing is descriptive API wall time. Remote inference and network are unprofiled. No product latency conclusion is established.",
     "",
