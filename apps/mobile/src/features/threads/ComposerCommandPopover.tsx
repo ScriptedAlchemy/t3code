@@ -25,6 +25,13 @@ import { pullRequestStatus } from "../pull-requests/pullRequestStatus";
 export type ComposerCommandItem =
   | {
       readonly id: string;
+      readonly type: "group-member";
+      readonly handle: string;
+      readonly label: string;
+      readonly description: string;
+    }
+  | {
+      readonly id: string;
       readonly type: "pull-request";
       readonly pullRequest: PullRequestContextMetadata;
       readonly label: string;
@@ -129,6 +136,8 @@ function itemIcon(item: ComposerCommandItem): AppSymbolName | null {
     case "path":
     case "model":
       return null;
+    case "group-member":
+      return "person.2";
     case "thread":
       return "text.bubble";
     case "environment":

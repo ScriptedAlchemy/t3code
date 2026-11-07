@@ -1,3 +1,5 @@
+import { ThreadGroupBar } from "./ThreadGroupBar";
+import { ThreadGroupLiveRows } from "./ThreadGroupLiveRows";
 import { AppText as Text } from "../../components/ui/AppText";
 import { isSeatedSeatThread } from "@t3tools/client-runtime/state/thread-group";
 import { ChildThreadApprovals } from "./ChildThreadApprovals";
@@ -828,6 +830,9 @@ function ThreadDetailBody(
     }
     if (props.activeWorkStartedAt !== null && contentPresentationKind === "ready") {
       return { kind: "working", startedAt: props.activeWorkStartedAt };
+    }
+    if (props.selectedThread.groupDiscussionOpen && contentPresentationKind === "ready") {
+      return { kind: "preparing", label: "Group discussion" };
     }
     if (pendingBackgroundWork !== null && contentPresentationKind === "ready") {
       return {
@@ -1704,6 +1709,16 @@ function ThreadDetailBody(
                       threadRef={props.selectedThreadDetailRef}
                       canOperateThread={props.canOperateThread}
                     />
+                    {props.draftMode ? null : <ThreadGroupBar thread={props.selectedThread} />}
+                    {props.selectedThread.group == null ? null : (
+                      <ThreadGroupLiveRows
+                        threadRef={{
+                          environmentId: props.environmentId,
+                          threadId: props.selectedThread.id,
+                        }}
+                        group={props.selectedThread.group}
+                      />
+                    )}
                     {props.draftMode ? null : (
                       <ThreadSideChatsRow
                         environmentId={props.environmentId}

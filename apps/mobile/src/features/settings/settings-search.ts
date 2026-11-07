@@ -99,6 +99,8 @@ const SETTINGS_SEARCH_TERMS = {
     "start from remote",
   ],
   SettingsLabs: [
+    "group conversations",
+    "invite models",
     "legacy",
     "plan mode",
     "beta",

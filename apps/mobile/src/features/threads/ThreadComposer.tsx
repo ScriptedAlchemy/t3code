@@ -1,3 +1,4 @@
+import { orchestrationEnvironment } from "../../state/orchestration";
 import { ThreadSplitSuggestion } from "./ThreadSplitSuggestion";
 import { ProjectKnowledgeEntry } from "../../components/ProjectKnowledgeEntry";
 import { useSidebarWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
@@ -572,6 +573,9 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
           props.selectedThread.projectId,
           "composer",
         );
+  const canInviteToGroup = useAtomValue(
+    orchestrationEnvironment.inviteToGroup.permissionAtom(props.environmentId),
+  );
   const mentionableEnvironments = useMentionableEnvironments();
   const composerMenu = useComposerCommandMenu({
     draftMessage: draftMessage,
@@ -601,8 +605,21 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       usageLimitsOffered && draftAttachments.length === 0 ? openUsageLimits : undefined,
     modelOptions: mentionModelOptions,
     modelProviders: props.serverConfig?.providers,
+    group: props.selectedThread.group,
     ...(props.onFreshSession === undefined ? {} : { onFreshSession: props.onFreshSession }),
     offersSideChat: props.offersSideChat === true,
+    onGroupInvite:
+      !props.isDraft &&
+      props.selectedThread.lineage.sideChat !== true &&
+      props.selectedThread.lineage.relationshipToParent !== "subagent" &&
+      canInviteToGroup &&
+      props.serverConfig?.settings.groupConversationsEnabled === true
+        ? () =>
+            navigation.navigate("ThreadGroupInvite", {
+              environmentId: props.environmentId,
+              threadId: props.selectedThread.id,
+            })
+        : undefined,
   });
   const voiceInput = useVoiceInputController({
     ownerKey: composerDraftKey,

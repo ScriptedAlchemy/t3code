@@ -64,6 +64,17 @@ describe("resolveComposerMenuSelection", () => {
 });
 
 describe("mobile slash commands", () => {
+  it.each([false, true])("offers /invite only when invitations are available (%s)", (available) => {
+    const items = buildComposerSlashCommandItems({
+      query: "invite",
+      atMessageStart: true,
+      hasThread: true,
+      offersGroupInvite: available,
+      allowInteractionMode: false,
+      selectedProviderStatus: null,
+    });
+    expect(items.map((item) => item.id)).toEqual(available ? ["cmd:invite"] : []);
+  });
   const antigravity = {
     driver: ProviderDriverKind.make("antigravity"),
     showInteractionModeToggle: false,
@@ -211,6 +222,23 @@ describe("mobile model mentions", () => {
         allowInteractionMode: true,
       }),
     ).toEqual({ text: "model:codex/gpt-5.4 ", cursor: 20, interactionMode: null });
+  });
+
+  it("addresses a group member with its unique handle", () => {
+    expect(
+      resolveComposerCommandSelection({
+        draftMessage: "Ask @as",
+        trigger: { rangeStart: 4, rangeEnd: 7 },
+        item: {
+          id: "group:astra",
+          type: "group-member",
+          handle: "astra-2",
+          label: "@astra-2",
+          description: "Astra",
+        },
+        allowInteractionMode: false,
+      }),
+    ).toEqual({ text: "Ask @astra-2 ", cursor: 13, interactionMode: null });
   });
 
   it("offers current, visible models labelled with their provider", () => {
