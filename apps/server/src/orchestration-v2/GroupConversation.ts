@@ -94,6 +94,7 @@ export const planWave = (
   group: OrchestrationV2ThreadGroup,
   unseen: (member: GroupMember) => ReadonlyArray<GroupEntry>,
   activeMembers: ReadonlyArray<GroupMember>,
+  lostTurn: ReadonlyArray<GroupMember> = [],
 ): GroupWave => {
   const { discussion } = group;
   if (discussion === null) return { start: [] };
@@ -105,8 +106,10 @@ export const planWave = (
   );
   if (closedByMember) return { start: [], close: "settled" };
   if (activeMembers.length > 0) return { start: [] };
-  const woken = members.filter((member) =>
-    unseen(member).some((entry) => wakes(entry, discussion.mode, group).includes(member)),
+  const woken = members.filter(
+    (member) =>
+      lostTurn.includes(member) ||
+      unseen(member).some((entry) => wakes(entry, discussion.mode, group).includes(member)),
   );
   if (woken.length === 0) return { start: [], close: "settled" };
   if (discussion.turnsLeft === 0) return { start: [], close: "budget" };
@@ -124,6 +127,7 @@ type RunRow = Pick<
   | "groupThrough"
   | "activeAttemptId"
   | "userMessageId"
+  | "startedAt"
 >;
 
 /** Who a non-member's words came from. Automatic wakes are not messages anyone sent. */
@@ -281,6 +285,18 @@ export function seatWakeCursor(
         : cursor,
     0,
   );
+}
+
+/** A restart cancelled the seat's latest turn, and a user's words never wake anyone twice. */
+export function seatLostTurn(
+  seatRuns: ReadonlyArray<Pick<RunRow, "status" | "groupThrough" | "ordinal" | "startedAt">>,
+): boolean {
+  let latest: (typeof seatRuns)[number] | undefined;
+  for (const run of seatRuns) {
+    if (run.groupThrough === undefined) continue;
+    if (latest === undefined || run.ordinal > latest.ordinal) latest = run;
+  }
+  return latest?.status === "cancelled" && latest.startedAt !== null;
 }
 
 /** The newest ordinal a provider took, or undefined before a seat's first turn reaches one. */

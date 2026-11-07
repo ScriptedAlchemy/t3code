@@ -202,6 +202,7 @@ import {
   readTurnOutcome,
   seatDeliveredCursor,
   seatForThread,
+  seatLostTurn,
   seatWakeCursor,
   unseenFor,
   finalReplyText,
@@ -5258,7 +5259,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...publishing.map((row) => row.seat.threadId),
       ...stored.discussion.delivering,
     ];
-    const wave = planWave(group, (member) => unseenFor(member, current, cursorFor(member)), active);
+    const wave = planWave(
+      group,
+      (member) => unseenFor(member, current, cursorFor(member)),
+      active,
+      live.filter((row) => seatLostTurn(row.runs)).map((row) => row.seat.threadId),
+    );
     const now = yield* DateTime.now;
     const next = groupAfterWave(group, wave, now);
     if (next === group) return;
@@ -5400,7 +5406,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const seatMessageId = (source: MessageId | string) =>
       MessageId.make(`message:group:${command.threadId}:${source}`);
-    const handed = new Set(member.messages.map((message) => message.id));
+    // A restart can cancel the turn that carried a message, and the seat still owes it an answer.
+    const cancelled = new Set(
+      member.runs.filter((run) => run.status === "cancelled").map((run) => run.userMessageId),
+    );
+    const handed = new Set(
+      member.messages.filter((message) => !cancelled.has(message.id)).map((message) => message.id),
+    );
     const delivered = seatDeliveredCursor(member);
     // A first turn gets the side chat digest for history, so it only needs the current exchange.
     const unseen = entries.filter(

@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
+import { seatForThread } from "./GroupConversation.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -207,6 +208,24 @@ export const make = Effect.gen(function* () {
     return [...sessions.values()];
   };
 
+  const isSeatedSeat = Effect.fnUntraced(function* (
+    thread: ProjectionStore.ProjectionRuntimeRecoveryState["thread"],
+  ) {
+    const parentId = thread.lineage.sideChat === true ? thread.lineage.parentThreadId : null;
+    if (parentId === null) return false;
+    const parent = yield* projections.getThread(parentId).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderRuntimeRecoveryError({
+            operation: "reconcile",
+            threadId: thread.id,
+            cause,
+          }),
+      ),
+    );
+    return seatForThread(parent.group, thread.id)?.status === "seated";
+  });
+
   const reconcileProjection = Effect.fn("ProviderRuntimeRecoveryService.reconcileProjection")(
     function* (
       projection: ProjectionStore.ProjectionRuntimeRecoveryState,
@@ -246,7 +265,7 @@ export const make = Effect.gen(function* () {
       );
       // The lost provider callback cannot resume; persisted questions can be
       // answered by a new user message in threads that accept messages.
-      const questions = pendingRequests.filter(
+      const answerableByMessage = pendingRequests.filter(
         (request) =>
           request.kind === "user_input" &&
           request.responseCapability.type === "live" &&
@@ -260,6 +279,11 @@ export const make = Effect.gen(function* () {
           ) &&
           !isProviderNativeSubagentThread(projection.thread),
       );
+      // The group sends a seat's turn again, and the seat asks again, so keeping this one repeats it.
+      const questions =
+        answerableByMessage.length > 0 && (yield* isSeatedSeat(projection.thread))
+          ? []
+          : answerableByMessage;
       const recoveredRequestIds = new Set(questions.map((request) => request.id));
       const messageRequestNodeIds = new Set(
         pendingRequests

@@ -29,6 +29,7 @@ import {
   planWave,
   readTurnOutcome,
   seatDeliveredCursor,
+  seatLostTurn,
   seatRunPublishes,
   seatWakeCursor,
   isAfterWakeFloor,
@@ -479,6 +480,29 @@ describe("what each member has not seen", () => {
       seatDeliveredCursor({ runs: [failedBeforeTurn, cancelled], providerTurns: [] }),
     ).toBeUndefined();
     expect(seatDeliveredCursor({ runs: [failedBeforeTurn, queued], providerTurns: [] })).toBe(7);
+  });
+
+  const startedAt = DateTime.makeUnsafe("2026-01-01T00:00:00.000Z");
+  const started = { groupThrough: 5, startedAt };
+  it.each<[string, ReadonlyArray<OrchestrationV2Run>, boolean]>([
+    ["a restart cancelled its last turn", [run("run:1", 1, "cancelled", started)], true],
+    [
+      "a user cancelled it while queued",
+      [run("run:1", 1, "cancelled", { groupThrough: 5, startedAt: null })],
+      false,
+    ],
+    [
+      "a later turn replaced the cancelled one",
+      [run("run:1", 1, "cancelled", started), run("run:2", 2, "completed", started)],
+      false,
+    ],
+    [
+      "a turn outside the group was cancelled",
+      [run("run:1", 1, "completed", started), run("run:2", 2, "cancelled", { startedAt })],
+      false,
+    ],
+  ])("knows a seat lost its turn only when %s", (_, runs, lost) => {
+    expect(seatLostTurn(runs)).toBe(lost);
   });
 
   it("publishes only runs delivered since the seat joined", () => {

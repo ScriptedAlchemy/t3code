@@ -17,6 +17,7 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   type RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -2133,6 +2134,106 @@ describe("group conversations", () => {
         ).pipe(Effect.provide(harness.layer));
       }),
     ),
+  );
+
+  it.live.each(["startup", "shutdown"] as const)(
+    "asks a seat again after a %s instead of keeping the question it lost",
+    (trigger) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness(`restart-question-${trigger}`);
+          const threadId = ThreadId.make(`thread:group:restart-question-${trigger}`);
+          yield* withReactor(
+            Effect.gen(function* () {
+              const orchestrator = yield* Orchestrator.OrchestratorV2;
+              const eventSink = yield* EventSink.EventSinkV2;
+              const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+                Effect.provide(Layer.mergeAll(IdAllocator.layer, EffectOutbox.layer)),
+              );
+              yield* startThread(threadId);
+              const seat = yield* invite(threadId, ASTRA);
+              const seatHold = yield* hold(harness.control, seat);
+              yield* script(harness.control, seat, ["never finished", "ANSWER AFTER RESTART"]);
+              yield* say(threadId, "question", "Ask the seat", [seat]);
+              yield* Deferred.await(seatHold.started);
+              const asking = yield* orchestrator.getThreadProjection(seat);
+              const run = asking.runs.at(-1)!;
+              const session = asking.providerSessions[0]!;
+              const requestId = RuntimeRequestId.make(`request:lost-${trigger}`);
+              const now = yield* DateTime.now;
+              yield* eventSink.write({
+                commandId: CommandId.make(`command:seed-seat-question-${trigger}`),
+                events: [
+                  {
+                    id: EventId.make(`event:seat-question-request-${trigger}`),
+                    type: "runtime-request.updated",
+                    threadId: seat,
+                    nodeId: run.rootNodeId!,
+                    occurredAt: now,
+                    payload: {
+                      id: requestId,
+                      nodeId: run.rootNodeId!,
+                      providerTurnId: null,
+                      nativeRequestRef: null,
+                      kind: "user_input",
+                      status: "pending",
+                      responseCapability: { type: "live", providerSessionId: session.id },
+                      createdAt: now,
+                      resolvedAt: null,
+                    },
+                  },
+                  {
+                    id: EventId.make(`event:seat-question-item-${trigger}`),
+                    type: "turn-item.updated",
+                    threadId: seat,
+                    nodeId: run.rootNodeId!,
+                    occurredAt: now,
+                    payload: {
+                      id: TurnItemId.make(`turn-item:seat-question-${trigger}`),
+                      type: "user_input_request",
+                      threadId: seat,
+                      runId: run.id,
+                      nodeId: run.rootNodeId!,
+                      providerThreadId: null,
+                      providerTurnId: null,
+                      nativeItemRef: null,
+                      parentItemId: null,
+                      ordinal: 1_000,
+                      status: "waiting",
+                      title: null,
+                      startedAt: now,
+                      completedAt: null,
+                      updatedAt: now,
+                      requestId,
+                      questions: [
+                        { id: "color", header: "Color", question: "Which color?", options: [] },
+                      ],
+                    },
+                  },
+                ],
+              });
+              yield* recovery.reconcile(trigger);
+              yield* Deferred.succeed(seatHold.release, "completed");
+              yield* until(
+                orchestrator
+                  .getThreadProjection(threadId)
+                  .pipe(
+                    Effect.map((row) =>
+                      publishedRows(row).some((reply) => reply.text === "ANSWER AFTER RESTART"),
+                    ),
+                  ),
+              );
+              const after = yield* orchestrator.getThreadProjection(seat);
+              assert.deepEqual(
+                after.runtimeRequests
+                  .filter((request) => request.status === "pending")
+                  .map((request) => request.id),
+                [],
+              );
+            }),
+          ).pipe(Effect.provide(harness.layer));
+        }),
+      ),
   );
 
   it.live.each([
