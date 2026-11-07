@@ -14,6 +14,7 @@ import { OrchestratorToolkit } from "../../apps/server/src/mcp/toolkits/orchestr
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { type GroupEntry } from "../../apps/server/src/orchestration-v2/GroupConversation.ts";
 import {
+  renderPrimaryGroupNote,
   renderPrimaryWakePrompt,
   renderSeatFirstPrompt,
   renderSeatTurnPrompt,
@@ -106,6 +107,14 @@ export function behaviorMessages(fixture: BehaviorCase) {
       );
       break;
     }
+    case "primary-first":
+      user(
+        [
+          renderPrimaryGroupNote({ self: primary, others: [peer], everyoneAddressed: true }),
+          fixture.request,
+        ].join("\n\n"),
+      );
+      break;
     case "primary-return":
       user(publicHistory(fixture.prior));
       user(fixture.request);

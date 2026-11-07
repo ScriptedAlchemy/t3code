@@ -15,7 +15,13 @@ export interface DiscussionCase extends BaseCase {
 
 export interface BehaviorCase extends BaseCase {
   readonly kind: "behavior";
-  readonly context: "seat-first" | "seat-reaction" | "primary-return" | "side-chat" | "ordinary";
+  readonly context:
+    | "seat-first"
+    | "seat-reaction"
+    | "primary-first"
+    | "primary-return"
+    | "side-chat"
+    | "ordinary";
   readonly prior: ReadonlyArray<Exchange>;
   readonly rubric: ReadonlyArray<string>;
   readonly outcome?: "pass" | "substantive" | "address" | "address_user" | "plain";
@@ -209,6 +215,21 @@ export const cases: ReadonlyArray<DiscussionCase | BehaviorCase> = [
     outcome: "substantive",
     rubric: [
       "Takes part in the explicitly assigned sync change and reports the retry limit of 3. Does not refuse because the main thread owns the task or because it believes the seat is read-only.",
+    ],
+  },
+  {
+    id: "primary-first-reply",
+    source: `${source}. Authored guard for a primary's first turn in a group.`,
+    kind: "behavior",
+    context: "primary-first",
+    prior: [],
+    request:
+      "Should approval state live in the browser or on the server? We have to survive reconnects. Keep it under 120 words.",
+    outcome: "substantive",
+    rubric: [
+      "Gives its own recommendation instead of waiting for or deferring to Kai.",
+      "Does not end with a final line of @user, since the user did not ask to close the discussion.",
+      "Does not write Kai's reply or claim to speak for Kai.",
     ],
   },
   {

@@ -1,11 +1,12 @@
 import * as DateTime from "effect/DateTime";
 import {
   groupAfterDelivered,
-  groupAfterUserMessage,
+  groupAfterMessage,
   groupAfterWave,
   resolveGroupAudience,
 } from "../../apps/server/src/orchestration-v2/ThreadGroupDecider.ts";
 import {
+  renderPrimaryGroupNote,
   renderSeatFirstPrompt,
   renderSeatTurnPrompt,
 } from "../../apps/server/src/orchestration-v2/GroupPrompt.ts";
@@ -30,7 +31,7 @@ export async function simulateDiscussion(
   reply: (member: GroupMember, messages: ReadonlyArray<Message>) => Promise<Message>,
 ) {
   const { planWave } = await policy(parallel);
-  let state = groupAfterUserMessage(group(), resolveGroupAudience(group(), "everyone"));
+  let state = groupAfterMessage(group(), resolveGroupAudience(group(), "everyone"), "user", 1);
   const entries: Exchange[] = [{ label: "User", text: request }];
   const histories = new Map<GroupMember, Message[]>([
     ["primary", []],
@@ -55,7 +56,14 @@ export async function simulateDiscussion(
         const prompt =
           member === "primary"
             ? history.length === 0
-              ? request
+              ? [
+                  renderPrimaryGroupNote({
+                    self: primary,
+                    others: [peer],
+                    everyoneAddressed: true,
+                  }),
+                  request,
+                ].join("\n\n")
               : wake(unseen)
             : history.length === 0
               ? [
