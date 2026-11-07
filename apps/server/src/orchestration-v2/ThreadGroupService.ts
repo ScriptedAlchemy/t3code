@@ -12,6 +12,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { resolveProjectProviderInstanceEnabled } from "@t3tools/contracts/settings";
+import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
@@ -129,6 +130,13 @@ const make = Effect.gen(function* () {
         return yield* new ThreadGroupDisabledError({ threadId });
       }
       const thread = yield* readThread("invite", threadId);
+      if (thread.deletedAt !== null || thread.archivedAt !== null) {
+        return yield* new ThreadGroupCommandError({
+          operation: "invite",
+          threadId,
+          reason: `Thread ${threadId} is not active.`,
+        });
+      }
       if (thread.lineage.sideChat === true || thread.lineage.relationshipToParent === "subagent") {
         return yield* new ThreadGroupCommandError({
           operation: "invite",
@@ -151,8 +159,7 @@ const make = Effect.gen(function* () {
         engine.getThreadRecords(seat.threadId, []).pipe(
           Effect.map((records) =>
             records.thread.deletedAt === null &&
-            records.thread.modelSelection.instanceId === modelSelection.instanceId &&
-            records.thread.modelSelection.model === modelSelection.model &&
+            modelSelectionsEqual(records.thread.modelSelection, modelSelection) &&
             seat.status === "left"
               ? seat
               : undefined,

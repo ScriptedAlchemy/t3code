@@ -26,6 +26,7 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
@@ -38,6 +39,7 @@ import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { ClaudeProviderCapabilitiesV2 } from "../Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "../Adapters/CodexAdapterV2.ts";
+import * as CommandReceiptStore from "../CommandReceiptStore.ts";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as EventSink from "../EventSink.ts";
 import * as GroupReactor from "../GroupReactor.ts";
@@ -45,7 +47,9 @@ import * as Orchestrator from "../Orchestrator.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
 import * as ProjectStore from "../ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
+import * as ProviderSessionManager from "../ProviderSessionManager.ts";
 import * as ThreadGroupService from "../ThreadGroupService.ts";
+import * as ThreadManagementService from "../ThreadManagementService.ts";
 import { CLAUDE_MODEL_SELECTION, CODEX_MODEL_SELECTION } from "./fixtures/shared.ts";
 import * as ProviderReplayHarness from "./ProviderReplayHarness.ts";
 
@@ -372,6 +376,8 @@ const makeHarness = Effect.fn("GroupConversationTest.makeHarness")(function* (
   name: string,
   options: {
     readonly enabled?: boolean;
+    /** Runs right after a seat's records are read, to land a change behind that read. */
+    readonly afterSeatRead?: (threadId: ThreadId) => Effect.Effect<void>;
     readonly runEffectWorker?: boolean;
     /** The orchestrator reads its own settings, so a seat can be turned off after its invite. */
     readonly orchestratorInstances?: typeof CONFIGURED_INSTANCES;
@@ -410,7 +416,28 @@ const makeHarness = Effect.fn("GroupConversationTest.makeHarness")(function* (
   ]);
   const database = SqlitePersistence.layerMemory;
   const dependencies = Layer.mergeAll(
-    ProjectionStore.layer,
+    options.afterSeatRead === undefined
+      ? ProjectionStore.layer
+      : Layer.effect(
+          ProjectionStore.ProjectionStoreV2,
+          Effect.gen(function* () {
+            const store = yield* ProjectionStore.ProjectionStoreV2;
+            return {
+              ...store,
+              getThreadRecords: (threadId, fields, filter) =>
+                store
+                  .getThreadRecords(threadId, fields, filter)
+                  .pipe(
+                    Effect.tap(() =>
+                      (fields as ReadonlyArray<string>).includes("turnItems") &&
+                      (fields as ReadonlyArray<string>).includes("runs")
+                        ? options.afterSeatRead!(threadId)
+                        : Effect.void,
+                    ),
+                  ),
+            } satisfies ProjectionStore.ProjectionStoreV2["Service"];
+          }),
+        ).pipe(Layer.provide(ProjectionStore.layer)),
     ServerSettings.ServerSettingsService.layerTest({
       groupConversationsEnabled: options.enabled ?? true,
       providerInstances: CONFIGURED_INSTANCES,
@@ -1895,6 +1922,164 @@ describe("group conversations", () => {
             assert.equal(ended.seats.find((row) => row.threadId === seat)?.status, "left");
           }),
         ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("refuses an invite on an archived thread and creates no seat thread", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("archived-invite");
+        const threadId = ThreadId.make("thread:group:archived-invite");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            const service = yield* ThreadGroupService.ThreadGroupService;
+            yield* startThread(threadId);
+            yield* orchestrator.dispatch({
+              type: "thread.archive",
+              commandId: CommandId.make("command:group:archived-invite"),
+              threadId,
+            });
+            const refused = yield* service
+              .invite({ threadId, modelSelection: ASTRA, createdBy: "user", creationSource: "web" })
+              .pipe(Effect.flip);
+            assert.equal(refused._tag, "ThreadGroupCommandError");
+            const { threads } = yield* projections.getShellSnapshot();
+            assert.isEmpty(threads.filter((row) => row.lineage.parentThreadId === threadId));
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("returns a seat only when the whole selection matches, options included", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("reinvite-options");
+        const threadId = ThreadId.make("thread:group:reinvite-options");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const service = yield* ThreadGroupService.ThreadGroupService;
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            yield* service.end({ threadId });
+            assert.equal(yield* invite(threadId, ASTRA), seat, "the same selection returns");
+            yield* service.end({ threadId });
+            const wanted: ModelSelection = {
+              ...ASTRA,
+              options: [{ id: "effort", value: "max" }],
+            };
+            const fresh = yield* invite(threadId, wanted);
+            assert.notEqual(fresh, seat);
+            const { thread } = yield* orchestrator.getThreadProjection(fresh);
+            assert.deepEqual(thread.modelSelection, wanted);
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("waits for the primary and can settle past a reply published after it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("wait-primary");
+        const threadId = ThreadId.make("thread:group:wait-primary");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            const primaryHold = yield* hold(harness.control, threadId);
+            yield* say(threadId, "question", "Work on it", ["primary", seat]);
+            yield* Deferred.await(primaryHold.started);
+            yield* until(
+              orchestrator
+                .getThreadProjection(threadId)
+                .pipe(Effect.map((row) => row.runs.some((run) => run.publication !== undefined))),
+            );
+            const running = yield* orchestrator.getThreadProjection(threadId);
+            const primary = running.runs.find((run) => run.publication === undefined)!;
+            assert.equal(ThreadManagementService.latestRun(running)?.id, primary.id);
+            const waited = yield* Effect.forkChild(
+              Effect.gen(function* () {
+                const management = yield* ThreadManagementService.ThreadManagementService;
+                return yield* management.waitForThread({ projectId, threadId, timeoutMs: 30_000 });
+              }).pipe(
+                Effect.provide(
+                  ThreadManagementService.layer.pipe(
+                    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+                    Layer.provide(CommandReceiptStore.layer),
+                  ),
+                ),
+              ),
+            );
+            yield* Deferred.succeed(primaryHold.release, "completed");
+            const result = yield* Fiber.join(waited);
+            assert.equal(result.run?.id, primary.id);
+            assert.equal(result.run?.status, "completed");
+            yield* settle(threadId);
+            yield* orchestrator.dispatch({
+              type: "thread.settle",
+              commandId: CommandId.make("command:group:wait-primary-settle"),
+              threadId,
+              expectedLatestRunId: primary.id,
+            });
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("publishes a seat that finishes while the startup sweep reads it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const hook = yield* Ref.make<((id: ThreadId) => Effect.Effect<void>) | null>(null);
+        const harness = yield* makeHarness("sweep-race", {
+          afterSeatRead: (id) =>
+            Ref.get(hook).pipe(Effect.flatMap((run) => run?.(id) ?? Effect.void)),
+        });
+        const threadId = ThreadId.make("thread:group:sweep-race");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const reactor = yield* GroupReactor.GroupReactor;
+          const sink = yield* EventSink.EventSinkV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          yield* startThread(threadId);
+          const seat = yield* invite(threadId, ASTRA);
+          const seatHold = yield* hold(harness.control, seat);
+          yield* script(harness.control, seat, ["FINISHED_DURING_SWEEP"]);
+          yield* say(threadId, "question", "Astra, answer", [seat]);
+          yield* Deferred.await(seatHold.started);
+          yield* worker.drain();
+          yield* Ref.set(hook, (id) =>
+            id !== seat
+              ? Effect.void
+              : Effect.gen(function* () {
+                  yield* Ref.set(hook, null);
+                  const afterSequence = yield* sink.latestSequence();
+                  yield* Deferred.succeed(seatHold.release, "completed");
+                  yield* sink.stream({ afterSequence }).pipe(
+                    Stream.filter(
+                      ({ event }) =>
+                        event.threadId === seat &&
+                        event.type === "run.updated" &&
+                        event.payload.status === "completed",
+                    ),
+                    Stream.take(1),
+                    Stream.runDrain,
+                  );
+                }).pipe(Effect.orDie),
+          );
+          yield* reactor.start();
+          yield* until(readGroup(threadId).pipe(Effect.map((row) => row?.discussion === null)));
+          const parent = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(publishedRows(parent), [
+            { label: "Astra", text: "FINISHED_DURING_SWEEP" },
+          ]);
+        }).pipe(Effect.provide(harness.layer));
       }),
     ),
   );

@@ -69,6 +69,7 @@ import {
   type ServerProvider,
   type ServerProviderModel,
   ThreadId,
+  isOrchestrationV2PublicationRun,
   isOrchestrationV2WorkActive,
   resolveActiveProviderPools,
   resolveProjectProviderInstanceEnabled,
@@ -616,6 +617,7 @@ function latestTerminalResultRun(
         ThreadManagementService.isTerminalRunStatus(run.status) &&
         !monitorRunIds.has(run.id) &&
         run.status !== "rolled_back" &&
+        !isOrchestrationV2PublicationRun(run) &&
         (run.id === delegatedRun?.id || run.startedAt !== null),
     )
     .reduce<OrchestrationV2Run | undefined>(

@@ -205,7 +205,9 @@ import {
   seatWakeCursor,
   unseenFor,
   wakeFloorRunOrdinal,
+  finalReplyText,
   type GroupMember,
+  seatRunPublishes,
 } from "./GroupConversation.ts";
 import {
   groupEndedNotice,
@@ -529,6 +531,11 @@ export interface OrchestratorV2Shape {
     readonly eventType?: OrchestrationV2DomainEvent["type"];
   }) => Stream.Stream<OrchestrationV2StoredEvent, OrchestratorV2Error>;
   readonly streamDomainEvents: Stream.Stream<OrchestrationV2DomainEvent, OrchestratorV2Error>;
+  /** Every event after a position from `getLatestEventSequence`, so a reader can catch up. */
+  readonly streamDomainEventsAfter: (
+    afterSequence: number,
+  ) => Stream.Stream<OrchestrationV2DomainEvent, OrchestratorV2Error>;
+  readonly getLatestEventSequence: () => Effect.Effect<number, OrchestratorV2Error>;
 }
 
 export class OrchestratorV2 extends Context.Service<OrchestratorV2, OrchestratorV2Shape>()(
@@ -3814,7 +3821,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         command.expectedLatestRunId !== undefined &&
         projection.runs.reduce<OrchestrationV2Run | undefined>(
-          (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),
+          (latest, run) =>
+            !isOrchestrationV2PublicationRun(run) &&
+            (latest === undefined || run.ordinal > latest.ordinal)
+              ? run
+              : latest,
           undefined,
         )?.id !== command.expectedLatestRunId
       ) {
@@ -5189,6 +5200,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
     const live = seats.flatMap((row) => (row === null ? [] : [row]));
     const liveIds = new Set(live.map((row) => row.seat.threadId));
+    const published = new Set(
+      parent.runs.flatMap((run) =>
+        run.publication?.type === "peer_reply" ? [run.publication.seatRunId] : [],
+      ),
+    );
+    // A settled reply can be ahead of its publication, and closing now would lose what it wakes.
+    const publishing = yield* Effect.filter(live, ({ seat, runs }) => {
+      const pending = runs.filter((run) => seatRunPublishes(seat, run) && !published.has(run.id));
+      if (pending.length === 0) return Effect.succeed(false);
+      return projectionStore
+        .getThreadRecords(seat.threadId, ["turnItems"], {
+          turnItemTypes: ["assistant_message"],
+          turnItemRunIds: pending.map((run) => run.id),
+        })
+        .pipe(
+          Effect.map(({ turnItems }) =>
+            pending.some((run) => finalReplyText(turnItems, run.id) !== null),
+          ),
+          mapDispatchError(command),
+        );
+    });
     const group = {
       ...stored,
       seats: stored.seats.map((seat) =>
@@ -5209,6 +5241,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const active: ReadonlyArray<GroupMember> = [
       ...(hasOpenRun(parent.runs) ? (["primary"] as const) : []),
       ...live.filter((row) => hasOpenRun(row.runs)).map((row) => row.seat.threadId),
+      ...publishing.map((row) => row.seat.threadId),
       ...stored.discussion.delivering,
     ];
     const wave = planWave(group, (member) => unseenFor(member, current, cursorFor(member)), active);
@@ -15721,6 +15754,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const shellProjectionError = (cause: unknown) =>
     new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell"), cause });
 
+  const domainEventsAfter = (afterSequence: number) =>
+    eventSink.stream({ afterSequence }).pipe(
+      Stream.map((stored) => stored.event),
+      Stream.mapError((cause) => new OrchestratorDomainEventStreamError({ cause })),
+    );
+
   return OrchestratorV2.of({
     resumeQueuedRuns,
     recoverDelegatedTasks,
@@ -15923,17 +15962,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     // Start at the latest sequence; awareness needs no historical replay.
     streamDomainEvents: Stream.unwrap(
+      eventSink.latestSequence().pipe(
+        Effect.mapError((cause) => new OrchestratorDomainEventStreamError({ cause })),
+        Effect.map(domainEventsAfter),
+      ),
+    ),
+    streamDomainEventsAfter: domainEventsAfter,
+    getLatestEventSequence: Effect.fn("OrchestratorV2.getLatestEventSequence")(() =>
       eventSink
         .latestSequence()
-        .pipe(Effect.map((latest) => eventSink.stream({ afterSequence: latest }))),
-    ).pipe(
-      Stream.map((stored) => stored.event),
-      Stream.mapError(
-        (cause) =>
-          new OrchestratorDomainEventStreamError({
-            cause,
-          }),
-      ),
+        .pipe(Effect.mapError((cause) => new OrchestratorDomainEventStreamError({ cause }))),
     ),
   });
 });

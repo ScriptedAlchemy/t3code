@@ -192,15 +192,16 @@ const make = Effect.gen(function* () {
     Effect.withSpan("GroupReactor.sweep"),
   );
 
+  // The sequence is read before the sweep, so anything that commits behind the sweep's reads replays.
   const start: GroupReactor["Service"]["start"] = () =>
     forkParked(
-      sweep.pipe(
-        Effect.andThen(
-          Stream.runForEach(engine.streamDomainEvents, handle).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("thread group event stream failed", { cause }),
-            ),
-          ),
+      Effect.gen(function* () {
+        const afterSequence = yield* engine.getLatestEventSequence();
+        yield* sweep;
+        yield* Stream.runForEach(engine.streamDomainEventsAfter(afterSequence), handle);
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("thread group event stream failed", { cause }),
         ),
       ),
     );

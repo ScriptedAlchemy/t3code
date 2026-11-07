@@ -229,6 +229,14 @@ it("reports the run that ended last, not the highest ordinal", () => {
       ended(4, "2026-07-24T10:00:00.000Z"),
       ended(2, "2026-07-24T10:05:00.000Z"),
       ended(3, "2026-07-24T10:10:00.000Z"),
+      {
+        ...ended(5, "2026-07-24T10:15:00.000Z"),
+        publication: {
+          type: "peer_reply",
+          seatThreadId: ThreadId.make("thread:seat"),
+          seatRunId: RunId.make("run:seat"),
+        },
+      },
     ],
   });
   assert.equal(progress.state, "result_available");
