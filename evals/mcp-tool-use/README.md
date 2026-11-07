@@ -32,6 +32,17 @@ Cases are JSON lines in `cases/`, one file per area. The case schema in `run.ts`
 
 Check that the case builds with `--dry-run --case <id>`. Then run it on the text before your fix, where it must fail, and on the text after, where it must pass.
 
+## Group conversations
+
+`cases/group-conversation.ndjson` distinguishes an invitation to co-design in the current visible conversation from a background implementation handoff. "Bring Astra in to design this" requires `t3_thread_group` with the advertised model selection. "Have Sol implement this" requires `delegate_task`. Two ordinary design controls forbid either action. The cases come from the Phase 5 group-conversation brief and its UX review, with authored Acme context.
+
+Run these alongside the existing side-chat, explicit new-thread, and task-queue controls. The runner imports the current thread toolkit, so the group tool's description and schema are never copied into the cases.
+
+```sh
+pnpm mcp-tool-use --cases mcp-tool-use/cases/group-conversation.ndjson --case group-bring-astra-to-design --samples 1 --out runs/group-routing-smoke
+pnpm mcp-tool-use --cases mcp-tool-use/cases/group-conversation.ndjson --samples 3 --out runs/group-routing
+```
+
 ## Device manager cases
 
 `cases/device-manager.ndjson` ports nine mechanisms from the [device-routing investigation described in #25661](https://github.com/pingdotgg/t3code/pull/25661) and adds seven cases from t3dotgg’s 2026-10-26 fleet device investigation. All prompts, files, hosts and prior turns are authored Acme data; the fleet cases cite finding ids without carrying source transcripts or identifiers.
