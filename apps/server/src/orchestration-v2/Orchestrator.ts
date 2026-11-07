@@ -199,6 +199,7 @@ import {
   hasOpenRun,
   planWave,
   primaryWakeCursor,
+  readTurnOutcome,
   seatDeliveredCursor,
   seatForThread,
   seatWakeCursor,
@@ -5077,7 +5078,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     const projection = yield* projectionStore
-      .getThreadRecords(command.threadId, ["runs"])
+      .getThreadRecords(command.threadId, ["runs", "turnItems"], {
+        turnItemTypes: ["assistant_message"],
+      })
       .pipe(mapDispatchError(command));
     const { thread } = projection;
     if (thread.deletedAt !== null || thread.archivedAt !== null) {
@@ -5118,7 +5121,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // A turn still running already took everything published before it started.
     const primaryCursor = primaryWakeCursor(projection.runs);
     const unseen = projection.runs.filter(
-      (run) => run.publication?.type === "peer_reply" && run.ordinal > primaryCursor,
+      (run) =>
+        run.publication?.type === "peer_reply" &&
+        run.ordinal > primaryCursor &&
+        projection.turnItems.some(
+          (item) =>
+            item.runId === run.id &&
+            item.type === "assistant_message" &&
+            readTurnOutcome(item.text).type !== "pass",
+        ),
     );
     yield* emitGroupNotice(
       command,
@@ -5405,7 +5416,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       },
       events,
       effects,
-      { groupThrough: through },
+      {
+        groupThrough: through,
+        ...(floorRun === 0 ? {} : { digestBeforeRunOrdinal: floorRun }),
+      },
     );
   });
 
@@ -6741,6 +6755,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       readonly groupThrough?: number;
       /** This message excludes the primary, so it is a run with no provider turn. */
       readonly peersOnly?: ReadonlyArray<ThreadId>;
+      /** A seat's first digest stops here: the current exchange arrives in its prompt. */
+      readonly digestBeforeRunOrdinal?: number;
     } = {},
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
@@ -8328,7 +8344,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // first, so the cap truncates them first, then imported and run items.
     const sideChatParentRunIds = [
       // Queued messages have not reached the main thread yet.
-      ...sourceRunsAfterFork.filter((run) => run.status !== "queued").map((run) => run.id),
+      ...sourceRunsAfterFork
+        .filter(
+          (run) =>
+            run.status !== "queued" &&
+            (group.digestBeforeRunOrdinal === undefined ||
+              run.ordinal < group.digestBeforeRunOrdinal),
+        )
+        .map((run) => run.id),
       ...(sourceRun === null && sourceProjection?.thread.historyOrigin === "v1_import"
         ? [null]
         : []),
@@ -8361,6 +8384,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               toProviderInstanceId: modelSelection.instanceId,
               coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, sideChatParentItems),
               parentItems: sideChatParentItems,
+              ...(seatFork ? { seat: true } : {}),
               createdAt: now,
             })
             .pipe(mapDispatchError(command));

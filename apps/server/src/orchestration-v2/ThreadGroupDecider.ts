@@ -114,12 +114,14 @@ type GroupMembershipCommand = Extract<
   { readonly type: "thread.group.invite" | "thread.group.remove" | "thread.group.end" }
 >;
 
+const VENDOR_WORDS = new Set(["claude", "gpt"]);
+
 /** "Claude Opus 4.8" reads as `opus`, since the vendor and version do not name who is speaking. */
 export function handleFromLabel(label: string): string {
   const words = label
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter((word) => word.length > 0 && !/\d/.test(word) && word !== "claude");
+    .filter((word) => word.length > 0 && !/\d/.test(word) && !VENDOR_WORDS.has(word));
   return (
     words[0] ??
     (label
@@ -135,6 +137,14 @@ function uniqueHandle(base: string, taken: ReadonlySet<string>): string {
   let suffix = 2;
   while (taken.has(`${base}-${suffix}`)) suffix += 1;
   return `${base}-${suffix}`;
+}
+
+/** Two seats on one model would otherwise read as one speaker. */
+function uniqueLabel(base: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(base)) return base;
+  let suffix = 2;
+  while (taken.has(`${base} ${suffix}`)) suffix += 1;
+  return `${base} ${suffix}`;
 }
 
 /** Turn budget for one user message. */
@@ -181,15 +191,16 @@ export function decideGroupMembership(input: {
         closedAt: group?.closedAt ?? null,
       };
       const existing = base.seats.find((seat) => seat.threadId === command.seat.threadId);
-      const taken = new Set([
-        base.primary.handle,
-        ...base.seats
-          .filter((seat) => seat.threadId !== command.seat.threadId)
-          .map((seat) => seat.handle),
-      ]);
+      const others = base.seats.filter((seat) => seat.threadId !== command.seat.threadId);
+      const taken = new Set([base.primary.handle, ...others.map((row) => row.handle)]);
       const seat = {
         threadId: command.seat.threadId,
-        label: existing?.label ?? command.seat.label,
+        label:
+          existing?.label ??
+          uniqueLabel(
+            command.seat.label,
+            new Set([base.primary.label, ...others.map((row) => row.label)]),
+          ),
         handle: existing?.handle ?? uniqueHandle(handleFromLabel(command.seat.label), taken),
         status: "seated" as const,
         joinedAfterRun: input.seatLatestRunOrdinal,

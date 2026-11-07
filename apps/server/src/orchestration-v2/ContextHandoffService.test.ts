@@ -348,6 +348,12 @@ it.effect("caps the side chat context block without summarizing discarded parent
     assert.isTrue(framingOnly.startsWith("You are in a side chat beside the main thread."));
     assert.notInclude(framingOnly, "Main thread activity");
 
+    assert.equal(
+      ContextHandoffService.makeSideChatContext({ parentThreadId, digest: [], seat: true }),
+      "",
+      "a seat takes part, so it gets no side chat framing or pointer at the main thread",
+    );
+
     const withPeer = ContextHandoffService.makeSideChatContext({
       parentThreadId,
       digest: [

@@ -1456,7 +1456,10 @@ describe("group conversations", () => {
           Effect.gen(function* () {
             const orchestrator = yield* Orchestrator.OrchestratorV2;
             yield* startThread(threadId);
-            yield* script(harness.control, threadId, ["PRIMARYMARK thinks CRDT"]);
+            yield* script(harness.control, threadId, [
+              "PRIMARYMARK thinks CRDT",
+              "BETWEENMARK came after the invite",
+            ]);
             yield* say(threadId, "warm", "Warm up");
             yield* until(
               orchestrator
@@ -1464,9 +1467,33 @@ describe("group conversations", () => {
                 .pipe(Effect.map((p) => p.runs.at(-1)?.status === "completed")),
             );
             const seat = yield* invite(threadId, OPUS);
+            yield* say(threadId, "between", "Between", ["primary"]);
+            yield* until(
+              orchestrator
+                .getThreadProjection(threadId)
+                .pipe(
+                  Effect.map((p) => p.runs.length === 2 && p.runs.at(-1)?.status === "completed"),
+                ),
+            );
             yield* Ref.set(harness.control.injected, []);
-            yield* say(threadId, "peer", "Opus, what did you recommend?", [seat]);
+            const question = "Opus, what did you recommend?";
+            yield* say(threadId, "peer", question, [seat]);
             yield* settle(threadId);
+
+            const [firstTurn] = yield* turnsOf(harness.control, seat);
+            assert.include(
+              firstTurn?.text ?? "",
+              "known here as",
+              "control: the seat's first prompt",
+            );
+            assert.notInclude(firstTurn?.text ?? "", "do not continue or redo");
+            assert.notInclude(firstTurn?.text ?? "", "t3_thread_read");
+            assert.include(firstTurn?.text ?? "", "BETWEENMARK", "the seat learns what it missed");
+            assert.lengthOf(
+              (firstTurn?.text ?? "").split(question),
+              2,
+              "the question being answered appears once",
+            );
 
             const seatRun = (yield* orchestrator.getThreadProjection(seat)).runs.at(-1);
             assert.equal(seatRun?.status, "completed", "a native fork would fail this adapter");

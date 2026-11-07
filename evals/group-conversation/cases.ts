@@ -147,6 +147,17 @@ export const cases: ReadonlyArray<DiscussionCase | BehaviorCase> = [
     rubric: ["Includes @rowan as an attribution inside the release-note sentence."],
   },
   {
+    id: "first-reply-stays-open",
+    source:
+      "Live Haiku and Luna group runs, 2026-11-06: seats ended a first reply with @user, which closed the discussion before any peer could react.",
+    kind: "behavior",
+    context: "seat-first",
+    prior: [],
+    request: "Should our notes app sync with a CRDT or an event log? Answer in two sentences.",
+    outcome: "plain",
+    rubric: ["Gives its own recommendation, without closing the discussion."],
+  },
+  {
     id: "return-to-user",
     source: `${source}, question 5. Authored closing-address guard.`,
     kind: "behavior",

@@ -34,10 +34,11 @@ export const group = (): OrchestrationV2ThreadGroup => ({
 
 export const delta = (entries: ReadonlyArray<Exchange>) =>
   entries.map((entry) => ({ ...entry, model: null }));
-export const digest = (entries: ReadonlyArray<Exchange>) =>
+export const digest = (entries: ReadonlyArray<Exchange>, seat = false) =>
   makeSideChatContext({
     parentThreadId: ThreadId.make("thread:main"),
     digest: entries.map((entry) => `[${entry.label}] ${entry.text}`),
+    seat,
   });
 
 const decodeHistoricalMessage = Schema.decodeSync(OrchestrationV2HistoricalMessage);
@@ -72,7 +73,7 @@ export function behaviorMessages(fixture: BehaviorCase) {
     case "seat-first":
       user(
         [
-          digest(fixture.prior),
+          digest(fixture.prior, true),
           renderSeatFirstPrompt({
             self: peer,
             others: [primary],

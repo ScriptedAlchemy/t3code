@@ -281,9 +281,13 @@ describe("production prompt and policy simulation", () => {
 
   it("renders digest framing, edit identity, and public attribution through production renderers", () => {
     const edit = behaviorMessages(fixture("public-reply-after-edit"))[0]!.text;
-    expect(edit).toContain("do not continue or redo the main thread's task");
+    expect(edit).not.toContain("do not continue or redo the main thread's task");
+    expect(edit).not.toContain("t3_thread_read");
     expect(edit).toContain("You are Kai, known here as @kai");
     expect(edit).toContain("you may read and edit it");
+    expect(behaviorMessages(fixture("side-chat-stays-separate"))[0]!.text).toContain(
+      "do not continue or redo the main thread's task",
+    );
     const primary = behaviorMessages(fixture("primary-carries-context"))[0]!.text;
     expect(primary).toContain("speaker=Kai");
     expect(primary).toContain("A transaction resolves it once");

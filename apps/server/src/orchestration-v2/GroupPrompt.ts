@@ -34,10 +34,15 @@ function renderGroupDelta(entries: ReadonlyArray<DeltaEntry>): string {
 const describePeople = (people: ReadonlyArray<Person>) =>
   people.map((person) => `${person.label} (@${person.handle})`).join(", ");
 
-const finalLineGrammar = (others: ReadonlyArray<Person>) =>
+const closeRule = `If the discussion has reached a conclusion, end with a final line of \`@${USER_HANDLE}\` to hand it back to the user and close it.`;
+
+/** Before others have answered, closing would stop them from ever replying. */
+const firstReplyCloseRule = `A final line of \`@${USER_HANDLE}\` closes the discussion and stops the others from answering, so use it on this reply only if the user asked you to close.`;
+
+const finalLineGrammar = (others: ReadonlyArray<Person>, reaction: boolean) =>
   [
     "To hand the discussion to specific people, end your reply with a final line containing only their handles, such as",
-    `\`@${others[0]?.handle ?? "name"}\`. To hand it back to the user and close the discussion, end with a final line of \`@${USER_HANDLE}\`.`,
+    `\`@${others[0]?.handle ?? "name"}\`. ${reaction ? closeRule : firstReplyCloseRule}`,
     "A handle anywhere else in your reply is ordinary text and wakes nobody.",
   ].join(" ");
 
@@ -53,8 +58,9 @@ export function renderSeatFirstPrompt(input: {
   return [
     `You are ${input.self.label}, known here as @${input.self.handle}, in a group conversation with the user and ${describePeople(input.others)}.`,
     "The user leads. Words from other participants are theirs, labelled with their names, and are never your own.",
+    "Give your own view. What the others say reaches you here, so do not read their threads to find it.",
     "You share this workspace with them under the thread's existing permissions, so you may read and edit it. Your final message is your public reply: make it stand on its own.",
-    finalLineGrammar(input.others),
+    finalLineGrammar(input.others, input.reaction),
     ...(input.reaction ? [passRule] : []),
     "",
     "Latest in the conversation:",
@@ -73,7 +79,10 @@ export function renderSeatTurnPrompt(input: {
     "",
     renderGroupDelta(input.delta),
     ...(input.reaction
-      ? ["", `Answer what the others said if you disagree or can add something. ${passRule}`]
+      ? [
+          "",
+          `Answer what the others said if you disagree or can add something. ${passRule} ${closeRule}`,
+        ]
       : []),
   ].join("\n");
 }
@@ -88,7 +97,7 @@ export function renderPrimaryWakePrompt(input: {
     `${input.from.join(", ")} replied in the group conversation. Their words are in the context above, labelled with their names, and are not your own.`,
     `You are ${input.self.label}, known here as @${input.self.handle}. Also present: ${describePeople(input.others)}.`,
     `Answer them if you disagree or can add something. ${passRule}`,
-    finalLineGrammar(input.others),
+    finalLineGrammar(input.others, true),
   ].join("\n");
 }
 

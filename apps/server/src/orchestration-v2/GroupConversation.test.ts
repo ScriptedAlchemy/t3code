@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  CommandId,
   MessageId,
+  type OrchestrationV2AppThread,
   type OrchestrationV2ThreadGroup,
   ProviderInstanceId,
   RunId,
@@ -10,8 +12,9 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Result from "effect/Result";
 
-import { handleFromLabel } from "./ThreadGroupDecider.ts";
+import { decideGroupMembership, handleFromLabel } from "./ThreadGroupDecider.ts";
 import {
   GROUP_PARALLEL,
   type GroupEntry,
@@ -70,12 +73,46 @@ describe("handleFromLabel", () => {
   it.each([
     ["Claude Opus 4.8", "opus"],
     ["Astra", "astra"],
-    ["GPT-5.4", "gpt"],
+    ["GPT-5.4", "gpt-5-4"],
     ["Sonnet 4.6 (1M)", "sonnet"],
-    ["gpt-6-astra", "gpt"],
+    ["gpt-6-astra", "astra"],
+    ["GPT-6-Luna", "luna"],
+    ["Claude Haiku 5.5", "haiku"],
     ["4.8", "4-8"],
   ])("reads %j as %s", (label, handle) => {
     expect(handleFromLabel(label)).toBe(handle);
+  });
+});
+
+describe("group membership labels", () => {
+  const thread = {
+    modelSelection: { instanceId: "codex", model: "same-model" },
+    group: null,
+  } as unknown as OrchestrationV2AppThread;
+  const inviteSeat = (current: OrchestrationV2AppThread, id: string) => {
+    const decided = decideGroupMembership({
+      thread: current,
+      seatLatestRunOrdinal: 0,
+      command: {
+        type: "thread.group.invite",
+        commandId: CommandId.make(`invite:${id}`),
+        threadId: ThreadId.make("thread:parent"),
+        seat: { threadId: ThreadId.make(id), label: "Opus" },
+        primaryLabel: "Opus",
+      },
+    });
+    if (Result.isFailure(decided)) throw new Error(decided.failure);
+    return { ...current, group: decided.success.group };
+  };
+
+  it("names members apart when the same model is invited again", () => {
+    const once = inviteSeat(thread, "seat:one");
+    const twice = inviteSeat(once, "seat:two");
+    expect(twice.group?.primary.label).toBe("Opus");
+    expect(twice.group?.seats.map((seat) => [seat.handle, seat.label])).toEqual([
+      ["opus-2", "Opus 2"],
+      ["opus-3", "Opus 3"],
+    ]);
   });
 });
 
