@@ -410,7 +410,7 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       /** A side chat in its parent's right panel; the parent keeps the keyboard and workspace UI. */
       embedded?: SideChatParentPanel;
-      /** A seated group member's work: read it here, talk to it from the thread's own composer. */
+      /** A seated group member's work: talk to it from the thread's own composer. Only its requests are answered here. */
       composerHidden?: boolean;
       routeKind: "server";
       draftId?: never;
@@ -1749,7 +1749,10 @@ export default function ChatView(props: ChatViewProps) {
   const isGitRepo = liveIsGitRepo ?? recallCheckoutIsRepo(environmentId, gitStatusCwd) ?? true;
   // Provider-native subagents cannot take messages; approvals and questions go to the top-level parent.
   const showProviderSubagentBar = isProviderSubagent;
-  const composerMounted = !showProviderSubagentBar && props.composerHidden !== true;
+  // The composer is the only place requests are answered, and a seat waiting on one hangs its group.
+  const composerMounted =
+    !showProviderSubagentBar &&
+    (props.composerHidden !== true || pendingApprovals.length > 0 || pendingUserInputs.length > 0);
   const providerSubagentModels = selectedProviderEntry?.models ?? EMPTY_PROVIDER_MODELS;
   // Providers can report dated model ids or aliases.
   const providerSubagentModelSlug = selectedProviderEntry
