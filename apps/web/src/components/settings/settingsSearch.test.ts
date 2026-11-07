@@ -234,6 +234,12 @@ describe("settings search targets", () => {
     expect(isSettingsSearchScopeAvailable(fallback.scope, "environment")).toBe(true);
     expect(isSettingsSearchScopeAvailable(fallback.scope, "all")).toBe(true);
     expect(isSettingsSearchScopeAvailable(fallback.scope, "project")).toBe(false);
+    const coldReturn = getSettingsSearchTargetScope("fresh-session-on-cold-return")!;
+    expect(coldReturn.scope).toBe("environment-defaults");
+    expect(isSettingsSearchScopeAvailable(coldReturn.scope, "environment")).toBe(true);
+    expect(isSettingsSearchScopeAvailable(coldReturn.scope, "all")).toBe(true);
+    expect(isSettingsSearchScopeAvailable(coldReturn.scope, "project")).toBe(false);
+    expect(isSettingsSearchScopeAvailable(coldReturn.scope, "checkout")).toBe(false);
     for (const id of ["response-streaming", "speech-project-dictionary"]) {
       expect(getSettingsSearchTargetScope(id)?.scope).toBe("project-defaults");
     }

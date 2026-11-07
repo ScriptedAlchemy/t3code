@@ -136,6 +136,11 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
   ProviderTurnStartServiceV2Shape
 >()("t3/orchestration-v2/ProviderTurnStartService/ProviderTurnStartServiceV2") {}
 
+// Past both limits, a replay of real threads shows a fresh session repaying its uncached first
+// request: the cache has already expired, and the smaller prompt is cheaper on every later call.
+const COLD_RETURN_IDLE_MS = 60 * 60_000;
+const COLD_RETURN_MIN_CONTEXT_TOKENS = 100_000;
+
 export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
@@ -159,6 +164,7 @@ export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
     const pstack = yield* PstackPack.PstackPack;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const eventSink = yield* EventSink.EventSinkV2;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
@@ -1033,6 +1039,47 @@ export const layer: Layer.Layer<
           return retryHandoff;
         },
       );
+      const isColdReturn = Effect.fn("ProviderTurnStartService.isColdReturn")(function* (
+        resumedThread: OrchestrationV2ProviderThread,
+      ) {
+        const enabled = yield* serverSettings.getSettings.pipe(
+          Effect.map((settings) => settings.freshSessionOnColdReturn),
+          Effect.orElseSucceed(() => false),
+        );
+        if (!enabled) return false;
+        const measured = latestNativeContextUsage(projection, resumedThread);
+        if (measured === undefined) return false;
+        if (measured.usage.usedTokens < COLD_RETURN_MIN_CONTEXT_TOKENS) return false;
+        const reportedAt = DateTime.make(measured.reportedAt);
+        if (Option.isNone(reportedAt)) return false;
+        // Token telemetry can arrive before a long tool run finishes. Count accepted root
+        // turn activity on this native conversation, including turns without usage reports.
+        let lastActivityMs = DateTime.toEpochMillis(reportedAt.value);
+        const attempts = new Map(projection.attempts.map((attempt) => [attempt.id, attempt]));
+        for (const turn of projection.providerTurns) {
+          if (turn.providerThreadId !== resumedThread.id || turn.runAttemptId === null) continue;
+          const attempt = attempts.get(turn.runAttemptId);
+          if (
+            attempt === undefined ||
+            attempt.nativeThreadId !== resumedThread.nativeThreadRef?.nativeId ||
+            attempt.providerThreadId !== resumedThread.id ||
+            attempt.rootNodeId !== turn.nodeId
+          )
+            continue;
+          const activityAt = turn.completedAt ?? turn.startedAt;
+          if (activityAt !== null) {
+            lastActivityMs = Math.max(lastActivityMs, DateTime.toEpochMillis(activityAt));
+          }
+        }
+        const idleMs = DateTime.toEpochMillis(yield* DateTime.now) - lastActivityMs;
+        if (idleMs < COLD_RETURN_IDLE_MS) return false;
+        const hasPendingWork = yield* (
+          session.hasPendingBackgroundWorkForThread?.(resumedThread, { includeSubagents: true }) ??
+            session.hasPendingBackgroundWork ??
+            Effect.succeed(false)
+        );
+        return !hasPendingWork;
+      });
       const prepareRecoveryHandoff = Effect.fn("ProviderTurnStartService.prepareRecoveryHandoff")(
         function* () {
           const transferId = yield* idAllocator.allocate.contextTransfer({
@@ -1269,6 +1316,13 @@ export const layer: Layer.Layer<
                 runtimePolicy: resolvedRuntimePolicy,
               }),
         );
+        // Resume checks native ownership and refreshes background work before a fresh session.
+        const coldReturn =
+          resumed._tag === "Success" &&
+          message.createdBy === "user" &&
+          !isCompactionCommandMessage(message) &&
+          !goalCommand &&
+          (yield* isColdReturn(resumed.success));
         if (resumed._tag === "Success") {
           const context = handoffContextForThread(resumed.success);
           context.budget = yield* Effect.cached(context.budget);
@@ -1285,7 +1339,7 @@ export const layer: Layer.Layer<
             Effect.as(true),
             Effect.catchTags({ ContextHandoffBudgetError: () => Effect.succeed(false) }),
           );
-          if (fits) return resumed.success;
+          if (fits && !coldReturn) return resumed.success;
           const freshThread = { ...resumed.success, nativeThreadRef: null };
           const freshContext = handoffContextForThread(freshThread);
           const { handoff } = yield* recoveryHandoff;
@@ -1308,6 +1362,7 @@ export const layer: Layer.Layer<
               Effect.succeed(false)
           );
           if (hasPendingWork) {
+            if (fits) return resumed.success;
             return yield* loadFromProvider(
               Effect.fail(
                 new ProviderAdapter.ProviderAdapterTurnStartError({
@@ -1337,12 +1392,19 @@ export const layer: Layer.Layer<
           driver: session.driver,
           providerThreadId: providerThread.id,
           runId,
-          reason: uncertainDelivery
-            ? "uncertain_history_delivery"
-            : resumed._tag === "Success"
-              ? "handoff_budget_exhausted"
-              : "resume_failed",
-          errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
+          reason: coldReturn
+            ? "cold_return"
+            : uncertainDelivery
+              ? "uncertain_history_delivery"
+              : resumed._tag === "Success"
+                ? "handoff_budget_exhausted"
+                : "resume_failed",
+          ...(coldReturn
+            ? {}
+            : {
+                errorTag:
+                  resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
+              }),
         });
         const replacement = yield* loadFromProvider(
           session.ensureThread({

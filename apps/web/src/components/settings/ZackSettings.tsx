@@ -27,6 +27,7 @@ export function ZackSettings() {
         <AssistedLearningRow />
         <ConversationSummariesRow />
         <ExternalHistoryRow />
+        <FreshSessionOnColdReturnRow />
         <PstackRow />
         <SkillsLibraryRows />
         <AgentGitHubReadGateRow />
@@ -155,6 +156,41 @@ function ExternalHistoryRow() {
             />
           ))}
         </div>
+      }
+    />
+  );
+}
+
+function FreshSessionOnColdReturnRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["freshSessionOnColdReturn"]}
+      {...searchableSetting("fresh-session-on-cold-return")}
+      description="After an hour away, continue a thread over about 100k tokens in a new provider session with recent context. Lowers cached input cost, though the agent may re-read some files."
+      resetAction={
+        settings.freshSessionOnColdReturn !== DEFAULT_UNIFIED_SETTINGS.freshSessionOnColdReturn ? (
+          <SettingResetButton
+            label="Fresh session after a long break"
+            onClick={() =>
+              updateSettings({
+                freshSessionOnColdReturn: DEFAULT_UNIFIED_SETTINGS.freshSessionOnColdReturn,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <ScopedSwitch
+          settingKeys={["freshSessionOnColdReturn"]}
+          checked={settings.freshSessionOnColdReturn}
+          onCheckedChange={(checked) =>
+            updateSettings({ freshSessionOnColdReturn: Boolean(checked) })
+          }
+          aria-label="Fresh session after a long break"
+        />
       }
     />
   );

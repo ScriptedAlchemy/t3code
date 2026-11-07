@@ -21,6 +21,12 @@ to retrieve saved messages and activity, including the remainder of a long item.
 constraint, you can still repeat it in your next message. Unless the project has conversation
 summaries turned on, a handoff is a budgeted selection, not a summary.
 
+## Fresh sessions after a long break
+
+Long threads get more expensive with every message, because the provider re-reads the whole history each time. With **Settings > Labs > Zack > Fresh session after a long break** turned on, a message you send to a thread over about 100,000 tokens, after an hour or more idle, continues in a new provider session. It receives the same handoff described above, and your thread and its history in T3 Code stay as they were.
+
+The first request costs more because nothing is cached, and the agent may re-read some files, so this suits threads you keep returning to. Runs with background work still in progress are left alone. The setting is off by default.
+
 ## Conversation summaries
 
 With conversation summaries on, older history that would not fit in a handoff can arrive as short

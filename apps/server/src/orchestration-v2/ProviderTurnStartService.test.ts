@@ -49,6 +49,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -83,11 +84,14 @@ const normalize = (target: string) => {
   }
   return `/${parts.join("/")}`;
 };
-const layerWorktreeLocation = (worktreesDir = managedWorktreesDir) =>
+const layerWorktreeLocation = (
+  worktreesDir = managedWorktreesDir,
+  settings?: Parameters<typeof ServerSettings.layerTest>[0],
+) =>
   Layer.mergeAll(
     Path.layer,
     Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
-    ServerSettings.layerTest(),
+    ServerSettings.layerTest(settings),
   );
 
 function startWithMissingWorktree(
@@ -286,6 +290,7 @@ it.each([
 });
 
 function makeLocalCommandHarness(input: {
+  readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly pstack?: PstackPack.PstackPack["Service"];
   readonly text: string;
   readonly knowledgeStore?: Effect.Success<typeof KnowledgePersistence.makeStore>;
@@ -307,6 +312,8 @@ function makeLocalCommandHarness(input: {
   readonly ensureThreadFailure?: unknown;
   readonly historyReadFailureAfterFallback?: unknown;
   readonly resumeFailure?: ProviderAdapter.ProviderAdapterV2Error;
+  readonly pendingBackgroundWorkOnResume?: boolean;
+  readonly pendingBackgroundWorkAfterHandoff?: boolean;
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
@@ -786,7 +793,20 @@ function makeLocalCommandHarness(input: {
   const nativeStart = vi.fn<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>(
     () => Effect.void,
   );
-  const fallbackEnsureThread = vi.fn(() => Effect.succeed(providerThread));
+  const fallbackEnsureThread = vi.fn(() =>
+    Effect.succeed(
+      input.recoveryNativeId === undefined
+        ? providerThread
+        : {
+            ...providerThread,
+            nativeThreadRef: {
+              driver: providerThread.driver,
+              nativeId: input.recoveryNativeId,
+              strength: "strong" as const,
+            },
+          },
+    ),
+  );
   const resumeFallbackSession = {
     driver: providerThread.driver,
     resumeThread: () =>
@@ -832,13 +852,19 @@ function makeLocalCommandHarness(input: {
     forkThread,
     startTurn,
   };
+  let resumedNativeThread = false;
+  let preparedRecoveryHandoff = false;
   const open = vi.fn(() =>
     input.sideChat !== undefined
       ? Effect.succeed(sideChatSession as never)
       : input.interruptOpen === true
         ? Effect.interrupt
         : "historyReadFailureAfterFallback" in input || "resumeFailure" in input
-          ? Effect.succeed(resumeFallbackSession as never)
+          ? Effect.succeed({
+              ...resumeFallbackSession,
+              providerSession,
+              startTurn: nativeStart,
+            } as never)
           : "ensureThreadFailure" in input
             ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
             : "openFailure" in input
@@ -870,7 +896,18 @@ function makeLocalCommandHarness(input: {
                           strength: "strong" as const,
                         },
                       }),
-                    resumeThread: () => Effect.succeed(projection.providerThreads.at(-1)),
+                    resumeThread: () =>
+                      Effect.sync(() => {
+                        resumedNativeThread = true;
+                        return projection.providerThreads.at(-1);
+                      }),
+                    hasPendingBackgroundWorkForThread: () =>
+                      Effect.sync(
+                        () =>
+                          (input.pendingBackgroundWorkOnResume === true && resumedNativeThread) ||
+                          (input.pendingBackgroundWorkAfterHandoff === true &&
+                            preparedRecoveryHandoff),
+                      ),
                   } as never)
                 : Effect.die("A local command must not open a native session."),
   );
@@ -1062,7 +1099,13 @@ function makeLocalCommandHarness(input: {
                   summaryText: input.sideChat ? "PARENT_HISTORY" : "Recovered history",
                   createdByProviderInstanceId: input.sideChat ? request.toProviderInstanceId : null,
                   updatedAt: request.createdAt,
-                } as OrchestrationV2ContextHandoff),
+                } as OrchestrationV2ContextHandoff).pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      preparedRecoveryHandoff = true;
+                    }),
+                  ),
+                ),
         }),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
@@ -1076,7 +1119,7 @@ function makeLocalCommandHarness(input: {
             }),
         }),
         IdAllocator.layer,
-        layerWorktreeLocation(input.worktreesDir),
+        layerWorktreeLocation(input.worktreesDir, input.settings),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
@@ -2432,6 +2475,157 @@ effectIt.effect(
       );
       expect(replacement.knowledgeDeliveries.at(-1)?.status).toBe("sent");
     }),
+);
+
+effectIt.effect.each([
+  { name: "a long idle thread", enabled: true, usedTokens: 120_000, idleMinutes: 61, fresh: true },
+  { name: "the setting off", enabled: false, usedTokens: 120_000, idleMinutes: 61, fresh: false },
+  { name: "a recent turn", enabled: true, usedTokens: 120_000, idleMinutes: 59, fresh: false },
+  { name: "a small thread", enabled: true, usedTokens: 99_999, idleMinutes: 61, fresh: false },
+  {
+    name: "recent completion after an old token report",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    turnCompletedMinutes: 60,
+    fresh: false,
+  },
+  {
+    name: "insufficient room for a fresh handoff",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    modelContextWindow: 16_000,
+    fresh: false,
+  },
+  {
+    name: "a native thread held by another client",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    threadInUse: true,
+    fresh: false,
+  },
+  {
+    name: "background work discovered while resuming",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    pendingBackgroundWorkOnResume: true,
+    fresh: false,
+  },
+  {
+    name: "background work discovered while preparing the handoff",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    pendingBackgroundWorkAfterHandoff: true,
+    fresh: false,
+  },
+  {
+    name: "a command message",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    text: "/compact",
+    fresh: false,
+  },
+  {
+    name: "a message not from a person",
+    enabled: true,
+    usedTokens: 120_000,
+    idleMinutes: 61,
+    createdBy: "system" as const,
+    fresh: false,
+  },
+] as const)("starting a turn with $name picks fresh session: $fresh", (scenario) =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      settings: { freshSessionOnColdReturn: scenario.enabled },
+      text: "text" in scenario ? scenario.text : "Keep going on the migration",
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+      recoveryNativeId: "fresh-native-conversation",
+      ...("modelContextWindow" in scenario
+        ? { modelContextWindow: scenario.modelContextWindow }
+        : {}),
+      ...("threadInUse" in scenario
+        ? {
+            resumeFailure: new ProviderAdapter.ProviderAdapterThreadInUseError({
+              driver: ProviderDriverKind.make("codex"),
+              providerThreadId: ProviderThreadId.make("new-provider-thread"),
+              detail: "This conversation is open in another Codex client.",
+              cause: new Error("thread existing-native-conversation already has an active writer"),
+            }),
+          }
+        : {}),
+      ...("pendingBackgroundWorkOnResume" in scenario
+        ? { pendingBackgroundWorkOnResume: scenario.pendingBackgroundWorkOnResume }
+        : {}),
+      ...("pendingBackgroundWorkAfterHandoff" in scenario
+        ? { pendingBackgroundWorkAfterHandoff: scenario.pendingBackgroundWorkAfterHandoff }
+        : {}),
+    });
+    const projection = harness.projection();
+    const previousAt = "2026-09-04T12:00:00.000Z";
+    const previousAttemptId = RunAttemptId.make("previous-failed-attempt");
+    harness.setProjection({
+      ...projection,
+      messages: projection.messages.map((message) => ({
+        ...message,
+        ...("createdBy" in scenario ? { createdBy: scenario.createdBy } : {}),
+      })),
+      attempts: [
+        ...projection.attempts,
+        {
+          ...projection.attempts[0]!,
+          id: previousAttemptId,
+          runId: RunId.make("previous-failed-run"),
+          rootNodeId: NodeId.make("previous-root"),
+          nativeThreadId: "existing-native-conversation",
+          providerThreadId: projection.providerThreads[0]!.id,
+          status: "completed",
+        },
+      ],
+      providerTurns: projection.providerTurns.map((turn) => ({
+        ...turn,
+        tokenUsage: { usedTokens: scenario.usedTokens, updatedAt: previousAt },
+        ...("turnCompletedMinutes" in scenario
+          ? {
+              completedAt: DateTime.makeUnsafe(
+                Date.parse(previousAt) + scenario.turnCompletedMinutes * 60_000,
+              ),
+            }
+          : {}),
+      })),
+    });
+    yield* TestClock.setTime(Date.parse(previousAt) + scenario.idleMinutes * 60_000);
+
+    yield* harness.start;
+
+    if ("threadInUse" in scenario) {
+      expect(harness.fallbackEnsureThread).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
+    }
+    // Commands run without a root run, which also means no fresh session.
+    const nativeId =
+      harness.startRootRun.mock.calls[0]?.[0].providerThread.nativeThreadRef?.nativeId;
+    expect(nativeId === "fresh-native-conversation").toBe(scenario.fresh);
+    expect(harness.events.some((event) => event.type === "context-handoff.updated")).toBe(
+      scenario.fresh,
+    );
+    if (
+      "pendingBackgroundWorkOnResume" in scenario ||
+      "pendingBackgroundWorkAfterHandoff" in scenario
+    ) {
+      expect(nativeId).toBe("existing-native-conversation");
+    }
+    if ("modelContextWindow" in scenario) {
+      yield* dispatchKnowledge(harness.startRootRun.mock.calls[0]![0]);
+      expect(nativeId).toBe("existing-native-conversation");
+      expect(harness.nativeStart).toHaveBeenCalledOnce();
+    }
+  }),
 );
 
 effectIt.effect.each(["prepared", "uncertain"] as const)(

@@ -472,6 +472,20 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       ))}
                   </SettingsSection>
                 ) : null}
+                <SettingsSection title="Long threads">
+                  <SettingsSwitchRow
+                    icon="clock"
+                    label="Fresh session after a long break"
+                    subtitle={
+                      projectSelected
+                        ? "Environment-wide setting. Select All projects to change it."
+                        : "After an hour away, continue a long thread in a new provider session with recent context. Lowers cached input cost."
+                    }
+                    value={uniform("freshSessionOnColdReturn")}
+                    disabled={disabledFor("freshSessionOnColdReturn")}
+                    onValueChange={(value) => write({ freshSessionOnColdReturn: value })}
+                  />
+                </SettingsSection>
                 <SettingsSection title="Skills">
                   <SettingsSwitchRow
                     icon="square.grid.2x2"

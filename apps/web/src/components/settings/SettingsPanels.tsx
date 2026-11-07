@@ -523,6 +523,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ? ["Show skills in slash menu"]
       : []),
     ...(settings.pstackEnabled !== DEFAULT_UNIFIED_SETTINGS.pstackEnabled ? ["pstack"] : []),
+    ...(settings.freshSessionOnColdReturn !== DEFAULT_UNIFIED_SETTINGS.freshSessionOnColdReturn
+      ? ["Fresh session after a long break"]
+      : []),
     ...(settings.composerRichTextEnabled !== DEFAULT_UNIFIED_SETTINGS.composerRichTextEnabled
       ? ["Rich text composer"]
       : []),
@@ -645,6 +648,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,
       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
       pstackEnabled: DEFAULT_UNIFIED_SETTINGS.pstackEnabled,
+      freshSessionOnColdReturn: DEFAULT_UNIFIED_SETTINGS.freshSessionOnColdReturn,
       composerRichTextEnabled: DEFAULT_UNIFIED_SETTINGS.composerRichTextEnabled,
       sendShortcut: DEFAULT_UNIFIED_SETTINGS.sendShortcut,
       followUpBehavior: DEFAULT_UNIFIED_SETTINGS.followUpBehavior,

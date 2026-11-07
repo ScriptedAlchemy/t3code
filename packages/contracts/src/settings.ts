@@ -1381,6 +1381,7 @@ export const ServerSettings = Schema.Struct({
   enableAgentDeviceAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Offer the bundled pstack skills in every provider composer. */
   pstackEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  freshSessionOnColdReturn: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Off by default: turning it on moves skill folders out of the user's Claude and Codex homes. */
   skillsLibraryEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** On by default: each settled run costs a text generation call unless its project opts out. */
@@ -1852,6 +1853,7 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   pstackEnabled: Schema.optionalKey(Schema.Boolean),
+  freshSessionOnColdReturn: Schema.optionalKey(Schema.Boolean),
   skillsLibraryEnabled: Schema.optionalKey(Schema.Boolean),
   enableAssistedLearning: Schema.optionalKey(Schema.Boolean),
   enableConversationSummaries: Schema.optionalKey(Schema.Boolean),

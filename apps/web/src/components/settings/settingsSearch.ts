@@ -732,6 +732,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["zack lauren tan skills workflows plugin pack architect setup models"],
   },
   {
+    id: "fresh-session-on-cold-return",
+    title: "Fresh session after a long break",
+    to: "/settings/labs",
+    scope: "environment-defaults",
+    searchTerms: ["zack cached input cost tokens long thread idle context handoff trim"],
+  },
+  {
     id: "composer-rich-text",
     title: "Rich text composer",
     to: "/settings/chat",
