@@ -5007,6 +5007,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs">,
     message: string,
     now: DateTime.Utc,
+    options: { readonly quiet?: boolean } = {},
   ) {
     // The timeline shows a row only through its run. A thread with no runs has nothing to report.
     const anchorRun = projection.runs.findLast((run) => run.status !== "queued");
@@ -5038,6 +5039,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         updatedAt: now,
         type: "system_notice",
         message,
+        ...(options.quiet ? { quiet: true } : {}),
       },
     });
   });
@@ -5137,6 +5139,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection,
       groupEndedNotice(group.primary.label, unseen.length),
       now,
+      { quiet: true },
     );
   });
 

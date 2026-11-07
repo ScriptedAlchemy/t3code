@@ -72,7 +72,7 @@ export function GroupRosterBar(props: { threadRef: ScopedThreadRef; group: Threa
           <UsersIcon />
         </ComposerBanner.Icon>
         <ComposerBanner.Content>
-          <span className="inline-flex shrink-0 items-center gap-1 px-1.5 text-xs font-medium">
+          <span className="inline-flex shrink-0 items-center gap-1 px-1.5 text-xs font-medium sm:text-sm">
             <StarIcon className="size-3 fill-current" aria-hidden />
             {group.primary.label}
             <span className="sr-only">, primary</span>

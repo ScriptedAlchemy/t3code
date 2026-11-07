@@ -8,6 +8,7 @@ import {
   groupParticipants,
   groupRowSpeaker,
   isQuietPass,
+  withoutCloseLine,
   isSeatedSeatThread,
   runningSeats,
   seatActivityLabel,
@@ -54,6 +55,19 @@ describe("groupAudienceForPrompt", () => {
     ["a peer that left", group, "@opus hello ", "everyone"],
   ])("%s", (_name, thread, prompt, expected) => {
     expect(groupAudienceForPrompt(thread, prompt)).toEqual(expected);
+  });
+});
+
+describe("withoutCloseLine", () => {
+  it.each([
+    ["Use a log.\n\n@user", "Use a log."],
+    ["Use a log.\n@USER  ", "Use a log."],
+    ["Ask @user about it.", "Ask @user about it."],
+    ["Use a log. @user", "Use a log. @user"],
+    ["Use a log.\n@astra", "Use a log.\n@astra"],
+    ["@user", "@user"],
+  ])("reads %j as %j", (text, expected) => {
+    expect(withoutCloseLine(text)).toBe(expected);
   });
 });
 

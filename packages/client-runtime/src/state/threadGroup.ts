@@ -126,6 +126,9 @@ export function groupRowSpeaker(
   };
 }
 
+/** A final `@user` line only tells the server to close the discussion, so a reader never needs it. */
+export const withoutCloseLine = (text: string): string => text.replace(/\s*\n\s*@user\s*$/i, "");
+
 /** "Astra had nothing to add", for a reply that was exactly `PASS`. */
 export const quietPassLine = (label: string): string => `${label} had nothing to add`;
 

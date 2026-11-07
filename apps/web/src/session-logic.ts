@@ -480,7 +480,7 @@ function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry
       return {
         ...common,
         label: item.message,
-        sourceActivityKind: "runtime.warning",
+        ...(item.quiet ? {} : { sourceActivityKind: "runtime.warning" as const }),
       };
     case "error": {
       const presentation = providerErrorPresentation(item);
@@ -614,6 +614,8 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
     const attempt = resolveAttempt(item);
     const attemptMetadata = attempt === undefined ? {} : { attempt };
     if (item.type === "notification") {
+      // The peer's reply sits right above the turn this woke, so this row would only repeat it.
+      if (item.source.kind === "group") continue;
       entries.push({
         id: item.id,
         kind: "work",

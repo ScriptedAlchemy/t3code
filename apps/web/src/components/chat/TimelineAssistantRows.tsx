@@ -2,6 +2,7 @@ import {
   groupRowSpeaker,
   isQuietPass,
   quietPassLine,
+  withoutCloseLine,
 } from "@t3tools/client-runtime/state/thread-group";
 import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipeline";
 import { type RunId } from "@t3tools/contracts";
@@ -37,13 +38,14 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
     row.message.streaming ? ctx.threadRef : null,
     row.projectedItem?.item.id,
   );
-  const text = liveText ?? row.message.text;
-  const messageText = text || (row.message.streaming ? "" : "(empty response)");
+  const rawText = liveText ?? row.message.text;
   const item = row.projectedItem?.item;
   const speaker = groupRowSpeaker(ctx.group, {
     speaker: item?.type === "assistant_message" ? item.speaker : undefined,
     run: ctx.runs.find((run) => run.id === item?.runId),
   });
+  const text = speaker === null ? rawText : withoutCloseLine(rawText);
+  const messageText = text || (row.message.streaming ? "" : "(empty response)");
   if (speaker !== null && !row.message.streaming && isQuietPass(text)) {
     return (
       <div className="min-w-0 px-1 py-0.5 text-xs text-muted-foreground">
@@ -206,7 +208,7 @@ function AssistantMessageMeta({
         </span>
       ) : null}
       <AssistantCopyButton
-        message={message}
+        message={ctx.group == null ? message : { ...message, text: withoutCloseLine(message.text) }}
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
