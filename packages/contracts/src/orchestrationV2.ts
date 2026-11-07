@@ -443,6 +443,28 @@ const LenientThreadOpens = Schema.NullOr(OrchestrationV2ThreadOpens).pipe(
   Schema.catchDecoding(() => Effect.succeedSome(null)),
 );
 
+/** Peers on a visible thread. The primary is `thread.modelSelection`, so it never appears here. */
+export const OrchestrationV2ThreadGroup = Schema.Struct({
+  status: Schema.Literals(["active", "ended"]),
+  seats: Schema.Array(
+    Schema.Struct({
+      /** The seat's hidden side chat. */
+      threadId: ThreadId,
+      handle: TrimmedNonEmptyString,
+      label: TrimmedNonEmptyString,
+      status: Schema.Literals(["seated", "left"]),
+    }),
+  ),
+  discussion: Schema.NullOr(
+    Schema.Struct({
+      mode: Schema.Literals(["everyone", "direct"]),
+      turnsLeft: NonNegativeInt,
+    }),
+  ),
+  closedBecause: Schema.NullOr(Schema.Literals(["settled", "budget", "stopped"])),
+});
+export type OrchestrationV2ThreadGroup = typeof OrchestrationV2ThreadGroup.Type;
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -488,6 +510,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   lastSnoozeWakeAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecovery)),
   guestShare: Schema.optional(Schema.NullOr(ThreadGuestShare)),
+  group: Schema.optional(Schema.NullOr(OrchestrationV2ThreadGroup)),
   pinnedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   pinOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -675,6 +698,27 @@ export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
 
 export const ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE = "workspace_preparation_failed";
 
+/** Marks a run recorded on a thread with no provider turn: words that were said elsewhere. */
+export const OrchestrationV2RunPublication = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("peer_reply"),
+    seatThreadId: ThreadId,
+    seatRunId: RunId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("user_to_peers"),
+    seatThreadIds: Schema.Array(ThreadId),
+  }),
+]);
+export type OrchestrationV2RunPublication = typeof OrchestrationV2RunPublication.Type;
+
+/** A display snapshot, so attribution survives rows a fork inherits without their runs. */
+export const OrchestrationV2MessageSpeaker = Schema.Struct({
+  label: TrimmedNonEmptyString,
+  model: TrimmedNonEmptyString,
+});
+export type OrchestrationV2MessageSpeaker = typeof OrchestrationV2MessageSpeaker.Type;
+
 export const OrchestrationV2Run = Schema.Struct({
   id: RunId,
   threadId: ThreadId,
@@ -709,8 +753,22 @@ export const OrchestrationV2Run = Schema.Struct({
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
   freshContext: Schema.optional(Schema.Boolean),
+  publication: Schema.optional(OrchestrationV2RunPublication),
+  /**
+   * Seat threads only: the parent's turn item ordinal through which this run's prompt delivered
+   * the public transcript. A run ordinal cannot serve, since a user message and the primary's
+   * reply share one run.
+   */
+  groupThrough: Schema.optional(NonNegativeInt),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
+
+/** Not every run has a provider turn. Readers looking for the latest provider work skip these. */
+export function isOrchestrationV2PublicationRun(
+  run: Pick<OrchestrationV2Run, "publication">,
+): boolean {
+  return run.publication !== undefined;
+}
 
 export function orchestrationV2RunWorkStartedAt(
   run: Pick<OrchestrationV2Run, "workStartedAt" | "startedAt" | "requestedAt">,
@@ -1123,6 +1181,7 @@ export type OrchestrationV2ProviderThread = typeof OrchestrationV2ProviderThread
 export const OrchestrationV2HistoricalMessage = Schema.Struct({
   role: Schema.Literals(["user", "assistant"]),
   text: Schema.String,
+  speaker: Schema.optional(OrchestrationV2MessageSpeaker),
   runStatus: Schema.optional(Schema.String),
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
@@ -1641,6 +1700,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     textOmitted: DedupedBodyMarker,
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
     streaming: Schema.Boolean,
+    speaker: Schema.optional(OrchestrationV2MessageSpeaker),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2107,6 +2167,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  group: OrchestrationV2AppThread.fields.group,
   latestRunId: Schema.NullOr(RunId),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   latestRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -2475,6 +2536,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     text: Schema.String,
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
     streaming: Schema.Boolean,
+    speaker: Schema.optional(OrchestrationV2MessageSpeaker),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,

@@ -5,10 +5,16 @@ import * as Schema from "effect/Schema";
 import { NodeId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
 import {
   latestProviderTurnForAttempt,
+  isOrchestrationV2PublicationRun,
+  OrchestrationV2AppThread,
+  OrchestrationV2AppThreadJson,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
   OrchestrationV2RpcSchemas,
+  OrchestrationV2Run,
+  OrchestrationV2RunJson,
+  OrchestrationV2ThreadGroup,
   OrchestrationV2Subagent,
   OrchestrationV2ThreadShellJson,
   OrchestrationV2SubagentJson,
@@ -19,6 +25,14 @@ import {
 
 const now = DateTime.makeUnsafe("2026-04-20T00:00:00.000Z");
 
+const decodeOrchestrationV2RunJson = Schema.decodeUnknownSync(OrchestrationV2RunJson);
+const encodeOrchestrationV2RunJson = Schema.encodeSync(OrchestrationV2RunJson);
+const encodeOrchestrationV2RunWire = Schema.encodeSync(Schema.toCodecJson(OrchestrationV2Run));
+const encodeOrchestrationV2TurnItemWire = Schema.encodeSync(
+  Schema.toCodecJson(OrchestrationV2TurnItem),
+);
+const decodeOrchestrationV2ThreadGroup = Schema.decodeSync(OrchestrationV2ThreadGroup);
+const encodeOrchestrationV2ThreadGroup = Schema.encodeSync(OrchestrationV2ThreadGroup);
 const decodeOrchestrationV2TurnItemJson = Schema.decodeUnknownSync(OrchestrationV2TurnItemJson);
 const encodeOrchestrationV2TurnItemJson = Schema.encodeSync(OrchestrationV2TurnItemJson);
 const decodeOrchestrationV2Subagent = Schema.decodeUnknownSync(OrchestrationV2Subagent);
@@ -35,6 +49,86 @@ const decodeOrchestrationV2ProviderCapabilities = Schema.decodeUnknownSync(
 );
 
 describe("orchestration V2 contracts", () => {
+  it("carries publication, speaker and group fields through every stored and wire shape", () => {
+    const publication = {
+      type: "peer_reply" as const,
+      seatThreadId: "thread:seat",
+      seatRunId: "run:seat",
+    };
+    const nowIso = DateTime.formatIso(now);
+    const runJson = {
+      id: "run:peer",
+      threadId: "thread:parent",
+      ordinal: 2,
+      providerInstanceId: "codex",
+      modelSelection: { instanceId: "codex", model: "gpt" },
+      providerThreadId: null,
+      userMessageId: "message:peer",
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "completed",
+      requestedAt: nowIso,
+      startedAt: nowIso,
+      completedAt: nowIso,
+      checkpointId: null,
+      contextHandoffId: null,
+      publication,
+      groupThrough: 7,
+    };
+    const run = decodeOrchestrationV2RunJson(runJson);
+    expect(isOrchestrationV2PublicationRun(run)).toBe(true);
+    expect(isOrchestrationV2PublicationRun({})).toBe(false);
+    expect(encodeOrchestrationV2RunJson(run)).toMatchObject({
+      publication,
+      groupThrough: 7,
+    });
+    expect(encodeOrchestrationV2RunWire(run)).toMatchObject({
+      publication,
+      groupThrough: 7,
+    });
+
+    const speaker = { label: "Astra", model: "gpt" };
+    const item = decodeOrchestrationV2TurnItemJson({
+      id: "item:peer",
+      threadId: "thread:parent",
+      runId: "run:peer",
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      status: "completed",
+      title: null,
+      startedAt: nowIso,
+      completedAt: nowIso,
+      updatedAt: nowIso,
+      type: "assistant_message",
+      messageId: "message:peer",
+      text: "Use an event log",
+      streaming: false,
+      speaker,
+    });
+    expect(encodeOrchestrationV2TurnItemJson(item)).toMatchObject({ speaker });
+    expect(encodeOrchestrationV2TurnItemWire(item)).toMatchObject({
+      speaker,
+    });
+
+    const group = {
+      status: "active" as const,
+      seats: [
+        { threadId: "thread:seat", handle: "astra", label: "Astra", status: "seated" as const },
+      ],
+      discussion: { mode: "everyone" as const, turnsLeft: 4 },
+      closedBecause: null,
+    };
+    expect(encodeOrchestrationV2ThreadGroup(decodeOrchestrationV2ThreadGroup(group))).toEqual(
+      group,
+    );
+    expect(OrchestrationV2AppThreadJson.fields.group).toBe(OrchestrationV2AppThread.fields.group);
+    expect(OrchestrationV2ThreadShellJson.fields.group).toBe(OrchestrationV2AppThread.fields.group);
+  });
+
   it("decodes thread event types from a newer server as skippable items", () => {
     const decodeWireItems = Schema.decodeUnknownSync(
       Schema.toCodecJson(Schema.Array(OrchestrationV2RpcSchemas.subscribeThread.output)),
