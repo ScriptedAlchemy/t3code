@@ -179,6 +179,24 @@ describe("idleCompactionWindow", () => {
     // A turn Claude itself reported as cancelled did run, so it stays the latest.
     steered.runs = steered.runs.map((run) => ({ ...run, startedAt: at(-MINUTE_MS) }));
     expect(idleCompactionWindow(steered, NOW_MS)).toBeNull();
+    // A peer's reply is not this provider's turn, so it does not move the window.
+    const published = records(cache);
+    published.runs = [
+      ...published.runs,
+      {
+        ...published.runs[0]!,
+        id: RunId.make("run-peer"),
+        ordinal: 2,
+        providerThreadId: null,
+        userMessageId: MessageId.make("message-peer"),
+        publication: {
+          type: "peer_reply",
+          seatThreadId: ThreadId.make("seat"),
+          seatRunId: RunId.make("seat-run"),
+        },
+      },
+    ];
+    expect(idleCompactionWindow(published, NOW_MS)?.runId).toBe(runId);
     const archived = records(cache);
     archived.thread = { ...archived.thread, archivedAt: at() };
     expect(idleCompactionWindow(archived, NOW_MS)).toBeNull();

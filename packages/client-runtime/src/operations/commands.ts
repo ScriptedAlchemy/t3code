@@ -4,6 +4,7 @@ import {
   CommandId,
   CheckpointId,
   CheckpointScopeId,
+  isOrchestrationV2PublicationRun,
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationV2CheckpointUnavailableError,
   WS_METHODS,
@@ -840,7 +841,7 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
         run.status === "waiting",
     )?.id;
     if (runId === undefined) {
-      const latestRun = projection.runs.at(-1);
+      const latestRun = projection.runs.findLast((run) => !isOrchestrationV2PublicationRun(run));
       if (
         derivePendingBackgroundWork({
           latestRun,

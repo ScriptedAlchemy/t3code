@@ -28,6 +28,7 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | Command receipt         | A durable record of a command's result, used to make retries idempotent.                                  |
 | Outbox effect           | Side-effect intent committed with the events, such as starting a provider turn or capturing a checkpoint. |
 | Effect worker           | The worker that runs outbox effects after commit and feeds their results back as commands.                |
+| Publication run         | A completed run recording words said elsewhere, with no provider turn. Latest-work readers skip it.       |
 
 ## Providers and checkpoints
 

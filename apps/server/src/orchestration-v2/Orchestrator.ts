@@ -24,6 +24,7 @@ import {
   CommandId,
   type GuestMessageId,
   isCompactionCommandMessage,
+  isOrchestrationV2PublicationRun,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   MessageId,
@@ -2220,7 +2221,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       );
-      const latestCompletedRun = projection.runs.findLast((run) => run.status === "completed");
+      const latestCompletedRun = projection.runs.findLast(
+        (run) => run.status === "completed" && !isOrchestrationV2PublicationRun(run),
+      );
       const latestHandoffRun = projection.runs.findLast(isHandoffSourceRun);
       const targetLastCompletedRun = lastDeliveredRunForProviderThread(
         projection,
@@ -7058,7 +7061,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const ordinal = nextRunOrdinal(projection);
     const runId = idAllocator.derive.run({ threadId: command.threadId, ordinal });
     const contextBoundary = freshContext ? ordinal : contextBoundaryOrdinal(projection.runs);
-    const latestCompletedRun = projection.runs.findLast((run) => run.status === "completed");
+    const latestCompletedRun = projection.runs.findLast(
+      (run) => run.status === "completed" && !isOrchestrationV2PublicationRun(run),
+    );
     const latestHandoffRun = projection.runs.findLast(isHandoffSourceRun);
     const legacyImportItems =
       projection.thread.historyOrigin === "v1_import" && contextBoundary === 0
@@ -12180,7 +12185,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? undefined
         : projection.providerThreads.find((candidate) => candidate.id === run?.providerThreadId);
     const hasBackgroundWork =
-      run?.id === projection.runs.findLast((candidate) => candidate.status !== "queued")?.id &&
+      run?.id ===
+        projection.runs.findLast(
+          (candidate) =>
+            candidate.status !== "queued" && !isOrchestrationV2PublicationRun(candidate),
+        )?.id &&
       derivePendingBackgroundWork({
         latestRun: run,
         providerThreads: projection.providerThreads,
@@ -12784,7 +12793,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       )
         ? Effect.void
         : Ref.update(effects, (existing) => [...existing, delegatedTasksStopEffect(command)]);
-    const latestRun = projection.runs.findLast((run) => run.status !== "queued");
+    const latestRun = projection.runs.findLast(
+      (run) => run.status !== "queued" && !isOrchestrationV2PublicationRun(run),
+    );
     const target =
       projection.runs.findLast(
         (run) =>
