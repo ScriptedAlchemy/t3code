@@ -257,7 +257,6 @@ export function makeSideChatContext(input: {
     ? []
     : [
         "You are in a side chat beside the main thread. The main thread may still be running in the same worktree. Answer the user's questions; do not continue or redo the main thread's task.",
-        "",
       ];
   const header = input.seat
     ? "Said in this conversation since you joined:"
@@ -265,15 +264,17 @@ export function makeSideChatContext(input: {
   const truncated = "- Earlier items truncated.";
   const footer = input.seat
     ? []
-    : [
-        "",
-        `Use t3_thread_read on thread ${input.parentThreadId} to see the main thread's live state.`,
-      ];
+    : [`Use t3_thread_read on thread ${input.parentThreadId} to see the main thread's live state.`];
+  const joinBlocks = (blocks: ReadonlyArray<ReadonlyArray<string>>) =>
+    blocks
+      .filter((block) => block.length > 0)
+      .map((block) => block.join("\n"))
+      .join("\n\n");
   const kept: Array<string> = [];
   let omitted = false;
   // The cap covers the whole block, so the fixed lines are reserved before any digest line.
   let remaining =
-    SIDE_CHAT_CONTEXT_MAX_CHARS - [...framing, header, truncated, ...footer].join("\n").length;
+    SIDE_CHAT_CONTEXT_MAX_CHARS - joinBlocks([framing, [header, truncated], footer]).length;
   for (let index = input.digest.length - 1; index >= 0; index--) {
     const item = input.digest[index]!;
     const line = typeof item === "string" ? item : summarizeDeltaItem(item);
@@ -286,7 +287,7 @@ export function makeSideChatContext(input: {
     remaining -= line.length + 1;
   }
   const activity = kept.length === 0 ? [] : [header, ...(omitted ? [truncated] : []), ...kept];
-  return [...framing, ...activity, ...footer].join("\n").trim();
+  return joinBlocks([framing, activity, footer]);
 }
 
 /** Side chat context is prepended to the provider prompt, never replayed as budgeted history. */

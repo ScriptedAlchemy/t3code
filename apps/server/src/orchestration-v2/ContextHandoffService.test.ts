@@ -345,8 +345,21 @@ it.effect("caps the side chat context block without summarizing discarded parent
       parentThreadId,
       digest: [],
     });
-    assert.isTrue(framingOnly.startsWith("You are in a side chat beside the main thread."));
-    assert.notInclude(framingOnly, "Main thread activity");
+    const framing =
+      "You are in a side chat beside the main thread. The main thread may still be running in the same worktree. Answer the user's questions; do not continue or redo the main thread's task.";
+    const pointer = `Use t3_thread_read on thread ${parentThreadId} to see the main thread's live state.`;
+    assert.equal(framingOnly, [framing, "", pointer].join("\n"));
+    assert.equal(
+      ContextHandoffService.makeSideChatContext({ parentThreadId, digest: ["- User: hello"] }),
+      [
+        framing,
+        "",
+        "Main thread activity since this side chat's starting point:",
+        "- User: hello",
+        "",
+        pointer,
+      ].join("\n"),
+    );
 
     assert.equal(
       ContextHandoffService.makeSideChatContext({ parentThreadId, digest: [], seat: true }),
