@@ -1951,7 +1951,7 @@ export const layer: Layer.Layer<
  */
 export const USER_STOP_REASON = "Stopped by user";
 
-export const SESSION_DETACHED_REASON = "T3 Code ended this turn to apply a thread change";
+export const SESSION_DETACHED_REASON = "Ended to apply a thread change";
 
 /** Detaching a session drops its thread binding in the commit that ends the turn. */
 export function runInterruptReason(
