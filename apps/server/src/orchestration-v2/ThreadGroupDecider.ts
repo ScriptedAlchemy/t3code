@@ -154,8 +154,8 @@ export interface GroupMembershipDecision {
 export function decideGroupMembership(input: {
   readonly thread: OrchestrationV2AppThread;
   readonly command: GroupMembershipCommand;
-  /** The parent's newest turn item ordinal. */
-  readonly latestItemOrdinal: number;
+  /** The invited seat's newest run. Zero for a new seat. */
+  readonly seatLatestRunOrdinal: number;
 }): Result.Result<GroupMembershipDecision, string> {
   const { thread, command } = input;
   const group = thread.group ?? null;
@@ -186,7 +186,7 @@ export function decideGroupMembership(input: {
         label: existing?.label ?? command.seat.label,
         handle: existing?.handle ?? uniqueHandle(handleFromLabel(command.seat.label), taken),
         status: "seated" as const,
-        joinedThrough: input.latestItemOrdinal,
+        joinedAfterRun: input.seatLatestRunOrdinal,
       };
       return Result.succeed({
         group: {

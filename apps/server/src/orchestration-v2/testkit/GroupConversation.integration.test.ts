@@ -881,6 +881,11 @@ describe("group conversations", () => {
               steers.some((steer) => steer.threadId === queued),
               "a provider that cannot steer is never steered",
             );
+            assert.isAbove(
+              countText(seen, `from ${threadId}`),
+              0,
+              "the primary's reply reaches a seat whose cursor moved while it ran",
+            );
           }),
         ).pipe(Effect.provide(harness.layer));
       }),
@@ -952,6 +957,17 @@ describe("group conversations", () => {
               turnsBefore,
               "nothing starts after Stop",
             );
+
+            yield* script(harness.control, threadId, ["PASS"]);
+            yield* script(harness.control, talker, ["PASS"]);
+            yield* script(harness.control, silent, ["PASS"]);
+            yield* say(threadId, "resume", "RESUMEMARK carry on");
+            yield* settle(threadId);
+            for (const member of [threadId, talker, silent]) {
+              const last = (yield* turnsOf(harness.control, member)).at(-1)?.text ?? "";
+              assert.include(last, "RESUMEMARK", "a message after Stop reaches every member");
+            }
+            assert.equal((yield* readGroup(threadId))!.closedBecause, "settled");
           }),
         ).pipe(Effect.provide(harness.layer));
       }),
@@ -1100,6 +1116,15 @@ describe("group conversations", () => {
               assert.equal(
                 notice?.type === "system_notice" ? notice.message : "",
                 "Group ended. Fable has not seen 1 message.",
+              );
+              const timeline = yield* orchestrator.getTimelinePage(threadId, {
+                view: "activity",
+                limit: 200,
+              });
+              assert.include(
+                JSON.stringify(timeline.items),
+                "Group ended. Fable has not seen 1 message.",
+                "the quiet line reaches a thread reader",
               );
 
               yield* Ref.set(harness.control.injected, []);
@@ -1288,6 +1313,93 @@ describe("group conversations", () => {
           assert.deepEqual(yield* counts, once);
           assert.isAbove(yield* eventSink.latestSequence(), 0);
         }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("publishes a seat invited while the primary runs", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("mid-turn");
+        const threadId = ThreadId.make("thread:group:mid-turn");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            yield* startThread(threadId);
+            const primaryHold = yield* hold(harness.control, threadId, "Primary is mid-sentence");
+            yield* say(threadId, "first", "Primary, go");
+            yield* Deferred.await(primaryHold.started);
+            yield* until(
+              orchestrator
+                .getThreadProjection(threadId)
+                .pipe(Effect.map((p) => p.providerTurns.some((turn) => turn.status === "running"))),
+            );
+            const seat = yield* invite(threadId, ASTRA);
+            yield* script(harness.control, seat, ["MIDTURNMARK from the new seat"]);
+            yield* say(threadId, "peer", "Astra, join in", [seat]);
+            yield* until(
+              orchestrator
+                .getThreadProjection(threadId)
+                .pipe(
+                  Effect.map((p) => p.runs.some((run) => run.publication?.type === "peer_reply")),
+                ),
+            );
+            const seatPrompt = (yield* turnsOf(harness.control, seat))[0]!.text;
+            assert.include(seatPrompt, "Astra, join in");
+            yield* Deferred.succeed(primaryHold.release, "completed");
+            const after = yield* settle(threadId);
+            assert.isTrue(publishedRows(after).some((row) => row.text.includes("MIDTURNMARK")));
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("writes no handoff row when a queued primary turn takes a peer reply", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("queued-handoff");
+        const threadId = ThreadId.make("thread:group:queued-handoff");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, ASTRA);
+            const primaryHold = yield* hold(harness.control, threadId);
+            yield* script(harness.control, seat, ["PEERMARK while you worked"]);
+            yield* script(harness.control, threadId, ["PASS", "PASS"]);
+            yield* say(threadId, "first", "Primary, go", ["primary"]);
+            yield* Deferred.await(primaryHold.started);
+            yield* say(threadId, "peer", "Astra, go", [seat]);
+            yield* until(
+              orchestrator
+                .getThreadProjection(threadId)
+                .pipe(
+                  Effect.map((p) => p.runs.some((run) => run.publication?.type === "peer_reply")),
+                ),
+            );
+            yield* Ref.set(harness.control.injected, []);
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("command:group-queued:queued"),
+              threadId,
+              messageId: MessageId.make("message:group-queued:queued"),
+              createdBy: "user",
+              creationSource: "web",
+              text: "Queued for the primary",
+              attachments: [],
+              groupAudience: ["primary"],
+              dispatchMode: { type: "queue_after_active" },
+            });
+            yield* Deferred.succeed(primaryHold.release, "completed");
+            const after = yield* settle(threadId);
+            const delivered = (yield* Ref.get(harness.control.injected)).filter((item) =>
+              item.content[0]?.text.includes("PEERMARK"),
+            );
+            assert.lengthOf(delivered, 1, "the queued turn still takes the reply");
+            assert.isFalse(after.turnItems.some((item) => item.type === "handoff"));
+          }),
+        ).pipe(Effect.provide(harness.layer));
       }),
     ),
   );

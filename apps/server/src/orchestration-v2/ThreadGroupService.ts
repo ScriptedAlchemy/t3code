@@ -97,8 +97,8 @@ const make = Effect.gen(function* () {
     );
 
   const readThread = (operation: string, threadId: ThreadId) =>
-    engine.getThreadProjection(threadId).pipe(
-      Effect.map((projection): OrchestrationV2AppThread => projection.thread),
+    engine.getThreadRecords(threadId, []).pipe(
+      Effect.map((records): OrchestrationV2AppThread => records.thread),
       Effect.mapError(failed(operation, threadId)),
     );
 
@@ -139,11 +139,11 @@ const make = Effect.gen(function* () {
       const providers = yield* registry.getProviders;
       const label = groupModelLabel(providers, modelSelection);
       const returning = yield* Effect.forEach(thread.group?.seats ?? [], (seat) =>
-        engine.getThreadProjection(seat.threadId).pipe(
-          Effect.map((seatProjection) =>
-            seatProjection.thread.deletedAt === null &&
-            seatProjection.thread.modelSelection.instanceId === modelSelection.instanceId &&
-            seatProjection.thread.modelSelection.model === modelSelection.model &&
+        engine.getThreadRecords(seat.threadId, []).pipe(
+          Effect.map((records) =>
+            records.thread.deletedAt === null &&
+            records.thread.modelSelection.instanceId === modelSelection.instanceId &&
+            records.thread.modelSelection.model === modelSelection.model &&
             seat.status === "left"
               ? seat
               : undefined,

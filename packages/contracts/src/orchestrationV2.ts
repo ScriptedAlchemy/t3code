@@ -463,8 +463,8 @@ export const OrchestrationV2ThreadGroup = Schema.Struct({
       handle: TrimmedNonEmptyString,
       label: TrimmedNonEmptyString,
       status: Schema.Literals(["seated", "left"]),
-      /** The parent's turn item ordinal at invite. Runs delivered at or below it never publish. */
-      joinedThrough: NonNegativeInt,
+      /** The seat's newest run at invite. That run and earlier ones never publish. */
+      joinedAfterRun: NonNegativeInt,
     }),
   ),
   discussion: Schema.NullOr(

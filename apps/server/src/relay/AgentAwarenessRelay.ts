@@ -93,6 +93,8 @@ function shouldPublishAgentAwarenessEvent(
     case "thread.settled":
     case "thread.model-selection-updated":
     case "thread.provider-switched":
+    // A discussion ending is the moment a user who walked away wants to hear about.
+    case "thread.group-updated":
     case "run.created":
     case "run.updated":
     case "runtime-request.updated":
@@ -102,7 +104,6 @@ function shouldPublishAgentAwarenessEvent(
     // Unsettling must not re-alert a dismissed result.
     case "thread.unsettled":
     case "thread.guest-share-updated":
-    case "thread.group-updated":
     case "thread.snoozed":
     case "thread.unsnoozed":
     case "thread.auto-settle-set":

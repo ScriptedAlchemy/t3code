@@ -5047,12 +5047,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     // Ending again, or removing a seat that already left, changes nothing.
     if (command.type === "thread.group.end" && thread.group?.status === "ended") return;
-    const ordinal = yield* nextTurnItemOrdinal(projection);
-    const decided = decideGroupMembership({
-      thread,
-      command,
-      latestItemOrdinal: ordinal - 1,
-    });
+    const seatLatestRunOrdinal =
+      command.type === "thread.group.invite"
+        ? nextRunOrdinal(
+            yield* projectionStore
+              .getThreadRecords(command.seat.threadId, ["runs"])
+              .pipe(mapDispatchError(command)),
+          ) - 1
+        : 0;
+    const decided = decideGroupMembership({ thread, command, seatLatestRunOrdinal });
     if (Result.isFailure(decided)) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -5070,6 +5073,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ]);
     }
     if (command.type !== "thread.group.end") return;
+    // The timeline shows a row only through its run. A thread with no runs has nothing to report.
+    const anchorRun = projection.runs.findLast((run) => run.status !== "queued");
+    if (anchorRun === undefined) return;
     // A turn still running already took everything published before it started.
     const primaryCursor = primaryWakeCursor(projection.runs);
     const unseen = projection.runs.filter(
@@ -5081,18 +5087,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     )({
       type: "turn-item.updated",
       threadId: thread.id,
+      runId: anchorRun.id,
       providerInstanceId: thread.providerInstanceId,
       occurredAt: now,
       payload: {
         id: TurnItemId.make(`turn-item:group-ended:${command.commandId}`),
         threadId: thread.id,
-        runId: null,
+        runId: anchorRun.id,
         nodeId: null,
         providerThreadId: null,
         providerTurnId: null,
         nativeItemRef: null,
         parentItemId: null,
-        ordinal,
+        ordinal: yield* nextTurnItemOrdinal(projection),
         status: "completed",
         title: null,
         startedAt: now,
@@ -5154,7 +5161,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const cursorFor = (member: GroupMember) => {
       if (member === "primary") return primaryCursor;
       const row = live.find((candidate) => candidate.seat.threadId === member);
-      return row === undefined ? Number.POSITIVE_INFINITY : seatWakeCursor(row.seat, row.runs);
+      return row === undefined ? Number.POSITIVE_INFINITY : seatWakeCursor(row.runs);
     };
     const active: ReadonlyArray<GroupMember> = [
       ...(hasOpenRun(parent.runs) ? (["primary"] as const) : []),
@@ -5223,7 +5230,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const parent = yield* projectionStore
       .getThreadRecords(command.parentThreadId, ["runs", "turnItems", "messages"], {
         turnItemTypes: ["user_message", "assistant_message"],
-        ...(command.messageId === undefined ? {} : { messageIds: [command.messageId] }),
+        messageIds: command.messageId === undefined ? [] : [command.messageId],
       })
       .pipe(mapDispatchError(command));
     const group = parent.thread.group ?? null;
@@ -5285,18 +5292,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       MessageId.make(`message:group:${command.threadId}:${source}`);
     const handed = new Set(member.messages.map((message) => message.id));
     const delivered = seatDeliveredCursor(member);
-    const from = delivered ?? seat.joinedThrough;
+    // A first turn gets the side chat digest for history, so it only needs the current exchange.
+    const floorRun = wakeFloorRunOrdinal(entries);
+    const unseen = entries.filter(
+      (entry) =>
+        (delivered === undefined ? entry.runOrdinal >= floorRun : entry.ordinal > delivered) &&
+        entry.speaker !== command.threadId &&
+        entry.ordinal <= settledThrough &&
+        (entry.messageId === null || !handed.has(seatMessageId(entry.messageId))),
+    );
     const delta: Array<{
       readonly label: string;
       readonly model: string | null;
       readonly text: string;
-    }> = entries.filter(
-      (entry) =>
-        entry.speaker !== command.threadId &&
-        entry.ordinal > from &&
-        entry.ordinal <= settledThrough &&
-        (entry.messageId === null || !handed.has(seatMessageId(entry.messageId))),
-    );
+    }> = [...unseen];
     const addressed =
       command.messageId === undefined
         ? undefined
@@ -5304,12 +5313,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       addressed !== undefined &&
       !handed.has(seatMessageId(addressed.id)) &&
-      !entries.some((entry) => entry.messageId === addressed.id && delta.includes(entry))
+      !unseen.some((entry) => entry.messageId === addressed.id)
     ) {
       delta.push({ label: "User", model: null, text: addressed.text });
     }
     if (delta.length === 0) return undefined;
-    const through = Math.max(from, settledThrough);
+    const through = Math.max(delivered ?? 0, settledThrough);
     const reaction = command.messageId === undefined;
     const others = participants.filter((person) => person.handle !== seat.handle);
     // Seats run under the thread's current permissions, not the ones it had at invite.

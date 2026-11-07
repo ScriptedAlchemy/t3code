@@ -649,7 +649,7 @@ it.effect("t3_thread_group speaks in handles, and a read-only client can only re
         handle: "astra",
         label: "Astra",
         status: "seated" as const,
-        joinedThrough: 0,
+        joinedAfterRun: 0,
       },
     ],
     discussion: null,

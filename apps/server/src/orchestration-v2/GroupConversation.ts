@@ -136,8 +136,9 @@ const isOpenStatus = (status: OrchestrationV2Run["status"]) =>
 
 /**
  * The public record as members read it. A member's mid-turn narration is not a reply, so the
- * primary contributes only its last message, and only once its run settles. `settledThrough` stops
- * below any row still changing: taking a cursor above one would lose it when it finishes.
+ * primary contributes only its last message, and only once its run settles. Ordinals are banded by
+ * run, so that reply will land below anything published meanwhile. `settledThrough` stops short of
+ * both, since a cursor above them would lose the reply when it finishes.
  */
 export function groupEntries(input: {
   readonly group: OrchestrationV2ThreadGroup;
@@ -148,15 +149,25 @@ export function groupEntries(input: {
   const runs = new Map(input.runs.map((run) => [run.id, run]));
   const finalPrimaryRows = new Map<OrchestrationV2Run["id"], OrchestrationV2TurnItem>();
   const entries: Array<GroupEntry> = [];
+  const openRunOrdinal = input.runs.reduce(
+    (lowest, run) =>
+      run.publication === undefined && isOpenStatus(run.status) && run.status !== "queued"
+        ? Math.min(lowest, run.ordinal)
+        : lowest,
+    Number.POSITIVE_INFINITY,
+  );
   let highest = 0;
   let lowestOpen = Number.POSITIVE_INFINITY;
+  const noteSettled = (ordinal: number, runOrdinal: number) => {
+    if (runOrdinal <= openRunOrdinal) highest = Math.max(highest, ordinal);
+  };
   for (const item of input.turnItems) {
     if (item.runId === null || item.parentItemId !== null) continue;
     const run = runs.get(item.runId);
     if (run === undefined || run.status === "rolled_back" || run.status === "cancelled") continue;
     if (item.type === "user_message") {
       if (run.status === "queued") continue;
-      highest = Math.max(highest, item.ordinal);
+      noteSettled(item.ordinal, run.ordinal);
       entries.push({
         ordinal: item.ordinal,
         runOrdinal: run.ordinal,
@@ -171,7 +182,7 @@ export function groupEntries(input: {
     if (item.type !== "assistant_message" || item.text.trim().length === 0) continue;
     const { publication } = run;
     if (publication?.type === "peer_reply") {
-      highest = Math.max(highest, item.ordinal);
+      noteSettled(item.ordinal, run.ordinal);
       entries.push({
         ordinal: item.ordinal,
         runOrdinal: run.ordinal,
@@ -188,7 +199,7 @@ export function groupEntries(input: {
       continue;
     }
     if (!isSettledStatus(run.status)) continue;
-    highest = Math.max(highest, item.ordinal);
+    noteSettled(item.ordinal, run.ordinal);
     const previous = finalPrimaryRows.get(run.id);
     if (previous === undefined || previous.ordinal < item.ordinal) {
       finalPrimaryRows.set(run.id, item);
@@ -223,9 +234,8 @@ export function wakeFloorRunOrdinal(entries: ReadonlyArray<GroupEntry>): number 
 const countsAsAttempt = (run: Pick<RunRow, "status">) =>
   run.status !== "rolled_back" && run.status !== "cancelled";
 
-/** The newest run this member was asked to answer. A failed turn counts, so it is not re-woken. */
+/** The newest ordinal this seat was asked to answer. A failed turn counts, so it is not re-woken. */
 export function seatWakeCursor(
-  seat: OrchestrationV2ThreadGroup["seats"][number],
   seatRuns: ReadonlyArray<Pick<RunRow, "status" | "groupThrough">>,
 ): number {
   return seatRuns.reduce(
@@ -233,7 +243,7 @@ export function seatWakeCursor(
       countsAsAttempt(run) && run.groupThrough !== undefined
         ? Math.max(cursor, run.groupThrough)
         : cursor,
-    seat.joinedThrough,
+    0,
   );
 }
 
@@ -298,13 +308,13 @@ export function finalReplyText(
 /** Whether this settled seat run should appear on the visible thread. */
 export function seatRunPublishes(
   seat: OrchestrationV2ThreadGroup["seats"][number],
-  run: Pick<RunRow, "status" | "groupThrough">,
+  run: Pick<RunRow, "status" | "groupThrough" | "ordinal">,
 ): boolean {
   return (
     seat.status === "seated" &&
     isSettledStatus(run.status) &&
     run.groupThrough !== undefined &&
-    run.groupThrough > seat.joinedThrough
+    run.ordinal > seat.joinedAfterRun
   );
 }
 

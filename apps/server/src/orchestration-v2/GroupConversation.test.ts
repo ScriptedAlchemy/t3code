@@ -36,7 +36,7 @@ const seat = (threadId: ThreadId, handle: string, status: "seated" | "left" = "s
   handle,
   label: handle,
   status,
-  joinedThrough: 0,
+  joinedAfterRun: 0,
 });
 
 const groupOf = (
@@ -320,6 +320,24 @@ describe("groupEntries", () => {
     expect(settledThrough).toBe(2);
   });
 
+  it("keeps the cursor below a running primary whose reply has not started", () => {
+    const { entries, settledThrough } = groupEntries({
+      group,
+      runs: [
+        run("run:1", 1, "running"),
+        run("run:2", 2, "completed", {
+          publication: { type: "peer_reply", seatThreadId: astra, seatRunId: RunId.make("s") },
+        }),
+      ],
+      turnItems: [
+        user("run:1", 1_000_001, "Question"),
+        assistant("run:2", 2_000_001, "Peer answer", { label: "Astra", model: "astra-model" }),
+      ],
+    });
+    expect(entries.map((row) => row.text)).toEqual(["Question", "Peer answer"]);
+    expect(settledThrough).toBe(1_000_001);
+  });
+
   it("names a primary that changed model by its slug, not the snapshot", () => {
     const { entries } = groupEntries({
       group,
@@ -353,14 +371,14 @@ describe("what each member has not seen", () => {
   });
 
   it("wakes from attempts but delivers from what a provider took", () => {
-    const seatRow = seat(astra, "astra");
     const failedBeforeTurn = run("run:1", 1, "failed", {
       groupThrough: 5,
       activeAttemptId: "attempt:1" as never,
     });
     const queued = run("run:2", 2, "queued", { groupThrough: 7 });
     const cancelled = run("run:3", 3, "cancelled", { groupThrough: 9 });
-    expect(seatWakeCursor(seatRow, [failedBeforeTurn, queued, cancelled])).toBe(7);
+    expect(seatWakeCursor([failedBeforeTurn, queued, cancelled])).toBe(7);
+    expect(seatWakeCursor([])).toBe(0);
     expect(
       seatDeliveredCursor({ runs: [failedBeforeTurn, cancelled], providerTurns: [] }),
     ).toBeUndefined();
@@ -368,16 +386,16 @@ describe("what each member has not seen", () => {
   });
 
   it("publishes only runs delivered since the seat joined", () => {
-    const joined = { ...seat(astra, "astra"), joinedThrough: 4 };
-    expect(seatRunPublishes(joined, run("a", 1, "completed", { groupThrough: 5 }))).toBe(true);
-    expect(seatRunPublishes(joined, run("b", 1, "interrupted", { groupThrough: 5 }))).toBe(true);
-    expect(seatRunPublishes(joined, run("c", 1, "completed", { groupThrough: 4 }))).toBe(false);
-    expect(seatRunPublishes(joined, run("d", 1, "completed"))).toBe(false);
-    expect(seatRunPublishes(joined, run("e", 1, "running", { groupThrough: 5 }))).toBe(false);
+    const joined = { ...seat(astra, "astra"), joinedAfterRun: 4 };
+    expect(seatRunPublishes(joined, run("a", 5, "completed", { groupThrough: 1 }))).toBe(true);
+    expect(seatRunPublishes(joined, run("b", 5, "interrupted", { groupThrough: 1 }))).toBe(true);
+    expect(seatRunPublishes(joined, run("c", 4, "completed", { groupThrough: 9 }))).toBe(false);
+    expect(seatRunPublishes(joined, run("d", 5, "completed"))).toBe(false);
+    expect(seatRunPublishes(joined, run("e", 5, "running", { groupThrough: 1 }))).toBe(false);
     expect(
       seatRunPublishes(
         { ...joined, status: "left" },
-        run("f", 1, "completed", { groupThrough: 5 }),
+        run("f", 5, "completed", { groupThrough: 1 }),
       ),
     ).toBe(false);
   });

@@ -123,7 +123,7 @@ describe("orchestration V2 contracts", () => {
           handle: "astra",
           label: "Astra",
           status: "seated" as const,
-          joinedThrough: 3,
+          joinedAfterRun: 3,
         },
       ],
       discussion: { mode: "everyone" as const, turnsLeft: 4, delivering: ["primary"] },
