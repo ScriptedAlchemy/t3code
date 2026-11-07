@@ -1,3 +1,11 @@
+import {
+  groupRowSpeaker,
+  isQuietPass,
+  quietPassLine,
+  type ThreadGroup,
+} from "@t3tools/client-runtime/state/thread-group";
+import { useQuietThreadStructure } from "../../state/use-thread-detail";
+import type { OrchestrationV2Run } from "@t3tools/contracts";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
@@ -343,6 +351,7 @@ export interface ThreadFeedHandle {
 }
 
 export interface ThreadFeedProps {
+  readonly group?: ThreadGroup | null;
   readonly toolCallVisibility?: ToolCallVisibility;
   readonly worktreeSetup?: WorktreeSetupCardProps | null;
   readonly setupWorkingStartedAt?: string | null;
@@ -1673,6 +1682,7 @@ function renderFeedEntry(
   info: { item: ThreadFeedRow; index: number },
   props: Pick<
     ThreadFeedProps,
+    | "group"
     | "environmentId"
     | "onUseArtifactTemplate"
     | "skills"
@@ -1681,6 +1691,7 @@ function renderFeedEntry(
     | "threadId"
     | "workspaceRoot"
   > & {
+    readonly runs: ReadonlyArray<OrchestrationV2Run>;
     readonly copiedRowId: string | null;
     readonly expandedWorkRows: Record<string, boolean>;
     readonly workRowSizing: ReturnType<typeof deriveThreadWorkLogSizing>;
@@ -1892,6 +1903,22 @@ function renderFeedEntry(
   if (entry.type === "message") {
     const { message } = entry;
     const isUser = message.role === "user";
+    const speaker = isUser
+      ? null
+      : groupRowSpeaker(props.group, {
+          speaker: message.speaker,
+          run: props.runs.find((run) => run.id === message.runId),
+        });
+    if (speaker !== null && !message.streaming && isQuietPass(message.text)) {
+      return (
+        <Text
+          accessibilityLabel={quietPassLine(speaker.label)}
+          className="px-1 py-1 text-xs text-foreground-muted"
+        >
+          {quietPassLine(speaker.label)}
+        </Text>
+      );
+    }
     const presentation = resolveUserMessagePresentation(message);
     const renderedText = renderAssistantCitationsAsText(presentation.text);
     const styles = isUser ? markdownStyles.user : markdownStyles.assistant;
@@ -2278,6 +2305,7 @@ function renderFeedEntry(
     const enterAnimated = isFreshTimestamp(message.createdAt);
     return (
       <Animated.View
+        accessibilityLabel={`${speaker?.label ?? "Assistant"} reply`}
         className={cn(
           showAssistantMeta && !(message.runId && props.failedRunIds.has(message.runId))
             ? "mb-5 px-1"
@@ -2286,6 +2314,11 @@ function renderFeedEntry(
         )}
         {...(enterAnimated ? { entering: FadeIn.duration(220) } : {})}
       >
+        {speaker === null ? null : (
+          <Text className="mb-1 text-xs text-foreground-muted">
+            {speaker.label} · {speaker.model}
+          </Text>
+        )}
         {renderedText.trim().length > 0 ? (
           <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
             <AssistantMarkdownContent
@@ -2727,6 +2760,7 @@ export const ThreadFeed = memo(function ThreadFeed({
   const guestShare = useThreadGuestShare(props.detailRef);
   const deviceType = useDeviceType();
   const duoColumns = useNativeWorkspaceColumnsSupported() && isDuoDevice(deviceType);
+  const structure = useQuietThreadStructure(props.detailRef);
   const openPullRequest = useOpenPullRequest();
   const navigation = useNavigation();
   const openLinkedThread = useOpenLinkedThread();
@@ -3818,6 +3852,8 @@ export const ThreadFeed = memo(function ThreadFeed({
             />
           ) : null}
           {renderFeedEntry(info, {
+            group: props.group,
+            runs: structure?.projection.runs ?? [],
             userMessageGrouping: info.item.userMessageGrouping,
             environmentId: props.environmentId,
             dispatchingMessageId: props.dispatchingMessageId,

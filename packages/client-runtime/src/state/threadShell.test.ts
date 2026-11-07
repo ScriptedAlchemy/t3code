@@ -290,6 +290,7 @@ describe("v2 thread shell lists", () => {
     });
     expect(registry.get(sideChats).map((thread) => thread.id)).toEqual([opus.id, plain.id]);
     expect(registry.get(running)).toEqual([astra.id]);
+    expect(registry.get(threads.threadShellAtom(parentRef))?.group).toEqual(group);
 
     const stillRunning = registry.get(running);
     registry.set(snapshotAtom(environmentId), {

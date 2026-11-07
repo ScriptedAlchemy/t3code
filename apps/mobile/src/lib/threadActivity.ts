@@ -126,6 +126,7 @@ export interface ThreadFeedActivity {
 }
 
 export interface ThreadFeedMessage {
+  readonly speaker?: import("@t3tools/contracts").OrchestrationV2MessageSpeaker;
   readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
   readonly id: MessageId;
   readonly role: "user" | "assistant";
@@ -2308,6 +2309,7 @@ export function buildThreadFeed(
           attachments: item.attachments ?? [],
           runId: item.runId,
           streaming: item.type === "assistant_message" && item.streaming,
+          ...(item.type === "assistant_message" && item.speaker ? { speaker: item.speaker } : {}),
           ...(item.type === "user_message"
             ? {
                 inputIntent: item.inputIntent,

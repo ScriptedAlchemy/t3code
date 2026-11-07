@@ -1,3 +1,5 @@
+import { AppText as Text } from "../../components/ui/AppText";
+import { isSeatedSeatThread } from "@t3tools/client-runtime/state/thread-group";
 import { ChildThreadApprovals } from "./ChildThreadApprovals";
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
 import { useSidebarWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
@@ -13,7 +15,11 @@ import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-visits";
-import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
+import {
+  useChildThreadInputs,
+  useThreadReportedModelSelection,
+  useQuietThreadShell,
+} from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import {
@@ -493,6 +499,15 @@ function ThreadDetailBody(
   const defaultComposerEditorRef = useRef<ComposerEditorHandle>(null);
   const composerEditorRef = props.draftMode?.editorRef ?? defaultComposerEditorRef;
   const isProviderSubagent = isProviderNativeSubagentThread(props.selectedThread.source);
+  const parentThread = useQuietThreadShell(
+    props.selectedThread.lineage.parentThreadId === null
+      ? null
+      : {
+          environmentId: props.environmentId,
+          threadId: props.selectedThread.lineage.parentThreadId,
+        },
+  );
+  const isGroupSeat = isSeatedSeatThread(parentThread?.group, props.selectedThread.id);
   const editingRunId = props.queuedRunEdit?.runId ?? null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- focuses the composer editor on the next animation frame when a queued run edit starts
   useEffect(() => {
@@ -1495,6 +1510,7 @@ function ThreadDetailBody(
                 detailRef={props.selectedThreadDetailRef}
                 workspaceRoot={props.threadCwd}
                 feed={props.selectedThreadFeed}
+                group={props.selectedThread.group}
                 pendingHandoff={props.pendingHandoff}
                 worktreeSetup={props.worktreeSetup}
                 setupWorkingStartedAt={props.setupWorkingStartedAt}
@@ -1503,7 +1519,9 @@ function ThreadDetailBody(
                 // A native subagent has no composer to edit a pending message in;
                 // Cancel on the edit banner would discard it.
                 onEditPendingMessage={
-                  isProviderSubagent || pendingMessageEditBlocked ? null : handleEditPendingMessage
+                  isProviderSubagent || isGroupSeat || pendingMessageEditBlocked
+                    ? null
+                    : handleEditPendingMessage
                 }
                 contentPresentation={props.contentPresentation}
                 threadTitle={props.selectedThread.title}
@@ -1810,7 +1828,11 @@ function ThreadDetailBody(
                 </View>
 
                 <View style={composerSlotHidden ? { display: "none" } : undefined}>
-                  {isProviderSubagent ? (
+                  {isGroupSeat ? (
+                    <Text className="px-4 pb-4 text-sm text-foreground-muted">
+                      Reply in the group conversation.
+                    </Text>
+                  ) : isProviderSubagent ? (
                     <View
                       className="self-center px-3 pt-1.5"
                       style={{
