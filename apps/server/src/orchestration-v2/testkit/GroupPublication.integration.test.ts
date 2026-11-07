@@ -801,4 +801,119 @@ describe("group publication runs", () => {
       }),
     ),
   );
+
+  it.live.each([
+    ["latest", CLAUDE_MODEL_SELECTION],
+    ["latest", CODEX_MODEL_SELECTION],
+    ["reply", CLAUDE_MODEL_SELECTION],
+    ["reply", CODEX_MODEL_SELECTION],
+  ] as const)("forks from %s with its row and context, continuing on %j", ([point, continueOn]) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const name = `fork-${point}-${continueOn.instanceId}`;
+        const harness = yield* makeHarness(name);
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const threadId = ThreadId.make(`thread:group-publication:${name}`);
+          yield* startThread(threadId);
+          yield* say(threadId, "first", "CONTROLQUESTION");
+          yield* settle(threadId);
+          yield* publishPeerReply(threadId, "reply");
+          const source = yield* orchestrator.getThreadProjection(threadId);
+          const replyRun = source.runs.at(-1)!;
+          if (point === "reply") {
+            yield* publishPeerReply(threadId, "later", { text: "LATERMARK after the fork" });
+          }
+
+          const forkId = ThreadId.make(`${threadId}:fork`);
+          yield* orchestrator.dispatch({
+            type: "thread.fork",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make(`command:fork:${name}`),
+            sourceThreadId: threadId,
+            targetThreadId: forkId,
+            sourcePoint:
+              point === "latest" ? { type: "latest_stable" } : { type: "run", runId: replyRun.id },
+            title: "Fork",
+          });
+          const shown = JSON.stringify(
+            (yield* orchestrator.getTimelinePage(forkId, { limit: 200 })).items,
+          );
+          assert.include(shown, "CONTROLQUESTION");
+          assert.include(shown, PEER_TEXT);
+          assert.notInclude(shown, "LATERMARK");
+          assert.include(shown, '"label":"Astra"');
+
+          yield* Ref.set(harness.injected, []);
+          yield* say(forkId, "go", "Continue in fork", { modelSelection: continueOn });
+          const fork = yield* settle(forkId);
+          assert.equal(fork.runs.at(-1)?.status, "completed");
+          const sent = [
+            ...(yield* Ref.get(harness.injected)).flatMap((item) =>
+              item.content.map((part) => part.text),
+            ),
+            yield* lastTurnText(harness.turns),
+          ];
+          assert.isTrue(hasText(sent, "CONTROLQUESTION"), "control context arrives");
+          assert.isTrue(hasText(sent, PEER_TEXT), "peer text arrives");
+          assert.isFalse(hasText(sent, "LATERMARK"), "later words stay behind");
+          const afterFirst = JSON.stringify(
+            (yield* orchestrator.getTimelinePage(forkId, { limit: 200 })).items,
+          );
+          assert.include(afterFirst, PEER_TEXT);
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("merges a fork back when its latest stable run is a publication run", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("merge-back");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const threadId = ThreadId.make("thread:group-publication:merge-back");
+          const forkId = ThreadId.make(`${threadId}:fork`);
+          yield* startThread(threadId);
+          yield* say(threadId, "first", "CONTROLQUESTION");
+          yield* settle(threadId);
+          yield* orchestrator.dispatch({
+            type: "thread.fork",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make("command:group-publication:merge-back:fork"),
+            sourceThreadId: threadId,
+            targetThreadId: forkId,
+            sourcePoint: { type: "latest_stable" },
+            title: "Fork",
+          });
+          yield* say(forkId, "work", "Work in the fork");
+          yield* settle(forkId);
+          yield* publishPeerReply(forkId, "reply");
+
+          yield* orchestrator.dispatch({
+            type: "thread.merge_back",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make("command:group-publication:merge-back"),
+            sourceThreadId: forkId,
+            targetThreadId: threadId,
+            sourcePoint: { type: "latest_stable" },
+          });
+          yield* Ref.set(harness.injected, []);
+          yield* say(threadId, "after", "Back on the main thread");
+          const after = yield* settle(threadId);
+          assert.equal(after.runs.at(-1)?.status, "completed");
+          const sent = [
+            ...(yield* Ref.get(harness.injected)).flatMap((item) =>
+              item.content.map((part) => part.text),
+            ),
+            yield* lastTurnText(harness.turns),
+          ];
+          assert.isTrue(hasText(sent, PEER_TEXT));
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
 });

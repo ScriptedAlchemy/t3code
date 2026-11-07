@@ -139,6 +139,7 @@ it.effect("resets a fork's pin, snooze, settle and delegation state but keeps it
     const linkOrigin = { sessionId: "mcp-session:fork-source", label: "Linked laptop" };
     const sourceThread: OrchestrationV2AppThread = {
       ...makeSourceThread(),
+      group: { status: "active", seats: [], discussion: null, closedBecause: null },
       lastSnoozeWakeAt: snoozedAt,
       pinnedAt: snoozedAt,
       pinOrderKey: "a0",
@@ -178,6 +179,7 @@ it.effect("resets a fork's pin, snooze, settle and delegation state but keeps it
     assert.equal(result.targetThread.branch, sourceThread.branch);
     assert.equal(result.targetThread.worktreePath, sourceThread.worktreePath);
     assert.isNull(result.targetThread.activeProviderThreadId);
+    assert.isNull(result.targetThread.group);
     assert.deepEqual(result.targetThread.lineage, {
       parentThreadId: sourceThreadId,
       relationshipToParent: "fork",

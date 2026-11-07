@@ -891,7 +891,11 @@ function latestStableRun(
 ): OrchestrationV2Run | null {
   return (
     projection.runs
-      .filter((run) => run.status === "completed" && run.checkpointId !== null)
+      .filter(
+        (run) =>
+          run.status === "completed" &&
+          (run.checkpointId !== null || isOrchestrationV2PublicationRun(run)),
+      )
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null
   );
 }
@@ -926,6 +930,19 @@ function providerThreadForRun(
   return run.providerThreadId === null
     ? undefined
     : projection.providerThreads.find((candidate) => candidate.id === run.providerThreadId);
+}
+
+/** A publication run has no conversation of its own, so name the one that preceded it. */
+function conversationRunFor(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs">,
+  run: OrchestrationV2Run,
+): OrchestrationV2Run {
+  if (run.providerThreadId !== null) return run;
+  return (
+    projection.runs.findLast(
+      (candidate) => candidate.ordinal < run.ordinal && candidate.providerThreadId !== null,
+    ) ?? run
+  );
 }
 
 function providerTurnForRun(
@@ -5124,7 +5141,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
 
-    const sourceProviderThread = providerThreadForRun(sourceProjection, sourceRun);
+    const sourceProviderThread = providerThreadForRun(
+      sourceProjection,
+      conversationRunFor(sourceProjection, sourceRun),
+    );
     const now = command.createdAt ?? (yield* DateTime.now);
     const emitEvent = emit(events, command);
     const transferId = yield* mapDispatchError(command)(
@@ -7549,7 +7569,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const sourceProviderThread =
       sourceProjection === null || sourceRun === null
         ? undefined
-        : providerThreadForRun(sourceProjection, sourceRun);
+        : providerThreadForRun(sourceProjection, conversationRunFor(sourceProjection, sourceRun));
     const sourceProviderTurnId =
       sourceProjection === null || sourceRun === null || sourceRun.activeAttemptId === null
         ? undefined
@@ -7564,7 +7584,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const sideChatWithoutSource =
       sideChatFork && pendingForkTransfer.sourcePoint.runId === undefined;
     if (pendingForkTransfer !== undefined) {
-      if (!sideChatWithoutSource && (sourceRun === null || sourceProviderThread === undefined)) {
+      if (
+        !sideChatWithoutSource &&
+        (sourceRun === null ||
+          (sourceProviderThread === undefined && !isOrchestrationV2PublicationRun(sourceRun)))
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -7646,7 +7670,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               capabilities,
               sameProvider:
                 pendingForkTransfer.sourceProviderInstanceId === modelSelection.instanceId,
-              hasStrongNativeSource: sourceProviderThread?.nativeThreadRef?.strength === "strong",
+              // The provider's copy of the conversation lacks words published after its last turn.
+              hasStrongNativeSource:
+                !isOrchestrationV2PublicationRun(sourceRun) &&
+                sourceProviderThread?.nativeThreadRef?.strength === "strong",
               sourceRunStatus: sourceRun.status,
               fromSpecificTurn: sourceRun !== null,
               sourceBusy: sourceRunsAfterFork.some(isActiveRun),
@@ -7955,7 +7982,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const mergeBackSourceProviderThread =
       mergeBackSourceProjection === null || mergeBackSourceRun === null
         ? undefined
-        : providerThreadForRun(mergeBackSourceProjection, mergeBackSourceRun);
+        : providerThreadForRun(
+            mergeBackSourceProjection,
+            conversationRunFor(mergeBackSourceProjection, mergeBackSourceRun),
+          );
     if (pendingMergeBackTransfer !== undefined && mergeBackSourceProviderThread === undefined) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
