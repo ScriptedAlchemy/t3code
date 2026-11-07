@@ -22,6 +22,7 @@ import {
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import { createOrchestrationV2TurnItemVisibility } from "@t3tools/shared/orchestrationV2Timeline";
 import { latestExecutedRun, latestUnheldRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -421,6 +422,19 @@ const settle = Effect.fn("GroupPublicationTest.settle")(function* (threadId: Thr
   return yield* awaitProjection(threadId, isIdle);
 });
 
+const visibleTexts = (projection: OrchestrationV2ThreadProjection) => {
+  const visible = createOrchestrationV2TurnItemVisibility({
+    runs: projection.runs,
+    attempts: projection.attempts,
+    items: projection.turnItems,
+  });
+  return projection.turnItems
+    .filter(visible)
+    .flatMap((item) =>
+      item.type === "assistant_message" || item.type === "user_message" ? [item.text] : [],
+    );
+};
+
 const hasText = (texts: ReadonlyArray<string>, needle: string) =>
   texts.some((text) => text.includes(needle));
 
@@ -684,5 +698,107 @@ describe("group publication runs", () => {
           }).pipe(Effect.provide(harness.layer));
         }),
       ),
+  );
+
+  it.live("removes a rewound publication run, leaves earlier ones, and hides it from search", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("rollback");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const search = yield* ThreadSearch.ThreadSearch;
+          const threadId = ThreadId.make("thread:group-publication:rollback");
+          yield* startThread(threadId);
+          yield* say(threadId, "first", "CONTROLQUESTION");
+          yield* settle(threadId);
+          yield* publishPeerReply(threadId, "kept", { text: "KEPTPEERMARK stays" });
+          yield* say(threadId, "second", "SECONDQUESTION");
+          const beforeReply = yield* settle(threadId);
+          yield* publishPeerReply(threadId, "gone", { text: "GONEPEERMARK goes" });
+          assert.lengthOf((yield* search.search({ query: "GONEPEERMARK" })).matches, 1);
+
+          const target = beforeReply.runs.at(-1)!;
+          const checkpoint = beforeReply.checkpoints.find((c) => c.runId === target.id)!;
+          yield* orchestrator.dispatch({
+            type: "checkpoint.rollback",
+            restoreFiles: false,
+            commandId: CommandId.make("command:group-publication:rollback"),
+            threadId,
+            scopeId: checkpoint.scopeId,
+            checkpointId: checkpoint.id,
+          });
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          yield* worker.drain();
+          const after = yield* awaitProjection(threadId, (projection) =>
+            projection.runs.some((run) => run.status === "rolled_back"),
+          );
+
+          const texts = visibleTexts(after);
+          assert.isTrue(hasText(texts, "CONTROLQUESTION"));
+          assert.isTrue(hasText(texts, "SECONDQUESTION"));
+          assert.isTrue(hasText(texts, "KEPTPEERMARK"));
+          assert.isFalse(hasText(texts, "GONEPEERMARK"));
+          assert.equal(
+            yield* Ref.get(harness.rollbackCalls),
+            0,
+            "the provider has nothing to undo",
+          );
+          assert.lengthOf((yield* search.search({ query: "GONEPEERMARK" })).matches, 0);
+          assert.lengthOf((yield* search.search({ query: "KEPTPEERMARK" })).matches, 1);
+
+          yield* Ref.set(harness.injected, []);
+          yield* say(threadId, "third", "After the rewind");
+          yield* settle(threadId);
+          assert.isFalse(
+            hasText(
+              (yield* Ref.get(harness.injected)).flatMap((item) =>
+                item.content.map((part) => part.text),
+              ),
+              "GONEPEERMARK",
+            ),
+          );
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.live("still asks the provider to undo a real turn rewound with a publication run", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("rollback-mixed");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const threadId = ThreadId.make("thread:group-publication:rollback-mixed");
+          yield* startThread(threadId);
+          yield* say(threadId, "first", "CONTROLQUESTION");
+          const base = yield* settle(threadId);
+          yield* publishPeerReply(threadId, "gone", { text: "GONEPEERMARK goes" });
+          yield* say(threadId, "second", "SECONDQUESTION");
+          yield* settle(threadId);
+
+          const checkpoint = base.checkpoints.find((c) => c.runId === base.runs[0]!.id)!;
+          yield* orchestrator.dispatch({
+            type: "checkpoint.rollback",
+            restoreFiles: false,
+            commandId: CommandId.make("command:group-publication:rollback-mixed"),
+            threadId,
+            scopeId: checkpoint.scopeId,
+            checkpointId: checkpoint.id,
+          });
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          yield* worker.drain();
+          const after = yield* awaitProjection(
+            threadId,
+            (projection) =>
+              projection.runs.filter((run) => run.status === "rolled_back").length === 2,
+          );
+          const texts = visibleTexts(after);
+          assert.isTrue(hasText(texts, "CONTROLQUESTION"));
+          assert.isFalse(hasText(texts, "SECONDQUESTION"));
+          assert.isFalse(hasText(texts, "GONEPEERMARK"));
+          assert.equal(yield* Ref.get(harness.rollbackCalls), 1);
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
   );
 });
