@@ -129,7 +129,6 @@ export function groupSeatFailedNotice(label: string, reason: string | undefined)
 
 export const groupSeatCouldNotStartNotice = (label: string) => `${label} could not start.`;
 
-/** The quiet line End writes on the visible thread. */
 export function groupEndedNotice(primaryLabel: string, unseenCount: number): string {
   if (unseenCount === 0) return "Group ended.";
   const noun = unseenCount === 1 ? "message" : "messages";

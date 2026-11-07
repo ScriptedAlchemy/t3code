@@ -91,7 +91,6 @@ type SeatShell = {
   readonly runtime: Parameters<typeof threadRuntimeIsActive>[0];
 };
 
-/** Seated seats whose own thread has an open run. */
 export function runningSeats(
   group: GroupLike,
   shellOf: (threadId: ThreadId) => SeatShell | null | undefined,

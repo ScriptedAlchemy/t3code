@@ -148,7 +148,6 @@ function uniqueLabel(base: string, taken: ReadonlySet<string>): string {
   return `${base} ${suffix}`;
 }
 
-/** Turn budget for one user message. */
 const groupTurnBudget = (group: OrchestrationV2ThreadGroup) =>
   Math.min(2 * seatedMembers(group).length, 8);
 
