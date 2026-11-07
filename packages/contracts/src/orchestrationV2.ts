@@ -3461,6 +3461,30 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
 const OrchestrationV2InternalCommand = Schema.Union([
+  // Records words said elsewhere on the visible thread as a completed run with no provider turn.
+  Schema.Struct({
+    type: Schema.Literal("thread.group.publish"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    status: Schema.Literals(["completed", "interrupted"]),
+    text: Schema.String,
+    entry: Schema.Union([
+      Schema.Struct({
+        type: Schema.Literal("peer_reply"),
+        seatThreadId: ThreadId,
+        seatRunId: RunId,
+        speaker: OrchestrationV2MessageSpeaker,
+        modelSelection: ModelSelection,
+      }),
+      Schema.Struct({
+        ...OrchestrationV2CreationFields,
+        type: Schema.Literal("user_to_peers"),
+        seatThreadIds: Schema.Array(ThreadId),
+        messageId: MessageId,
+        attachments: Schema.Array(ChatAttachment),
+      }),
+    ]),
+  }),
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),

@@ -193,6 +193,7 @@ import {
   isForkableSourceRunStatus,
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
+import { planGroupPublication } from "./ThreadGroupDecider.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
@@ -559,6 +560,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.archive":
     case "thread.unarchive":
     case "thread.delete":
+    case "thread.group.publish":
     case "thread.guest-share.open":
     case "thread.guest-share.redeem":
     case "thread.guest-share.close":
@@ -4817,6 +4819,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...refusal,
       ...runtimeModeCeiling,
     });
+  });
+
+  const dispatchGroupPublish = Effect.fn("orchestrationV2.dispatch.groupPublish")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.group.publish" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(command.threadId, ["runs"])
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+        ),
+      );
+    if (projection.thread.deletedAt !== null) return;
+    const now = yield* DateTime.now;
+    const { run, message, turnItem } = planGroupPublication({
+      command,
+      thread: projection.thread,
+      ordinal: nextRunOrdinal(projection),
+      turnItemOrdinal: yield* nextTurnItemOrdinal(projection),
+      now,
+    });
+    if (projection.runs.some((existing) => existing.id === run.id)) return;
+    const emitEvent = emit(events, command);
+    const common = {
+      threadId: command.threadId,
+      runId: run.id,
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+    };
+    yield* emitEvent({ ...common, type: "run.created", payload: run });
+    yield* emitEvent({ ...common, type: "message.updated", payload: message });
+    yield* emitEvent({ ...common, type: "turn-item.updated", payload: turnItem });
   });
 
   const dispatchThreadFork = Effect.fn("orchestrationV2.dispatch.threadFork")(function* (
@@ -14267,6 +14302,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.interrupt.unresponsive":
         yield* dispatchInterruptUnresponsive(command, events);
         break;
+      case "thread.group.publish":
+        yield* dispatchGroupPublish(command, events);
+        break;
       case "thread.fork":
         yield* dispatchThreadFork(command, events);
         break;
@@ -14414,6 +14452,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "subagent.stop" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||
+          // The same words arrive again after a crash or sweep.
+          command.type === "thread.group.publish" ||
           (command.type === "thread.delete" && command.onlyIfUnused === true),
         (_planned) =>
           new OrchestratorDispatchError({
