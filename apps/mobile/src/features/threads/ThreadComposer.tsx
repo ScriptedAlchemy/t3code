@@ -1,3 +1,4 @@
+import { groupParticipants, isGroupActive } from "@t3tools/client-runtime/state/thread-group";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { ThreadSplitSuggestion } from "./ThreadSplitSuggestion";
 import { ProjectKnowledgeEntry } from "../../components/ProjectKnowledgeEntry";
@@ -1038,6 +1039,10 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                   // The save uses a draft snapshot; further typing would be discarded on success.
                   readOnly={isSubmissionLocked}
                   skills={composerMenu.skills}
+                  groupHandles={(isGroupActive(props.selectedThread.group)
+                    ? groupParticipants(props.selectedThread.group)
+                    : []
+                  ).map((participant) => participant.handle.toLowerCase())}
                   selection={composerMenu.selection}
                   onChangeText={(text) => {
                     if (!isSubmissionLocked) props.onChangeDraftMessage(text);
