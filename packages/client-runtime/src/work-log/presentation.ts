@@ -182,7 +182,8 @@ function resolveT3McpToolPresentation(
           : status === "declined"
             ? `Declined to ${action.toLowerCase()}`
             : status === "stopped"
-              ? `Stopped ${running.toLowerCase()}`
+              ? // Moving a thread ends its provider session, often before the call can report success.
+                `${definition.summaryAction === "worktree-handoff" ? "Started" : "Stopped"} ${running.toLowerCase()}`
               : running;
 
   const actionKind =

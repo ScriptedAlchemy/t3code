@@ -580,6 +580,7 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
+  readonly loadRunOpenItems?: () => Effect.Effect<ReadonlyArray<OrchestrationV2TurnItem>, never>;
   readonly message: ProviderAdapter.ProviderAdapterV2TurnMessage;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
@@ -637,6 +638,8 @@ export const layer: Layer.Layer<
         readonly openRunOwnedSubagents?: OpenRunOwnedSubagentProjection;
         // Root turn snapshot written with the run when T3 ends the run itself.
         readonly abandonedProviderTurn?: OrchestrationV2ProviderTurn;
+        // Calls a detached session can never finish. Left open, restart recovery wakes the agent for them.
+        readonly detachedOpenItems?: ReadonlyArray<OrchestrationV2TurnItem>;
         readonly terminal: ProviderTerminalEvent;
         readonly completedAt?: DateTime.Utc;
         readonly failureItemPersisted: boolean;
@@ -800,6 +803,25 @@ export const layer: Layer.Layer<
           ],
           events: [
             ...cascadedSubagentEvents,
+            ...(yield* Effect.forEach(input.detachedOpenItems ?? [], (item) =>
+              allocateEventId().pipe(
+                Effect.map((id) => ({
+                  id,
+                  type: "turn-item.updated" as const,
+                  threadId: input.run.threadId,
+                  runId: input.run.id,
+                  nodeId: input.rootNode.id,
+                  providerInstanceId: input.run.providerInstanceId,
+                  occurredAt: completedAt,
+                  payload: {
+                    ...item,
+                    status: "interrupted" as const,
+                    completedAt,
+                    updatedAt: completedAt,
+                  },
+                })),
+              ),
+            )),
             ...(input.abandonedProviderTurn === undefined
               ? []
               : [
@@ -944,11 +966,8 @@ export const layer: Layer.Layer<
             ),
           ),
         );
-        const makeFailedTerminalEvent = (
-          failure: OrchestrationV2ProviderFailure,
-          failureItemOrdinal: number,
-        ): ProviderTerminalEvent => ({
-          type: "turn.terminal",
+        const abandonedTurnTerminal = () => ({
+          type: "turn.terminal" as const,
           driver: input.providerThread.driver,
           providerThreadId: input.providerThread.id,
           providerTurnId:
@@ -958,10 +977,16 @@ export const layer: Layer.Layer<
               nativeTurnId: `failed:${input.attempt.id}`,
             }),
           runOrdinal: input.run.ordinal,
+          threadDisposition: "reusable" as const,
+        });
+        const makeFailedTerminalEvent = (
+          failure: OrchestrationV2ProviderFailure,
+          failureItemOrdinal: number,
+        ): ProviderTerminalEvent => ({
+          ...abandonedTurnTerminal(),
           failureItemOrdinal,
           status: "failed",
           failure,
-          threadDisposition: "reusable",
         });
         const responseStreamingMode = yield* Effect.gen(function* () {
           const responseStreamingMode = yield* serverSettings.getSettings.pipe(
@@ -1652,10 +1677,16 @@ export const layer: Layer.Layer<
               (cause) =>
                 Effect.gen(function* () {
                   const completedAt = yield* DateTime.now;
-                  yield* Effect.logWarning("orchestration V2 provider event ingestion failed", {
-                    runId: input.run.id,
-                    cause,
-                  });
+                  // Detaching closes the stream of a provider with one thread per session on purpose.
+                  const detached =
+                    input.loadRunInterruptReason !== undefined &&
+                    (yield* input.loadRunInterruptReason()) === SESSION_DETACHED_REASON;
+                  if (!detached) {
+                    yield* Effect.logWarning("orchestration V2 provider event ingestion failed", {
+                      runId: input.run.id,
+                      cause,
+                    });
+                  }
                   if (yield* Ref.get(rootRunFinalized)) return;
                   const providerThread = yield* Ref.get(latestProviderThread);
                   const routing = yield* Ref.get(eventRouting);
@@ -1712,17 +1743,27 @@ export const layer: Layer.Layer<
                     },
                     openRunOwnedSubagents: openSubagents,
                     ...(abandonedProviderTurn === null ? {} : { abandonedProviderTurn }),
+                    ...(detached && input.loadRunOpenItems !== undefined
+                      ? { detachedOpenItems: yield* input.loadRunOpenItems() }
+                      : {}),
                     completedAt,
-                    terminal: makeFailedTerminalEvent(
-                      makeProviderFailure({
-                        cause: squashed,
-                        message:
-                          knownProviderFailureMessage(squashed) ??
-                          userFacingDatabaseErrorMessage(squashed),
-                        class: "unknown",
-                      }),
-                      latestItemOrdinal + 1,
-                    ),
+                    terminal: detached
+                      ? {
+                          ...abandonedTurnTerminal(),
+                          status: "interrupted" as const,
+                          failure: null,
+                          reason: SESSION_DETACHED_REASON,
+                        }
+                      : makeFailedTerminalEvent(
+                          makeProviderFailure({
+                            cause: squashed,
+                            message:
+                              knownProviderFailureMessage(squashed) ??
+                              userFacingDatabaseErrorMessage(squashed),
+                            class: "unknown",
+                          }),
+                          latestItemOrdinal + 1,
+                        ),
                     failureItemPersisted: false,
                     refreshAfterTurn,
                   }).pipe(
@@ -1909,6 +1950,29 @@ export const layer: Layer.Layer<
  * always set one, so a missing reason means a person stopped the run.
  */
 export const USER_STOP_REASON = "Stopped by user";
+
+export const SESSION_DETACHED_REASON = "T3 Code ended this turn to apply a thread change";
+
+/** Detaching a session drops its thread binding in the commit that ends the turn. */
+export function runInterruptReason(
+  records: {
+    readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
+    readonly providerThreads: ReadonlyArray<
+      Pick<OrchestrationV2ProviderThread, "id" | "providerSessionId">
+    >;
+    readonly providerSessions: ReadonlyArray<{ readonly id: ProviderSessionId }>;
+  },
+  providerThreadId: OrchestrationV2ProviderThread["id"],
+): string | undefined {
+  const request = records.turnItems.find((item) => item.type === "run_interrupt_request");
+  if (request?.type === "run_interrupt_request") return request.message;
+  const sessionId = records.providerThreads.find(
+    (thread) => thread.id === providerThreadId,
+  )?.providerSessionId;
+  return sessionId != null && !records.providerSessions.some((session) => session.id === sessionId)
+    ? SESSION_DETACHED_REASON
+    : undefined;
+}
 
 export function makeInterruptResultTurnItem(input: {
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];

@@ -540,6 +540,10 @@ export interface ProjectionStoreV2Shape {
   readonly getThreadShell: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2ThreadShell | null, ProjectionStoreV2Error>;
+  /** The thread a provider's own session id belongs to. Scans provider threads, so failed lookups only. */
+  readonly findThreadIdByNativeThreadId: (
+    nativeThreadId: string,
+  ) => Effect.Effect<ThreadId | null, ProjectionStoreV2Error>;
   /** The thread whose current guest share has this id. Scans thread rows; only redeem uses it. */
   readonly findGuestShareThreadId: (
     shareId: GuestShareId,
@@ -7340,6 +7344,20 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       return rows[0] === undefined ? null : ThreadId.make(rows[0].thread_id);
     }, Effect.mapError(shellSnapshotReadError));
 
+    const findThreadIdByNativeThreadId = Effect.fn("ProjectionStore.findThreadIdByNativeThreadId")(
+      function* (nativeThreadId: string) {
+        const rows = yield* sql<{ readonly thread_id: string }>`
+          SELECT thread_id
+          FROM orchestration_v2_projection_provider_threads
+          WHERE json_extract(payload_json, '$.nativeThreadRef.nativeId') = ${nativeThreadId}
+          ORDER BY updated_at DESC
+          LIMIT 1
+        `;
+        return rows[0] === undefined ? null : ThreadId.make(rows[0].thread_id);
+      },
+      Effect.mapError(shellSnapshotReadError),
+    );
+
     const listOlderSettledThreads: ProjectionStoreV2Shape["listOlderSettledThreads"] = Effect.fn(
       "ProjectionStore.listOlderSettledThreads",
     )(function* ({ before, projectIds, limit }) {
@@ -7491,6 +7509,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       listOlderSettledThreads: readOnReader(listOlderSettledThreads),
       getThreadShell: readOnReader(getThreadShell),
       findGuestShareThreadId: readOnReader(findGuestShareThreadId),
+      findThreadIdByNativeThreadId: readOnReader(findThreadIdByNativeThreadId),
       getThread: readOnReader(getThread),
       getSettlementCandidates: readOnReader(getSettlementCandidates),
       getThreadsWithPullRequests: readOnReader(getThreadsWithPullRequests),

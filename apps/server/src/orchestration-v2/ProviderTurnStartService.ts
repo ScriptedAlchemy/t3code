@@ -299,16 +299,33 @@ export const layer: Layer.Layer<
             .pipe(Effect.catchCause(() => Effect.succeed(false))),
         loadRunInterruptReason: () =>
           projectionStore
-            .getThreadRecords(input.threadId, ["turnItems"], {
-              turnItemTypes: ["run_interrupt_request"],
-              turnItemRunIds: [input.runId],
-            })
+            .getThreadRecords(
+              input.threadId,
+              ["turnItems", "providerThreads", "providerSessions"],
+              {
+                turnItemTypes: ["run_interrupt_request"],
+                turnItemRunIds: [input.runId],
+              },
+            )
             .pipe(
-              Effect.map(({ turnItems }) => {
-                const request = turnItems.find((item) => item.type === "run_interrupt_request");
-                return request?.type === "run_interrupt_request" ? request.message : undefined;
-              }),
+              Effect.map((records) =>
+                RunExecutionService.runInterruptReason(records, input.providerThreadId),
+              ),
               Effect.catchCause(() => Effect.undefined),
+            ),
+        loadRunOpenItems: () =>
+          projectionStore
+            .getThreadRecords(input.threadId, ["turnItems"], { turnItemRunIds: [input.runId] })
+            .pipe(
+              Effect.map(({ turnItems }) =>
+                turnItems.filter(
+                  (item) =>
+                    item.status === "running" &&
+                    item.type !== "subagent" &&
+                    item.providerThreadId === input.providerThreadId,
+                ),
+              ),
+              Effect.orElseSucceed(() => []),
             ),
       };
     };
@@ -1820,6 +1837,7 @@ export const layer: Layer.Layer<
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
         loadRunInterruptReason: runControls.loadRunInterruptReason,
+        loadRunOpenItems: runControls.loadRunOpenItems,
         message: {
           messageId: message.id,
           text: userText,
