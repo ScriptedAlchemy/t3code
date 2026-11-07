@@ -72,7 +72,7 @@ describe("withoutCloseLine", () => {
     ["Use a log.\n\n@user", "Use a log."],
     ["Use a log.\n@USER  ", "Use a log."],
     ["Ask @user about it.", "Ask @user about it."],
-    ["Use a log. @user", "Use a log. @user"],
+    ["Use a log. @user", "Use a log."],
     ["Use a log.\n@astra", "Use a log.\n@astra"],
     ["@user", "@user"],
   ])("reads %j as %j", (text, expected) => {
