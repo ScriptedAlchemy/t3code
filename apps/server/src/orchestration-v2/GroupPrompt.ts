@@ -101,6 +101,21 @@ export function renderPrimaryWakePrompt(input: {
   ].join("\n");
 }
 
+/** The primary's context on a user's message, since no model is told about the group otherwise. */
+export function renderPrimaryGroupNote(input: {
+  readonly self: Person;
+  readonly others: ReadonlyArray<Person>;
+  readonly everyoneAddressed: boolean;
+}): string {
+  return [
+    `You are ${input.self.label}, known here as @${input.self.handle}, in a group conversation with the user and ${describePeople(input.others)}.`,
+    input.everyoneAddressed
+      ? "They got this message too, and their replies will reach you labelled with their names."
+      : "Their replies reach you labelled with their names.",
+    `Give your own view. ${firstReplyCloseRule}`,
+  ].join(" ");
+}
+
 export const primaryWakeSummary = (from: ReadonlyArray<string>) =>
   `${from.join(", ")} replied in the group`;
 

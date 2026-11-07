@@ -2408,4 +2408,56 @@ describe("group conversations", () => {
       }),
     ),
   );
+
+  it.live("tells the primary about the group on a user's message, not on its wake", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness("primary-note");
+        const threadId = ThreadId.make("thread:group:primary-note");
+        yield* withReactor(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const noteOf = (text: string) => text.includes("in a group conversation with the user");
+            yield* startThread(threadId);
+            yield* say(threadId, "solo", "Before the group");
+            yield* until(
+              orchestrator
+                .getThreadProjection(threadId)
+                .pipe(Effect.map((row) => row.runs.at(-1)?.status === "completed")),
+            );
+            const seat = yield* invite(threadId, ASTRA);
+            yield* script(harness.control, seat, ["Use a log."]);
+            yield* say(threadId, "everyone", "Which design?");
+            const parent = yield* settle(threadId);
+            const turns = yield* turnsOf(harness.control, threadId);
+            assert.isFalse(noteOf(turns[0]!.text), "no group existed yet");
+            assert.isTrue(noteOf(turns[1]!.text));
+            assert.include(turns[1]!.text, "You are Fable, known here as @fable");
+            assert.include(turns[1]!.text, "Astra (@");
+            assert.include(turns[1]!.text, "They got this message too");
+            assert.include(turns[1]!.text, "`@user` closes the discussion");
+            assert.include(turns[1]!.text, "Which design?");
+            assert.isAbove(turns.length, 2, "the primary woke for Astra's reply");
+            assert.isFalse(noteOf(turns.at(-1)!.text), "a wake has its own prompt");
+            const visible = parent.turnItems.flatMap((item) =>
+              item.type === "user_message" ? [item.text] : [],
+            );
+            assert.includeMembers(visible, ["Which design?"]);
+            assert.isFalse(visible.some(noteOf), "the note stays out of the visible row");
+            assert.isFalse(
+              (yield* turnsOf(harness.control, seat)).some((turn) =>
+                turn.text.startsWith("You are Fable"),
+              ),
+            );
+
+            yield* say(threadId, "direct", "Only you", ["primary"]);
+            yield* settle(threadId);
+            const direct = (yield* turnsOf(harness.control, threadId)).at(-1)!.text;
+            assert.isTrue(noteOf(direct));
+            assert.notInclude(direct, "got this message too");
+          }),
+        ).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
 });
