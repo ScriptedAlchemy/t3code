@@ -13,6 +13,9 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
 const noSuggestion = { suggest: false } as const;
+// Frozen on calibration data; change only with a fresh evaluation (evals/thread-split).
+const SUGGESTION_THRESHOLD = 0.6538;
+const MIN_MESSAGE_WORDS = 5;
 const Answer = Schema.Struct({
   model: Schema.String,
   answers: Schema.Struct({
@@ -66,6 +69,7 @@ const make = Effect.gen(function* () {
       !isLocalDecisionEndpoint(config.threadSplitModelEndpoint)
     )
       return noSuggestion;
+    if (input.message.trim().split(/\s+/).length < MIN_MESSAGE_WORDS) return noSuggestion;
     const count = yield* threads.getMessageCount(input.threadId);
     if (count < 2 || count > 100) return noSuggestion;
     const source = yield* threads.getThreadRecords(input.threadId, ["messages", "runs"]);
@@ -81,8 +85,19 @@ const make = Effect.gen(function* () {
       source.thread.deletedAt
     )
       return noSuggestion;
+    const hiddenRuns = source.runs.filter(
+      (run) =>
+        run.status === "rolled_back" || (run.status === "cancelled" && run.startedAt === null),
+    );
+    const hiddenRunIds = new Set(hiddenRuns.map((run) => run.id));
+    const hiddenMessageIds = new Set(hiddenRuns.map((run) => run.userMessageId));
     const prior: Array<{ user: string; assistant_final: string }> = [];
     for (const message of source.messages) {
+      if (
+        (message.runId !== null && hiddenRunIds.has(message.runId)) ||
+        hiddenMessageIds.has(message.id)
+      )
+        continue;
       if (
         message.streaming ||
         message.attachments.length ||
@@ -117,7 +132,7 @@ const make = Effect.gen(function* () {
     if (
       answer.model !== "pplx-decider-flash-v1.2" ||
       answer.truncated ||
-      answer.answers.q.noul < 0.94
+      answer.answers.q.noul < SUGGESTION_THRESHOLD
     )
       return noSuggestion;
     const current = yield* threads.getThreadRecords(input.threadId, ["runs"]);

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import time
 
-from detector import PROMPT, request, score_response, summarize
+from detector import PROMPT, message_word_count, request, score_response, summarize
 
 
 def main():
@@ -12,8 +12,11 @@ def main():
     parser.add_argument('--cases', type=Path, required=True)
     parser.add_argument('--model', type=Path, required=True)
     parser.add_argument('--threshold', type=float, required=True)
+    parser.add_argument('--min-message-words', type=int, default=0)
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
+    if args.min_message_words < 0:
+        parser.error('--min-message-words must be nonnegative')
     summarize([], args.threshold)
     cases = json.loads(args.cases.read_text())
     summarize([dict(id=c['id'], label=c['label'], score=None) for c in cases], args.threshold)
@@ -36,10 +39,13 @@ def main():
             state = case['state']
             row = {key: case[key] for key in ('id', 'session', 'label')}
             start = time.perf_counter()
-            try:
-                row['score'] = score_response(model.decide_request(request(state)))
-            except Exception as error:
-                row.update(score=None, error=type(error).__name__)
+            if message_word_count(state['new_message']) < args.min_message_words:
+                row.update(score=None, abstention='short_message')
+            else:
+                try:
+                    row['score'] = score_response(model.decide_request(request(state)))
+                except Exception as error:
+                    row.update(score=None, error=type(error).__name__)
             row['seconds'] = time.perf_counter() - start
             rows.append(row)
             output.write(json.dumps(row) + '\n')
@@ -47,6 +53,7 @@ def main():
     report = {
         'model': args.model.name,
         'threshold': args.threshold,
+        'min_message_words': args.min_message_words,
         'prompt': PROMPT,
         'cases_sha256': hashlib.sha256(args.cases.read_bytes()).hexdigest(),
         'counts': summarize(rows, args.threshold),

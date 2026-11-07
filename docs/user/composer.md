@@ -510,6 +510,7 @@ Checks run on the connected server, including when you use a remote browser or
 phone. The experimental model can miss new tasks or suggest a split for a follow-up;
 you decide whether the earlier context is still needed. Attachments and context
 references stay in their current thread and are not eligible for this suggestion.
+Drafts under five words are not checked.
 
 The endpoint must be a loopback Jev-compatible endpoint on the server machine,
 using `pplx-decider-flash-v1.2`. For an existing MLX Decision installation on Apple

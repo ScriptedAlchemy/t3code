@@ -5,7 +5,7 @@ of the preceding thread's results, files, decisions or instructions. A different
 subject alone does not establish independence. This is an offline experiment;
 it does not create threads, alter history, or display suggestions.
 
-The direct prompt is shared with the server in
+The contextual prompt is shared with the server in
 `packages/shared/src/threadSplitPrompt.json`. Each request contains one question:
 pplx's joint question attention makes scores depend on siblings when batched.
 Truncated requests and inference failures abstain and are counted separately.
@@ -19,13 +19,16 @@ call a paid provider or download model weights.
 ```sh
 python3 -m unittest discover -s evals/thread-split
 python3 evals/thread-split/run.py --cases /path/to/private-cases.json \
-  --model /path/to/pplx-decider-flash-v1.2 --threshold 0.94 \
+  --model /path/to/pplx-decider-flash-v1.2 --threshold 0.6538 --min-message-words 5 \
   --out /path/to/new-run
 ```
 
 The output directory must not exist. It receives scores, abstentions, request
 latencies, the exact prompt, input digest, threshold and confusion counts.
 The threshold is explicit; this runner never tunes it on evaluation labels.
+`--min-message-words 5` skips inference for short drafts, as the service does,
+and records them as `short_message` abstentions. The default is zero to preserve
+historical classifier-only runs. Abstentions stay separate from confusion counts.
 
 Cases are a JSON array with `id`, `session`, `label` (`INDEPENDENT` or `DEPENDS`),
 and `state` containing only `prior_thread` and `new_message`. Prior thread entries
@@ -56,8 +59,8 @@ Automatic splitting and interrupting prompts are outside this feature.
 ## Session-held-out experiment
 
 `experiment.py` separates score collection from labeling and calibration. It uses
-three fixed yes/no prompts: the production baseline, an actionable-task/reference
-check, and a contextual task check. Keep both packets and labels outside the repo.
+three fixed yes/no prompts: the original baseline, an actionable-task/reference
+check, and the production contextual task check. Keep both packets and labels outside the repo.
 
 Packets contain `id`, `session`, `split` (`calibration` or `evaluation`), `state`
 (as above), and `eligibility: {"eligible": true, "reasons": []}`. A session cannot
@@ -81,19 +84,26 @@ python3 -c 'import sys; sys.path.insert(0, "evals/thread-split"); from experimen
 
 ```sh
 python3 evals/thread-split/experiment.py score --packets /private/packets.json \
-  --split calibration --labels-sha256 CALIBRATION_LABEL_HASH \
+  --split calibration --min-message-words 5 --labels-sha256 CALIBRATION_LABEL_HASH \
   --model /models/pplx-decider-flash-v1.2 --out /private/cal-scores
 python3 evals/thread-split/experiment.py calibrate --packets /private/packets.json \
-  --labels /private/cal-labels.json --scores /private/cal-scores/scores.jsonl \
+  --min-message-words 5 --labels /private/cal-labels.json --scores /private/cal-scores/scores.jsonl \
   --out /private/selection.json
 python3 evals/thread-split/experiment.py score --packets /private/packets.json \
-  --split evaluation --selection /private/selection.json \
+  --split evaluation --min-message-words 5 --selection /private/selection.json \
   --labels-sha256 EVALUATION_LABEL_HASH --model /models/pplx-decider-flash-v1.2 --out /private/test-scores
 python3 evals/thread-split/experiment.py report --packets /private/packets.json \
-  --split evaluation --selection /private/selection.json \
+  --split evaluation --min-message-words 5 --selection /private/selection.json \
   --labels /private/test-labels.json --scores /private/test-scores/scores.jsonl \
   --out /private/report.json
 ```
+
+The word minimum applies to candidate prompts; the original baseline keeps its
+original eligibility. Use the same value for every command: receipts and the frozen
+selection bind it before evaluation. Omit it for historical runs without the gate.
+Scoring still measures bounded short inputs for the `classifier` comparison, while
+`reconstructed_path` abstains on them and reports `short_message` exclusions. Such
+missed new tasks remain in the path's recall denominator.
 
 Calibration refuses held-out labels or scores. It selects the prompt/cutoff with
 most useful eligible detections subject to at most 1% observed false suggestions
@@ -104,7 +114,7 @@ requirements, not guarantees of generalisation. Ties prefer fewer false
 suggestions, then the baseline prompt. If no useful cutoff qualifies, the frozen
 threshold is null (no suggestions). This empirical constraint is not a population
 guarantee. Evaluation scores only the frozen choice and the production baseline;
-its report includes the baseline at the shipped 0.94 cutoff.
+its report includes the baseline at its original 0.94 cutoff.
 
 The report retains every checkpoint in reconstructed-path recall, including
 ineligible cases and abstentions; its false-suggestion rate describes all negative
@@ -134,7 +144,7 @@ a third judge resolved 13 disagreements before scoring. Whole ancestry groups
 separate 140 development/calibration cases from 54 held-out cases. This is one
 user's history, not a representative population sample.
 
-At the shipped 0.94 threshold, the baseline produced no held-out suggestions.
+At its original 0.94 threshold, the baseline produced no held-out suggestions.
 Among 23 eligible cases, it missed the one actionable independent task and falsely
 flagged none of 21 negatives; one case remained uncertain. Across all 54 cases,
 there were three new tasks, two excluded by eligibility gates. Zero observed false
@@ -150,5 +160,32 @@ RPC, concurrent drafts, or client typing behavior.
 
 Three fixed prompts were scored on calibration data. Only 23 eligible negatives
 were available, below the predeclared 100-negative minimum, so no tuned candidate
-qualified. These results do not justify a threshold change or a readiness claim.
-The feature remains experimental and opt-in.
+qualified. These results did not justify a threshold change. The November 4 evaluation below did.
+
+## Production configuration
+
+Production uses pplx-decider-flash-v1.2, the contextual prompt, threshold 0.6538, and no
+suggestion under five words. The threshold is the lowest with at most 1% false suggestions on
+calibration. The word minimum was chosen before the Claude and Codex test split was read.
+
+A 927-message test, 97% Cursor, had 20.0% weighted recall and 1.09% false suggestions, both
+at this threshold without the word minimum. A separate test of 421 Claude and Codex messages
+(33 new tasks, 375 negatives, and 13 other cases, whole threads held out) compared the two configurations:
+
+| Configuration                  | AUC   | Recall | False suggestions | Precision, known labels |
+| ------------------------------ | ----- | ------ | ----------------- | ----------------------- |
+| Baseline, 0.94                 | 0.749 | 1/33   | 3/375             | 25.0% (1/4)             |
+| Contextual, 0.6538, five words | 0.886 | 8/33   | 6/375             | 57.1% (8/14)            |
+
+Precision excludes uncertain labels, matching `experiment.py`, and is calculated
+from the true and false suggestions shown. The previously reported 12.5% and 44.4%
+use a different denominator; the private score receipts are needed to reconcile
+that denominator. These corrected ratios are arithmetic on the reported counts,
+not a new model evaluation.
+
+Recall rose by 8.6 to 36.7 points (95% interval, resampling threads). False suggestions were
+1.6% against the 1% calibration target; the increase over baseline is within noise (-0.5 to +2.3
+points). Threads with credential-shaped text were excluded, which leans the sample toward shorter
+threads. This is one user's history. The feature stays passive, opt-in and experimental; these
+numbers do not support automatic splitting. Any later change to the prompt or threshold needs
+fresh threads, because these test splits have been read.

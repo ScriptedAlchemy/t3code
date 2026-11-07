@@ -4,15 +4,18 @@ import {
   ProjectId,
   ProviderInstanceId,
   MessageId,
+  RunId,
   DEFAULT_SERVER_SETTINGS,
   type OrchestrationV2AppThread,
   type OrchestrationV2ConversationMessage,
+  type OrchestrationV2Run,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
@@ -21,9 +24,16 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as Suggestions from "./ThreadSplitSuggestions.ts";
 import type { ProjectionRecords, ProjectionRecordField } from "./ProjectionStore.ts";
 
+const decodeRequest = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Struct({ state: Schema.Unknown })),
+);
 const threadId = ThreadId.make("split-test");
 const input = { threadId, message: "What is the capital of France?" };
-function source() {
+function source(): {
+  thread: OrchestrationV2AppThread;
+  messages: OrchestrationV2ConversationMessage[];
+  runs: OrchestrationV2Run[];
+} {
   const now = DateTime.makeUnsafe("2026-11-03T00:00:00Z");
   const thread: OrchestrationV2AppThread = {
     id: threadId,
@@ -78,6 +88,9 @@ it.effect("abstains for disabled, unsafe endpoints, truncated replies and stale 
       "stale",
       "context",
       "empty-context",
+      "short-message",
+      "below-threshold",
+      "at-threshold",
       "valid",
     ] as const) {
       const records = source();
@@ -103,7 +116,19 @@ it.effect("abstains for disabled, unsafe endpoints, truncated replies and stale 
             Response.json(
               {
                 model: scenario === "wrong-model" ? "other" : "pplx-decider-flash-v1.2",
-                answers: { q: { type: "noul", noul: scenario === "invalid" ? 2 : 0.98 } },
+                answers: {
+                  q: {
+                    type: "noul",
+                    noul:
+                      scenario === "invalid"
+                        ? 2
+                        : scenario === "below-threshold"
+                          ? 0.6537
+                          : scenario === "at-threshold"
+                            ? 0.6538
+                            : 0.98,
+                  },
+                },
                 truncated: scenario === "body",
               },
               { headers: scenario === "header" ? { "x-mlx-decision-truncated": "true" } : {} },
@@ -131,12 +156,23 @@ it.effect("abstains for disabled, unsafe endpoints, truncated replies and stale 
         ),
       );
       const result = yield* Effect.gen(function* () {
-        return yield* (yield* Suggestions.ThreadSplitSuggestions).suggest(input);
+        return yield* (yield* Suggestions.ThreadSplitSuggestions).suggest(
+          scenario === "short-message" ? { threadId, message: "run every test now" } : input,
+        );
       }).pipe(Effect.provide(layer));
-      assert.equal(result.suggest, scenario === "valid" || scenario === "empty-context", scenario);
+      assert.equal(
+        result.suggest,
+        scenario === "valid" || scenario === "empty-context" || scenario === "at-threshold",
+        scenario,
+      );
       assert.equal(
         requests,
-        scenario === "disabled" || scenario === "remote" || scenario === "context" ? 0 : 1,
+        scenario === "disabled" ||
+          scenario === "remote" ||
+          scenario === "context" ||
+          scenario === "short-message"
+          ? 0
+          : 1,
         scenario,
       );
     }
@@ -191,5 +227,96 @@ it.effect("does not queue a second model request while one is in flight", () =>
       assert.deepEqual(yield* service.suggest(input), { suggest: true });
       assert.equal(calls, 2);
     }).pipe(Effect.provide(layer));
+  }),
+);
+
+it.effect("classifies only history from visible turns", () =>
+  Effect.gen(function* () {
+    for (const scenario of [
+      "rolled-back",
+      "cancelled-before-start",
+      "cancelled-after-start",
+    ] as const) {
+      const records = source();
+      const runId = RunId.make("discarded-run");
+      const user = {
+        ...records.messages[0]!,
+        id: MessageId.make("discarded-request"),
+        text: "An abandoned topic about cooking.",
+      };
+      records.runs.push({
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId: records.thread.providerInstanceId,
+        modelSelection: records.thread.modelSelection,
+        providerThreadId: null,
+        userMessageId: user.id,
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: scenario === "rolled-back" ? "rolled_back" : "cancelled",
+        requestedAt: records.thread.createdAt,
+        startedAt: scenario === "cancelled-before-start" ? null : records.thread.createdAt,
+        completedAt: records.thread.createdAt,
+        checkpointId: null,
+        contextHandoffId: null,
+      });
+      records.messages.push(user);
+      if (scenario !== "cancelled-before-start")
+        records.messages.push({
+          ...records.messages[1]!,
+          id: MessageId.make("discarded-reply"),
+          runId,
+          text: "Here is a recipe.",
+        });
+      let state: unknown;
+      const client = HttpClient.make((request) =>
+        Effect.sync(() => {
+          assert.equal(request.body._tag, "Uint8Array");
+          if (request.body._tag === "Uint8Array")
+            state = decodeRequest(new TextDecoder().decode(request.body.body)).state;
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({
+              model: "pplx-decider-flash-v1.2",
+              answers: { q: { type: "noul", noul: 0.98 } },
+            }),
+          );
+        }),
+      );
+      const layer = Suggestions.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(Orchestrator.OrchestratorV2)({
+              getMessageCount: () => Effect.succeed(records.messages.length),
+              getThreadRecords: <K extends ProjectionRecordField>() =>
+                Effect.succeed(records as unknown as ProjectionRecords<K>),
+            }),
+            ServerSettings.layerTest({
+              threadSplitSuggestionsEnabled: true,
+              threadSplitModelEndpoint: "http://127.0.0.1:8000/v1/systemone",
+            }),
+            Layer.succeed(HttpClient.HttpClient, client),
+          ),
+        ),
+      );
+      const result = yield* Effect.gen(function* () {
+        return yield* (yield* Suggestions.ThreadSplitSuggestions).suggest(input);
+      }).pipe(Effect.provide(layer));
+      assert.deepEqual(result, { suggest: true }, scenario);
+      assert.deepEqual(
+        state,
+        {
+          prior_thread: [
+            { user: "Run the tests.", assistant_final: "The parser tests passed." },
+            ...(scenario === "cancelled-after-start"
+              ? [{ user: user.text, assistant_final: "Here is a recipe." }]
+              : []),
+          ],
+          new_message: input.message,
+        },
+        scenario,
+      );
+    }
   }),
 );
