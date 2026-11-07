@@ -1337,8 +1337,10 @@ export default function ChatView(props: ChatViewProps) {
   const conversationProviderStatus =
     providerStatuses.find((status) => status.instanceId === activeRuntime?.providerInstanceId) ??
     activeProviderStatus;
+  // The server refuses a rewind while a discussion is open.
   const supportsConversationRollback =
     canOperateThread &&
+    threadGroup?.discussion == null &&
     conversationProviderStatus !== null &&
     conversationProviderStatus.supportsConversationRollback !== false;
   const phase = derivePhase(activeRuntime);
@@ -3514,6 +3516,7 @@ export default function ChatView(props: ChatViewProps) {
                   footer={timelineFooter}
                   listRef={legendListRef}
                   runs={serverProjection?.runs ?? []}
+                  group={threadGroup}
                   latestRun={activeActivityRun}
                   announcedRun={announcedRun(activeActivityRun, serverProjection?.runs ?? [])}
                   detailBehindShell={isDetailBehindShell(
