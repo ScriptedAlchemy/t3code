@@ -28,6 +28,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -59,6 +60,7 @@ const Files = Schema.Struct({
     }),
   ),
 });
+const Peer = Schema.Struct({ environmentId: EnvironmentId });
 const Models = Schema.Struct({
   data: Schema.Array(
     Schema.Struct({ id: Schema.String, owned_by: Schema.optional(Schema.String) }),
@@ -115,9 +117,11 @@ const make = Effect.gen(function* () {
   const installContext = yield* Effect.context<Effect.Services<ReturnType<typeof install>>>();
   const latest = yield* Effect.cachedWithTTL(
     latestRelease().pipe(Effect.provide(installContext)),
-    "15 minutes",
+    (exit) => (Exit.isSuccess(exit) ? "15 minutes" : 0),
   );
   const mutex = yield* Semaphore.make(1);
+  const updateMutex = yield* Semaphore.make(1);
+  const children = yield* Queue.sliding<ChildProcessSpawner.ChildProcessHandle>(1);
   const directory = path.join(config.stateDir, "inference-proxy");
   let cached: Saved | undefined;
   let running:
@@ -211,11 +215,29 @@ const make = Effect.gen(function* () {
         Effect.timeout("8 seconds"),
       );
       running = { child, scope, key, management, baseUrl };
+      yield* Queue.offer(children, child);
       return running;
     }).pipe(
       Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, Exit.void) : Effect.void)),
     );
   });
+
+  const watchChild = Effect.fn("InferenceProxy.watchChild")(function* () {
+    const child = yield* Queue.take(children);
+    yield* child.exitCode;
+    if (running?.child !== child) return;
+    // Local providers call the sidecar directly, so their next turn cannot wake a stopped host.
+    yield* Effect.sleep("1 second");
+    yield* mutex
+      .withPermit(
+        Effect.gen(function* () {
+          const state = yield* read;
+          if (state.enabled && (!running || running.child === child)) yield* ensure(state);
+        }),
+      )
+      .pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("1 second") }));
+  });
+  yield* watchChild().pipe(Effect.ignore, Effect.forever, Effect.forkScoped);
 
   const status = mutex
     .withPermit(
@@ -287,137 +309,151 @@ const make = Effect.gen(function* () {
     return urls;
   });
 
-  const manage = Effect.fn("InferenceProxy.manage")(
-    function* (input: InferenceProxyAction) {
-      const state = yield* read;
-      if (input.operation === "checkUpdate" || input.operation === "update") {
-        const denial = managedUpdatesDenial(settings.managedPolicy);
-        if (!state.enabled || denial) {
-          if (input.operation === "update")
-            return yield* failure(denial ?? "Enable inference hosting first.");
-          return {};
-        }
-        const current = state.release?.version ?? proxyVersion;
-        const release = yield* latest.pipe(
-          Effect.mapError(safeFailure("Could not check upstream CLIProxyAPI releases.")),
-        );
-        const available =
-          release.version.localeCompare(current, "en", { numeric: true }) > 0
-            ? release.version
-            : null;
-        if (input.operation === "checkUpdate" || !available)
-          return { update: { current, available } };
-        yield* install(directory, release).pipe(
-          Effect.provide(installContext),
-          Effect.mapError(safeFailure("Could not install the verified CLIProxyAPI update.")),
-        );
-        const next = { ...state, release };
+  const updateRuntime = Effect.fn("InferenceProxy.updateRuntime")(function* (
+    operation: "checkUpdate" | "update",
+  ) {
+    const state = yield* mutex.withPermit(read);
+    const denial = managedUpdatesDenial(settings.managedPolicy);
+    if (!state.enabled || denial) {
+      if (operation === "update")
+        return yield* failure(denial ?? "Enable inference hosting first.");
+      return {};
+    }
+    const current = state.release?.version ?? proxyVersion;
+    const release = yield* latest.pipe(
+      Effect.mapError(safeFailure("Could not check upstream CLIProxyAPI releases.")),
+    );
+    const available =
+      release.version.localeCompare(current, "en", { numeric: true }) > 0 ? release.version : null;
+    if (operation === "checkUpdate" || !available) return { update: { current, available } };
+    yield* install(directory, release).pipe(
+      Effect.provide(installContext),
+      Effect.mapError(safeFailure("Could not install the verified CLIProxyAPI update.")),
+    );
+    return yield* mutex.withPermit(
+      Effect.gen(function* () {
+        const before = yield* read;
+        if (!before.enabled) return yield* failure("Hosting was disabled during the update.");
+        const next = { ...before, release };
         yield* Effect.uninterruptibleMask((restore) =>
           stop.pipe(
             Effect.andThen(restore(ensure(next))),
             Effect.andThen(save(next)),
-            Effect.onError(() => stop.pipe(Effect.andThen(ensure(state)), Effect.ignore)),
+            Effect.onError(() => stop.pipe(Effect.andThen(ensure(before)), Effect.ignore)),
           ),
         );
         return { update: { current: release.version, available: null } };
-      }
-      if (input.operation === "configure") {
-        if (input.enabled && input.sharing && sharingDenial) return yield* failure(sharingDenial);
-        if (!input.enabled) {
-          yield* save({ ...state, enabled: false, sharing: false, grants: [] }).pipe(
-            Effect.andThen(stop),
-            Effect.uninterruptible,
-          );
-        } else {
-          if (input.sharing) yield* sharingUrls;
-          const next = {
-            ...state,
-            enabled: true,
-            sharing: input.sharing,
-            port: state.port || (yield* net.reserveLoopbackPort("127.0.0.1")),
-            grants: input.sharing ? state.grants : [],
-          };
-          yield* Effect.uninterruptibleMask((restore) =>
-            restore(ensure(next)).pipe(
-              Effect.andThen(save(next)),
-              Effect.onError(() => (state.enabled ? Effect.void : stop)),
-            ),
-          );
-        }
-        return {};
-      }
-      if (input.operation === "removeRoute") {
-        const { providerInstances } = yield* settings.getSettings;
-        if (!isInferenceConfig(providerInstances[input.instanceId]?.config))
-          return yield* failure("This provider is not an inference route.");
-        yield* settings.updateProviderInstance({
-          operation: "remove",
-          instanceId: input.instanceId,
-        });
-        return {};
-      }
-      if (input.operation === "revoke") {
-        yield* save({
+      }),
+    );
+  });
+  type HostAction = Exclude<InferenceProxyAction, { operation: "checkUpdate" | "update" }>;
+  const manageHost = Effect.fn("InferenceProxy.manageHost")(function* (input: HostAction) {
+    const state = yield* read;
+    if (input.operation === "configure") {
+      if (input.enabled && input.sharing && sharingDenial) return yield* failure(sharingDenial);
+      if (!input.enabled) {
+        yield* save({ ...state, enabled: false, sharing: false, grants: [] }).pipe(
+          Effect.andThen(stop),
+          Effect.uninterruptible,
+        );
+      } else {
+        if (input.sharing) yield* sharingUrls;
+        const next = {
           ...state,
-          grants: state.grants.filter((g) => g.environmentId !== input.environmentId),
+          enabled: true,
+          sharing: input.sharing,
+          port: state.port || (yield* net.reserveLoopbackPort("127.0.0.1")),
+          grants: input.sharing ? state.grants : [],
+        };
+        yield* Effect.uninterruptibleMask((restore) =>
+          restore(ensure(next)).pipe(
+            Effect.andThen(save(next)),
+            Effect.onError(() => (state.enabled ? Effect.void : stop)),
+          ),
+        );
+      }
+      return {};
+    }
+    if (input.operation === "removeRoute") {
+      const { providerInstances } = yield* settings.getSettings;
+      if (!isInferenceConfig(providerInstances[input.instanceId]?.config))
+        return yield* failure("This provider is not an inference route.");
+      yield* settings.updateProviderInstance({
+        operation: "remove",
+        instanceId: input.instanceId,
+      });
+      return {};
+    }
+    if (input.operation === "revoke") {
+      yield* save({
+        ...state,
+        grants: state.grants.filter((g) => g.environmentId !== input.environmentId),
+      });
+      return {};
+    }
+    const runtime = yield* ensure(state);
+    const base = runtime.baseUrl + "/v0/management/";
+    const admin = runtime.management;
+    switch (input.operation) {
+      case "signIn": {
+        if (!isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(input.driver)))
+          return yield* failure("This driver is disabled by environment policy.");
+        const login = yield* jsonRequest(
+          base + (input.driver === "codex" ? "codex" : "anthropic") + "-auth-url",
+          admin,
+          Login,
+        );
+        if (URL.parse(login.url)?.protocol !== "https:")
+          return yield* failure("Invalid sign-in URL.");
+        return { login };
+      }
+      case "check":
+        return yield* jsonRequest(
+          base + "get-auth-status?state=" + encodeURIComponent(input.state),
+          admin,
+          AuthStatus,
+        );
+      case "cancel":
+        yield* jsonRequest(
+          base + "oauth-session?state=" + encodeURIComponent(input.state),
+          admin,
+          Schema.Unknown,
+          "DELETE",
+        );
+        return {};
+      case "callback": {
+        const url = URL.parse(input.callback);
+        if (!url || url.searchParams.get("state") !== input.state)
+          return yield* failure("Paste the complete callback URL from this sign-in.");
+        yield* jsonRequest(base + "oauth-callback", admin, Schema.Unknown, "POST", {
+          redirect_url: input.callback,
         });
+        return { status: "wait" as const };
+      }
+      case "removeAccount": {
+        if (input.name !== path.basename(input.name) || !input.name.endsWith(".json"))
+          return yield* failure("Invalid account file name.");
+        yield* jsonRequest(
+          base + "auth-files?name=" + encodeURIComponent(input.name),
+          admin,
+          Schema.Unknown,
+          "DELETE",
+        );
         return {};
       }
-      const runtime = yield* ensure(state);
-      const base = runtime.baseUrl + "/v0/management/";
-      const admin = runtime.management;
+    }
+  }, mutex.withPermit);
+  const manage = Effect.fn("InferenceProxy.manage")(
+    function* (input: InferenceProxyAction) {
       switch (input.operation) {
-        case "signIn": {
-          if (
-            !isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(input.driver))
-          )
-            return yield* failure("This driver is disabled by environment policy.");
-          const login = yield* jsonRequest(
-            base + (input.driver === "codex" ? "codex" : "anthropic") + "-auth-url",
-            admin,
-            Login,
-          );
-          if (URL.parse(login.url)?.protocol !== "https:")
-            return yield* failure("Invalid sign-in URL.");
-          return { login };
-        }
-        case "check":
-          return yield* jsonRequest(
-            base + "get-auth-status?state=" + encodeURIComponent(input.state),
-            admin,
-            AuthStatus,
-          );
-        case "cancel":
-          yield* jsonRequest(
-            base + "oauth-session?state=" + encodeURIComponent(input.state),
-            admin,
-            Schema.Unknown,
-            "DELETE",
-          );
-          return {};
-        case "callback": {
-          const url = URL.parse(input.callback);
-          if (!url || url.searchParams.get("state") !== input.state)
-            return yield* failure("Paste the complete callback URL from this sign-in.");
-          yield* jsonRequest(base + "oauth-callback", admin, Schema.Unknown, "POST", {
-            redirect_url: input.callback,
-          });
-          return { status: "wait" as const };
-        }
-        case "removeAccount": {
-          if (input.name !== path.basename(input.name) || !input.name.endsWith(".json"))
-            return yield* failure("Invalid account file name.");
-          yield* jsonRequest(
-            base + "auth-files?name=" + encodeURIComponent(input.name),
-            admin,
-            Schema.Unknown,
-            "DELETE",
-          );
-          return {};
-        }
+        case "checkUpdate":
+          return yield* updateRuntime("checkUpdate");
+        case "update":
+          return yield* updateMutex.withPermit(updateRuntime("update"));
+        default:
+          return yield* manageHost(input);
       }
     },
-    mutex.withPermit,
     Effect.mapError(safeFailure("Could not update the inference host.")),
   );
 
@@ -468,31 +504,36 @@ const make = Effect.gen(function* () {
   const connect = Effect.fn("InferenceProxy.connect")(
     function* ({ grant, driver, hostLabel }: InferenceRouteInput) {
       const id = yield* environment.getEnvironmentId;
-      if (id !== grant.consumerId || !validateRouteUrl(grant.baseUrl, id === grant.hostId))
+      if (id !== grant.consumerId)
         return yield* failure("Invalid inference route for this environment.");
       if (!isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(driver)))
         return yield* failure("This driver is disabled by environment policy.");
-      let baseUrl = grant.baseUrl;
-      if (id !== grant.hostId) {
-        const candidates = [baseUrl, ...(grant.alternates ?? [])];
-        if (candidates.some((url) => !validateRouteUrl(url, false)))
-          return yield* failure("Invalid inference route for this environment.");
-        baseUrl = yield* Effect.firstSuccessOf(
-          candidates.map((url) =>
-            Effect.gen(function* () {
+      const local = id === grant.hostId;
+      const candidates = local ? [grant.baseUrl] : [grant.baseUrl, ...(grant.alternates ?? [])];
+      if (candidates.some((url) => !validateRouteUrl(url, local)))
+        return yield* failure("Invalid inference route for this environment.");
+      if (local) {
+        const runtime = yield* mutex.withPermit(read.pipe(Effect.flatMap(ensure)));
+        if (runtime.baseUrl !== grant.baseUrl || runtime.key !== grant.key)
+          return yield* failure("The local inference grant has changed. Request a new route.");
+      }
+      const { baseUrl, data } = yield* Effect.firstSuccessOf(
+        candidates.map((url) =>
+          Effect.gen(function* () {
+            if (!local) {
               const peer = yield* jsonRequest(
                 new URL("/.well-known/t3/environment", url).href,
                 undefined,
-                Schema.Struct({ environmentId: EnvironmentId }),
+                Peer,
               );
               if (peer.environmentId !== grant.hostId)
                 return yield* failure("The address belongs to another T3 environment.");
-              return url;
-            }),
-          ),
-        );
-      }
-      const { data } = yield* jsonRequest(baseUrl + "/v1/models", grant.key, Models);
+            }
+            const { data } = yield* jsonRequest(url + "/v1/models", grant.key, Models);
+            return { baseUrl: url, data };
+          }),
+        ),
+      );
       const models = data
         .filter((m) => (driver === "codex" ? /^(gpt-|o\d)/i.test(m.id) : /^claude-/i.test(m.id)))
         .map((m) => m.id);

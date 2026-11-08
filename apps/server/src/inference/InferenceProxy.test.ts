@@ -4,11 +4,14 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
 import * as PlatformError from "effect/PlatformError";
 import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
@@ -36,9 +39,16 @@ it.effect(
           config.stateDir + "/inference-proxy/runtime/" + proxyVersion + "-darwin-arm64";
         yield* fs.makeDirectory(runtime, { recursive: true });
         yield* fs.writeFileString(runtime + "/cli-proxy-api", "");
+        const downloading = yield* Deferred.make<void>();
+        const finishDownload = yield* Deferred.make<void>();
+        let registryOffline = true;
+        let tailnetCatalogDown = false;
         let serving = false;
         let lan = false;
         let rejectNextLaunch = false;
+        let currentExit: Deferred.Deferred<void> | undefined;
+        let expectRecovery = false;
+        const recovered = yield* Deferred.make<void>();
         let starts = 0;
         let stops = 0;
         const spawner = ChildProcessSpawner.make((command) =>
@@ -53,7 +63,11 @@ it.effect(
                 method: "spawn",
               });
             }
+            const exited = yield* Deferred.make<void>();
             if (!tailscale) {
+              currentExit = exited;
+              if (expectRecovery) yield* Deferred.succeed(recovered, undefined);
+              yield* Effect.addFinalizer(() => Deferred.succeed(exited, undefined));
               starts++;
               yield* Effect.addFinalizer(() =>
                 Effect.sync(() => {
@@ -72,8 +86,10 @@ it.effect(
               : Stream.empty;
             return ChildProcessSpawner.makeHandle({
               pid: ChildProcessSpawner.ProcessId(123),
-              isRunning: Effect.succeed(true),
-              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+              isRunning: Deferred.isDone(exited).pipe(Effect.map((done) => !done)),
+              exitCode: tailscale
+                ? Effect.succeed(ChildProcessSpawner.ExitCode(0))
+                : Deferred.await(exited).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
               stdin: Sink.drain,
               stdout,
               stderr: Stream.empty,
@@ -90,6 +106,10 @@ it.effect(
         let peerId = hostId;
         const remoteCatalogKeys: (string | undefined)[] = [];
         const http = HttpClient.make((request) => {
+          if (registryOffline && request.url.endsWith("/releases/latest"))
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(request, new Response(null, { status: 503 })),
+            );
           if (request.url.endsWith("/releases/latest"))
             return Effect.succeed(
               HttpClientResponse.fromWeb(
@@ -112,6 +132,9 @@ it.effect(
           if (request.url.endsWith("/assets/123"))
             return Effect.succeed(
               HttpClientResponse.fromWeb(request, new Response(new Uint8Array(1))),
+            ).pipe(
+              Effect.tap(() => Deferred.succeed(downloading, undefined)),
+              Effect.tap(() => Deferred.await(finishDownload)),
             );
           if (
             request.url.includes("/api/inference") ||
@@ -124,6 +147,10 @@ it.effect(
               );
             }
             remoteCatalogKeys.push(request.headers.authorization);
+            if (tailnetCatalogDown && request.url.startsWith("https:"))
+              return Effect.succeed(
+                HttpClientResponse.fromWeb(request, new Response(null, { status: 502 })),
+              );
           }
           return Effect.succeed(
             HttpClientResponse.fromWeb(
@@ -201,6 +228,11 @@ it.effect(
             );
             expect((yield* settings.getSettings).providerPools).toHaveProperty("codex");
             catalog = [{ id: "gpt-fixture" }];
+            expect(
+              (yield* proxy
+                .connect({ ...connect, grant: { ...local, key: "expired-local-key" } })
+                .pipe(Effect.flip)).message,
+            ).toContain("local inference");
             yield* proxy.connect(connect);
             expect((yield* settings.getSettings).providerPools).not.toHaveProperty("codex");
             expect(Object.values((yield* settings.getSettings).providerInstances)).toEqual(
@@ -218,6 +250,14 @@ it.effect(
             peerId = hostId;
             yield* proxy.connect({ ...connect, grant: issued });
             expect(remoteCatalogKeys).toEqual(["Bearer " + issued.key]);
+            tailnetCatalogDown = true;
+            yield* proxy.connect({ ...connect, grant: issued });
+            expect(
+              Object.values((yield* settings.getSettings).providerInstances).find(
+                (i) => i.displayName === "Codex via Host",
+              )?.config,
+            ).toMatchObject({ launchArgs: expect.stringContaining("192.168.1.12") });
+            tailnetCatalogDown = false;
             const routes = (yield* proxy.status).routes;
             expect(routes).toHaveLength(1);
             peerId = EnvironmentId.make("other-host");
@@ -235,13 +275,19 @@ it.effect(
                 .pipe(Effect.flip),
             ).toHaveProperty("_tag", "InferenceProxyError");
             identity = hostId;
+            yield* proxy.manage({ operation: "checkUpdate" }).pipe(Effect.flip);
+            registryOffline = false;
             expect((yield* proxy.manage({ operation: "checkUpdate" })).update).toEqual({
               current: proxyVersion,
               available: "8.0.61",
             });
-            expect(
-              (yield* proxy.manage({ operation: "update" }).pipe(Effect.flip)).message,
-            ).toContain("checksum");
+            const update = yield* proxy
+              .manage({ operation: "update" })
+              .pipe(Effect.flip, Effect.forkScoped);
+            yield* Deferred.await(downloading);
+            expect((yield* proxy.authorize(issued.key))?.key).toBeDefined();
+            yield* Deferred.succeed(finishDownload, undefined);
+            expect((yield* Fiber.join(update)).message).toContain("checksum");
             expect((yield* proxy.status).version).toBe(proxyVersion);
             expect(stops).toBe(0);
             const installed = runtime.replace(proxyVersion, "8.0.61");
@@ -264,13 +310,17 @@ it.effect(
             yield* proxy.manage({ operation: "revoke", environmentId: peer.environmentId });
             expect(yield* proxy.authorize(grant.key)).toBeNull();
             expect((yield* proxy.grant(peer)).key).not.toBe(grant.key);
+            expectRecovery = true;
+            yield* Deferred.succeed(currentExit!, undefined);
+            yield* TestClock.adjust("1 second");
+            yield* Deferred.await(recovered);
             yield* proxy.manage({ operation: "configure", enabled: false, sharing: false });
             expect((yield* proxy.status).consumers).toEqual([]);
             expect(Option.isSome(yield* state.get("inference-proxy-state"))).toBe(true);
           }).pipe(Effect.provide(service)),
         );
-        expect(starts).toBe(4);
-        expect(stops).toBe(4);
+        expect(starts).toBe(5);
+        expect(stops).toBe(5);
       }).pipe(
         Effect.provide(
           Layer.merge(

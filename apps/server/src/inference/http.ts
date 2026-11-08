@@ -25,6 +25,7 @@ const handler = Effect.gen(function* () {
   const headers: Record<string, string> = { authorization: "Bearer " + target.key };
   for (const name of [
     "accept",
+    "content-encoding",
     "anthropic-version",
     "anthropic-beta",
     "session_id",

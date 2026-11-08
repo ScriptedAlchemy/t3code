@@ -1,3 +1,4 @@
+import * as NodeZlib from "node:zlib";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -17,6 +18,7 @@ it("streams an authorized request with a host key, then denies the revoked consu
       expect(request.url).toBe("http://127.0.0.1:43210/v1/messages?beta=true");
       expect(request.headers.authorization).toBe("Bearer private-host-key");
       expect(request.headers["anthropic-version"]).toBe("2023-06-01");
+      expect(request.headers["content-encoding"]).toBe("zstd");
       expect(request.headers.cookie).toBeUndefined();
       expect(request.headers["x-api-key"]).toBeUndefined();
       signal.addEventListener("abort", () => {
@@ -57,12 +59,14 @@ it("streams an authorized request with a host key, then denies the revoked consu
     ),
     { disableLogger: true },
   );
+  const compressedBody = new Uint8Array(NodeZlib.zstdCompressSync("{}"));
   const request = (path: string, key?: string) =>
     new Request("http://t3.test/api/inference/" + path, {
       method: "POST",
-      body: "{}",
+      body: compressedBody,
       headers: {
         "anthropic-version": "2023-06-01",
+        "content-encoding": "zstd",
         cookie: "t3session=private",
         ...(key ? { "x-api-key": key } : {}),
       },
