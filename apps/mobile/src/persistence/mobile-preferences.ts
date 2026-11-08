@@ -39,6 +39,7 @@ export const PullRequestListControls = Schema.Struct({
 export type PullRequestListControls = typeof PullRequestListControls.Type;
 
 const ThreadListFilters = Schema.Struct({
+  hideOfflineEnvironments: Schema.optional(Schema.Boolean),
   environmentId: Schema.NullOr(EnvironmentId),
   projectKey: Schema.NullOr(Schema.String),
 });

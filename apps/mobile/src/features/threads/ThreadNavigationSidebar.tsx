@@ -268,6 +268,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     threads,
     pendingTasks,
     environmentId: options.selectedEnvironmentId,
+    hideOfflineEnvironments: options.hideOfflineEnvironments,
     projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
     searchQuery: props.searchQuery,
     searchMatches: threadSearchMatchByKey,
@@ -568,9 +569,11 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
             ? threadSearch.isPending
               ? "Searching thread messages…"
               : "No matching threads"
-            : selectedProjectScope !== null
-              ? `No threads in ${selectedProjectScope.title}`
-              : "No threads yet"}
+            : options.hideOfflineEnvironments
+              ? "No visible threads. Turn off Hide offline environments in Settings → Labs → Zack settings, or choose another filter."
+              : selectedProjectScope !== null
+                ? `No threads in ${selectedProjectScope.title}`
+                : "No threads yet"}
     </Text>
   );
 
