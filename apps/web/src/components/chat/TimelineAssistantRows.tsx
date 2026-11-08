@@ -5,6 +5,7 @@ import {
   withoutCloseLine,
 } from "@t3tools/client-runtime/state/thread-group";
 import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipeline";
+import { trimThreadAutolinkPadding } from "@t3tools/shared/threadLinks";
 import { type RunId } from "@t3tools/contracts";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import { memo, use, useState } from "react";
@@ -45,7 +46,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
     run: ctx.runs.find((run) => run.id === item?.runId),
   });
   const text = speaker === null ? rawText : withoutCloseLine(rawText);
-  const messageText = text || (row.message.streaming ? "" : "(empty response)");
+  const messageText = trimThreadAutolinkPadding(text) || (row.message.streaming ? "" : "(empty response)");
   if (speaker !== null && !row.message.streaming && isQuietPass(text)) {
     return (
       <div className="min-w-0 px-1 py-0.5 text-xs text-muted-foreground">

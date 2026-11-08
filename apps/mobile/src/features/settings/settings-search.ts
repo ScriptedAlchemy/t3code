@@ -101,6 +101,7 @@ const SETTINGS_SEARCH_TERMS = {
   SettingsLabs: [
     "group conversations",
     "invite models",
+    "hide offline environments",
     "legacy",
     "plan mode",
     "beta",

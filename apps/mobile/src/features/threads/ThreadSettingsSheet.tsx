@@ -1233,7 +1233,7 @@ function ThreadSettingsModelsScreen() {
             session.purpose === "invite"
               ? "Invite"
               : session.pendingModel
-                ? "Save thread settings"
+                ? "Save"
                 : "Done",
           disabled: session.purpose === "invite" && session.pendingModel === null,
           onPress: commitAndClose,
