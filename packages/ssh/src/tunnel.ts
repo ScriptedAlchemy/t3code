@@ -3,7 +3,7 @@ import type {
   DesktopSshEnvironmentTarget,
 } from "@t3tools/contracts";
 import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
-import { cliReleaseAssetUrl } from "@t3tools/shared/cliRelease";
+import { cliReleaseDownloadBaseUrl } from "@t3tools/shared/cliRelease";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as NetService from "@t3tools/shared/Net";
 import { extractJsonObject, fromLenientJson } from "@t3tools/shared/schemaJson";
@@ -862,12 +862,12 @@ export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string
     throw new SshInvalidArchiveVersionError({ archiveVersion });
   }
   const releaseUrl = new URL(
-    cliReleaseAssetUrl(archiveVersion, "", input?.releaseBaseUrl ?? undefined),
+    cliReleaseDownloadBaseUrl(archiveVersion, input?.releaseBaseUrl ?? undefined),
   );
   const releaseUrlSuffix = `${releaseUrl.search}${releaseUrl.hash}`;
   releaseUrl.search = "";
   releaseUrl.hash = "";
-  const releaseBaseUrl = releaseUrl.toString().replace(/\/+$/u, "");
+  const releaseBaseUrl = releaseUrl.toString();
   return stripTrailingNewlines(
     applyScriptPlaceholders(REMOTE_RUNNER_SCRIPT, {
       T3_NODE_SCRIPT_PATH: shellSingleQuote(nodeScriptPath),
