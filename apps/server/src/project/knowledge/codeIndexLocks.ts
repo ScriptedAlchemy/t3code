@@ -268,9 +268,7 @@ function isT3Directory(
         LEGACY_INDEX_FILES.every((file) => !isRealDirectory(NodePath.join(path, file)))) &&
       entries.every((name) => {
         const entry = NodeFS.lstatSync(NodePath.join(path, name));
-        return entry.isDirectory()
-          ? allowed === undefined
-          : entry.isFile() && entry.nlink === 1;
+        return entry.isDirectory() ? allowed === undefined : entry.isFile() && entry.nlink === 1;
       })
     );
   } catch {
