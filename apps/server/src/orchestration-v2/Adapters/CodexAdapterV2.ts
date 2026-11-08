@@ -82,6 +82,7 @@ import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexSchema from "effect-codex-app-server/schema";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
@@ -1408,35 +1409,60 @@ export interface CodexThreadReleases {
   readonly awaitRelease: (nativeThreadId: string) => Effect.Effect<boolean>;
 }
 
-export const makeCodexThreadReleases = Effect.sync((): CodexThreadReleases => {
-  // Finished releases stay until a resume consumes them; the close can beat the refused resume.
-  const releases = new Map<string, Deferred.Deferred<void>>();
-  return {
-    begin: (nativeThreadId) =>
-      Effect.sync(() => {
-        const current = releases.get(nativeThreadId);
-        if (current === undefined || Deferred.isDoneUnsafe(current)) {
-          releases.set(nativeThreadId, Deferred.makeUnsafe());
-        }
-      }),
-    finish: (nativeThreadId) =>
-      Effect.suspend(() => {
-        const release = releases.get(nativeThreadId);
-        return release === undefined ? Effect.void : Deferred.succeed(release, undefined);
-      }),
-    awaitRelease: (nativeThreadId) =>
-      Effect.suspend(() => {
-        const release = releases.get(nativeThreadId);
-        return release === undefined
-          ? Effect.succeed(false)
-          : Deferred.await(release).pipe(
-              Effect.timeoutOption(CODEX_THREAD_RELEASE_TIMEOUT),
-              Effect.map(Option.isSome),
-              Effect.ensuring(Effect.sync(() => releases.delete(nativeThreadId))),
-            );
-      }),
-  };
-});
+export const makeCodexThreadReleases = Clock.clockWith((clock) =>
+  Effect.sync((): CodexThreadReleases => {
+    const releases = new Map<string, Deferred.Deferred<void>>();
+    // Keep close-before-resume evidence briefly, including idle unloads never resumed here.
+    const completedAt = new Map<string, number>();
+    const pruneCompleted = () => {
+      const cutoff =
+        clock.currentTimeMillisUnsafe() - Duration.toMillis(CODEX_THREAD_RELEASE_TIMEOUT);
+      for (const [nativeThreadId, at] of completedAt) {
+        if (at > cutoff) break;
+        completedAt.delete(nativeThreadId);
+        releases.delete(nativeThreadId);
+      }
+    };
+    return {
+      begin: (nativeThreadId) =>
+        Effect.sync(() => {
+          pruneCompleted();
+          const current = releases.get(nativeThreadId);
+          if (current === undefined || Deferred.isDoneUnsafe(current)) {
+            completedAt.delete(nativeThreadId);
+            releases.set(nativeThreadId, Deferred.makeUnsafe());
+          }
+        }),
+      finish: (nativeThreadId) =>
+        Effect.suspend(() => {
+          const release = releases.get(nativeThreadId);
+          if (release === undefined) return Effect.void;
+          if (!completedAt.has(nativeThreadId)) {
+            completedAt.set(nativeThreadId, clock.currentTimeMillisUnsafe());
+          }
+          return Deferred.succeed(release, undefined);
+        }),
+      awaitRelease: (nativeThreadId) =>
+        Effect.suspend(() => {
+          pruneCompleted();
+          const release = releases.get(nativeThreadId);
+          return release === undefined
+            ? Effect.succeed(false)
+            : Deferred.await(release).pipe(
+                Effect.timeoutOption(CODEX_THREAD_RELEASE_TIMEOUT),
+                Effect.map(Option.isSome),
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    if (releases.get(nativeThreadId) !== release) return;
+                    releases.delete(nativeThreadId);
+                    completedAt.delete(nativeThreadId);
+                  }),
+                ),
+              );
+        }),
+    };
+  }),
+);
 
 export class CodexAppServerClientFactory extends Context.Service<
   CodexAppServerClientFactory,

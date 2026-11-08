@@ -3959,6 +3959,23 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect("does not retry an external writer because of an old completed release", () =>
+    Effect.gen(function* () {
+      const releases = yield* CodexAdapterV2.makeCodexThreadReleases;
+      yield* releases.begin("old-thread");
+      yield* releases.begin("pending-thread");
+      yield* releases.finish("old-thread");
+      yield* TestClock.adjust("91 seconds");
+      assert.equal(yield* releases.awaitRelease("old-thread"), false);
+      yield* releases.begin("recent-thread");
+      yield* releases.finish("recent-thread");
+      assert.equal(yield* releases.awaitRelease("recent-thread"), true);
+      assert.equal(yield* releases.awaitRelease("recent-thread"), false);
+      yield* releases.finish("pending-thread");
+      assert.equal(yield* releases.awaitRelease("pending-thread"), true);
+    }),
+  );
+
   it.effect("resumes a thread once this server's unsubscribed copy closes", () =>
     Effect.scoped(
       Effect.gen(function* () {
