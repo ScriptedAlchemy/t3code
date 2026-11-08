@@ -151,6 +151,26 @@ export function createThreadFamilyAtoms<R, ER, E>(
     }).pipe(Atom.withLabel(`environment-thread-family-rows:${key}`)),
   );
 
+  const shellThreadIdsAtom = Atom.family((environmentId: EnvironmentId) => {
+    let previous: ReadonlyArray<OrchestrationV2ThreadShell> | undefined;
+    let ids: ReadonlySet<ThreadId> = new Set();
+    return Atom.make((get) => {
+      const state = shellStateValue(get(shellStateAtom(environmentId)));
+      const threads = state === null ? undefined : Option.getOrNull(state.snapshot)?.threads;
+      if (threads !== previous) {
+        previous = threads;
+        ids = new Set(threads?.map(({ id }) => id));
+      }
+      return ids;
+    }).pipe(Atom.withLabel(`environment-shell-thread-ids:${environmentId}`));
+  });
+  const missingFamilyRowsAtom = Atom.family((key: string) => {
+    const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, ThreadId];
+    return Atom.make((get) =>
+      get(shellThreadIdsAtom(environmentId)).has(threadId) ? EMPTY_READS : get(familyRowsAtom(key)),
+    ).pipe(Atom.withLabel(`environment-missing-thread-family-rows:${key}`));
+  });
+
   /**
    * Merges `rows` behind the shell rows until the returned release runs. Reads read under `key`
    * share one entry; each read's `snapshotSequence` decides which removals drop its rows.
@@ -186,14 +206,41 @@ export function createThreadFamilyAtoms<R, ER, E>(
     registry: AtomRegistry.AtomRegistry,
     environmentId: EnvironmentId,
     threadId: ThreadId,
+    options: { readonly onlyWhenMissing?: boolean } = {},
   ): (() => void) => {
     const key = familyKey(environmentId, threadId);
-    const release = mountRows(registry, environmentId, `family:${key}`, familyRowsAtom(key));
-    // Mounting again after a failure retries instead of keeping the failure until reconnect.
-    if (threadFamilyRead(registry.get(familyAtom(key))) === "failed") {
-      refresh(registry, environmentId, threadId);
+    const onlyWhenMissing = options.onlyWhenMissing === true;
+    const release = mountRows(
+      registry,
+      environmentId,
+      `${onlyWhenMissing ? "missing-family" : "family"}:${key}`,
+      onlyWhenMissing ? missingFamilyRowsAtom(key) : familyRowsAtom(key),
+    );
+    const retryFailed = () => {
+      if (threadFamilyRead(registry.get(familyAtom(key))) === "failed") {
+        refresh(registry, environmentId, threadId);
+      }
+    };
+    if (!onlyWhenMissing) {
+      retryFailed();
+      return release;
     }
-    return release;
+    let wasMissing = false;
+    // A cached failure must retry when the shell first omits a still-mounted citation.
+    const unsubscribe = registry.subscribe(
+      shellThreadIdsAtom(environmentId),
+      (ids) => {
+        const missing = !ids.has(threadId);
+        const becameMissing = missing && !wasMissing;
+        wasMissing = missing;
+        if (becameMissing) retryFailed();
+      },
+      { immediate: true },
+    );
+    return () => {
+      unsubscribe();
+      release();
+    };
   };
 
   const snapshotAtom = Atom.family((environmentId: EnvironmentId) => {

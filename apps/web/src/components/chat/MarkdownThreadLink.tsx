@@ -23,24 +23,21 @@ export function MarkdownThreadLink(props: {
   readonly label: string | null;
 }) {
   const environmentId = props.link.environmentId ?? props.environmentId;
-  const { threadId } = props.link;
-  const decodedId = percentDecodedThreadLinkId(threadId);
-  const written = useThreadShell(scopeThreadRef(environmentId, threadId));
+  const decodedId = percentDecodedThreadLinkId(props.link.threadId);
+  const written = useThreadShell(scopeThreadRef(environmentId, props.link.threadId));
   const decoded = useThreadShell(
     written === null && decodedId !== null ? scopeThreadRef(environmentId, decodedId) : null,
   );
   const local = written ?? decoded;
-  // An idle child's shell row can come from this very read. Releasing on title arrival removes it.
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains the cited families while the link is displayed
+  const threadId = props.link.threadId;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps cited rows mounted for the link's lifetime, independently of the family data it loads
   useEffect(() => {
-    const releaseWritten = threadFamilies.mount(appAtomRegistry, environmentId, threadId);
-    const releaseDecoded =
-      decodedId === null
-        ? undefined
-        : threadFamilies.mount(appAtomRegistry, environmentId, decodedId);
+    const ids = decodedId === null ? [threadId] : [threadId, decodedId];
+    const releases = ids.map((id) =>
+      threadFamilies.mount(appAtomRegistry, environmentId, id, { onlyWhenMissing: true }),
+    );
     return () => {
-      releaseWritten();
-      releaseDecoded?.();
+      for (const release of releases) release();
     };
   }, [environmentId, threadId, decodedId]);
   const guess = local === null && props.link.environmentId === null;
