@@ -36,23 +36,18 @@ export function useResetCredit(
     inFlight.current = true;
     setBusy(true);
     setStatus(null);
-    try {
-      const result = await consume({ environmentId, input });
-      if (result._tag === "Success") {
-        setStatus(result.value.warning ?? OUTCOME_TEXT[result.value.outcome]);
-        return;
-      }
-      setStatus(
-        "error" in result.cause && result.cause.error instanceof Error
-          ? result.cause.error.message
-          : "Could not use the reset credit.",
-      );
-    } catch {
-      setStatus("Could not use the reset credit.");
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
+    const result = await consume({ environmentId, input }).catch(() => null);
+    inFlight.current = false;
+    setBusy(false);
+    if (result?._tag === "Success") {
+      setStatus(result.value.warning ?? OUTCOME_TEXT[result.value.outcome]);
+      return;
     }
+    setStatus(
+      result !== null && "error" in result.cause && result.cause.error instanceof Error
+        ? result.cause.error.message
+        : "Could not use the reset credit.",
+    );
   };
 
   const confirm = () => {
