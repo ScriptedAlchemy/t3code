@@ -146,6 +146,29 @@ it("keeps the user's files in an older version's control folder", () => {
   }
 });
 
+it.each([
+  [".codegraph-t3-g1", "codegraph.db"],
+  [".codegraph-t3-g1", "t3-index.json"],
+  [".codegraph-t3-g1", ".gitignore"],
+  [".codegraph-t3", "codegraph.db"],
+])("preserves user directories at %s/%s", (directory, name) => {
+  const checkout = legacyCheckout([`${directory}/${name}/notes.txt`]);
+  const notes = NodePath.join(checkout, directory, name, "notes.txt");
+  try {
+    NodeFS.writeFileSync(notes, "my files, not an index");
+    if (name !== "codegraph.db") {
+      NodeFS.writeFileSync(NodePath.join(checkout, directory, "codegraph.db"), "");
+    }
+    expect(hasLegacyIndexFiles(checkout)).toBe(false);
+    removeLegacyIndexFromCheckout(checkout);
+    expect(NodeFS.readFileSync(notes, "utf8")).toBe("my files, not an index");
+    expect(NodeFS.readFileSync(NodePath.join(checkout, "keep.txt"), "utf8")).toBe("mine");
+    expect(hasLegacyIndexFiles(checkout)).toBe(false);
+  } finally {
+    NodeFS.rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
 it.skipIf(!symlinksSupported).each([
   [".codegraph-t3", "build.lock", "published"],
   [".codegraph-t3-g1", "readers.lock", "codegraph.db"],

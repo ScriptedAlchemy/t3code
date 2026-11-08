@@ -266,7 +266,9 @@ function isT3Directory(
       (allowed === undefined || entries.every((name) => allowed.includes(name))) &&
       entries.every((name) => {
         const entry = NodeFS.lstatSync(NodePath.join(path, name));
-        return entry.isDirectory() || (entry.isFile() && entry.nlink === 1);
+        return entry.isDirectory()
+          ? allowed === undefined && !LEGACY_INDEX_FILES.includes(name)
+          : entry.isFile() && entry.nlink === 1;
       })
     );
   } catch {
