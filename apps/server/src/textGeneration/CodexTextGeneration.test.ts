@@ -372,6 +372,23 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
     ),
   );
 
+  it.effect("keeps checkout instructions out of automatic memory extraction", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ candidates: [] }),
+        requireArg: "--config project_doc_max_bytes=0",
+        requiredCwd: process.cwd(),
+      },
+      (textGeneration) =>
+        textGeneration.generateKnowledgeCandidates({
+          cwd: process.cwd(),
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-6-luna"),
+          runOutcome: "completed",
+          messages: [{ ref: "M1", role: "user", text: "Use the shared test runner." }],
+        }),
+    ),
+  );
+
   it.effect("preserves custom PR instructions while allowing checkout inspection", () =>
     withFakeCodexEnv(
       {
