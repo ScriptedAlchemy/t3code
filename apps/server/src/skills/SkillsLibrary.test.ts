@@ -19,6 +19,7 @@ import * as SkillsLibrary from "./SkillsLibrary.ts";
 
 const setup = Effect.fn("SkillsLibrary.test.setup")(function* (
   drivers: ReadonlyArray<ProviderDriverKind> = [],
+  configuredRoot?: { readonly directory: string; readonly enabled: boolean },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -37,7 +38,8 @@ const setup = Effect.fn("SkillsLibrary.test.setup")(function* (
             drivers.map((driverKind) => ({
               instanceId: ProviderInstanceId.make(driverKind),
               driverKind,
-              enabled: true,
+              enabled: configuredRoot?.enabled ?? true,
+              ...(configuredRoot ? { sharedSkillsDirectory: configuredRoot.directory } : {}),
               displayName: undefined,
               continuationIdentity: { driverKind, continuationKey: driverKind },
               get orchestrationAdapter(): never {
@@ -92,6 +94,100 @@ const snapshot = (root: string) =>
 
 it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
   describe("apply", () => {
+    it.effect.skipIf(!symlinksSupported)(
+      "shares a configured profile root once and restores it when disabled",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const customHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-custom-skills-" });
+          const directory = path.join(customHome, "skills");
+          const { service, library, skill, read, link } = yield* setup(
+            [ProviderDriverKind.make("claudeAgent")],
+            { directory, enabled: true },
+          );
+          yield* skill(directory, "custom", "custom instructions");
+          yield* skill(library, "shared", "shared instructions");
+          yield* service.apply;
+          yield* service.apply;
+          expect(yield* read(library, "custom")).toContain("custom instructions");
+          expect(yield* read(directory, "shared")).toContain("shared instructions");
+          expect(yield* link(directory, "custom")).toBe(path.join(library, "custom"));
+          yield* service.detach;
+          expect(yield* link(directory, "custom")).toBeUndefined();
+          expect(yield* read(directory, "shared")).toContain("shared instructions");
+          yield* service.detach;
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "deduplicates a configured alias of the default profile",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const customHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-alias-skills-" });
+          const directory = path.join(customHome, "skills");
+          const { service, library, claude, skill, read } = yield* setup(
+            [ProviderDriverKind.make("claudeAgent")],
+            { directory, enabled: true },
+          );
+          yield* fs.symlink(claude, directory);
+          yield* skill(library, "shared", "shared instructions");
+          yield* service.apply;
+          expect(
+            (yield* service.status).linked.filter((entry) => entry.driver === "claudeAgent"),
+          ).toEqual([{ driver: "claudeAgent", name: "shared" }]);
+          yield* service.detach;
+          expect(yield* read(directory, "shared")).toContain("shared instructions");
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "recognizes the library through an alias before its skills directory exists",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const customHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-library-alias-" });
+          const alias = path.join(customHome, "agents");
+          const directory = path.join(alias, "skills");
+          const { service, library, claude, skill, read } = yield* setup(
+            [ProviderDriverKind.make("claudeAgent")],
+            { directory, enabled: true },
+          );
+          yield* fs.makeDirectory(path.dirname(library), { recursive: true });
+          yield* fs.symlink(path.dirname(library), alias);
+          yield* skill(claude, "custom", "custom instructions");
+          yield* service.apply;
+          expect(yield* read(library, "custom")).toContain("custom instructions");
+          yield* service.detach;
+          expect(yield* read(claude, "custom")).toContain("custom instructions");
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "does not mutate a disabled account's configured profile",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const customHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-disabled-skills-" });
+          const directory = path.join(customHome, "skills");
+          const { service, library, skill, link } = yield* setup(
+            [ProviderDriverKind.make("claudeAgent")],
+            { directory, enabled: false },
+          );
+          yield* skill(directory, "custom", "private instructions");
+          yield* skill(library, "shared", "shared instructions");
+          const before = yield* snapshot(customHome);
+          yield* service.apply;
+          yield* service.detach;
+          expect(yield* snapshot(customHome)).toEqual(before);
+          expect(yield* link(directory, "custom")).toBeUndefined();
+        }),
+    );
+
     it.effect.skipIf(!symlinksSupported)(
       "makes shared skills available to a configured Antigravity with no global home",
       () =>

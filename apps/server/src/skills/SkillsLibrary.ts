@@ -155,10 +155,17 @@ export const make = Effect.gen(function* () {
 
   const realPath = (filePath: string) =>
     io("scan", filePath, () =>
-      NodeFSP.realpath(filePath).catch((cause: NodeJS.ErrnoException) => {
-        if (cause.code === "ENOENT") return filePath;
-        throw cause;
-      }),
+      (async function resolve(candidate: string): Promise<string> {
+        try {
+          return await NodeFSP.realpath(candidate);
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+          const parent = path.dirname(candidate);
+          return parent === candidate
+            ? candidate
+            : path.join(await resolve(parent), path.basename(candidate));
+        }
+      })(filePath),
     );
 
   const readNames = (directory: string) =>
@@ -212,21 +219,27 @@ export const make = Effect.gen(function* () {
   const resolveRoots = Effect.fn("SkillsLibrary.resolveRoots")(function* () {
     const libraryPath = path.join(home, ".agents", "skills");
     const libraryReal = yield* realPath(libraryPath);
-    const configuredDrivers = new Set(
-      (yield* registry.listInstances)
-        .filter((instance) => instance.enabled)
-        .map((instance) => instance.driverKind),
-    );
+    const instances = (yield* registry.listInstances).filter((instance) => instance.enabled);
+    const configuredDrivers = new Set(instances.map((instance) => instance.driverKind));
     const roots: Array<{ readonly root: HarnessSkillRoot; readonly directory: string }> = [];
     for (const root of HARNESS_SKILL_ROOTS) {
       const harnessHome = yield* root.home(environment, home);
       if (!configuredDrivers.has(root.driver) && !(yield* exists(harnessHome))) continue;
       const directory = path.join(harnessHome, "skills");
-      // Treating the library itself as a root would delete its copies as duplicates of themselves.
-      if ((yield* realPath(directory)) === libraryReal) continue;
       roots.push({ root, directory });
     }
-    return { libraryPath, roots };
+    for (const instance of instances) {
+      const root = HARNESS_SKILL_ROOTS.find((root) => root.driver === instance.driverKind);
+      if (root !== undefined && instance.sharedSkillsDirectory !== undefined) {
+        roots.push({ root, directory: instance.sharedSkillsDirectory });
+      }
+    }
+    const unique = new Map<string, (typeof roots)[number]>();
+    for (const candidate of roots) {
+      const real = yield* realPath(candidate.directory);
+      if (real !== libraryReal && !unique.has(real)) unique.set(real, candidate);
+    }
+    return { libraryPath, roots: [...unique.values()] };
   });
 
   /** Restores a crash left staged; one beside a folder it does not equal is the user's. */
@@ -495,11 +508,12 @@ export const layer = Layer.effect(
       Effect.map((current) => current.skillsLibraryEnabled),
       Effect.orElseSucceed(() => false),
     );
-    const instanceIds = (
+    const instanceRoots = (
       instances: ReadonlyArray<{
         instanceId: string;
         driverKind: ProviderDriverKind;
         enabled: boolean;
+        sharedSkillsDirectory?: string;
       }>,
     ) =>
       new Set(
@@ -509,9 +523,9 @@ export const layer = Layer.effect(
               instance.enabled &&
               HARNESS_SKILL_ROOTS.some((root) => root.driver === instance.driverKind),
           )
-          .map((instance) => instance.instanceId),
+          .map((instance) => `${instance.instanceId}\0${instance.sharedSkillsDirectory ?? ""}`),
       );
-    let known = instanceIds(yield* registry.listInstances);
+    let known = instanceRoots(yield* registry.listInstances);
 
     if (enabled) yield* library.apply.pipe(logFailure, Effect.forkScoped);
     // A detach a restart interrupted has already turned the switch off; finish its staged copies.
@@ -524,7 +538,7 @@ export const layer = Layer.effect(
     yield* Stream.fromSubscription(instanceChanges).pipe(
       Stream.runForEach(() =>
         Effect.gen(function* () {
-          const current = instanceIds(yield* registry.listInstances);
+          const current = instanceRoots(yield* registry.listInstances);
           const created = [...current].some((id) => !known.has(id));
           known = current;
           if (created && enabled) yield* library.apply.pipe(logFailure);

@@ -351,6 +351,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   return {
     instanceId,
     driverKind: DRIVER,
+    sharedSkillsDirectory: path.join(runtime.homeLayout.sharedHomePath, "skills"),
     continuationIdentity,
     displayName,
     accentColor,

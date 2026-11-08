@@ -340,7 +340,9 @@ folder from `~/.claude/skills`, `~/.codex/skills`, and Antigravity's user skill 
 into `~/.agents/skills` and links it back, and links every skill there into Claude's
 and Antigravity's skill folders. Codex,
 Cursor, OpenCode, and other agents that read `~/.agents/skills` see the same set. Claude's
-account-synced skills and Codex's bundled skills stay where they are.
+account-synced skills and Codex's bundled skills stay where they are. Configured Claude and
+Codex homes participate too. Claude accounts with **Use your Claude profile** turned off keep
+their private skills.
 
 A skill found in two places with identical contents is kept once. When the contents
 differ, nothing is moved for that skill and the setting lists both paths; delete or
