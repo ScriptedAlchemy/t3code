@@ -294,6 +294,27 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   expect(
     seen.at(-1)!.layout.items.every((item) => item.thread.environmentId === otherEnvironmentId),
   ).toBe(true);
+  // Explicitly selecting an offline environment keeps its threads listed, so a
+  // thread on that environment stays discoverable under its own filter.
+  await act(async () =>
+    root.render(<Probe input={{ ...hiddenInput, environmentId }} tab="chats" />),
+  );
+  expect(seen.at(-1)!.layout.items).toHaveLength(85);
+  expect(seen.at(-1)!.layout.settledCount).toBe(575);
+  expect(
+    seen.at(-1)!.layout.items.every((item) => item.thread.environmentId === environmentId),
+  ).toBe(true);
+  expect(
+    seen
+      .at(-1)!
+      .items.filter((item) => item.type === "v2-pending")
+      .map((item) => item.pendingTask.environmentId),
+  ).toEqual([environmentId]);
+  expect(
+    vi
+      .mocked(olderSettledThreads.shelfAtom)
+      .mock.lastCall?.[0].map(({ scope }) => scope.environmentId),
+  ).toEqual([environmentId]);
   await act(async () => root.render(<Probe input={input} tab="chats" />));
   expect(seen.at(-1)!.layout.settledCount).toBe(1100);
 });

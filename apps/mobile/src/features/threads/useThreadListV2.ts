@@ -71,9 +71,16 @@ export function useThreadListV2(input: {
 }) {
   const { workingShelfEnabled } = input;
   const offlineEnvironmentIds = useAtomValue(offlineEnvironmentIdsAtom);
+  // An explicitly selected environment stays listed even when it counts as
+  // offline; hiding it would leave its own filter with nothing to open.
   const hiddenEnvironmentIds = useMemo(
-    () => new Set(input.hideOfflineEnvironments ? offlineEnvironmentIds : []),
-    [input.hideOfflineEnvironments, offlineEnvironmentIds],
+    () =>
+      new Set(
+        input.hideOfflineEnvironments
+          ? offlineEnvironmentIds.filter((id) => id !== input.environmentId)
+          : [],
+      ),
+    [input.hideOfflineEnvironments, offlineEnvironmentIds, input.environmentId],
   );
   const threads = useMemo(
     () =>
