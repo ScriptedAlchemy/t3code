@@ -869,7 +869,9 @@ describe("filterSidebarV2VisibleThreads", () => {
     expect(visibleIds(null, null)).toEqual(["local", "remote", "local-other"]);
     expect(visibleIds(null, hidden())).toEqual(["local", "local-other"]);
     expect(visibleIds(localScope, hidden())).toEqual(["local"]);
-    expect(visibleIds(remoteScope, hidden())).toEqual([]);
+    // Explicitly scoping to the offline environment's project keeps its
+    // threads listed, so they stay discoverable under that scope.
+    expect(visibleIds(remoteScope, hidden())).toEqual(["remote"]);
     // The open thread's row stays listed, but only within the project scope.
     expect(visibleIds(null, hidden(remoteKey))).toEqual(["local", "remote", "local-other"]);
     expect(visibleIds(localScope, hidden(remoteKey))).toEqual(["local"]);
@@ -877,6 +879,7 @@ describe("filterSidebarV2VisibleThreads", () => {
     expect(hidesOffline(null, null)).toBe(false);
     expect(hidesOffline(null, hidden())).toBe(true);
     expect(hidesOffline(localScope, hidden())).toBe(false);
+    expect(hidesOffline(remoteScope, hidden())).toBe(false);
     expect(hidesOffline(null, hidden(remoteKey))).toBe(false);
   });
 

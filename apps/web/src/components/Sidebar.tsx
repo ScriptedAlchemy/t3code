@@ -501,7 +501,12 @@ function useSidebarThreads(input: {
   const olderSettledShelf = useOlderSettledShelf({
     scopes: olderSettledScopes(
       [...serverConfigs.keys()].filter(
-        (environmentId) => hidden === null || !hidden.environmentIds.has(environmentId),
+        (environmentId) =>
+          hidden === null ||
+          !hidden.environmentIds.has(environmentId) ||
+          // A scoped project on an offline environment still pages its shelf.
+          (scopedProjectKeys !== null &&
+            [...scopedProjectKeys].some((key) => key.startsWith(`${environmentId}:`))),
       ),
       scopedProjectKeys,
     ),

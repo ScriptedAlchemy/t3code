@@ -71,17 +71,23 @@ export function useThreadListV2(input: {
 }) {
   const { workingShelfEnabled } = input;
   const offlineEnvironmentIds = useAtomValue(offlineEnvironmentIdsAtom);
-  // An explicitly selected environment stays listed even when it counts as
-  // offline; hiding it would leave its own filter with nothing to open.
-  const hiddenEnvironmentIds = useMemo(
-    () =>
-      new Set(
-        input.hideOfflineEnvironments
-          ? offlineEnvironmentIds.filter((id) => id !== input.environmentId)
-          : [],
+  // An explicitly selected environment, or one whose project is explicitly
+  // scoped to, stays listed even when it counts as offline; hiding it would
+  // leave its own filter with nothing to open.
+  const hiddenEnvironmentIds = useMemo(() => {
+    if (!input.hideOfflineEnvironments) return new Set<EnvironmentId>();
+    const scopedEnvironmentIds = new Set(input.projectRefs?.map((ref) => ref.environmentId));
+    return new Set(
+      offlineEnvironmentIds.filter(
+        (id) => id !== input.environmentId && !scopedEnvironmentIds.has(id),
       ),
-    [input.hideOfflineEnvironments, offlineEnvironmentIds, input.environmentId],
-  );
+    );
+  }, [
+    input.hideOfflineEnvironments,
+    offlineEnvironmentIds,
+    input.environmentId,
+    input.projectRefs,
+  ]);
   const threads = useMemo(
     () =>
       hiddenEnvironmentIds.size === 0

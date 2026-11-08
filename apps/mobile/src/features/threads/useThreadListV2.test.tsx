@@ -315,6 +315,28 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
       .mocked(olderSettledThreads.shelfAtom)
       .mock.lastCall?.[0].map(({ scope }) => scope.environmentId),
   ).toEqual([environmentId]);
+  // Scoping to a project on the offline environment (without selecting the
+  // environment itself) also keeps its threads listed.
+  await act(async () =>
+    root.render(
+      <Probe
+        input={{
+          ...hiddenInput,
+          projectRefs: [{ environmentId, projectId: ProjectId.make("project-test") }],
+        }}
+        tab="chats"
+      />,
+    ),
+  );
+  expect(seen.at(-1)!.layout.items).toHaveLength(85);
+  expect(
+    seen.at(-1)!.layout.items.every((item) => item.thread.environmentId === environmentId),
+  ).toBe(true);
+  expect(
+    vi
+      .mocked(olderSettledThreads.shelfAtom)
+      .mock.lastCall?.[0].map(({ scope }) => scope.environmentId),
+  ).toContain(environmentId);
   await act(async () => root.render(<Probe input={input} tab="chats" />));
   expect(seen.at(-1)!.layout.settledCount).toBe(1100);
 });

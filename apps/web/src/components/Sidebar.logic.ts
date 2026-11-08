@@ -625,6 +625,10 @@ export function filterSidebarV2VisibleThreads<
       thread.archivedAt === null &&
       (hidden === null ||
         !hidden.environmentIds.has(thread.environmentId) ||
+        // Explicitly scoping to a project keeps its threads listed even when
+        // their environment counts as offline.
+        (scopedProjectKeys !== null &&
+          scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)) ||
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) ===
           hidden.keptThreadKey) &&
       !isShownUnderParent(
