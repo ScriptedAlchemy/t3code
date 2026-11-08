@@ -33,6 +33,7 @@ it.effect(
         const fs = yield* FileSystem.FileSystem;
         const config = yield* ServerConfig.ServerConfig;
         const state = yield* ServerSecretStore.ServerSecretStore;
+        const home = yield* fs.makeTempDirectoryScoped();
         const hostId = EnvironmentId.make("host");
         const peer = { environmentId: EnvironmentId.make("worker"), label: "Workstation" };
         const runtime =
@@ -160,6 +161,12 @@ it.effect(
                   ? {
                       files: [
                         {
+                          name: "codex:api-key:fixture",
+                          provider: "codex",
+                          status: "active",
+                          runtime_only: true,
+                        },
+                        {
                           name: "one.json",
                           provider: "codex",
                           status: "active",
@@ -190,6 +197,7 @@ it.effect(
           ),
           Layer.provide(Layer.succeed(ServerConfig.ServerConfig, { ...config, port: 12345 })),
           Layer.provide(Layer.mock(ProcessRunner.ProcessRunner)({})),
+          Layer.provide(Layer.succeed(HostProcess.HomeDirectory, home)),
           Layer.provide(Layer.succeed(HostProcess.Platform, "darwin")),
           Layer.provide(Layer.succeed(HostProcess.Architecture, "arm64")),
           Layer.provide(NetService.layer),
@@ -216,6 +224,58 @@ it.effect(
             yield* startSharing;
             const { accounts } = yield* proxy.status;
             expect(accounts).toEqual([{ name: "one.json", provider: "codex", status: "active" }]);
+            catalog = [{ id: "bridge/coding" }];
+            const mapping = { source: "traex", pool: "work", upstream: "bridge/coding" } as const;
+            expect(
+              (yield* proxy.manage({ operation: "mapModel", mapping }).pipe(Effect.flip)).message,
+            ).toContain("Traex bridge");
+            yield* fs.makeDirectory(home + "/.traex-bridge");
+            yield* fs.writeFileString(home + "/.traex-bridge/api-key", "bridge-fixture");
+            expect(
+              (yield* proxy.manage({ operation: "listModels", source: "traex" })).models,
+            ).toEqual(["bridge/coding"]);
+            catalog = [];
+            yield* proxy.manage({ operation: "mapModel", mapping });
+            yield* proxy.manage({
+              operation: "mapModel",
+              mapping: { ...mapping, upstream: "renamed" },
+            });
+            yield* proxy.manage({
+              operation: "mapModel",
+              mapping: { ...mapping, source: "codex", upstream: "gpt-native" },
+            });
+            yield* proxy.manage({
+              operation: "mapModel",
+              mapping: { ...mapping, source: "claudeAgent", upstream: "claude-native" },
+            });
+            yield* proxy.manage({ operation: "setRouting", strategy: "fill-first" });
+            yield* proxy.manage({ operation: "setRouting", sessionAffinity: false });
+            const safeStatus = yield* proxy.status;
+            expect(JSON.stringify(safeStatus)).not.toContain("bridge-fixture");
+            expect(safeStatus.routing?.mappings).toHaveLength(3);
+            const readConfig = fs
+              .readFileString(config.stateDir + "/inference-proxy/config.yaml")
+              .pipe(Effect.map((s) => JSON.parse(s) as Record<string, unknown>));
+            expect(yield* readConfig).toMatchObject({
+              routing: { strategy: "fill-first", "session-affinity": false },
+              oauth: {
+                "model-alias": {
+                  codex: [{ name: "gpt-native", alias: "codex-pool-work", fork: true }],
+                  claude: [{ name: "claude-native", alias: "claude-pool-work", fork: true }],
+                },
+              },
+              "api-keys": {
+                codex: [
+                  {
+                    "base-url": "http://127.0.0.1:8317/v1",
+                    keys: [{ "api-key": "bridge-fixture" }],
+                    models: [{ name: "renamed", alias: "codex-pool-work" }],
+                  },
+                ],
+              },
+            });
+            yield* proxy.manage({ operation: "unmapModel", source: "traex", pool: "work" });
+            expect(yield* readConfig).not.toHaveProperty("api-keys");
             const issued = yield* proxy.grant(peer);
             expect(issued.baseUrl).toBe("https://pool.example.ts.net/api/inference");
             expect((yield* proxy.grant(peer)).key).toBe(issued.key);
@@ -323,6 +383,14 @@ it.effect(
         yield* Effect.scoped(
           Effect.gen(function* () {
             const proxy = yield* InferenceProxy.InferenceProxy;
+            expect((yield* proxy.status).routing).toMatchObject({
+              strategy: "fill-first",
+              sessionAffinity: false,
+              mappings: [
+                { source: "codex", pool: "work" },
+                { source: "claudeAgent", pool: "work" },
+              ],
+            });
             expect((yield* proxy.authorize(grant.key))?.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
             yield* proxy.manage({ operation: "revoke", environmentId: peer.environmentId });
             expect(yield* proxy.authorize(grant.key)).toBeNull();

@@ -62,6 +62,15 @@ The agent runs tools and stores files and thread history on its executing enviro
 A second host gets its own model picker entry. Choose that entry to switch hosts.
 Choose the route again in Settings to refresh its model list after changing accounts.
 
+Under **Model pools**, choose a source and load its model IDs or enter one manually. Give equivalent
+models the same pool name. For example, map your Codex model and the ID reported
+by Traex bridge to `work`. Apply the Codex route on each consuming environment
+to refresh its model picker, then select `codex-pool-work`. The Traex bridge
+must be running on the host with its key in `~/.traex-bridge/api-key`. Claude
+pools have separate `claude-pool-…` IDs. The routing switches apply across
+the host. Round-robin distributes new sessions, and session affinity keeps a
+conversation on its credential while that credential is available.
+
 Adding a working route retires the old CLI profile pool for that provider on
 the executing machine. Existing profiles remain individually selectable. For an
 existing thread, choose the routed provider when you want to switch. You can

@@ -4,6 +4,9 @@ import {
   managedUpdatesDenial,
   ProviderDriverKind,
   InferenceConsumer,
+  InferenceRouting,
+  defaultInferenceRouting,
+  inferencePoolModel,
   InferenceProxyError,
   ProviderInstanceId,
   isManagedDriverAllowed,
@@ -46,6 +49,8 @@ const Saved = Schema.Struct({
   enabled: Schema.Boolean,
   sharing: Schema.Boolean,
   port: Schema.Int,
+  routing: Schema.optionalKey(InferenceRouting),
+  traexKey: Schema.optionalKey(Schema.String),
   release: Schema.optionalKey(Release),
   grants: Schema.Array(Schema.Struct({ ...InferenceConsumer.fields, key: Schema.String })),
 });
@@ -57,6 +62,7 @@ const Files = Schema.Struct({
       name: Schema.String,
       provider: Schema.String,
       status: Schema.String,
+      runtime_only: Schema.optionalKey(Schema.Boolean),
     }),
   ),
 });
@@ -66,6 +72,19 @@ const Models = Schema.Struct({
     Schema.Struct({ id: Schema.String, owned_by: Schema.optional(Schema.String) }),
   ),
 });
+function modelsForDriver(
+  data: (typeof Models.Type)["data"],
+  driver: InferenceRouteInput["driver"],
+) {
+  return data
+    .filter((model) => {
+      const owner = model.owned_by?.toLowerCase();
+      if (owner === "openai") return driver === "codex";
+      if (owner === "anthropic") return driver === "claudeAgent";
+      return driver === "codex" ? /^(codex-|gpt-|o\d)/i.test(model.id) : /^claude-/i.test(model.id);
+    })
+    .map((m) => m.id);
+}
 const Login = Schema.Struct({ state: Schema.String, url: Schema.String });
 const AuthStatus = Schema.Struct({ status: Schema.Literals(["ok", "error", "wait"]) });
 const failure = (message: string) => new InferenceProxyError({ message });
@@ -113,6 +132,7 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const direct = yield* DirectEndpoints;
   const env = yield* HostProcess.Environment;
+  const homeDirectory = yield* HostProcess.HomeDirectory;
   const sharingDenial = managedCapabilityDenial(settings.managedPolicy, "remoteClients");
   const installContext = yield* Effect.context<Effect.Services<ReturnType<typeof install>>>();
   const latest = yield* Effect.cachedWithTTL(
@@ -148,6 +168,72 @@ const make = Effect.gen(function* () {
     running = undefined;
   });
   yield* Effect.addFinalizer(() => stop);
+  const traexBaseUrl = "http://127.0.0.1:8317/v1";
+  const readTraexKey = Effect.gen(function* () {
+    const key = (yield* fs
+      .readFileString(path.join(homeDirectory, ".traex-bridge", "api-key"))
+      .pipe(
+        Effect.mapError(() => failure("Set up Traex bridge and its API key on this host first.")),
+      )).trim();
+    if (!key || /[\r\n]/.test(key))
+      return yield* failure("The Traex bridge API key on this host is invalid.");
+    return key;
+  });
+  const writeConfig = Effect.fn("InferenceProxy.writeConfig")(function* (
+    state: Saved,
+    key: string,
+    management: string,
+  ) {
+    const authDir = path.join(directory, "accounts");
+    yield* fs.makeDirectory(authDir, { recursive: true, mode: 0o700 });
+    const routing = state.routing ?? defaultInferenceRouting;
+    const modelsFor = (source: "codex" | "claudeAgent" | "traex") =>
+      routing.mappings
+        .filter((m) => m.source === source)
+        .map((m) => ({
+          name: m.upstream,
+          alias: inferencePoolModel(m),
+          "force-mapping": true,
+          ...(source === "traex" ? {} : { fork: true }),
+        }));
+    const bridgeModels = modelsFor("traex");
+    const temp = yield* fs.makeTempFileScoped({ directory });
+    yield* fs.writeFileString(
+      temp,
+      yield* encodeConfig({
+        "config-version": 8,
+        server: { host: "127.0.0.1", port: state.port, "max-request-body-bytes": 64 * 1024 * 1024 },
+        oauth: {
+          "auth-dir": authDir,
+          "model-alias": { codex: modelsFor("codex"), claude: modelsFor("claudeAgent") },
+        },
+        ...(bridgeModels.length && state.traexKey
+          ? {
+              "api-keys": {
+                codex: [
+                  {
+                    name: "Traex bridge",
+                    "base-url": traexBaseUrl,
+                    models: bridgeModels,
+                    keys: [{ "api-key": state.traexKey, "disable-codex-cloaking": true }],
+                  },
+                ],
+              },
+            }
+          : {}),
+        access: { "api-keys": [key] },
+        requests: { "passthrough-headers": true },
+        management: {
+          "allow-remote": false,
+          "secret-key": management,
+          "disable-control-panel": true,
+        },
+        routing: { strategy: routing.strategy, "session-affinity": routing.sessionAffinity },
+      }),
+      { mode: 0o600 },
+    );
+    yield* fs.rename(temp, path.join(directory, "config.yaml"));
+  }, Effect.scoped);
   const ensure = Effect.fn("InferenceProxy.start")(function* (state: Saved) {
     if (!state.enabled)
       return yield* failure("Enable inference hosting on this environment first.");
@@ -166,26 +252,8 @@ const make = Effect.gen(function* () {
       "base64url",
     );
     const management = yield* newKey;
-    const authDir = path.join(directory, "accounts");
-    yield* fs.makeDirectory(authDir, { recursive: true, mode: 0o700 });
     const file = path.join(directory, "config.yaml");
-    yield* fs.writeFileString(
-      file,
-      yield* encodeConfig({
-        "config-version": 8,
-        server: { host: "127.0.0.1", port: state.port, "max-request-body-bytes": 64 * 1024 * 1024 },
-        oauth: { "auth-dir": authDir },
-        access: { "api-keys": [key] },
-        requests: { "passthrough-headers": true },
-        management: {
-          "allow-remote": false,
-          "secret-key": management,
-          "disable-control-panel": true,
-        },
-        routing: { strategy: "round-robin", "session-affinity": true },
-      }),
-      { mode: 0o600 },
-    );
+    yield* writeConfig(state, key, management);
     const scope = yield* Scope.make();
     const baseUrl = `http://127.0.0.1:${state.port}`;
     return yield* Effect.gen(function* () {
@@ -251,6 +319,7 @@ const make = Effect.gen(function* () {
               ? [{ instanceId: ProviderInstanceId.make(id), label: instance.displayName ?? id }]
               : [],
           ),
+          routing: state.routing ?? defaultInferenceRouting,
           version: state.release?.version ?? proxyVersion,
           enabled: state.enabled,
           sharing: state.sharing,
@@ -264,7 +333,14 @@ const make = Effect.gen(function* () {
             runtime.management,
             Files,
           );
-          return { ...summary, running: true, accounts: files, problem: null };
+          return {
+            ...summary,
+            running: true,
+            accounts: files
+              .filter((file) => !file.runtime_only)
+              .map(({ name, provider, status }) => ({ name, provider, status })),
+            problem: null,
+          };
         }).pipe(
           Effect.orElseSucceed((e) => ({
             ...summary,
@@ -368,7 +444,10 @@ const make = Effect.gen(function* () {
     );
     return { update: { current: release.version, available: null } };
   });
-  type HostAction = Exclude<InferenceProxyAction, { operation: "checkUpdate" | "update" }>;
+  type HostAction = Exclude<
+    InferenceProxyAction,
+    { operation: "checkUpdate" | "update" | "listModels" }
+  >;
   const manageHost = Effect.fn("InferenceProxy.manageHost")(function* (input: HostAction) {
     const state = yield* read;
     if (input.operation === "configure") {
@@ -394,6 +473,55 @@ const make = Effect.gen(function* () {
           ),
         );
       }
+      return {};
+    }
+    if (
+      input.operation === "setRouting" ||
+      input.operation === "mapModel" ||
+      input.operation === "unmapModel"
+    ) {
+      const routing = state.routing ?? defaultInferenceRouting;
+      let nextRouting: InferenceRouting = routing;
+      let traexKey = state.traexKey;
+      if (input.operation === "setRouting") {
+        nextRouting = {
+          ...routing,
+          strategy: input.strategy ?? routing.strategy,
+          sessionAffinity: input.sessionAffinity ?? routing.sessionAffinity,
+        };
+      } else {
+        const { source, pool } = input.operation === "mapModel" ? input.mapping : input;
+        const mappings = routing.mappings.filter((m) => m.source !== source || m.pool !== pool);
+        if (input.operation === "mapModel") {
+          const driver = source === "claudeAgent" ? source : "codex";
+          if (!isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(driver)))
+            return yield* failure("This provider is disabled by environment policy.");
+          if (mappings.length >= 128)
+            return yield* failure("Remove a mapping before adding another.");
+          if (source === "traex") {
+            traexKey = yield* readTraexKey;
+          }
+          mappings.push(input.mapping);
+        }
+        nextRouting = { ...routing, mappings };
+      }
+      const { traexKey: _previousKey, ...other } = state;
+      const next: Saved = {
+        ...other,
+        routing: nextRouting,
+        ...(nextRouting.mappings.some((m) => m.source === "traex") && traexKey ? { traexKey } : {}),
+      };
+      const runtime = yield* ensure(state);
+      yield* writeConfig(next, runtime.key, runtime.management).pipe(
+        Effect.andThen(
+          save(next).pipe(
+            Effect.onError(() =>
+              writeConfig(state, runtime.key, runtime.management).pipe(Effect.orDie),
+            ),
+          ),
+        ),
+        Effect.uninterruptible,
+      );
       return {};
     }
     if (input.operation === "removeRoute") {
@@ -468,6 +596,24 @@ const make = Effect.gen(function* () {
   const manage = Effect.fn("InferenceProxy.manage")(
     function* (input: InferenceProxyAction) {
       switch (input.operation) {
+        case "listModels": {
+          const driver = input.source === "claudeAgent" ? input.source : "codex";
+          if (!isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(driver)))
+            return yield* failure("This provider is disabled by environment policy.");
+          const runtime = yield* mutex.withPermit(read.pipe(Effect.flatMap(ensure)));
+          const bridge = input.source === "traex";
+          const { data } = yield* jsonRequest(
+            (bridge ? traexBaseUrl : runtime.baseUrl + "/v1") + "/models",
+            bridge ? yield* readTraexKey : runtime.key,
+            Models,
+          );
+          const ids = bridge
+            ? data.map((m) => m.id)
+            : modelsForDriver(data, driver).filter(
+                (id) => !id.startsWith("codex-pool-") && !id.startsWith("claude-pool-"),
+              );
+          return { models: [...new Set(ids)].sort() };
+        }
         case "checkUpdate":
           return yield* updateRuntime("checkUpdate");
         case "update":
@@ -556,16 +702,7 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
-      const models = data
-        .filter((model) => {
-          const owner = model.owned_by?.toLowerCase();
-          if (owner === "openai") return driver === "codex";
-          if (owner === "anthropic") return driver === "claudeAgent";
-          return driver === "codex"
-            ? /^(codex-|gpt-|o\d)/i.test(model.id)
-            : /^claude-/i.test(model.id);
-        })
-        .map((m) => m.id);
+      const models = modelsForDriver(data, driver);
       if (!models.length)
         return yield* failure("Sign in to an account for this provider on the host, then retry.");
       const hash = yield* Effect.promise(() =>

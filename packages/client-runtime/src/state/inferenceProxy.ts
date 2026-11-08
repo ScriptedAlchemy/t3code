@@ -30,6 +30,7 @@ export function createInferenceProxyAtoms<R, E>(
     tag: WS_METHODS.inferenceManage,
     onSuccess: ({ environmentId, input }, registry) =>
       Effect.sync(() => {
+        if (input.operation === "listModels") return;
         registry.refresh(inferenceStatus({ environmentId, input: {} }));
         if (input.operation === "configure" || input.operation === "update")
           registry.refresh(updates({ environmentId, input: { operation: "checkUpdate" } }));

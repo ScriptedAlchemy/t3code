@@ -1,4 +1,12 @@
-import { inferenceRouteIssue } from "@t3tools/contracts";
+import {
+  inferenceRouteIssue,
+  inferencePoolModel,
+  inferenceSourceLabels,
+  isInferenceModelMapping,
+  type InferenceModelMapping,
+  type InferenceRouting,
+  type InferenceProxyActionResult,
+} from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -14,6 +22,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Select, SelectTrigger, SelectPopup, SelectItem } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { SettingsPageContainer, SettingsSection, SettingsRow } from "./settingsLayout";
 
@@ -76,6 +85,195 @@ function InferenceRoute({
   );
 }
 
+function ModelPools({
+  routing,
+  disabled,
+  run,
+}: {
+  routing: InferenceRouting;
+  disabled: boolean;
+  run: (action: InferenceProxyAction) => Promise<InferenceProxyActionResult | undefined>;
+}) {
+  const [source, setSource] = useState<InferenceModelMapping["source"]>("codex");
+  const [pool, setPool] = useState("");
+  const [upstream, setUpstream] = useState("");
+  const [catalog, setCatalog] = useState<{
+    source: InferenceModelMapping["source"];
+    ids: readonly string[];
+  } | null>(null);
+  const ids = catalog?.source === source ? catalog.ids : undefined;
+  async function loadModels() {
+    const result = await run({ operation: "listModels", source });
+    if (result?.models) setCatalog({ source, ids: result.models });
+  }
+  const mapping = { source, pool: pool.trim(), upstream: upstream.trim() };
+  const sources = ["codex", "traex", "claudeAgent"] as const;
+  const existing = routing.mappings.find((m) => m.source === source && m.pool === mapping.pool);
+  const hint =
+    source === "traex"
+      ? "Uses the bridge and API key in ~/.traex-bridge on this host."
+      : "Use the same pool name for sources that serve equivalent models.";
+  const poolHint = mapping.pool
+    ? "Model picker ID: " + inferencePoolModel(mapping)
+    : "Use lowercase letters, numbers, dots or hyphens.";
+  const cannotSave =
+    disabled ||
+    !isInferenceModelMapping(mapping) ||
+    (source !== "traex" && existing?.upstream === mapping.upstream);
+  return (
+    <SettingsSection title="Model pools">
+      <SettingsRow
+        title="Round-robin routing"
+        description="Distribute requests across eligible credentials. Turn off to use the first available credential."
+        control={
+          <Switch
+            aria-label="Round-robin routing"
+            checked={routing.strategy === "round-robin"}
+            disabled={disabled}
+            onCheckedChange={(enabled) =>
+              void run({
+                operation: "setRouting",
+                strategy: enabled ? "round-robin" : "fill-first",
+              })
+            }
+          />
+        }
+      />
+      <SettingsRow
+        title="Keep sessions on one account"
+        description="Reuse the same credential for a conversation while it is available."
+        control={
+          <Switch
+            aria-label="Keep sessions on one account"
+            checked={routing.sessionAffinity}
+            disabled={disabled}
+            onCheckedChange={(sessionAffinity) =>
+              void run({ operation: "setRouting", sessionAffinity })
+            }
+          />
+        }
+      />
+      {routing.mappings.map((m) => (
+        <SettingsRow
+          key={m.source + ":" + m.pool}
+          title={inferencePoolModel(m)}
+          description={inferenceSourceLabels[m.source] + " · " + m.upstream}
+          control={
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={disabled}
+              onClick={() => void run({ operation: "unmapModel", source: m.source, pool: m.pool })}
+            >
+              Remove mapping
+            </Button>
+          }
+        />
+      ))}
+      <SettingsRow
+        title="Model source"
+        description={hint}
+        control={
+          <Select
+            value={source}
+            disabled={disabled}
+            onValueChange={(v) => {
+              if (v) setSource(v);
+            }}
+          >
+            <SelectTrigger aria-label="Model source">{inferenceSourceLabels[source]}</SelectTrigger>
+            <SelectPopup>
+              {sources.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {inferenceSourceLabels[s]}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        }
+      />
+      <SettingsRow
+        title="Available models"
+        description={
+          ids?.length === 0 ? "No models reported. Enter the upstream ID below." : undefined
+        }
+        control={
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={disabled}
+              onClick={() => void loadModels()}
+            >
+              Load source models
+            </Button>
+            {ids && ids.length > 0 && (
+              <Select
+                value={upstream}
+                disabled={disabled}
+                onValueChange={(v) => {
+                  if (v) setUpstream(v);
+                }}
+              >
+                <SelectTrigger aria-label="Choose upstream model">Choose model</SelectTrigger>
+                <SelectPopup>
+                  {ids.map((id) => (
+                    <SelectItem key={id} value={id}>
+                      {id}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            )}
+          </div>
+        }
+      />
+      <SettingsRow
+        title="Upstream model ID"
+        control={
+          <Input
+            aria-label="Upstream model ID"
+            value={upstream}
+            disabled={disabled}
+            onChange={(e) => setUpstream(e.target.value)}
+            placeholder="Upstream ID"
+          />
+        }
+      />
+      <SettingsRow
+        title="Pool name"
+        description={poolHint}
+        control={
+          <Input
+            aria-label="Pool name"
+            value={pool}
+            disabled={disabled}
+            onChange={(e) => setPool(e.target.value)}
+            placeholder="work"
+          />
+        }
+      />
+      <SettingsRow
+        title="Publish mapping"
+        description="Apply a route again to refresh its model picker after changing pools."
+        control={
+          <Button
+            size="sm"
+            disabled={cannotSave}
+            onClick={() => void run({ operation: "mapModel", mapping })}
+          >
+            {existing?.upstream === mapping.upstream && source === "traex"
+              ? "Refresh bridge key"
+              : existing
+                ? "Update mapping"
+                : "Add mapping"}
+          </Button>
+        }
+      />
+    </SettingsSection>
+  );
+}
+
 export function InferenceSettings({ environmentId }: { environmentId: EnvironmentId }) {
   const { environments } = useEnvironments();
   const current = environments.find((e) => e.environmentId === environmentId);
@@ -125,6 +323,7 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
       setCallback("");
       setNotice("Sign-in failed or expired. Start a new sign-in.");
     }
+    return result.value;
   }
   return (
     <SettingsPageContainer className="gap-8">
@@ -300,6 +499,9 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
             />
           )}
         </SettingsSection>
+      )}
+      {host?.enabled && host.routing && (
+        <ModelPools routing={host.routing} disabled={busy || !canManage} run={run} />
       )}
       {notice && (
         <p role="status" className="text-sm">
