@@ -107,7 +107,7 @@ const CLAUDE_OVERLAY_POLICY: OverlayPolicy = {
   retired: CLAUDE_PROFILE_ENTRIES.map((entry) => entry.name),
 };
 
-export function claudeCliEnvironment(environment: NodeJS.ProcessEnv, configDir: ClaudeAccountDir) {
+export function claudeCliEnvironment(environment: NodeJS.ProcessEnv, configDir: string) {
   const next = { ...environment };
   for (const key of Object.keys(next)) {
     const name = key.toUpperCase();
@@ -260,17 +260,15 @@ export const mergeClaudeProcessEnvironment = Effect.fn("mergeClaudeProcessEnviro
   hostEnvironment: NodeJS.ProcessEnv,
 ) {
   const baseEnvironment: NodeJS.ProcessEnv = {
-    ...hostEnvironment,
+    ...(config.setupMode === "inference"
+      ? claudeCliEnvironment(hostEnvironment, config.homePath)
+      : hostEnvironment),
     CLAUDE_CODE_ENTRYPOINT: "t3-code",
   };
   for (const name of CLAUDE_HOST_SESSION_VARIABLES) delete baseEnvironment[name];
   // The desktop runs the server as Node through Electron. Commands Claude runs inherit its env, so
   // an Electron app they start (T3 Code itself, VS Code) would run as Node and exit.
   delete baseEnvironment.ELECTRON_RUN_AS_NODE;
-  if (config.setupMode === "inference") {
-    for (const name of CLAUDE_ACCOUNT_ENVIRONMENT) delete baseEnvironment[name];
-    baseEnvironment.CLAUDE_SECURESTORAGE_CONFIG_DIR = config.homePath;
-  }
   const environment = yield* mergeProviderInstanceEnvironment(instanceEnvironment, baseEnvironment);
   const settingsEntrypoint = (yield* readClaudeSettingsEnv(config, undefined, environment))
     .CLAUDE_CODE_ENTRYPOINT;

@@ -19,6 +19,8 @@ it("streams an authorized request with a host key, then denies the revoked consu
       expect(request.headers.authorization).toBe("Bearer private-host-key");
       expect(request.headers["anthropic-version"]).toBe("2023-06-01");
       expect(request.headers["content-encoding"]).toBe("zstd");
+      expect(request.headers["x-codex-turn-state"]).toBe("turn-fixture");
+      expect(request.headers["x-codex-turn-metadata"]).toBe("metadata-fixture");
       expect(request.headers.cookie).toBeUndefined();
       expect(request.headers["x-api-key"]).toBeUndefined();
       signal.addEventListener("abort", () => {
@@ -38,7 +40,11 @@ it("streams an authorized request with a host key, then denies the revoked consu
       return HttpClientResponse.fromWeb(
         request,
         new Response(stream, {
-          headers: { "content-type": "text/event-stream", "set-cookie": "secret=hidden" },
+          headers: {
+            "content-type": "text/event-stream",
+            "set-cookie": "secret=hidden",
+            "x-codex-turn-state": "next-turn-fixture",
+          },
         }),
       );
     }),
@@ -67,6 +73,8 @@ it("streams an authorized request with a host key, then denies the revoked consu
       headers: {
         "anthropic-version": "2023-06-01",
         "content-encoding": "zstd",
+        "x-codex-turn-state": "turn-fixture",
+        "x-codex-turn-metadata": "metadata-fixture",
         cookie: "t3session=private",
         ...(key ? { "x-api-key": key } : {}),
       },
@@ -76,6 +84,7 @@ it("streams an authorized request with a host key, then denies the revoked consu
     expect((await handler(request("v1/messages"))).status).toBe(401);
     const result = await handler(request("v1/messages?beta=true", "consumer"));
     expect(result.headers.get("set-cookie")).toBeNull();
+    expect(result.headers.get("x-codex-turn-state")).toBe("next-turn-fixture");
     const reader = result.body!.getReader();
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("data: first\n\n");
     finish!();

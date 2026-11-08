@@ -186,6 +186,24 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
           { name: "CLAUDE_EFFORT", value: "low", sensitive: false },
         ];
 
+        const routed = yield* mergeClaudeProcessEnvironment(
+          { homePath, setupMode: "inference" },
+          [{ name: "ANTHROPIC_BASE_URL", value: "http://route", sensitive: false }],
+          {
+            ...host,
+            Anthropic_Custom_Headers: "host-headers",
+            Claude_Code_Use_Bedrock: "1",
+            ANTHROPIC_MODEL: "host-model",
+            Claude_Config_Dir: "host-home",
+          },
+        );
+        expect(routed).toEqual({
+          CLAUDE_CODE_ENTRYPOINT: "t3-code",
+          KEEP: "1",
+          ANTHROPIC_BASE_URL: "http://route",
+          CLAUDE_CONFIG_DIR: homePath,
+          CLAUDE_SECURESTORAGE_CONFIG_DIR: homePath,
+        });
         expect(yield* mergeClaudeProcessEnvironment({ homePath }, undefined, host)).toEqual({
           CLAUDE_CODE_ENTRYPOINT: "t3-code",
           KEEP: "1",

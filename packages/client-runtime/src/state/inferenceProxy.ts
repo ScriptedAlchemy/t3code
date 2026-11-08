@@ -44,6 +44,7 @@ export function createInferenceProxyAtoms<R, E>(
         input: { host: InferenceConsumer; consumer: InferenceConsumer; driver: InferenceDriver },
         registry: AtomRegistry.AtomRegistry,
       ) {
+        yield* consumerPermission.authorize(registry, input.consumer.environmentId);
         const connections = yield* EnvironmentRegistry;
         const grant = yield* connections.run(
           input.host.environmentId,

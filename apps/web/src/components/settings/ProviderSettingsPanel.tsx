@@ -1109,7 +1109,7 @@ export function EnvironmentProviderSettings({
         {supportsInference && (
           <SettingsRow
             title="Inference accounts"
-            description="Host Codex and Claude accounts or use a host on your tailnet."
+            description="Host Codex and Claude accounts here, or use accounts from a paired environment over LAN or Tailscale."
             control={
               <Button
                 size="sm"

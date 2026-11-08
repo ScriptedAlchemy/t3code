@@ -101,7 +101,7 @@ it.effect(
             });
           }),
         );
-        let catalog: readonly { id: string }[] = [];
+        let catalog: readonly { id: string; owned_by?: string }[] = [];
         let identity = hostId;
         let peerId = hostId;
         const remoteCatalogKeys: (string | undefined)[] = [];
@@ -227,13 +227,23 @@ it.effect(
               "InferenceProxyError",
             );
             expect((yield* settings.getSettings).providerPools).toHaveProperty("codex");
-            catalog = [{ id: "gpt-fixture" }];
+            catalog = [
+              { id: "codex-auto-review", owned_by: "openai" },
+              { id: "office-model", owned_by: "openai" },
+              { id: "gpt-other", owned_by: "anthropic" },
+              { id: "gpt-fixture" },
+            ];
             expect(
               (yield* proxy
                 .connect({ ...connect, grant: { ...local, key: "expired-local-key" } })
                 .pipe(Effect.flip)).message,
             ).toContain("local inference");
             yield* proxy.connect(connect);
+            expect(
+              Object.values((yield* settings.getSettings).providerInstances).find(
+                (i) => i.displayName === "Codex via Host",
+              )?.config,
+            ).toMatchObject({ customModels: ["codex-auto-review", "office-model", "gpt-fixture"] });
             expect((yield* settings.getSettings).providerPools).not.toHaveProperty("codex");
             expect(Object.values((yield* settings.getSettings).providerInstances)).toEqual(
               expect.arrayContaining([expect.objectContaining({ displayName: "Codex via Host" })]),
@@ -290,6 +300,10 @@ it.effect(
             expect((yield* Fiber.join(update)).message).toContain("checksum");
             expect((yield* proxy.status).version).toBe(proxyVersion);
             expect(stops).toBe(0);
+            const staleRuntime = runtime.replace(proxyVersion, "8.0.58");
+            const otherPlatform = staleRuntime.replace("darwin-arm64", "linux-x64");
+            yield* fs.makeDirectory(staleRuntime);
+            yield* fs.makeDirectory(otherPlatform);
             const installed = runtime.replace(proxyVersion, "8.0.61");
             yield* fs.makeDirectory(installed, { recursive: true });
             yield* fs.writeFileString(installed + "/cli-proxy-api", "");
@@ -299,6 +313,9 @@ it.effect(
             expect((yield* proxy.authorize(issued.key))?.key).toBeDefined();
             yield* proxy.manage({ operation: "update" });
             expect((yield* proxy.status).version).toBe("8.0.61");
+            expect(yield* fs.exists(staleRuntime)).toBe(false);
+            expect(yield* fs.exists(otherPlatform)).toBe(true);
+            expect(yield* fs.exists(runtime)).toBe(true);
             return issued;
           }).pipe(Effect.provide(service)),
         );

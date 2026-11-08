@@ -32,6 +32,11 @@ const handler = Effect.gen(function* () {
     "session-id",
     "x-session-id",
     "x-client-request-id",
+    "x-codex-beta-features",
+    "x-codex-turn-metadata",
+    "x-codex-turn-state",
+    "x-codex-window-id",
+    "thread-id",
     "x-claude-code-session-id",
   ]) {
     const value = request.headers[name];
@@ -53,6 +58,9 @@ const handler = Effect.gen(function* () {
     contentType: result.headers["content-type"] ?? "application/json",
     headers: {
       "cache-control": "no-store, no-transform",
+      ...(result.headers["x-codex-turn-state"]
+        ? { "x-codex-turn-state": result.headers["x-codex-turn-state"] }
+        : {}),
       ...(result.headers["retry-after"] ? { "retry-after": result.headers["retry-after"] } : {}),
     },
   });

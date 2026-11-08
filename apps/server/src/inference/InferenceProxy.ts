@@ -39,7 +39,7 @@ import { DirectEndpoints } from "../environment/DirectEndpoints.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
-import { install, proxyVersion, latestRelease, Release } from "./install.ts";
+import { install, proxyVersion, resolveRelease, Release } from "./install.ts";
 import { routeProvider, validateRouteUrl } from "./routes.ts";
 
 const Saved = Schema.Struct({
@@ -116,7 +116,7 @@ const make = Effect.gen(function* () {
   const sharingDenial = managedCapabilityDenial(settings.managedPolicy, "remoteClients");
   const installContext = yield* Effect.context<Effect.Services<ReturnType<typeof install>>>();
   const latest = yield* Effect.cachedWithTTL(
-    latestRelease().pipe(Effect.provide(installContext)),
+    resolveRelease(undefined).pipe(Effect.provide(installContext)),
     (exit) => (Exit.isSuccess(exit) ? "15 minutes" : 0),
   );
   const mutex = yield* Semaphore.make(1);
@@ -176,6 +176,7 @@ const make = Effect.gen(function* () {
         server: { host: "127.0.0.1", port: state.port, "max-request-body-bytes": 64 * 1024 * 1024 },
         oauth: { "auth-dir": authDir },
         access: { "api-keys": [key] },
+        requests: { "passthrough-headers": true },
         management: {
           "allow-remote": false,
           "secret-key": management,
@@ -330,11 +331,11 @@ const make = Effect.gen(function* () {
       Effect.provide(installContext),
       Effect.mapError(safeFailure("Could not install the verified CLIProxyAPI update.")),
     );
-    return yield* mutex.withPermit(
+    yield* mutex.withPermit(
       Effect.gen(function* () {
         const before = yield* read;
         if (!before.enabled) return yield* failure("Hosting was disabled during the update.");
-        const next = { ...before, release };
+        const next = { ...before, release: { version: release.version } };
         yield* Effect.uninterruptibleMask((restore) =>
           stop.pipe(
             Effect.andThen(restore(ensure(next))),
@@ -342,9 +343,30 @@ const make = Effect.gen(function* () {
             Effect.onError(() => stop.pipe(Effect.andThen(ensure(before)), Effect.ignore)),
           ),
         );
-        return { update: { current: release.version, available: null } };
       }),
     );
+    const runtimeDir = path.join(directory, "runtime");
+    yield* fs.readDirectory(runtimeDir).pipe(
+      Effect.flatMap((entries) =>
+        Effect.forEach(
+          entries,
+          (entry) => {
+            const match = /^(\d+\.\d+\.\d+)-(.+)$/.exec(entry);
+            if (
+              !match ||
+              match[2] !== release.target ||
+              match[1] === current ||
+              match[1]!.localeCompare(release.version, "en", { numeric: true }) >= 0
+            )
+              return Effect.void;
+            return fs.remove(path.join(runtimeDir, entry), { recursive: true });
+          },
+          { discard: true },
+        ),
+      ),
+      Effect.catch(() => Effect.logWarning("Could not remove obsolete CLIProxyAPI releases.")),
+    );
+    return { update: { current: release.version, available: null } };
   });
   type HostAction = Exclude<InferenceProxyAction, { operation: "checkUpdate" | "update" }>;
   const manageHost = Effect.fn("InferenceProxy.manageHost")(function* (input: HostAction) {
@@ -535,7 +557,14 @@ const make = Effect.gen(function* () {
         ),
       );
       const models = data
-        .filter((m) => (driver === "codex" ? /^(gpt-|o\d)/i.test(m.id) : /^claude-/i.test(m.id)))
+        .filter((model) => {
+          const owner = model.owned_by?.toLowerCase();
+          if (owner === "openai") return driver === "codex";
+          if (owner === "anthropic") return driver === "claudeAgent";
+          return driver === "codex"
+            ? /^(codex-|gpt-|o\d)/i.test(model.id)
+            : /^claude-/i.test(model.id);
+        })
         .map((m) => m.id);
       if (!models.length)
         return yield* failure("Sign in to an account for this provider on the host, then retry.");
