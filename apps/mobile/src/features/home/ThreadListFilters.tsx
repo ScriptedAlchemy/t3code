@@ -12,6 +12,8 @@ export function ThreadListFilters(props: {
   readonly projects: ReadonlyArray<HomeListFilterMenuProject>;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  readonly hideOfflineEnvironments: boolean;
+  readonly onHideOfflineEnvironmentsChange: (value: boolean) => void;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
   /** List padding the scroller bleeds through so pills start where row content does. */
@@ -31,9 +33,12 @@ export function ThreadListFilters(props: {
       contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 2, paddingBottom: 10, gap: 8 }}
     >
       <ListFilterMenu
-        label={selectedEnvironment?.label ?? "All environments"}
+        label={
+          selectedEnvironment?.label ??
+          (props.hideOfflineEnvironments ? "Online environments" : "All environments")
+        }
         accessibilityLabel="Filter threads by environment"
-        active={selectedEnvironment !== undefined}
+        active={selectedEnvironment !== undefined || props.hideOfflineEnvironments}
         actions={[
           {
             id: "all",
@@ -48,9 +53,16 @@ export function ThreadListFilters(props: {
                 ? ("on" as const)
                 : ("off" as const),
           })),
+          {
+            id: "hide-offline",
+            title: "Hide offline environments",
+            state: props.hideOfflineEnvironments ? "on" : "off",
+          },
         ]}
         onSelect={(id) => {
-          if (id === "all") props.onEnvironmentChange(null);
+          if (id === "hide-offline")
+            props.onHideOfflineEnvironmentsChange(!props.hideOfflineEnvironments);
+          else if (id === "all") props.onEnvironmentChange(null);
           else {
             const environment = props.environments.find(
               (candidate) => JSON.stringify(candidate.environmentId) === id,
@@ -85,7 +97,9 @@ export function ThreadListFilters(props: {
           }
         }}
       />
-      {props.selectedEnvironmentId !== null || props.selectedProjectKey !== null ? (
+      {props.selectedEnvironmentId !== null ||
+      props.selectedProjectKey !== null ||
+      props.hideOfflineEnvironments ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Reset thread filters"
@@ -93,6 +107,7 @@ export function ThreadListFilters(props: {
           onPress={() => {
             props.onEnvironmentChange(null);
             props.onProjectChange(null);
+            props.onHideOfflineEnvironmentsChange(false);
           }}
         >
           <SymbolView name="xmark.circle.fill" size={18} tintColorClassName="accent-icon-muted" />

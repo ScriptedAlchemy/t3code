@@ -17,6 +17,8 @@ export function buildHomeListFilterMenuItems(props: {
   readonly projects: ReadonlyArray<HomeListFilterMenuProject>;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  readonly hideOfflineEnvironments: boolean;
+  readonly onHideOfflineEnvironmentsChange: (value: boolean) => void;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
 }): AppBarMenuItem[] {
@@ -64,5 +66,11 @@ export function buildHomeListFilterMenuItems(props: {
     });
   }
 
+  items.push({
+    id: "hide-offline-environments",
+    title: "Hide offline environments",
+    selected: props.hideOfflineEnvironments,
+    onPress: () => props.onHideOfflineEnvironmentsChange(!props.hideOfflineEnvironments),
+  });
   return items;
 }

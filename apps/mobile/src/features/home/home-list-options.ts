@@ -9,6 +9,7 @@ import { updateMobilePreferencesAtom } from "../../state/preferences";
 import type { HomeProjectSortOrder } from "./homeThreadList";
 
 export interface HomeListOptions {
+  readonly hideOfflineEnvironments: boolean;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
   readonly projectSortOrder: HomeProjectSortOrder;
@@ -20,6 +21,7 @@ export interface ResolvedHomeListOptions extends HomeListOptions {
 
 function defaultHomeListOptions(filters?: ThreadListFilters): HomeListOptions {
   return {
+    hideOfflineEnvironments: filters?.hideOfflineEnvironments ?? false,
     selectedEnvironmentId: filters?.environmentId ?? null,
     selectedProjectKey: filters?.projectKey ?? null,
     projectSortOrder:
@@ -49,7 +51,7 @@ export function HomeListOptionsProvider({
   const [optionsAtom] = useState(() => Atom.make(defaultHomeListOptions(savedFilters)));
   const options = useAtomValue(optionsAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
-  // Only the scope persists; the sort order is per session. Updates read the
+  // Only the filters persist; the sort order is per session. Updates read the
   // registry, so several in one event each build on the last and save it.
   const updateOptions = (patch: Partial<HomeListOptions>) => {
     const current = registry.get(optionsAtom);
@@ -57,12 +59,14 @@ export function HomeListOptionsProvider({
     registry.set(optionsAtom, next);
     if (
       next.selectedEnvironmentId !== current.selectedEnvironmentId ||
-      next.selectedProjectKey !== current.selectedProjectKey
+      next.selectedProjectKey !== current.selectedProjectKey ||
+      next.hideOfflineEnvironments !== current.hideOfflineEnvironments
     ) {
       savePreferences({
         threadListFilters: {
           environmentId: next.selectedEnvironmentId,
           projectKey: next.selectedProjectKey,
+          hideOfflineEnvironments: next.hideOfflineEnvironments,
         },
       });
     }
@@ -98,6 +102,9 @@ export function useHomeListOptions(availableEnvironmentIds: ReadonlySet<Environm
   const setSelectedProjectKey = (value: string | null) => {
     updateOptions({ selectedProjectKey: value });
   };
+  const setHideOfflineEnvironments = (value: boolean) => {
+    updateOptions({ hideOfflineEnvironments: value });
+  };
   const setProjectSortOrder = (value: HomeProjectSortOrder) => {
     updateOptions({ projectSortOrder: value });
   };
@@ -106,5 +113,6 @@ export function useHomeListOptions(availableEnvironmentIds: ReadonlySet<Environm
     setSelectedEnvironmentId,
     setSelectedProjectKey,
     setProjectSortOrder,
+    setHideOfflineEnvironments,
   } as const;
 }

@@ -152,7 +152,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   const availableEnvironmentIds = new Set(
     environments.map((environment) => environment.environmentId),
   );
-  const { options, setSelectedEnvironmentId, setSelectedProjectKey } =
+  const { options, setSelectedEnvironmentId, setSelectedProjectKey, setHideOfflineEnvironments } =
     useHomeListOptions(availableEnvironmentIds);
   const searchEnvironmentIds =
     options.selectedEnvironmentId === null
@@ -268,6 +268,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     threads,
     pendingTasks,
     environmentId: options.selectedEnvironmentId,
+    hideOfflineEnvironments: options.hideOfflineEnvironments,
     projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
     searchQuery: props.searchQuery,
     searchMatches: threadSearchMatchByKey,
@@ -535,7 +536,10 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
         accessibilityLabel: "Search threads",
       }}
       filter={{
-        customized: options.selectedEnvironmentId !== null || selectedProjectKey !== null,
+        customized:
+          options.selectedEnvironmentId !== null ||
+          selectedProjectKey !== null ||
+          options.hideOfflineEnvironments,
         items: buildHomeListFilterMenuItems({
           environments,
           projects: projectFilterOptions,
@@ -543,6 +547,8 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
           selectedProjectKey,
           onEnvironmentChange: setSelectedEnvironmentId,
           onProjectChange: setSelectedProjectKey,
+          hideOfflineEnvironments: options.hideOfflineEnvironments,
+          onHideOfflineEnvironmentsChange: setHideOfflineEnvironments,
         }),
       }}
       sidebar={{
@@ -568,9 +574,11 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
             ? threadSearch.isPending
               ? "Searching thread messages…"
               : "No matching threads"
-            : selectedProjectScope !== null
-              ? `No threads in ${selectedProjectScope.title}`
-              : "No threads yet"}
+            : options.hideOfflineEnvironments
+              ? "No visible threads. Turn off Hide offline environments or choose another filter."
+              : selectedProjectScope !== null
+                ? `No threads in ${selectedProjectScope.title}`
+                : "No threads yet"}
     </Text>
   );
 

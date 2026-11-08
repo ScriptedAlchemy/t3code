@@ -8,6 +8,8 @@ import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
+import { offlineEnvironmentIdsAtom } from "../../state/presentation";
+import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { olderSettledThreads } from "../../state/threads";
 import { makeRawThreadShell } from "../../test-fixtures";
 import { useThreadListV2 } from "./useThreadListV2";
@@ -16,6 +18,10 @@ vi.mock("../../state/threads", () => ({
   olderSettledThreads: { shelfAtom: vi.fn() },
   threadFamilies: { mountRows: () => () => {} },
 }));
+vi.mock("../../state/presentation", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { offlineEnvironmentIdsAtom: Atom.make<ReadonlyArray<EnvironmentId>>([]) };
+});
 vi.mock("../../state/atom-registry", () => ({ appAtomRegistry: undefined }));
 
 it("reuses a large thread list across tab renders and updates when its inputs change", async () => {
@@ -23,6 +29,7 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   using _globals = { [Symbol.dispose]: () => vi.unstubAllGlobals() };
   const shelfAtom = Atom.make<ReadonlyMap<EnvironmentId, OlderSettledShelfEnvironment>>(new Map());
   vi.mocked(olderSettledThreads.shelfAtom).mockReturnValue(shelfAtom);
+  const offlineIds = offlineEnvironmentIdsAtom as Atom.Writable<ReadonlyArray<EnvironmentId>>;
   const registry = AtomRegistry.make();
   using _registry = { [Symbol.dispose]: () => registry.dispose() };
   const environmentId = EnvironmentId.make("environment-1");
@@ -43,6 +50,7 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     threads,
     pendingTasks: [],
     environmentId: null,
+    hideOfflineEnvironments: false,
     projectRefs: null,
     searchQuery: "",
     searchMatches: new Map(),
@@ -108,6 +116,45 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   expect(
     seen.at(-1)!.layout.items.every((item) => item.thread.environmentId === environmentId),
   ).toBe(true);
+
+  await act(async () => registry.set(offlineIds, [otherEnvironmentId]));
+  const pendingTasks: ReadonlyArray<PendingNewTask> = [environmentId, otherEnvironmentId].map(
+    (id) => ({
+      kind: "draft",
+      key: `draft-${id}`,
+      environmentId: id,
+      projectId: ProjectId.make("project-test"),
+      projectTitle: undefined,
+      projectCwd: undefined,
+      title: "Unsent draft",
+      createdAt: input.now,
+      draftKey: `draft-${id}`,
+      draft: { text: "Unsent draft", attachments: [] },
+    }),
+  );
+  const hiddenInput = { ...input, pendingTasks, hideOfflineEnvironments: true };
+  await act(async () => root.render(<Probe input={hiddenInput} tab="chats" />));
+  expect(seen.at(-1)!.layout.items).toHaveLength(85);
+  expect(seen.at(-1)!.layout.settledCount).toBe(525);
+  expect(
+    seen
+      .at(-1)!
+      .items.filter((item) => item.type === "v2-pending")
+      .map((item) => item.pendingTask.environmentId),
+  ).toEqual([environmentId]);
+  expect(
+    seen.at(-1)!.layout.items.every((item) => item.thread.environmentId === environmentId),
+  ).toBe(true);
+  expect(
+    vi
+      .mocked(olderSettledThreads.shelfAtom)
+      .mock.lastCall?.[0].map(({ scope }) => scope.environmentId),
+  ).toEqual([environmentId]);
+  await act(async () => root.render(<Probe input={input} tab="chats" />));
+  expect(seen.at(-1)!.layout.items).toHaveLength(160);
+  await act(async () => root.render(<Probe input={hiddenInput} tab="chats" />));
+  await act(async () => registry.set(offlineIds, []));
+  expect(seen.at(-1)!.layout.items).toHaveLength(160);
 
   const queuedThreadKeys = new Set([`${environmentId}:thread-150`]);
   await act(async () => root.render(<Probe input={{ ...input, queuedThreadKeys }} tab="chats" />));
@@ -241,4 +288,12 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   expect(loaded.layout.items).toHaveLength(160);
   expect(loaded.olderSettledShelf.isListed(threads[150]!)).toBe(true);
   expect(loaded.items).not.toBe(loading.items);
+  await act(async () => registry.set(offlineIds, [environmentId]));
+  await act(async () => root.render(<Probe input={hiddenInput} tab="chats" />));
+  expect(seen.at(-1)!.layout.settledCount).toBe(525);
+  expect(
+    seen.at(-1)!.layout.items.every((item) => item.thread.environmentId === otherEnvironmentId),
+  ).toBe(true);
+  await act(async () => root.render(<Probe input={input} tab="chats" />));
+  expect(seen.at(-1)!.layout.settledCount).toBe(1100);
 });
