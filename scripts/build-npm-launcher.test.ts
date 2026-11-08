@@ -403,8 +403,13 @@ for (const { name, executable } of [
   { name: "terminated probe", executable: "#!/bin/sh\nkill -TERM $$\n" },
   {
     name: "unresponsive probe",
-    executable:
-      '#!/bin/sh\ntrap \'echo caught > "$T3CODE_TEST_TERM"; exit 42\' TERM\necho ready > "$T3CODE_TEST_READY"\nwhile :; do :; done\n',
+    executable: `#!/bin/sh
+trap 'echo caught > "$T3CODE_TEST_TERM"; exit 42' TERM
+mkfifo "$T3CODE_TEST_READY.fifo" || exit 1
+exec 3<>"$T3CODE_TEST_READY.fifo"
+echo ready > "$T3CODE_TEST_READY"
+read -r unused <&3
+`,
   },
 ]) {
   it.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
@@ -437,7 +442,7 @@ for (const { name, executable } of [
           assert.include(failed.stderr, "runtime loader failed");
         }
         if (name === "terminated probe") assert.include(failed.stderr, "SIGTERM");
-        if (executable.includes("trap")) {
+        if (name === "unresponsive probe") {
           assert.isTrue(yield* fs.exists(env.T3CODE_TEST_READY), failed.stderr);
           assert.isFalse(yield* fs.exists(env.T3CODE_TEST_TERM));
           assert.include(failed.stderr, "ETIMEDOUT");
