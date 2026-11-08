@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off -- POSIX FileSystem.realPath can preserve the caller's casing on a case-insensitive volume.
+import * as NodeFSP from "node:fs/promises";
 import {
   GitCommandError,
   OrchestrationV2AppThreadJson,
@@ -431,18 +433,21 @@ const make = Effect.gen(function* () {
     return { projects, threads: [...snapshot.threads, ...snapshot.archivedThreads] };
   });
 
+  const canonicalPath = Effect.fn("StorageCleanup.canonicalPath")((target: string) =>
+    Effect.promise(() => NodeFSP.realpath(target).catch(() => null)),
+  );
+
   const containsProjectRoot = Effect.fn("StorageCleanup.containsProjectRoot")(function* (
     worktreePath: string,
     projects: ReadonlyArray<{ readonly workspaceRoot: string }>,
   ) {
+    const canonicalWorktree = (yield* canonicalPath(worktreePath)) ?? worktreePath;
     for (const project of projects) {
       const projectPath = path.resolve(project.workspaceRoot);
       if (pathKey(projectPath) === pathKey(worktreePath) || inside(worktreePath, projectPath))
         return true;
-      const realPath = yield* fs
-        .realPath(projectPath)
-        .pipe(Effect.orElseSucceed(() => projectPath));
-      if (pathKey(realPath) === pathKey(worktreePath) || inside(worktreePath, realPath))
+      const realPath = (yield* canonicalPath(projectPath)) ?? projectPath;
+      if (pathKey(realPath) === pathKey(canonicalWorktree) || inside(canonicalWorktree, realPath))
         return true;
     }
     return false;
@@ -462,9 +467,7 @@ const make = Effect.gen(function* () {
     for (const row of rows) {
       const resolved = path.resolve(row.worktreePath);
       referenced.add(pathKey(resolved));
-      referenced.add(
-        pathKey(yield* fs.realPath(resolved).pipe(Effect.orElseSucceed(() => resolved))),
-      );
+      referenced.add(pathKey((yield* canonicalPath(resolved)) ?? resolved));
     }
     const referencedAncestors = new Set<string>();
     for (let ancestor of referenced) {
@@ -479,9 +482,8 @@ const make = Effect.gen(function* () {
       ),
       (project) => {
         const resolved = path.resolve(project.workspaceRoot);
-        return fs.realPath(resolved).pipe(
-          Effect.orElseSucceed(() => resolved),
-          Effect.map((realPath) => [resolved, realPath]),
+        return canonicalPath(resolved).pipe(
+          Effect.map((realPath) => [resolved, realPath ?? resolved]),
         );
       },
     )).flat();
@@ -804,10 +806,7 @@ const make = Effect.gen(function* () {
       path,
       yield* HostProcess.HomeDirectory,
     )) {
-      const root = yield* fs.exists(directory).pipe(
-        Effect.flatMap((exists) => (exists ? fs.realPath(directory) : Effect.succeed(null))),
-        Effect.orElseSucceed(() => null),
-      );
+      const root = yield* canonicalPath(directory);
       if (root !== null && !isFilesystemRoot(root, path)) roots.push(root);
     }
     const deletedRows = yield* sql<{ payload_json: string; workspaceRoot: string }>`

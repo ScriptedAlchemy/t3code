@@ -2437,14 +2437,21 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.live.each(["before-check", "while-measuring"] as const)(
-    "keeps a worktree protected by a missing project root (%s)",
+  it.live.each(["before-check", "while-measuring", "alternate-spelling"] as const)(
+    "keeps a worktree protected by a project root (%s)",
     (timing) =>
       runCleanupTest(
         Effect.gen(function* () {
           const fixture = yield* pausedMeasurementFixture();
           if (timing === "before-check")
             fixture.setProjectRoots([fixture.repo, `${fixture.worktree}/removed-checkout`]);
+          if (timing === "alternate-spelling") {
+            const otherSpelling = fixture.worktree.toUpperCase();
+            fixture.setProjectRoots([
+              fixture.repo,
+              (yield* fixture.fs.exists(otherSpelling)) ? otherSpelling : fixture.worktree,
+            ]);
+          }
           const cleanup = yield* fixture.service.runNow.pipe(Effect.forkChild);
           if (timing === "while-measuring") {
             yield* Deferred.await(fixture.measuring);
