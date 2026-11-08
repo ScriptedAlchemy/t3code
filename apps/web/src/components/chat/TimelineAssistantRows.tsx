@@ -46,7 +46,8 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
     run: ctx.runs.find((run) => run.id === item?.runId),
   });
   const text = speaker === null ? rawText : withoutCloseLine(rawText);
-  const messageText = trimThreadAutolinkPadding(text) || (row.message.streaming ? "" : "(empty response)");
+  const messageText =
+    trimThreadAutolinkPadding(text) || (row.message.streaming ? "" : "(empty response)");
   if (speaker !== null && !row.message.streaming && isQuietPass(text)) {
     return (
       <div className="min-w-0 px-1 py-0.5 text-xs text-muted-foreground">

@@ -1229,12 +1229,7 @@ function ThreadSettingsModelsScreen() {
           session.hasLegacyModels,
         ]}
         confirm={{
-          label:
-            session.purpose === "invite"
-              ? "Invite"
-              : session.pendingModel
-                ? "Save"
-                : "Done",
+          label: session.purpose === "invite" ? "Invite" : session.pendingModel ? "Save" : "Done",
           disabled: session.purpose === "invite" && session.pendingModel === null,
           onPress: commitAndClose,
         }}
