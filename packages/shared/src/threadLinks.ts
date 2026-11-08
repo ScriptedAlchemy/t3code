@@ -10,9 +10,10 @@ const V2_PREFIX = `${THREAD_LINK_PROTOCOL}://v2/`;
 const HOSTED_PREFIX = `${DEFAULT_HOSTED_APP_URL}/threads/`;
 const HOSTED_SEGMENT = "[A-Za-z0-9_%-]+";
 const HOSTED_LINK = `${HOSTED_PREFIX.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}${HOSTED_SEGMENT}/${HOSTED_SEGMENT}`;
-// Code comes first in the alternation so a link written inside a code span or fence is skipped.
+// Code comes first in an alternation so a link written inside a code span or fence is skipped.
+const CODE = String.raw`(?<fence>(\`{3,}|~{3,})[\s\S]*?(?:\2|(?![\s\S])))|(?<span>(\`+)[\s\S]*?\4)`;
 const THREAD_LINK_OUTSIDE_CODE = new RegExp(
-  String.raw`(?<fence>(\`{3,}|~{3,})[\s\S]*?(?:\2|$))|(?<span>(\`+)[^\n]*?\4)|\[(?<label>[^\]\n]*)\]\(<?(?<href>t3-thread:\/\/v[12]\/[^\s>)]+|${HOSTED_LINK})>?\)|<(?<autolink>t3-thread:\/\/v[12]\/[^\s<>]+|${HOSTED_LINK})>|(?<bare>${HOSTED_LINK})(?![\w%/?#-])`,
+  String.raw`${CODE}|\[(?<label>[^\]\n]*)\]\(<?(?<href>t3-thread:\/\/v[12]\/[^\s>)]+|${HOSTED_LINK})>?\)|<(?<autolink>t3-thread:\/\/v[12]\/[^\s<>]+|${HOSTED_LINK})>|(?<bare>${HOSTED_LINK})(?![\w%/?#-])`,
   "g",
 );
 
@@ -137,6 +138,21 @@ export function formatHostedThreadLink(
   const href = hostedThreadLink(ref, origin);
   const cleaned = linkLabel(label);
   return cleaned ? `[${cleaned}](${href})` : href;
+}
+
+// At most one line break on a side, so a blank line never joins two paragraphs.
+const PADDED_THREAD_AUTOLINK = new RegExp(
+  String.raw`${CODE}|^(?: {4}|\t)[^\n]*|<[ \t]*\r?\n?[ \t]*(?<autolink>t3-thread:\/\/v[12]\/[^\s<>]+)[ \t]*\r?\n?[ \t]*>`,
+  "gm",
+);
+
+/** Models sometimes pad an autolink, as in `< t3-thread://… >`, which Markdown leaves as text. */
+export function trimThreadAutolinkPadding(markdown: string): string {
+  if (!markdown.includes(`${THREAD_LINK_PROTOCOL}://v`)) return markdown;
+  return markdown.replace(PADDED_THREAD_AUTOLINK, (source, ...args) => {
+    const href = (args.at(-1) as { autolink?: string }).autolink;
+    return href !== undefined && parseThreadLinkHref(href) ? `<${href}>` : source;
+  });
 }
 
 export function hasThreadLinks(markdown: string): boolean {

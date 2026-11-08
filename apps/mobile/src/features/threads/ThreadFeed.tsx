@@ -62,7 +62,11 @@ import {
 import type { ToolCallVisibility } from "@t3tools/contracts/settings";
 import { renderAssistantCitationsAsText } from "@t3tools/shared/assistantCitations";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
-import { hostedThreadLink, parseThreadLinkHref } from "@t3tools/shared/threadLinks";
+import {
+  hostedThreadLink,
+  parseThreadLinkHref,
+  trimThreadAutolinkPadding,
+} from "@t3tools/shared/threadLinks";
 import { PROMPT_LINK_MAX_PROMPT_LENGTH } from "@t3tools/shared/promptLinks";
 import {
   parseComposerContextHref,
@@ -1202,7 +1206,10 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill> | undefined;
 }) {
   const models = useModelMentions(props.environmentId, props.markdown);
-  const liveMarkdown = useLiveThreadLinkLabels(props.markdown, props.environmentId);
+  const liveMarkdown = useLiveThreadLinkLabels(
+    trimThreadAutolinkPadding(props.markdown),
+    props.environmentId,
+  );
   const threadIcons = useThreadChipIcons(props.environmentId, liveMarkdown);
   const linkHandlers: MarkdownLinkHandlers = {
     ...props.linkHandlers,
