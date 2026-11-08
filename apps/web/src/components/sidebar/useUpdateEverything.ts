@@ -1,13 +1,16 @@
-import { useAtomValue } from "@effect/atom-react";
-import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
+import { useContext, useEffect } from "react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
+import { AuthProvidersManageScope, PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
 
 import { APP_VERSION } from "~/branding";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { isElectron } from "~/env";
 import { useEnvironments } from "~/state/environments";
-import { environmentIdsKey } from "~/state/environmentAtomList";
-import { environmentUpdateStatesAtom } from "~/state/server";
-import { environmentSessionStatesAtom } from "~/state/session";
+import { environmentAtomList, environmentIdsKey } from "~/state/environmentAtomList";
+import { environmentUpdateStatesAtom, serverEnvironment } from "~/state/server";
+import { useAtomCommand } from "~/state/use-atom-command";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { environmentSessionStatesAtom, useEnvironmentsWithScope } from "~/state/session";
 import { getProviderUpdateRunOutcome } from "../ProviderUpdateLaunchNotification.logic";
 import { useProviderUpdates } from "../ProviderUpdatesAction";
 import { canUpdateServer, type ServerUpdateOutcome, useServerUpdate } from "../ServerUpdateAction";
@@ -32,6 +35,9 @@ import {
   waitForUpdateRestart,
 } from "./updateEverythingRun";
 
+const proxyUpdateAtom = (environmentId: UpdateRunMachine["environmentId"]) =>
+  serverEnvironment.inferenceProxy.updates({ environmentId, input: { operation: "checkUpdate" } });
+const proxyUpdatesByEnvironment = environmentAtomList("web-inference-updates", proxyUpdateAtom);
 const UPDATE_RESTART_DELAY_MS = 5_000;
 
 /** Servers this desktop app runs; they update with it. */
@@ -75,6 +81,48 @@ export function useUpdateEverything(
   const providerUpdates = useProviderUpdates();
   // A track switch moves app and servers only; provider updates stay a separate choice.
   const providers = channelSwitch ? { machines: [], updateAll: async () => [] } : providerUpdates;
+  const manageable = useEnvironmentsWithScope(environments, AuthProvidersManageScope);
+  const proxyHosts = environments.filter(
+    (e) =>
+      !channelSwitch &&
+      e.connection.phase === "connected" &&
+      e.serverConfig?.environment.capabilities.inferenceProxy &&
+      manageable.has(e.environmentId),
+  );
+  const proxyIds = environmentIdsKey(proxyHosts.map((e) => e.environmentId));
+  const checks = useAtomValue(proxyUpdatesByEnvironment(proxyIds));
+  const registry = useContext(RegistryContext);
+  const refreshProxyUpdates = () =>
+    proxyHosts.forEach((e) => registry.refresh(proxyUpdateAtom(e.environmentId)));
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refresh upstream releases while the desktop remains open
+  useEffect(() => {
+    if (!proxyIds) return;
+    const timer = window.setInterval(
+      () => {
+        for (const key of proxyIds.split("\n"))
+          registry.refresh(proxyUpdateAtom(key as UpdateRunMachine["environmentId"]));
+      },
+      60 * 60 * 1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [registry, proxyIds]);
+  const proxyTargets = proxyHosts.filter((_e, i) => {
+    const result = checks[i];
+    return result?._tag === "Success" && result.value.update?.available;
+  });
+  const manageProxy = useAtomCommand(serverEnvironment.inferenceProxy.manageInference, {
+    reportFailure: false,
+  });
+  const providerMachines = machines.flatMap((m) => {
+    const names =
+      providers.machines
+        .find((p) => p.environmentId === m.environmentId)
+        ?.candidates.map((c) => PROVIDER_DISPLAY_NAMES[c.driver] ?? c.driver) ?? [];
+    if (proxyTargets.some((p) => p.environmentId === m.environmentId)) names.push("CLIProxyAPI");
+    return names.length
+      ? [{ environmentId: m.environmentId, label: m.label, providers: names }]
+      : [];
+  });
   const updateServer = useServerUpdate();
 
   const view = describeUpdateEverything({
@@ -82,17 +130,12 @@ export function useUpdateEverything(
     localMachines: machines.filter((machine) => machine.hostedByThisApp),
     servers: moving,
     skipped,
-    providerMachines: providers.machines.map((machine) => ({
-      environmentId: machine.environmentId,
-      label: machine.label,
-      providers: machine.candidates.map(
-        (candidate) => PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver,
-      ),
-    })),
+    providerMachines,
   });
 
   return {
-    hasUpdates: servers.length > 0 || providers.machines.length > 0,
+    hasUpdates: servers.length > 0 || providerMachines.length > 0,
+    refreshProxyUpdates,
     ...view,
     restarts,
     run: async ({
@@ -108,7 +151,7 @@ export function useUpdateEverything(
       };
       const startedAt = Date.now();
       const machinesById = new Map<UpdateRunMachine["environmentId"], UpdateRunMachine>();
-      for (const machine of providers.machines) {
+      for (const machine of providerMachines) {
         machinesById.set(machine.environmentId, {
           environmentId: machine.environmentId,
           label: machine.label,
@@ -160,6 +203,18 @@ export function useUpdateEverything(
               }
               return runOutcome;
             });
+            for (const target of proxyTargets) {
+              const result = await manageProxy({
+                environmentId: target.environmentId,
+                input: { operation: "update" },
+              });
+              if (result._tag === "Success") outcomes.push({ status: "updated" });
+              else {
+                const line = `${target.label} · CLIProxyAPI: ${String(squashAtomCommandFailure(result))}`;
+                providerFailures.set(target.environmentId, line);
+                outcomes.push({ status: "failed", line });
+              }
+            }
             for (const machine of machinesById.values()) {
               if (machine.server === null) {
                 settleUpdateRunMachine(

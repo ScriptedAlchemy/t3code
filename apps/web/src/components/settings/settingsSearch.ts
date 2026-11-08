@@ -97,7 +97,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/keybindings": "Keybindings",
   "/settings/snap-shot": "SnapShots",
   "/settings/providers": "Providers",
-  "/settings/account-pools": "Account pools",
+  "/settings/account-pools": "Inference accounts",
   "/settings/threads": "Threads",
   "/settings/browser": "Browser",
   "/settings/devices": "Devices",
@@ -988,10 +988,10 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "account-pools",
-    title: "Account pools",
+    title: "Inference accounts",
     to: "/settings/account-pools",
     searchTerms: [
-      "zack labs load balance load balancing failover multiple accounts pool usage limit quota rotate switch claude codex",
+      "cliproxyapi tailscale inference route provider host account pools zack labs load balance load balancing failover multiple accounts pool usage limit quota rotate switch claude codex",
     ],
     requiresProviderPools: true,
   },

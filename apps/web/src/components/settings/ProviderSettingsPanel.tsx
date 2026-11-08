@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { SettingsGroup } from "./SettingsGroup";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import {
@@ -566,6 +567,10 @@ export function EnvironmentProviderSettings({
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.projectProviderInstanceOverrides === true,
   );
+  const supportsInference = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.environment.capabilities.inferenceProxy === true,
+  );
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -1101,6 +1106,21 @@ export function EnvironmentProviderSettings({
       />
 
       <SettingsSection title="Advanced">
+        {supportsInference && (
+          <SettingsRow
+            title="Inference accounts"
+            description="Host Codex and Claude accounts or use a host on your tailnet."
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                render={<Link to="/settings/account-pools" search={{ machine: environmentId }} />}
+              >
+                Manage accounts
+              </Button>
+            }
+          />
+        )}
         <SettingsRow
           id={searchableSetting("provider-health-check-interval").id}
           title={

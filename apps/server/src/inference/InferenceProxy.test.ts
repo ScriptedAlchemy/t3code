@@ -1,0 +1,281 @@
+import { expect, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { EnvironmentId, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NetService from "@t3tools/shared/Net";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { DirectEndpoints } from "../environment/DirectEndpoints.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as InferenceProxy from "./InferenceProxy.ts";
+import { proxyVersion } from "./install.ts";
+
+it.effect(
+  "restores hosted accounts, scopes grants to consumers and cuts over a working route atomically",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig.ServerConfig;
+        const state = yield* ServerSecretStore.ServerSecretStore;
+        const hostId = EnvironmentId.make("host");
+        const peer = { environmentId: EnvironmentId.make("worker"), label: "Workstation" };
+        const runtime =
+          config.stateDir + "/inference-proxy/runtime/" + proxyVersion + "-darwin-arm64";
+        yield* fs.makeDirectory(runtime, { recursive: true });
+        yield* fs.writeFileString(runtime + "/cli-proxy-api", "");
+        let serving = false;
+        let lan = false;
+        let starts = 0;
+        let stops = 0;
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            const tailscale =
+              ChildProcess.isStandardCommand(command) && command.command === "tailscale";
+            if (!tailscale) {
+              starts++;
+              yield* Effect.addFinalizer(() =>
+                Effect.sync(() => {
+                  stops++;
+                }),
+              );
+            }
+            const stdout = tailscale
+              ? Stream.succeed(
+                  new TextEncoder().encode(
+                    serving
+                      ? '{"Web":{"pool.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:12345"}}}}}'
+                      : "{}",
+                  ),
+                )
+              : Stream.empty;
+            return ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(123),
+              isRunning: Effect.succeed(true),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+              stdin: Sink.drain,
+              stdout,
+              stderr: Stream.empty,
+              all: stdout,
+              kill: () => Effect.void,
+              unref: Effect.succeed(Effect.void),
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            });
+          }),
+        );
+        let catalog: readonly { id: string }[] = [];
+        let identity = hostId;
+        let peerId = hostId;
+        const remoteCatalogKeys: (string | undefined)[] = [];
+        const http = HttpClient.make((request) => {
+          if (request.url.endsWith("/releases/latest"))
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(
+                request,
+                Response.json({
+                  tag_name: "v8.0.61",
+                  draft: false,
+                  prerelease: false,
+                  assets: [
+                    {
+                      id: 123,
+                      name: "CLIProxyAPI_8.0.61_darwin_aarch64.tar.gz",
+                      size: 1,
+                      digest: "sha256:" + "0".repeat(64),
+                    },
+                  ],
+                }),
+              ),
+            );
+          if (request.url.endsWith("/assets/123"))
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(request, new Response(new Uint8Array(1))),
+            );
+          if (
+            request.url.includes("/api/inference") ||
+            request.url.includes("/.well-known/t3/environment")
+          ) {
+            if (request.url.endsWith("/.well-known/t3/environment")) {
+              expect(request.headers.authorization).toBeUndefined();
+              return Effect.succeed(
+                HttpClientResponse.fromWeb(request, Response.json({ environmentId: peerId })),
+              );
+            }
+            remoteCatalogKeys.push(request.headers.authorization);
+          }
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              Response.json(
+                request.url.endsWith("auth-files")
+                  ? {
+                      files: [
+                        {
+                          name: "one.json",
+                          provider: "codex",
+                          status: "active",
+                          refresh_token: "must stay local",
+                        },
+                      ],
+                    }
+                  : { data: catalog },
+              ),
+            ),
+          );
+        });
+        const service = InferenceProxy.layer.pipe(
+          Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+          Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
+          Layer.provide(
+            Layer.mock(DirectEndpoints)({
+              resolveAvailable: () =>
+                Effect.succeed(
+                  lan ? [{ kind: "lan", httpBaseUrl: "http://192.168.1.12:12345/" }] : [],
+                ),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(ServerEnvironment.ServerEnvironment)({
+              getEnvironmentId: Effect.sync(() => identity),
+            }),
+          ),
+          Layer.provide(Layer.succeed(ServerConfig.ServerConfig, { ...config, port: 12345 })),
+          Layer.provide(Layer.mock(ProcessRunner.ProcessRunner)({})),
+          Layer.provide(Layer.succeed(HostProcess.Platform, "darwin")),
+          Layer.provide(Layer.succeed(HostProcess.Architecture, "arm64")),
+          Layer.provide(NetService.layer),
+          Layer.fresh,
+        );
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const grant = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const proxy = yield* InferenceProxy.InferenceProxy;
+            expect((yield* proxy.status).enabled).toBe(false);
+            const startSharing = proxy.manage({
+              operation: "configure",
+              enabled: true,
+              sharing: true,
+            });
+            expect((yield* startSharing.pipe(Effect.flip)).message).toContain("Tailscale HTTPS");
+            expect((yield* proxy.status).enabled).toBe(false);
+            lan = true;
+            yield* startSharing;
+            expect((yield* proxy.grant(peer)).baseUrl).toBe(
+              "http://192.168.1.12:12345/api/inference",
+            );
+            serving = true;
+            yield* startSharing;
+            const { accounts } = yield* proxy.status;
+            expect(accounts).toEqual([{ name: "one.json", provider: "codex", status: "active" }]);
+            const issued = yield* proxy.grant(peer);
+            expect(issued.baseUrl).toBe("https://pool.example.ts.net/api/inference");
+            expect((yield* proxy.grant(peer)).key).toBe(issued.key);
+            expect((yield* proxy.authorize(issued.key))?.key).not.toBe(issued.key);
+            const local = yield* proxy.grant({ environmentId: hostId, label: "Host" });
+            const connect = { grant: local, driver: "codex" as const, hostLabel: "Host" };
+            expect(yield* proxy.connect(connect).pipe(Effect.flip)).toHaveProperty(
+              "_tag",
+              "InferenceProxyError",
+            );
+            expect((yield* settings.getSettings).providerPools).toHaveProperty("codex");
+            catalog = [{ id: "gpt-fixture" }];
+            yield* proxy.connect(connect);
+            expect((yield* settings.getSettings).providerPools).not.toHaveProperty("codex");
+            expect(Object.values((yield* settings.getSettings).providerInstances)).toEqual(
+              expect.arrayContaining([expect.objectContaining({ displayName: "Codex via Host" })]),
+            );
+            expect(
+              yield* proxy.connect({ ...connect, grant: issued }).pipe(Effect.flip),
+            ).toHaveProperty("_tag", "InferenceProxyError");
+            identity = peer.environmentId;
+            peerId = peer.environmentId;
+            expect(
+              (yield* proxy.connect({ ...connect, grant: issued }).pipe(Effect.flip)).message,
+            ).toContain("another T3 environment");
+            expect(remoteCatalogKeys).toEqual([]);
+            peerId = hostId;
+            yield* proxy.connect({ ...connect, grant: issued });
+            expect(remoteCatalogKeys).toEqual(["Bearer " + issued.key]);
+            const routes = (yield* proxy.status).routes;
+            expect(routes).toHaveLength(1);
+            peerId = EnvironmentId.make("other-host");
+            yield* proxy.connect({
+              ...connect,
+              hostLabel: "Second",
+              grant: { ...issued, hostId: peerId },
+            });
+            expect((yield* proxy.status).routes).toHaveLength(2);
+            yield* proxy.manage({ operation: "removeRoute", instanceId: routes[0]!.instanceId });
+            expect((yield* proxy.status).routes.map((r) => r.label)).toEqual(["Codex via Second"]);
+            expect(
+              yield* proxy
+                .manage({ operation: "removeRoute", instanceId: ProviderInstanceId.make("codex") })
+                .pipe(Effect.flip),
+            ).toHaveProperty("_tag", "InferenceProxyError");
+            identity = hostId;
+            expect((yield* proxy.manage({ operation: "checkUpdate" })).update).toEqual({
+              current: proxyVersion,
+              available: "8.0.61",
+            });
+            expect(
+              (yield* proxy.manage({ operation: "update" }).pipe(Effect.flip)).message,
+            ).toContain("checksum");
+            expect((yield* proxy.status).version).toBe(proxyVersion);
+            expect(stops).toBe(0);
+            const installed = runtime.replace(proxyVersion, "8.0.61");
+            yield* fs.makeDirectory(installed, { recursive: true });
+            yield* fs.writeFileString(installed + "/cli-proxy-api", "");
+            yield* proxy.manage({ operation: "update" });
+            expect((yield* proxy.status).version).toBe("8.0.61");
+            return issued;
+          }).pipe(Effect.provide(service)),
+        );
+        expect(stops).toBe(2);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const proxy = yield* InferenceProxy.InferenceProxy;
+            expect((yield* proxy.authorize(grant.key))?.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
+            yield* proxy.manage({ operation: "revoke", environmentId: peer.environmentId });
+            expect(yield* proxy.authorize(grant.key)).toBeNull();
+            expect((yield* proxy.grant(peer)).key).not.toBe(grant.key);
+            yield* proxy.manage({ operation: "configure", enabled: false, sharing: false });
+            expect((yield* proxy.status).consumers).toEqual([]);
+            expect(Option.isSome(yield* state.get("inference-proxy-state"))).toBe(true);
+          }).pipe(Effect.provide(service)),
+        );
+        expect(starts).toBe(3);
+        expect(stops).toBe(3);
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            ServerSettings.layerTest({
+              providerPools: {
+                [ProviderDriverKind.make("codex")]: {
+                  enabled: true,
+                  memberInstanceIds: [ProviderInstanceId.make("codex")],
+                },
+              },
+            }),
+            ServerSecretStore.layer,
+          ).pipe(
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), { prefix: "t3-inference-test-" }),
+            ),
+            Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+          ),
+        ),
+      ),
+    ),
+);

@@ -158,28 +158,36 @@ describe("command permissions", () => {
     ),
   );
 
-  it.effect("requires the destination provider grant to remove an incomplete connection", () =>
+  it.effect("requires the destination provider grant to manage an account or inference route", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const registry = yield* setup;
-        const remove = createCommandPermissions(runtime, WS_METHODS.providerAuthRemoveMethod);
-        registry.set(sessions(env), AsyncResult.success(grant(true)));
-        expect(registry.get(remove.permissionAtom(env))).toBe(false);
-        expect((yield* remove.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
-          "EnvironmentAuthorizationError",
-        );
-        registry.set(
-          sessions(env),
-          AsyncResult.success({
-            ...grant(false),
-            scopes: [AuthProvidersManageScope],
-            permissions: [AuthProvidersManageScope],
-          }),
-        );
-        expect(registry.get(remove.permissionAtom(env))).toBe(true);
-        yield* remove.authorize(registry, env);
-        registry.set(sessions(other), AsyncResult.success(grant(false)));
-        expect(registry.get(remove.permissionAtom(other))).toBe(false);
+        for (const tag of [
+          WS_METHODS.providerAuthRemoveMethod,
+          WS_METHODS.inferenceStatus,
+          WS_METHODS.inferenceManage,
+          WS_METHODS.inferenceGrant,
+          WS_METHODS.inferenceConnect,
+        ] as const) {
+          const remove = createCommandPermissions(runtime, tag);
+          registry.set(sessions(env), AsyncResult.success(grant(true)));
+          expect(registry.get(remove.permissionAtom(env))).toBe(false);
+          expect((yield* remove.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+            "EnvironmentAuthorizationError",
+          );
+          registry.set(
+            sessions(env),
+            AsyncResult.success({
+              ...grant(false),
+              scopes: [AuthProvidersManageScope],
+              permissions: [AuthProvidersManageScope],
+            }),
+          );
+          expect(registry.get(remove.permissionAtom(env))).toBe(true);
+          yield* remove.authorize(registry, env);
+          registry.set(sessions(other), AsyncResult.success(grant(false)));
+          expect(registry.get(remove.permissionAtom(other))).toBe(false);
+        }
       }),
     ),
   );

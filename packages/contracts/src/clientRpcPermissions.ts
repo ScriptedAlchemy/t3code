@@ -68,6 +68,10 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.providerInstallCancel]: AuthProvidersManageScope,
   [WS_METHODS.providerInstallRemove]: AuthProvidersManageScope,
   // Export returns plaintext provider secrets.
+  [WS_METHODS.inferenceStatus]: AuthProvidersManageScope,
+  [WS_METHODS.inferenceManage]: AuthProvidersManageScope,
+  [WS_METHODS.inferenceGrant]: AuthProvidersManageScope,
+  [WS_METHODS.inferenceConnect]: AuthProvidersManageScope,
   [WS_METHODS.providerAccountExport]: AuthProvidersManageScope,
   [WS_METHODS.providerAccountImport]: AuthProvidersManageScope,
 

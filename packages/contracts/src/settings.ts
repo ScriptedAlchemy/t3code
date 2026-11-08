@@ -713,9 +713,9 @@ export function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fi
 
 export const CodexSettings = makeProviderSettingsSchema(
   {
-    setupMode: Schema.optionalKey(Schema.Literals(["managed", "existing", "cli"])).pipe(
-      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
-    ),
+    setupMode: Schema.optionalKey(
+      Schema.Literals(["managed", "existing", "cli", "inference"]),
+    ).pipe(Schema.annotateKey({ providerSettingsForm: { hidden: true } })),
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
@@ -794,7 +794,7 @@ const InstanceIdleCompaction = Schema.Literals(
 
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
-    setupMode: Schema.optionalKey(Schema.Literals(["existing", "cli"])).pipe(
+    setupMode: Schema.optionalKey(Schema.Literals(["existing", "cli", "inference"])).pipe(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     enabled: Schema.Boolean.pipe(

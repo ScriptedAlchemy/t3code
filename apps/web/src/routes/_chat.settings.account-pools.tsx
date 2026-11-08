@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { InferenceSettings } from "../components/settings/InferenceSettings";
 import { ProviderPoolsSettings } from "../components/settings/ProviderPoolsSettings";
 import { useSettingsScope } from "../components/settings/SettingsScopeContext";
 
@@ -14,6 +15,13 @@ function SettingsAccountPoolsRoute() {
       </p>
     );
   }
+  if (environment.serverConfig?.environment.capabilities.inferenceProxy)
+    return (
+      <InferenceSettings
+        key={environment.environmentId}
+        environmentId={environment.environmentId}
+      />
+    );
   return <ProviderPoolsSettings environmentId={environment.environmentId} />;
 }
 

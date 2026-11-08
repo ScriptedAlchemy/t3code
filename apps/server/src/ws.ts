@@ -1,3 +1,4 @@
+import * as InferenceProxy from "./inference/InferenceProxy.ts";
 import * as ThreadSplitSuggestions from "./orchestration-v2/ThreadSplitSuggestions.ts";
 import * as PstackPack from "./pstack/PstackPack.ts";
 import * as SkillsLibrary from "./skills/SkillsLibrary.ts";
@@ -1669,6 +1670,7 @@ export const layerWsRpc = (
         yield* AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const providerAuth = yield* ProviderAuthService.ProviderAuthService;
+      const inference = yield* InferenceProxy.InferenceProxy;
       const accountTransfer = yield* ProviderAccountTransfer.ProviderAccountTransfer;
       const providerInstallation = yield* ProviderInstallation.ProviderInstallation;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
@@ -2871,6 +2873,10 @@ export const layerWsRpc = (
         [WS_METHODS.serverRunStorageCleanup]: () => storageCleanup.runNow,
         [WS_METHODS.serverGetStorageCleanupReport]: () => storageCleanup.reports,
         [WS_METHODS.serverGetDatabaseStorage]: () => databaseStorage.status,
+        [WS_METHODS.inferenceStatus]: () => inference.status,
+        [WS_METHODS.inferenceManage]: (input) => inference.manage(input),
+        [WS_METHODS.inferenceGrant]: (input) => inference.grant(input),
+        [WS_METHODS.inferenceConnect]: (input) => inference.connect(input),
         [WS_METHODS.peerLinksList]: (_input) =>
           peerLinks.list.pipe(Effect.map((links) => ({ links }))),
         [WS_METHODS.peerLinksLink]: (input) => peerLinks.link(input),
@@ -3725,6 +3731,7 @@ export const layer = Layer.unwrap(
     const npmRelease = yield* NpmRelease.NpmRelease;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
+    const inference = yield* InferenceProxy.InferenceProxy;
     const peerLinks = yield* PeerLinks.PeerLinks;
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const sql = yield* SqlClient.SqlClient;
@@ -3814,6 +3821,7 @@ export const layer = Layer.unwrap(
                   reviewGuides,
                 ),
               ),
+              Layer.provide(Layer.succeed(InferenceProxy.InferenceProxy, inference)),
               Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
               Layer.provide(Layer.succeed(PeerLinkRequests.PeerLinkRequests, peerLinkRequests)),
               Layer.provide(

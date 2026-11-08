@@ -282,8 +282,8 @@ function AccountPoolsRow() {
   if (!hasProviderPoolsEnvironment(environments)) return null;
   return (
     <SettingsRow
-      title="Account pools"
-      description="Pool accounts of the same provider so turns run on an account that still has quota."
+      title="Inference accounts"
+      description="Host provider accounts and route inference through an environment over Tailscale or your trusted LAN."
       control={
         <Button size="sm" variant="outline" render={<Link to="/settings/account-pools" />}>
           Open

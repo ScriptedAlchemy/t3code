@@ -62,6 +62,10 @@ const RPC_AGGREGATES = {
   [WS_METHODS.chatGptReconnectProfile]: "provider",
   [WS_METHODS.chatGptImportProfile]: "provider",
   [WS_METHODS.chatGptHandoffSubscribe]: "provider",
+  [WS_METHODS.inferenceStatus]: "provider",
+  [WS_METHODS.inferenceManage]: "provider",
+  [WS_METHODS.inferenceGrant]: "provider",
+  [WS_METHODS.inferenceConnect]: "provider",
   [WS_METHODS.providerAccountExport]: "provider",
   [WS_METHODS.providerAccountImport]: "provider",
   [WS_METHODS.providerAuthRespond]: "provider",
@@ -258,6 +262,10 @@ const RPC_METHODS_WITH_TRACING_DISABLED: ReadonlySet<string> = new Set([
   WS_METHODS.serverGetProcessResourceHistory,
   WS_METHODS.serverSignalProcess,
   // Payloads and failed-decode messages carry plaintext provider secrets.
+  WS_METHODS.inferenceStatus,
+  WS_METHODS.inferenceManage,
+  WS_METHODS.inferenceGrant,
+  WS_METHODS.inferenceConnect,
   WS_METHODS.providerAccountExport,
   WS_METHODS.providerAccountImport,
 ]);

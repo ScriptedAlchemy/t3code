@@ -73,10 +73,9 @@ Add another ChatGPT account in **Settings → Providers**, then select the accou
 from the thread's model picker. Compatible accounts can continue the same thread.
 Connecting accounts through T3 Code leaves your CLI login unchanged.
 
-To show your accounts as one entry in the model picker, pool them in **Settings >
-Labs > Zack > Account pools**. Pooled ChatGPT accounts that share a Codex home resume the same
-thread natively when a turn moves between them. An account with its own Codex home,
-such as Traex, continues from a summary of the conversation instead.
+To sign in on one machine and use those accounts from your other environments,
+open **Inference accounts** in **Settings > Providers**. See [Host and share
+inference accounts](./providers-claude.md#host-and-share-inference-accounts).
 
 ### Multiple CLI logins
 

@@ -1,3 +1,4 @@
+import { InferenceProxy } from "./inference/InferenceProxy.ts";
 import * as ThreadSplitSuggestions from "./orchestration-v2/ThreadSplitSuggestions.ts";
 import * as PstackPack from "./pstack/PstackPack.ts";
 import * as SkillsLibrary from "./skills/SkillsLibrary.ts";
@@ -808,6 +809,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(OtlpEndpointCheck.OtlpEndpointCheck)({}),
   Layer.mock(PairingGrantStore.PairingGrantStore)({}),
+  Layer.mock(InferenceProxy)({}),
   Layer.mock(PeerLinks.PeerLinks)({}),
   Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
   Layer.mock(PortScanner.PortDiscovery)({ trackAgent: () => () => undefined }),

@@ -325,6 +325,7 @@ function SidebarUpdateControl() {
       setIsCheckAnimationLatched(true);
       setCheckAnimationKey((key) => key + 1);
     }
+    everything.refreshProxyUpdates();
     void bridge
       .checkForUpdate()
       .then((result) => {

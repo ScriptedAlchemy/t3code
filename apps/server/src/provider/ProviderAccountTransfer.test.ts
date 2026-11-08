@@ -198,6 +198,25 @@ describe("ProviderAccountTransfer", () => {
     }),
   );
 
+  it.effect("requires each environment to provision its own inference grant", () =>
+    Effect.gen(function* () {
+      const a = yield* makeEnvironment({
+        settings: {
+          providerInstances: {
+            [workCodex]: {
+              driver: codex,
+              config: { setupMode: "inference" },
+              environment: [
+                { name: "T3_INFERENCE_KEY", sensitive: true, value: "only-for-source" },
+              ],
+            },
+          },
+        },
+      });
+      expect(yield* failure(a.transfer.exportAccount(workCodex))).toBe("inference-route");
+    }),
+  );
+
   it.effect("creates the account on a destination that lacks it, secrets included", () =>
     Effect.gen(function* () {
       const a = yield* makeEnvironment({ settings: sourceSettings });

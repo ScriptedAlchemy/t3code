@@ -37,23 +37,38 @@ Claude Code's verbose mode can stay enabled when you use Claude for text generat
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
 T3 Code uses the Claude configuration on the connected server.
 
-## Account pools
+## Host and share inference accounts
 
-With two or more Claude accounts, you can offer them as one. In **Settings >
-Labs > Zack > Account pools**, tick the Claude accounts to share and turn on **Pool these
-accounts**. The model picker then shows a single Claude entry in place of the
-ticked accounts. Each turn runs on an account that still has usage left. If an
-account reaches its usage limit mid-turn, the turn continues on another account,
-and the thread's model picker shows the account that ran it.
+In **Settings > Providers**, select the environment that will hold your accounts.
+Open **Inference accounts** (under **Advanced** on web and desktop) and turn on hosting. T3 Code
+downloads CLIProxyAPI on that machine and verifies the release before starting it.
+Add each account, sign in with its provider, paste the final localhost URL back
+into Settings, and check its status. The host keeps the provider login and handles
+account selection and refresh.
 
-A thread stays on its account while that account is available. Moving a thread to
-another Claude account continues from a summary of the conversation, because each
-account keeps its own history.
+For another machine to use those accounts, enable **Tailscale HTTPS** or LAN access on the host and turn on **Share inference with paired environments**.
+Connect your client to both T3 environments with provider management access.
+Select the environment where you want to run agents in Settings. Under **Route
+requests through an environment**, choose Codex or Claude beside the host name.
+That environment must be able to reach the host over Tailscale or its private LAN address and run the
+corresponding agent CLI. You can also choose the current host for local use.
 
-Pooled accounts stay in **Settings**, where you can still select them and where
-**Settings > Providers** shows which pool each belongs to and when a limited account
-is available again. To bring an account back into the model picker, untick it or
-turn the pool off. Threads stay on the account that last ran them.
+Use LAN HTTP only on a trusted network. Prompts, responses, and revocable route keys travel unencrypted on that connection.
+
+Select **Codex via …** or **Claude via …** in a thread on web, desktop, or mobile.
+The host receives the model request, including its prompt and tool results.
+The agent runs tools and stores files and thread history on its executing environment.
+A second host gets its own model picker entry. Choose that entry to switch hosts.
+Choose the route again in Settings to refresh its model list after changing accounts.
+
+Adding a working route retires the old CLI profile pool for that provider on
+the executing machine. Existing profiles remain individually selectable. For an
+existing thread, choose the routed provider when you want to switch. You can
+also retire a legacy pool directly in Inference accounts.
+
+Remove a provider login on its host, revoke one consuming environment, or turn
+off sharing to revoke all remote grants. Remove the route in **Inference accounts** on the executing machine. Stopping hosting keeps the host's accounts
+for the next start.
 
 ## Compact long conversations
 

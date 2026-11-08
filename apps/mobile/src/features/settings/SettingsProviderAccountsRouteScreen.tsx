@@ -9,6 +9,7 @@ import {
 import {
   AuthProvidersManageScope,
   isManagedDriverAllowed,
+  isInferenceConfig,
   type ProviderAuthResponse,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -32,6 +33,7 @@ import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActi
 import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
+import { InferenceAccounts } from "./InferenceAccounts";
 import { ProviderAccountSync } from "./ProviderAccountSync";
 import { AddClaudeAccount, ClaudeAccount } from "./ClaudeAccounts";
 import { CLAUDE_DRIVER } from "./claude-accounts";
@@ -84,9 +86,13 @@ function EnvironmentProviders({
   readonly environment: SettingsTarget;
   readonly providers: ReadonlyArray<ServerProvider>;
 }) {
-  const accounts = providers.filter(canManageProvider);
+  const directProviders = providers.filter(
+    (p) =>
+      !isInferenceConfig(environment.serverConfig.settings.providerInstances[p.instanceId]?.config),
+  );
+  const accounts = directProviders.filter(canManageProvider);
   // Claude has no in-app sign-in; each account is its own instance on a signed-in config folder.
-  const claudeAccounts = providers.filter(
+  const claudeAccounts = directProviders.filter(
     (provider) => provider.driver === CLAUDE_DRIVER && !canManageProvider(provider),
   );
   const canAddClaude = isManagedDriverAllowed(
@@ -95,6 +101,9 @@ function EnvironmentProviders({
   );
   return (
     <>
+      {environment.serverConfig.environment.capabilities.inferenceProxy && (
+        <InferenceAccounts environment={environment} />
+      )}
       {accounts.map((provider, index) => (
         <ProviderAccount
           key={provider.instanceId}

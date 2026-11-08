@@ -1,0 +1,362 @@
+import { useAtomValue } from "@effect/atom-react";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  type EnvironmentId,
+  type InferenceDriver,
+  type InferenceProxyAction,
+} from "@t3tools/contracts";
+import { useState } from "react";
+import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
+import { serverEnvironment } from "../../state/server";
+import { useEnvironmentQuery } from "../../state/query";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Switch } from "../ui/switch";
+import { SettingsPageContainer, SettingsSection, SettingsRow } from "./settingsLayout";
+
+const { inferenceProxy } = serverEnvironment;
+const labels = { codex: "Codex", claudeAgent: "Claude" } as const;
+
+function InferenceRoute({
+  host,
+  consumer,
+}: {
+  host: EnvironmentPresentation;
+  consumer: EnvironmentPresentation;
+}) {
+  const canGrant = useAtomValue(inferenceProxy.canGrant(host.environmentId));
+  const canConnect = useAtomValue(inferenceProxy.canConnect(consumer.environmentId));
+  const route = useAtomCommand(inferenceProxy.routeInference, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  async function add(driver: InferenceDriver) {
+    setBusy(true);
+    setNotice("");
+    const result = await route({ host, consumer, driver });
+    setBusy(false);
+    setNotice(
+      result._tag === "Failure"
+        ? String(squashAtomCommandFailure(result))
+        : `Select ${labels[driver]} via ${host.label} in the model picker.`,
+    );
+  }
+  return (
+    <SettingsRow
+      title={host.label}
+      description={
+        host.environmentId === consumer.environmentId
+          ? "Use accounts on this environment."
+          : "Use this host’s accounts over Tailscale or your trusted LAN."
+      }
+      status={notice || undefined}
+      control={
+        <div className="flex gap-2">
+          {(["codex", "claudeAgent"] as const).map((driver) => (
+            <Button
+              key={driver}
+              size="sm"
+              variant="outline"
+              disabled={!canGrant || !canConnect || busy}
+              onClick={() => void add(driver)}
+            >
+              {labels[driver]}
+            </Button>
+          ))}
+        </div>
+      }
+    />
+  );
+}
+
+export function InferenceSettings({ environmentId }: { environmentId: EnvironmentId }) {
+  const { environments } = useEnvironments();
+  const current = environments.find((e) => e.environmentId === environmentId);
+  const canManage = useAtomValue(inferenceProxy.manageInference.permissionAtom(environmentId));
+  const query = useEnvironmentQuery(
+    canManage ? inferenceProxy.inferenceStatus({ environmentId, input: {} }) : null,
+  );
+  const command = useAtomCommand(inferenceProxy.manageInference, { reportFailure: false });
+  const legacy = useEnvironmentSettings(environmentId, (s) => s.providerPools);
+  const update = useUpdateEnvironmentSettings(environmentId);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [login, setLogin] = useState<{ url: string; state: string } | null>(null);
+  const [callback, setCallback] = useState("");
+  const host = query.data;
+  const updateQuery = useEnvironmentQuery(
+    host?.enabled
+      ? inferenceProxy.updates({ environmentId, input: { operation: "checkUpdate" } })
+      : null,
+  );
+  const available = updateQuery.data?.update?.available;
+  async function run(input: InferenceProxyAction) {
+    setBusy(true);
+    setNotice("");
+    const result = await command({ environmentId, input });
+    setBusy(false);
+    if (result._tag === "Failure") {
+      setNotice(String(squashAtomCommandFailure(result)));
+      return;
+    }
+    if (result.value.login) {
+      setLogin(result.value.login);
+      setCallback("");
+    }
+    if (
+      input.operation === "cancel" ||
+      (input.operation === "configure" && !input.enabled) ||
+      result.value.status === "ok"
+    ) {
+      setLogin(null);
+      setCallback("");
+    }
+    if (result.value.status === "wait")
+      setNotice("Waiting for the host to finish sign-in. Check status after a moment.");
+    if (result.value.status === "error") {
+      setLogin(null);
+      setCallback("");
+      setNotice("Sign-in failed or expired. Start a new sign-in.");
+    }
+  }
+  return (
+    <SettingsPageContainer className="gap-8">
+      <SettingsSection id="account-pools" title="Inference hosting">
+        {!canManage ? (
+          <SettingsRow title="Provider management access is required." />
+        ) : host ? (
+          <>
+            <SettingsRow
+              title="Host accounts on this environment"
+              description={`T3 Code installs CLIProxyAPI ${host.version} and keeps account logins here.`}
+              status={busy ? "Working…" : (host.problem ?? (host.running ? "Running" : "Stopped"))}
+              control={
+                <Switch
+                  aria-label="Host inference accounts"
+                  checked={host.enabled}
+                  disabled={busy}
+                  onCheckedChange={(enabled) =>
+                    void run({ operation: "configure", enabled, sharing: false })
+                  }
+                />
+              }
+            />
+            {host.enabled && (
+              <>
+                <SettingsRow
+                  title="CLIProxyAPI updates"
+                  description={
+                    updateQuery.error ??
+                    (available
+                      ? `Version ${available} is available. Updating restarts the inference host.`
+                      : `Installed version: ${host.version}`)
+                  }
+                  control={
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy || updateQuery.isPending}
+                      onClick={() =>
+                        available ? void run({ operation: "update" }) : updateQuery.refresh()
+                      }
+                    >
+                      {available ? "Update" : "Check for updates"}
+                    </Button>
+                  }
+                />
+                <SettingsRow
+                  title="Share inference with paired environments"
+                  description="Use Tailscale HTTPS or enable LAN access on a trusted network. LAN HTTP sends requests and route keys unencrypted. Turning sharing off revokes remote access."
+                  control={
+                    <Switch
+                      aria-label="Share inference with paired environments"
+                      checked={host.sharing}
+                      disabled={busy}
+                      onCheckedChange={(sharing) =>
+                        void run({ operation: "configure", enabled: true, sharing })
+                      }
+                    />
+                  }
+                />
+                {host.consumers.map((c) => (
+                  <SettingsRow
+                    key={c.environmentId}
+                    title={c.label}
+                    description="Authorized for inference"
+                    control={
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() =>
+                          void run({ operation: "revoke", environmentId: c.environmentId })
+                        }
+                      >
+                        Revoke
+                      </Button>
+                    }
+                  />
+                ))}
+              </>
+            )}
+          </>
+        ) : (
+          <SettingsRow title={query.error ?? "Loading host status…"} />
+        )}
+      </SettingsSection>
+      {host?.enabled && (
+        <SettingsSection title="Hosted accounts">
+          {host.accounts.map((account) => (
+            <SettingsRow
+              key={account.name}
+              title={account.name}
+              description={`${account.provider} · ${account.status}`}
+              control={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void run({ operation: "removeAccount", name: account.name })}
+                >
+                  Remove
+                </Button>
+              }
+            />
+          ))}
+          {login ? (
+            <>
+              <SettingsRow
+                title="Finish signing in"
+                description="Open the provider sign-in page and paste the final localhost URL here, even if the browser cannot load it."
+                control={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    render={<a href={login.url} target="_blank" rel="noreferrer" />}
+                  >
+                    Open sign-in
+                  </Button>
+                }
+              />
+              <Input
+                aria-label="Sign-in callback URL"
+                placeholder="Paste callback URL"
+                type="password"
+                value={callback}
+                onChange={(event) => setCallback(event.target.value)}
+              />
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  disabled={busy || !callback}
+                  onClick={() => void run({ operation: "callback", state: login.state, callback })}
+                >
+                  Submit
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void run({ operation: "check", state: login.state })}
+                >
+                  Check status
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void run({ operation: "cancel", state: login.state })}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </>
+          ) : (
+            <SettingsRow
+              title="Add an account"
+              description="Sign in once for each account this host should use."
+              control={
+                <div className="flex gap-2">
+                  {(["codex", "claudeAgent"] as const).map((driver) => (
+                    <Button
+                      key={driver}
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => void run({ operation: "signIn", driver })}
+                    >
+                      {labels[driver]}
+                    </Button>
+                  ))}
+                </div>
+              }
+            />
+          )}
+        </SettingsSection>
+      )}
+      {notice && (
+        <p role="status" className="text-sm">
+          {notice}
+        </p>
+      )}
+      {current && canManage && (
+        <SettingsSection title="Route requests through an environment">
+          <SettingsRow
+            title={`Run agents on ${current.label}`}
+            description="Choose a host and provider below. Tools and files stay on this environment. Adding a route retires its existing CLI profile pool."
+          />
+          {host?.routes.map((route) => (
+            <SettingsRow
+              key={route.instanceId}
+              title={route.label}
+              description="Configured on this environment"
+              control={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    void run({ operation: "removeRoute", instanceId: route.instanceId })
+                  }
+                >
+                  Remove route
+                </Button>
+              }
+            />
+          ))}
+          {environments
+            .filter(
+              (e) =>
+                e.connection.phase === "connected" &&
+                e.serverConfig?.environment.capabilities.inferenceProxy,
+            )
+            .map((e) => (
+              <InferenceRoute key={e.environmentId} host={e} consumer={current} />
+            ))}
+        </SettingsSection>
+      )}
+      {Object.keys(legacy).length > 0 && (
+        <SettingsSection title="Existing CLI profile pools">
+          {Object.keys(legacy).map((driver) => (
+            <SettingsRow
+              key={driver}
+              title={driver}
+              description="Add an inference route to replace this pool, or retire it to select individual profiles."
+              control={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!canManage}
+                  onClick={() => update({ providerPools: { [driver]: null } })}
+                >
+                  Retire pool
+                </Button>
+              }
+            />
+          ))}
+        </SettingsSection>
+      )}
+    </SettingsPageContainer>
+  );
+}
