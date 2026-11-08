@@ -96,11 +96,7 @@ describe("group membership labels", () => {
     modelSelection: { instanceId: "codex", model: "same-model" },
     group: null,
   } as unknown as OrchestrationV2AppThread;
-  const inviteSeat = (
-    current: OrchestrationV2AppThread,
-    id: string,
-    primaryLabel = "Opus",
-  ) => {
+  const inviteSeat = (current: OrchestrationV2AppThread, id: string, primaryLabel = "Opus") => {
     const decided = decideGroupMembership({
       thread: current,
       seatLatestRunOrdinal: 0,
@@ -128,12 +124,13 @@ describe("group membership labels", () => {
     expect(group.primary.handle).toBe(handle);
     const reply = entry(ThreadId.make("seat:one"), `@${group.primary.handle}`);
     expect(wakes(reply, "direct", group)).toEqual(["primary"]);
-    expect(
-      planWave(group, (member) => (member === "primary" ? [reply] : []), []),
-    ).toEqual({ start: ["primary"] });
-    expect(
-      planWave(group, () => [entry(ThreadId.make("seat:one"), "@user")], []),
-    ).toEqual({ start: [], close: "settled" });
+    expect(planWave(group, (member) => (member === "primary" ? [reply] : []), [])).toEqual({
+      start: ["primary"],
+    });
+    expect(planWave(group, () => [entry(ThreadId.make("seat:one"), "@user")], [])).toEqual({
+      start: [],
+      close: "settled",
+    });
     expect(wakes(entry(ThreadId.make("seat:one"), "@primary"), "direct", group)).toEqual([
       "primary",
     ]);
