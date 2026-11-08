@@ -264,10 +264,12 @@ function isT3Directory(
     return (
       entries.some((name) => names.includes(name)) &&
       (allowed === undefined || entries.every((name) => allowed.includes(name))) &&
+      (allowed !== undefined ||
+        LEGACY_INDEX_FILES.every((file) => !isRealDirectory(NodePath.join(path, file)))) &&
       entries.every((name) => {
         const entry = NodeFS.lstatSync(NodePath.join(path, name));
         return entry.isDirectory()
-          ? allowed === undefined && !LEGACY_INDEX_FILES.includes(name)
+          ? allowed === undefined
           : entry.isFile() && entry.nlink === 1;
       })
     );

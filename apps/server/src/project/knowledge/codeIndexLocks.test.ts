@@ -169,6 +169,29 @@ it.each([
   }
 });
 
+it.each(["published", "build.lock", "codegraph.db"])(
+  "preserves a directory whose casing may alias the legacy file %s",
+  (name) => {
+    const marker = name === "published" ? "codegraph.db" : "published";
+    const checkout = legacyCheckout([
+      `.codegraph-t3/${marker}`,
+      `.codegraph-t3/${name.toUpperCase()}/notes.txt`,
+    ]);
+    const control = NodePath.join(checkout, ".codegraph-t3");
+    const notes = NodePath.join(control, name.toUpperCase(), "notes.txt");
+    try {
+      const aliasesDirectory = NodeFS.existsSync(NodePath.join(control, name, "notes.txt"));
+      expect(hasLegacyIndexFiles(checkout)).toBe(!aliasesDirectory);
+      expect(() => removeLegacyIndexFromCheckout(checkout)).not.toThrow();
+      expect(NodeFS.readFileSync(notes, "utf8")).toBe("");
+      expect(NodeFS.existsSync(NodePath.join(control, marker))).toBe(aliasesDirectory);
+      expect(NodeFS.readFileSync(NodePath.join(checkout, "keep.txt"), "utf8")).toBe("mine");
+    } finally {
+      NodeFS.rmSync(checkout, { recursive: true, force: true });
+    }
+  },
+);
+
 it.skipIf(!symlinksSupported).each([
   [".codegraph-t3", "build.lock", "published"],
   [".codegraph-t3-g1", "readers.lock", "codegraph.db"],
