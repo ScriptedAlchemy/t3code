@@ -1138,15 +1138,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           ),
         );
   const threads = useQuietThreadShells();
-  const delegatedUnderParent = withoutHiddenDelegationParents(
+  const scopedDelegatedUnderParent = withoutHiddenDelegationParents(
     allDelegatedUnderParent,
     threads,
     hiddenEnvironmentIds,
+    chosenScopeProjectKeys,
   );
   const routeRowThreadRef =
     routeThreadRef === null
       ? null
-      : resolveSidebarRowThreadRef(routeThreadRef, threads, delegatedUnderParent);
+      : resolveSidebarRowThreadRef(routeThreadRef, threads, scopedDelegatedUnderParent);
   const routeRowThreadKey = routeRowThreadRef === null ? null : scopedThreadKey(routeRowThreadRef);
   // Only a hidden environment's open row is kept, so other navigation leaves the partition memoized.
   const keptThreadKey =
@@ -1166,9 +1167,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     routeKey: routeRowThreadKey,
     isSearching: isSearchingThreads,
     scopedProjectKeys: chosenScopeProjectKeys,
-    delegatedUnderParent,
+    delegatedUnderParent: scopedDelegatedUnderParent,
     findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
   });
+  const delegatedUnderParent = revealWidensScope
+    ? withoutHiddenDelegationParents(allDelegatedUnderParent, threads, hiddenEnvironmentIds)
+    : scopedDelegatedUnderParent;
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
   const projectScopeKey = projectScopeKeys.length === 0 ? null : projectScopeKeys.join("\n");
   const toggleProjectScopeKey = (key: string) =>

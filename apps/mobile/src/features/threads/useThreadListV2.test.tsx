@@ -339,4 +339,64 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   ).toContain(environmentId);
   await act(async () => root.render(<Probe input={input} tab="chats" />));
   expect(seen.at(-1)!.layout.settledCount).toBe(1100);
+
+  const parent = presentThreadShell(
+    environmentId,
+    makeRawThreadShell({
+      id: ThreadId.make("parent"),
+      projectId: ProjectId.make("parent-project"),
+    }),
+  );
+  const task = presentThreadShell(
+    otherEnvironmentId,
+    makeRawThreadShell({
+      id: ThreadId.make("task"),
+      delegatedFrom: { environmentId, threadId: parent.id, title: parent.title },
+    }),
+  );
+  const subagent = {
+    ...task,
+    id: ThreadId.make("subagent"),
+    lineage: {
+      parentThreadId: task.id,
+      rootThreadId: task.id,
+      relationshipToParent: "subagent" as const,
+    },
+  };
+  const archived = { ...task, id: ThreadId.make("archived"), archivedAt: input.now };
+  const delegationInput = {
+    ...input,
+    threads: [parent, task, subagent, archived],
+    hideOfflineEnvironments: true,
+  };
+  await act(async () => registry.set(offlineIds, []));
+  await act(async () => root.render(<Probe input={delegationInput} tab="chats" />));
+  expect(seen.at(-1)!.layout.items.map((item) => item.thread.id)).toEqual([parent.id]);
+  await act(async () => registry.set(offlineIds, [environmentId]));
+  expect(seen.at(-1)!.layout.items.map((item) => item.thread.id)).toEqual([task.id]);
+  const taskScope = { environmentId: otherEnvironmentId, projectId: task.projectId };
+  await act(async () =>
+    root.render(
+      <Probe
+        input={{
+          ...delegationInput,
+          projectRefs: [taskScope, { environmentId, projectId: parent.projectId }],
+        }}
+        tab="chats"
+      />,
+    ),
+  );
+  expect(seen.at(-1)!.layout.items.map((item) => item.thread.id)).toEqual([parent.id]);
+  await act(async () =>
+    root.render(
+      <Probe
+        input={{
+          ...delegationInput,
+          projectRefs: [taskScope, { environmentId, projectId: ProjectId.make("other-project") }],
+        }}
+        tab="chats"
+      />,
+    ),
+  );
+  expect(seen.at(-1)!.layout.items.map((item) => item.thread.id)).toEqual([task.id]);
 });

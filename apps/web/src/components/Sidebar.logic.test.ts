@@ -903,11 +903,14 @@ describe("filterSidebarV2VisibleThreads", () => {
     const delegated = new Set([
       threadKey({ environmentId: task.environmentId, threadId: task.id }),
     ]);
-    const visibleIds = (hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null) =>
+    const visibleIds = (
+      hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null,
+      scope: ReadonlySet<string> | null = null,
+    ) =>
       filterSidebarV2VisibleThreads(
         threads,
-        null,
-        withoutHiddenDelegationParents(delegated, threads, hiddenEnvironmentIds),
+        scope,
+        withoutHiddenDelegationParents(delegated, threads, hiddenEnvironmentIds, scope),
         hiddenEnvironmentIds === null
           ? null
           : { environmentIds: hiddenEnvironmentIds, keptThreadKey: null },
@@ -916,6 +919,20 @@ describe("filterSidebarV2VisibleThreads", () => {
     expect(visibleIds(null)).toEqual(["thread-parent"]);
     expect(visibleIds(new Set([parentEnvironmentId]))).toEqual(["thread-task"]);
     expect(visibleIds(new Set([taskEnvironmentId]))).toEqual(["thread-parent"]);
+    const hiddenParents = new Set([parentEnvironmentId]);
+    const bothProjects = new Set([
+      `${parentEnvironmentId}:${parent.projectId}`,
+      `${taskEnvironmentId}:${task.projectId}`,
+    ]);
+    expect(visibleIds(hiddenParents, bothProjects)).toEqual(["thread-parent"]);
+    expect(
+      visibleIds(
+        hiddenParents,
+        new Set([`${parentEnvironmentId}:other-project`, `${taskEnvironmentId}:${task.projectId}`]),
+      ),
+    ).toEqual(["thread-task"]);
+    // Widening a route back to all projects hides the offline parent again.
+    expect(visibleIds(hiddenParents, null)).toEqual(["thread-task"]);
   });
 });
 
