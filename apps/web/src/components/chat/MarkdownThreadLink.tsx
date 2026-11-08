@@ -23,23 +23,26 @@ export function MarkdownThreadLink(props: {
   readonly label: string | null;
 }) {
   const environmentId = props.link.environmentId ?? props.environmentId;
-  const decodedId = percentDecodedThreadLinkId(props.link.threadId);
-  const written = useThreadShell(scopeThreadRef(environmentId, props.link.threadId));
+  const { threadId } = props.link;
+  const decodedId = percentDecodedThreadLinkId(threadId);
+  const written = useThreadShell(scopeThreadRef(environmentId, threadId));
   const decoded = useThreadShell(
     written === null && decodedId !== null ? scopeThreadRef(environmentId, decodedId) : null,
   );
   const local = written ?? decoded;
-  // Shells leave out idle subagent children and older settled threads, so a cited thread the
-  // shell lacks is read with its family until it lands; only a settled empty read proves it gone.
-  const missingThreadId = local === null ? (decodedId ?? props.link.threadId) : null;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- mounts the family read for a cited thread the shell omits while this link shows it
-  useEffect(
-    () =>
-      missingThreadId === null
+  // An idle child's shell row can come from this very read. Releasing on title arrival removes it.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains the cited families while the link is displayed
+  useEffect(() => {
+    const releaseWritten = threadFamilies.mount(appAtomRegistry, environmentId, threadId);
+    const releaseDecoded =
+      decodedId === null
         ? undefined
-        : threadFamilies.mount(appAtomRegistry, environmentId, missingThreadId),
-    [environmentId, missingThreadId],
-  );
+        : threadFamilies.mount(appAtomRegistry, environmentId, decodedId);
+    return () => {
+      releaseWritten();
+      releaseDecoded?.();
+    };
+  }, [environmentId, threadId, decodedId]);
   const guess = local === null && props.link.environmentId === null;
   const refs = useThreadRefs(guess);
   const remote = useThreadShell(guess ? guessThreadLinkRef(props.link, refs) : null);
