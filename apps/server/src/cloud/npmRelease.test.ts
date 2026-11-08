@@ -169,11 +169,16 @@ it.effect("authenticates the fork API without sending the GitHub token to an ass
           expect(request.headers.authorization).toBe("Bearer test-token");
           return json([{ tag_name: `v${version}` }]);
         }
-        expect(request.url).toBe(`https://mirror.example/v${version}/t3-release.json`);
+        expect(request.url).toBe(
+          `https://mirror.example/releases/v${version}/t3-release.json?region=test`,
+        );
         expect(request.headers.authorization).toBeUndefined();
         return json({ version, databaseMigration: 85 });
       },
-      { GH_TOKEN: "test-token", T3CODE_RELEASE_BASE_URL: "https://mirror.example/" },
+      {
+        GH_TOKEN: "test-token",
+        T3CODE_RELEASE_BASE_URL: "https://mirror.example/releases/?region=test",
+      },
     );
     expect(yield* service.get({ spec: "nightly" })).toEqual({ version, databaseMigration: 85 });
   }),

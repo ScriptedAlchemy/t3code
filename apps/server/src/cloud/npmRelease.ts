@@ -7,7 +7,7 @@ import {
   CLI_RELEASE_BASE_URL_ENV,
   CLI_RELEASE_METADATA_FILE,
   CLI_RELEASE_REPOSITORY,
-  cliReleaseDownloadBaseUrl,
+  cliReleaseAssetUrl,
   cliReleaseIndexPageUrl,
   newestCliReleaseVersion,
 } from "@t3tools/shared/cliRelease";
@@ -112,7 +112,7 @@ export const make = Effect.fn("NpmRelease.make")(function* () {
           const version = yield* resolveVersion(spec);
           if (version === null) return null;
           const json = yield* read(
-            `${cliReleaseDownloadBaseUrl(version, releaseBaseUrl)}/${CLI_RELEASE_METADATA_FILE}`,
+            cliReleaseAssetUrl(version, CLI_RELEASE_METADATA_FILE, releaseBaseUrl),
             { api: false, allowMissing: true },
           );
           // Older releases have no migration asset; track-switch checks must keep them blocked.
