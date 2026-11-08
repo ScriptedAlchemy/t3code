@@ -12,6 +12,14 @@ are sent only when they appear in a provider's public model list.
 Product events do not include prompts, responses, file contents, authentication tokens, conversation IDs,
 raw provider events, or child-agent output.
 
+## Telemetry from providers
+
+T3 asks the harness it starts to disable optional telemetry, whether inference runs directly or through a paired environment. For example, T3 disables Codex analytics, feedback uploads, and OpenTelemetry exports; Claude Code and Grok usage metrics and crash reports; Kiro and Muse telemetry; and GitHub Copilot CLI's client telemetry. T3 also disables OpenTelemetry for OpenCode servers it starts and Gemini CLI processes. These settings apply to new provider processes. They do not change how your CLI runs outside T3.
+
+A harness must support the opt-out. The bundled Antigravity ACP server (1.4.5) does not accept the telemetry flag supported by the newer `agy acp` command. A separately running OpenCode server needs its own settings. For controls such as Cursor Privacy Mode or Gemini CLI usage statistics, use the provider's account or CLI settings.
+
+The provider still receives inference requests and can record authentication, usage for billing, and operational or security events. Routing over LAN or Tailscale does not change those policies. T3's own diagnostics have separate controls below.
+
 ## Relay connection diagnostics
 
 T3 Code sends relay connection traces to Axiom to diagnose T3 Connect connectivity. These are

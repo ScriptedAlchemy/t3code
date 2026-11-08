@@ -99,8 +99,8 @@ describe("Muse SDK host", () => {
         cwd: "/workspace",
         args:
           mode === "full-access"
-            ? ["serve", "--trust-workspace", "--disable-sandbox"]
-            : ["serve", "--trust-workspace"],
+            ? ["serve", "-c", "telemetry.enabled=false", "--trust-workspace", "--disable-sandbox"]
+            : ["serve", "-c", "telemetry.enabled=false", "--trust-workspace"],
       });
       expect(museApprovalMode(mode)).toBe(mode === "full-access" ? "allowAll" : "promptUnmatched");
       fake.startup.resolve(fake.ready);
