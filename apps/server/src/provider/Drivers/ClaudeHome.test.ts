@@ -1,3 +1,4 @@
+import { providerProcessEnvironment } from "@t3tools/provider-core/server/providerTelemetry";
 import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -198,6 +199,7 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
           },
         );
         expect(routed).toEqual({
+          ...providerProcessEnvironment({}, "linux"),
           CLAUDE_CODE_ENTRYPOINT: "t3-code",
           KEEP: "1",
           ANTHROPIC_BASE_URL: "http://route",
@@ -205,10 +207,12 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
           CLAUDE_SECURESTORAGE_CONFIG_DIR: homePath,
         });
         expect(yield* mergeClaudeProcessEnvironment({ homePath }, undefined, host)).toEqual({
+          ...providerProcessEnvironment({}, "linux"),
           CLAUDE_CODE_ENTRYPOINT: "t3-code",
           KEEP: "1",
         });
         expect(yield* mergeClaudeProcessEnvironment({ homePath }, instance, host)).toEqual({
+          ...providerProcessEnvironment({}, "linux"),
           CLAUDE_CODE_ENTRYPOINT: "instance",
           CLAUDE_EFFORT: "low",
           KEEP: "1",

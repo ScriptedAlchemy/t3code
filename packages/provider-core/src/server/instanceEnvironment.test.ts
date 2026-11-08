@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
+import { providerProcessEnvironment } from "./providerTelemetry.ts";
 import { mergeProviderInstanceEnvironment } from "./instanceEnvironment.ts";
 
 describe("mergeProviderInstanceEnvironment", () => {
@@ -12,17 +13,24 @@ describe("mergeProviderInstanceEnvironment", () => {
     "applies Windows instance overrides case-insensitively before preparing the agent PATH",
     () =>
       Effect.gen(function* () {
-        const baseEnv = { PATH: "C:\\old", Custom: "inherited" };
+        const baseEnv = { Disable_Telemetry: "0", PATH: "C:\\old", Custom: "inherited" };
         expect(
           yield* mergeProviderInstanceEnvironment(
             [
               { name: "Path", value: "C:\\provider-gh", sensitive: false },
               { name: "CUSTOM", value: "override", sensitive: false },
+              { name: "OTEL_SDK_DISABLED", value: "false", sensitive: false },
             ],
             baseEnv,
           ),
-        ).toEqual({ PATH: "C:\\provider-gh", CUSTOM: "override" });
-        expect(baseEnv).toEqual({ PATH: "C:\\old", Custom: "inherited" });
+        ).toEqual({
+          ...providerProcessEnvironment({}, "win32"),
+          PATH: "C:\\provider-gh",
+          CUSTOM: "override",
+          DISABLE_TELEMETRY: "1",
+          OTEL_SDK_DISABLED: "true",
+        });
+        expect(baseEnv).toEqual({ Disable_Telemetry: "0", PATH: "C:\\old", Custom: "inherited" });
       }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
   );
   it.effect.each([
@@ -44,7 +52,7 @@ describe("mergeProviderInstanceEnvironment", () => {
         baseEnv,
       );
 
-      expect(environment).toEqual({
+      expect(environment).toMatchObject({
         CODEX_HOME: path.join("/home/ada", tail),
         CLAUDE_CONFIG_DIR: path.join("/home/ada", tail),
         CUSTOM_VALUE: value,
@@ -68,7 +76,7 @@ describe("mergeProviderInstanceEnvironment", () => {
           [{ name: "CUSTOM_VALUE", value: "~/.custom", sensitive: false }],
           baseEnv,
         ),
-      ).toEqual({ ...baseEnv, CUSTOM_VALUE: "~/.custom" });
+      ).toMatchObject({ ...baseEnv, CUSTOM_VALUE: "~/.custom" });
     }),
   );
 
@@ -115,10 +123,15 @@ describe("mergeProviderInstanceEnvironment", () => {
           Effect.provideService(HostProcess.Platform, "win32"),
           Effect.provideService(HostProcess.HomeDirectory, "/home/ada"),
         ),
-      ).toEqual({ CODEX_HOME: "/home/ada/corp" });
+      ).toMatchObject({ CODEX_HOME: "/home/ada/corp" });
       // Upper case sorts first, so it also wins where a spawn merges the parent environment back.
-      expect(yield* merge("win32")).toEqual({ HTTPS_PROXY: "http://gateway", PATH: "/bin" });
+      expect(yield* merge("win32")).toEqual({
+        ...providerProcessEnvironment({}, "win32"),
+        HTTPS_PROXY: "http://gateway",
+        PATH: "/bin",
+      });
       expect(yield* merge("linux")).toEqual({
+        ...providerProcessEnvironment({}, "linux"),
         HTTPS_PROXY: "http://mine",
         Https_Proxy: "http://gateway",
         PATH: "/bin",

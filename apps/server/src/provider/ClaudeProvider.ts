@@ -42,6 +42,7 @@ import {
 import { resolveClaudeSdkExecutablePath } from "./Drivers/ClaudeExecutable.ts";
 import {
   claudeAccountSettings,
+  claudePrivateSettings,
   parseClaudeAccountDir,
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
@@ -238,12 +239,12 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
     // The probe keeps filesystem setting sources for slash-command discovery,
     // but must not run the user's hooks: it fires every few minutes, so
     // SessionStart hooks would run on every health check.
-    settings: {
+    settings: claudePrivateSettings({
       disableAllHooks: true,
       ...(input.config?.setupMode === "cli"
         ? claudeAccountSettings(parseClaudeAccountDir(input.config.homePath))
         : {}),
-    },
+    }),
     ...(input.config?.setupMode === "cli"
       ? {
           spawnClaudeCodeProcess: (options: Parameters<typeof spawnClaudeProcess>[0]) =>

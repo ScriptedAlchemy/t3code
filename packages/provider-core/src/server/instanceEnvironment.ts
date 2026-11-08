@@ -3,6 +3,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
+import { providerProcessEnvironment } from "./providerTelemetry.ts";
 import { expandHomePath } from "./pathExpansion.ts";
 import * as ProviderHost from "./ProviderHost.ts";
 
@@ -11,7 +12,8 @@ export const mergeProviderInstanceEnvironment = Effect.fn(function* (
   baseEnv: NodeJS.ProcessEnv = process.env,
 ) {
   const home = yield* HostProcess.HomeDirectory;
-  const windows = (yield* HostProcess.Platform) === "win32";
+  const platform = yield* HostProcess.Platform;
+  const windows = platform === "win32";
   const next: NodeJS.ProcessEnv = environment?.length ? { ...baseEnv } : baseEnv;
   for (const variable of environment ?? []) {
     // An unresolved secret reference carries no value; the registry resolves it for the provider.
@@ -31,7 +33,9 @@ export const mergeProviderInstanceEnvironment = Effect.fn(function* (
         : variable.value;
   }
   const host = yield* Effect.serviceOption(ProviderHost.ProviderHost);
-  return Option.isSome(host) && host.value.prepareAgentEnvironment !== undefined
-    ? yield* host.value.prepareAgentEnvironment(next)
-    : next;
+  const prepared =
+    Option.isSome(host) && host.value.prepareAgentEnvironment !== undefined
+      ? yield* host.value.prepareAgentEnvironment(next)
+      : next;
+  return providerProcessEnvironment(prepared, platform);
 });

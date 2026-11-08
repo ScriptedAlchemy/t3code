@@ -1,3 +1,4 @@
+import { claudeTelemetryOptOut } from "@t3tools/provider-core/server/providerTelemetry";
 import type { Settings as ClaudeSdkSettings } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ClaudeSettings,
@@ -123,6 +124,10 @@ export function claudeCliEnvironment(environment: NodeJS.ProcessEnv, configDir: 
   return { ...next, CLAUDE_CONFIG_DIR: configDir, CLAUDE_SECURESTORAGE_CONFIG_DIR: configDir };
 }
 
+export function claudePrivateSettings(settings: ClaudeSdkSettings | undefined) {
+  return { ...settings, env: { ...settings?.env, ...claudeTelemetryOptOut } };
+}
+
 export function claudeAccountSettings(
   configDir: ClaudeAccountDir | undefined,
 ): ClaudeSdkSettings | undefined {
@@ -222,7 +227,7 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   config: Pick<ClaudeSettings, "homePath">,
   baseEnv?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<NodeJS.ProcessEnv, never, Path.Path> {
-  const resolvedBaseEnv = baseEnv ?? process.env;
+  const resolvedBaseEnv = { ...(baseEnv ?? process.env), ...claudeTelemetryOptOut };
   const homePath = config.homePath.trim();
   if (homePath.length === 0) return resolvedBaseEnv;
   const resolvedHomePath = yield* resolveClaudeHomePath(config);

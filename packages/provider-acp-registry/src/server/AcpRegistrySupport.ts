@@ -1,4 +1,8 @@
 import {
+  codexTelemetryConfig,
+  mergeTelemetryConfig,
+} from "@t3tools/provider-core/server/providerTelemetry";
+import {
   ACP_REGISTRY_MAX_AGENTS,
   AcpRegistryOperationError,
   AcpRegistryOperationErrorReason,
@@ -47,6 +51,37 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+
+function acpLaunchOptions(
+  agentId: string,
+  command: string,
+  args: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv,
+) {
+  const executable = command
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/\.(?:cmd|exe)$/i, "")
+    .toLowerCase();
+  if (agentId === "github-copilot-cli" || executable === "copilot") {
+    return {
+      args: args.includes("--disable-client-telemetry")
+        ? args
+        : ["--disable-client-telemetry", ...args],
+      env,
+    };
+  }
+  if (agentId === "codex-acp" || executable === "codex-acp") {
+    return {
+      args,
+      env: { ...env, CODEX_CONFIG: mergeTelemetryConfig(env.CODEX_CONFIG, codexTelemetryConfig) },
+    };
+  }
+  if (executable === "agy" && args[0] === "acp" && !args.includes("--disable-telemetry")) {
+    return { args: [...args, "--disable-telemetry"], env };
+  }
+  return { args, env };
+}
 
 const ACP_REGISTRY_URL = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 
@@ -1849,7 +1884,12 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
         yield* validateLocalExecutable(command);
         return {
           distribution: "local",
-          spawn: { command, args: settings.commandArgs, cwd, env, shell: false },
+          spawn: {
+            command,
+            ...acpLaunchOptions("", executable, settings.commandArgs, env),
+            cwd,
+            shell: false,
+          },
         } satisfies ResolvedAcpRegistryAgent;
       }
       const agentId = settings.agentId.trim();
@@ -1914,9 +1954,8 @@ export const makeAcpRegistryCatalog = Effect.fn("AcpRegistryCatalog.make")(funct
         distribution: distribution.kind,
         spawn: {
           command,
-          args,
+          ...acpLaunchOptions(agent.id, command, args, spawnEnvironment),
           cwd,
-          env: spawnEnvironment,
         },
       } satisfies ResolvedAcpRegistryAgent;
     },

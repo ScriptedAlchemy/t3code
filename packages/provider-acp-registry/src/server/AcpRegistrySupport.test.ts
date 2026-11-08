@@ -283,6 +283,48 @@ describe("AcpRegistrySupport", () => {
     );
   });
 
+  it.effect.each([
+    { command: "copilot", args: ["--acp"], expectedArgs: ["--disable-client-telemetry", "--acp"] },
+    { command: "agy", args: ["acp"], expectedArgs: ["acp", "--disable-telemetry"] },
+    { command: "agy_acp_server.par", args: [], expectedArgs: [] },
+    { command: "codex-acp", args: [], expectedArgs: [] },
+  ])(
+    "applies the opt-out supported by the local $command executable",
+    ({ command, args, expectedArgs }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cacheDir = yield* fs.makeTempDirectoryScoped();
+        const commandPath = `${cacheDir}/${command}`;
+        yield* fs.writeFileString(commandPath, "#!/bin/sh\n");
+        yield* fs.chmod(commandPath, 0o755);
+        const resolver = yield* AcpRegistrySupport.makeAcpRegistryCatalog({
+          cacheDir,
+          toolsDir: cacheDir,
+          registryUrl,
+        });
+        const env = {
+          CODEX_CONFIG:
+            '{"model":"custom","otel":{"environment":"team","exporter":"otlp-http"},"analytics":{"enabled":true}}',
+        };
+        const { spawn } = yield* resolver.resolve(
+          decodeAcpRegistrySettings({ source: "local", commandPath, commandArgs: args }),
+          cacheDir,
+          env,
+        );
+        expect(spawn.args).toEqual(expectedArgs);
+        if (command === "codex-acp") {
+          expect(JSON.parse(spawn.env?.CODEX_CONFIG ?? "null")).toMatchObject({
+            model: "custom",
+            otel: { environment: "team", exporter: "none" },
+            analytics: { enabled: false },
+          });
+        } else expect(spawn.env?.CODEX_CONFIG).toBe(env.CODEX_CONFIG);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(layerResolver(() => Effect.die("unexpected registry request"))),
+      ),
+  );
+
   it.effect("resolves a local executable path and inherits the host environment", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
