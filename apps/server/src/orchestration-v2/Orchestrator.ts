@@ -607,6 +607,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.group.end":
     case "thread.group.advance":
     case "thread.group.deliver":
+    case "thread.group.stop-seat":
     case "thread.group.delivered":
     case "thread.group.steer-accepted":
     case "thread.group.notice":
@@ -11604,7 +11605,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
 
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
-    command: OrchestrationV2Command,
+    command: OrchestrationV2ServerCommand,
     fields: ReadonlyArray<K>,
     filter?: ProjectionRecordFilter,
   ) =>
@@ -13541,6 +13542,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.stop" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    scope: "thread" | "group" = "thread",
   ) {
     const projection = yield* projectionStore
       .getThreadRecords(command.threadId, ["runs", "providerThreads", "turnItems", "subagents"], {
@@ -13578,6 +13580,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }).length > 0
         ? latestRun
         : undefined);
+    // The parent can end a group before its stop reaches this seat's lock.
+    if (scope === "group" && (target ?? latestRun)?.groupThrough === undefined) return undefined;
+    const holdQueue =
+      scope === "thread" ||
+      !projection.runs.some((run) => run.status === "queued" && run.groupThrough === undefined);
     if (target !== undefined) {
       const interruptEvents = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
       const interruptEffects = yield* Ref.make<Array<PendingOrchestrationEffectV2>>([]);
@@ -13588,7 +13595,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             commandId: command.commandId,
             threadId: command.threadId,
             runId: target.id,
-            holdQueue: true,
+            holdQueue,
             ...(command.reason === undefined ? {} : { reason: command.reason }),
           },
           interruptEvents,
@@ -13621,7 +13628,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     for (const run of reached.values()) {
       yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
     }
-    yield* holdStoppedThread({ command, events, projection, cohortRunIds: [], now });
+    if (holdQueue) yield* holdStoppedThread({ command, events, projection, cohortRunIds: [], now });
     yield* cancelIdleOrphans({ command, events, projection });
     yield* stopDelegatedTasks;
     return undefined;
@@ -15039,6 +15046,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ]);
         }
         break;
+      case "thread.group.stop-seat": {
+        const { runs } = yield* loadProjectionForCommand(command, ["runs"], {
+          runStatuses: ["queued"],
+        });
+        cancelUnsettledEffects = yield* dispatchThreadStop(
+          { ...command, type: "thread.stop", reason: "Stopped with the group" },
+          events,
+          effects,
+          "group",
+        );
+        for (const run of runs) {
+          if (run.groupThrough !== undefined) {
+            yield* dispatchQueuedRunCancel(
+              { ...command, type: "queued-run.cancel", runId: run.id },
+              events,
+            );
+          }
+        }
+        break;
+      }
       case "thread.stop": {
         const thread = yield* findThread(command.threadId);
         const group = thread?.group;
@@ -15346,6 +15373,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "thread.group.advance" ||
           command.type === "thread.group.deliver" ||
           command.type === "thread.group.delivered" ||
+          command.type === "thread.group.stop-seat" ||
           command.type === "thread.group.remove" ||
           command.type === "thread.group.end" ||
           command.type === "thread.group.steer-accepted" ||

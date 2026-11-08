@@ -129,34 +129,21 @@ const runGroupEffect = Effect.fn("OrchestrationEffectExecutorV2.groupEffect")(fu
   yield* Effect.forEach(
     request.seatThreadIds,
     (seatThreadId) =>
-      Effect.gen(function* () {
-        yield* threads.dispatch({
-          type: "thread.stop",
-          commandId: CommandId.make(`server:group-stop:${effect.id}:${seatThreadId}`),
+      threads
+        .dispatch({
+          type: "thread.group.stop-seat",
+          commandId: CommandId.make(`server:group-stop-seat:${effect.id}:${seatThreadId}`),
           threadId: seatThreadId,
-          reason: "Stopped with the group",
-        });
-        const { runs } = yield* threads.getThreadRecords(seatThreadId, ["runs"]);
-        yield* Effect.forEach(
-          runs.filter((run) => run.status === "queued"),
-          (run) =>
-            threads.dispatch({
-              type: "queued-run.cancel",
-              commandId: CommandId.make(`server:group-stop-queued:${effect.id}:${run.id}`),
-              threadId: seatThreadId,
-              runId: run.id,
+        })
+        .pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("a group seat could not stop", {
+              threadId: effect.threadId,
+              seatThreadId,
+              cause,
             }),
-          { discard: true },
-        );
-      }).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("a group seat could not stop", {
-            threadId: effect.threadId,
-            seatThreadId,
-            cause,
-          }),
+          ),
         ),
-      ),
     { discard: true },
   );
 });

@@ -3555,6 +3555,11 @@ const OrchestrationV2InternalCommand = Schema.Union([
     messageId: Schema.optional(MessageId),
   }),
   Schema.Struct({
+    type: Schema.Literal("thread.group.stop-seat"),
+    commandId: CommandId,
+    threadId: ThreadId,
+  }),
+  Schema.Struct({
     type: Schema.Literal("thread.group.delivered"),
     commandId: CommandId,
     threadId: ThreadId,

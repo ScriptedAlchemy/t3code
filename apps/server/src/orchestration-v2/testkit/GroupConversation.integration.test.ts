@@ -1588,6 +1588,51 @@ describe("group conversations", () => {
     ),
   );
 
+  it.live.each(["idle", "running"] as const)(
+    "preserves later side chat messages when End reaches a seat that was %s",
+    (state) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeHarness("end-pending-stop", { runEffectWorker: false });
+          yield* Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const service = yield* ThreadGroupService.ThreadGroupService;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            const threadId = ThreadId.make("thread:group:end-pending-stop");
+            yield* startThread(threadId);
+            const seat = yield* invite(threadId, STEERLESS);
+            if (state === "running") {
+              const live = yield* hold(harness.control, seat);
+              yield* say(threadId, "group", "Group turn", [seat]);
+              yield* worker.drain();
+              yield* Deferred.await(live.started);
+              yield* say(threadId, "queued-group", "Queued group turn", [seat]);
+              yield* worker.drain();
+              const beforeEnd = yield* orchestrator.getThreadProjection(seat);
+              assert.equal(beforeEnd.runs.at(-1)?.status, "queued");
+            }
+            yield* service.end({ threadId });
+            yield* say(seat, "solo", "First independent turn", undefined, "queue");
+            yield* say(seat, "queued-solo", "Second independent turn", undefined, "queue");
+            yield* worker.drain();
+            const { runs } = yield* orchestrator.getThreadProjection(seat);
+            const solo = runs.filter((run) => run.groupThrough === undefined);
+            assert.lengthOf(solo, 2);
+            for (const run of solo) {
+              assert.notInclude(["interrupted", "cancelled"], run.status);
+              assert.isNotTrue(run.queueHeld);
+            }
+            if (state === "running") {
+              assert.deepEqual(
+                runs.filter((run) => run.groupThrough !== undefined).map((run) => run.status),
+                ["interrupted", "cancelled"],
+              );
+            }
+          }).pipe(Effect.provide(harness.layer));
+        }),
+      ),
+  );
+
   it.live("holds a discussion open while a member is being told to start", () =>
     Effect.scoped(
       Effect.gen(function* () {
