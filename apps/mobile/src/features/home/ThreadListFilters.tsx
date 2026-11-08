@@ -13,7 +13,6 @@ export function ThreadListFilters(props: {
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
   readonly hideOfflineEnvironments: boolean;
-  readonly onHideOfflineEnvironmentsChange: (value: boolean) => void;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
   /** List padding the scroller bleeds through so pills start where row content does. */
@@ -53,16 +52,9 @@ export function ThreadListFilters(props: {
                 ? ("on" as const)
                 : ("off" as const),
           })),
-          {
-            id: "hide-offline",
-            title: "Hide offline environments",
-            state: props.hideOfflineEnvironments ? "on" : "off",
-          },
         ]}
         onSelect={(id) => {
-          if (id === "hide-offline")
-            props.onHideOfflineEnvironmentsChange(!props.hideOfflineEnvironments);
-          else if (id === "all") props.onEnvironmentChange(null);
+          if (id === "all") props.onEnvironmentChange(null);
           else {
             const environment = props.environments.find(
               (candidate) => JSON.stringify(candidate.environmentId) === id,
@@ -97,9 +89,7 @@ export function ThreadListFilters(props: {
           }
         }}
       />
-      {props.selectedEnvironmentId !== null ||
-      props.selectedProjectKey !== null ||
-      props.hideOfflineEnvironments ? (
+      {props.selectedEnvironmentId !== null || props.selectedProjectKey !== null ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Reset thread filters"
@@ -107,7 +97,6 @@ export function ThreadListFilters(props: {
           onPress={() => {
             props.onEnvironmentChange(null);
             props.onProjectChange(null);
-            props.onHideOfflineEnvironmentsChange(false);
           }}
         >
           <SymbolView name="xmark.circle.fill" size={18} tintColorClassName="accent-icon-muted" />

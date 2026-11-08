@@ -119,7 +119,6 @@ export function HomeRouteScreen() {
     options: listOptions,
     setSelectedEnvironmentId,
     setSelectedProjectKey,
-    setHideOfflineEnvironments,
   } = useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
   // A legacy per-environment scratch key resolves here on every render; the stored
@@ -175,10 +174,7 @@ export function HomeRouteScreen() {
             accessibilityLabel: "Search threads",
           }}
           filter={{
-            customized:
-              selectedEnvironmentId !== null ||
-              selectedProjectKey !== null ||
-              listOptions.hideOfflineEnvironments,
+            customized: selectedEnvironmentId !== null || selectedProjectKey !== null,
             items: buildHomeListFilterMenuItems({
               environments,
               projects: projectFilterOptions,
@@ -186,8 +182,6 @@ export function HomeRouteScreen() {
               selectedProjectKey,
               onEnvironmentChange: setSelectedEnvironmentId,
               onProjectChange: setSelectedProjectKey,
-              hideOfflineEnvironments: listOptions.hideOfflineEnvironments,
-              onHideOfflineEnvironmentsChange: setHideOfflineEnvironments,
             }),
           }}
         />
@@ -211,7 +205,6 @@ export function HomeRouteScreen() {
           onEnvironmentChange={setSelectedEnvironmentId}
           onProjectChange={setSelectedProjectKey}
           hideOfflineEnvironments={listOptions.hideOfflineEnvironments}
-          onHideOfflineEnvironmentsChange={setHideOfflineEnvironments}
           onOpenSettings={() => selectTab("settings")}
           onSearchQueryChange={setSearchQuery}
           onSelectThread={handleSelectThread}

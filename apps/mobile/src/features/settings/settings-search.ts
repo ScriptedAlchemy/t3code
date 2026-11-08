@@ -99,6 +99,7 @@ const SETTINGS_SEARCH_TERMS = {
     "start from remote",
   ],
   SettingsLabs: [
+    "hide offline environments",
     "legacy",
     "plan mode",
     "beta",

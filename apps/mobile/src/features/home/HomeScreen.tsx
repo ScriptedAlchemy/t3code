@@ -103,7 +103,6 @@ interface HomeScreenProps {
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
   readonly hideOfflineEnvironments: boolean;
-  readonly onHideOfflineEnvironmentsChange: (value: boolean) => void;
   readonly projectSortOrder: HomeProjectSortOrder;
   readonly projectGroupingMode: SidebarProjectGroupingMode;
   readonly onSearchQueryChange: (query: string) => void;
@@ -744,7 +743,6 @@ export function HomeScreen(props: HomeScreenProps) {
           onEnvironmentChange={props.onEnvironmentChange}
           onProjectChange={props.onProjectChange}
           hideOfflineEnvironments={props.hideOfflineEnvironments}
-          onHideOfflineEnvironmentsChange={props.onHideOfflineEnvironmentsChange}
         />
       ) : null}
     </>
@@ -760,7 +758,7 @@ export function HomeScreen(props: HomeScreenProps) {
     ) : props.hideOfflineEnvironments ? (
       <EmptyState
         title="No visible threads"
-        detail="Turn off Hide offline environments or choose another filter."
+        detail="Turn off Hide offline environments in Settings → Labs → Zack, or choose another filter."
         variant={Platform.OS === "android" ? "plain" : undefined}
       />
     ) : v2ScopedProjectGroup !== null ? (

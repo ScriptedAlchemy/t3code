@@ -152,7 +152,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   const availableEnvironmentIds = new Set(
     environments.map((environment) => environment.environmentId),
   );
-  const { options, setSelectedEnvironmentId, setSelectedProjectKey, setHideOfflineEnvironments } =
+  const { options, setSelectedEnvironmentId, setSelectedProjectKey } =
     useHomeListOptions(availableEnvironmentIds);
   const searchEnvironmentIds =
     options.selectedEnvironmentId === null
@@ -536,10 +536,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
         accessibilityLabel: "Search threads",
       }}
       filter={{
-        customized:
-          options.selectedEnvironmentId !== null ||
-          selectedProjectKey !== null ||
-          options.hideOfflineEnvironments,
+        customized: options.selectedEnvironmentId !== null || selectedProjectKey !== null,
         items: buildHomeListFilterMenuItems({
           environments,
           projects: projectFilterOptions,
@@ -547,8 +544,6 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
           selectedProjectKey,
           onEnvironmentChange: setSelectedEnvironmentId,
           onProjectChange: setSelectedProjectKey,
-          hideOfflineEnvironments: options.hideOfflineEnvironments,
-          onHideOfflineEnvironmentsChange: setHideOfflineEnvironments,
         }),
       }}
       sidebar={{
@@ -575,7 +570,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
               ? "Searching thread messages…"
               : "No matching threads"
             : options.hideOfflineEnvironments
-              ? "No visible threads. Turn off Hide offline environments or choose another filter."
+              ? "No visible threads. Turn off Hide offline environments in Settings → Labs → Zack, or choose another filter."
               : selectedProjectScope !== null
                 ? `No threads in ${selectedProjectScope.title}`
                 : "No threads yet"}
