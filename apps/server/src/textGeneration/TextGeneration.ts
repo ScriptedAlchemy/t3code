@@ -53,6 +53,7 @@ const resolveInstance = Effect.fn("TextGeneration.resolveInstance")(function* (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
   operation: TextGenerationOperation,
   instanceId: ProviderInstanceId,
+  model?: string,
 ): Effect.fn.Return<ProviderInstance["textGeneration"], TextGenerationError> {
   const instance = yield* registry.getInstance(instanceId);
   if (!instance) {
@@ -66,6 +67,16 @@ const resolveInstance = Effect.fn("TextGeneration.resolveInstance")(function* (
       operation,
       detail: `Provider '${instanceId}' does not support this text generation operation. Choose a model from a provider that supports it.`,
     });
+  }
+  if (operation === "generateKnowledgeCandidates") {
+    const snapshot = yield* instance.snapshot.getSnapshot;
+    if (exhaustedUsageWindow(snapshot, DateTime.toEpochMillis(yield* DateTime.now), model)) {
+      return yield* new TextGenerationError({
+        operation,
+        detail:
+          "Automatic memory skipped because the selected provider's usage allowance is exhausted.",
+      });
+    }
   }
   if (operation === "generateModelEvaluation") {
     const snapshot = yield* instance.snapshot.getSnapshot;
@@ -185,6 +196,7 @@ export const make = Effect.gen(function* () {
           registry,
           "generateKnowledgeCandidates",
           input.modelSelection.instanceId,
+          input.modelSelection.model,
         ).pipe(
           Effect.flatMap((textGeneration) => textGeneration.generateKnowledgeCandidates(input)),
         );
