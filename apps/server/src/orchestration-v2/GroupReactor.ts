@@ -133,7 +133,7 @@ const make = Effect.gen(function* () {
         yield* onRunSettled(event.threadId, event.payload.id, event.id);
         return;
       }
-      if (event.type === "thread.deleted") {
+      if (event.type === "thread.deleted" || event.type === "thread.archived") {
         const parentId = event.payload.lineage.parentThreadId;
         if (parentId === null || event.payload.lineage.sideChat !== true) return;
         const parent = yield* projections.getThread(parentId);

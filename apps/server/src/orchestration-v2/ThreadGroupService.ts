@@ -17,6 +17,7 @@ import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -36,9 +37,6 @@ type ThreadGroupError = ThreadGroupCommandError | ThreadGroupDisabledError;
 export class ThreadGroupService extends Context.Service<
   ThreadGroupService,
   {
-    readonly status: (input: {
-      readonly threadId: ThreadId;
-    }) => Effect.Effect<OrchestrationV2ThreadGroup | null, ThreadGroupCommandError>;
     readonly invite: (
       input: Actor & {
         readonly threadId: ThreadId;
@@ -50,9 +48,6 @@ export class ThreadGroupService extends Context.Service<
       readonly seatThreadId: ThreadId;
     }) => Effect.Effect<OrchestrationV2ThreadGroup, ThreadGroupCommandError>;
     readonly end: (input: {
-      readonly threadId: ThreadId;
-    }) => Effect.Effect<OrchestrationV2ThreadGroup, ThreadGroupCommandError>;
-    readonly stop: (input: {
       readonly threadId: ThreadId;
     }) => Effect.Effect<OrchestrationV2ThreadGroup, ThreadGroupCommandError>;
     /** Says something to the group on the caller's behalf. `to` lists handles; absent is everyone. */
@@ -116,12 +111,6 @@ const make = Effect.gen(function* () {
     return thread.group;
   });
 
-  const status: ThreadGroupService["Service"]["status"] = Effect.fn("ThreadGroupService.status")(
-    function* ({ threadId }) {
-      return (yield* readThread("status", threadId)).group ?? null;
-    },
-  );
-
   const invite: ThreadGroupService["Service"]["invite"] = Effect.fn("ThreadGroupService.invite")(
     function* (input) {
       const { threadId, modelSelection } = input;
@@ -155,24 +144,25 @@ const make = Effect.gen(function* () {
       }
       const providers = yield* registry.getProviders;
       const label = groupModelLabel(providers, modelSelection);
-      const returning = yield* Effect.forEach(thread.group?.seats ?? [], (seat) =>
-        engine.getThreadRecords(seat.threadId, []).pipe(
-          Effect.map((records) =>
-            records.thread.deletedAt === null &&
-            modelSelectionsEqual(records.thread.modelSelection, modelSelection) &&
-            seat.status === "left"
-              ? seat
-              : undefined,
+      const returning = yield* Effect.findFirst(
+        thread.group?.seats.filter((seat) => seat.status === "left") ?? [],
+        (seat) =>
+          engine.getThreadRecords(seat.threadId, []).pipe(
+            Effect.map(
+              ({ thread }) =>
+                thread.deletedAt === null &&
+                thread.archivedAt === null &&
+                modelSelectionsEqual(thread.modelSelection, modelSelection),
+            ),
+            Effect.orElseSucceed(() => false),
           ),
-          Effect.orElseSucceed(() => undefined),
-        ),
       );
-      const seatThreadId =
-        returning.find((seat) => seat !== undefined)?.threadId ??
-        ThreadId.make(
-          `thread:group-seat:${yield* random.uuidV4().pipe(Effect.mapError(failed("invite", threadId)))}`,
-        );
-      if (!returning.some((seat) => seat?.threadId === seatThreadId)) {
+      const seatThreadId = Option.isSome(returning)
+        ? returning.value.threadId
+        : ThreadId.make(
+            `thread:group-seat:${yield* random.uuidV4().pipe(Effect.mapError(failed("invite", threadId)))}`,
+          );
+      if (Option.isNone(returning)) {
         yield* engine
           .dispatch({
             type: "thread.fork",
@@ -228,20 +218,6 @@ const make = Effect.gen(function* () {
     return yield* readGroup("end", threadId);
   });
 
-  const stop: ThreadGroupService["Service"]["stop"] = Effect.fn("ThreadGroupService.stop")(
-    function* ({ threadId }) {
-      yield* engine
-        .dispatch({
-          type: "thread.stop",
-          commandId: yield* newCommandId("stop", threadId),
-          threadId,
-          reason: "Stopped with the group",
-        })
-        .pipe(Effect.mapError(failed("stop", threadId)));
-      return yield* readGroup("stop", threadId);
-    },
-  );
-
   const discuss: ThreadGroupService["Service"]["discuss"] = Effect.fn("ThreadGroupService.discuss")(
     function* (input) {
       const { threadId, to } = input;
@@ -286,7 +262,7 @@ const make = Effect.gen(function* () {
     },
   );
 
-  return ThreadGroupService.of({ status, invite, remove, end, stop, discuss });
+  return ThreadGroupService.of({ invite, remove, end, discuss });
 });
 
 export const layer = Layer.effect(ThreadGroupService, make);

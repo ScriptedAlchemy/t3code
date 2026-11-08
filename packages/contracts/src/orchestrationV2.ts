@@ -3802,7 +3802,6 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   threadGroupInvite: "orchestration.threadGroupInvite",
   threadGroupRemove: "orchestration.threadGroupRemove",
   threadGroupEnd: "orchestration.threadGroupEnd",
-  threadGroupStop: "orchestration.threadGroupStop",
   forceStopThread: "orchestration.forceStopThread",
   getTurnItem: "orchestration.getTurnItem",
   launchThread: "orchestration.launchThread",
@@ -4503,10 +4502,6 @@ export const OrchestrationV2RpcSchemas = {
     output: OrchestrationV2ThreadGroup,
   },
   threadGroupEnd: {
-    input: Schema.Struct({ threadId: ThreadId }),
-    output: OrchestrationV2ThreadGroup,
-  },
-  threadGroupStop: {
     input: Schema.Struct({ threadId: ThreadId }),
     output: OrchestrationV2ThreadGroup,
   },

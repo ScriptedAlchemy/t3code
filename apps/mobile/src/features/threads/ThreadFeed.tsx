@@ -1915,7 +1915,7 @@ function renderFeedEntry(
       ? null
       : groupRowSpeaker(props.group, {
           speaker: message.speaker,
-          run: props.runs.find((run) => run.id === message.runId),
+          run: props.group == null ? undefined : props.runs.find((run) => run.id === message.runId),
         });
     if (speaker !== null && !message.streaming && isQuietPass(message.text)) {
       return (

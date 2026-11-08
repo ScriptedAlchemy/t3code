@@ -5110,6 +5110,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     // Ending again, or removing a seat that already left, changes nothing.
     if (command.type === "thread.group.end" && thread.group?.status === "ended") return;
+    if (
+      command.type === "thread.group.remove" &&
+      thread.group != null &&
+      !thread.group.seats.some(
+        (seat) => seat.threadId === command.seatThreadId && seat.status === "seated",
+      )
+    )
+      return;
     const seatLatestRunOrdinal =
       command.type === "thread.group.invite"
         ? nextRunOrdinal(
@@ -5202,7 +5210,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (seat) =>
         projectionStore.getThreadRecords(seat.threadId, ["runs"]).pipe(
           Effect.map((records) =>
-            records.thread.deletedAt === null ? { seat, runs: records.runs } : null,
+            records.thread.deletedAt === null && records.thread.archivedAt === null
+              ? { seat, runs: records.runs }
+              : null,
           ),
           Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
           mapDispatchError(command),
@@ -5388,7 +5398,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         messageRoles: ["user"],
       })
       .pipe(mapDispatchError(command));
-    if (member.thread.deletedAt !== null) return undefined;
+    if (member.thread.deletedAt !== null || member.thread.archivedAt !== null) return undefined;
     // A seat runs on its own thread, so the check a user's own message gets never sees it.
     const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
     if (
@@ -14916,6 +14926,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 text: guestSend.text,
                 context: { version: 1 as const, records: [], guest: guestSend.guest },
               };
+        if (dispatched.groupAudience !== undefined && thread.group?.status !== "active") {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "This group is no longer active. Review the recipients before sending again.",
+          });
+        }
         const audience = groupAudienceForMessage(thread, dispatched);
         if (audience !== null && audience.seats.length === 0 && !audience.includesPrimary) {
           return yield* new OrchestratorDispatchError({
@@ -14929,7 +14946,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             return yield* new OrchestratorDispatchError({
               commandId: command.commandId,
               commandType: command.type,
-              cause: "This discussion has no turns left for that audience.",
+              cause:
+                "There are not enough turns for that audience. Address fewer members to continue.",
             });
           }
           const now = yield* DateTime.now;
@@ -15328,6 +15346,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "thread.group.advance" ||
           command.type === "thread.group.deliver" ||
           command.type === "thread.group.delivered" ||
+          command.type === "thread.group.remove" ||
           command.type === "thread.group.end" ||
           command.type === "thread.group.steer-accepted" ||
           command.type === "thread.group.notice" ||

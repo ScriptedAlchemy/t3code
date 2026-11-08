@@ -291,7 +291,7 @@ export const groupCanAffordMessage = (
   group: OrchestrationV2ThreadGroup,
   audience: GroupAudience,
   createdBy: OrchestrationV2Actor,
-): boolean => createdBy === "user" || turnsSpent(audience) <= availableTurns(group, createdBy);
+): boolean => turnsSpent(audience) <= availableTurns(group, createdBy);
 
 /** A message sets the mode and pays for the members it reaches. */
 export function groupAfterMessage(

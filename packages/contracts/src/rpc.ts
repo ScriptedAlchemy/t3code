@@ -1971,12 +1971,6 @@ const WsOrchestrationV2ThreadGroupEndRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.
   error: Schema.Union([ThreadGroupCommandError, EnvironmentAuthorizationError]),
 });
 
-const WsOrchestrationV2ThreadGroupStopRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.threadGroupStop, {
-  payload: OrchestrationV2RpcSchemas.threadGroupStop.input,
-  success: OrchestrationV2RpcSchemas.threadGroupStop.output,
-  error: Schema.Union([ThreadGroupCommandError, EnvironmentAuthorizationError]),
-});
-
 const WsOrchestrationV2ForceStopThreadRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.forceStopThread, {
   payload: OrchestrationV2RpcSchemas.forceStopThread.input,
   success: OrchestrationV2RpcSchemas.forceStopThread.output,
@@ -2496,7 +2490,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2ThreadGroupInviteRpc,
   WsOrchestrationV2ThreadGroupRemoveRpc,
   WsOrchestrationV2ThreadGroupEndRpc,
-  WsOrchestrationV2ThreadGroupStopRpc,
   WsOrchestrationV2ForceStopThreadRpc,
   WsOrchestrationV2GetTurnItemRpc,
   WsOrchestrationV2GetTurnDiffRpc,

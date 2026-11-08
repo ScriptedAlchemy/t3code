@@ -80,6 +80,10 @@ export function groupAudienceForPrompt(
   const addressed = new Set<ThreadGroupMember>();
   for (const [, token] of prompt.matchAll(ADDRESS_TOKEN)) {
     const handle = token?.replace(TRAILING_PUNCTUATION, "") ?? "";
+    if (sameHandle(handle, "primary")) {
+      addressed.add("primary");
+      continue;
+    }
     const participant = participantForHandle(group, handle);
     if (participant !== undefined) addressed.add(participant.member);
   }
@@ -130,7 +134,13 @@ export function groupRowSpeaker(
 }
 
 /** A trailing `@user` only steers the discussion, so a reader never needs it. */
-export const withoutCloseLine = (text: string): string => text.replace(/\s+@user\s*$/i, "");
+export function withoutCloseLine(text: string): string {
+  const trimmed = text.trimEnd();
+  const newline = trimmed.lastIndexOf("\n");
+  if (newline < 0 || !/^@user(?:\s+@user)*$/i.test(trimmed.slice(newline + 1).trim())) return text;
+  const body = trimmed.slice(0, newline).trimEnd();
+  return body || text;
+}
 
 /** "Astra had nothing to add", for a reply that was exactly `PASS`. */
 export const quietPassLine = (label: string): string => `${label} had nothing to add`;

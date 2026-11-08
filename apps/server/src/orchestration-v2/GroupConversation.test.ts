@@ -555,6 +555,22 @@ describe("the discussion budget", () => {
     expect(groupAfterMessage(groupOf(null), audience, "agent", 1).discussion?.turnsLeft).toBe(4);
   });
 
+  it("applies the eight-turn limit to the initial audience, including the primary", () => {
+    const seats = Array.from({ length: 8 }, (_, i) =>
+      seat(ThreadId.make(`thread:${i}`), `peer-${i}`),
+    );
+    const group = { ...groupOf(null), seats };
+    const audience = {
+      mode: "everyone" as const,
+      seats: seats.map((row) => row.threadId),
+      includesPrimary: true,
+    };
+    expect(groupCanAffordMessage(group, audience, "user")).toBe(false);
+    expect(groupCanAffordMessage(group, { ...audience, includesPrimary: false }, "user")).toBe(
+      true,
+    );
+  });
+
   it("refuses an agent's message the open discussion cannot pay for", () => {
     const low = groupOf(discussion("everyone", 1));
     expect(groupCanAffordMessage(low, audience, "agent")).toBe(false);

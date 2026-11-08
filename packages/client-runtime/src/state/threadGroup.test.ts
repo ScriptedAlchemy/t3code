@@ -54,6 +54,7 @@ describe("groupAudienceForPrompt", () => {
     ["a name that is not a member", group, "@README.md please ", "everyone"],
     ["a peer that left", group, "@opus hello ", "everyone"],
     ["a peer at the end of the prompt", group, "what do you think @astra", [astra]],
+    ["the primary alias", group, "@PRIMARY please answer", ["primary"]],
     ["only a peer", group, "@astra", [astra]],
     ["a peer before a comma", group, "@astra, what do you think?", [astra]],
     ["a peer before a colon", group, "@astra: what do you think?", [astra]],
@@ -72,7 +73,9 @@ describe("withoutCloseLine", () => {
     ["Use a log.\n\n@user", "Use a log."],
     ["Use a log.\n@USER  ", "Use a log."],
     ["Ask @user about it.", "Ask @user about it."],
-    ["Use a log. @user", "Use a log."],
+    ["Ask @user", "Ask @user"],
+    ["Answer.\n@astra @user", "Answer.\n@astra @user"],
+    ["Answer.\r\n  @user\n", "Answer."],
     ["Use a log.\n@astra", "Use a log.\n@astra"],
     ["@user", "@user"],
   ])("reads %j as %j", (text, expected) => {

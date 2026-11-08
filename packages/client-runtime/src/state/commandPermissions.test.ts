@@ -241,7 +241,6 @@ describe("command permissions", () => {
     ORCHESTRATION_V2_WS_METHODS.threadGroupInvite,
     ORCHESTRATION_V2_WS_METHODS.threadGroupRemove,
     ORCHESTRATION_V2_WS_METHODS.threadGroupEnd,
-    ORCHESTRATION_V2_WS_METHODS.threadGroupStop,
   ])("uses the target grant for both availability and execution of %s", (method) =>
     Effect.scoped(
       Effect.gen(function* () {

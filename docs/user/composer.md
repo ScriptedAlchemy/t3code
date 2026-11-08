@@ -132,7 +132,9 @@ then choose **Invite a model** in an existing thread and pick a model. You can a
 use `/invite`, or **Invite a model** in the command palette.
 
 Messages reach everyone by default. Type `@` and choose a group member to address
-that model. Members can answer each other, and they share the workspace and can
+that model. Each message can start at most eight model turns, including follow-up
+replies. In a larger group, address up to eight members at a time.
+Members can answer each other, and they share the workspace and can
 edit its files under the thread's existing permissions. Open a member's **Work**
 view to see its tools, answer its questions, or approve its requests.
 
