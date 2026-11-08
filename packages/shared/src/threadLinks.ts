@@ -11,7 +11,7 @@ const HOSTED_PREFIX = `${DEFAULT_HOSTED_APP_URL}/threads/`;
 const HOSTED_SEGMENT = "[A-Za-z0-9_%-]+";
 const HOSTED_LINK = `${HOSTED_PREFIX.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}${HOSTED_SEGMENT}/${HOSTED_SEGMENT}`;
 // Code comes first in an alternation so a link written inside a code span or fence is skipped.
-const CODE = String.raw`(?<fence>(\`{3,}|~{3,})[\s\S]*?(?:\2|(?![\s\S])))|(?<span>(\`+)(?:(?!\r?\n[ \t]*\r?\n)[\s\S])*?\4)`;
+const CODE = String.raw`(?<fence>(\`{3,}|~{3,})[\s\S]*?(?:\2|(?![\s\S])))|(?<span>(\`+)(?:(?!(?:\r\n|\r(?!\n)|\n)[ \t]*(?:\r\n|\r(?!\n)|\n))[\s\S])*?\4)`;
 const THREAD_LINK_OUTSIDE_CODE = new RegExp(
   String.raw`${CODE}|\[(?<label>[^\]\n]*)\]\(<?(?<href>t3-thread:\/\/v[12]\/[^\s>)]+|${HOSTED_LINK})>?\)|<(?<autolink>t3-thread:\/\/v[12]\/[^\s<>]+|${HOSTED_LINK})>|(?<bare>${HOSTED_LINK})(?![\w%/?#-])`,
   "g",

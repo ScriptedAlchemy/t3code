@@ -152,13 +152,15 @@ describe("thread links", () => {
     );
     for (const literal of [
       "`multiline\n<t3-thread://v1/t1>\ncode`",
+      "`multiline\r\n<t3-thread://v1/t1>\r\ncode`",
+      "`multiline\r<t3-thread://v1/t1>\rcode`",
       "```md\n\n<t3-thread://v1/t1>\n\n```",
       "~~~md\n\n<t3-thread://v1/t1>\n\n~~~",
     ]) {
       expect(threadLinkRefs(literal, local)).toEqual([]);
       expect(relabelThreadLinks(literal, local, () => "New")).toBe(literal);
     }
-    for (const newline of ["\n", "\r\n"]) {
+    for (const newline of ["\n", "\r\n", "\r"]) {
       for (const blank of ["", " \t"]) {
         const paragraphs = [
           "An unmatched ` in one paragraph.",
