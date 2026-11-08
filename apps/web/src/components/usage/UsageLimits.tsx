@@ -19,7 +19,7 @@ import {
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
 import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
-import { Fragment, useLayoutEffect, useState } from "react";
+import { Fragment, useLayoutEffect, useRef, useState } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { observeResize } from "../../lib/observeResize";
@@ -243,25 +243,35 @@ export function useResetCredit(
 ) {
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const consume = useAtomCommand(serverEnvironment.consumeResetCredit, { reportFailure: false });
+  const inFlight = useRef(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
   const redeem = async () => {
     setConfirming(false);
-    if (!readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
+    if (inFlight.current || !readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
+    inFlight.current = true;
     setBusy(true);
     setStatus(null);
-    const result = await consume({ environmentId, input });
-    setBusy(false);
-    const message =
-      result._tag === "Success"
-        ? (result.value.warning ?? OUTCOME_TEXT[result.value.outcome])
-        : "error" in result.cause && result.cause.error instanceof Error
-          ? result.cause.error.message
-          : "Could not use the reset credit.";
-    setStatus(message);
-    return { reset: result._tag === "Success" && result.value.outcome === "reset", message };
+    try {
+      const result = await consume({ environmentId, input });
+      const message =
+        result._tag === "Success"
+          ? (result.value.warning ?? OUTCOME_TEXT[result.value.outcome])
+          : "error" in result.cause && result.cause.error instanceof Error
+            ? result.cause.error.message
+            : "Could not use the reset credit.";
+      setStatus(message);
+      return { reset: result._tag === "Success" && result.value.outcome === "reset", message };
+    } catch {
+      const message = "Could not use the reset credit.";
+      setStatus(message);
+      return { reset: false, message };
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
   };
 
   return { canManageProviders, confirming, setConfirming, busy, status, redeem };
