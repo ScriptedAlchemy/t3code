@@ -148,6 +148,7 @@ describe("ssh tunnel scripts", () => {
     "systemd-unavailable",
     "systemd-unavailable-xdg",
     "systemd-unavailable-relative-xdg",
+    "systemd-unavailable-login-xdg",
     "none",
   ] as const;
   it.live.each(serviceManagers)(
@@ -184,7 +185,7 @@ esac
           yield* fs.writeFileString(`${agents}/com.t3tools.t3code.service.plist`, "installed");
         }
         const xdgConfigHome =
-          manager === "systemd-unavailable-xdg"
+          manager === "systemd-unavailable-xdg" || manager === "systemd-unavailable-login-xdg"
             ? `${root}/custom config`
             : manager === "systemd-unavailable-relative-xdg"
               ? "relative-config"
