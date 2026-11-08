@@ -4,7 +4,7 @@ import {
   type ProviderConsumeResetCreditInput,
   type ProviderConsumeResetCreditOutcome,
 } from "@t3tools/contracts";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import * as Dialog from "../../components/ui/Dialog";
 import { serverEnvironment } from "../../state/server";
@@ -27,28 +27,36 @@ export function useResetCredit(
   const consume = useAtomCommand(serverEnvironment.consumeResetCredit, {
     reportFailure: false,
   });
+  const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
   const redeem = async () => {
-    if (!readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
+    if (inFlight.current || !readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
+    inFlight.current = true;
     setBusy(true);
     setStatus(null);
-    const result = await consume({ environmentId, input });
-    setBusy(false);
-    if (result._tag === "Success") {
-      setStatus(result.value.warning ?? OUTCOME_TEXT[result.value.outcome]);
-      return;
+    try {
+      const result = await consume({ environmentId, input });
+      if (result._tag === "Success") {
+        setStatus(result.value.warning ?? OUTCOME_TEXT[result.value.outcome]);
+        return;
+      }
+      setStatus(
+        "error" in result.cause && result.cause.error instanceof Error
+          ? result.cause.error.message
+          : "Could not use the reset credit.",
+      );
+    } catch {
+      setStatus("Could not use the reset credit.");
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
     }
-    setStatus(
-      "error" in result.cause && result.cause.error instanceof Error
-        ? result.cause.error.message
-        : "Could not use the reset credit.",
-    );
   };
 
   const confirm = () => {
-    if (!readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
+    if (inFlight.current || !readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
     Dialog.alert(
       "Use a reset credit?",
       "This redeems one credit on your account and clears the current rate-limit windows. It cannot be undone.",
