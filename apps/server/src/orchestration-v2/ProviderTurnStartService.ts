@@ -297,7 +297,7 @@ export const layer: Layer.Layer<
               }),
             )
             .pipe(Effect.catchCause(() => Effect.succeed(false))),
-        loadRunInterruptReason: () =>
+        loadRunInterrupt: () =>
           projectionStore
             .getThreadRecords(
               input.threadId,
@@ -309,7 +309,7 @@ export const layer: Layer.Layer<
             )
             .pipe(
               Effect.map((records) =>
-                RunExecutionService.runInterruptReason(records, input.providerThreadId),
+                RunExecutionService.resolveRunInterrupt(records, input.providerThreadId),
               ),
               Effect.catchCause(() => Effect.undefined),
             ),
@@ -1836,7 +1836,7 @@ export const layer: Layer.Layer<
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
-        loadRunInterruptReason: runControls.loadRunInterruptReason,
+        loadRunInterrupt: runControls.loadRunInterrupt,
         loadRunOpenItems: runControls.loadRunOpenItems,
         message: {
           messageId: message.id,

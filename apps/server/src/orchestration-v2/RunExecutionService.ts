@@ -557,6 +557,11 @@ export const RunExecutionServiceV2Error = Schema.Union([
 ]);
 export type RunExecutionServiceV2Error = typeof RunExecutionServiceV2Error.Type;
 
+interface RunInterrupt {
+  readonly source: "request" | "detach";
+  readonly message: string;
+}
+
 export interface RunExecutionServiceV2StartRootRunInput {
   readonly commandId: CommandId;
   readonly appThread: OrchestrationV2AppThread;
@@ -579,7 +584,7 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly shouldStartProviderTurn?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
-  readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
+  readonly loadRunInterrupt?: () => Effect.Effect<RunInterrupt | undefined, never>;
   readonly loadRunOpenItems?: () => Effect.Effect<ReadonlyArray<OrchestrationV2TurnItem>, never>;
   readonly message: ProviderAdapter.ProviderAdapterV2TurnMessage;
   readonly modelSelection: ModelSelection;
@@ -634,12 +639,12 @@ export const layer: Layer.Layer<
         readonly attempt: OrchestrationV2RunAttempt;
         readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
         readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
-        readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
+        readonly loadRunInterrupt?: () => Effect.Effect<RunInterrupt | undefined, never>;
         readonly openRunOwnedSubagents?: OpenRunOwnedSubagentProjection;
         // Root turn snapshot written with the run when T3 ends the run itself.
         readonly abandonedProviderTurn?: OrchestrationV2ProviderTurn;
         // Calls a detached session can never finish. Left open, restart recovery wakes the agent for them.
-        readonly detachedOpenItems?: ReadonlyArray<OrchestrationV2TurnItem>;
+        readonly loadRunOpenItems?: RunExecutionServiceV2StartRootRunInput["loadRunOpenItems"];
         readonly terminal: ProviderTerminalEvent;
         readonly completedAt?: DateTime.Utc;
         readonly failureItemPersisted: boolean;
@@ -664,10 +669,8 @@ export const layer: Layer.Layer<
                 ? false
                 : yield* input.hasUnpairedRunInterruptRequest();
             if (hasUnpairedRequest) {
-              const reason =
-                input.loadRunInterruptReason === undefined
-                  ? undefined
-                  : yield* input.loadRunInterruptReason();
+              const interrupt =
+                input.loadRunInterrupt === undefined ? undefined : yield* input.loadRunInterrupt();
               yield* eventSink.writeWithEffects({
                 effects: [],
                 events: [
@@ -684,7 +687,7 @@ export const layer: Layer.Layer<
                       run: input.run,
                       rootNode: input.rootNode,
                       providerThread: input.providerThread,
-                      reason,
+                      reason: interrupt?.message,
                       completedAt,
                     }),
                   },
@@ -696,12 +699,18 @@ export const layer: Layer.Layer<
           return;
         }
         const allocateEventId = () => idAllocator.allocate.event({ threadId: input.run.threadId });
+        const interrupt =
+          input.terminal.status === "interrupted" && input.loadRunInterrupt !== undefined
+            ? yield* input.loadRunInterrupt()
+            : undefined;
         const reason =
           input.terminal.status === "interrupted"
-            ? ((input.loadRunInterruptReason === undefined
-                ? undefined
-                : yield* input.loadRunInterruptReason()) ?? input.terminal.reason)
+            ? (interrupt?.message ?? input.terminal.reason)
             : undefined;
+        const detachedOpenItems =
+          interrupt?.source === "detach" && input.loadRunOpenItems !== undefined
+            ? yield* input.loadRunOpenItems()
+            : [];
         const open = input.openRunOwnedSubagents ?? emptyOpenRunOwnedSubagentProjection();
         const hasOpenSubagentProjection =
           open.subagents.size > 0 ||
@@ -803,7 +812,7 @@ export const layer: Layer.Layer<
           ],
           events: [
             ...cascadedSubagentEvents,
-            ...(yield* Effect.forEach(input.detachedOpenItems ?? [], (item) =>
+            ...(yield* Effect.forEach(detachedOpenItems, (item) =>
               allocateEventId().pipe(
                 Effect.map((id) => ({
                   id,
@@ -1227,9 +1236,10 @@ export const layer: Layer.Layer<
               : {
                   hasUnpairedRunInterruptRequest: input.hasUnpairedRunInterruptRequest,
                 }),
-            ...(input.loadRunInterruptReason === undefined
+            ...(input.loadRunInterrupt === undefined
               ? {}
-              : { loadRunInterruptReason: input.loadRunInterruptReason }),
+              : { loadRunInterrupt: input.loadRunInterrupt }),
+            loadRunOpenItems: input.loadRunOpenItems,
             openRunOwnedSubagents: openSubagents,
             terminal,
             failureItemPersisted: terminal === reported && terminal.status === "failed",
@@ -1678,9 +1688,11 @@ export const layer: Layer.Layer<
                 Effect.gen(function* () {
                   const completedAt = yield* DateTime.now;
                   // Detaching closes the stream of a provider with one thread per session on purpose.
-                  const detached =
-                    input.loadRunInterruptReason !== undefined &&
-                    (yield* input.loadRunInterruptReason()) === SESSION_DETACHED_REASON;
+                  const interrupt =
+                    input.loadRunInterrupt === undefined
+                      ? undefined
+                      : yield* input.loadRunInterrupt();
+                  const detached = interrupt?.source === "detach";
                   if (!detached) {
                     yield* Effect.logWarning("orchestration V2 provider event ingestion failed", {
                       runId: input.run.id,
@@ -1743,9 +1755,8 @@ export const layer: Layer.Layer<
                     },
                     openRunOwnedSubagents: openSubagents,
                     ...(abandonedProviderTurn === null ? {} : { abandonedProviderTurn }),
-                    ...(detached && input.loadRunOpenItems !== undefined
-                      ? { detachedOpenItems: yield* input.loadRunOpenItems() }
-                      : {}),
+                    loadRunInterrupt: () => Effect.succeed(interrupt),
+                    loadRunOpenItems: input.loadRunOpenItems,
                     completedAt,
                     terminal: detached
                       ? {
@@ -1954,7 +1965,7 @@ export const USER_STOP_REASON = "Stopped by user";
 export const SESSION_DETACHED_REASON = "Ended to apply a thread change";
 
 /** Detaching a session drops its thread binding in the commit that ends the turn. */
-export function runInterruptReason(
+export function resolveRunInterrupt(
   records: {
     readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
     readonly providerThreads: ReadonlyArray<
@@ -1963,14 +1974,15 @@ export function runInterruptReason(
     readonly providerSessions: ReadonlyArray<{ readonly id: ProviderSessionId }>;
   },
   providerThreadId: OrchestrationV2ProviderThread["id"],
-): string | undefined {
+): RunInterrupt | undefined {
   const request = records.turnItems.find((item) => item.type === "run_interrupt_request");
-  if (request?.type === "run_interrupt_request") return request.message;
+  if (request?.type === "run_interrupt_request")
+    return { source: "request", message: request.message };
   const sessionId = records.providerThreads.find(
     (thread) => thread.id === providerThreadId,
   )?.providerSessionId;
   return sessionId != null && !records.providerSessions.some((session) => session.id === sessionId)
-    ? SESSION_DETACHED_REASON
+    ? { source: "detach", message: SESSION_DETACHED_REASON }
     : undefined;
 }
 

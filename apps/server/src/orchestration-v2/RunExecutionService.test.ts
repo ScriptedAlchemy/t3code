@@ -2616,7 +2616,10 @@ it.effect.each([
       const { written, observed, committedEffects } = yield* captureRootRunTermination({
         key: "hard-stop",
         shouldFinalizeRun: () => Effect.succeed(true),
-        loadRunInterruptReason: () => Effect.succeed(requestReason),
+        loadRunInterrupt: () =>
+          Effect.succeed(
+            requestReason === undefined ? undefined : { source: "request", message: requestReason },
+          ),
         events: (ids) =>
           Stream.make({ ...rootTerminalEvent(ids, "interrupted"), reason: providerReason }),
       });
@@ -2644,7 +2647,7 @@ it.each([
   const providerThreadId = ProviderThreadId.make("provider-thread:reason");
   const providerSessionId = ProviderSessionId.make("provider-session:reason");
   assert.equal(
-    RunExecutionService.runInterruptReason(
+    RunExecutionService.resolveRunInterrupt(
       {
         turnItems:
           request === undefined
@@ -2654,7 +2657,7 @@ it.each([
         providerSessions: bound ? [{ id: providerSessionId }] : [],
       },
       providerThreadId,
-    ),
+    )?.message,
     expected,
   );
 });
@@ -2723,36 +2726,56 @@ it.effect("refreshes pull requests after a provider stream exits with an error",
 );
 
 it.effect.each([
-  { reason: RunExecutionService.SESSION_DETACHED_REASON, run: "run:interrupted" },
-  { reason: "Stopped by user", run: "run:failed" },
-])("ends a run whose stream closes with $reason as $run", ({ reason, run }) =>
-  Effect.gen(function* () {
-    const { written, observed } = yield* captureRootRunTermination({
-      key: `detached-stream:${run}`,
-      shouldFinalizeRun: () => Effect.succeed(true),
-      loadRunInterruptReason: () => Effect.succeed(reason),
-      loadRunOpenItems: () =>
-        Effect.succeed([{ type: "dynamic_tool", status: "running" } as OrchestrationV2TurnItem]),
-      events: () =>
-        Stream.fail(
-          new ProviderAdapter.ProviderAdapterEventStreamError({
-            driver,
-            providerSessionId: ProviderSessionId.make("session:detached"),
-            cause: "Workspace changed.",
-          }),
-        ),
-    });
-    assert.equal(observed[0], run);
-    if (run === "run:failed") return;
-    assert.deepEqual(
-      written.map((item) => [item.type, item.status]),
-      [
-        ["dynamic_tool", "interrupted"],
-        ["run_interrupt_result", "interrupted"],
-      ],
-    );
-    assert.equal(written[1]?.type === "run_interrupt_result" ? written[1].message : null, reason);
-  }),
+  { detached: true, streamError: true, run: "run:interrupted" },
+  { detached: true, streamError: false, run: "run:interrupted" },
+  { detached: false, streamError: true, run: "run:failed" },
+])(
+  "finalizes open tools on detach (detached=$detached, streamError=$streamError)",
+  ({ detached, streamError, run }) =>
+    Effect.gen(function* () {
+      const providerThreadId = ProviderThreadId.make("provider-thread:handoff");
+      const providerSessionId = ProviderSessionId.make("session:handoff");
+      const reason = "Ended to apply a thread change";
+      const { written, observed } = yield* captureRootRunTermination({
+        key: `detached-stream:${run}`,
+        shouldFinalizeRun: () => Effect.succeed(true),
+        loadRunInterrupt: () =>
+          Effect.succeed(
+            RunExecutionService.resolveRunInterrupt(
+              {
+                turnItems: detached
+                  ? []
+                  : [{ type: "run_interrupt_request", message: reason } as OrchestrationV2TurnItem],
+                providerThreads: [{ id: providerThreadId, providerSessionId }],
+                providerSessions: detached ? [] : [{ id: providerSessionId }],
+              },
+              providerThreadId,
+            ),
+          ),
+        loadRunOpenItems: () =>
+          Effect.succeed([{ type: "dynamic_tool", status: "running" } as OrchestrationV2TurnItem]),
+        events: (ids) =>
+          streamError
+            ? Stream.fail(
+                new ProviderAdapter.ProviderAdapterEventStreamError({
+                  driver,
+                  providerSessionId,
+                  cause: "Workspace changed.",
+                }),
+              )
+            : Stream.make(rootTerminalEvent(ids, "interrupted")),
+      });
+      assert.equal(observed[0], run);
+      if (run === "run:failed") return;
+      assert.deepEqual(
+        written.map((item) => [item.type, item.status]),
+        [
+          ["dynamic_tool", "interrupted"],
+          ["run_interrupt_result", "interrupted"],
+        ],
+      );
+      assert.equal(written[1]?.type === "run_interrupt_result" ? written[1].message : null, reason);
+    }),
 );
 
 it.effect("records a provider's input rejection at turn start in the terminal error", () =>
@@ -3223,7 +3246,7 @@ function captureRootRunTermination(input: {
   readonly shouldFinalizeRun: () => Effect.Effect<boolean, ProjectionStore.ProjectionStoreV2Error>;
   readonly rejectTerminalWrite?: boolean;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
-  readonly loadRunInterruptReason?: () => Effect.Effect<string | undefined, never>;
+  readonly loadRunInterrupt?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["loadRunInterrupt"];
   readonly loadRunOpenItems?: () => Effect.Effect<ReadonlyArray<OrchestrationV2TurnItem>, never>;
   readonly hasPendingBackgroundWorkForThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["hasPendingBackgroundWorkForThread"];
   readonly seedOpenSubagent?: boolean;
@@ -3412,9 +3435,9 @@ function captureRootRunTermination(input: {
         attemptId: ids.attemptId,
         providerTurnOrdinal: 1,
         shouldFinalizeRun: input.shouldFinalizeRun,
-        ...(input.loadRunInterruptReason === undefined
+        ...(input.loadRunInterrupt === undefined
           ? {}
-          : { loadRunInterruptReason: input.loadRunInterruptReason }),
+          : { loadRunInterrupt: input.loadRunInterrupt }),
         ...(input.loadRunOpenItems === undefined
           ? {}
           : { loadRunOpenItems: input.loadRunOpenItems }),
