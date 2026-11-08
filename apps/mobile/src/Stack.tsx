@@ -119,6 +119,7 @@ import { SettingsKeyboardRouteScreen } from "./features/settings/SettingsKeyboar
 import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import { SettingsVoiceRouteScreen } from "./features/settings/SettingsVoiceRouteScreen";
 import { SettingsVoiceModelsRouteScreen } from "./features/settings/SettingsVoiceModelsRouteScreen";
+import { SkillsLibraryIssuesRouteScreen } from "./features/settings/SkillsLibrarySettings";
 import {
   SettingsOpenSourceLicenseRouteScreen,
   SettingsOpenSourceLicensesRouteScreen,
@@ -209,6 +210,10 @@ const SETTINGS_SCREENS = {
     screen: SettingsZackRouteScreen,
     linking: "settings/labs/zack",
     options: settingsPage("Zack"),
+  }),
+  SettingsSkillsLibraryIssues: createNativeStackScreen({
+    screen: SkillsLibraryIssuesRouteScreen,
+    options: SEARCH_SHEET_ROUTE,
   }),
   SettingsProviderAccounts: createNativeStackScreen({
     screen: SettingsProviderAccountsRouteScreen,
