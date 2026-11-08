@@ -77,9 +77,13 @@ exit 7
   const requests: Array<string> = [];
   const server = NodeHttp.createServer((request, response) => {
     requests.push(request.url ?? "");
-    if (request.url === `/v${VERSION}/SHA256SUMS`) {
+    const url = new URL(request.url ?? "", "http://localhost");
+    const prefix = url.pathname.startsWith("/mirror/") ? "/mirror" : "";
+    if (prefix && url.search !== "?region=test") {
+      response.writeHead(400).end();
+    } else if (url.pathname === `${prefix}/v${VERSION}/SHA256SUMS`) {
       response.end(`${checksum}  ${archiveName}\n`);
-    } else if (request.url === `/v${VERSION}/${archiveName}`) {
+    } else if (url.pathname === `${prefix}/v${VERSION}/${archiveName}`) {
       response.writeHead(200, { "Content-Length": archive.length }).end(archive);
     } else {
       response.writeHead(404).end();
@@ -153,7 +157,7 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
           PATH: (yield* HostProcess.Environment).PATH,
           T3CODE_HOME: home,
           T3CODE_TEST_CALLS: path.join(root, "calls"),
-          T3CODE_RELEASE_BASE_URL: release.baseUrl,
+          T3CODE_RELEASE_BASE_URL: `${release.baseUrl}/mirror///?region=test#download`,
         };
         const launcher = yield* fs.realPath(path.join(packageDir, "bin/t3.mjs"));
         const first = yield* run(process.execPath, [launcher, "serve", "a b"], {
@@ -177,6 +181,10 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
           [VERSION],
         );
 
+        assert.deepStrictEqual(release.requests, [
+          `/mirror/v${VERSION}/SHA256SUMS?region=test`,
+          `/mirror/v${VERSION}/t3-${VERSION}-${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}.tar.gz?region=test`,
+        ]);
         const requestsAfterFirst = release.requests.length;
         const second = yield* run(process.execPath, [launcher, "--version"], { cwd: root, env });
         assert.equal(second.exitCode, 0);
