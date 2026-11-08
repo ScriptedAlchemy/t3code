@@ -64,7 +64,6 @@ export interface SettingsSearchItem {
   readonly cloudOnly?: boolean;
   readonly environmentOnly?: boolean;
   readonly providerSettingsOnly?: boolean;
-  readonly macProviderSettingsOnly?: boolean;
   readonly localBackendManagementOnly?: boolean;
   readonly localEnvironmentOnly?: boolean;
   readonly wslAvailableOnly?: boolean;
@@ -80,7 +79,6 @@ export interface SettingsSearchAvailability {
   readonly hasCloudPublicConfig: boolean;
   readonly hasEnvironment: boolean;
   readonly hasProviderSettingsEnvironment: boolean;
-  readonly hasMacProviderSettingsEnvironment: boolean;
   readonly canManageLocalBackend: boolean;
   readonly isWslSettingsRowVisible: boolean;
   readonly hasThreadAutoSettlement: boolean;
@@ -496,6 +494,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["beta boring sidebar folder rows multiline branch pull request details"],
   },
   {
+    id: "tool-call-visibility",
+    title: "Tool calls in chat",
+    to: "/settings/labs",
+    searchTerms: [
+      "beta hide tool calls commands edits searches work log activity quiet chat zen final answers only",
+    ],
+  },
+  {
     id: "guest-links",
     title: "Guest links",
     to: "/settings/labs",
@@ -510,6 +516,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["beta link another machine vps peer agents work there delegate"],
   },
   {
+    id: "auto-code-index",
+    title: "Automatic code indexing",
+    to: "/settings/labs",
+    scope: "environment",
+    searchTerms: ["beta code graph index worktree automatic settle cleanup background"],
+  },
+  {
     id: "simlock-hosts",
     title: "Simlock device hosts (alpha)",
     to: "/settings/labs",
@@ -518,9 +531,11 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "voice-transcription-destination",
-    title: "Send microphone audio to",
+    title: "Transcribe with",
     to: "/settings/voice",
-    searchTerms: ["speech voice dictation stt transcription environment machine consent privacy"],
+    searchTerms: [
+      "send microphone audio dictation destination speech voice stt transcription environment machine consent privacy cloud OpenAI Grok OpenRouter",
+    ],
   },
   {
     id: "voice-microphone",
@@ -775,12 +790,10 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "assisted-learning",
-    title: "Suggest facts from finished runs",
+    title: "Save facts from finished runs",
     to: "/settings/labs",
     scope: "project-defaults",
-    searchTerms: [
-      "zack assisted learning project memory knowledge facts extract suggestions model",
-    ],
+    searchTerms: ["zack automatic assisted learning project memory knowledge facts extract model"],
   },
   {
     id: "conversation-summaries",
@@ -997,14 +1010,6 @@ export const SETTINGS_SEARCH_ITEMS = [
       "usage sources CLIProxyAPI CLI proxy hub quota subscription limits management key add remove",
     ],
     providerSettingsOnly: true,
-  },
-  {
-    id: "cursor-keychain-usage",
-    title: "Cursor account usage",
-    to: "/settings/providers",
-    searchTerms: ["cursor macOS keychain usage tokens cost limits permission"],
-    providerSettingsOnly: true,
-    macProviderSettingsOnly: true,
   },
   {
     id: "skills-library",
@@ -1547,7 +1552,6 @@ export function filterAvailableSettingsSearchItems(
       (!item.cloudOnly || availability.hasCloudPublicConfig) &&
       (!item.environmentOnly || availability.hasEnvironment) &&
       (!item.providerSettingsOnly || availability.hasProviderSettingsEnvironment) &&
-      (!item.macProviderSettingsOnly || availability.hasMacProviderSettingsEnvironment) &&
       (!item.localBackendManagementOnly || availability.canManageLocalBackend) &&
       (!item.localEnvironmentOnly || !availability.localEnvironmentDisabled) &&
       (!item.wslAvailableOnly || availability.isWslSettingsRowVisible) &&

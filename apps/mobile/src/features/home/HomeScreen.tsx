@@ -89,7 +89,6 @@ import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-sw
 import { useFabScroll } from "./FabScrollContext";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
-import { ProjectLoomEntry } from "../loom/ProjectLoomEntry";
 
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -103,6 +102,7 @@ interface HomeScreenProps {
   readonly searchQuery: string;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  readonly hideOfflineEnvironments: boolean;
   readonly projectSortOrder: HomeProjectSortOrder;
   readonly projectGroupingMode: SidebarProjectGroupingMode;
   readonly onSearchQueryChange: (query: string) => void;
@@ -466,6 +466,7 @@ export function HomeScreen(props: HomeScreenProps) {
     threads: props.threads,
     pendingTasks: props.pendingTasks,
     environmentId: props.selectedEnvironmentId,
+    hideOfflineEnvironments: props.hideOfflineEnvironments,
     projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
     searchQuery: props.searchQuery,
     searchMatches: threadSearchMatchByKey,
@@ -671,15 +672,10 @@ export function HomeScreen(props: HomeScreenProps) {
     catalogState: props.catalogState,
     projectCount: props.projects.length,
   });
-  const loomProjects = props.projects.filter(
-    (project) =>
-      props.selectedEnvironmentId === null || project.environmentId === props.selectedEnvironmentId,
-  );
 
   if (!hasAnyThreads) {
     return (
       <View className={containerClassName}>
-        <ProjectLoomEntry projects={loomProjects} />
         <ScreenContent surface={sidebarSurface ? "drawer" : "screen"}>
           <View
             className={cn(
@@ -734,7 +730,6 @@ export function HomeScreen(props: HomeScreenProps) {
   const v2ListHeader = (
     <>
       {listHeader}
-      <ProjectLoomEntry projects={loomProjects} />
       {Platform.OS === "ios" && workspace ? (
         <ThreadListFilters
           gutter={sidebarSurface ? 8 : 0}
@@ -747,6 +742,7 @@ export function HomeScreen(props: HomeScreenProps) {
           selectedProjectKey={props.selectedProjectKey}
           onEnvironmentChange={props.onEnvironmentChange}
           onProjectChange={props.onProjectChange}
+          hideOfflineEnvironments={props.hideOfflineEnvironments}
         />
       ) : null}
     </>
@@ -757,6 +753,12 @@ export function HomeScreen(props: HomeScreenProps) {
       <EmptyState
         title="No results"
         detail={`No threads matching "${props.searchQuery}".`}
+        variant={Platform.OS === "android" ? "plain" : undefined}
+      />
+    ) : props.hideOfflineEnvironments ? (
+      <EmptyState
+        title="No visible threads"
+        detail="Turn off Hide offline environments in Settings → Labs → Zack settings, or choose another filter."
         variant={Platform.OS === "android" ? "plain" : undefined}
       />
     ) : v2ScopedProjectGroup !== null ? (
@@ -816,6 +818,8 @@ export function HomeScreen(props: HomeScreenProps) {
                 recycleItems
                 extraData={v2ExtraData}
                 ListHeaderComponent={v2ListHeader}
+                // Lifted above the rows so an iOS filter menu's dismissal morph is not covered.
+                ListHeaderComponentStyle={{ zIndex: 1 }}
                 ListFooterComponent={
                   settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0 ? (
                     <ThreadListV2ShowMoreRow

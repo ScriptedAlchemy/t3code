@@ -7,6 +7,7 @@ import { getClientSettings, setClientSettings } from "./methods/clientSettings.t
 import { getConnectionCatalog, setConnectionCatalog } from "./methods/connectionCatalog.ts";
 import { discoverLanServices } from "./methods/lanDiscovery.ts";
 import {
+  getHostEnvironmentId,
   getLocalEnvironmentEnabled,
   setLocalEnvironmentEnabled,
 } from "./methods/localEnvironment.ts";
@@ -39,6 +40,7 @@ import {
   getLocalEnvironmentBearerToken,
   installRelayTelemetryEnabled,
   getSystemLocale,
+  getPreferredSystemLanguages,
   getWindowFullscreenState,
   openExternal,
   readMedia,
@@ -95,10 +97,12 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handleSync(getAppBranding);
   yield* installRelayTelemetryEnabled();
   yield* ipc.handleSync(getSystemLocale);
+  yield* ipc.handleSync(getPreferredSystemLanguages);
   yield* ipc.handleSync(getWindowFullscreenState);
   yield* ipc.handleSync(getLocalEnvironmentBootstraps);
   yield* ipc.handleSync(getLocalEnvironmentEnabled);
   yield* ipc.handle(setLocalEnvironmentEnabled);
+  yield* ipc.handle(getHostEnvironmentId);
   yield* ipc.handle(getLocalEnvironmentBearerToken);
 
   yield* ipc.handle(getClientSettings);

@@ -38,12 +38,45 @@ it("saves the scope from every update made in one event", async () => {
   act(() => {
     controls!.setSelectedEnvironmentId(ENVIRONMENT);
     controls!.setSelectedProjectKey("env-1:project-1");
+    controls!.setHideOfflineEnvironments(true);
   });
 
   expect(harness.saved.at(-1)).toEqual({
-    threadListFilters: { environmentId: ENVIRONMENT, projectKey: "env-1:project-1" },
+    threadListFilters: {
+      environmentId: ENVIRONMENT,
+      projectKey: "env-1:project-1",
+      hideOfflineEnvironments: true,
+    },
   });
   expect(controls!.options.selectedEnvironmentId).toBe(ENVIRONMENT);
   expect(controls!.options.selectedProjectKey).toBe("env-1:project-1");
+  expect(controls!.options.hideOfflineEnvironments).toBe(true);
+  const savedFilters = controls!.options;
   act(() => root.unmount());
+  const restored = createRoot(document.createElement("div"));
+  await act(async () =>
+    restored.render(
+      <HomeListOptionsProvider
+        projectGroupingMode="repository"
+        savedFilters={{
+          environmentId: savedFilters.selectedEnvironmentId,
+          projectKey: savedFilters.selectedProjectKey,
+          hideOfflineEnvironments: savedFilters.hideOfflineEnvironments,
+        }}
+      >
+        <Probe />
+      </HomeListOptionsProvider>,
+    ),
+  );
+  expect(controls!.options.hideOfflineEnvironments).toBe(true);
+  act(() => controls!.setHideOfflineEnvironments(false));
+  expect(controls!.options.hideOfflineEnvironments).toBe(false);
+  expect(harness.saved.at(-1)).toEqual({
+    threadListFilters: {
+      environmentId: ENVIRONMENT,
+      projectKey: "env-1:project-1",
+      hideOfflineEnvironments: false,
+    },
+  });
+  act(() => restored.unmount());
 });

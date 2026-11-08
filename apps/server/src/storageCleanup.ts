@@ -43,6 +43,7 @@ import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementService.ts";
 import * as WorktreeBranches from "./orchestration-v2/WorktreeBranches.ts";
+import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -203,7 +204,7 @@ export function storageCleanupActivityAt(thread: OrchestrationV2ThreadShell): nu
 }
 
 /** Only a complete subagent or side chat chain within this worktree shares ownership. */
-function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | "lineage">>(
+export function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | "lineage">>(
   threads: ReadonlyArray<T>,
 ) {
   if (threads.length === 1) return threads[0];
@@ -231,7 +232,7 @@ function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | "lineag
   return owner;
 }
 
-function worktreeSettlementChain(
+export function worktreeSettlementChain(
   thread: OrchestrationV2ThreadShell,
   byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell>,
   now: number,
@@ -303,6 +304,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const worktreeBranches = yield* WorktreeBranches.WorktreeBranches;
+  const codeIntelligence = yield* CodeIntelligence.CodeIntelligence;
   const gitManager = yield* GitManager.GitManager;
   const terminals = yield* TerminalManager.TerminalManager;
   const fs = yield* FileSystem.FileSystem;
@@ -939,6 +941,7 @@ const make = Effect.gen(function* () {
           checkout._tag !== "Bound" &&
           snapshot.threads.some(
             (other) =>
+              other.projectId === thread.projectId &&
               other.worktreePath !== null &&
               path.resolve(other.worktreePath) !== worktreePath &&
               group.some((member) => member.branch !== null && member.branch === other.branch),
@@ -1163,8 +1166,10 @@ const make = Effect.gen(function* () {
         const blocked = yield* blockedSinceCheck();
         if (blocked !== null) return keep(blocked);
         const bytes = yield* measureWorktree(worktreePath);
-        const blockedWhileMeasuring = yield* blockedSinceCheck();
-        if (blockedWhileMeasuring !== null) return keep(blockedWhileMeasuring);
+        // Stop builds while their sources still exist, then recheck activity and checkout safety.
+        yield* codeIntelligence.removeCheckoutIndex(worktreePath);
+        const blockedBeforeRemoval = yield* blockedSinceCheck();
+        if (blockedBeforeRemoval !== null) return keep(blockedBeforeRemoval);
         const observed = yield* worktreeBranches.observe(worktreePath);
         if (
           checkout._tag === "Detached"
@@ -1199,7 +1204,7 @@ const make = Effect.gen(function* () {
           const changes = yield* localChangesReason(worktreePath, settings);
           if (changes !== null) return keep(changes);
         }
-        // Last, so nothing that runs after this can drop the ref that holds the commit.
+        // Recheck recovery refs immediately before removal.
         const finalBlocker = yield* checkCheckout();
         if (finalBlocker !== null) return keep(finalBlocker);
         yield* removeLinkedWorktree({
@@ -1472,9 +1477,12 @@ const make = Effect.gen(function* () {
           )
             return Effect.void;
         }
-        return anyWorktreePolicy(lastSettings, (rules) => rules.worktreeOnDelete)
-          ? requestSweep
-          : Effect.void;
+        if (!anyWorktreePolicy(lastSettings, (rules) => rules.worktreeOnDelete)) return Effect.void;
+        return event.type === "provider-session.updated" && event.payload.status === "error"
+          ? providerSessions
+              .isLive(event.payload.id)
+              .pipe(Effect.flatMap((live) => (live ? Effect.void : requestSweep)))
+          : requestSweep;
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("Storage cleanup event stream failed", { cause }),

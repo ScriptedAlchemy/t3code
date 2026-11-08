@@ -1,5 +1,4 @@
 import { useActiveNewTask } from "../../state/active-new-task";
-import { ProjectLoomEntry } from "../loom/ProjectLoomEntry";
 import { ThreadUndoNotice } from "../home/ThreadUndoNotice";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
 import {
@@ -269,6 +268,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     threads,
     pendingTasks,
     environmentId: options.selectedEnvironmentId,
+    hideOfflineEnvironments: options.hideOfflineEnvironments,
     projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
     searchQuery: props.searchQuery,
     searchMatches: threadSearchMatchByKey,
@@ -569,9 +569,11 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
             ? threadSearch.isPending
               ? "Searching thread messages…"
               : "No matching threads"
-            : selectedProjectScope !== null
-              ? `No threads in ${selectedProjectScope.title}`
-              : "No threads yet"}
+            : options.hideOfflineEnvironments
+              ? "No visible threads. Turn off Hide offline environments in Settings → Labs → Zack settings, or choose another filter."
+              : selectedProjectScope !== null
+                ? `No threads in ${selectedProjectScope.title}`
+                : "No threads yet"}
     </Text>
   );
 
@@ -609,9 +611,6 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
                 showsVerticalScrollIndicator={false}
                 style={styles.threadList}
                 ListEmptyComponent={listEmpty}
-                ListHeaderComponent={
-                  <ProjectLoomEntry projects={projectScopes.flatMap((scope) => scope.projects)} />
-                }
               />
             </GestureDetector>
           </SwipeableScrollGateProvider>
@@ -636,10 +635,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
         }}
       >
         {listItems.length === 0 ? (
-          <View className="flex-1">
-            <ProjectLoomEntry projects={projectScopes.flatMap((scope) => scope.projects)} />
-            <View className="flex-1 items-center justify-center">{listEmpty}</View>
-          </View>
+          <View className="flex-1 items-center justify-center">{listEmpty}</View>
         ) : (
           <SwipeableScrollGateProvider enabled={swipeEnabled}>
             <GestureDetector gesture={sidebarScrollGesture}>
@@ -668,9 +664,6 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
                 showsVerticalScrollIndicator={false}
                 style={styles.threadList}
                 ListEmptyComponent={listEmpty}
-                ListHeaderComponent={
-                  <ProjectLoomEntry projects={projectScopes.flatMap((scope) => scope.projects)} />
-                }
               />
             </GestureDetector>
           </SwipeableScrollGateProvider>

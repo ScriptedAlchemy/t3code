@@ -6,7 +6,6 @@ import * as ConversationSummaries from "./project/conversationSummaries/Conversa
 import * as ModelEvaluations from "./modelEvaluations/ModelEvaluations.ts";
 import * as ExternalHistory from "./project/externalHistory/ExternalHistory.ts";
 import { conversationSummariesRpcHandlers } from "./conversationSummariesRpc.ts";
-import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import * as FileHistory from "./project/knowledge/FileHistory.ts";
 import {
@@ -124,7 +123,6 @@ import {
   WsConversationSummariesRpcGroup,
   WsModelEvaluationsRpcGroup,
   WsExternalHistoryRpcGroup,
-  WsProjectLoomRpcGroup,
   WsProjectCodeRpcGroup,
 } from "@t3tools/contracts";
 import {
@@ -190,6 +188,7 @@ import {
   makeLiveBodyDeduper,
   projectDomainEventForWire,
   projectThreadProjectionForWire,
+  threadStreamEventItem,
 } from "./orchestration-v2/WireProjection.ts";
 import { dedupeSnapshotBodies } from "@t3tools/shared/orchestrationV2DedupedBodies";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -203,7 +202,7 @@ import * as AcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/s
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ProviderAuthService from "./provider/ProviderAuthService.ts";
 import * as ProviderAccountTransfer from "./provider/ProviderAccountTransfer.ts";
-import { makeProviderInstallation } from "./provider/providerInstallation.ts";
+import * as ProviderInstallation from "./provider/providerInstallation.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as NpmRelease from "./cloud/npmRelease.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -214,7 +213,7 @@ import { invalidateSettingsSecrets } from "./sourceControl/sourceControlHostSecr
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
-import { terminalOutputStream, withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
+import { terminalOutputStream, withOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
@@ -472,8 +471,44 @@ export const resolveOpenDiscoveryForConfig = <T, D, E1, R1, E2, R2, E3, R3, E4, 
     },
     { concurrency: "unbounded" },
   ).pipe(Effect.map(({ editorConfig, ...endpoints }) => ({ ...editorConfig, ...endpoints })));
-function withoutWorkspaceSnapshots(providers: ReadonlyArray<ServerProvider>): ServerProvider[] {
-  return providers.map(({ workspaceSnapshots: _workspaceSnapshots, ...provider }) => provider);
+// A failed scan leaves no cwd snapshot, so a client without the machine catalog gets it
+// as a pending snapshot, which it shows while it retries the scan.
+function workspaceSnapshotOrCatalog(
+  provider: ServerProvider,
+  cwd: string,
+  catalogOnDemand: boolean,
+) {
+  const snapshots = (provider.workspaceSnapshots ?? []).filter((snapshot) => snapshot.cwd === cwd);
+  if (snapshots.length > 0 || !catalogOnDemand) return snapshots;
+  return [
+    {
+      cwd,
+      checkedAt: provider.checkedAt,
+      slashCommands: provider.slashCommands,
+      slashCommandsPending: true,
+      skills: provider.skills,
+    },
+  ];
+}
+
+// On-demand catalog clients read full entries from the cwd snapshot they fetch. Names still
+// change the config when the machine catalog does, so the client refetches, and skill names
+// and labels keep skill links working where no snapshot is fetched.
+function withoutWorkspaceSnapshots(
+  providers: ReadonlyArray<ServerProvider>,
+  catalogsPerCwd: ReadonlySet<string> = new Set(),
+): ServerProvider[] {
+  return providers.map(({ workspaceSnapshots: _workspaceSnapshots, ...provider }) =>
+    catalogsPerCwd.has(provider.instanceId)
+      ? {
+          ...provider,
+          slashCommands: provider.slashCommands.map(({ name }) => ({ name })),
+          skills: provider.skills.map(
+            ({ description: _d, shortDescription: _s, ...skill }) => skill,
+          ),
+        }
+      : provider,
+  );
 }
 
 function unexpectedCompatibilityError(error: never): never {
@@ -689,13 +724,6 @@ const ServerCoreWsRpcGroup = ServerWsRpcGroup.omit(
   WS_METHODS.modelEvaluationsList,
   WS_METHODS.modelEvaluationsClear,
   WS_METHODS.externalHistoryQuery,
-  WS_METHODS.projectReadLoomWindow,
-);
-const layerProjectLoomRpc = WsProjectLoomRpcGroup.middleware(RpcInstrumentation).toLayer(
-  Effect.gen(function* () {
-    const loom = yield* ProjectLoom.ProjectLoom;
-    return { [WS_METHODS.projectReadLoomWindow]: (input) => loom.readWindow(input) };
-  }),
 );
 const layerConversationSummariesRpc = WsConversationSummariesRpcGroup.middleware(
   RpcInstrumentation,
@@ -1062,11 +1090,7 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
           afterSequence,
         })
         .pipe(
-          Stream.map((stored) => ({
-            kind: "event" as const,
-            sequence: stored.sequence,
-            event: stored.event,
-          })),
+          Stream.map(threadStreamEventItem),
           coalesceThreadLiveStream,
           Stream.mapError(
             (cause) =>
@@ -1646,7 +1670,7 @@ export const layerWsRpc = (
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const providerAuth = yield* ProviderAuthService.ProviderAuthService;
       const accountTransfer = yield* ProviderAccountTransfer.ProviderAccountTransfer;
-      const providerInstallation = yield* makeProviderInstallation();
+      const providerInstallation = yield* ProviderInstallation.ProviderInstallation;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const npmRelease = yield* NpmRelease.NpmRelease;
       const config = yield* ServerConfig.ServerConfig;
@@ -2045,6 +2069,7 @@ export const layerWsRpc = (
         readonly usageLimitsCommand: boolean;
         readonly workspaceSnapshotsOnDemand: boolean;
         readonly deferNetworkDiscovery: boolean;
+        readonly catalogsPerCwd?: ReadonlySet<string>;
       }) {
         const keybindingsConfig = yield* keybindings.loadConfigState;
         const currentProviders = yield* providerRegistry.getPublishedProviders;
@@ -2052,7 +2077,7 @@ export const layerWsRpc = (
           ? withUsageLimitsCommands(currentProviders, yield* usageLimitSources.current)
           : currentProviders;
         const providers = options.workspaceSnapshotsOnDemand
-          ? withoutWorkspaceSnapshots(commandProviders)
+          ? withoutWorkspaceSnapshots(commandProviders, options.catalogsPerCwd)
           : commandProviders;
         const settings = ServerSettings.redactServerSettingsForClient(
           yield* serverSettings.getSettings,
@@ -2702,6 +2727,9 @@ export const layerWsRpc = (
             if (instanceId === undefined || cwd === undefined) {
               return { providers: withoutWorkspaceSnapshots(commandProviders) };
             }
+            const catalogOnDemand =
+              input.providerCatalogsOnDemand === true &&
+              (yield* providerInstances.getInstance(instanceId))?.snapshotForCwd !== undefined;
             return {
               providers: commandProviders
                 .filter((provider) => provider.instanceId === instanceId)
@@ -2711,9 +2739,7 @@ export const layerWsRpc = (
                   models: [],
                   slashCommands: [],
                   skills: [],
-                  workspaceSnapshots: (provider.workspaceSnapshots ?? []).filter(
-                    (snapshot) => snapshot.cwd === cwd,
-                  ),
+                  workspaceSnapshots: workspaceSnapshotOrCatalog(provider, cwd, catalogOnDemand),
                 })),
             };
           }),
@@ -2818,6 +2844,7 @@ export const layerWsRpc = (
         [WS_METHODS.chatGptHandoffSubscribe]: (input) =>
           subscribeChatGptHandoff(input, currentSessionId),
         [WS_METHODS.providerAuthCancel]: (input) => providerAuth.cancel(input, currentSessionId),
+        [WS_METHODS.providerAuthRemoveMethod]: (input) => providerAuth.removeMethod(input),
         [WS_METHODS.providerAuthLogout]: (input) => providerAuth.logout(input),
         [WS_METHODS.providerAuthSubscribe]: (input) =>
           providerAuth.subscribe(input, currentSessionId),
@@ -3092,8 +3119,12 @@ export const layerWsRpc = (
         [WS_METHODS.subscribeProjectClones]: () => projectCloneTracker.stream,
         [WS_METHODS.sourceControlPublishRepository]: (input) =>
           sourceControlRepositories.publishRepository(input).pipe(
-            Effect.tap(() => repositoryIdentityResolver.resolve(input.cwd, { refresh: true })),
-            Effect.tap(() => refreshGitStatus(input.cwd)),
+            // A failed push still leaves the new remote added.
+            Effect.ensuring(
+              repositoryIdentityResolver
+                .resolve(input.cwd, { refresh: true })
+                .pipe(Effect.andThen(refreshGitStatus(input.cwd))),
+            ),
           ),
         [WS_METHODS.projectsSearchEntries]: (input) =>
           workspaceEntries.search(input).pipe(
@@ -3443,7 +3474,22 @@ export const layerWsRpc = (
             Effect.gen(function* () {
               const usageLimitsCommand = input.usageLimitsCommand === true;
               const workspaceSnapshotsOnDemand = input.workspaceSnapshotsOnDemand === true;
-              // Buffer changes through discovery and the initial snapshot's RPC ACK wait.
+              // Only providers that can scan a cwd answer the client's on-demand catalog fetch.
+              // Read per update, since a replaced instance can change that.
+              const currentCatalogsPerCwd =
+                workspaceSnapshotsOnDemand && input.providerCatalogsOnDemand === true
+                  ? providerInstances.listInstances.pipe(
+                      Effect.map(
+                        (instances) =>
+                          new Set(
+                            instances
+                              .filter((instance) => instance.snapshotForCwd !== undefined)
+                              .map((instance) => instance.instanceId),
+                          ),
+                      ),
+                    )
+                  : Effect.succeed(new Set<string>());
+              // Buffer changes through discovery and the initial snapshot's send.
               const keybindingsChanges = yield* keybindings.subscribeChanges;
               const settingsChanges = yield* serverSettings.subscribeChanges;
               const remoteTargets = yield* Effect.forkScoped(remoteOpenTargets.resolveTargets(), {
@@ -3459,6 +3505,7 @@ export const layerWsRpc = (
                 usageLimitsCommand,
                 workspaceSnapshotsOnDemand,
                 deferNetworkDiscovery: true,
+                catalogsPerCwd: yield* currentCatalogsPerCwd,
               });
               const keybindingsUpdates = keybindingsChanges.pipe(
                 Stream.map((event) => ({
@@ -3477,16 +3524,19 @@ export const layerWsRpc = (
                     usageLimitsCommand ? sameUsageLimitCommandCoverage : () => true,
                   ),
                 ),
-                (providers, sources) => {
-                  const commandProviders = usageLimitsCommand
-                    ? withUsageLimitsCommands(providers, sources)
-                    : providers;
-                  // Stripped before the de-dupe below, so snapshot-only changes send nothing.
-                  return workspaceSnapshotsOnDemand
-                    ? withoutWorkspaceSnapshots(commandProviders)
-                    : commandProviders;
-                },
+                (providers, sources) =>
+                  usageLimitsCommand ? withUsageLimitsCommands(providers, sources) : providers,
               ).pipe(
+                // Stripped before the de-dupe below, so snapshot-only changes send nothing.
+                Stream.mapEffect((commandProviders) =>
+                  workspaceSnapshotsOnDemand
+                    ? currentCatalogsPerCwd.pipe(
+                        Effect.map((catalogsPerCwd) =>
+                          withoutWorkspaceSnapshots(commandProviders, catalogsPerCwd),
+                        ),
+                      )
+                    : Effect.succeed(commandProviders),
+                ),
                 // Compare initial paired values with the snapshot; blindly dropping them loses changes between snapshot and subscription.
                 (updates) => Stream.concat(rpcInitialItems([config.providers]), updates),
                 Stream.changesWith(
@@ -3659,7 +3709,6 @@ export const layerWsRpc = (
     Layer.merge(layerConversationSummariesRpc),
     Layer.merge(layerModelEvaluationsRpc),
     Layer.merge(layerExternalHistoryRpc),
-    Layer.merge(layerProjectLoomRpc),
     Layer.merge(layerProjectCodeRpc),
   );
 
@@ -3715,7 +3764,7 @@ export const layer = Layer.unwrap(
         const rpcWebSocketHttpEffect = yield* Effect.gen(function* () {
           const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
           yield* RpcServer.make(ServerWsRpcGroup, WS_RPC_SERVER_OPTIONS).pipe(
-            Effect.provideService(RpcServer.Protocol, withTerminalOutputWindow(protocol)),
+            Effect.provideService(RpcServer.Protocol, withOutputWindow(protocol)),
             Effect.provide(
               Layer.merge(
                 RpcAuthorization.layer(session.scopes, (method, payload) => {

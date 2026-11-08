@@ -1,7 +1,9 @@
+import { useAtomValue } from "@effect/atom-react";
 import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useMemo, useSyncExternalStore } from "react";
 
+import { offlineEnvironmentIdsAtom } from "../../state/presentation";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../../state/olderSettledShelf";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
@@ -46,6 +48,7 @@ function observeInbox(
 export function useThreadListV2(input: {
   readonly threads: LayoutInput["threads"];
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
+  readonly hideOfflineEnvironments: boolean;
   readonly environmentId: EnvironmentId | null;
   readonly projectRefs: LayoutInput["projectRefs"];
   readonly searchQuery: string;
@@ -66,7 +69,19 @@ export function useThreadListV2(input: {
   readonly settledShelfExpanded: boolean;
   readonly selectedThreadKey: string | null;
 }) {
-  const { threads, workingShelfEnabled } = input;
+  const { workingShelfEnabled } = input;
+  const offlineEnvironmentIds = useAtomValue(offlineEnvironmentIdsAtom);
+  const hiddenEnvironmentIds = useMemo(
+    () => new Set(input.hideOfflineEnvironments ? offlineEnvironmentIds : []),
+    [input.hideOfflineEnvironments, offlineEnvironmentIds],
+  );
+  const threads = useMemo(
+    () =>
+      hiddenEnvironmentIds.size === 0
+        ? input.threads
+        : input.threads.filter((thread) => !hiddenEnvironmentIds.has(thread.environmentId)),
+    [input.threads, hiddenEnvironmentIds],
+  );
   const layoutTime = useMemo(
     () => threadListV2LayoutTime({ threads, now: input.now, searchQuery: input.searchQuery }),
     [threads, input.now, input.searchQuery],
@@ -121,8 +136,8 @@ export function useThreadListV2(input: {
         environmentId: input.environmentId,
         projectRefs: input.projectRefs,
         settlementEnvironmentIds: input.settlementEnvironmentIds,
-      }),
-    [input.environmentId, input.projectRefs, input.settlementEnvironmentIds],
+      }).filter((scope) => !hiddenEnvironmentIds.has(scope.environmentId)),
+    [input.environmentId, input.projectRefs, input.settlementEnvironmentIds, hiddenEnvironmentIds],
   );
   const olderSettledShelf = useOlderSettledShelf({
     scopes,
@@ -201,6 +216,7 @@ export function useThreadListV2(input: {
     const searchQuery = input.searchQuery.trim().toLocaleLowerCase();
     return input.pendingTasks.filter(
       (pendingTask) =>
+        !hiddenEnvironmentIds.has(pendingTask.environmentId) &&
         (input.environmentId === null || pendingTask.environmentId === input.environmentId) &&
         (scopedProjectKeys === null ||
           scopedProjectKeys.has(
@@ -208,7 +224,13 @@ export function useThreadListV2(input: {
           )) &&
         (searchQuery.length === 0 || pendingTask.title.toLocaleLowerCase().includes(searchQuery)),
     );
-  }, [input.projectRefs, input.searchQuery, input.pendingTasks, input.environmentId]);
+  }, [
+    input.projectRefs,
+    input.searchQuery,
+    input.pendingTasks,
+    input.environmentId,
+    hiddenEnvironmentIds,
+  ]);
   const items = useMemo(
     () =>
       buildThreadListV2ListItems({

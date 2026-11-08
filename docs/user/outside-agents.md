@@ -45,9 +45,10 @@ Only approve a sign-in you just started. To approve, enter a pairing code from
 browser already signed in to the environment with permission to manage access
 can approve without a code.
 
-Then choose what the agent may do:
+Then choose what the agent may do. **Auto** is selected by default, or the
+closest lower mode allowed by your organization’s policy:
 
-- **Read only** is the default. The agent can read projects, threads, and project
+- **Read only** lets the agent read projects, threads, and project
   code, recall saved facts, and see the available providers and models. It cannot
   change source files or saved facts.
 - **Supervised** through **Full access** also let it start, message and stop
@@ -97,9 +98,8 @@ Agents without OAuth support cannot connect.
 
 Connected agents can search a project's conversations and recall saved facts.
 With permission to make changes, they can record observations for later work.
-An observation keeps the agent's identity
-and remains marked as proposed until you confirm it. Use **Project memory** in
-T3 Code to inspect, edit, or forget these facts.
+An observation is saved immediately and keeps the agent's identity. Use **Project
+memory** in T3 Code to inspect, edit, or forget these facts.
 
 Agents can also query symbols, callers, references, dependencies, and likely
 change impact in a registered project's codebase. Selecting a thread uses that
