@@ -5,6 +5,9 @@ import {
   type AssistedLearningRun,
   type KnowledgeMessageRef,
   type ProjectId,
+  RunId,
+  ThreadId,
+  AssistedLearningRunOutcome,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Digest from "effect/crypto/Digest";
@@ -14,7 +17,10 @@ import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
+
+import { forkParked } from "../../serverActivation.ts";
 
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -33,6 +39,35 @@ const MAX_TRANSCRIPT_CHARS = 32_000;
 const MAX_CANDIDATES = 3;
 const MAX_CANDIDATE_CHARS = 2_000;
 const MAX_ENTITIES = 5;
+const ACKNOWLEDGEMENTS = new Set([
+  "ok",
+  "okay",
+  "thanks",
+  "thank you",
+  "continue",
+  "go on",
+  "proceed",
+  "hi",
+  "hello",
+  "hey",
+  "next",
+  "yes",
+  "yep",
+  "sure",
+  "sounds good",
+  "great",
+  "nice",
+  "done",
+  "go ahead",
+]);
+const supportsLearning = (text: string) =>
+  !ACKNOWLEDGEMENTS.has(
+    text
+      .trim()
+      .toLowerCase()
+      .replace(/[.!?…]+$/gu, "")
+      .trim(),
+  );
 
 const Candidate = Schema.Struct({
   kind: Schema.Literals(["decision", "constraint", "convention"]),
@@ -54,33 +89,41 @@ const make = Effect.gen(function* () {
   const digest = (text: string) =>
     crypto.digest(Digest.sha256, new TextEncoder().encode(text)).pipe(Effect.map(Hex.encode));
 
-  const extractRun: AssistedLearningRunnerShape["extractRun"] = Effect.fn(
-    "AssistedLearning.extractRun",
-  )(
-    function* ({ threadId, runId, runOutcome }) {
-      const records = yield* projections
-        // The run's request and its replies both carry the run id.
-        .getThreadRecords(threadId, ["messages"], { messageRunIds: [runId] })
-        .pipe(Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }));
-      // With no thread there is no project to attribute an outcome to.
-      if (records === null) return;
-      const projectId: ProjectId = records.thread.projectId;
-      if (yield* knowledge.hasAssistedRun(projectId, runId)) return;
-      const finish = (result: AssistedLearningRun["result"], reason: string | null, saved = 0) =>
-        DateTime.now.pipe(
-          Effect.flatMap((now) =>
-            knowledge.recordAssistedRun(projectId, {
-              threadId,
-              runId,
-              runOutcome,
-              result,
-              reason,
-              saved,
-              at: DateTime.formatIso(now),
-            }),
-          ),
+  const lock = yield* Semaphore.make(1);
+  const extractBatch = Effect.fn("AssistedLearning.extractRun")(
+    function* (
+      projectId: ProjectId,
+      scheduledBatch: ReadonlyArray<Parameters<AssistedLearningRunnerShape["extractRun"]>[0]>,
+      rootThreadId?: ThreadId,
+    ) {
+      const batch: Array<Parameters<AssistedLearningRunnerShape["extractRun"]>[0]> = [];
+      for (const entry of scheduledBatch) {
+        if (yield* knowledge.hasAssistedRun(projectId, entry.runId)) {
+          yield* sql`DELETE FROM project_knowledge_learning_queue WHERE run_id = ${entry.runId}`;
+        } else batch.push(entry);
+      }
+      if (batch.length === 0) return;
+      const savedByRun = new Map<RunId, number>();
+      const skippedRuns = new Set<RunId>();
+      const finish = (result: AssistedLearningRun["result"], reason: string | null) =>
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const at = DateTime.formatIso(yield* DateTime.now);
+            for (const entry of batch) {
+              if (!(yield* knowledge.hasAssistedRun(projectId, entry.runId)))
+                yield* knowledge.recordAssistedRun(projectId, {
+                  ...entry,
+                  result: skippedRuns.has(entry.runId) ? "skipped" : result,
+                  reason: skippedRuns.has(entry.runId)
+                    ? "The source thread is unavailable or moved."
+                    : reason,
+                  saved: savedByRun.get(entry.runId) ?? 0,
+                  at,
+                });
+              yield* sql`DELETE FROM project_knowledge_learning_queue WHERE run_id = ${entry.runId}`;
+            }
+          }),
         );
-      if (records.thread.deletedAt !== null) return yield* finish("skipped", "Thread was deleted.");
       const settings = resolveProjectSettings(
         yield* serverSettings.getSettings,
         projectId,
@@ -88,59 +131,110 @@ const make = Effect.gen(function* () {
       // The setting can change between scheduling and running; the latest choice wins.
       if (!settings.enableAssistedLearning)
         return yield* finish("skipped", "Automatic memory is off for this project.");
-      const finalized = records.messages
-        .filter(
-          (message) =>
-            (message.role === "user" || message.role === "assistant") &&
-            !message.streaming &&
-            message.text.trim() !== "",
-        )
-        .toSorted(
-          (left, right) =>
-            DateTime.toEpochMillis(left.createdAt) - DateTime.toEpochMillis(right.createdAt),
+      const evidence = [];
+      for (const entry of batch) {
+        if (yield* knowledge.hasAssistedRun(projectId, entry.runId)) continue;
+        const source = yield* projections
+          .getThreadRecords(entry.threadId, ["messages"], { messageRunIds: [entry.runId] })
+          .pipe(
+            Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+          );
+        if (
+          source === null ||
+          source.thread.projectId !== projectId ||
+          (rootThreadId !== undefined && source.thread.lineage.rootThreadId !== rootThreadId) ||
+          source.thread.deletedAt !== null
+        ) {
+          skippedRuns.add(entry.runId);
+          continue;
+        }
+        evidence.push(
+          ...source.messages.filter(
+            (message) =>
+              (message.role === "user" || message.role === "assistant") &&
+              !message.streaming &&
+              message.text.trim() !== "",
+          ),
         );
+      }
+      const finalized = evidence.toSorted(
+        (left, right) =>
+          DateTime.toEpochMillis(left.createdAt) - DateTime.toEpochMillis(right.createdAt),
+      );
       if (!finalized.some((message) => message.role === "assistant"))
         return yield* finish("skipped", "The run has no finished reply to learn from.");
+      const userEvidence = finalized.some(
+        (message) =>
+          message.role === "user" && message.createdBy === "user" && supportsLearning(message.text),
+      );
+      const completedEvidence = finalized.filter((message) =>
+        batch.some((entry) => entry.runId === message.runId && entry.runOutcome === "completed"),
+      );
+      if (
+        !userEvidence &&
+        (new Set(completedEvidence.map((message) => message.runId)).size < 2 ||
+          new Set(completedEvidence.map((message) => message.threadId)).size < 2 ||
+          new Set(completedEvidence.map((message) => message.text.trim().toLowerCase())).size < 2)
+      )
+        return yield* finish(
+          "skipped",
+          "No user-supported or independently corroborated evidence.",
+        );
       // Keep the request and the latest replies; the middle of a long run goes first.
       const kept: typeof finalized = [];
+      const textLimits = new Map<string, number>();
       let budget = MAX_TRANSCRIPT_CHARS;
       for (const message of [finalized[0]!, ...finalized.slice(1).toReversed()]) {
         if (kept.length >= MAX_MESSAGES || budget <= 0) break;
+        const available = Math.min(budget, MAX_MESSAGE_CHARS);
         kept.push(message);
-        budget -= Math.min(message.text.length, MAX_MESSAGE_CHARS);
+        textLimits.set(message.id, available);
+        budget -= Math.min(message.text.length, available);
       }
       const transcript = kept.toSorted(
         (left, right) => finalized.indexOf(left) - finalized.indexOf(right),
       );
       // Citations are message ids and digests from this canonical read; the model only names refs.
       const refs = new Map<string, KnowledgeMessageRef>();
-      const messages = [];
+      const userRefs = new Set<string>();
+      const messages: Array<
+        TextGeneration.KnowledgeCandidatesGenerationInput["messages"][number] & {
+          threadId: ThreadId;
+          runId: RunId;
+          runOutcome: AssistedLearningRunOutcome;
+        }
+      > = [];
       for (const [index, message] of transcript.entries()) {
         const ref = `M${index + 1}`;
+        if (
+          message.role === "user" &&
+          message.createdBy === "user" &&
+          supportsLearning(message.text)
+        )
+          userRefs.add(ref);
         refs.set(ref, {
           kind: "message",
-          threadId,
+          threadId: message.threadId,
+          runId: message.runId!,
           messageId: message.id,
           digest: yield* digest(message.text),
         });
         messages.push({
           ref,
           role: message.role as "user" | "assistant",
-          text:
-            message.text.length > MAX_MESSAGE_CHARS
-              ? `${message.text.slice(0, MAX_MESSAGE_CHARS)}\n[truncated]`
-              : message.text,
+          threadId: message.threadId,
+          runId: message.runId!,
+          runOutcome: batch.find((entry) => entry.runId === message.runId)!.runOutcome,
+          text: message.text.slice(0, textLimits.get(message.id)),
         });
       }
       const project = yield* projects.get(projectId);
-      const cwd =
-        records.thread.worktreePath ??
-        (Option.isSome(project) ? project.value.workspaceRoot : undefined);
+      const cwd = Option.isSome(project) ? project.value.workspaceRoot : undefined;
       if (cwd === undefined) return yield* finish("skipped", "The project was not found.");
       const generated = yield* textGeneration
         .generateKnowledgeCandidates({
           cwd,
-          runOutcome,
+          runOutcome: batch.length === 1 ? batch[0]!.runOutcome : "completed",
           messages,
           modelSelection: settings.textGenerationModelSelection,
         })
@@ -152,10 +246,19 @@ const make = Effect.gen(function* () {
           }),
         );
       if (!generated.ok) return yield* finish("failed", generated.detail.slice(0, 300));
-      const actor = { kind: "assisted" as const, threadId, runId, runOutcome };
       yield* sql.withTransaction(
         Effect.gen(function* () {
-          if (yield* knowledge.hasAssistedRun(projectId, runId)) return;
+          if (
+            (yield* Effect.forEach(batch, (entry) =>
+              knowledge.hasAssistedRun(projectId, entry.runId),
+            )).every(Boolean)
+          )
+            return;
+          if (
+            !resolveProjectSettings(yield* serverSettings.getSettings, projectId).settings
+              .enableAssistedLearning
+          )
+            return yield* finish("skipped", "Automatic memory is off for this project.");
           let saved = 0;
           let duplicates = 0;
           let dropped = 0;
@@ -167,11 +270,36 @@ const make = Effect.gen(function* () {
               const source = refs.get(ref);
               return source ? [source] : [];
             });
-            if (candidate === null || sources.length === 0) {
+            const citedMessages = messages.filter((message) =>
+              (candidate?.citations ?? []).some((ref) => ref.trim() === message.ref),
+            );
+            const corroborated =
+              citedMessages.every((message) => message.runOutcome === "completed") &&
+              new Set(citedMessages.map((message) => message.runId)).size >= 2 &&
+              new Set(citedMessages.map((message) => message.threadId)).size >= 2 &&
+              new Set(citedMessages.map((message) => message.text.trim().toLowerCase())).size >= 2;
+            const userSupported = (candidate?.citations ?? []).some((ref) =>
+              userRefs.has(ref.trim()),
+            );
+            if (
+              candidate === null ||
+              sources.length === 0 ||
+              candidate.citations.some((ref) => !refs.has(ref.trim())) ||
+              (!userSupported && !corroborated)
+            ) {
               dropped += 1;
               continue;
             }
-            const runContentId = `assisted:${runId}:${(yield* digest(candidate.content)).slice(0, 32)}`;
+            const support =
+              citedMessages.find((message) => userRefs.has(message.ref)) ?? citedMessages[0]!;
+            const actor = {
+              kind: "assisted" as const,
+              threadId: support.threadId,
+              runId: support.runId,
+              runOutcome: support.runOutcome,
+            };
+            if (yield* knowledge.hasAssistedRun(projectId, actor.runId)) continue;
+            const runContentId = `assisted:${actor.runId}:${(yield* digest(candidate.content)).slice(0, 32)}`;
             const create = {
               action: "create" as const,
               commandId: CommandId.make(runContentId),
@@ -201,8 +329,10 @@ const make = Effect.gen(function* () {
                     : Effect.succeed({ outcome: "dropped" as const }),
               }),
             );
-            if (result.outcome === "saved") saved += 1;
-            else if (result.outcome === "duplicate") duplicates += 1;
+            if (result.outcome === "saved") {
+              saved += 1;
+              savedByRun.set(actor.runId, (savedByRun.get(actor.runId) ?? 0) + 1);
+            } else if (result.outcome === "duplicate") duplicates += 1;
             else if (result.outcome === "dropped") dropped += 1;
           }
           const notes = [
@@ -218,16 +348,135 @@ const make = Effect.gen(function* () {
           yield* finish(
             "ran",
             notes.length > 0 ? notes.join(" ") : saved === 0 ? "Nothing durable to save." : null,
-            saved,
           );
         }),
       );
     },
+    (effect, _projectId, batch, _rootThreadId) =>
+      effect.pipe(
+        Effect.mapError((cause) => new AssistedLearningError({ runId: batch[0]!.runId, cause })),
+      ),
+  );
+
+  const extractRun: AssistedLearningRunnerShape["extractRun"] = Effect.fn(
+    "AssistedLearning.extractSingleRun",
+  )(
+    function* (input) {
+      const records = yield* projections
+        .getThreadRecords(input.threadId, [])
+        .pipe(Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }));
+      if (records !== null)
+        yield* extractBatch(records.thread.projectId, [input], records.thread.lineage.rootThreadId);
+    },
     (effect, { runId }) =>
       effect.pipe(Effect.mapError((cause) => new AssistedLearningError({ runId, cause }))),
   );
-
-  return { extractRun };
+  const decodeQueue = Schema.decodeUnknownEffect(
+    Schema.Array(
+      Schema.Struct({
+        threadId: ThreadId,
+        runId: RunId,
+        runOutcome: AssistedLearningRunOutcome,
+      }),
+    ),
+  );
+  const drainDue = lock
+    .withPermits(1)(
+      Effect.gen(function* () {
+        const now = DateTime.toEpochMillis(yield* DateTime.now);
+        const families = yield* sql<{
+          projectId: ProjectId;
+          rootThreadId: ThreadId;
+          completed: number;
+          lastQueuedAt: number;
+        }>`
+      SELECT project_id AS "projectId", root_thread_id AS "rootThreadId",
+        SUM(CASE WHEN run_outcome = 'completed' THEN 1 ELSE 0 END) AS completed,
+        MAX(queued_at) AS "lastQueuedAt"
+      FROM project_knowledge_learning_queue GROUP BY project_id, root_thread_id`;
+        if (families.length === 0) return;
+        const settings = yield* serverSettings.getSettings;
+        for (const family of families) {
+          const enabled = resolveProjectSettings(settings, family.projectId).settings
+            .enableAssistedLearning;
+          if (enabled && family.completed < 8) {
+            if (family.lastQueuedAt > now - 30 * 60 * 1000) continue;
+            const shells = yield* projections.getShellSnapshot({
+              familyOf: family.rootThreadId,
+              projectId: family.projectId,
+            });
+            const members = [...shells.threads, ...shells.archivedThreads];
+            const busy = members.some(
+              (thread) =>
+                thread.activeRunId !== null ||
+                thread.activityRunStatus != null ||
+                thread.pendingRuntimeRequest !== null,
+            );
+            const latestActivity = members.reduce(
+              (latest, thread) =>
+                Math.max(
+                  latest,
+                  ...[
+                    thread.latestVisibleMessage?.updatedAt,
+                    thread.latestUserMessageAt,
+                    thread.latestRunRequestedAt,
+                    thread.latestRunCompletedAt,
+                  ].flatMap((at) => (at == null ? [] : [DateTime.toEpochMillis(at)])),
+                ),
+              family.lastQueuedAt,
+            );
+            if (busy || latestActivity > now - 30 * 60 * 1000) continue;
+          }
+          const batch = yield* sql`
+        SELECT thread_id AS "threadId", run_id AS "runId", run_outcome AS "runOutcome"
+        FROM project_knowledge_learning_queue WHERE project_id = ${family.projectId}
+          AND root_thread_id = ${family.rootThreadId} ORDER BY queued_at, run_id LIMIT 8
+      `.pipe(Effect.flatMap(decodeQueue));
+          if (batch.length > 0) yield* extractBatch(family.projectId, batch, family.rootThreadId);
+        }
+      }),
+    )
+    .pipe(
+      Effect.mapError((cause) => new AssistedLearningError({ runId: "learning-queue", cause })),
+    );
+  const enqueueRun: AssistedLearningRunnerShape["enqueueRun"] = Effect.fn(
+    "AssistedLearning.enqueueRun",
+  )(
+    function* (input) {
+      const records = yield* projections
+        .getThreadRecords(input.threadId, [])
+        .pipe(Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }));
+      if (records === null) return;
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      yield* sql`INSERT INTO project_knowledge_learning_queue
+        (run_id, project_id, root_thread_id, thread_id, run_outcome, queued_at)
+        SELECT ${input.runId}, ${records.thread.projectId}, ${records.thread.lineage.rootThreadId},
+          ${input.threadId}, ${input.runOutcome}, ${now}
+        WHERE NOT EXISTS (SELECT 1 FROM project_knowledge_assisted_runs WHERE run_id = ${input.runId})
+        ON CONFLICT (run_id) DO NOTHING`;
+    },
+    (effect, { runId }) =>
+      effect.pipe(Effect.mapError((cause) => new AssistedLearningError({ runId, cause }))),
+  );
+  return { extractRun, enqueueRun, drainDue };
 });
 
 export const layerRunner = Layer.effect(AssistedLearningRunner, make);
+
+export const layerWorker = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const runner = yield* AssistedLearningRunner;
+    yield* forkParked(
+      Effect.forever(
+        Effect.gen(function* () {
+          yield* runner.drainDue.pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Automatic memory review deferred", { cause }),
+            ),
+          );
+          yield* Effect.sleep("1 minute");
+        }),
+      ),
+    );
+  }),
+).pipe(Layer.provideMerge(layerRunner));

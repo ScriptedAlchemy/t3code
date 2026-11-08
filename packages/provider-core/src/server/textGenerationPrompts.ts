@@ -491,14 +491,25 @@ export interface KnowledgeCandidatesPromptInput {
   runOutcome: "completed" | "failed" | "interrupted";
   messages: ReadonlyArray<{
     readonly ref: string;
+    readonly threadId?: string;
+    readonly runId?: string;
+    readonly runOutcome?: "completed" | "failed" | "interrupted";
     readonly role: "user" | "assistant";
     readonly text: string;
   }>;
 }
 
 export function buildKnowledgeCandidatesPrompt(input: KnowledgeCandidatesPromptInput) {
+  const threads = new Map<string, string>();
+  const runs = new Map<string, string>();
+  for (const message of input.messages) {
+    if (message.threadId !== undefined && !threads.has(message.threadId))
+      threads.set(message.threadId, `T${threads.size + 1}`);
+    if (message.runId !== undefined && !runs.has(message.runId))
+      runs.set(message.runId, `R${runs.size + 1}`);
+  }
   const prompt = [
-    "You review one finished exchange between a user and a coding agent and extract durable project knowledge a future agent working in this repository should know.",
+    "You review a bounded batch of new finished exchanges from one project thread family and extract durable project knowledge a future agent working in this repository should know.",
     "Return a JSON object with key candidates: an array of at most 3 objects with keys kind, content, entities, citations.",
     "Rules:",
     "- kind is one of decision, constraint, convention",
@@ -507,6 +518,8 @@ export function buildKnowledgeCandidatesPrompt(input: KnowledgeCandidatesPromptI
     "- content is one or two plain sentences that stand alone without this conversation",
     "- entities lists up to 5 short names of files, modules, tools, or concepts the knowledge is about",
     "- citations lists the refs (like M1) of the messages that state or directly support it; never invent a ref",
+    "- assistant-only claims need independent supporting messages from different completed runs and threads; repeated assertions from one agent are insufficient",
+    "- for failed or interrupted runs extract only what the user stated, not what the agent assumed",
     "- return an empty candidates array when nothing durable was established, which is the common case",
     ...(input.runOutcome === "completed"
       ? []
@@ -515,7 +528,10 @@ export function buildKnowledgeCandidatesPrompt(input: KnowledgeCandidatesPromptI
         ]),
     "",
     "Messages:",
-    ...input.messages.map((message) => `[${message.ref}] ${message.role}:\n${message.text}\n`),
+    ...input.messages.map(
+      (message) =>
+        `[${message.ref}] ${message.role}${message.runId === undefined ? "" : ` (${threads.get(message.threadId ?? "") ?? "T?"}/${runs.get(message.runId)}, ${message.runOutcome ?? input.runOutcome})`}:\n${message.text}\n`,
+    ),
   ].join("\n");
   const outputSchema = Schema.Struct({
     candidates: Schema.Array(

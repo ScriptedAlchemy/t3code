@@ -2,7 +2,7 @@
 export function projectMemorySearchTokens(text: string): string[] {
   return [
     ...new Set(
-      (text.match(/[a-zA-Z0-9_/:.]+/g) ?? [])
+      (text.match(/[\p{L}\p{N}_/:.]+/gu) ?? [])
         .filter((token) => token.length >= 2)
         .map((token) => token.toLowerCase()),
     ),

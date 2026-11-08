@@ -60,14 +60,21 @@ import * as ProjectKnowledge from "./ProjectKnowledge.ts";
 const decodeKnowledgeSearchResult = Schema.decodeUnknownEffect(ProjectKnowledgeSearchResult);
 
 const environmentId = EnvironmentId.make("knowledge-test-environment");
-const knowledgeTestLayer = (scoring: typeof HolographicMemory.layer = HolographicMemory.layer) =>
+const knowledgeTestLayer = (
+  scoring: typeof HolographicMemory.layer = HolographicMemory.layer,
+  noTranscriptSearch = false,
+) =>
   ProjectKnowledge.layer.pipe(
     Layer.provide(scoring),
     Layer.provideMerge(
       Layer.mergeAll(
         ProjectStore.layer,
         ProjectionStore.layer,
-        ThreadSearch.layer,
+        noTranscriptSearch
+          ? Layer.mock(ThreadSearch.ThreadSearch)({
+              search: () => Effect.die("Passive previews must not search transcripts"),
+            })
+          : ThreadSearch.layer,
         ProjectionReplay.layer.pipe(
           Layer.provideMerge(EventStore.layer),
           Layer.provide(ProjectionStore.layer),
@@ -1733,6 +1740,62 @@ it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
       knowledge.list({ projectId }),
       (listed) => listed.facts[0]?.retrievalCount,
     );
+    assert.deepEqual(
+      yield* knowledge.suggest({
+        projectId,
+        requestId: CommandId.make("suggest-greeting"),
+        query: "hello there",
+      }),
+      [],
+    );
+    const suggestions = yield* knowledge.suggest({
+      projectId,
+      requestId: CommandId.make("suggest-relevant"),
+      query: "cache keys tenant",
+    });
+    assert.equal(suggestions.length, 1);
+    assert.equal(suggestions[0]?.fact.id, ProjectFactId.make("fact-one"));
+    assert.equal(suggestions[0]?.fact.sources[0]?.kind, "user");
+    const sql = yield* SqlClient.SqlClient;
+    assert.equal(
+      (yield* sql`SELECT command_id FROM project_knowledge_commands WHERE command_id = ${"suggest-relevant"}`)
+        .length,
+      0,
+    );
+
+    assert.deepEqual(
+      yield* knowledge.suggest({
+        projectId,
+        requestId: CommandId.make("suggest-weak"),
+        query: "tenant garden bicycle banana weather holiday mountain sunset",
+      }),
+      [],
+    );
+    yield* knowledge.mutate(
+      {
+        ...createFact(projectId, "unicode"),
+        content: "缓存键必须包含租户标识",
+        entities: [],
+        tags: [],
+      },
+      { kind: "user" },
+    );
+    const unicode = yield* knowledge.suggest({
+      projectId,
+      requestId: CommandId.make("suggest-unicode"),
+      query: "缓存键必须包含租户标识",
+    });
+    assert.equal(unicode[0]?.fact.id, ProjectFactId.make("unicode"));
+    assert.include(unicode[0]?.reason ?? "", "缓存键必须包含租户标识");
+    assert.deepEqual(
+      yield* knowledge.suggest({
+        projectId,
+        requestId: CommandId.make("suggest-filler"),
+        query: "please can you help",
+      }),
+      [],
+    );
+    assert.equal(yield* storedCount, 0);
     assert.equal(yield* searchCount("browse", false), 0);
     assert.equal(yield* storedCount, 0);
     assert.equal(yield* searchCount("agent"), 1);
@@ -2619,4 +2682,130 @@ it.effect(
         }).pipe(Effect.provide(reopened())),
       );
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
+it.effect("automatic corroboration appends validated sources without rewriting curated facts", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const projectId = ProjectId.make("corroboration");
+    const threadId = ThreadId.make("corroboration-thread");
+    yield* createProject(projectId);
+    yield* projections.apply(thread(threadId, projectId));
+    yield* projections.apply(
+      message(threadId, "corroboration-source", "user", "Cache keys include tenant IDs."),
+    );
+    const citation = yield* knowledge.readSource({
+      projectId,
+      threadId,
+      messageId: MessageId.make("corroboration-source"),
+    });
+    assert.equal(citation.state, "available");
+    if (citation.state !== "available") return;
+    const original = yield* knowledge.mutate(createFact(projectId), { kind: "user" });
+    const actor = {
+      kind: "assisted" as const,
+      threadId,
+      runId: RunId.make("corroboration-run"),
+      runOutcome: "completed" as const,
+    };
+    const candidate = { ...createFact(projectId, "automatic"), sources: [citation.source] };
+    assert.equal((yield* knowledge.saveAutomatic(candidate, actor)).outcome, "duplicate");
+    const merged = (yield* knowledge.readFact({ projectId, factId: original.id })).fact;
+    assert.deepEqual(merged.sources, [...original.sources, citation.source]);
+    assert.equal(merged.content, original.content);
+    assert.deepEqual(merged.origin, original.origin);
+    assert.equal(merged.trust, original.trust);
+    yield* knowledge.saveAutomatic(
+      { ...candidate, factId: ProjectFactId.make("automatic-repeat") },
+      actor,
+    );
+    assert.deepEqual((yield* knowledge.readFact({ projectId, factId: original.id })).fact, merged);
+    const invalid = yield* knowledge
+      .saveAutomatic(
+        {
+          ...candidate,
+          factId: ProjectFactId.make("automatic-invalid"),
+          sources: [{ ...citation.source, runId: RunId.make("fabricated") }],
+        },
+        actor,
+      )
+      .pipe(Effect.result);
+    assert.equal(invalid._tag, "Failure");
+    const extraSources = [];
+    for (let index = 0; index < 16; index++) {
+      const id = MessageId.make(`corroboration-extra-${index}`);
+      yield* projections.apply(message(threadId, id, "user", "Cache keys include tenant IDs."));
+      const source = yield* knowledge.readSource({ projectId, threadId, messageId: id });
+      if (source.state === "available") extraSources.push(source.source);
+    }
+    yield* knowledge.saveAutomatic(
+      { ...candidate, factId: ProjectFactId.make("automatic-cap"), sources: extraSources },
+      actor,
+    );
+    const capped = (yield* knowledge.readFact({ projectId, factId: original.id })).fact;
+    assert.equal(capped.sources.length, 16);
+    assert.deepEqual(capped.sources.slice(0, 2), merged.sources);
+    yield* knowledge.mutate(
+      {
+        action: "forget",
+        projectId,
+        factId: original.id,
+        expectedRevision: capped.revision,
+        commandId: CommandId.make("forget-corroborated"),
+      },
+      { kind: "user" },
+    );
+    yield* knowledge.saveAutomatic({ ...candidate, factId: original.id }, actor);
+    assert.equal(
+      (yield* knowledge.readFact({ projectId, factId: original.id })).fact.status,
+      "forgotten",
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("passive previews return only two relevant facts and never search transcripts", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("compact-preview");
+    yield* createProject(projectId);
+    const empty = yield* knowledge.search({
+      projectId,
+      requestId: CommandId.make("preview-empty"),
+      query: "cache keys tenant",
+      preview: true,
+    });
+    assert.deepEqual(empty.messages.matches, []);
+    assert.equal(empty.facts.state === "available" ? empty.facts.matches.length : -1, 0);
+    for (const id of ["first", "second", "third"])
+      yield* knowledge.mutate(createFact(projectId, id), { kind: "user" });
+    yield* knowledge.mutate(
+      {
+        ...createFact(projectId, "unrelated"),
+        content: "Use readable garden labels.",
+        entities: [],
+        tags: [],
+      },
+      { kind: "user" },
+    );
+    const result = yield* knowledge.search({
+      projectId,
+      requestId: CommandId.make("preview-compact"),
+      query: "cache keys tenant",
+      preview: true,
+      limit: 50,
+    });
+    assert.deepEqual(result.messages.matches, []);
+    assert.equal(result.facts.state, "available");
+    if (result.facts.state !== "available") return;
+    assert.equal(result.facts.matches.length, 2);
+    assert.equal(result.facts.nextCursor, null);
+    assert.isFalse(result.facts.matches.some((item) => item.fact.id === "unrelated"));
+    const sql = yield* SqlClient.SqlClient;
+    assert.equal(
+      (yield* sql`SELECT command_id FROM project_knowledge_commands WHERE search_json IS NOT NULL`)
+        .length,
+      0,
+    );
+  }).pipe(Effect.provide(knowledgeTestLayer(HolographicMemory.layer, true))),
 );

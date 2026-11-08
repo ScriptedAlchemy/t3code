@@ -130,7 +130,7 @@ Open **Project memory** from the thread details, the command palette, or
 `mod+shift+u` on web or desktop, or from thread actions on mobile. Search
 conversations and saved facts in the current project, inspect their sources, and
 select evidence for your next message. Selecting a fact shows its evidence;
-only its checkbox adds it to your draft. Archived conversations are excluded unless
+choose **Attach** to include the selected evidence in your draft. Archived conversations are excluded unless
 you include them. A fact whose cited message was edited, deleted, or archived is
 flagged in the list.
 
@@ -154,24 +154,29 @@ up in recall unless you show superseded facts. After you save, T3 points out
 existing facts that look like duplicates or possible contradictions so you can
 compare them; it never merges or replaces them on its own.
 
-T3 also saves facts from finished runs on its own. After a run finishes, fails, or
-is stopped, your text generation model reads that run's messages and saves up to
-three decisions, constraints, or conventions, each citing the messages it came
-from. Each run costs one model call. To turn this off, use **Save facts from
-finished runs** under **Memory health** in Project memory, or in **Settings → Labs →
-Zack** for one project or every project. The **Automatic** filter lists these facts,
-and a fact from a run that failed or was stopped says so.
+When **Save facts from finished runs** is on, T3 reviews new runs from a thread
+and its child threads together. A batch is eligible after eight completed runs or
+30 minutes of inactivity. Your text generation model can propose up to three
+facts in one call per eligible batch. Each fact needs a citation to a message
+you wrote or corroborating messages from separate runs in different threads.
+Failed and stopped runs can supply evidence. Change this setting under **Memory
+health** in Project memory or in **Settings → Labs → Zack**. Project memory
+shows the last outcome and the **Automatic** filter lists automatically saved facts.
 
-An exact duplicate of an existing fact is skipped. Different facts are saved
-separately, even when they look similar or may conflict. Both can come up in recall
-until you supersede one.
-Agents find saved facts by searching; nothing is added to their prompts on its own.
-A fact's trust rating, age, and how often it is recalled all affect its rank, and a
-fact rated below the recall threshold stops coming up. Facts are not deleted
-automatically.
-A fact you forget is not saved again from the same run, but a later run can learn it
-again. Project memory shows what the last run did, including why it was skipped or
-failed.
+An exact repeat can add new citations to a saved fact. You decide when similar
+or conflicting facts should supersede one another. Trust, age and retrieval
+history affect recall. Forgetting a fact removes its content, and a later run
+can supply new evidence for it.
+
+Pause while composing the first request in a thread to see up to two related
+facts. Each suggestion shows why it matched. Open its source, choose **Use** to
+review it for attachment, or **Dismiss** it for this draft. Previewing a
+suggestion costs no model tokens and does not increase its trust.
+
+Agents can search project memory on demand. On an unattended first turn with T3
+tools available and room in the context window, the agent can also receive up to
+two fact IDs. It can open a fact and follow its citations when the task needs
+the evidence.
 
 A fact's details show its history: when it was created, edited, superseded, and
 rated helpful or unhelpful, with the trust change from each rating. **Memory health** counts facts by status. When facts lose their cited

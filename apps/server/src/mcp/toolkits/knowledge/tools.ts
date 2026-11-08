@@ -18,6 +18,7 @@ import {
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import * as ProjectKnowledge from "../../../project/knowledge/ProjectKnowledge.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -35,9 +36,9 @@ export const KnowledgeToolkit = Toolkit.make(
   Tool.make("t3_knowledge_search", {
     ...shared,
     description:
-      "Use when a task depends on prior project decisions, conventions, constraints, or agent observations. Resolve projectId from the selected environment's registered projects with t3_project_list and t3_project_read using the same environmentId. Recall is on demand; facts are not automatically added to the prompt. Read returned message citations with t3_knowledge_read_source in that same environment before relying on them. Facts use holographic and lexical ranking. Unavailable ranking is explicit. Superseded facts are excluded unless includeSuperseded is set. Reuse requestId for retries so retrieval is counted once.",
+      "Use when a task depends on prior project decisions, conventions, constraints, or agent observations. Resolve projectId from the selected environment's registered projects with t3_project_list and t3_project_read using the same environmentId. Read returned message citations with t3_knowledge_read_source in that same environment before relying on them. Facts use holographic and lexical ranking. Unavailable ranking is explicit. Superseded facts are excluded unless includeSuperseded is set. Reuse requestId for retries so retrieval is counted once.",
     parameters: Schema.Struct({
-      ...ProjectKnowledgeSearchInput.fields,
+      ...Struct.omit(ProjectKnowledgeSearchInput.fields, ["preview"]),
       environmentId: OrchestratorMcpEnvironmentTarget,
     }),
     success: ProjectKnowledgeSearchResult,

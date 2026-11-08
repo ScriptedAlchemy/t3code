@@ -444,7 +444,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     label="Save facts from finished runs"
                     subtitle={
                       assistedLearningUnavailableReason ??
-                      "After each run, your text generation model saves up to three cited facts. Each run costs one model call."
+                      "Completed runs are grouped into background learning batches. Your text generation model saves up to three cited facts per batch; eligible batches use at most one model call."
                     }
                     value={uniform("enableAssistedLearning")}
                     disabled={

@@ -599,7 +599,7 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
     ),
   ),
   Layer.provide(
-    AssistedLearning.layerRunner.pipe(
+    AssistedLearning.layerWorker.pipe(
       Layer.provide(Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer)),
     ),
   ),

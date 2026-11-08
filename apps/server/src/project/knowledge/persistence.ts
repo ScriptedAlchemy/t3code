@@ -305,7 +305,7 @@ export const makeStore = Effect.gen(function* () {
       partial: ids.length > 1000,
     };
   });
-  const hasDuplicateContent = Effect.fn("ProjectKnowledgeStore.hasDuplicateContent")(function* (
+  const findDuplicateContent = Effect.fn("ProjectKnowledgeStore.findDuplicateContent")(function* (
     projectId: ProjectId,
     content: string,
   ) {
@@ -320,8 +320,9 @@ export const makeStore = Effect.gen(function* () {
         WHERE project_id = ${projectId} AND status = 'saved' AND superseded_by_id IS NULL
           AND content IS NOT NULL AND id > ${afterId ?? ""}
         ORDER BY id ASC LIMIT 100`;
-      if (rows.some((row) => normalizeFactContent(row.content) === normalized)) return true;
-      if (rows.length < 100) return false;
+      const duplicate = rows.find((row) => normalizeFactContent(row.content) === normalized);
+      if (duplicate) return yield* find(projectId, duplicate.id);
+      if (rows.length < 100) return null;
       afterId = rows.at(-1)!.id;
     }
   });
@@ -726,7 +727,7 @@ export const makeStore = Effect.gen(function* () {
     recordSearch,
     candidates,
     similar,
-    hasDuplicateContent,
+    findDuplicateContent,
     recordHistory,
     eraseHistory,
     history,

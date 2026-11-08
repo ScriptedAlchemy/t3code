@@ -103,9 +103,12 @@ export type ReviewGuideGenerationResult = Omit<
 export interface KnowledgeCandidatesGenerationInput {
   cwd: string;
   runOutcome: "completed" | "failed" | "interrupted";
-  /** Finalized messages of one run, oldest first; `ref` is what citations name. */
+  /** Finalized new evidence from one thread family, oldest first; `ref` is what citations name. */
   messages: ReadonlyArray<{
     readonly ref: string;
+    readonly threadId?: string;
+    readonly runId?: string;
+    readonly runOutcome?: "completed" | "failed" | "interrupted";
     readonly role: "user" | "assistant";
     readonly text: string;
   }>;

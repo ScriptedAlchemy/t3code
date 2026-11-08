@@ -13,10 +13,12 @@ import {
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
+  type ProjectId,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
   type RunAttemptId,
   isCompactionCommandMessage,
+  isSubstantiveProjectMemoryQuery,
   parseGoalCommand,
   RunId,
   ThreadId,
@@ -122,6 +124,34 @@ const PROMPT_REFUSAL_TAGS = [
 const refusedBeforePrompt = (error: unknown): boolean =>
   PROMPT_REFUSAL_TAGS.some((tag) => Predicate.isTagged(error, tag)) ||
   (Predicate.hasProperty(error, "cause") && refusedBeforePrompt(error.cause));
+
+const unattendedMemoryHint = Effect.fn("ProviderTurnStartService.unattendedMemoryHint")(function* (
+  knowledge: ProjectKnowledge.ProjectKnowledge["Service"],
+  projectId: ProjectId,
+  runId: RunId,
+  query: string,
+) {
+  const matches = yield* knowledge
+    .suggest({
+      projectId,
+      requestId: CommandId.make(`memory-preview:${runId}`),
+      query,
+    })
+    .pipe(
+      Effect.timeoutOption("150 millis"),
+      Effect.orElseSucceed(() => Option.none()),
+    );
+  // IDs can also be supplied by clients. Only opaque identifiers belong in a provider hint.
+  const opaqueId = /^[a-zA-Z0-9_:.-]{1,128}$/;
+  if (Option.isNone(matches) || !opaqueId.test(projectId)) return "";
+  const ids = matches.value
+    .map(({ fact }) => fact.id)
+    .filter((id) => opaqueId.test(id))
+    .slice(0, 2);
+  return ids.length === 0
+    ? ""
+    : `Related project memory in ${projectId}. Read by fact ID with t3_knowledge_read_fact: ${ids.join(", ")}.`;
+});
 
 export interface ProviderTurnStartServiceV2Shape {
   readonly start: (input: {
@@ -1581,21 +1611,44 @@ export const layer: Layer.Layer<
       const initialDeliveryState = yield* knowledgeDelivery.readState;
       userText = initialDeliveryState.sent ? composer.baseText : composer.text;
       {
-        yield* knowledgeDelivery.checkBudget(
-          handoffBudgetAssumptions({
-            tokenCap,
-            modelContextWindow,
-            userText:
-              restartNote === "" ? composer.baseText : `${restartNote}\n\n${composer.baseText}`,
-            attachments: message.attachments,
-            providerThread: budgetProviderThread,
-            nativeContextEstimate:
-              budgetProviderThread.contextUsage?.usedTokens === undefined
-                ? yield* nativeContextEstimate
-                : 0,
-          }),
-          initialDeliveryState.sent,
-        );
+        const budget = handoffBudgetAssumptions({
+          tokenCap,
+          modelContextWindow,
+          userText:
+            restartNote === "" ? composer.baseText : `${restartNote}\n\n${composer.baseText}`,
+          attachments: message.attachments,
+          providerThread: budgetProviderThread,
+          nativeContextEstimate:
+            budgetProviderThread.contextUsage?.usedTokens === undefined
+              ? yield* nativeContextEstimate
+              : 0,
+        });
+        yield* knowledgeDelivery.checkBudget(budget, initialDeliveryState.sent);
+        // People choose suggestions in the composer. Unattended starts can discover the same facts by ID.
+        if (
+          (message.creationSource === "mcp" || message.creationSource === "server") &&
+          run.ordinal === 1 &&
+          attempt.attemptOrdinal === 1 &&
+          (session.supportsT3Tools ??
+            session.providerSession.capabilities.tools.supportsMcpTools) &&
+          !noteContinuation &&
+          restartNote === "" &&
+          effectiveHandoffs.length === 0 &&
+          retryHandoff.length === 0 &&
+          sideChatHandoff === undefined &&
+          (message.context?.records.length ?? 0) === 0 &&
+          !message.text.trimStart().startsWith("/") &&
+          budget.knowledgeAllowance >= 512 &&
+          isSubstantiveProjectMemoryQuery(message.text)
+        ) {
+          const hint = yield* unattendedMemoryHint(
+            knowledge,
+            projection.thread.projectId,
+            run.id,
+            message.text,
+          );
+          userText = withInlineContext(hint, userText);
+        }
         if (!(yield* isCurrentAttemptInStatus("running"))) return;
       }
       const persistHandoff = Effect.fn("ProviderTurnStartService.persist")(function* (

@@ -379,7 +379,11 @@ it.effect.each(["project-knowledge.extract", "conversation-summary.generate"] as
         Effect.andThen(Deferred.await(release)),
       );
       const runners = Layer.merge(
-        Layer.succeed(AssistedLearningRunner, { extractRun: () => hold }),
+        Layer.succeed(AssistedLearningRunner, {
+          extractRun: () => hold,
+          enqueueRun: () => hold,
+          drainDue: Effect.void,
+        }),
         Layer.succeed(ConversationSummaryRuntime, {
           summarizeThread: () => hold.pipe(Effect.as({ hasMore: false })),
           forHandoff: () => Effect.succeed([]),

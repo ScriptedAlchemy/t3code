@@ -22,6 +22,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
@@ -59,7 +60,7 @@ const makeLayer = (
       Layer.mergeAll(ProjectStore.layer, ProjectionStore.layer, ThreadSearch.layer),
     ),
     Layer.provideMerge(SqlitePersistence.layerMemory),
-    Layer.provide(ServerSettings.layerTest(settings)),
+    Layer.provideMerge(ServerSettings.layerTest(settings)),
     Layer.provide(
       Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
         getEnvironmentId: Effect.succeed(EnvironmentId.make("learning-environment")),
@@ -272,12 +273,14 @@ it.effect("saves a settled run's cited facts exactly once, recallable without re
       {
         kind: "message",
         threadId,
+        runId,
         messageId: MessageId.make("learning-user"),
         digest: yield* sha256("From now on API responses use snake_case keys everywhere."),
       },
       {
         kind: "message",
         threadId,
+        runId,
         messageId: MessageId.make("learning-reply"),
         digest: yield* sha256("Done. I converted the handlers to snake_case keys."),
       },
@@ -458,9 +461,9 @@ it.effect(
 
 const testsCommand = {
   kind: "convention" as const,
-  content: "Tests run with vp test.",
+  content: "API field names use snake_case.",
   entities: [],
-  citations: ["M2"],
+  citations: ["M1"],
 };
 
 it.effect("does not bring back a forgotten fact when the job runs again", () => {
@@ -502,6 +505,7 @@ it.effect("commits a run's facts only together with its outcome", () => {
   const model = scripted([{ candidates: [snakeCase, testsCommand] }]);
   return Effect.gen(function* () {
     yield* seedRun;
+    yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.add(at, { hours: 1 })));
     const runner = yield* AssistedLearningRunner;
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
     const sql = yield* SqlClient.SqlClient;
@@ -510,14 +514,16 @@ it.effect("commits a run's facts only together with its outcome", () => {
     );
     yield* sql`CREATE TEMP TRIGGER lose_outcome BEFORE INSERT ON project_knowledge_assisted_runs
       BEGIN SELECT RAISE(ABORT, 'outcome lost'); END`;
-    const lost = yield* runner
-      .extractRun({ threadId, runId, runOutcome: "completed" })
-      .pipe(Effect.result);
+    yield* runner.enqueueRun({ threadId, runId, runOutcome: "completed" });
+    yield* TestClock.adjust("30 minutes");
+    const lost = yield* runner.drainDue.pipe(Effect.result);
     assert.isTrue(Result.isFailure(lost));
     // Nothing a user could edit or forget exists without the outcome.
     assert.deepEqual(yield* savedContent, []);
+    assert.equal((yield* sql`SELECT * FROM project_knowledge_learning_queue`).length, 1);
     yield* sql`DROP TRIGGER lose_outcome`;
-    yield* runner.extractRun({ threadId, runId, runOutcome: "completed" });
+    yield* runner.drainDue;
+    assert.deepEqual(yield* sql`SELECT * FROM project_knowledge_learning_queue`, []);
     assert.deepEqual(yield* savedContent, [snakeCase.content, testsCommand.content].toSorted());
     assert.equal((yield* knowledge.status({ projectId })).assistedLearning?.lastRun?.saved, 2);
   }).pipe(Effect.provide(makeLayer(model.generate)));
@@ -608,4 +614,356 @@ it.effect("skips a run whose project turned automatic memory off before it ran",
       }),
     ),
   );
+});
+
+it.effect(
+  "waits for family inactivity, resumes its durable queue, and never reviews old evidence twice",
+  () => {
+    const model = scripted([{ candidates: [snakeCase] }]);
+    return Effect.gen(function* () {
+      yield* seedRun;
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.add(at, { minutes: 10 })));
+      const runner = yield* AssistedLearningRunner;
+      const sql = yield* SqlClient.SqlClient;
+      yield* runner.enqueueRun({ threadId, runId, runOutcome: "completed" });
+      yield* runner.enqueueRun({ threadId, runId, runOutcome: "completed" });
+      yield* runner.drainDue;
+      assert.equal(model.calls.length, 0);
+      assert.equal((yield* sql`SELECT * FROM project_knowledge_learning_queue`).length, 1);
+      yield* TestClock.adjust("30 minutes");
+      yield* runner.drainDue;
+      assert.equal(model.calls.length, 1);
+      assert.deepEqual(yield* sql`SELECT * FROM project_knowledge_learning_queue`, []);
+      yield* runner.enqueueRun({ threadId, runId, runOutcome: "completed" });
+      yield* TestClock.adjust("30 minutes");
+      yield* runner.drainDue;
+      assert.equal(model.calls.length, 1);
+    }).pipe(Effect.provide(makeLayer(model.generate)));
+  },
+);
+
+it.effect(
+  "batches eight new runs across a root and its child, retaining each citation's provenance",
+  () => {
+    const model = scripted([
+      {
+        candidates: [
+          { ...snakeCase, citations: ["M1", "M8"] },
+          { ...testsCommand, citations: ["M2", "M3"] },
+        ],
+      },
+    ]);
+    return Effect.gen(function* () {
+      yield* seedRun;
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.add(at, { minutes: 10 })));
+      const runner = yield* AssistedLearningRunner;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const records = yield* projections.getThreadRecords(threadId, []);
+      const childId = ThreadId.make("learning-child");
+      yield* projections.apply({
+        id: EventId.make("create-child"),
+        type: "thread.created",
+        threadId: childId,
+        providerInstanceId,
+        occurredAt: at,
+        payload: {
+          ...records.thread,
+          id: childId,
+          lineage: {
+            parentThreadId: threadId,
+            rootThreadId: threadId,
+            relationshipToParent: "subagent",
+          },
+        },
+      });
+      for (let index = 0; index < 8; index += 1) {
+        const sourceThreadId = index % 2 === 0 ? threadId : childId;
+        const sourceRunId = RunId.make(`batch-run-${index}`);
+        yield* projections.apply({
+          id: EventId.make(`batch-message-${index}`),
+          type: "message.updated",
+          threadId: sourceThreadId,
+          providerInstanceId,
+          occurredAt: DateTime.add(at, { minutes: index }),
+          payload: {
+            id: MessageId.make(`batch-message-${index}`),
+            threadId: sourceThreadId,
+            runId: sourceRunId,
+            nodeId: null,
+            role: index === 0 ? "user" : "assistant",
+            text: `API responses use snake_case keys ${index}.`,
+            attachments: [],
+            streaming: false,
+            createdAt: DateTime.add(at, { minutes: index }),
+            updatedAt: at,
+            createdBy: index === 0 ? "user" : "agent",
+            creationSource: "web",
+          },
+        });
+        yield* runner.enqueueRun({
+          threadId: sourceThreadId,
+          runId: sourceRunId,
+          runOutcome: "completed",
+        });
+        assert.equal(model.calls.length, 0);
+      }
+      yield* runner.drainDue;
+      assert.equal(model.calls.length, 1);
+      assert.equal(model.calls[0]!.messages.length, 8);
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const { facts } = yield* knowledge.list({ projectId, status: "saved" });
+      assert.equal(facts.length, 2);
+      assert.deepEqual(
+        facts
+          .find((fact) => fact.content === snakeCase.content)!
+          .sources.map((source) => source.kind === "message" && [source.threadId, source.runId]),
+        [
+          [threadId, RunId.make("batch-run-0")],
+          [childId, RunId.make("batch-run-7")],
+        ],
+      );
+    }).pipe(Effect.provide(makeLayer(model.generate)));
+  },
+);
+
+it.effect("resets the idle window when the family receives new work", () => {
+  const model = scripted([{ candidates: [snakeCase] }]);
+  return Effect.gen(function* () {
+    yield* seedRun;
+    yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.add(at, { minutes: 10 })));
+    const runner = yield* AssistedLearningRunner;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* runner.enqueueRun({ threadId, runId, runOutcome: "completed" });
+    yield* TestClock.adjust("20 minutes");
+    const now = yield* DateTime.now;
+    yield* projections.apply({
+      id: EventId.make("new-family-work"),
+      type: "message.updated",
+      threadId,
+      providerInstanceId,
+      occurredAt: now,
+      payload: {
+        id: MessageId.make("new-family-work"),
+        threadId,
+        runId: RunId.make("next-run"),
+        nodeId: null,
+        role: "user",
+        text: "Continue working on the API.",
+        attachments: [],
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+        createdBy: "user",
+        creationSource: "web",
+      },
+    });
+    yield* TestClock.adjust("10 minutes");
+    yield* runner.drainDue;
+    assert.equal(model.calls.length, 0);
+    yield* TestClock.adjust("20 minutes");
+    yield* runner.drainDue;
+    assert.equal(model.calls.length, 1);
+    assert.equal(model.calls[0]!.messages.length, 2);
+  }).pipe(Effect.provide(makeLayer(model.generate)));
+});
+
+it.effect(
+  "drops unsupported assistant-only claims and terminal model failures without a retry storm",
+  () => {
+    const model = scripted([
+      { candidates: [{ ...snakeCase, citations: ["M2"] }] },
+      new TextGenerationError({
+        operation: "generateKnowledgeCandidates",
+        detail: "Provider quota exhausted",
+      }),
+    ]);
+    return Effect.gen(function* () {
+      yield* seedRun;
+      const runner = yield* AssistedLearningRunner;
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      yield* runner.extractRun({ threadId, runId, runOutcome: "completed" });
+      assert.deepEqual((yield* knowledge.list({ projectId, status: "saved" })).facts, []);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM project_knowledge_assisted_runs`;
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.add(at, { hours: 1 })));
+      yield* runner.enqueueRun({ threadId, runId, runOutcome: "completed" });
+      yield* TestClock.adjust("30 minutes");
+      yield* runner.drainDue;
+      yield* TestClock.adjust("30 minutes");
+      yield* runner.drainDue;
+      assert.equal(model.calls.length, 2);
+      assert.equal(
+        (yield* knowledge.status({ projectId })).assistedLearning?.lastRun?.result,
+        "failed",
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM project_knowledge_learning_queue`, []);
+    }).pipe(Effect.provide(makeLayer(model.generate)));
+  },
+);
+
+it.effect(
+  "receipts bounded pending chunks when a project opts out, without reading them into a model",
+  () => {
+    const model = scripted([{ candidates: [snakeCase] }]);
+    return Effect.gen(function* () {
+      yield* seedRun;
+      const runner = yield* AssistedLearningRunner;
+      yield* runner.enqueueRun({ threadId, runId, runOutcome: "completed" });
+      const sql = yield* SqlClient.SqlClient;
+      for (let index = 0; index < 9; index += 1)
+        yield* sql`INSERT INTO project_knowledge_learning_queue
+        (project_id, root_thread_id, thread_id, run_id, run_outcome, queued_at)
+        VALUES (${projectId}, ${threadId}, ${threadId}, ${`opt-out-${index}`}, 'completed', 0)`;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* settings.updateSettings({
+        projectSettingsOverrides: { [projectId]: { enableAssistedLearning: false } },
+      });
+      yield* runner.drainDue;
+      assert.equal(model.calls.length, 0);
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      assert.equal(
+        (yield* knowledge.status({ projectId })).assistedLearning?.lastRun?.result,
+        "skipped",
+      );
+      assert.equal((yield* sql`SELECT * FROM project_knowledge_learning_queue`).length, 2);
+      assert.equal((yield* sql`SELECT * FROM project_knowledge_assisted_runs`).length, 8);
+      yield* runner.drainDue;
+      assert.deepEqual(yield* sql`SELECT * FROM project_knowledge_learning_queue`, []);
+    }).pipe(Effect.provide(makeLayer(model.generate)));
+  },
+);
+
+it.effect("resumes a persisted idle family after restart without a new run event", () => {
+  const model = scripted([{ candidates: [snakeCase] }]);
+  return Effect.gen(function* () {
+    yield* seedRun;
+    yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.add(at, { hours: 1 })));
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO project_knowledge_learning_queue
+      (project_id, root_thread_id, thread_id, run_id, run_outcome, queued_at)
+      VALUES (${projectId}, ${threadId}, ${threadId}, ${runId}, 'completed', ${DateTime.toEpochMillis(at)})`;
+    const runner = yield* AssistedLearningRunner;
+    yield* runner.drainDue;
+    yield* runner.drainDue;
+    assert.equal(model.calls.length, 1);
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    assert.equal((yield* knowledge.list({ projectId, status: "saved" })).facts.length, 1);
+    assert.deepEqual(yield* sql`SELECT * FROM project_knowledge_learning_queue`, []);
+  }).pipe(Effect.provide(makeLayer(model.generate)));
+});
+
+it.effect.each(["missing", "deleted", "moved"] as const)(
+  "consumes a %s queue head and attributes sibling facts to their interrupted source run",
+  (state) => {
+    const model = scripted([{ candidates: [snakeCase] }]);
+    return Effect.gen(function* () {
+      yield* seedRun;
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.add(at, { hours: 1 })));
+      const sql = yield* SqlClient.SqlClient;
+      const missingRun = RunId.make("missing-run");
+      if (state !== "missing") {
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const records = yield* projections.getThreadRecords(threadId, []);
+        yield* projections.apply({
+          id: EventId.make("unavailable-head"),
+          type: "thread.created",
+          threadId: ThreadId.make("missing-thread"),
+          providerInstanceId,
+          occurredAt: at,
+          payload: {
+            ...records.thread,
+            id: ThreadId.make("missing-thread"),
+            projectId: state === "moved" ? ProjectId.make("another-project") : projectId,
+            deletedAt: state === "deleted" ? at : null,
+          },
+        });
+      }
+      yield* sql`INSERT INTO project_knowledge_learning_queue
+      (project_id, root_thread_id, thread_id, run_id, run_outcome, queued_at) VALUES
+      (${projectId}, ${threadId}, 'missing-thread', ${missingRun}, 'failed', 0),
+      (${projectId}, ${threadId}, ${threadId}, ${runId}, 'interrupted', 1)`;
+      const runner = yield* AssistedLearningRunner;
+      yield* runner.drainDue;
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const { facts } = yield* knowledge.list({ projectId, status: "saved" });
+      assert.equal(facts.length, 1);
+      assert.deepEqual(facts[0]!.origin, {
+        kind: "assisted",
+        threadId,
+        runId,
+        runOutcome: "interrupted",
+      });
+      assert.deepEqual(
+        yield* sql`SELECT run_id, result, saved FROM project_knowledge_assisted_runs ORDER BY run_id`,
+        [
+          { run_id: runId, result: "ran", saved: 1 },
+          { run_id: missingRun, result: "skipped", saved: 0 },
+        ],
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM project_knowledge_learning_queue`, []);
+      assert.equal(model.calls[0]!.messages[0]!.runOutcome, "interrupted");
+    }).pipe(Effect.provide(makeLayer(model.generate)));
+  },
+);
+
+it.effect(
+  "avoids a model call for uncorroborated assistant-only evidence and caps every transcript slice",
+  () => {
+    const model = scripted([{ candidates: [] }]);
+    return Effect.gen(function* () {
+      yield* seedRun;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = json_set(payload_json, '$.createdBy', 'agent') WHERE message_id = 'learning-user'`;
+      const runner = yield* AssistedLearningRunner;
+      yield* runner.extractRun({ threadId, runId, runOutcome: "completed" });
+      assert.equal(model.calls.length, 0);
+      yield* sql`DELETE FROM project_knowledge_assisted_runs`;
+      yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = json_set(payload_json, '$.createdBy', 'user') WHERE message_id = 'learning-user'`;
+      yield* seedReplies(10);
+      yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = json_set(payload_json, '$.text', ${"x".repeat(6_000)}) WHERE role = 'assistant'`;
+      yield* runner.extractRun({ threadId, runId, runOutcome: "completed" });
+      assert.equal(model.calls.length, 1);
+      assert.isAtMost(
+        model.calls[0]!.messages.reduce((total, message) => total + message.text.length, 0),
+        32_000,
+      );
+      assert.isTrue(model.calls[0]!.messages.every((message) => message.text.length <= 6_000));
+    }).pipe(Effect.provide(makeLayer(model.generate)));
+  },
+);
+
+it.effect.each([" OK! ", "Thanks.", "continue...", "HELLO", "Use Bun."])(
+  "requires meaningful human evidence before paying for a singleton review: %s",
+  (text) => {
+    const model = scripted([{ candidates: [] }]);
+    return Effect.gen(function* () {
+      yield* seedRun;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = json_set(payload_json, '$.text', ${text}) WHERE message_id = 'learning-user'`;
+      const runner = yield* AssistedLearningRunner;
+      yield* runner.extractRun({ threadId, runId, runOutcome: "completed" });
+      assert.equal(model.calls.length, text === "Use Bun." ? 1 : 0);
+    }).pipe(Effect.provide(makeLayer(model.generate)));
+  },
+);
+
+it.effect("dequeues stale completed entries without touching their existing receipts", () => {
+  const model = scripted([{ candidates: [snakeCase] }]);
+  return Effect.gen(function* () {
+    yield* seedRun;
+    const runner = yield* AssistedLearningRunner;
+    yield* runner.extractRun({ threadId, runId, runOutcome: "completed" });
+    const sql = yield* SqlClient.SqlClient;
+    const before = yield* sql`SELECT * FROM project_knowledge_assisted_runs`;
+    yield* runner.enqueueRun({ threadId, runId, runOutcome: "failed" });
+    assert.deepEqual(yield* sql`SELECT * FROM project_knowledge_learning_queue`, []);
+    yield* sql`INSERT INTO project_knowledge_learning_queue
+      (project_id, root_thread_id, thread_id, run_id, run_outcome, queued_at)
+      VALUES (${projectId}, ${threadId}, ${threadId}, ${runId}, 'failed', 0)`;
+    yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.add(at, { hours: 1 })));
+    yield* runner.drainDue;
+    assert.deepEqual(yield* sql`SELECT * FROM project_knowledge_assisted_runs`, before);
+    assert.deepEqual(yield* sql`SELECT * FROM project_knowledge_learning_queue`, []);
+    assert.equal(model.calls.length, 1);
+  }).pipe(Effect.provide(makeLayer(model.generate)));
 });

@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import { expect, it } from "vite-plus/test";
 import {
+  addProjectMemorySuggestion,
   deliveredKnowledgeNotes,
   deliveredKnowledgeSnapshot,
   KNOWLEDGE_DELIVERY_OMISSION_LABEL,
@@ -133,4 +134,21 @@ it("traces trust from before the first recorded event through each feedback", ()
     "Marked helpful",
     "Marked unhelpful",
   ]);
+});
+
+it("adds suggested facts without losing selections or duplicating revisions", () => {
+  const first = { kind: "fact" as const, factId: ProjectFactId.make("first"), revision: 1 };
+  const second = { kind: "fact" as const, factId: ProjectFactId.make("second"), revision: 1 };
+  expect(addProjectMemorySuggestion([first], { id: second.factId, revision: 2 })).toEqual([
+    first,
+    { ...second, revision: 2 },
+  ]);
+  expect(
+    addProjectMemorySuggestion([first, second, first], { id: first.factId, revision: 3 }),
+  ).toEqual([{ ...first, revision: 3 }, second]);
+  const full = Array.from({ length: 20 }, (_, i) => ({
+    ...first,
+    factId: ProjectFactId.make(String(i)),
+  }));
+  expect(addProjectMemorySuggestion(full, { id: second.factId, revision: 1 })).toBe(full);
 });
