@@ -1,3 +1,4 @@
+import { createRef, useImperativeHandle } from "react";
 import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -25,16 +26,17 @@ function setup() {
   mocks.canManage.mockReset().mockReturnValue(true);
   vi.mocked(Dialog.alert).mockClear();
   const root = createRoot(document.createElement("div"));
-  let current: ReturnType<typeof useResetCredit> | undefined;
+  const ref = createRef<ReturnType<typeof useResetCredit>>();
   function Probe() {
-    current = useResetCredit(environmentId, input);
+    const value = useResetCredit(environmentId, input);
+    useImperativeHandle(ref, () => value);
     return null;
   }
   act(() => root.render(<Probe />));
   return {
     get value() {
-      if (current === undefined) throw new Error("Reset-credit hook was not mounted");
-      return current;
+      if (ref.current === null) throw new Error("Reset-credit hook was not mounted");
+      return ref.current;
     },
     [Symbol.dispose]: () => act(() => root.unmount()),
   };
@@ -52,7 +54,13 @@ it.each(["success", "failure", "rejection"] as const)(
   "coalesces overlapping approvals and permits a new attempt after %s",
   async (outcome) => {
     using fixture = setup();
-    const pending = Promise.withResolvers<Result>();
+    let resolve!: (value: Result) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<Result>((complete, fail) => {
+      resolve = complete;
+      reject = fail;
+    });
+    const pending = { promise, resolve, reject };
     mocks.consume.mockReturnValueOnce(pending.promise);
     fixture.value.confirm();
     const first = approval();

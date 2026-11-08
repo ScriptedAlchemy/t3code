@@ -1,3 +1,4 @@
+import { createRef, useImperativeHandle } from "react";
 import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
 
@@ -10,6 +11,7 @@ vi.mock("../../state/session", () => ({
 }));
 vi.mock("../../state/server", () => ({ serverEnvironment: { consumeResetCredit: {} } }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => mocks.consume }));
+vi.mock("../../hooks/useSettings", () => ({ usePrimarySettings: vi.fn() }));
 vi.mock("../../state/presentation", () => ({ environmentPresentations: {} }));
 vi.mock("./UsageLimitsPooled", () => ({ UsageLimitsPooled: () => null }));
 
@@ -23,16 +25,17 @@ type Result = typeof success | { readonly _tag: "Failure"; readonly cause: { err
 function setup() {
   mocks.consume.mockReset().mockResolvedValue(success);
   mocks.canManage.mockReset().mockReturnValue(true);
-  let current: ReturnType<typeof useResetCredit> | undefined;
+  const ref = createRef<ReturnType<typeof useResetCredit>>();
   function Probe() {
-    current = useResetCredit(environmentId, input);
+    const value = useResetCredit(environmentId, input);
+    useImperativeHandle(ref, () => value);
     return null;
   }
   return {
     Probe,
     get value() {
-      if (current === undefined) throw new Error("Reset-credit hook was not mounted");
-      return current;
+      if (ref.current === null) throw new Error("Reset-credit hook was not mounted");
+      return ref.current;
     },
   };
 }
@@ -42,7 +45,13 @@ it.each(["success", "failure", "rejection"] as const)(
   async (outcome) => {
     const fixture = setup();
     await using _screen = await render(<fixture.Probe />);
-    const pending = Promise.withResolvers<Result>();
+    let resolve!: (value: Result) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<Result>((complete, fail) => {
+      resolve = complete;
+      reject = fail;
+    });
+    const pending = { promise, resolve, reject };
     mocks.consume.mockReturnValueOnce(pending.promise);
     const attempts: Array<ReturnType<typeof fixture.value.redeem>> = [];
     await act(() => {

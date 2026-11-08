@@ -254,24 +254,17 @@ export function useResetCredit(
     inFlight.current = true;
     setBusy(true);
     setStatus(null);
-    try {
-      const result = await consume({ environmentId, input });
-      const message =
-        result._tag === "Success"
-          ? (result.value.warning ?? OUTCOME_TEXT[result.value.outcome])
-          : "error" in result.cause && result.cause.error instanceof Error
-            ? result.cause.error.message
-            : "Could not use the reset credit.";
-      setStatus(message);
-      return { reset: result._tag === "Success" && result.value.outcome === "reset", message };
-    } catch {
-      const message = "Could not use the reset credit.";
-      setStatus(message);
-      return { reset: false, message };
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
-    }
+    const result = await consume({ environmentId, input }).catch(() => null);
+    inFlight.current = false;
+    setBusy(false);
+    const message =
+      result?._tag === "Success"
+        ? (result.value.warning ?? OUTCOME_TEXT[result.value.outcome])
+        : result !== null && "error" in result.cause && result.cause.error instanceof Error
+          ? result.cause.error.message
+          : "Could not use the reset credit.";
+    setStatus(message);
+    return { reset: result?._tag === "Success" && result.value.outcome === "reset", message };
   };
 
   return { canManageProviders, confirming, setConfirming, busy, status, redeem };
