@@ -171,7 +171,7 @@ export function decideGroupMembership(input: {
   const group = thread.group ?? null;
   switch (command.type) {
     case "thread.group.invite": {
-      const primaryHandle = handleFromLabel(command.primaryLabel);
+      const primaryHandle = uniqueHandle(handleFromLabel(command.primaryLabel), new Set());
       const seatHandles = (group?.seats ?? []).map((seat) => seat.handle);
       // The composer's picker may have moved the primary since the last invite.
       const primary = {

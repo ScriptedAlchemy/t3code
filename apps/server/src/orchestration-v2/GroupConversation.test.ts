@@ -96,7 +96,11 @@ describe("group membership labels", () => {
     modelSelection: { instanceId: "codex", model: "same-model" },
     group: null,
   } as unknown as OrchestrationV2AppThread;
-  const inviteSeat = (current: OrchestrationV2AppThread, id: string) => {
+  const inviteSeat = (
+    current: OrchestrationV2AppThread,
+    id: string,
+    primaryLabel = "Opus",
+  ) => {
     const decided = decideGroupMembership({
       thread: current,
       seatLatestRunOrdinal: 0,
@@ -105,12 +109,35 @@ describe("group membership labels", () => {
         commandId: CommandId.make(`invite:${id}`),
         threadId: ThreadId.make("thread:parent"),
         seat: { threadId: ThreadId.make(id), label: "Opus" },
-        primaryLabel: "Opus",
+        primaryLabel,
       },
     });
     if (Result.isFailure(decided)) throw new Error(decided.failure);
     return { ...current, group: decided.success.group };
   };
+
+  it.each([
+    ["User", "user-2"],
+    ["USER model", "user-2"],
+    ["Primary", "primary-2"],
+    ["Opus", "opus"],
+  ])("keeps the primary %s addressable without taking a reserved handle", (label, handle) => {
+    const once = inviteSeat(thread, "seat:one", label);
+    const twice = inviteSeat(once, "seat:two", label);
+    const group = { ...twice.group, discussion: discussion("direct", 4) };
+    expect(group.primary.handle).toBe(handle);
+    const reply = entry(ThreadId.make("seat:one"), `@${group.primary.handle}`);
+    expect(wakes(reply, "direct", group)).toEqual(["primary"]);
+    expect(
+      planWave(group, (member) => (member === "primary" ? [reply] : []), []),
+    ).toEqual({ start: ["primary"] });
+    expect(
+      planWave(group, () => [entry(ThreadId.make("seat:one"), "@user")], []),
+    ).toEqual({ start: [], close: "settled" });
+    expect(wakes(entry(ThreadId.make("seat:one"), "@primary"), "direct", group)).toEqual([
+      "primary",
+    ]);
+  });
 
   it("names members apart when the same model is invited again", () => {
     const once = inviteSeat(thread, "seat:one");
