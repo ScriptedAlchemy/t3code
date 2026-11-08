@@ -288,7 +288,7 @@ esac
       assert.notEqual(result.exitCode, 0);
       assert.include(
         result.stderr,
-        `https://mirror.example/releases/v${ARCHIVE.archiveVersion}/SHA256SUMS?region=test#download`,
+        `https://mirror.example/releases/v${ARCHIVE.archiveVersion}/SHA256SUMS?region=test`,
       );
       assert.isFalse(result.runtimeExists);
     }),
