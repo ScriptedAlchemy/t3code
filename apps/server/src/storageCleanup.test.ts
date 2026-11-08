@@ -1772,6 +1772,8 @@ describe("deleted thread worktrees", () => {
         fixture.setDeletedThreads([owner]);
         fixture.setThreads([]);
         yield* fixture.fs.writeFileString(`${fixture.worktree}/tracked.txt`, "agent edit\n");
+        const link = fixture.path.join(fixture.repo, "linked-checkouts");
+        yield* fixture.fs.symlink(fixture.path.dirname(fixture.worktree), link);
         const reads = yield* stopSessionAfterStartupSweep(
           fixture,
           owner.id,
@@ -1785,6 +1787,7 @@ describe("deleted thread worktrees", () => {
               .writeFileString(`${fixture.worktree}/tracked.txt`, "original\n")
               .pipe(Effect.orDie);
           }),
+          fixture.path.join(link, fixture.path.basename(fixture.worktree)),
         );
         expect(reads).toBeGreaterThan(0);
         expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
@@ -2273,7 +2276,7 @@ describe("orphan worktree reports", () => {
           );
           const report = yield* fixture.service.runNow;
           expect(report.entries[0]).toMatchObject(
-            platform === "win32"
+            platform === "win32" || (yield* fixture.fs.exists(fixture.worktree.toUpperCase()))
               ? { outcome: "kept", reason: "Open terminal" }
               : { outcome: "removed" },
           );
@@ -2292,7 +2295,7 @@ describe("orphan worktree reports", () => {
           fixture.setOpenSessionCwd(fixture.worktree.toUpperCase());
           const report = yield* fixture.service.runNow;
           expect(report.entries[0]).toMatchObject(
-            platform === "win32"
+            platform === "win32" || (yield* fixture.fs.exists(fixture.worktree.toUpperCase()))
               ? { outcome: "kept", reason: "Provider session is still open" }
               : { outcome: "removed" },
           );
@@ -2652,6 +2655,54 @@ describe("storage cleanup reports and local file policies", () => {
         expect(report.bytesFreed).toBe(0);
         expect(yield* fs.exists(worktree)).toBe(true);
         expect(yield* fs.readFileString(`${worktree}/notes.txt`)).toBe("untracked\n");
+      }),
+    ),
+  );
+  it.live.each([
+    "existing thread",
+    "new thread",
+    "retargeted alias",
+    "terminal",
+    "provider session",
+  ] as const)("keeps a checkout used through a linked parent (%s)", (reference) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* pausedMeasurementFixture();
+        const { fs, path, worktree, repo } = fixture;
+        const alias = path.join(repo, "linked-worktrees");
+        yield* fs.symlink(reference === "retargeted alias" ? repo : path.dirname(worktree), alias);
+        const otherPath = path.join(alias, path.basename(worktree));
+        const addReference = Effect.gen(function* () {
+          if (reference === "terminal") {
+            yield* fixture.openTerminal({ cwd: otherPath, worktreePath: null });
+          } else if (reference === "provider session") {
+            fixture.setOpenSessionCwd(otherPath);
+          } else {
+            fixture.setThreads([
+              shell({ branch: "feature", worktreePath: worktree }),
+              shell({
+                id: ThreadId.make("other"),
+                branch: "feature",
+                worktreePath: otherPath,
+                status: "running",
+              }),
+            ]);
+          }
+        });
+        if (reference === "existing thread" || reference === "retargeted alias")
+          yield* addReference;
+        const cleanup = yield* fixture.service.runNow.pipe(Effect.forkChild);
+        if (reference !== "existing thread") {
+          yield* Deferred.await(fixture.measuring);
+          if (reference === "retargeted alias") {
+            yield* fs.remove(alias);
+            yield* fs.symlink(path.dirname(worktree), alias);
+          } else yield* addReference;
+        }
+        yield* Deferred.succeed(fixture.resume, undefined);
+        const report = yield* Fiber.join(cleanup);
+        expect(yield* fs.exists(worktree)).toBe(true);
+        expect(report.entries[0]?.outcome).toBe("kept");
       }),
     ),
   );
