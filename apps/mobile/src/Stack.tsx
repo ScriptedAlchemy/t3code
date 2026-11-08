@@ -78,7 +78,6 @@ import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
 import { AddProjectNewRoute } from "./features/projects/AddProjectNewRoute";
 import { AddProjectRepositoryRoute } from "./features/projects/AddProjectRepositoryRoute";
 import { AddProjectSourceRoute } from "./features/projects/AddProjectSourceRoute";
-import { ProjectLoomRouteScreen } from "./features/loom/ProjectLoomRouteScreen";
 import {
   NewTaskBranchPickerRouteScreen,
   NewTaskEnvironmentPickerRouteScreen,
@@ -119,6 +118,7 @@ import { SettingsKeyboardRouteScreen } from "./features/settings/SettingsKeyboar
 import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import { SettingsVoiceRouteScreen } from "./features/settings/SettingsVoiceRouteScreen";
 import { SettingsVoiceModelsRouteScreen } from "./features/settings/SettingsVoiceModelsRouteScreen";
+import { SkillsLibraryIssuesRouteScreen } from "./features/settings/SkillsLibrarySettings";
 import {
   SettingsOpenSourceLicenseRouteScreen,
   SettingsOpenSourceLicensesRouteScreen,
@@ -209,6 +209,10 @@ const SETTINGS_SCREENS = {
     screen: SettingsZackRouteScreen,
     linking: "settings/labs/zack",
     options: settingsPage("Zack"),
+  }),
+  SettingsSkillsLibraryIssues: createNativeStackScreen({
+    screen: SkillsLibraryIssuesRouteScreen,
+    options: SEARCH_SHEET_ROUTE,
   }),
   SettingsProviderAccounts: createNativeStackScreen({
     screen: SettingsProviderAccountsRouteScreen,
@@ -506,11 +510,6 @@ const RootStackConfig = createWorkspaceStackNavigator({
         contentStyle: { backgroundColor: "transparent" },
         ...getCompactBrandHeaderOptions(),
       },
-    }),
-    ProjectLoom: createNativeStackScreen({
-      screen: ProjectLoomRouteScreen,
-      linking: "projects/:environmentId/:projectId/loom",
-      options: pageRoute(),
     }),
     PullRequest: createNativeStackScreen({
       screen: PullRequestRouteScreen,

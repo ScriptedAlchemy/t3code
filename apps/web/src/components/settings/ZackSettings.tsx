@@ -22,20 +22,28 @@ import {
 /** Fork-only feature preferences, grouped so they are easy to find. */
 export function ZackSettings() {
   return (
-    <>
-      <SettingsSection id="zack" title="Zack">
-        <AssistedLearningRow />
-        <ConversationSummariesRow />
-        <ExternalHistoryRow />
-        <FreshSessionOnColdReturnRow />
-        <PstackRow />
-        <SkillsLibraryRows />
-        <AgentGitHubReadGateRow />
-        <ThreadSplitRows />
-        <AccountPoolsRow />
-      </SettingsSection>
-      <ModelEvaluationSettings />
-    </>
+    <SettingsSection id="zack" title="Zack" variant="plain">
+      <div className="space-y-6">
+        <SettingsSection title="Memory and history">
+          <AssistedLearningRow />
+          <ConversationSummariesRow />
+          <ExternalHistoryRow />
+          <FreshSessionOnColdReturnRow />
+        </SettingsSection>
+        <SettingsSection title="Skills">
+          <PstackRow />
+          <SkillsLibraryRows />
+        </SettingsSection>
+        <SettingsSection title="Thread suggestions">
+          <ThreadSplitRows />
+        </SettingsSection>
+        <SettingsSection title="Agent tools and accounts">
+          <AgentGitHubReadGateRow />
+          <AccountPoolsRow />
+        </SettingsSection>
+        <ModelEvaluationSettings />
+      </div>
+    </SettingsSection>
   );
 }
 
@@ -64,21 +72,26 @@ function AssistedLearningRow() {
       description={
         unavailableReason ??
         (isProjectScope
-          ? "After each run in this project, your text generation model proposes up to three cited facts for review in Project memory. Each run costs one model call."
-          : "After each run, your text generation model proposes up to three cited facts for review in Project memory. Each run costs one model call. Projects can override it.")
+          ? "After each run in this project, your text generation model saves up to three cited facts to Project memory. Each run costs one model call."
+          : "After each run, your text generation model saves up to three cited facts to Project memory. Each run costs one model call. Projects can override it.")
       }
       resetAction={
-        unavailableReason === null && settings.enableAssistedLearning ? (
+        unavailableReason === null &&
+        settings.enableAssistedLearning !== DEFAULT_SERVER_SETTINGS.enableAssistedLearning ? (
           <SettingResetButton
-            label="assisted learning"
-            tooltip="Reset assisted learning to off"
-            onClick={() => updateSettings({ enableAssistedLearning: false })}
+            label="automatic memory"
+            tooltip="Reset automatic memory to on"
+            onClick={() =>
+              updateSettings({
+                enableAssistedLearning: DEFAULT_SERVER_SETTINGS.enableAssistedLearning,
+              })
+            }
           />
         ) : null
       }
       control={
         <Switch
-          aria-label="Suggest facts from finished runs"
+          aria-label="Save facts from finished runs"
           disabled={unavailableReason !== null}
           mixed={mixed}
           checked={mixed ? false : settings.enableAssistedLearning}
@@ -102,8 +115,8 @@ function ConversationSummariesRow() {
       {...searchableSetting("conversation-summaries")}
       description={
         isProjectScope
-          ? "After turns complete in this project, your text generation model summarizes older messages so provider switches and forks keep the gist of history that no longer fits. Each summary costs one model call."
-          : "After turns complete, your text generation model summarizes older messages so provider switches and forks keep the gist of history that no longer fits. Each summary costs one model call. Projects can override it."
+          ? "After turns complete in this project, your text model summarizes older messages so switches and forks keep the gist of history that no longer fits. Each summary costs one model call."
+          : "After turns complete, your text model summarizes older messages so switches and forks keep the gist of history that no longer fits. Each summary costs one model call. Projects can override it."
       }
       resetAction={
         settings.enableConversationSummaries ? (

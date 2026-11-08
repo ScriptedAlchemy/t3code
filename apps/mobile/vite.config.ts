@@ -4,6 +4,7 @@ import { defineConfig, normalizePath } from "vite-plus";
 import "vite-plus/test/config";
 
 const reactTests = [
+  "src/state/entities.test.tsx",
   "src/features/external-history/ExternalHistoryRouteScreen.test.tsx",
   "src/features/conversation-summaries/ConversationSummariesRouteScreen.test.tsx",
   "src/components/ProjectKnowledgeEntry.test.tsx",
@@ -23,7 +24,6 @@ const reactTests = [
   "src/components/ProjectFavicon.test.tsx",
   "src/components/ui/Dialog.android.test.tsx",
   "src/features/files/FileCodeRelationships.test.tsx",
-  "src/features/loom/ProjectLoomRouteScreen.test.tsx",
   "src/features/pull-requests/usePullRequestList.test.tsx",
   "src/features/pull-requests/usePullRequestLiveChecks.test.tsx",
   "src/components/ui/AppBar.android.test.tsx",
@@ -52,6 +52,7 @@ const reactTests = [
   "src/features/connection/ConnectionsNewRouteScreen.test.tsx",
   "src/features/connection/LinkedEnvironmentsSection.test.tsx",
   "src/features/devices/device-stream.browser.test.ts",
+  "src/features/keyboard/keyboardControllerState.test.tsx",
 ];
 
 const sourceRoot = `${normalizePath(NodeURL.fileURLToPath(new URL("./src", import.meta.url)))}/`;

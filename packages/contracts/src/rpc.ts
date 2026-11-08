@@ -8,7 +8,6 @@ import {
   ConversationSummaryListInput,
   ConversationSummaryRead,
 } from "./conversationSummaries.ts";
-import { LoomWindow, LoomWindowInput, ProjectLoomError } from "./projectLoom.ts";
 import {
   ModelEvaluationClearInput,
   ModelEvaluationError,
@@ -94,6 +93,7 @@ import {
   ProviderAuthCompleteInput,
   ProviderAuthState,
   ProviderAuthStartInput,
+  ProviderAuthRemoveMethodInput,
   ProviderAuthRespondInput,
   ProviderInstallCancelInput,
   ProviderInstallState,
@@ -259,6 +259,7 @@ import {
   PullRequestLinkedThreadsResult,
   PullRequestSummary,
   PullRequestReviewerCandidateList,
+  PullRequestReviewerCandidatesInput,
   PullRequestReviewerRequestInput,
   PullRequestLabelCandidateList,
   PullRequestLabelChangeInput,
@@ -484,7 +485,6 @@ export const WS_METHODS = {
   conversationSummariesExpand: "conversationSummaries.expand",
   modelEvaluationsList: "modelEvaluations.list",
   modelEvaluationsClear: "modelEvaluations.clear",
-  projectReadLoomWindow: "project.readLoomWindow",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -526,6 +526,7 @@ export const WS_METHODS = {
   providerAccountImport: "provider.account.import",
   providerAuthRespond: "provider.auth.respond",
   providerAuthCancel: "provider.auth.cancel",
+  providerAuthRemoveMethod: "provider.auth.removeMethod",
   providerAuthLogout: "provider.auth.logout",
   providerAuthSubscribe: "provider.auth.subscribe",
   providerInstallStart: "provider.install.start",
@@ -741,6 +742,8 @@ export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProv
     workspaceSnapshotsOnDemand: Schema.optional(Schema.Boolean),
     /** As on `subscribeServerConfig`: add /usage-limits to the replied snapshot. */
     usageLimitsCommand: Schema.optional(Schema.Boolean),
+    /** As on `subscribeServerConfig`: a failed cwd scan replies with the machine catalog as a pending snapshot. */
+    providerCatalogsOnDemand: Schema.optional(Schema.Boolean),
   }),
   success: ServerProviderUpdatedPayload,
   error: Schema.Union([EnvironmentAuthorizationError, ProviderSetupError]),
@@ -813,6 +816,12 @@ const WsProviderAccountImportRpc = Rpc.make(WS_METHODS.providerAccountImport, {
 
 const WsProviderAuthCancelRpc = Rpc.make(WS_METHODS.providerAuthCancel, {
   payload: ProviderAuthCancelInput,
+  success: ProviderAuthState,
+  error: ProviderSetupRpcError,
+});
+
+const WsProviderAuthRemoveMethodRpc = Rpc.make(WS_METHODS.providerAuthRemoveMethod, {
+  payload: ProviderAuthRemoveMethodInput,
   success: ProviderAuthState,
   error: ProviderSetupRpcError,
 });
@@ -1300,7 +1309,7 @@ const WsPullRequestsSubscribeRefreshesRpc = Rpc.make(WS_METHODS.pullRequestsSubs
 
 // Fetch reviewer candidates only when the menu opens to avoid unused host requests.
 const WsPullRequestsReviewerCandidatesRpc = Rpc.make(WS_METHODS.pullRequestsReviewerCandidates, {
-  payload: PullRequestRef,
+  payload: PullRequestReviewerCandidatesInput,
   success: PullRequestReviewerCandidateList,
   error: PullRequestRpcError,
 });
@@ -2008,6 +2017,8 @@ export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerCon
     usageLimitsCommand: Schema.optional(Schema.Boolean),
     /** Omit per-cwd provider snapshots; the client fetches its cwd through `server.refreshProviders`. */
     workspaceSnapshotsOnDemand: Schema.optional(Schema.Boolean),
+    /** With on-demand snapshots, also omit machine slash commands and skills a cwd snapshot replaces. */
+    providerCatalogsOnDemand: Schema.optional(Schema.Boolean),
   }),
   success: ServerConfigStreamEvent,
   error: Schema.Union([KeybindingsConfigError, ServerSettingsError, EnvironmentAuthorizationError]),
@@ -2179,14 +2190,6 @@ export const WsProjectKnowledgeRpcGroup = RpcGroup.make(
   WsProjectKnowledgeStatusRpc,
 ).middleware(RpcScopeAuthorization);
 
-export const WsProjectLoomRpcGroup = RpcGroup.make(
-  Rpc.make(WS_METHODS.projectReadLoomWindow, {
-    payload: LoomWindowInput,
-    success: LoomWindow,
-    error: Schema.Union([ProjectLoomError, EnvironmentAuthorizationError]),
-  }),
-).middleware(RpcScopeAuthorization);
-
 // Transport opt-in: old protocol-2 clients cannot decode tool/range sources or follow
 // intra-source text cursors. MCP and the domain service always use the current format.
 const ConversationSummaryRpcSourceFormat = {
@@ -2270,6 +2273,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderAccountImportRpc,
   WsProviderAuthRespondRpc,
   WsProviderAuthCancelRpc,
+  WsProviderAuthRemoveMethodRpc,
   WsProviderAuthLogoutRpc,
   WsProviderAuthSubscribeRpc,
   WsProviderInstallStartRpc,
@@ -2476,5 +2480,4 @@ export const WsRpcGroup = RpcGroup.make(
   .merge(WsConversationSummariesRpcGroup)
   .merge(WsModelEvaluationsRpcGroup)
   .merge(WsExternalHistoryRpcGroup)
-  .merge(WsProjectLoomRpcGroup)
   .merge(WsProjectCodeRpcGroup);

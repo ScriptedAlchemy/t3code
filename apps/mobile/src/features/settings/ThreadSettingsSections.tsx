@@ -23,6 +23,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
+import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
+import type { ToolCallVisibility } from "@t3tools/contracts/settings";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { planAutoSettleSettingsSync, type AutoSettleSettings } from "./autoSettleSettingsSync";
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
@@ -53,6 +55,7 @@ export function SettingsLabsRouteScreen() {
             onPress={() => navigation.navigate("SettingsZack")}
           />
         </SettingsSection>
+        <ToolCallVisibilitySection />
         <BetaSettingsSection />
         <LegacySettingsSection />
       </ScrollView>
@@ -60,7 +63,7 @@ export function SettingsLabsRouteScreen() {
   );
 }
 
-const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
+const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays ?? 7;
 
 /**
  * Usage-limit and auto-settle rows. The Threads page owns their writes, so they share its queue
@@ -244,39 +247,119 @@ function BetaSettingsSection() {
       environment.connection.phase === "connected" &&
       environment.serverConfig?.environment.capabilities.peerLinks === true,
   );
-  const writable = useEnvironmentsWithScope(supported, AuthSettingsWriteScope);
+  const indexing = environments.filter(
+    (environment) =>
+      environment.connection.phase === "connected" &&
+      environment.serverConfig?.environment.capabilities.projectCode === true,
+  );
+  const writable = useEnvironmentsWithScope(environments, AuthSettingsWriteScope);
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
     label: "linked environments beta update",
     reportFailure: true,
   });
-  if (supported.length === 0) return null;
+  if (supported.length === 0 && indexing.length === 0) return null;
+  return (
+    <View className="gap-6">
+      {supported.length === 0 ? null : (
+        <View className="gap-3">
+          <SettingsSection title="Beta: Linked environments">
+            {supported.map((environment) => {
+              const policy = environment.serverConfig?.managedPolicy;
+              const managed = isManagedSettingPath(policy, "linkedEnvironmentsEnabled");
+              return (
+                <SettingsSwitchRow
+                  key={environment.environmentId}
+                  icon="link"
+                  label={environment.label}
+                  {...(managed ? { subtitle: `Managed by ${policy?.organization}.` } : {})}
+                  value={environment.serverConfig?.settings.linkedEnvironmentsEnabled === true}
+                  disabled={managed || !writable.has(environment.environmentId)}
+                  onValueChange={(value) =>
+                    void updateSettings({
+                      environmentId: environment.environmentId,
+                      input: { patch: { linkedEnvironmentsEnabled: value } },
+                    })
+                  }
+                />
+              );
+            })}
+          </SettingsSection>
+          <Text className="px-2 text-sm text-foreground-muted">
+            Let agents on a machine work on your other machines, and theirs on it. Turn it on for
+            each machine. While it is off, nothing new starts over a link; tasks already running
+            finish.
+          </Text>
+        </View>
+      )}
+      {indexing.length === 0 ? null : (
+        <View className="gap-3">
+          <SettingsSection title="Beta: Automatic code indexing">
+            {indexing.map((environment) => {
+              const policy = environment.serverConfig?.managedPolicy;
+              const managed = isManagedSettingPath(policy, "autoCodeIndexEnabled");
+              return (
+                <SettingsSwitchRow
+                  key={environment.environmentId}
+                  icon="magnifyingglass"
+                  label={environment.label}
+                  {...(managed ? { subtitle: `Managed by ${policy?.organization}.` } : {})}
+                  value={environment.serverConfig?.settings.autoCodeIndexEnabled !== false}
+                  disabled={managed || !writable.has(environment.environmentId)}
+                  onValueChange={(value) =>
+                    void updateSettings({
+                      environmentId: environment.environmentId,
+                      input: { patch: { autoCodeIndexEnabled: value } },
+                    })
+                  }
+                />
+              );
+            })}
+          </SettingsSection>
+          <Text className="px-2 text-sm text-foreground-muted">
+            Index a project when you add it, and a worktree while an agent works in it. A worktree's
+            index is removed when its thread settles. While this is off, a checkout only indexes
+            when something asks it a code question.
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const TOOL_CALL_VISIBILITY_OPTIONS: ReadonlyArray<{
+  readonly value: ToolCallVisibility;
+  readonly label: string;
+}> = [
+  { value: "showAll", label: "Show all" },
+  { value: "hideSuccessful", label: "Hide successful" },
+  { value: "hideAll", label: "Hide all" },
+  { value: "zen", label: "Zen" },
+];
+
+function ToolCallVisibilitySection() {
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  const selected = AsyncResult.isSuccess(preferences)
+    ? (preferences.value.toolCallVisibility ?? "showAll")
+    : null;
+
   return (
     <View className="gap-3">
-      <SettingsSection title="Beta: Linked environments">
-        {supported.map((environment) => {
-          const policy = environment.serverConfig?.managedPolicy;
-          const managed = isManagedSettingPath(policy, "linkedEnvironmentsEnabled");
-          return (
-            <SettingsSwitchRow
-              key={environment.environmentId}
-              icon="link"
-              label={environment.label}
-              {...(managed ? { subtitle: `Managed by ${policy?.organization}.` } : {})}
-              value={environment.serverConfig?.settings.linkedEnvironmentsEnabled === true}
-              disabled={managed || !writable.has(environment.environmentId)}
-              onValueChange={(value) =>
-                void updateSettings({
-                  environmentId: environment.environmentId,
-                  input: { patch: { linkedEnvironmentsEnabled: value } },
-                })
-              }
-            />
-          );
-        })}
+      <SettingsSection title="Beta: Tool calls in chat">
+        {TOOL_CALL_VISIBILITY_OPTIONS.map((option, index) => (
+          <ListChoiceRow
+            key={option.value}
+            label={option.label}
+            selected={selected === option.value}
+            separated={index > 0}
+            disabled={selected === null}
+            onPress={() => savePreferences({ toolCallVisibility: option.value })}
+          />
+        ))}
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
-        Let agents on a machine work on your other machines, and theirs on it. Turn it on for each
-        machine. While it is off, nothing new starts over a link; tasks already running finish.
+        Hide the commands, edits, and searches agents run. Hide successful keeps failures. Zen shows
+        only final answers. Approvals, questions, and errors always show.
       </Text>
     </View>
   );

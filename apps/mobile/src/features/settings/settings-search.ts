@@ -99,6 +99,7 @@ const SETTINGS_SEARCH_TERMS = {
     "start from remote",
   ],
   SettingsLabs: [
+    "hide offline environments",
     "legacy",
     "plan mode",
     "beta",
@@ -121,6 +122,12 @@ const SETTINGS_SEARCH_TERMS = {
     "scores",
     "guidance",
     "orchestration",
+    "tool calls in chat",
+    "hide tool calls",
+    "commands edits searches",
+    "work log",
+    "zen",
+    "final answers only",
   ],
   SettingsEnvironmentMaintenance: ["updates", "provider updates", "restart", "manage environments"],
   SettingsAbout: [

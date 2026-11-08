@@ -235,7 +235,6 @@ export const make = Effect.gen(function* () {
       conversationSummaries: true,
       conversationSummarySourceFormat: 2,
       externalHistory: 1,
-      projectLoom: true,
       projectCode: true,
       projectCodeFreshness: true,
       projectCodeTests: true,
@@ -293,6 +292,7 @@ export const make = Effect.gen(function* () {
       scheduledTaskThreadModes: true,
       npmReleaseLookup: true,
       voiceTranscription: isSpeechPlatformSupported(hostPlatform, hostArchitecture, hostLibc),
+      cloudVoiceTranscription: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
       ...(serverInstallation === null ? {} : { serverInstallation }),
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate

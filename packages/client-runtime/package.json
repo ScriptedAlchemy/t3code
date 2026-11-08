@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./skills-library-issues": {
+      "types": "./src/skillsLibraryIssues.ts",
+      "default": "./src/skillsLibraryIssues.ts"
+    },
     "./modelEvaluations": {
       "types": "./src/modelEvaluations/index.ts",
       "default": "./src/modelEvaluations/index.ts"
@@ -14,10 +18,6 @@
     "./projectCode": {
       "types": "./src/projectCode/index.ts",
       "default": "./src/projectCode/index.ts"
-    },
-    "./projectLoom": {
-      "types": "./src/projectLoom/index.ts",
-      "default": "./src/projectLoom/index.ts"
     },
     "./conversationSummaries": {
       "types": "./src/conversationSummaries/index.ts",
@@ -566,6 +566,10 @@
     "./model-traits": {
       "types": "./src/modelTraits.ts",
       "default": "./src/modelTraits.ts"
+    },
+    "./pull-request-reviewers": {
+      "types": "./src/pullRequestReviewers.ts",
+      "default": "./src/pullRequestReviewers.ts"
     },
     "./provider-clients": {
       "types": "./src/providerClients.ts",

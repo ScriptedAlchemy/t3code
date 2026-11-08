@@ -56,7 +56,6 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
   BrainIcon,
-  ChartGanttIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
@@ -155,6 +154,7 @@ import {
   hasTrailingPathSeparator,
   inferProjectTitleFromPath,
   isExplicitRelativeProjectPath,
+  isFilesystemBrowseQuery,
   isScratchProject,
   isUnsupportedWindowsProjectPath,
   resolveProjectPathForDispatch,
@@ -221,8 +221,8 @@ import {
   type SearchOverlayMode,
 } from "./CommandPalette.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
-import { isSidebarHiddenThread, resolveLoomTargets } from "./Sidebar.logic";
-import { CommandPaletteContent } from "./CommandPaletteContent";
+import { isSidebarHiddenThread } from "./Sidebar.logic";
+import { CommandPaletteContent, type PendingInputSelection } from "./CommandPaletteContent";
 import {
   selectCommandPaletteClientSettings,
   useEnvironmentLookups,
@@ -435,6 +435,8 @@ function OpenCommandPaletteDialog(props: {
   const resultListRef = useRef<LegendListRef | null>(null);
   // A pushed view drops the typed highlight until the user moves it again.
   const highlightClearedRef = useRef(viewStack.length > 0);
+  // Entering or leaving browse mode remounts the input; carry the caret across it.
+  const remountSelectionRef = useRef<PendingInputSelection | null>(null);
   function clearTypedHighlight(): void {
     highlightClearedRef.current = true;
     setHighlightedItemValue(null);
@@ -932,10 +934,25 @@ function OpenCommandPaletteDialog(props: {
     setHighlightedItemValue(null);
   }
 
-  function handleQueryChange(nextQuery: string): void {
+  function handleQueryChange(nextQuery: string, source: EventTarget | null): void {
     browseNavigation.invalidate();
     clearTypedHighlight();
-    setQuery(canBrowsePaths ? resolvePastedPath(query, nextQuery) : nextQuery);
+    const resolvedQuery = canBrowsePaths ? resolvePastedPath(query, nextQuery) : nextQuery;
+    // A rewritten paste has no matching offsets, so its caret lands at the end.
+    if (
+      source instanceof HTMLInputElement &&
+      resolvedQuery === nextQuery &&
+      (canBrowsePaths && isFilesystemBrowseQuery(resolvedQuery, browseEnvironmentPlatform)) !==
+        isBrowsing
+    ) {
+      remountSelectionRef.current = {
+        value: resolvedQuery,
+        start: source.selectionStart,
+        end: source.selectionEnd,
+        direction: source.selectionDirection,
+      };
+    }
+    setQuery(resolvedQuery);
     if (nextQuery === "" && currentView?.initialQuery) {
       popView();
     }
@@ -1706,31 +1723,6 @@ function OpenCommandPaletteDialog(props: {
         });
       },
     });
-    const loomTargets = resolveLoomTargets({
-      members: contextualProjectGroup.memberProjects,
-      activeProjectRef: contextualProjectRef,
-      supportsLoom: (environmentId) =>
-        serverConfigs.get(environmentId)?.environment.capabilities.projectLoom === true,
-    });
-    for (const member of loomTargets) {
-      actionItems.push({
-        kind: "action",
-        value: `action:open-loom:${member.environmentId}:${member.id}`,
-        searchTerms: ["loom", "timeline", "activity", "agents", "history", "project"],
-        title: "Open Loom",
-        description:
-          loomTargets.length > 1 && member.environmentLabel !== null
-            ? `${contextualProjectGroup.displayName} on ${member.environmentLabel}`
-            : contextualProjectGroup.displayName,
-        icon: <ChartGanttIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          await navigate({
-            to: "/loom/$environmentId/$projectId",
-            params: { environmentId: member.environmentId, projectId: member.id },
-          });
-        },
-      });
-    }
   }
 
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
@@ -2923,7 +2915,8 @@ function OpenCommandPaletteDialog(props: {
           scrollCommandPaletteRowIntoView(resultListRef.current, rowIndex);
         }
       }}
-      onValueChange={handleQueryChange}
+      onValueChange={(nextQuery, { event }) => handleQueryChange(nextQuery, event.target)}
+      pendingSelectionRef={remountSelectionRef}
       showBackHint={isSubmenu}
       value={query}
     >

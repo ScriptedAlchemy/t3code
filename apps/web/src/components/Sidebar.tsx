@@ -17,6 +17,7 @@ import {
   DndContext,
   useSensor,
   useSensors,
+  type AutoScrollOptions,
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
@@ -61,7 +62,6 @@ import {
 import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
 
 import {
-  ChartGanttIcon,
   CheckIcon,
   ChevronDownIcon,
   FolderIcon,
@@ -132,7 +132,7 @@ import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
-import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
+import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useBoringSidebarEnabled, useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
@@ -215,7 +215,6 @@ import {
   useThreadJumpHintsVisible,
   type SidebarListItem,
   type SidebarSection,
-  resolveLoomTargets,
   resolveSidebarRowThreadRef,
 } from "./Sidebar.logic";
 import {
@@ -900,6 +899,9 @@ function checkThreadOperations(
 
 const SIDEBAR_DRAG_DISTANCE = 6;
 
+// dnd-kit's 20% edge zone at full speed runs the list away while the pointer rests near the bottom.
+const SIDEBAR_AUTO_SCROLL: AutoScrollOptions = { threshold: { x: 0, y: 0.05 }, acceleration: 3 };
+
 const SIDEBAR_DRAG_LABEL_HEIGHT = 24;
 
 const threadSearchResultId = (index: number) => `sidebar-thread-search-result-${index}`;
@@ -1084,6 +1086,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   } | null>(null);
   const dragSensorRef = useRef<SidebarPointerSensor | null>(null);
   const contextDragKeyRef = useRef<string | null>(null);
+  const dragScrollRef = useRef<{ readonly viewport: Element; readonly top: number } | null>(null);
   const [actionSweep, setActionSweep] = useState<{
     action: SidebarSweepAction;
     keys: ReadonlySet<string>;
@@ -1263,50 +1266,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             projectRef,
           ),
         },
-      });
-    },
-  );
-  const activeProjectRef = resolveThreadActionProjectRef({
-    activeDraftThread: newThreadContext.activeDraftThread,
-    activeThread: newThreadContext.activeThread ?? undefined,
-    defaultProjectRef: null,
-    handleNewThread: newThreadContext.handleNewThread,
-  });
-  const loomTargetsFor = (projectGroup: SidebarProjectSnapshot) =>
-    resolveLoomTargets({
-      members: projectGroup.memberProjects,
-      activeProjectRef,
-      supportsLoom: (environmentId) =>
-        serverConfigs.get(environmentId)?.environment.capabilities.projectLoom === true,
-    });
-  const handleOpenLoom = useStableCallback(
-    async (event: ReactMouseEvent<HTMLElement>, projectGroup: SidebarProjectSnapshot) => {
-      event.preventDefault();
-      event.stopPropagation();
-      suppressNextScopeChangeRef.current = true;
-      dispatchProjectScopeMenu({ type: "project-settings-opened" });
-      const targets = loomTargetsFor(projectGroup);
-      let member = targets.length === 1 ? targets[0] : undefined;
-      if (targets.length > 1) {
-        const api = readLocalApi();
-        if (!api) return;
-        const clicked = await settlePromise(() =>
-          api.contextMenu.show(
-            targets.map((target) => ({
-              id: `${target.environmentId}:${target.id}`,
-              label: `Open Loom on ${target.environmentLabel ?? target.environmentId}`,
-            })),
-            { x: event.clientX, y: event.clientY },
-          ),
-        );
-        if (clicked._tag === "Failure") return;
-        member = targets.find((target) => `${target.environmentId}:${target.id}` === clicked.value);
-      }
-      if (member === undefined) return;
-      if (isMobile) setOpenMobile(false);
-      void router.navigate({
-        to: "/loom/$environmentId/$projectId",
-        params: { environmentId: member.environmentId, projectId: member.id },
       });
     },
   );
@@ -1797,6 +1756,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const finishThreadDrag = (started: boolean) => {
     dragSensorRef.current = null;
     contextDragKeyRef.current = null;
+    dragScrollRef.current = null;
     endThreadContextDrag();
     if (started) {
       listMotionRef.current?.release();
@@ -1824,6 +1784,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     const bounds = threadListRef.current?.getBoundingClientRect();
     return bounds !== undefined && (point.x < bounds.left || point.x > bounds.right);
   };
+  // The path out of the list often crosses dnd-kit's edge zone, which autoscrolls the sidebar.
+  const restoreDragScroll = () => {
+    const scroll = dragScrollRef.current;
+    if (scroll && scroll.viewport.scrollTop !== scroll.top) scroll.viewport.scrollTop = scroll.top;
+  };
   const moveThreadContextDrag = (point: { x: number; y: number }) => {
     const contextDrag = pointerOutsideThreadList(point);
     setDragState((current) =>
@@ -1835,6 +1800,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       endThreadContextDrag();
       return false;
     }
+    restoreDragScroll();
     const threads = contextDragThreads();
     const title =
       threadByKeyRef.current.get(contextDragKeyRef.current ?? "")?.title.trim() || "Thread";
@@ -1843,6 +1809,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
   const dropThreadContextDrag = (point: { x: number; y: number }) => {
     if (!pointerOutsideThreadList(point)) return false;
+    restoreDragScroll();
     dropThreadContext(point, contextDragThreads());
     return true;
   };
@@ -1969,6 +1936,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (activeSection === undefined) return;
     listMotionRef.current?.suspend();
     const list = threadListRef.current;
+    const viewport = list?.closest('[data-slot="scroll-area-viewport"]');
+    dragScrollRef.current = viewport ? { viewport, top: viewport.scrollTop } : null;
     const header = list?.querySelector<HTMLElement>('[data-testid="sidebar-pinned-header"]');
     if (list && header) {
       const listRect = list.getBoundingClientRect();
@@ -3219,20 +3188,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               )}
                             </ProjectScopeRowIcon>
                             <span className="min-w-0 truncate text-sm">{item.label}</span>
-                            {project && loomTargetsFor(project).length > 0 ? (
-                              <Button
-                                size="icon-xs"
-                                variant="ghost-muted"
-                                tabIndex={-1}
-                                aria-hidden="true"
-                                title={`Open Loom for ${project.displayName}`}
-                                className="ml-auto"
-                                onPointerDown={(event) => event.stopPropagation()}
-                                onClick={(event) => void handleOpenLoom(event, project)}
-                              >
-                                <ChartGanttIcon className="size-3.5" />
-                              </Button>
-                            ) : null}
                             {project && showProjectEnvironments ? (
                               <ProjectEnvironmentBadge
                                 group={project}
@@ -3404,7 +3359,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             >
               <DndContext
                 sensors={dndSensors}
-                autoScroll={!isContextDrag}
+                autoScroll={isContextDrag ? false : SIDEBAR_AUTO_SCROLL}
                 collisionDetection={dndCollisionDetection}
                 modifiers={dndModifiers}
                 onDragStart={handleThreadDragStart}

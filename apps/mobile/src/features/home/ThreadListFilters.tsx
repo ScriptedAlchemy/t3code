@@ -12,6 +12,7 @@ export function ThreadListFilters(props: {
   readonly projects: ReadonlyArray<HomeListFilterMenuProject>;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  readonly hideOfflineEnvironments: boolean;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
   /** List padding the scroller bleeds through so pills start where row content does. */
@@ -27,13 +28,16 @@ export function ThreadListFilters(props: {
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
-      style={{ marginHorizontal: -props.gutter }}
+      style={{ marginHorizontal: -props.gutter, overflow: "visible" }}
       contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 2, paddingBottom: 10, gap: 8 }}
     >
       <ListFilterMenu
-        label={selectedEnvironment?.label ?? "All environments"}
+        label={
+          selectedEnvironment?.label ??
+          (props.hideOfflineEnvironments ? "Online environments" : "All environments")
+        }
         accessibilityLabel="Filter threads by environment"
-        active={selectedEnvironment !== undefined}
+        active={selectedEnvironment !== undefined || props.hideOfflineEnvironments}
         actions={[
           {
             id: "all",

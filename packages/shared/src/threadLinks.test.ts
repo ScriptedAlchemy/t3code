@@ -10,6 +10,7 @@ import {
   relabelThreadLinks,
   threadLinkCandidates,
   threadLinkRefs,
+  trimThreadAutolinkPadding,
 } from "./threadLinks.ts";
 
 const ref = (environmentId: string, threadId = "chat-1") => ({
@@ -149,6 +150,35 @@ describe("thread links", () => {
         "After [New](t3-thread://v2/local/t1)",
       ].join("\n"),
     );
+  });
+
+  it("trims the whitespace a model writes inside a thread autolink's brackets, and nothing else", () => {
+    const delegated =
+      "t3-thread://v2/ffa70b7f-bbd5-47ff-9f01-bdad03fba727/thread:delegated-task:command%3Amcp%3A14ece488-0be2-4b67-bb57-7c2ee9190309%3Adelegate-task%3Azack-settings-ui-opus-20261107-2144";
+    expect(trimThreadAutolinkPadding(`Opened < ${delegated}>.`)).toBe(`Opened <${delegated}>.`);
+    expect(
+      trimThreadAutolinkPadding("<\tt3-thread://v1/t1 \t> and <\n  t3-thread://v2/local/t2\n>"),
+    ).toBe("<t3-thread://v1/t1> and <t3-thread://v2/local/t2>");
+    expect(
+      trimThreadAutolinkPadding("[Settings](< t3-thread://v1/t1 >)\r\n<\r\nt3-thread://v1/t2\r\n>"),
+    ).toBe("[Settings](<t3-thread://v1/t1>)\r\n<t3-thread://v1/t2>");
+    const untouched = [
+      "<t3-thread://v2/local/t1> [a](<t3-thread://v2/local/t1>)",
+      "< t3 > < t3-thread://v2/env > < t3-thread://v2/<env>/<thread> > < t3-thread://v1/ >",
+      "< t3-thread://v2/local/thr ead > <\n\nt3-thread://v1/t1>",
+      '< https://example.com/t3-thread > <a href="t3-thread://v2/local/t1">x</a>',
+      "Literal `< t3-thread://v2/local/t1 >`",
+      "Literal `code\n< t3-thread://v2/local/t1 >\ncode`",
+      "    < t3-thread://v2/local/t1 >",
+      "\t< t3-thread://v2/local/t1 >",
+      "```md",
+      "< t3-thread://v2/local/t1 >",
+      "```",
+    ].join("\n");
+    expect(trimThreadAutolinkPadding(untouched)).toBe(untouched);
+    expect(
+      relabelThreadLinks(trimThreadAutolinkPadding(`< ${delegated} >`), local, () => "Settings UI"),
+    ).toBe(`[Settings UI](${delegated})`);
   });
 
   it("lists the threads a message's links can name, outside code", () => {

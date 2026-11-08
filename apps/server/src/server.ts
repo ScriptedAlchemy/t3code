@@ -7,7 +7,7 @@ import * as AssistedLearning from "./project/knowledge/AssistedLearning.ts";
 import * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
 import * as ModelEvaluations from "./modelEvaluations/ModelEvaluations.ts";
 import * as ExternalHistory from "./project/externalHistory/ExternalHistory.ts";
-import * as ProjectLoom from "./project/loom/ProjectLoom.ts";
+import * as CodeIndexReactor from "./project/knowledge/CodeIndexReactor.ts";
 import * as CodeIntelligence from "./project/knowledge/CodeIntelligence.ts";
 import * as FileHistory from "./project/knowledge/FileHistory.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -55,6 +55,7 @@ import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
 import * as SpeechModelStore from "./speech/SpeechModelStore.ts";
 import * as SpeechService from "./speech/SpeechService.ts";
+import * as CloudSpeech from "./speech/CloudSpeech.ts";
 import { speechHttpApiLayer } from "./speech/http.ts";
 import { speechStreamRouteLayer } from "./speech/stream.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
@@ -120,6 +121,7 @@ import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts";
 import * as NativeAppIconResolver from "./assets/NativeAppIconResolver.ts";
 import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
+import * as ProviderInstallation from "./provider/providerInstallation.ts";
 import * as CodexInstallation from "./provider/CodexInstallation.ts";
 import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
 import * as ProviderAdapterRegistry from "./orchestration-v2/ProviderAdapterRegistry.ts";
@@ -208,7 +210,6 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as AntigravityUsage from "./provider/Drivers/AntigravityUsage.ts";
 import { MuseUsageHome } from "@t3tools/provider-muse/server";
 import * as CursorAccountReader from "@t3tools/provider-cursor/server/CursorAccountReader";
-import * as CursorKeychain from "@t3tools/provider-cursor/server/CursorKeychain";
 import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsageAccounts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as CodexUsageHistory from "./usage/CodexUsageHistory.ts";
@@ -317,9 +318,7 @@ const layerUsage = UsageService.layer.pipe(
       AntigravityUsage.layer,
       MuseUsageHome.layer,
       CodexUsageHistory.layer,
-      CursorUsageAccounts.layer.pipe(
-        Layer.provide(CursorAccountReader.layer.pipe(Layer.provide(CursorKeychain.layer))),
-      ),
+      CursorUsageAccounts.layer.pipe(Layer.provide(CursorAccountReader.layer)),
     ).pipe(Layer.provide(ProviderHostLive.layer.pipe(Layer.provide(ServerSecretStore.layer)))),
   ),
   Layer.provide(layerServerSettings),
@@ -657,14 +656,16 @@ const layerProviderInstallationRefresh = Layer.effectDiscard(
   }),
 );
 
+const layerStorageCleanup = StorageCleanup.layer.pipe(
+  Layer.provide(Layer.merge(ProjectionStoreV2.layer, WorktreeBranches.layer)),
+);
+
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
-  StorageCleanup.layer.pipe(
-    Layer.provide(Layer.merge(ProjectionStoreV2.layer, WorktreeBranches.layer)),
-  ),
+  layerStorageCleanup,
   DatabaseStorage.layer.pipe(Layer.provide(ProjectionMaintenance.layer)),
   layerThreadPullRequestWorker,
   DelegatedTaskAnalytics.layer,
@@ -694,8 +695,15 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       yield* service.start();
     }),
   ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
+  CodeIndexReactor.layer.pipe(
+    Layer.provide(layerStorageCleanup),
+    Layer.provide(ProjectionStoreV2.layer),
+    Layer.provide(ProjectStore.layer),
+    Layer.provide(layerServerSettings),
+  ),
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
+  ProviderInstallation.layer,
   ReplayMarkers.layer,
   ThreadSplitSuggestions.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
@@ -713,7 +721,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       ),
     ),
   ),
-  Layer.provideMerge(Layer.merge(ProjectLoom.layer, ExternalHistory.layer)),
+  Layer.provideMerge(ExternalHistory.layer),
   Layer.provideMerge(
     ProjectKnowledge.layer.pipe(
       Layer.provide(ProjectionStoreV2.layer),
@@ -788,7 +796,14 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerCodeIntelligence = Layer.mergeAll(CodeIntelligence.layer, FileHistory.layer).pipe(
+const layerCodeIntelligence = Layer.mergeAll(
+  CodeIntelligence.layer.pipe(
+    Layer.provide(GitVcsDriver.layerVcs),
+    // Layers memoize by reference, so this is the same settings instance the server uses.
+    Layer.provide(layerServerSettings),
+  ),
+  FileHistory.layer,
+).pipe(
   Layer.provideMerge(Layer.mergeAll(ProjectStore.layer, ProjectionStoreV2.layer, layerWorkspace)),
 );
 
@@ -881,6 +896,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(SpeechModelStore.layer),
     ),
   ),
+  Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
   Layer.provide(layerServerSettings),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),

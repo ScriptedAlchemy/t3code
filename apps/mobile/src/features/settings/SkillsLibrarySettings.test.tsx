@@ -15,6 +15,7 @@ const { Children, mocks } = vi.hoisted(() => ({
     refresh: vi.fn(),
     query: vi.fn(),
     refreshStatus: vi.fn(),
+    navigate: vi.fn(),
     status: {
       libraryPath: "~/.agents/skills",
       linked: [],
@@ -25,7 +26,22 @@ const { Children, mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("react-native", () => ({ View: Children }));
+vi.mock("@react-navigation/native", () => ({
+  useNavigation: () => ({ navigate: mocks.navigate }),
+}));
 vi.mock("../../components/ui/AppText", () => ({ AppText: Children }));
+vi.mock("../../components/ui/RowPressable", () => ({ RowPressable: Children }));
+vi.mock("../../components/ui/EmptyState", () => ({ EmptyState: () => null }));
+vi.mock("../../components/ui/AppActivityIndicator", () => ({ AppActivityIndicator: () => null }));
+vi.mock("../../state/environments", () => ({ useEnvironments: () => ({ environments: [] }) }));
+vi.mock("../pull-requests/PullRequestSearchSheet", () => ({ PullRequestSearchSheet: () => null }));
+vi.mock("../../components/ui/ListRow", () => ({
+  ListRow: (props: { label: string; description?: string; onPress: () => void }) => (
+    <button onClick={props.onPress}>
+      {props.label}: {props.description}
+    </button>
+  ),
+}));
 vi.mock("../../components/ui/ListActionRow", () => ({
   ListActionRow: ({
     label,
@@ -135,6 +151,7 @@ beforeEach(() => {
   mocks.refresh.mockResolvedValue(AsyncResult.success(undefined));
   mocks.query.mockClear();
   mocks.refreshStatus.mockClear();
+  mocks.navigate.mockClear();
   mocks.status = { libraryPath: "~/.agents/skills", linked: [], conflicts: [], nameMismatches: [] };
 });
 afterEach(() => act(() => root.unmount()));
@@ -153,7 +170,14 @@ describe("mobile skills library", () => {
     );
     expect(toggle).not.toBeNull();
     expect(toggle!.disabled).toBe(false);
-    expect(container.textContent).toContain("~/.claude/skills/review");
+    expect(container.textContent).not.toContain("~/.claude/skills/review");
+    const issues = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Skill issues: 1 conflict",
+    );
+    act(() => issues!.click());
+    expect(mocks.navigate).toHaveBeenCalledWith("SettingsSkillsLibraryIssues", {
+      environmentId: "remote",
+    });
     await act(async () => toggle!.click());
     expect(mocks.update).toHaveBeenCalledWith({
       environmentId: "remote",
@@ -176,7 +200,7 @@ describe("mobile skills library", () => {
     expect(refresh).toBeDefined();
     mocks.status = { ...mocks.status, conflicts: [] };
     await act(async () => refresh!.click());
-    expect(container.textContent).not.toContain("~/.claude/skills/review");
+    expect(container.textContent).not.toContain("Skill issues");
     await act(async () => toggle!.click());
     expect(mocks.update).toHaveBeenLastCalledWith({
       environmentId: "remote",
