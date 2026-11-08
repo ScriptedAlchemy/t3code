@@ -7,6 +7,7 @@ import * as NetService from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
+import * as PlatformError from "effect/PlatformError";
 import * as Option from "effect/Option";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -37,12 +38,21 @@ it.effect(
         yield* fs.writeFileString(runtime + "/cli-proxy-api", "");
         let serving = false;
         let lan = false;
+        let rejectNextLaunch = false;
         let starts = 0;
         let stops = 0;
         const spawner = ChildProcessSpawner.make((command) =>
           Effect.gen(function* () {
             const tailscale =
               ChildProcess.isStandardCommand(command) && command.command === "tailscale";
+            if (!tailscale && rejectNextLaunch) {
+              rejectNextLaunch = false;
+              return yield* PlatformError.systemError({
+                _tag: "NotFound",
+                module: "ChildProcess",
+                method: "spawn",
+              });
+            }
             if (!tailscale) {
               starts++;
               yield* Effect.addFinalizer(() =>
@@ -237,12 +247,16 @@ it.effect(
             const installed = runtime.replace(proxyVersion, "8.0.61");
             yield* fs.makeDirectory(installed, { recursive: true });
             yield* fs.writeFileString(installed + "/cli-proxy-api", "");
+            rejectNextLaunch = true;
+            yield* proxy.manage({ operation: "update" }).pipe(Effect.flip);
+            expect(yield* proxy.status).toMatchObject({ running: true, version: proxyVersion });
+            expect((yield* proxy.authorize(issued.key))?.key).toBeDefined();
             yield* proxy.manage({ operation: "update" });
             expect((yield* proxy.status).version).toBe("8.0.61");
             return issued;
           }).pipe(Effect.provide(service)),
         );
-        expect(stops).toBe(2);
+        expect(stops).toBe(3);
         yield* Effect.scoped(
           Effect.gen(function* () {
             const proxy = yield* InferenceProxy.InferenceProxy;
@@ -255,8 +269,8 @@ it.effect(
             expect(Option.isSome(yield* state.get("inference-proxy-state"))).toBe(true);
           }).pipe(Effect.provide(service)),
         );
-        expect(starts).toBe(3);
-        expect(stops).toBe(3);
+        expect(starts).toBe(4);
+        expect(stops).toBe(4);
       }).pipe(
         Effect.provide(
           Layer.merge(

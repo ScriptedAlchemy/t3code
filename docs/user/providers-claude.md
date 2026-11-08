@@ -44,7 +44,8 @@ Open **Inference accounts** (under **Advanced** on web and desktop) and turn on 
 downloads CLIProxyAPI on that machine and verifies the release before starting it.
 Add each account, sign in with its provider, paste the final localhost URL back
 into Settings, and check its status. The host keeps the provider login and handles
-account selection and refresh.
+account selection and refresh. Desktop includes compatible CLIProxyAPI releases in **Update everything**.
+You can also check for updates in **Inference accounts** on any client. Updating restarts the host, so finish active turns first.
 
 For another machine to use those accounts, enable **Tailscale HTTPS** or LAN access on the host and turn on **Share inference with paired environments**.
 Connect your client to both T3 environments with provider management access.
