@@ -45,6 +45,8 @@ import { ModelEvaluationSettings } from "./ModelEvaluationSettings";
 import { SkillsLibrarySettings } from "./SkillsLibrarySettings";
 import { AutoSettleSettingsRows, ThreadSplitSettingsSection } from "./ThreadSettingsSections";
 import { supportsSharedSettingsSync } from "@t3tools/client-runtime/state/shared-settings";
+import { useHomeListOptions } from "../home/home-list-options";
+import { useEnvironments } from "../../state/environments";
 
 type SettingsPage = "threads" | "source-control" | "worktrees" | "maintenance" | "zack";
 
@@ -182,6 +184,10 @@ export function SettingsZackRouteScreen() {
 }
 
 function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
+  const { environments } = useEnvironments();
+  const { options, setHideOfflineEnvironments } = useHomeListOptions(
+    new Set(environments.map((environment) => environment.environmentId)),
+  );
   const environmentMenu = useSettingsEnvironmentMenu();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
@@ -310,6 +316,17 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
         contentContainerClassName="gap-6 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
+        {props.page === "zack" ? (
+          <SettingsSection title="Threads">
+            <SettingsSwitchRow
+              icon="wifi.slash"
+              label="Hide offline environments"
+              subtitle="Hide threads from offline environments on this device."
+              value={options.hideOfflineEnvironments}
+              onValueChange={setHideOfflineEnvironments}
+            />
+          </SettingsSection>
+        ) : null}
         {!hasConnectedSelection || reference === null ? (
           <Text className="px-2 text-base text-foreground-muted">
             {projectSelected

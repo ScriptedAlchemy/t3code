@@ -570,7 +570,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
               ? "Searching thread messages…"
               : "No matching threads"
             : options.hideOfflineEnvironments
-              ? "No visible threads. Turn off Hide offline environments in Settings → Labs → Zack, or choose another filter."
+              ? "No visible threads. Turn off Hide offline environments in Settings → Labs → Zack settings, or choose another filter."
               : selectedProjectScope !== null
                 ? `No threads in ${selectedProjectScope.title}`
                 : "No threads yet"}

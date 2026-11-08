@@ -1,4 +1,3 @@
-import { useHomeListOptions } from "../home/home-list-options";
 import { Button } from "../../components/ui/Button";
 import {
   AuthSettingsWriteScope,
@@ -36,10 +35,6 @@ import {
 } from "./settings-scoped-server";
 
 export function SettingsLabsRouteScreen() {
-  const { environments } = useEnvironments();
-  const { options, setHideOfflineEnvironments } = useHomeListOptions(
-    new Set(environments.map((environment) => environment.environmentId)),
-  );
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
 
@@ -59,15 +54,6 @@ export function SettingsLabsRouteScreen() {
             value="Memory, summaries, skills, thread suggestions, evaluations"
             onPress={() => navigation.navigate("SettingsZack")}
           />
-          <View className="border-t border-border-subtle">
-            <SettingsSwitchRow
-              icon="wifi.slash"
-              label="Hide offline environments"
-              subtitle="Hide threads from offline environments on this device."
-              value={options.hideOfflineEnvironments}
-              onValueChange={setHideOfflineEnvironments}
-            />
-          </View>
         </SettingsSection>
         <ToolCallVisibilitySection />
         <BetaSettingsSection />
