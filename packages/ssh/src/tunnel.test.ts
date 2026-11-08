@@ -90,7 +90,11 @@ const runArchiveRunner = Effect.fn("test.runArchiveRunner")(
   function* (
     installedVersion: string,
     installDirectory = ".local/bin",
-    options?: { readonly cliScript?: string; readonly fifo?: boolean },
+    options?: {
+      readonly cliScript?: string;
+      readonly fifo?: boolean;
+      readonly releaseBaseUrl?: string;
+    },
   ) {
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectoryScoped();
@@ -112,7 +116,15 @@ const runArchiveRunner = Effect.fn("test.runArchiveRunner")(
     }
     yield* fs.writeFileString(`${root}/bin/curl`, '#!/bin/sh\necho "HTTP 404" >&2\nexit 22\n');
     yield* fs.chmod(`${root}/bin/curl`, 0o700);
-    yield* fs.writeFileString(`${root}/runner.sh`, SshTunnel.buildRemoteT3RunnerScript(ARCHIVE));
+    yield* fs.writeFileString(
+      `${root}/runner.sh`,
+      SshTunnel.buildRemoteT3RunnerScript({
+        ...ARCHIVE,
+        ...(options?.releaseBaseUrl === undefined
+          ? {}
+          : { releaseBaseUrl: options.releaseBaseUrl }),
+      }),
+    );
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
       ChildProcess.make("sh", [`${root}/runner.sh`, "pair", "--json"], {
@@ -266,6 +278,20 @@ esac
         assert.include(result.stderr, `Install the exact T3 CLI (${ARCHIVE.archiveVersion})`);
         assert.isFalse(result.runtimeExists);
       }),
+  );
+
+  it.live("preserves the release mirror query and fragment after the checksum path", () =>
+    Effect.gen(function* () {
+      const result = yield* runArchiveRunner("0.0.1", ".t3/bin", {
+        releaseBaseUrl: "https://mirror.example/releases/?region=test#download",
+      });
+      assert.notEqual(result.exitCode, 0);
+      assert.include(
+        result.stderr,
+        `https://mirror.example/releases/v${ARCHIVE.archiveVersion}/SHA256SUMS?region=test#download`,
+      );
+      assert.isFalse(result.runtimeExists);
+    }),
   );
 
   it.live(
