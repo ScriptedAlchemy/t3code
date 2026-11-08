@@ -1,17 +1,32 @@
 import { useAtomValue } from "@effect/atom-react";
+import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+import type { EnvironmentId } from "@t3tools/contracts";
+import {
+  filterSkillsLibraryIssues,
+  skillsLibraryIssues,
+  skillsLibraryIssueSummary,
+  type SkillsLibraryIssue,
+} from "@t3tools/client-runtime/skills-library-issues";
 import { useState } from "react";
-import { View } from "react-native";
+import { FlatList, Platform, View } from "react-native";
 
+import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../components/ui/AppText";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListRow } from "../../components/ui/ListRow";
+import { RowPressable } from "../../components/ui/RowPressable";
+import { cn } from "../../lib/cn";
+import { useEnvironments } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { PullRequestSearchSheet } from "../pull-requests/PullRequestSearchSheet";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import type { SettingsTarget } from "./settings-environment-filter";
 
@@ -22,6 +37,7 @@ export function SkillsLibrarySettings({ environment }: { readonly environment: S
 }
 
 function LibraryControls({ environment }: { readonly environment: SettingsTarget }) {
+  const navigation = useNavigation();
   const environmentId = environment.environmentId;
   const enabled = environment.serverConfig.settings.skillsLibraryEnabled;
   const canWrite = useAtomValue(serverEnvironment.updateSettings.permissionAtom(environmentId));
@@ -68,12 +84,13 @@ function LibraryControls({ environment }: { readonly environment: SettingsTarget
   };
   const failure = error ?? status.error;
   const needsRefresh = enabled || failure !== null || (status.data?.linked.length ?? 0) > 0;
+  const issueSummary = status.data ? skillsLibraryIssueSummary(status.data) : null;
   return (
     <>
       <SettingsSwitchRow
         icon="square.grid.2x2"
         label="Skills library"
-        subtitle="Share skills across providers and accounts on this environment. Turning it off restores separate skill folders."
+        subtitle="Share skills across providers and accounts. Off restores separate skill folders."
         value={enabled}
         disabled={pending || !canWrite || !canRefresh}
         onValueChange={(next) => void refresh(next)}
@@ -82,7 +99,7 @@ function LibraryControls({ environment }: { readonly environment: SettingsTarget
         <ListActionRow
           icon="arrow.clockwise"
           label="Refresh skills library"
-          description="After resolving a conflict or adding a skill, refresh to update the shared folders."
+          description="Update shared folders after fixing an issue or adding a skill."
           loading={pending}
           onPress={() => void refresh()}
         />
@@ -92,22 +109,138 @@ function LibraryControls({ environment }: { readonly environment: SettingsTarget
           {failure}
         </Text>
       ) : null}
-      {status.data?.conflicts.map((conflict) => (
-        <View key={conflict.name} className="gap-1 px-4 pb-3">
-          <Text className="text-sm font-t3-medium">{conflict.name}</Text>
+      {issueSummary ? (
+        <ListRow
+          icon="exclamationmark.triangle"
+          label="Skill issues"
+          description={issueSummary}
+          onPress={() => navigation.navigate("SettingsSkillsLibraryIssues", { environmentId })}
+        />
+      ) : null}
+    </>
+  );
+}
+
+export function SkillsLibraryIssuesRouteScreen({
+  route,
+}: StaticScreenProps<{ readonly environmentId: EnvironmentId }>) {
+  const { environmentId } = route.params;
+  const { environments } = useEnvironments();
+  const label =
+    environments.find((environment) => environment.environmentId === environmentId)?.label ??
+    "this environment";
+  const status = useEnvironmentQuery(
+    serverEnvironment.skillsLibraryStatus({ environmentId, input: {} }),
+  );
+  const [query, setQuery] = useState("");
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const issues = filterSkillsLibraryIssues(
+    status.data ? skillsLibraryIssues(status.data) : [],
+    query,
+  );
+  const summary = status.data ? skillsLibraryIssueSummary(status.data) : null;
+  return (
+    <PullRequestSearchSheet
+      title="Skill issues"
+      placeholder="Search skills or paths"
+      closeAccessibilityLabel="Close skill issues"
+      clearAccessibilityLabel="Clear skill issue search"
+      query={query}
+      onQueryChange={setQuery}
+    >
+      {({ paddingBottom }) => (
+        <FlatList
+          data={issues}
+          keyExtractor={(issue) => issue.key}
+          extraData={openKey}
+          className="flex-1"
+          contentInsetAdjustmentBehavior="automatic"
+          automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 16, paddingBottom }}
+          ListHeaderComponent={
+            <Text className="pb-3 text-xs text-foreground-muted">
+              {status.error ??
+                (summary
+                  ? `${summary} on ${label}. Fix them, then refresh the skills library.`
+                  : `Skills library issues on ${label}.`)}
+            </Text>
+          }
+          renderItem={({ item, index }) => (
+            <SkillsLibraryIssueRow
+              issue={item}
+              first={index === 0}
+              last={index === issues.length - 1}
+              open={openKey === item.key}
+              onToggle={() => setOpenKey((current) => (current === item.key ? null : item.key))}
+            />
+          )}
+          ListEmptyComponent={
+            !status.data && status.error === null ? (
+              <AppActivityIndicator className="my-8" />
+            ) : status.error ? undefined : (
+              <EmptyState
+                title={query.trim() ? "No issues match" : "No skill issues"}
+                detail={
+                  query.trim()
+                    ? "Try another skill name or path."
+                    : `The skills library on ${label} has no conflicts or name mismatches.`
+                }
+                variant="plain"
+              />
+            )
+          }
+        />
+      )}
+    </PullRequestSearchSheet>
+  );
+}
+
+function SkillsLibraryIssueRow(props: {
+  readonly issue: SkillsLibraryIssue;
+  readonly first: boolean;
+  readonly last: boolean;
+  readonly open: boolean;
+  readonly onToggle: () => void;
+}) {
+  const { issue } = props;
+  return (
+    <View
+      className={cn(
+        "overflow-hidden bg-grouped-card",
+        props.first && "rounded-t-2xl",
+        props.last && "rounded-b-2xl",
+        !props.first && "border-t border-border-subtle",
+      )}
+    >
+      <RowPressable
+        accessibilityRole="button"
+        accessibilityLabel={`${issue.name}, ${issue.kind}`}
+        accessibilityHint={props.open ? "Hides details" : "Shows paths and how to fix it"}
+        accessibilityState={{ expanded: props.open }}
+        onPress={props.onToggle}
+        className="gap-1 px-4 py-3"
+      >
+        <Text className="text-base font-t3-medium text-foreground" numberOfLines={1}>
+          {issue.name}
+        </Text>
+        <Text className="text-sm text-foreground-muted" numberOfLines={1}>
+          {issue.kind}
+        </Text>
+      </RowPressable>
+      {props.open ? (
+        <View className="gap-2 px-4 pb-3">
+          {issue.paths.map((path) => (
+            <Text key={path} selectable className="font-mono text-xs text-foreground">
+              {path}
+            </Text>
+          ))}
           <Text selectable className="text-sm text-foreground-muted">
-            {conflict.reason === "outsideLink"
-              ? `${conflict.paths[0]} has a link outside the skill at ${conflict.paths[1]}. Replace the link with the file before refreshing.`
-              : `${conflict.paths[0]} and ${conflict.paths[1]} differ. Keep one copy before refreshing.`}
+            {issue.guidance}
           </Text>
         </View>
-      ))}
-      {status.data?.nameMismatches.map((mismatch) => (
-        <Text key={mismatch.name} selectable className="px-4 pb-3 text-sm text-foreground-muted">
-          {mismatch.name} is named "{mismatch.frontmatterName}" in its SKILL.md. Some providers use
-          the folder name and others use that name.
-        </Text>
-      ))}
-    </>
+      ) : null}
+    </View>
   );
 }

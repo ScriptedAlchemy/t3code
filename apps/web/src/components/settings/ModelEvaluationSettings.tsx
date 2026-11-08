@@ -110,24 +110,22 @@ export function ModelEvaluationSettings() {
       : [target.label];
   });
   return (
-    <SettingsSection id="model-evaluations" title="Zack · Model evaluations">
+    <SettingsSection id="model-evaluations" title="Model evaluations">
       <SettingsRow
         serverScoped
         settingKeys={["enableModelEvaluations"]}
         {...searchableSetting("blind-model-evaluations")}
         description={
           <>
-            Use an extra model call to score completed tasks and build project guidance. Model and
-            provider labels are removed before judging.
+            Score completed tasks with an extra model call to build guidance. Labels are removed
+            before judging.
             {unavailableEnvironments.length > 0 ? (
               <span className="mt-1 block text-warning">
-                Choose an available judge on {unavailableEnvironments.join(", ")} before enabling.
+                Choose an available judge on {unavailableEnvironments.join(", ")} first.
               </span>
             ) : null}
             {!supported ? (
-              <span className="mt-1 block">
-                Connect or update the selected environments to use this feature.
-              </span>
+              <span className="mt-1 block">Connect or update the selected environments.</span>
             ) : null}
           </>
         }

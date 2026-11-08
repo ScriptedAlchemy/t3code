@@ -22,19 +22,27 @@ import {
 /** Fork-only feature preferences, grouped so they are easy to find. */
 export function ZackSettings() {
   return (
-    <>
-      <SettingsSection id="zack" title="Zack">
-        <AssistedLearningRow />
-        <ConversationSummariesRow />
-        <ExternalHistoryRow />
-        <PstackRow />
-        <SkillsLibraryRows />
-        <AgentGitHubReadGateRow />
-        <ThreadSplitRows />
-        <AccountPoolsRow />
-      </SettingsSection>
-      <ModelEvaluationSettings />
-    </>
+    <SettingsSection id="zack" title="Zack" variant="plain">
+      <div className="space-y-6">
+        <SettingsSection title="Memory and history">
+          <AssistedLearningRow />
+          <ConversationSummariesRow />
+          <ExternalHistoryRow />
+        </SettingsSection>
+        <SettingsSection title="Skills">
+          <PstackRow />
+          <SkillsLibraryRows />
+        </SettingsSection>
+        <SettingsSection title="Thread suggestions">
+          <ThreadSplitRows />
+        </SettingsSection>
+        <SettingsSection title="Agent tools and accounts">
+          <AgentGitHubReadGateRow />
+          <AccountPoolsRow />
+        </SettingsSection>
+        <ModelEvaluationSettings />
+      </div>
+    </SettingsSection>
   );
 }
 
@@ -106,8 +114,8 @@ function ConversationSummariesRow() {
       {...searchableSetting("conversation-summaries")}
       description={
         isProjectScope
-          ? "After turns complete in this project, your text generation model summarizes older messages so provider switches and forks keep the gist of history that no longer fits. Each summary costs one model call."
-          : "After turns complete, your text generation model summarizes older messages so provider switches and forks keep the gist of history that no longer fits. Each summary costs one model call. Projects can override it."
+          ? "After turns complete in this project, your text model summarizes older messages so switches and forks keep the gist of history that no longer fits. Each summary costs one model call."
+          : "After turns complete, your text model summarizes older messages so switches and forks keep the gist of history that no longer fits. Each summary costs one model call. Projects can override it."
       }
       resetAction={
         settings.enableConversationSummaries ? (
