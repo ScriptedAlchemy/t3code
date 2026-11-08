@@ -744,7 +744,13 @@ if [ -z "$REMOTE_PORT" ]; then
       fi
       ;;
     Linux)
-      if command -v systemctl >/dev/null 2>&1 && systemctl --user cat t3code.service >/dev/null 2>&1; then
+      case "\${XDG_CONFIG_HOME:-}" in
+        /*) SERVICE_CONFIG_HOME="$XDG_CONFIG_HOME" ;;
+        *) SERVICE_CONFIG_HOME="$HOME/.config" ;;
+      esac
+      # SSH sessions can lack a reachable user manager while its unit remains installed.
+      if [ -f "$SERVICE_CONFIG_HOME/systemd/user/t3code.service" ] ||
+        { command -v systemctl >/dev/null 2>&1 && systemctl --user cat t3code.service >/dev/null 2>&1; }; then
         SERVICE_INSTALLED=1
       fi
       ;;
