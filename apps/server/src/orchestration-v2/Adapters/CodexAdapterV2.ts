@@ -1451,7 +1451,7 @@ export const makeCodexThreadReleases = Clock.clockWith((clock) =>
             : Deferred.await(release).pipe(
                 Effect.timeoutOption(CODEX_THREAD_RELEASE_TIMEOUT),
                 Effect.map(Option.isSome),
-                Effect.ensuring(
+                Effect.tap(() =>
                   Effect.sync(() => {
                     if (releases.get(nativeThreadId) !== release) return;
                     releases.delete(nativeThreadId);

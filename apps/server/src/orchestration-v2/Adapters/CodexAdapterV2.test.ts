@@ -3971,6 +3971,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       yield* releases.finish("recent-thread");
       assert.equal(yield* releases.awaitRelease("recent-thread"), true);
       assert.equal(yield* releases.awaitRelease("recent-thread"), false);
+      const cancelledWait = yield* releases
+        .awaitRelease("pending-thread")
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Fiber.interrupt(cancelledWait);
       yield* releases.finish("pending-thread");
       assert.equal(yield* releases.awaitRelease("pending-thread"), true);
     }),
