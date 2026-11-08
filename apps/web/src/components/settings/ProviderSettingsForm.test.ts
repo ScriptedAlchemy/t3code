@@ -52,6 +52,14 @@ describe("ProviderSettingsForm helpers", () => {
     expect(next).toEqual({ forkOwned: 1 });
   });
 
+  it("only offers a Codex shadow home when the instance already uses one", () => {
+    const codex = providerClients.get(ProviderDriverKind.make("codex"))!;
+    const fields = (config: unknown) =>
+      deriveProviderSettingsFields(codex, config).map((field) => field.key);
+    expect(fields({})).not.toContain("shadowHomePath");
+    expect(fields({ shadowHomePath: "/saved/profile" })).toContain("shadowHomePath");
+  });
+
   it("shows the profile switch only to signed-in Claude accounts and stores it off", () => {
     const claude = providerClients.get(ProviderDriverKind.make("claudeAgent"))!;
     const cliFields = deriveProviderSettingsFields(claude, { setupMode: "cli" });

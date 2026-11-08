@@ -1,7 +1,12 @@
 import { expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  retiredPoolRoute,
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Deferred from "effect/Deferred";
@@ -305,6 +310,11 @@ it.effect(
               )?.config,
             ).toMatchObject({ customModels: ["codex-auto-review", "office-model", "gpt-fixture"] });
             expect((yield* settings.getSettings).providerPools).not.toHaveProperty("codex");
+            const firstRoute = retiredPoolRoute(
+              yield* settings.getSettings,
+              ProviderInstanceId.make("pool_codex"),
+            );
+            expect(firstRoute).toMatch(/^inference_codex_/);
             expect(Object.values((yield* settings.getSettings).providerInstances)).toEqual(
               expect.arrayContaining([expect.objectContaining({ displayName: "Codex via Host" })]),
             );

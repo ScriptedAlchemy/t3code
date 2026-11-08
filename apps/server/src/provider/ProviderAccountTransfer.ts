@@ -114,6 +114,8 @@ export const makeProviderAccountTransfer = Effect.fn("ProviderAccountTransfer.ma
 
     const committed = yield* settings.reviseProviderInstance(instanceId, (current, all) =>
       Effect.gen(function* () {
+        if (isInferenceConfig(current?.config))
+          return yield* new ProviderAccountTransferError({ instanceId, reason: "inference-route" });
         const merged = mergePortableAccount({
           current,
           implicitDriver: implicitDefaultDriver(instanceId),

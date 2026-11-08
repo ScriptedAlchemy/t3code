@@ -19,7 +19,6 @@ import { useEnvironments, type EnvironmentPresentation } from "../../state/envir
 import { serverEnvironment } from "../../state/server";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectTrigger, SelectPopup, SelectItem } from "../ui/select";
@@ -282,8 +281,6 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
     canManage ? inferenceProxy.inferenceStatus({ environmentId, input: {} }) : null,
   );
   const command = useAtomCommand(inferenceProxy.manageInference, { reportFailure: false });
-  const legacy = useEnvironmentSettings(environmentId, (s) => s.providerPools);
-  const update = useUpdateEnvironmentSettings(environmentId);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [login, setLogin] = useState<{ url: string; state: string } | null>(null);
@@ -542,27 +539,6 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
             .map((e) => (
               <InferenceRoute key={e.environmentId} host={e} consumer={current} />
             ))}
-        </SettingsSection>
-      )}
-      {Object.keys(legacy).length > 0 && (
-        <SettingsSection title="Existing CLI profile pools">
-          {Object.keys(legacy).map((driver) => (
-            <SettingsRow
-              key={driver}
-              title={driver}
-              description="Add an inference route to replace this pool, or retire it to select individual profiles."
-              control={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!canManage}
-                  onClick={() => update({ providerPools: { [driver]: null } })}
-                >
-                  Retire pool
-                </Button>
-              }
-            />
-          ))}
         </SettingsSection>
       )}
     </SettingsPageContainer>

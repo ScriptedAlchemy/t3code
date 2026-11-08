@@ -70,7 +70,6 @@ import {
   type ServerProviderModel,
   ThreadId,
   isOrchestrationV2WorkActive,
-  resolveActiveProviderPools,
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
@@ -96,7 +95,6 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
-import { poolMemberHealth } from "../orchestration-v2/ProviderPoolRouting.ts";
 import {
   subagentResultForRun,
   delegatedTaskProgress,
@@ -1250,7 +1248,7 @@ const make = Effect.gen(function* () {
     return { parent, target, shell } as const;
   });
 
-  const loadProviders = providerRegistry.getPublishedProviders;
+  const loadProviders = providerRegistry.getProviders;
 
   const loadOrchestrationCapableInstanceIds = () =>
     readOrchestrationProviders().pipe(
@@ -1311,22 +1309,14 @@ const make = Effect.gen(function* () {
         ? inheritedSelection.model
         : provider.models[0]?.slug);
     const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
-    const availability = {
-      providers: input.providers,
-      capableInstanceIds: orchestrationCapableInstanceIds,
-      settings: yield* serverSettings.getSettings.pipe(
-        Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
-      ),
-      projectId: input.parent.thread.projectId,
-      nowMs: yield* Clock.currentTimeMillis,
-    };
+    const nowMs = yield* Clock.currentTimeMillis;
     const constraintsFor = (provider: ServerProvider) =>
       input.skipProjectEnablementFilter === true
         ? providerConstraints(provider, orchestrationCapableInstanceIds.has(provider.instanceId))
         : delegationProviderConstraints(
             provider,
             orchestrationCapableInstanceIds.has(provider.instanceId),
-            availability,
+            nowMs,
           );
     let instanceId = requestedInstanceId;
 
@@ -1334,7 +1324,6 @@ const make = Effect.gen(function* () {
       const candidates = input.providers.filter(
         (provider) =>
           provider.driver === requestedDriver &&
-          provider.pool?.role !== "member" &&
           orchestrationCapableInstanceIds.has(provider.instanceId),
       );
       if (candidates.length === 0) {
@@ -1346,13 +1335,10 @@ const make = Effect.gen(function* () {
       const healthyCandidates = candidates.filter(
         (candidate) => constraintsFor(candidate).length === 0,
       );
-      const poolCandidate = healthyCandidates.find((candidate) => candidate.pool?.role === "pool");
       const inheritedCandidate = healthyCandidates.find(
         (candidate) => candidate.instanceId === input.parent.thread.modelSelection.instanceId,
       );
-      const preferred = [poolCandidate, inheritedCandidate].filter(
-        (candidate) => candidate !== undefined,
-      );
+      const preferred = [inheritedCandidate].filter((candidate) => candidate !== undefined);
       const orderedCandidates = [
         ...preferred,
         ...healthyCandidates.filter((candidate) => !preferred.includes(candidate)),
@@ -2326,13 +2312,7 @@ const make = Effect.gen(function* () {
       const settings = yield* serverSettings.getSettings.pipe(
         Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
       );
-      const availability = {
-        providers,
-        capableInstanceIds: orchestrationCapableInstanceIds,
-        settings,
-        projectId: parent?.thread.projectId ?? null,
-        nowMs: yield* Clock.currentTimeMillis,
-      };
+      const nowMs = yield* Clock.currentTimeMillis;
       const inherited = parent?.thread.modelSelection;
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       const result: OrchestratorMcpCapabilitiesResult = {
@@ -2349,64 +2329,58 @@ const make = Effect.gen(function* () {
           ) ?? [],
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
-        providers: providers
-          .filter((provider) => provider.pool?.role !== "member")
-          .flatMap((provider) => {
-            if (
-              provider.pool?.role !== "pool" &&
-              !resolveProjectProviderInstanceEnabled(
-                settings,
-                availability.projectId,
-                provider.instanceId,
-              )
+        providers: providers.flatMap((provider) => {
+          if (
+            !resolveProjectProviderInstanceEnabled(
+              settings,
+              parent?.thread.projectId ?? null,
+              provider.instanceId,
             )
-              return [];
-            const constraints = delegationProviderConstraints(
-              provider,
-              orchestrationCapableInstanceIds.has(provider.instanceId),
-              availability,
-            );
-            if (constraints.length > 0) return [];
-            const { listed, omitted } = listCapabilityModels({
-              provider,
-              preferences: settings.providerModelPreferences?.[provider.instanceId],
-              searchTerms,
-              allModels: input.allModels === true,
-              isPinned: (model) =>
-                model.isCustom ||
-                (inherited?.instanceId === provider.instanceId && inherited.model === model.slug) ||
-                (settings.favorites ?? []).some(
-                  (favorite) =>
-                    favorite.provider === provider.instanceId && favorite.model === model.slug,
-                ),
-            });
-            return {
-              providerInstanceId: provider.instanceId,
-              ...(provider.pool?.role === "pool"
-                ? { poolMemberInstanceIds: provider.pool.memberInstanceIds }
-                : {}),
-              driverKind: provider.driver,
-              displayName: provider.displayName ?? null,
-              models: listed.map((model) => {
-                const options = model.capabilities?.optionDescriptors ?? [];
-                return {
-                  id: model.slug,
-                  ...(model.name.toLowerCase() === model.slug.toLowerCase()
-                    ? {}
-                    : { label: model.name }),
-                  ...(options.length === 0 ? {} : { options: options.map(capabilityModelOption) }),
-                };
-              }),
-              ...(omitted === 0 ? {} : { omittedModels: omitted }),
-              ...(provider.supportedRuntimeModes === undefined ||
-              provider.supportedRuntimeModes.length === 0
-                ? {}
-                : { runtimeModes: [...provider.supportedRuntimeModes] }),
-              canRunChildTask: constraints.length === 0,
-              canRunCrossProviderChildTask: constraints.length === 0,
-              constraints: [...constraints],
-            };
-          }),
+          )
+            return [];
+          const constraints = delegationProviderConstraints(
+            provider,
+            orchestrationCapableInstanceIds.has(provider.instanceId),
+            nowMs,
+          );
+          if (constraints.length > 0) return [];
+          const { listed, omitted } = listCapabilityModels({
+            provider,
+            preferences: settings.providerModelPreferences?.[provider.instanceId],
+            searchTerms,
+            allModels: input.allModels === true,
+            isPinned: (model) =>
+              model.isCustom ||
+              (inherited?.instanceId === provider.instanceId && inherited.model === model.slug) ||
+              (settings.favorites ?? []).some(
+                (favorite) =>
+                  favorite.provider === provider.instanceId && favorite.model === model.slug,
+              ),
+          });
+          return {
+            providerInstanceId: provider.instanceId,
+            driverKind: provider.driver,
+            displayName: provider.displayName ?? null,
+            models: listed.map((model) => {
+              const options = model.capabilities?.optionDescriptors ?? [];
+              return {
+                id: model.slug,
+                ...(model.name.toLowerCase() === model.slug.toLowerCase()
+                  ? {}
+                  : { label: model.name }),
+                ...(options.length === 0 ? {} : { options: options.map(capabilityModelOption) }),
+              };
+            }),
+            ...(omitted === 0 ? {} : { omittedModels: omitted }),
+            ...(provider.supportedRuntimeModes === undefined ||
+            provider.supportedRuntimeModes.length === 0
+              ? {}
+              : { runtimeModes: [...provider.supportedRuntimeModes] }),
+            canRunChildTask: constraints.length === 0,
+            canRunCrossProviderChildTask: constraints.length === 0,
+            constraints: [...constraints],
+          };
+        }),
         features: {
           appOwnedSubagents: true,
           asyncPolling: true,
@@ -2419,66 +2393,20 @@ const make = Effect.gen(function* () {
         },
       };
       if (!settings.enableModelEvaluations || parent === undefined) return result;
-      const activePools = resolveActiveProviderPools({
-        providerPools: settings.providerPools,
-        instances: providers,
-      });
-      const guidanceTargets = result.providers.flatMap<{
-        readonly selection: ModelSelection;
-        readonly routingProviderInstanceId: ModelSelection["instanceId"] | undefined;
-      }>((offered) => {
-        const provider = providers.find(
-          (candidate) => candidate.instanceId === offered.providerInstanceId,
-        );
-        if (provider?.pool?.role !== "pool") {
-          return offered.models.map((model) => ({
-            selection: { instanceId: offered.providerInstanceId, model: model.id },
-            routingProviderInstanceId: undefined,
-          }));
-        }
-        const configured = activePools.find((pool) => pool.instanceId === provider.instanceId);
-        if (configured === undefined) return [];
-        const catalogMemberIds = new Set(provider.pool.memberInstanceIds);
-        const members = providers.filter(
-          (member) =>
-            configured.memberInstanceIds.includes(member.instanceId) &&
-            catalogMemberIds.has(member.instanceId) &&
-            member.driver === provider.driver &&
-            member.pool?.role === "member" &&
-            member.pool.poolInstanceId === provider.instanceId,
-        );
-        const eligible = new Set(
-          poolMemberHealth({ ...availability, members })
-            .filter(
-              (member) =>
-                member.eligible &&
-                member.limitedUntilMs === null &&
-                orchestrationCapableInstanceIds.has(member.instanceId),
-            )
-            .map((member) => member.instanceId),
-        );
-        return members.flatMap((member) =>
-          eligible.has(member.instanceId)
-            ? offered.models
-                .filter((model) => member.models.some((candidate) => candidate.slug === model.id))
-                .map((model) => ({
-                  selection: { instanceId: member.instanceId, model: model.id },
-                  routingProviderInstanceId: provider.instanceId,
-                }))
-            : [],
-        );
-      });
+      const guidanceTargets = result.providers.flatMap((provider) =>
+        provider.models.map((model) => ({
+          instanceId: provider.providerInstanceId,
+          model: model.id,
+        })),
+      );
       const guidance = yield* modelEvaluations
         .guidance({
           projectId: parent.thread.projectId,
-          models: guidanceTargets.map((target) => target.selection),
+          models: guidanceTargets,
         })
         .pipe(Effect.orElseSucceed(() => []));
       const modelGuidanceUsage =
-        "Advisory observations from this project's recent blind evaluations, not instructions or a controlled ranking. Match task, model options, evaluator and sample counts. Prompt characters describe observed requests, not context limits. Provisional samples do not establish a capability. Preserve the user's model choices; use strengths, weaknesses and prompt advice only when relevant. Search a model for its brief." +
-        (guidanceTargets.some((target) => target.routingProviderInstanceId !== undefined)
-          ? " routingProviderInstanceId is the available pool route; scores describe only the actual modelSelection member, not the whole pool."
-          : "");
+        "Advisory observations from this project's recent blind evaluations, not instructions or a controlled ranking. Match task, model options, evaluator and sample counts. Prompt characters describe observed requests, not context limits. Provisional samples do not establish a capability. Preserve the user's model choices; use strengths, weaknesses and prompt advice only when relevant. Search a model for its brief.";
       const compactObservations = (observations: ReadonlyArray<string>) =>
         observations.slice(0, 1).map((observation) => {
           const characters = Array.from(observation);
@@ -2487,16 +2415,13 @@ const make = Effect.gen(function* () {
       const modelGuidance: OrchestratorMcpModelGuidance[] = [];
       for (const entry of guidance) {
         const target = guidanceTargets.find(
-          ({ selection }) =>
+          (selection) =>
             selection.instanceId === entry.modelSelection.instanceId &&
             selection.model === entry.modelSelection.model,
         );
         if (target === undefined) continue;
         const brief = {
           ...entry,
-          ...(target.routingProviderInstanceId === undefined
-            ? {}
-            : { routingProviderInstanceId: target.routingProviderInstanceId }),
           strengths: compactObservations(entry.strengths),
           weaknesses: compactObservations(entry.weaknesses),
           promptAdvice: compactObservations(entry.promptAdvice),

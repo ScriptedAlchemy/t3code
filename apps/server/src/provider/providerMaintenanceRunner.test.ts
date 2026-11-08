@@ -195,7 +195,6 @@ function makeRegistry(
 
     const registry: ProviderRegistry.ProviderRegistry["Service"] = {
       getProviders: Ref.get(providersRef),
-      getPublishedProviders: Ref.get(providersRef),
       streamPublishedChanges: Stream.empty,
       markLimited: () => Effect.void,
       refresh: () => Ref.get(providersRef),

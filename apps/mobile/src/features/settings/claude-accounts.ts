@@ -1,8 +1,4 @@
 import {
-  deriveAvailableInstanceId,
-  deriveInstanceId,
-} from "@t3tools/client-runtime/provider-instance-ids";
-import {
   defaultInstanceIdForDriver,
   isManagedSettingPath,
   ProviderDriverKind,
@@ -31,29 +27,15 @@ export function claudeConfigDir(instance: ProviderInstanceConfig | undefined): s
   return typeof homePath === "string" ? homePath : "";
 }
 
-/** Adds a Claude instance (`instanceId` null) or edits one, keeping every field the form doesn't show. */
 export function planClaudeAccountSave(input: {
   readonly providerInstances: ServerSettings["providerInstances"];
   readonly policy: ManagedPolicySummary | undefined;
-  readonly instanceId: ProviderInstanceId | null;
+  readonly instanceId: ProviderInstanceId;
   readonly draft: ClaudeAccountDraft;
 }): { readonly mutation: ProviderInstanceMutation } | { readonly error: string } {
   const name = input.draft.name.trim();
   const configDir = input.draft.configDir.trim();
-  const adding = input.instanceId === null;
-  if (adding && name.length === 0) return { error: "Enter a name for this account." };
-  if (adding && configDir.length === 0) {
-    return { error: "Enter the Claude config folder this account is signed in with." };
-  }
-  const instanceId =
-    input.instanceId ??
-    ProviderInstanceId.make(
-      deriveAvailableInstanceId(
-        (label) => deriveInstanceId(CLAUDE_DRIVER, label) || CLAUDE_DRIVER,
-        name,
-        new Set([DEFAULT_CLAUDE_INSTANCE_ID, ...Object.keys(input.providerInstances)]),
-      ),
-    );
+  const instanceId = input.instanceId;
   if (input.policy && isManagedSettingPath(input.policy, `providerInstances.${instanceId}`)) {
     return { error: `Managed by ${input.policy.organization}.` };
   }
@@ -65,11 +47,10 @@ export function planClaudeAccountSave(input: {
   const nextConfig = configDir ? { ...config, homePath: configDir } : config;
   const instance: ProviderInstanceConfig = {
     ...rest,
-    ...(adding ? { enabled: true } : {}),
     ...(name ? { displayName: name } : {}),
     ...(Object.keys(nextConfig).length > 0 ? { config: nextConfig } : {}),
   };
   return {
-    mutation: { operation: adding ? "create" : "upsert", instanceId, instance },
+    mutation: { operation: "upsert", instanceId, instance },
   };
 }

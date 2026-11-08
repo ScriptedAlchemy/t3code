@@ -18,7 +18,6 @@ import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { WizardFooter, WizardHeader, WizardPanel, WizardPopup } from "../ui/wizard";
-import { MultipleAccountsNote } from "./MultipleAccountsNote";
 import { SettingsRow } from "./settingsLayout";
 
 const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -125,7 +124,6 @@ export function AddCodexAccountDialog({
                   />
                 }
               />
-              <MultipleAccountsNote environmentId={environmentId} driver={CODEX_DRIVER_KIND} />
             </form>
           )}
         </WizardPanel>

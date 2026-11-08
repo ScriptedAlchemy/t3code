@@ -115,6 +115,12 @@ export function deriveProviderSettingsFields(
       const formAnnotation = readProviderSettingsFormAnnotation(fieldSchema);
       if (formAnnotation.hidden) return [];
       if (
+        definition.driverKind === "codex" &&
+        key === "shadowHomePath" &&
+        !readProviderConfigString(value, key)
+      )
+        return [];
+      if (
         definition.driverKind === "claudeAgent" &&
         ((readProviderConfigString(value, "setupMode") === "cli" && key === "homePath") ||
           (readProviderConfigString(value, "setupMode") !== "cli" && key === "shareProfile"))

@@ -2,7 +2,7 @@ import type { ServerProvider } from "@t3tools/contracts";
 
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useClientSettings } from "../../hooks/useSettings";
-import { limitedUntilLabel } from "./ProviderPoolsSettings.logic";
+import { limitedUntilLabel } from "./providerAccountStatus";
 
 /**
  * The server publishes `limitedUntil` once and never again when it passes, so this reads the

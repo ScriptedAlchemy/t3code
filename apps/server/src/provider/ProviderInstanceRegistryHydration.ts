@@ -53,8 +53,7 @@ type ProviderInstanceRegistryHydrationEnv =
 export const deriveProviderInstanceConfigMap = (
   settings: ServerSettings,
 ): ProviderInstanceConfigMap => {
-  // A hand-edited `pool_*` entry would register a real adapter under the id
-  // the published pool entry uses; the mutation path refuses it, so must this.
+  // Reserve legacy pool IDs for threads resuming through their replacement route.
   const merged: Record<string, ProviderInstanceConfig> = Object.fromEntries(
     Object.entries(settings.providerInstances).filter(
       ([instanceId]) => !isReservedProviderInstanceId(instanceId),

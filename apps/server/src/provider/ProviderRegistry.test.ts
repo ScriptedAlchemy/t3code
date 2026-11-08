@@ -31,7 +31,6 @@ import {
   PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
   ProviderDriverKind,
   ProviderInstanceId,
-  providerPoolInstanceId,
   ServerSettings,
   ServerSettingsError,
   ServerProvider,
@@ -1637,7 +1636,6 @@ it.layer(
         const second = yield* makeInstance("codex_second");
         const unrelated = yield* makeInstance("codex_unrelated");
         const instances = [first.instance, second.instance, unrelated.instance];
-        const poolInstanceId = providerPoolInstanceId(ProviderDriverKind.make("codex"));
         const layerInstanceRegistry = Layer.succeed(
           ProviderInstanceRegistry.ProviderInstanceRegistry,
           {
@@ -1701,38 +1699,16 @@ it.layer(
           yield* registry.invalidateModelCaches({ ...workspace, fresh: true });
           assert.deepStrictEqual(yield* first.takeMaintenanceReads, [false]);
 
-          yield* registry.invalidateModelCaches({
-            instanceId: poolInstanceId,
-          });
-          assert.strictEqual(yield* Ref.get(first.invalidations), 5);
-          assert.strictEqual(yield* Ref.get(second.invalidations), 2);
-          assert.strictEqual(yield* Ref.get(unrelated.invalidations), 1);
-          assert.deepStrictEqual(yield* first.takeMaintenanceReads, [false]);
-
-          const poolWorkspace = { instanceId: poolInstanceId, cwd: "/workspace" };
-          yield* registry.refreshWorkspaceSnapshot(poolWorkspace);
+          const selectedWorkspace = { instanceId: first.instance.instanceId, cwd: "/workspace" };
+          yield* registry.refreshWorkspaceSnapshot(selectedWorkspace);
           yield* registry.refreshWorkspaceSnapshot({
-            instanceId: unrelated.instance.instanceId,
-            cwd: poolWorkspace.cwd,
+            ...selectedWorkspace,
+            instanceId: second.instance.instanceId,
           });
           yield* registry.refreshWorkspaceSnapshot({
             instanceId: unrelated.instance.instanceId,
             cwd: "/other-workspace",
           });
-          // A cached pool request retains each member's workspace scan and cache timer.
-          yield* registry.refreshWorkspaceSnapshot(poolWorkspace);
-          assert.strictEqual(yield* Ref.get(first.workspaceScans), 1);
-          assert.strictEqual(yield* Ref.get(second.workspaceScans), 1);
-          assert.strictEqual(yield* Ref.get(first.invalidations), 5);
-          assert.strictEqual(yield* Ref.get(second.invalidations), 2);
-
-          yield* registry.refreshWorkspaceSnapshot({ ...poolWorkspace, fresh: true });
-          assert.strictEqual(yield* Ref.get(first.invalidations), 6);
-          assert.strictEqual(yield* Ref.get(second.invalidations), 3);
-          assert.strictEqual(yield* Ref.get(unrelated.invalidations), 1);
-          assert.strictEqual(yield* Ref.get(first.workspaceScans), 2);
-          assert.strictEqual(yield* Ref.get(second.workspaceScans), 2);
-          assert.strictEqual(yield* Ref.get(unrelated.workspaceScans), 2);
           const workspacesByInstance = registry.getProviders.pipe(
             Effect.map((providers) =>
               Object.fromEntries(
@@ -1744,19 +1720,19 @@ it.layer(
             ),
           );
           assert.deepStrictEqual(yield* workspacesByInstance, {
-            [first.instance.instanceId]: [poolWorkspace.cwd],
-            [second.instance.instanceId]: [poolWorkspace.cwd],
+            [first.instance.instanceId]: [selectedWorkspace.cwd],
+            [second.instance.instanceId]: [selectedWorkspace.cwd],
             [unrelated.instance.instanceId]: ["/other-workspace"],
           });
 
           // Selecting a single account still invalidates other accounts for only that cwd.
           yield* registry.refreshWorkspaceSnapshot({
-            ...poolWorkspace,
+            ...selectedWorkspace,
             instanceId: first.instance.instanceId,
             fresh: true,
           });
           assert.deepStrictEqual(yield* workspacesByInstance, {
-            [first.instance.instanceId]: [poolWorkspace.cwd],
+            [first.instance.instanceId]: [selectedWorkspace.cwd],
             [second.instance.instanceId]: [],
             [unrelated.instance.instanceId]: ["/other-workspace"],
           });
@@ -1766,16 +1742,6 @@ it.layer(
               Layer.provideMerge(layerInstanceRegistry),
               Layer.provideMerge(layerModelManifest),
               Layer.provideMerge(layerLatestVersions),
-              Layer.provide(
-                ServerSettingsModule.layerTest({
-                  providerPools: {
-                    [ProviderDriverKind.make("codex")]: {
-                      enabled: true,
-                      memberInstanceIds: [first.instance.instanceId, second.instance.instanceId],
-                    },
-                  },
-                }),
-              ),
               Layer.provide(layerUnusedMutator),
               Layer.provideMerge(
                 ServerConfig.layerTest(process.cwd(), {

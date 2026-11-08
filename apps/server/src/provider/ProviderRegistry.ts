@@ -2,8 +2,6 @@ import {
   defaultInstanceIdForDriver,
   isProviderWorkspaceSnapshotCurrent,
   ProviderDriverKind,
-  providerPoolDriver,
-  resolveActiveProviderPools,
   type IsoDateTime,
   type ProviderInstanceId,
   type ServerProvider,
@@ -14,6 +12,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import { subscribeBeforeSnapshotWithoutMutex } from "../utils/subscribeBeforeSnapshot.ts";
 import * as Equal from "effect/Equal";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -30,9 +29,7 @@ import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderL
 import * as ModelManifest from "./ModelManifest.ts";
 import { applyProviderCompatibility } from "./providerCompatibility.ts";
 import * as ServerConfig from "../config.ts";
-import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
-import { withProviderPools } from "./providerPoolSnapshot.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
 import {
   hydrateCachedProvider,
@@ -58,16 +55,9 @@ export type ProviderMaintenanceActionKind = "update";
 export class ProviderRegistry extends Context.Service<
   ProviderRegistry,
   {
-    /** Real instances only. Refresh, maintenance, and usage reports never meet a pool. */
     readonly getProviders: Effect.Effect<ReadonlyArray<ServerProvider>>;
 
-    /**
-     * `getProviders` plus one virtual entry per active account pool, with the
-     * members stamped. The only list transports and MCP may read.
-     */
-    readonly getPublishedProviders: Effect.Effect<ReadonlyArray<ServerProvider>>;
-
-    /** Starts with the current published list, then every provider or pool change. */
+    /** Starts with the current catalog. */
     readonly streamPublishedChanges: Stream.Stream<ReadonlyArray<ServerProvider>>;
 
     readonly markLimited: (input: {
@@ -381,7 +371,6 @@ export const layer = Layer.effect(
     const instanceRegistryMutator =
       yield* ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator;
     const manifestService = yield* ModelManifest.ModelManifest;
-    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const serviceScope = yield* Effect.scope;
     const config = yield* ServerConfig.ServerConfig;
@@ -715,25 +704,9 @@ export const layer = Layer.effect(
       return yield* refreshOneSource(instance);
     });
 
-    const providerPools = serverSettings.getSettings.pipe(
-      Effect.map((settings) => settings.providerPools),
-      Effect.orDie,
-    );
-
-    const refreshInstance: (
-      instanceId: ProviderInstanceId,
-    ) => Effect.Effect<ReadonlyArray<ServerProvider>> = Effect.fn("refreshInstance")(function* (
+    const refreshInstance = Effect.fn("refreshInstance")(function* (
       instanceId: ProviderInstanceId,
     ) {
-      const poolDriver = providerPoolDriver(instanceId);
-      if (poolDriver !== null) {
-        const members = (yield* providerPools)[poolDriver]?.memberInstanceIds ?? [];
-        yield* Effect.forEach(members, refreshInstance, {
-          concurrency: "unbounded",
-          discard: true,
-        });
-        return yield* Ref.get(providersRef);
-      }
       yield* syncLiveSourcesAndContinue;
       const instance = (yield* Ref.get(liveSubsRef)).get(instanceId);
       if (!instance) {
@@ -1097,42 +1070,24 @@ export const layer = Layer.effect(
     const refreshWorkspaceSnapshot = Effect.fn("refreshWorkspaceSnapshot")(function* (
       input: Parameters<ProviderRegistry["Service"]["refreshWorkspaceSnapshot"]>[0],
     ) {
-      const instanceIds =
-        providerPoolDriver(input.instanceId) === null
-          ? [input.instanceId]
-          : (resolveActiveProviderPools({
-              providerPools: yield* providerPools,
-              instances: yield* Ref.get(providersRef),
-            }).find((pool) => pool.instanceId === input.instanceId)?.memberInstanceIds ?? []);
       if (input.fresh) {
-        // Clear other providers once: each member scan must retain the other pool members' results.
         yield* updateProviders((providers) =>
           providers.map((candidate) =>
-            instanceIds.includes(candidate.instanceId)
+            candidate.instanceId === input.instanceId
               ? candidate
               : dropProviderWorkspaceSnapshot(candidate, input.cwd),
           ),
         );
       }
-      yield* Effect.forEach(
-        instanceIds,
-        (instanceId) => refreshInstanceWorkspaceSnapshot({ ...input, instanceId }),
-        { concurrency: "unbounded", discard: true },
-      );
-      return yield* Ref.get(providersRef);
+      return yield* refreshInstanceWorkspaceSnapshot(input);
     });
 
-    const getPublishedProviders = Effect.all([Ref.get(providersRef), providerPools]).pipe(
-      Effect.map(([providers, providerPools]) => withProviderPools({ providers, providerPools })),
-    );
-    const streamPublishedChanges = Stream.zipLatestWith(
-      Stream.concat(Stream.fromEffect(Ref.get(providersRef)), Stream.fromPubSub(changesPubSub)),
-      Stream.concat(
-        Stream.fromEffect(providerPools),
-        serverSettings.streamChanges.pipe(Stream.map((settings) => settings.providerPools)),
+    const getProviders = Ref.get(providersRef);
+    const streamPublishedChanges = Stream.unwrap(
+      subscribeBeforeSnapshotWithoutMutex(changesPubSub, getProviders).pipe(
+        Effect.map(({ latest, changes }) => Stream.concat(Stream.succeed(latest), changes)),
       ),
-      (providers, providerPools) => withProviderPools({ providers, providerPools }),
-    ).pipe(Stream.changesWith((previous, next) => Equal.equals(previous, next)));
+    ).pipe(Stream.changesWith((left, right) => Equal.equals(left, right)));
 
     const markLimited = Effect.fn("markLimited")(function* (input: {
       readonly instanceId: ProviderInstanceId;
@@ -1149,22 +1104,9 @@ export const layer = Layer.effect(
     ) {
       yield* manifestService.forceRefresh;
       const instances = yield* instanceRegistry.listInstances;
-      const instanceIds =
-        input.instanceId === undefined
-          ? undefined
-          : providerPoolDriver(input.instanceId) === null
-            ? [input.instanceId]
-            : (resolveActiveProviderPools({
-                providerPools: yield* providerPools,
-                instances: instances.map((instance) => ({
-                  instanceId: instance.instanceId,
-                  driver: instance.driverKind,
-                  enabled: instance.enabled,
-                })),
-              }).find((pool) => pool.instanceId === input.instanceId)?.memberInstanceIds ?? []);
       yield* Effect.forEach(
         instances.filter(
-          (instance) => instanceIds === undefined || instanceIds.includes(instance.instanceId),
+          (instance) => input.instanceId === undefined || input.instanceId === instance.instanceId,
         ),
         (instance) =>
           Effect.gen(function* () {
@@ -1186,8 +1128,7 @@ export const layer = Layer.effect(
     });
 
     return {
-      getProviders: Ref.get(providersRef),
-      getPublishedProviders,
+      getProviders,
       streamPublishedChanges,
       markLimited,
       refresh: (provider?: ProviderDriverKind) =>

@@ -2,29 +2,9 @@
 
 Use a Codex CLI account or ChatGPT subscription sharing to code in T3 Code.
 
-## Sign in with Codex CLI
+## Use hosted inference accounts
 
-In **Settings > Providers**, choose **Add provider**, then **Codex** and **Sign in
-with Codex CLI**. Name the account and continue to sign-in. T3 Code stores this
-account's login separately. The account shares your Codex skills, plugins, and
-thread history.
-
-If Codex is unavailable, install it from the account's setup panel before signing
-in. T3 Code installs it on the selected environment's machine.
-
-For a T3-managed installation, use **Refresh provider status** in **Settings >
-Providers** to check for the latest stable Codex release, then choose **Update
-Codex** when offered. On mobile, the update is offered under **Provider accounts**.
-Updates install only when requested; a failed update keeps the previous runtime.
-
-Choose **Device code** to sign in from any device. Enter the displayed code on the
-OpenAI page and choose your account. Choose **Browser on server machine** to sign
-in with a browser on the machine running the T3 Code environment.
-
-Use **Open browser** if the sign-in page does not open. You can cancel and retry,
-change accounts, or sign out in the provider's settings. Signing out stops this
-account's running threads and keeps their history. On mobile, open **Provider
-accounts** to sign in or out of an account you have configured.
+Choose **Settings > Providers > Inference accounts** to sign in on one host and run Codex threads on environments paired over Tailscale or your trusted LAN. Each thread keeps its workspace and tools on the environment where it runs. [Host and share inference accounts](./providers-claude.md#host-and-share-inference-accounts)
 
 ## Connect with ChatGPT sharing
 
@@ -62,65 +42,9 @@ To use another executable, set its path in **Config**.
 
 Traex stores its sessions and configuration in a separate Codex home.
 
-Running `codex login` does not change a managed ChatGPT connection. In
-**Settings > Providers**, add a Codex instance, choose **Configure manually**,
-and complete the wizard. Then select that instance from the thread's model
-picker. See [Use multiple accounts](#use-multiple-accounts).
-
 ## Use multiple accounts
 
-Add another ChatGPT account in **Settings → Providers**, then select the account
-from the thread's model picker. Compatible accounts can continue the same thread.
-Connecting accounts through T3 Code leaves your CLI login unchanged.
-
-To sign in on one machine and use those accounts from your other environments,
-open **Inference accounts** in **Settings > Providers**. See [Host and share
-inference accounts](./providers-claude.md#host-and-share-inference-accounts).
-
-### Multiple CLI logins
-
-A shared Codex home with a shadow home lets work and personal accounts continue
-the same threads. The accounts share Codex sessions and configuration while keeping
-their own login and available models.
-
-Keep your first account in `~/.codex`. On the environment's machine, sign the
-second account into a fresh directory:
-
-```bash
-mkdir -p ~/.codex_personal
-CODEX_HOME=~/.codex_personal codex login
-```
-
-Then add a second Codex instance in **Settings > Providers**:
-
-| Instance       | CODEX_HOME path | Shadow home path    |
-| -------------- | --------------- | ------------------- |
-| Codex Work     | `~/.codex`      | Leave empty         |
-| Codex Personal | `~/.codex`      | `~/.codex_personal` |
-
-Both instances must use the same **CODEX_HOME path**. T3 Code prepares the shared
-state in the shadow directory; do not populate it by copying your whole Codex
-home.
-
-The shadow account needs its own `auth.json` file. If Codex uses an OS credential
-store, configure file storage for this setup. See
-[OpenAI's credential storage guide](https://learn.chatgpt.com/docs/auth#credential-storage).
-
-Use a completely separate **CODEX_HOME path**, with no shadow home, when you want
-separate Codex sessions and configuration. That instance cannot continue threads
-from the other home.
-
-## Switch accounts in an existing thread
-
-Choose the other account from the thread's model picker. T3 Code offers compatible
-Codex instances that share the thread's **CODEX_HOME path**. Changing accounts does
-not move the conversation into a separate Codex home.
-
-If the account is missing from the picker, compare the home paths in provider
-settings. If two instances show the same unexpected account or models, check their
-reported accounts, refresh provider status, and confirm the second instance has
-its own shadow path and login. A shadow-home conflict usually means the directory
-contains a copied Codex setup. Use a fresh shadow directory and sign in again.
+Add accounts on the inference host and connect a Codex route on each environment that needs them. Select the routed provider and model in the thread picker. To keep using an individual CLI login, select its existing provider instance. [Host and share inference accounts](./providers-claude.md#host-and-share-inference-accounts)
 
 ## Answer questions while Codex works
 

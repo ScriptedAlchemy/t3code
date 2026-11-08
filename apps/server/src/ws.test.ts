@@ -23,7 +23,6 @@ import {
   TurnItemId,
   ProviderDriverKind,
   ProviderInstanceId,
-  providerPoolInstanceId,
   SourceControlRepositoryError,
   WS_METHODS,
   WsRpcGroup,
@@ -99,7 +98,6 @@ import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderL
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
-import { withProviderPools } from "./provider/providerPoolSnapshot.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
@@ -951,7 +949,6 @@ it.effect.each([
         }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed([]),
-          getPublishedProviders: Effect.succeed([]),
           streamChanges: Stream.never,
           streamPublishedChanges: Stream.never,
         }),
@@ -1184,14 +1181,13 @@ it.effect.each([
 );
 
 it.effect(
-  "on-demand clients get provider config without workspace snapshots and refresh selected pool models",
+  "on-demand clients get provider config without workspace snapshots and refresh the selected provider models",
   () =>
     Effect.gen(function* () {
       const driver = ProviderDriverKind.make("claudeAgent");
       const instanceId = ProviderInstanceId.make("claudeAgent");
       const secondInstanceId = ProviderInstanceId.make("claudeAgent_work");
       const unrelatedInstanceId = ProviderInstanceId.make("claudeAgent_unrelated");
-      const poolInstanceId = providerPoolInstanceId(driver);
       const snapshotFor = (cwd: string, checkedAt: string) => ({
         cwd,
         checkedAt,
@@ -1227,15 +1223,11 @@ it.effect(
         { ...provider, instanceId: secondInstanceId },
         { ...provider, instanceId: unrelatedInstanceId },
       ]);
-      const providerPools = {
-        [driver]: { enabled: true, memberInstanceIds: [instanceId, secondInstanceId] },
-      };
       yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
         providerInstances: {
           [secondInstanceId]: { driver, enabled: true },
           [unrelatedInstanceId]: { driver, enabled: true },
         },
-        providerPools,
       });
       let scansCwd = true;
       const instances = [instanceId, secondInstanceId, unrelatedInstanceId].map(
@@ -1279,9 +1271,6 @@ it.effect(
         }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Ref.get(providers),
-          getPublishedProviders: Ref.get(providers).pipe(
-            Effect.map((current) => withProviderPools({ providers: current, providerPools })),
-          ),
           streamPublishedChanges: Stream.fromQueue(providerChanges).pipe(
             Stream.tap(() => Queue.offer(pulled, undefined)),
           ),
@@ -1393,7 +1382,7 @@ it.effect(
       ]);
       assert.deepEqual(
         snapshot.config.providers
-          .find((entry) => entry.instanceId === poolInstanceId)
+          .find((entry) => entry.instanceId === instanceId)
           ?.models.map((model) => model.slug),
         ["old-model"],
       );
@@ -1402,31 +1391,25 @@ it.effect(
       // A rescan that only touches a snapshot sends nothing; the next real change does.
       yield* Queue.offer(
         providerChanges,
-        withProviderPools({
-          providers: (yield* Ref.get(providers)).map((entry) =>
-            entry.instanceId === instanceId
-              ? { ...entry, workspaceSnapshots: [snapshotFor("/a", "2026-10-25T00:05:00.000Z")] }
-              : entry,
-          ),
-          providerPools,
-        }),
+        (yield* Ref.get(providers)).map((entry) =>
+          entry.instanceId === instanceId
+            ? { ...entry, workspaceSnapshots: [snapshotFor("/a", "2026-10-25T00:05:00.000Z")] }
+            : entry,
+        ),
       );
       yield* Queue.take(pulled);
       yield* TestClock.adjust("1 second");
       yield* Queue.offer(
         providerChanges,
-        withProviderPools({
-          providers: (yield* Ref.get(providers)).map((entry) =>
-            entry.instanceId === instanceId
-              ? {
-                  ...entry,
-                  status: "warning",
-                  slashCommands: [...provider.slashCommands, USAGE_LIMITS_COMMAND],
-                }
-              : entry,
-          ),
-          providerPools,
-        }),
+        (yield* Ref.get(providers)).map((entry) =>
+          entry.instanceId === instanceId
+            ? {
+                ...entry,
+                status: "warning",
+                slashCommands: [...provider.slashCommands, USAGE_LIMITS_COMMAND],
+              }
+            : entry,
+        ),
       );
       yield* Queue.take(pulled);
       yield* TestClock.adjust("1 second");
@@ -1442,12 +1425,9 @@ it.effect(
       scansCwd = false;
       yield* Queue.offer(
         providerChanges,
-        withProviderPools({
-          providers: (yield* Ref.get(providers)).map((entry) =>
-            entry.instanceId === instanceId ? { ...entry, status: "warning" } : entry,
-          ),
-          providerPools,
-        }),
+        (yield* Ref.get(providers)).map((entry) =>
+          entry.instanceId === instanceId ? { ...entry, status: "warning" } : entry,
+        ),
       );
       yield* Queue.take(pulled);
       yield* TestClock.adjust("1 second");
@@ -1501,32 +1481,31 @@ it.effect(
 
       yield* server.write(0, {
         _tag: "Request",
-        id: RpcMessage.RequestId("refresh-pool-models"),
+        id: RpcMessage.RequestId("refresh-instance-models"),
         tag: WS_METHODS.serverRefreshProviders,
         payload: {
-          instanceId: poolInstanceId,
+          instanceId,
           refreshModels: true,
           workspaceSnapshotsOnDemand: true,
         },
         headers: Headers.empty,
       });
-      const refreshedPool = (yield* Queue.take(responses)) as {
+      const refreshedModels = (yield* Queue.take(responses)) as {
         readonly providers: ReadonlyArray<ServerProvider>;
       };
       assert.deepEqual(
-        refreshedPool.providers.map((entry) => [
+        refreshedModels.providers.map((entry) => [
           entry.instanceId,
           entry.models.map((model) => model.slug),
         ]),
         [
           [instanceId, ["new-model"]],
-          [secondInstanceId, ["new-model"]],
+          [secondInstanceId, ["old-model"]],
           [unrelatedInstanceId, ["old-model"]],
-          [poolInstanceId, ["new-model"]],
         ],
       );
       assert.isTrue(
-        refreshedPool.providers.every((entry) => entry.workspaceSnapshots === undefined),
+        refreshedModels.providers.every((entry) => entry.workspaceSnapshots === undefined),
       );
     }).pipe(
       Effect.provide(

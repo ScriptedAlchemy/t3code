@@ -1,4 +1,5 @@
 import {
+  retiredPoolRoute,
   type ModelSelection,
   type ProviderInstanceId,
   type ProviderOptionDescriptor,
@@ -153,7 +154,6 @@ function defaultSeat(
     const eligible = matching.filter(
       ({ provider, model }) =>
         constraintsFor(provider).length === 0 &&
-        provider.pool?.role !== "member" &&
         isCapabilityModelVisible(model, modelPreferences?.[provider.instanceId]),
     );
     const exact = eligible.filter(({ model }) => model.slug === variant.model);
@@ -165,11 +165,7 @@ function defaultSeat(
         reason: "model alias is ambiguous; run setup-pstack to choose an advertised model",
       };
     const priority = (provider: ServerProvider) =>
-      provider.pool?.role === "pool"
-        ? 0
-        : provider.instanceId === parentModelSelection?.instanceId
-          ? 1
-          : 2;
+      Number(provider.instanceId !== parentModelSelection?.instanceId);
     const available = candidates.toSorted(
       (left, right) => priority(left.provider) - priority(right.provider),
     );
@@ -203,21 +199,21 @@ function defaultSeat(
   return { kind: "unresolved", model: slug, reason: "model is not advertised" };
 }
 
-export function resolveRoles(
-  input: {
-    readonly file: ReturnType<typeof parseModelsFile> | undefined;
-    readonly defaults: ReadonlyArray<PstackRoleDefault>;
-    readonly capableInstanceIds: ReadonlySet<ProviderInstanceId>;
-    readonly parentModelSelection?: ModelSelection;
-    readonly settings: Parameters<typeof delegationProviderConstraints>[2]["settings"] &
-      Partial<Pick<ServerSettings, "providerModelPreferences">>;
-  } & Parameters<typeof delegationProviderConstraints>[2],
-) {
+export function resolveRoles(input: {
+  readonly file: ReturnType<typeof parseModelsFile> | undefined;
+  readonly defaults: ReadonlyArray<PstackRoleDefault>;
+  readonly capableInstanceIds: ReadonlySet<ProviderInstanceId>;
+  readonly parentModelSelection?: ModelSelection;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly nowMs: number;
+  readonly settings: Pick<ServerSettings, "providerInstances" | "retiredPoolRoutes"> &
+    Partial<Pick<ServerSettings, "providerModelPreferences">>;
+}) {
   const constraintsFor = (provider: ServerProvider) =>
     delegationProviderConstraints(
       provider,
       input.capableInstanceIds.has(provider.instanceId),
-      input,
+      input.nowMs,
     );
   const diagnostics = [...(input.file?.diagnostics ?? [])];
   const parent =
@@ -274,9 +270,9 @@ export function resolveRoles(
         return inherited.kind === "unavailable" && !panel ? undefined : inherited;
       if (seat.kind === "unresolved") return fallback(index, seat.model, seat.reason);
       const entry = seat.entry;
-      const provider = input.providers.find(
-        (provider) => provider.instanceId === entry.providerInstanceId,
-      );
+      const instanceId =
+        retiredPoolRoute(input.settings, entry.providerInstanceId) ?? entry.providerInstanceId;
+      const provider = input.providers.find((provider) => provider.instanceId === instanceId);
       const model = provider?.models.find((model) => model.slug === entry.model);
       const descriptors = model?.capabilities?.optionDescriptors ?? [];
       const { options, problems } = resolveOptions(entry.options, descriptors);
@@ -292,7 +288,7 @@ export function resolveRoles(
       }
       return {
         kind: "target",
-        target: { providerInstanceId: entry.providerInstanceId, model: entry.model, options },
+        target: { providerInstanceId: instanceId, model: entry.model, options },
       };
     });
     const available = seats.filter((seat) => seat !== undefined);

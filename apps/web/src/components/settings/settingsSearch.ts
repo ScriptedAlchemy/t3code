@@ -71,7 +71,7 @@ export interface SettingsSearchItem {
   readonly peerLinksOnly?: boolean;
   readonly secondary?: boolean;
   readonly requiresThreadAutoSettlement?: boolean;
-  readonly requiresProviderPools?: boolean;
+  readonly requiresInferenceProxy?: boolean;
 }
 
 export interface SettingsSearchAvailability {
@@ -82,7 +82,7 @@ export interface SettingsSearchAvailability {
   readonly canManageLocalBackend: boolean;
   readonly isWslSettingsRowVisible: boolean;
   readonly hasThreadAutoSettlement: boolean;
-  readonly hasProviderPools: boolean;
+  readonly hasInferenceProxy: boolean;
   readonly managedTunnelActive?: boolean;
   readonly hasPeerLinkHost?: boolean;
 }
@@ -993,7 +993,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [
       "cliproxyapi tailscale inference route provider host account pools zack labs load balance load balancing failover multiple accounts pool usage limit quota rotate switch claude codex",
     ],
-    requiresProviderPools: true,
+    requiresInferenceProxy: true,
   },
   {
     id: "provider-account-sync",
@@ -1496,17 +1496,17 @@ export function getThreadAutoSettlementSearchAvailability(
   };
 }
 
-interface ProviderPoolsSearchEnvironment {
+interface InferenceProxySearchEnvironment {
   readonly serverConfig: {
-    readonly environment: { readonly capabilities: { readonly providerPools?: boolean } };
+    readonly environment: { readonly capabilities: { readonly inferenceProxy?: boolean } };
   } | null;
 }
 
-export function hasProviderPoolsEnvironment(
-  environments: readonly ProviderPoolsSearchEnvironment[],
+export function hasInferenceProxyEnvironment(
+  environments: readonly InferenceProxySearchEnvironment[],
 ): boolean {
   return environments.some(
-    (environment) => environment.serverConfig?.environment.capabilities.providerPools === true,
+    (environment) => environment.serverConfig?.environment.capabilities.inferenceProxy === true,
   );
 }
 
@@ -1556,7 +1556,7 @@ export function filterAvailableSettingsSearchItems(
       (!item.localEnvironmentOnly || !availability.localEnvironmentDisabled) &&
       (!item.wslAvailableOnly || availability.isWslSettingsRowVisible) &&
       (!item.requiresThreadAutoSettlement || availability.hasThreadAutoSettlement) &&
-      (!item.requiresProviderPools || availability.hasProviderPools) &&
+      (!item.requiresInferenceProxy || availability.hasInferenceProxy) &&
       (!item.managedTunnelOnly || availability.managedTunnelActive === true) &&
       (!item.peerLinksOnly || availability.hasPeerLinkHost === true),
   );

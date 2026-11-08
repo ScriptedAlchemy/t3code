@@ -12,34 +12,6 @@ const claude = ProviderDriverKind.make("claudeAgent");
 const work = ProviderInstanceId.make("claudeAgent_work");
 
 describe("planClaudeAccountSave", () => {
-  it("adds a signed-in config folder as a new Claude instance with a free id", () => {
-    const providerInstances: ServerSettings["providerInstances"] = {
-      [work]: { driver: claude, config: { homePath: "~/.claude-work" } },
-    };
-    const plan = (name: string, configDir: string) =>
-      planClaudeAccountSave({
-        providerInstances,
-        policy: undefined,
-        instanceId: null,
-        draft: { name, configDir },
-      });
-
-    expect(plan(" Work ", " ~/.claude-willy ")).toEqual({
-      mutation: {
-        operation: "create",
-        instanceId: "claudeAgent_work_2",
-        instance: {
-          driver: "claudeAgent",
-          enabled: true,
-          displayName: "Work",
-          config: { homePath: "~/.claude-willy" },
-        },
-      },
-    });
-    expect(plan("", "~/.claude-willy")).toHaveProperty("error");
-    expect(plan("Willy", " ")).toHaveProperty("error");
-  });
-
   it("edits the name and folder without dropping the instance's other settings", () => {
     const providerInstances: ServerSettings["providerInstances"] = {
       [work]: {

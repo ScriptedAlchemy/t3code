@@ -79,7 +79,6 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 
 const decodeTarget = Schema.decodeUnknownEffect(OrchestratorMcpTarget);
 const decodeModelGuidance = Schema.decodeUnknownSync(ModelEvaluationGuidance);
-const decodeCapabilitiesResult = Schema.decodeUnknownSync(OrchestratorMcpCapabilitiesResult);
 
 const layerOrchestratorWithEvaluations = OrchestratorMcpService.layer.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
@@ -209,7 +208,7 @@ describe("OrchestratorMcpService", () => {
         }),
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getPublishedProviders: Effect.succeed([]),
+          getProviders: Effect.succeed([]),
         }),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed([]),
@@ -318,7 +317,7 @@ describe("OrchestratorMcpService", () => {
         }),
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getPublishedProviders: Effect.succeed([]),
+          getProviders: Effect.succeed([]),
         }),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed([]),
@@ -517,7 +516,7 @@ describe("OrchestratorMcpService", () => {
         }),
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getPublishedProviders: Effect.succeed([]),
+          getProviders: Effect.succeed([]),
         }),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed([]),
@@ -712,7 +711,7 @@ describe("OrchestratorMcpService", () => {
         }),
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getPublishedProviders: Effect.succeed([]),
+          getProviders: Effect.succeed([]),
         }),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed([]),
@@ -802,7 +801,7 @@ describe("OrchestratorMcpService", () => {
         }),
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getPublishedProviders: Effect.succeed([]),
+          getProviders: Effect.succeed([]),
         }),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed([]),
@@ -893,7 +892,7 @@ describe("OrchestratorMcpService", () => {
         }),
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getPublishedProviders: Effect.succeed([]),
+          getProviders: Effect.succeed([]),
         }),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed([]),
@@ -1079,7 +1078,7 @@ describe("OrchestratorMcpService", () => {
         }),
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getPublishedProviders: Effect.succeed([]),
+          getProviders: Effect.succeed([]),
         }),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed([]),
@@ -1218,7 +1217,7 @@ describe("OrchestratorMcpService provider resolution", () => {
 
   const providerRegistryLayer = (providers: ReadonlyArray<ServerProvider>) =>
     Layer.mock(ProviderRegistry.ProviderRegistry)({
-      getPublishedProviders: Effect.succeed(providers),
+      getProviders: Effect.succeed(providers),
       refreshInstance: () => Effect.succeed(providers),
     });
 
@@ -1511,7 +1510,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             },
           }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
-            getPublishedProviders: Effect.sync(() => providers),
+            getProviders: Effect.sync(() => providers),
           }),
           adapterRegistryLayer([
             codexInstanceId,
@@ -1582,7 +1581,6 @@ describe("OrchestratorMcpService provider resolution", () => {
             );
             assert.isTrue(entry!.canRunCrossProviderChildTask);
             assert.deepEqual(entry!.constraints, []);
-            assert.isUndefined(entry!.poolMemberInstanceIds);
           }
 
           assert.isUndefined(byId.get(disabledAntigravityInstanceId));
@@ -1814,7 +1812,6 @@ describe("OrchestratorMcpService provider resolution", () => {
             ),
           );
           assert.equal(enabled.modelGuidance![0]!.confidence, "provisional");
-          assert.isUndefined(enabled.modelGuidance![0]!.routingProviderInstanceId);
           const otherModel = yield* capabilitiesWith("gpt-6", false, {
             enabled: true,
             entries,
@@ -1822,162 +1819,6 @@ describe("OrchestratorMcpService provider resolution", () => {
           });
           assert.isUndefined(otherModel.modelGuidance);
         }),
-    );
-
-    it.effect("maps pool guidance to eligible actual members without combining their scores", () =>
-      Effect.gen(function* () {
-        const driver = ProviderDriverKind.make("codex");
-        const poolId = ProviderInstanceId.make("pool_codex");
-        const workId = ProviderInstanceId.make("codex_work");
-        const disabledId = ProviderInstanceId.make("codex_disabled");
-        const projectDisabledId = ProviderInstanceId.make("codex_project_disabled");
-        const unrelatedId = ProviderInstanceId.make("codex_unrelated");
-        const otherModelId = ProviderInstanceId.make("codex_other_model");
-        const noAdapterId = ProviderInstanceId.make("codex_no_adapter");
-        const sharedModel = "gpt-5.4";
-        const memberIds = [
-          codexInstanceId,
-          workId,
-          disabledId,
-          projectDisabledId,
-          otherModelId,
-          noAdapterId,
-        ];
-        const members: ServerProvider[] = [...memberIds, unrelatedId].map((instanceId) => ({
-          ...providerSnapshot({
-            instanceId,
-            driver,
-            model: instanceId === otherModelId ? "other-model" : sharedModel,
-          }),
-          pool: { role: "member", poolInstanceId: poolId },
-          ...(instanceId === disabledId ? { enabled: false, status: "disabled" as const } : {}),
-        }));
-        const observed = decodeModelGuidance({
-          modelSelection: {
-            instanceId: codexInstanceId,
-            model: sharedModel,
-            options: [{ id: "effort", value: "high" }],
-          },
-          evaluatorSelection: { instanceId: "judge", model: "judge-model" },
-          rubricVersion: "1",
-          taskCategory: "review",
-          scope: "subagent",
-          sampleCount: 2,
-          insufficientEvidenceCount: 0,
-          meanScores: {
-            taskCompletion: 3,
-            correctness: null,
-            instructionFollowing: 3,
-            verification: null,
-          },
-          scoreCounts: {
-            taskCompletion: 2,
-            correctness: 0,
-            instructionFollowing: 2,
-            verification: 0,
-          },
-          confidence: "provisional",
-          promptChars: { min: 100, median: 100, max: 100 },
-          strengths: ["Kept the review focused."],
-          weaknesses: [],
-          promptAdvice: ["Include the relevant acceptance check."],
-          latestAt: "2026-10-01T00:00:00.000Z",
-        });
-        const workObservation = {
-          ...observed,
-          sampleCount: 7,
-          modelSelection: { ...observed.modelSelection, instanceId: workId },
-        };
-        const ordinaryObservation = {
-          ...observed,
-          modelSelection: { instanceId: opencodeInstanceId, model: "oc-model" },
-        };
-        const entries = [
-          observed,
-          workObservation,
-          ordinaryObservation,
-          ...[disabledId, projectDisabledId, unrelatedId, otherModelId, noAdapterId, poolId].map(
-            (instanceId) => ({
-              ...observed,
-              modelSelection: { ...observed.modelSelection, instanceId },
-            }),
-          ),
-          {
-            ...observed,
-            modelSelection: { ...observed.modelSelection, model: "other-model" },
-          },
-        ];
-        const dependencies = Layer.mergeAll(
-          NodeServices.layer,
-          NodeCrypto.layer,
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
-            getThreadRecords: () => Effect.succeed(parentProjection([])),
-          }),
-          ServerSettings.layerTest({
-            enableModelEvaluations: true,
-            providerInstances: {
-              ...Object.fromEntries(
-                [...memberIds, unrelatedId].map((instanceId) => [
-                  instanceId,
-                  { driver, config: {}, enabled: instanceId !== disabledId },
-                ]),
-              ),
-              [opencodeInstanceId]: { driver: "opencode", config: {}, enabled: true },
-            },
-            providerPools: { [driver]: { enabled: true, memberInstanceIds: memberIds } },
-            projectSettingsOverrides: {
-              [projectId]: { providerInstances: { [projectDisabledId]: { enabled: false } } },
-            },
-          }),
-          providerRegistryLayer([
-            ...members,
-            {
-              ...providerSnapshot({ instanceId: poolId, driver, model: sharedModel }),
-              pool: {
-                role: "pool",
-                memberInstanceIds: [...memberIds, unrelatedId],
-                droppedModels: [],
-              },
-            },
-            providerSnapshot({
-              instanceId: opencodeInstanceId,
-              driver: ProviderDriverKind.make("opencode"),
-              model: "oc-model",
-            }),
-          ]),
-          adapterRegistryLayer([
-            ...memberIds.filter((id) => id !== noAdapterId),
-            unrelatedId,
-            opencodeInstanceId,
-          ]),
-          Layer.mock(ModelEvaluations.ModelEvaluations)({
-            guidance: (input) =>
-              Effect.sync(() => {
-                assert.equal(input.projectId, projectId);
-                assert.deepEqual(input.models, [
-                  { instanceId: codexInstanceId, model: sharedModel },
-                  { instanceId: workId, model: sharedModel },
-                  { instanceId: opencodeInstanceId, model: "oc-model" },
-                ]);
-                return entries;
-              }),
-          }),
-          Layer.mock(ProjectService.ProjectService)({}),
-          Layer.mock(SecretRequests.SecretRequests)({}),
-          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        );
-        yield* Effect.gen(function* () {
-          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-          const result = decodeCapabilitiesResult(yield* service.capabilities(scope));
-          assert.deepEqual(result.modelGuidance, [
-            { ...observed, routingProviderInstanceId: poolId },
-            { ...workObservation, routingProviderInstanceId: poolId },
-            ordinaryObservation,
-          ]);
-          assert.isTrue(result.modelGuidanceUsage?.includes("Preserve the user's model choices"));
-        }).pipe(Effect.provide(layerOrchestratorWithEvaluations.pipe(Layer.provide(dependencies))));
-      }),
     );
 
     const listing = (capabilities: OrchestratorMcpCapabilitiesResult) =>
@@ -2113,7 +1954,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           }),
           ServerSettings.layerTest(),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
-            getPublishedProviders: Effect.succeed(providers),
+            getProviders: Effect.succeed(providers),
             refreshInstance: () => Effect.succeed(providers),
           }),
           adapterRegistryLayer([codexInstanceId]),
@@ -2200,245 +2041,6 @@ describe("OrchestratorMcpService provider resolution", () => {
         );
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provideMerge(dependencies))));
     }),
-  );
-
-  it.effect.each([
-    "all limited",
-    "healthy capacity",
-    "shared login",
-    "shared credential",
-    "project disabled",
-    "unavailable",
-    "expired",
-    "unknown quota",
-    "unregistered adapters",
-    "only cooling adapter registered",
-    "only healthy adapter registered",
-  ] as const)("pool delegation availability: %s", (scenario) =>
-    Effect.gen(function* () {
-      const poolInstanceId = ProviderInstanceId.make("pool_codex");
-      const workInstanceId = ProviderInstanceId.make("codex_work");
-      const codex = ProviderDriverKind.make("codex");
-      const limitedUntil = "2099-01-01T00:00:00.000Z";
-      const members: ServerProvider[] = [codexInstanceId, workInstanceId].map(
-        (instanceId, index) => ({
-          ...providerSnapshot({ instanceId, driver: codex, model: "gpt-5.4" }),
-          pool: { role: "member", poolInstanceId },
-          ...(index === 0 || scenario === "all limited" ? { limitedUntil } : {}),
-          ...(scenario === "expired" ? { limitedUntil: "1969-01-01T00:00:00.000Z" } : {}),
-          ...(scenario === "shared login"
-            ? { auth: { status: "authenticated", email: "same@example.com" } }
-            : {}),
-          ...(scenario === "shared credential"
-            ? {
-                usageLimits: {
-                  checkedAt: "2026-01-01T00:00:00.000Z",
-                  credentialFingerprint: "same",
-                  windows: [],
-                },
-              }
-            : {}),
-          ...(index === 1 && scenario === "unavailable" ? { installed: false } : {}),
-        }),
-      );
-      const providers: ServerProvider[] = [
-        ...members,
-        {
-          ...providerSnapshot({ instanceId: poolInstanceId, driver: codex, model: "gpt-5.4" }),
-          pool: {
-            role: "pool",
-            memberInstanceIds: [codexInstanceId, workInstanceId],
-            droppedModels: [],
-          },
-        },
-      ];
-      const available = [
-        "healthy capacity",
-        "expired",
-        "unknown quota",
-        "only healthy adapter registered",
-      ].includes(scenario);
-      const dependencies = Layer.mergeAll(
-        NodeServices.layer,
-        NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
-          getThreadRecords: () => Effect.succeed(parentProjection([])),
-          isProviderInstanceEnabledForProject: () => Effect.succeed(true),
-        }),
-        ServerSettings.layerTest({
-          providerInstances: {
-            [workInstanceId]: { driver: codex, displayName: "Work", config: {}, enabled: true },
-          },
-          projectSettingsOverrides: {
-            [projectId]: {
-              providerInstances: {
-                [workInstanceId]: { enabled: scenario !== "project disabled" },
-              },
-            },
-          },
-        }),
-        Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getPublishedProviders: Effect.succeed(providers),
-          refreshInstance: () =>
-            Effect.succeed(members.map(({ pool: _pool, ...member }) => member)),
-        }),
-        adapterRegistryLayer(
-          scenario === "unregistered adapters"
-            ? []
-            : scenario === "only cooling adapter registered"
-              ? [codexInstanceId]
-              : scenario === "only healthy adapter registered"
-                ? [workInstanceId]
-                : [codexInstanceId, workInstanceId],
-        ),
-        Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(SecretRequests.SecretRequests)({}),
-        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-      );
-      yield* Effect.gen(function* () {
-        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        assert.deepEqual(
-          (yield* service.capabilities(scope)).providers.map(
-            (provider) => provider.providerInstanceId,
-          ),
-          available ? [poolInstanceId] : [],
-        );
-        if (!available) {
-          for (const target of [
-            { providerInstanceId: poolInstanceId },
-            { providerInstanceId: workInstanceId },
-            { driverKind: codex },
-          ]) {
-            const error = yield* service
-              .delegateTask(scope, {
-                task: "Summarize",
-                target,
-                mode: "async",
-                clientRequestId: "limited-pool",
-              })
-              .pipe(Effect.flip);
-            assert.equal(error.code, "provider_unavailable");
-          }
-        }
-      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
-    }),
-  );
-
-  it.effect(
-    "delegates a driverKind target to the driver's pool and lists the pool over its members",
-    () =>
-      Effect.gen(function* () {
-        const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
-        const codex = ProviderDriverKind.make("codex");
-        const workInstanceId = ProviderInstanceId.make("codex_work");
-        const poolInstanceId = ProviderInstanceId.make("pool_codex");
-        const task = {
-          id: taskId,
-          threadId: parentThreadId,
-          runId: parentRunId,
-          parentNodeId,
-          origin: "app_owned",
-          createdBy: "agent",
-          driver: codex,
-          providerInstanceId: workInstanceId,
-          providerThreadId: null,
-          childThreadId,
-          nativeTaskRef: null,
-          prompt: "Summarize the diff.",
-          title: null,
-          model: "gpt-5.4",
-          status: "running",
-          result: null,
-          startedAt: null,
-          completedAt: null,
-        };
-        let delegated = false;
-        const member = (instanceId: ProviderInstanceId) => ({
-          ...providerSnapshot({ instanceId, driver: codex, model: "gpt-5.4" }),
-          pool: { role: "member" as const, poolInstanceId },
-        });
-        const layerDependencies = Layer.mergeAll(
-          NodeServices.layer,
-          NodeCrypto.layer,
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
-            hasReceipt: () => Effect.succeed(false),
-            assertProviderInstanceEnabled: () => Effect.void,
-            isProviderInstanceEnabledForProject: () => Effect.succeed(true),
-            getThreadRecords: (threadId) =>
-              Effect.succeed(
-                threadId === parentThreadId
-                  ? parentProjection(delegated ? [task] : [])
-                  : childProjection,
-              ),
-            dispatch: (command) =>
-              Ref.update(dispatched, (commands) => [...commands, command]).pipe(
-                Effect.andThen(
-                  Effect.sync(() => {
-                    delegated = true;
-                  }),
-                ),
-                Effect.as({
-                  sequence: 1,
-                  storedEvents: [
-                    {
-                      sequence: 1,
-                      commandId: null,
-                      event: { type: "subagent.updated", payload: task },
-                    },
-                  ],
-                } as never),
-              ),
-          }),
-          ServerSettings.layerTest({
-            providerInstances: { [workInstanceId]: { driver: codex, config: {}, enabled: true } },
-          }),
-          providerRegistryLayer([
-            { ...member(codexInstanceId), limitedUntil: "2099-01-01T00:00:00.000Z" },
-            member(workInstanceId),
-            {
-              ...providerSnapshot({ instanceId: poolInstanceId, driver: codex, model: "gpt-5.4" }),
-              pool: {
-                role: "pool" as const,
-                memberInstanceIds: [codexInstanceId, workInstanceId],
-                droppedModels: [],
-              },
-            },
-          ]),
-          adapterRegistryLayer([codexInstanceId, workInstanceId]),
-          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-          Layer.mock(ProjectService.ProjectService)({}),
-          Layer.mock(SecretRequests.SecretRequests)({}),
-          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        );
-
-        yield* Effect.gen(function* () {
-          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-          const capabilities = yield* service.capabilities(scope);
-          assert.deepEqual(
-            capabilities.providers.map((provider) => provider.providerInstanceId),
-            [poolInstanceId],
-          );
-          assert.deepInclude(capabilities.providers[0], {
-            poolMemberInstanceIds: [codexInstanceId, workInstanceId],
-          });
-          const result = yield* service.delegateTask(scope, {
-            task: "Summarize the diff.",
-            target: { driverKind: codex },
-            mode: "async",
-            clientRequestId: "delegate-pool-driver-1",
-          });
-          assert.equal(result.status, "running");
-          assert.equal(result.providerInstanceId, workInstanceId);
-          assert.equal(result.model, "gpt-5.4");
-          const request = (yield* Ref.get(dispatched))[0] as {
-            modelSelection: { instanceId: string; model: string };
-          };
-          assert.equal(request.modelSelection.instanceId, poolInstanceId);
-          assert.equal(request.modelSelection.model, "gpt-5.4");
-        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
-      }),
   );
 
   it.effect("rejects delegation to a provider without a registered adapter", () =>
@@ -2679,7 +2281,7 @@ describe("OrchestratorMcpService provider resolution", () => {
               ),
           }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
-            getPublishedProviders: Ref.get(accepted).pipe(
+            getProviders: Ref.get(accepted).pipe(
               Effect.map((isAccepted) =>
                 [
                   providerSnapshot({
@@ -3304,7 +2906,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             }),
             ServerSettings.layerTest(),
             Layer.mock(ProviderRegistry.ProviderRegistry)({
-              getPublishedProviders: Effect.succeed([]),
+              getProviders: Effect.succeed([]),
             }),
             Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
               list: () => Effect.succeed([]),
@@ -3376,7 +2978,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   }),
                   ServerSettings.layerTest(),
                   Layer.mock(ProviderRegistry.ProviderRegistry)({
-                    getPublishedProviders: Effect.succeed([]),
+                    getProviders: Effect.succeed([]),
                   }),
                   Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
                     list: () => Effect.succeed([]),
@@ -3466,7 +3068,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   }),
                   ServerSettings.layerTest(),
                   Layer.mock(ProviderRegistry.ProviderRegistry)({
-                    getPublishedProviders: Effect.succeed([]),
+                    getProviders: Effect.succeed([]),
                   }),
                   Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
                     list: () => Effect.succeed([]),
@@ -4072,7 +3674,6 @@ describe("OrchestratorMcpService provider resolution", () => {
         ];
         const resolved = resolveRoles({
           settings: DEFAULT_SERVER_SETTINGS,
-          projectId,
           nowMs: 0,
           file:
             driver === "codex"

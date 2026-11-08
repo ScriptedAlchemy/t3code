@@ -266,7 +266,6 @@ export const make = Effect.gen(function* () {
       usagePriceOverrides: true,
       usageModelAliases: true,
       inferenceProxy: true,
-      providerPools: true,
       threadPinning: true,
       threadPinReorder: true,
       threadActiveReorder: true,

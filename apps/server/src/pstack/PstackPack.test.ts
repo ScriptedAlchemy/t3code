@@ -12,7 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PstackPack from "./PstackPack.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { ProjectId, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import { claudeProvider, makeFixture } from "./PstackPack.testkit.ts";
 
 it.layer(NodeServices.layer)("PstackPack", (it) => {
@@ -413,53 +413,33 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
       assert.include(expansion.text, "Provider is rate limited. Retry after its cooldown expires.");
     }),
   );
-  it.effect.each(["all cooling", "healthy member disabled", "healthy member available"] as const)(
-    "pool roles use project-aware delegation availability: %s",
+  it.effect.each(["cooling", "disabled", "available"] as const)(
+    "a saved CLI pool seat uses its inference route when %s",
     (scenario) =>
       Effect.gen(function* () {
         const projectId = ProjectId.make("pack-test");
-        const poolId = ProviderInstanceId.make("pool_claudeAgent");
-        const workId = ProviderInstanceId.make("claudeAgent_work");
-        const members: ServerProvider[] = [claudeProvider.instanceId, workId].map(
-          (instanceId, index) => ({
-            ...claudeProvider,
-            instanceId,
-            pool: { role: "member", poolInstanceId: poolId },
-            ...(index === 0 || scenario === "all cooling"
-              ? { limitedUntil: "2099-01-01T00:00:00Z" }
-              : {}),
-          }),
-        );
+        const route = ProviderInstanceId.make("inference_claude_host");
         const fixture = yield* makeFixture(
           [
-            ...members,
+            claudeProvider,
             {
               ...claudeProvider,
-              instanceId: poolId,
-              pool: {
-                role: "pool",
-                memberInstanceIds: members.map((member) => member.instanceId),
-                droppedModels: [],
-              },
+              instanceId: route,
+              ...(scenario === "cooling" ? { limitedUntil: "2099-01-01T00:00:00Z" } : {}),
             },
           ],
           ServerSettings.layerTest({
             pstackEnabled: true,
+            retiredPoolRoutes: { [claudeProvider.driver]: route },
             providerInstances: {
-              [workId]: { driver: claudeProvider.driver, enabled: true, config: {} },
-            },
-            providerPools: {
-              [claudeProvider.driver]: {
+              [route]: {
+                driver: claudeProvider.driver,
                 enabled: true,
-                memberInstanceIds: members.map((member) => member.instanceId),
+                config: { setupMode: "inference" },
               },
             },
             projectSettingsOverrides: {
-              [projectId]: {
-                providerInstances: {
-                  [workId]: { enabled: scenario !== "healthy member disabled" },
-                },
-              },
+              [projectId]: { providerInstances: { [route]: { enabled: scenario !== "disabled" } } },
             },
           }),
         );
@@ -475,15 +455,18 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
             { createdBy: "user" },
           );
         }).pipe(Effect.provide(fixture.layer));
-        if (scenario === "healthy member available") {
+        if (scenario === "available") {
           assert.include(
             expansion.text,
-            '- architect runners: [1] {"providerInstanceId":"pool_claudeAgent"',
+            '- architect runners: [1] {"providerInstanceId":"inference_claude_host"',
           );
           assert.notInclude(expansion.text, "Fallback:");
         } else {
           assert.include(expansion.text, "- architect runners: [1] inherit");
-          assert.include(expansion.text, "Every available pool member is rate limited.");
+          assert.include(
+            expansion.text,
+            scenario === "cooling" ? "Provider is rate limited." : "Provider instance is disabled.",
+          );
         }
       }),
   );

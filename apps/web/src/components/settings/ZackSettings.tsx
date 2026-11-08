@@ -11,7 +11,7 @@ import { ScopedSwitch } from "./ScopedSwitch";
 import { scopedAssistedLearningUnavailableReason } from "./scopedSettings";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
-import { hasProviderPoolsEnvironment, searchableSetting } from "./settingsSearch";
+import { hasInferenceProxyEnvironment, searchableSetting } from "./settingsSearch";
 import { SkillsLibraryRows } from "./SkillsLibrarySettings";
 import {
   useScopedSettings,
@@ -279,7 +279,7 @@ function ThreadSplitRows() {
 /** Pools stay on their own page because they edit one environment at a time. */
 function AccountPoolsRow() {
   const { environments } = useEnvironments();
-  if (!hasProviderPoolsEnvironment(environments)) return null;
+  if (!hasInferenceProxyEnvironment(environments)) return null;
   return (
     <SettingsRow
       title="Inference accounts"

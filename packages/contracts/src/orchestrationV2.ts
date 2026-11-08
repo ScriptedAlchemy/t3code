@@ -3561,14 +3561,6 @@ const OrchestrationV2InternalCommand = Schema.Union([
     delivery: Schema.optional(OrchestrationV2SecretRequestDelivery),
     secretStatus: OrchestrationV2SecretRequestStatus,
   }),
-  Schema.Struct({
-    type: Schema.Literal("run.pool-failover"),
-    commandId: CommandId,
-    threadId: ThreadId,
-    runId: RunId,
-    attemptId: RunAttemptId,
-    failure: OrchestrationV2ProviderFailure,
-  }),
   /**
    * Records or updates a link an agent asked the user to make. Internal so no
    * client can mark a request linked without the link being made.
@@ -3602,10 +3594,6 @@ const OrchestrationV2InternalCommand = Schema.Union([
   }),
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
-
-// Keyed by attempt so the hook and the recovery sweep collapse onto one receipt.
-export const runPoolFailoverCommandId = (attemptId: RunAttemptId): CommandId =>
-  CommandId.make(`command:system:pool-failover:${attemptId}`);
 
 export type OrchestrationV2ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
 

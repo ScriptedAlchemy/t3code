@@ -1,15 +1,11 @@
 import {
   isProviderAvailable,
-  findProviderPool,
   providerLimitedUntilMs,
-  type ProjectId,
-  type ProviderInstanceId,
   type ServerProvider,
   type ServerProviderModel,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
-import { poolMemberHealth } from "../orchestration-v2/ProviderPoolRouting.ts";
 import * as Effect from "effect/Effect";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -51,34 +47,11 @@ export function providerConstraints(
 export function delegationProviderConstraints(
   provider: ServerProvider,
   supportsOrchestrationV2: boolean,
-  input: {
-    readonly providers: ReadonlyArray<ServerProvider>;
-    readonly capableInstanceIds?: ReadonlySet<ProviderInstanceId>;
-    readonly settings: Parameters<typeof poolMemberHealth>[0]["settings"];
-    readonly projectId: ProjectId | null;
-    readonly nowMs: number;
-  },
+  nowMs: number,
 ): ReadonlyArray<string> {
   const constraints = [...providerConstraints(provider, supportsOrchestrationV2)];
-  const owner = findProviderPool(input.providers, provider.instanceId);
-  if (owner === null) {
-    if (providerLimitedUntilMs(provider, input.nowMs) !== null) {
-      constraints.push("Provider is rate limited. Retry after its cooldown expires.");
-    }
-    return constraints;
-  }
-  const members = poolMemberHealth({ ...input, members: owner.members });
-  const eligible = members.filter(
-    (member) =>
-      member.eligible &&
-      (input.capableInstanceIds === undefined || input.capableInstanceIds.has(member.instanceId)),
-  );
-  if (eligible.length === 0) {
-    constraints.push("No pool member is available for this project.");
-  } else if (eligible.every((member) => member.limitedUntilMs !== null)) {
-    constraints.push(
-      "Every available pool member is rate limited. Retry after a cooldown expires.",
-    );
+  if (providerLimitedUntilMs(provider, nowMs) !== null) {
+    constraints.push("Provider is rate limited. Retry after its cooldown expires.");
   }
   return constraints;
 }
@@ -122,19 +95,8 @@ export const readOrchestrationProviders = Effect.fn("OrchestrationTargets.readPr
   function* () {
     const registry = yield* ProviderRegistry.ProviderRegistry;
     const adapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
-    const [providers, instanceIds] = yield* Effect.all([
-      registry.getPublishedProviders,
-      adapters.list(),
-    ]);
+    const [providers, instanceIds] = yield* Effect.all([registry.getProviders, adapters.list()]);
     const capableInstanceIds = new Set(instanceIds);
-    // A pool delegates through a registered member adapter, never its virtual id.
-    for (const provider of providers) {
-      if (
-        provider.pool?.role === "pool" &&
-        provider.pool.memberInstanceIds.some((instanceId) => instanceIds.includes(instanceId))
-      )
-        capableInstanceIds.add(provider.instanceId);
-    }
     return { providers, capableInstanceIds };
   },
 );

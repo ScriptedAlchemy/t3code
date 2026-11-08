@@ -35,7 +35,7 @@ import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
 import { InferenceAccounts } from "./InferenceAccounts";
 import { ProviderAccountSync } from "./ProviderAccountSync";
-import { AddClaudeAccount, ClaudeAccount } from "./ClaudeAccounts";
+import { ClaudeAccount } from "./ClaudeAccounts";
 import { CLAUDE_DRIVER } from "./claude-accounts";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 
@@ -91,13 +91,8 @@ function EnvironmentProviders({
       !isInferenceConfig(environment.serverConfig.settings.providerInstances[p.instanceId]?.config),
   );
   const accounts = directProviders.filter(canManageProvider);
-  // Claude has no in-app sign-in; each account is its own instance on a signed-in config folder.
   const claudeAccounts = directProviders.filter(
     (provider) => provider.driver === CLAUDE_DRIVER && !canManageProvider(provider),
-  );
-  const canAddClaude = isManagedDriverAllowed(
-    environment.serverConfig.managedPolicy,
-    CLAUDE_DRIVER,
   );
   return (
     <>
@@ -120,7 +115,6 @@ function EnvironmentProviders({
       {claudeAccounts.map((provider) => (
         <ClaudeAccount key={provider.instanceId} environment={environment} provider={provider} />
       ))}
-      {canAddClaude ? <AddClaudeAccount environment={environment} /> : null}
     </>
   );
 }

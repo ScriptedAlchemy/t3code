@@ -4,21 +4,9 @@ T3 Code uses Claude Code's login and configuration. Start with the default provi
 for one account; [provider setup](./install.md#providers) covers installation and
 shared provider settings.
 
-## Add another account
+## Connect Claude Code
 
-In **Settings > Providers**, add Claude and choose **Sign in with Claude Code**.
-Name the account and continue to sign-in. Open the browser link, then paste the
-code from Claude into T3 Code. You can sign in from another device when the
-T3 Code environment runs remotely. To sign out, open that account's provider
-settings.
-
-Accounts added with **Sign in with Claude Code** share your Claude profile in
-`~/.claude`, including settings, skills, plugins, agents, and `CLAUDE.md`. Changes
-from any account, such as enabling a plugin or allowing a tool, apply to all
-accounts. Each account keeps its own login, trust decisions, MCP servers, and
-conversation history. Accounts added before this version start sharing too. Turn
-off **Use your Claude profile** in an account's provider settings to give it a
-profile of its own.
+For multiple accounts, open **Inference accounts** on the environment where you want to sign in. [Host and share inference accounts](#host-and-share-inference-accounts)
 
 To reuse an installed CLI account, choose **Use existing Claude Code**. Leave
 **CLAUDE_CONFIG_DIR path** empty to use the CLI's default configuration. For a
@@ -29,9 +17,6 @@ can find the system keychain.
 For API keys, custom endpoints, and routers, choose **Use existing Claude Code**
 and configure its **Environment variables**. Independent subscription accounts
 use their own Claude login and ignore credential and endpoint overrides.
-
-On mobile, tap **Add Claude account** in **Settings > Providers** and enter a name and
-the config folder of an account already signed in on the environment's machine.
 
 Claude Code's verbose mode can stay enabled when you use Claude for text generation, including
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
@@ -71,10 +56,7 @@ pools have separate `claude-pool-…` IDs. The routing switches apply across
 the host. Round-robin distributes new sessions, and session affinity keeps a
 conversation on its credential while that credential is available.
 
-Adding a working route retires the old CLI profile pool for that provider on
-the executing machine. Existing profiles remain individually selectable. For an
-existing thread, choose the routed provider when you want to switch. You can
-also retire a legacy pool directly in Inference accounts.
+The first inference route for a provider replaces its old CLI account pool. Threads saved with that pool use the replacement route. Threads pinned to an individual CLI account keep that selection. You can switch either kind of thread in the provider picker.
 
 Remove a provider login on its host, revoke one consuming environment, or turn
 off sharing to revoke all remote grants. Remove the route in **Inference accounts** on the executing machine. Stopping hosting keeps the host's accounts

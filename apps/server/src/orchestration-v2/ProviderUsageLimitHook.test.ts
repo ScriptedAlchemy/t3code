@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import type { OrchestrationV2ProviderFailure } from "@t3tools/contracts";
 
-import { limitCooldownUntilMs } from "./ProviderPoolFailover.ts";
+import { limitCooldownUntilMs } from "./ProviderUsageLimitHook.ts";
 
 const nowMs = Date.parse("2026-10-20T12:00:00.000Z");
 const futureResetAt = "2026-10-20T12:10:00.000Z";

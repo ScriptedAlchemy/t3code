@@ -318,7 +318,6 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
           file: file === undefined ? undefined : parseModelsFile(file),
           defaults: pack.defaults,
           settings: currentSettings,
-          projectId: input.projectId,
           ...(input.parentModelSelection === undefined
             ? {}
             : { parentModelSelection: input.parentModelSelection }),

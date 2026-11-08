@@ -6,8 +6,10 @@ import {
   ChevronDownIcon,
   HardDriveIcon,
   MessageCircleIcon,
-  TerminalIcon,
+  NetworkIcon,
 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { useServerConfigs } from "../../state/entities";
 import { useState } from "react";
 import {
   deriveAvailableInstanceId,
@@ -64,7 +66,6 @@ import { AcpRegistrySearchStep, useAcpRegistrySearch } from "./AcpRegistrySearch
 import { ProviderWizardAuthenticationStep } from "./ProviderWizardAuthenticationStep";
 import { resolveOfficialAcpRegistryIconUrl } from "./AcpRegistryIcon";
 import { AddManagedCodexAccountDialog } from "./CodexSetupSection";
-import { MultipleAccountsNote } from "./MultipleAccountsNote";
 import { ProviderEnvironmentSection } from "./ProviderInstanceCard";
 import { useSecretSources } from "./SecretSourceInput";
 
@@ -133,14 +134,15 @@ function ProviderOptionGrid({
     </RadioGroup>
   );
 }
-type ConnectionChoice = "cli" | "existing" | "managed";
+type ConnectionChoice = "inference" | "existing" | "managed";
+const inferenceConnection = {
+  value: "inference",
+  label: "Use inference accounts",
+  description: "Use accounts hosted on this environment or a paired machine.",
+  icon: NetworkIcon,
+} as const;
 const CODEX_CONNECTION_OPTIONS = [
-  {
-    value: "cli",
-    label: "Sign in with Codex CLI",
-    description: "Add an account that shares your Codex skills, plugins, and history.",
-    icon: TerminalIcon,
-  },
+  inferenceConnection,
   {
     value: "existing",
     label: "Use existing Codex CLI",
@@ -157,13 +159,7 @@ const CODEX_CONNECTION_OPTIONS = [
 const CONNECTION_OPTIONS = {
   codex: CODEX_CONNECTION_OPTIONS,
   claudeAgent: [
-    {
-      value: "cli",
-      label: "Sign in with Claude Code",
-      description:
-        "Add an account with its own login and history that shares your Claude settings, skills, and plugins.",
-      icon: TerminalIcon,
-    },
+    inferenceConnection,
     {
       value: "existing",
       label: "Use existing Claude Code",
@@ -238,10 +234,12 @@ export function AddProviderInstanceDialog({
   const driverOption = providerClients.get(driver) ?? DEFAULT_DRIVER_OPTION;
   const isAcpRegistry = driver === ACP_REGISTRY_DRIVER_KIND;
   const hasConnectionChoice = selection === "codex" || selection === "claudeAgent";
-  const connectionChoice = connectionChoices[selection] ?? "cli";
+  const supportsInference =
+    useServerConfigs().get(environmentId)?.environment.capabilities.inferenceProxy === true;
+  const connectionChoice =
+    connectionChoices[selection] ?? (supportsInference ? "inference" : "existing");
   const connectionOptions =
     selection === "claudeAgent" ? CONNECTION_OPTIONS.claudeAgent : CONNECTION_OPTIONS.codex;
-  const isCliAccount = hasConnectionChoice && connectionChoice === "cli";
   const showRegistrySearch =
     !createdInstanceId &&
     providerView === "catalog" &&
@@ -338,11 +336,7 @@ export function AddProviderInstanceDialog({
     if (navigation.kind === "blocked") {
       setHasAttemptedSubmit(true);
     }
-    if (
-      ((isAcpRegistry && !isLocalAcp) || isCliAccount) &&
-      navigation.kind === "navigate" &&
-      navigation.step === 2
-    ) {
+    if (isAcpRegistry && !isLocalAcp && navigation.kind === "navigate" && navigation.step === 2) {
       void handleSave();
       return;
     }
@@ -441,9 +435,8 @@ export function AddProviderInstanceDialog({
     setHasAttemptedSubmit(true);
     if (instanceIdError !== null || (isAcpRegistry && acpSelectionError !== null)) return;
 
-    const config = isCliAccount
-      ? { setupMode: "cli" }
-      : driver === "codex" || driver === "claudeAgent"
+    const config =
+      driver === "codex" || driver === "claudeAgent"
         ? { ...configDraft, setupMode: "existing" }
         : configDraft;
     const hasConfig = Object.keys(config).length > 0;
@@ -475,7 +468,7 @@ export function AddProviderInstanceDialog({
       return;
     }
     onCreated?.(brandedId);
-    if ((isAcpRegistry && !isLocalAcp) || isCliAccount) {
+    if (isAcpRegistry && !isLocalAcp) {
       setCreatedInstanceId(brandedId);
       setIsSaving(false);
       setWizardStep(2);
@@ -524,7 +517,7 @@ export function AddProviderInstanceDialog({
               prerequisite={{ step: 0, error: acpSelectionError }}
               onNavigation={applyWizardNavigation}
             />
-          ) : (
+          ) : providerView === "connection" ? null : (
             <AddProviderInstanceWizardSteps
               currentStep={wizardStep}
               summaries={wizardStepSummaries}
@@ -535,11 +528,7 @@ export function AddProviderInstanceDialog({
                 createdInstanceId !== null ||
                 (hasConnectionChoice && wizardStep === 0)
               }
-              steps={
-                (providerView === "connection" ? connectionChoice === "cli" : isCliAccount)
-                  ? ACP_REGISTRY_WIZARD_STEPS
-                  : ADD_PROVIDER_WIZARD_STEPS
-              }
+              steps={ADD_PROVIDER_WIZARD_STEPS}
               onNavigation={applyWizardNavigation}
             />
           )}
@@ -550,7 +539,6 @@ export function AddProviderInstanceDialog({
             environmentId={environmentId}
             environmentLabel={environmentLabel}
             instanceId={createdInstanceId}
-            autoOpenBrowser={isCliAccount}
             onFinish={() => onOpenChange(false)}
           />
         ) : (
@@ -572,7 +560,6 @@ export function AddProviderInstanceDialog({
                   onValueChange={selectProvider}
                   aria-labelledby="add-instance-driver-label"
                 />
-                <MultipleAccountsNote environmentId={environmentId} driver={driver} />
               </div>
 
               {wizardStep === 0 && providerView === "connection" ? (
@@ -587,39 +574,41 @@ export function AddProviderInstanceDialog({
                     aria-labelledby="add-provider-connection-label"
                     value={connectionChoice}
                     onValueChange={(value) => {
-                      if (value === "cli" || value === "existing" || value === "managed") {
+                      if (value === "inference" || value === "existing" || value === "managed") {
                         setConnectionChoices((current) => ({ ...current, [selection]: value }));
                       }
                     }}
                   >
-                    {connectionOptions.map((option) => {
-                      const Icon = option.icon;
-                      return (
-                        <RadioPrimitive.Root
-                          key={option.value}
-                          value={option.value}
-                          aria-label={`${option.label}. ${option.description}`}
-                          className="flex min-w-0 cursor-pointer items-center gap-3 rounded-lg bg-card px-3 py-2.5 text-left outline-none ring-1 ring-black/5 hover:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring data-checked:bg-primary/8 data-checked:ring-2 data-checked:ring-inset data-checked:ring-primary dark:bg-white/3 dark:ring-white/5 dark:hover:bg-white/5 dark:data-checked:bg-primary/15 dark:data-checked:ring-primary"
-                        >
-                          <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-medium text-foreground">
-                              {option.label}
+                    {connectionOptions
+                      .filter((option) => supportsInference || option.value !== "inference")
+                      .map((option) => {
+                        const Icon = option.icon;
+                        return (
+                          <RadioPrimitive.Root
+                            key={option.value}
+                            value={option.value}
+                            aria-label={`${option.label}. ${option.description}`}
+                            className="flex min-w-0 cursor-pointer items-center gap-3 rounded-lg bg-card px-3 py-2.5 text-left outline-none ring-1 ring-black/5 hover:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring data-checked:bg-primary/8 data-checked:ring-2 data-checked:ring-inset data-checked:ring-primary dark:bg-white/3 dark:ring-white/5 dark:hover:bg-white/5 dark:data-checked:bg-primary/15 dark:data-checked:ring-primary"
+                          >
+                            <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm font-medium text-foreground">
+                                {option.label}
+                              </span>
+                              <span className="block text-xs text-muted-foreground">
+                                {option.description}
+                              </span>
                             </span>
-                            <span className="block text-xs text-muted-foreground">
-                              {option.description}
+                            <span aria-hidden className="size-4.5 shrink-0">
+                              <RadioPrimitive.Indicator className="grid size-4.5 place-items-center rounded-full border border-input bg-background data-checked:border-primary data-checked:bg-primary">
+                                {connectionChoice === option.value ? (
+                                  <span className="size-1.5 rounded-full bg-primary-foreground" />
+                                ) : null}
+                              </RadioPrimitive.Indicator>
                             </span>
-                          </span>
-                          <span aria-hidden className="size-4.5 shrink-0">
-                            <RadioPrimitive.Indicator className="grid size-4.5 place-items-center rounded-full border border-input bg-background data-checked:border-primary data-checked:bg-primary">
-                              {connectionChoice === option.value ? (
-                                <span className="size-1.5 rounded-full bg-primary-foreground" />
-                              ) : null}
-                            </RadioPrimitive.Indicator>
-                          </span>
-                        </RadioPrimitive.Root>
-                      );
-                    })}
+                          </RadioPrimitive.Root>
+                        );
+                      })}
                   </RadioGroup>
                 </div>
               ) : null}
@@ -828,7 +817,7 @@ export function AddProviderInstanceDialog({
                 />
               </SettingsGroup>
 
-              {!isAcpRegistry && !isCliAccount && driverSettingsFields.length > 0 ? (
+              {!isAcpRegistry && driverSettingsFields.length > 0 ? (
                 <SettingsGroup variant="plain" className={cn(wizardStep !== 2 && "hidden")}>
                   <ProviderSettingsForm
                     definition={driverOption}
@@ -842,7 +831,7 @@ export function AddProviderInstanceDialog({
                     environmentId={environmentId}
                   />
                 </SettingsGroup>
-              ) : !isAcpRegistry && !isCliAccount && wizardStep === 2 ? (
+              ) : !isAcpRegistry && wizardStep === 2 ? (
                 <div className="grid gap-2">
                   <p className="text-sm text-muted-foreground">
                     This driver has no required configuration. You can add the instance now.
@@ -870,7 +859,17 @@ export function AddProviderInstanceDialog({
               >
                 {wizardStep === 0 && providerView === "catalog" ? "Cancel" : "Back"}
               </Button>
-              {wizardStep === 0 ? (
+              {wizardStep === 0 &&
+              providerView === "connection" &&
+              connectionChoice === "inference" ? (
+                <Button
+                  size="sm"
+                  render={<Link to="/settings/account-pools" search={{ machine: environmentId }} />}
+                  onClick={() => onOpenChange(false)}
+                >
+                  Open inference accounts
+                </Button>
+              ) : wizardStep === 0 ? (
                 <Button
                   size="sm"
                   disabled={isPreparingRegistryAgent}
@@ -889,7 +888,7 @@ export function AddProviderInstanceDialog({
                 >
                   {providerView === "connection" ? "Continue" : "Next"}
                 </Button>
-              ) : wizardStep < (isAcpRegistry || isCliAccount ? 1 : 2) ? (
+              ) : wizardStep < (isAcpRegistry ? 1 : 2) ? (
                 <Button
                   size="sm"
                   disabled={isPreparingRegistryAgent}
@@ -905,7 +904,7 @@ export function AddProviderInstanceDialog({
                 >
                   {isSaving
                     ? "Adding..."
-                    : (isAcpRegistry && !isLocalAcp) || isCliAccount
+                    : isAcpRegistry && !isLocalAcp
                       ? "Continue to sign-in"
                       : "Add instance"}
                 </Button>

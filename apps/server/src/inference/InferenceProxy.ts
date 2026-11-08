@@ -714,10 +714,7 @@ const make = Effect.gen(function* () {
       const home = path.join(config.stateDir, "providers", "inference", instanceId);
       yield* fs.makeDirectory(home, { recursive: true, mode: 0o700 });
       const instance = routeProvider(driver, baseUrl, grant.key, hostLabel, models, home);
-      yield* settings.updateProviderInstance(
-        { operation: "upsert", instanceId, instance },
-        { providerPools: { [driver]: null } },
-      );
+      yield* settings.updateProviderInstance({ operation: "upsert", instanceId, instance });
     },
     Effect.mapError(safeFailure("Could not configure the routed provider.")),
   );

@@ -95,8 +95,6 @@ import {
   ProjectMutationError,
   ProviderUploadFeedbackError,
   ProviderSetupError,
-  providerPoolDriver,
-  resolveActiveProviderPools,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   type ServerConfig as ClientServerConfig,
@@ -2074,7 +2072,7 @@ export const layerWsRpc = (
         readonly catalogsPerCwd?: ReadonlySet<string>;
       }) {
         const keybindingsConfig = yield* keybindings.loadConfigState;
-        const currentProviders = yield* providerRegistry.getPublishedProviders;
+        const currentProviders = yield* providerRegistry.getProviders;
         const commandProviders = options.usageLimitsCommand
           ? withUsageLimitsCommands(currentProviders, yield* usageLimitSources.current)
           : currentProviders;
@@ -2680,24 +2678,10 @@ export const layerWsRpc = (
                   : providerRegistry.refresh();
             if (input.refreshModels) {
               const instances = yield* providerInstances.listInstances;
-              const poolDriver =
-                input.instanceId === undefined ? null : providerPoolDriver(input.instanceId);
-              const selectedInstanceIds =
-                input.instanceId === undefined
-                  ? undefined
-                  : poolDriver === null
-                    ? [input.instanceId]
-                    : (resolveActiveProviderPools({
-                        providerPools: (yield* serverSettings.getSettings.pipe(Effect.orDie))
-                          .providerPools,
-                        instances: providers,
-                      }).find((pool) => pool.instanceId === input.instanceId)?.memberInstanceIds ??
-                      []);
               for (const instance of instances) {
                 if (
                   !instance.refreshModels ||
-                  (selectedInstanceIds !== undefined &&
-                    !selectedInstanceIds.includes(instance.instanceId)) ||
+                  (input.instanceId !== undefined && input.instanceId !== instance.instanceId) ||
                   !providers.some(
                     (provider) =>
                       provider.instanceId === instance.instanceId &&
@@ -2719,7 +2703,7 @@ export const layerWsRpc = (
                 providers = yield* providerRegistry.refreshInstance(instance.instanceId);
               }
             }
-            providers = yield* providerRegistry.getPublishedProviders;
+            providers = yield* providerRegistry.getProviders;
             if (input.workspaceSnapshotsOnDemand !== true) return { providers };
             const commandProviders =
               input.usageLimitsCommand === true

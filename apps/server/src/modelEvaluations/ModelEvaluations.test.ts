@@ -58,7 +58,7 @@ const makeLayer = (
     Layer.provide(Layer.mock(TextGeneration.TextGeneration)({ generateModelEvaluation: generate })),
     Layer.provide(
       Layer.mock(ProviderRegistry.ProviderRegistry)({
-        getPublishedProviders: Effect.succeed(published),
+        getProviders: Effect.succeed(published),
       }),
     ),
     Layer.provideMerge(

@@ -214,6 +214,9 @@ describe("ProviderAccountTransfer", () => {
         },
       });
       expect(yield* failure(a.transfer.exportAccount(workCodex))).toBe("inference-route");
+      const source = yield* makeEnvironment({ settings: sourceSettings });
+      const account = yield* source.transfer.exportAccount(workCodex);
+      expect(yield* failure(a.transfer.importAccount(account))).toBe("inference-route");
     }),
   );
 

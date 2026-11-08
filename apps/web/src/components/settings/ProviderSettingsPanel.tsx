@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { SettingsGroup } from "./SettingsGroup";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import {
+  isInferenceConfig,
   AuthSettingsWriteScope,
   AuthProvidersManageScope,
   AuthOrchestrationReadScope,
@@ -105,7 +106,7 @@ import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSectio
 import { readProviderConfigString } from "./ProviderSettingsForm";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import { providerClients } from "./providerDriverMeta";
-import { resolveProviderPoolName } from "./ProviderPoolsSettings.logic";
+import { resolveProviderPoolName } from "./providerAccountStatus";
 import { searchableSetting } from "./settingsSearch";
 import { CompactIdleThreadsRow } from "./SettingsPanels";
 import {
@@ -1416,7 +1417,7 @@ function ProviderInstanceRow({
           : undefined
       }
       syncAction={
-        mode === "editor" ? (
+        mode === "editor" && !isInferenceConfig(instance.config) ? (
           <SyncProviderAccountsAction
             sourceEnvironmentId={environmentId}
             readOnly={readOnly}

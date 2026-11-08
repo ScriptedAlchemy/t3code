@@ -829,22 +829,14 @@ const make = Effect.gen(function* () {
         input.delegatedFrom !== undefined &&
         !(Option.isSome(delegationReceipt) && delegationReceipt.value.status === "accepted")
       ) {
-        const providers = yield* providerRegistry.getPublishedProviders;
+        const providers = yield* providerRegistry.getProviders;
         const provider = providers.find(
           (candidate) => candidate.instanceId === input.modelSelection.instanceId,
-        );
-        const settings = yield* serverSettings.getSettings.pipe(
-          Effect.mapError(mapError(input, "create-thread")),
         );
         const constraints =
           provider === undefined
             ? ["Provider instance is not registered."]
-            : delegationProviderConstraints(provider, true, {
-                providers,
-                settings,
-                projectId: input.projectId,
-                nowMs: yield* Clock.currentTimeMillis,
-              });
+            : delegationProviderConstraints(provider, true, yield* Clock.currentTimeMillis);
         if (constraints.length > 0)
           return yield* mapError(input, "create-thread")(constraints.join(" "));
       }

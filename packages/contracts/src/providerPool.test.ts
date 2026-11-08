@@ -5,11 +5,8 @@ import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
   findProviderPool,
   isReservedProviderInstanceId,
-  ProviderPoolSettings,
   providerLimitedUntilMs,
   providerPoolDriver,
-  providerPoolInstanceId,
-  resolveActiveProviderPools,
 } from "./providerPool.ts";
 import { ServerProvider } from "./server.ts";
 
@@ -18,7 +15,6 @@ const codex = ProviderDriverKind.make("codex");
 const id = ProviderInstanceId.make;
 
 const decodeProvider = Schema.decodeUnknownSync(ServerProvider);
-const decodePoolSettings = Schema.decodeUnknownSync(ProviderPoolSettings);
 const provider = (instanceId: string, driver: ProviderDriverKind, extra: object = {}) =>
   decodeProvider({
     instanceId,
@@ -35,8 +31,7 @@ const provider = (instanceId: string, driver: ProviderDriverKind, extra: object 
 
 describe("pool instance ids", () => {
   it("round-trips a driver through its pool id", () => {
-    expect(providerPoolInstanceId(claude)).toBe("pool_claudeAgent");
-    expect(providerPoolDriver(providerPoolInstanceId(claude))).toBe(claude);
+    expect(providerPoolDriver(id("pool_claudeAgent"))).toBe(claude);
   });
 
   it("finds no driver in an ordinary instance id", () => {
@@ -49,78 +44,6 @@ describe("pool instance ids", () => {
     expect(isReservedProviderInstanceId("pool_")).toBe(true);
     expect(isReservedProviderInstanceId("codex_pool")).toBe(false);
     expect(isReservedProviderInstanceId("pooled")).toBe(false);
-  });
-});
-
-describe("resolveActiveProviderPools", () => {
-  const instances = [
-    { instanceId: id("claudeAgent"), driver: claude, enabled: true },
-    { instanceId: id("claudeAgent_icloud"), driver: claude, enabled: true },
-    { instanceId: id("claudeAgent_off"), driver: claude, enabled: false },
-    { instanceId: id("codex"), driver: codex, enabled: true },
-    { instanceId: id("codex_2"), driver: codex, enabled: true },
-  ];
-  const resolve = (providerPools: unknown) =>
-    resolveActiveProviderPools({
-      providerPools: decodePoolSettings(providerPools),
-      instances,
-    });
-
-  it("activates a pool of two enabled same-driver members, in pool order", () => {
-    expect(
-      resolve({ claudeAgent: { memberInstanceIds: ["claudeAgent_icloud", "claudeAgent"] } }),
-    ).toEqual([
-      {
-        driver: claude,
-        instanceId: "pool_claudeAgent",
-        memberInstanceIds: ["claudeAgent_icloud", "claudeAgent"],
-      },
-    ]);
-  });
-
-  it("ignores unknown, wrong-driver, and repeated members", () => {
-    expect(
-      resolve({
-        claudeAgent: {
-          memberInstanceIds: [
-            "claudeAgent",
-            "claudeAgent_off",
-            "claudeAgent_removed",
-            "codex",
-            "claudeAgent",
-            "claudeAgent_icloud",
-          ],
-        },
-      }),
-    ).toEqual([
-      {
-        driver: claude,
-        instanceId: "pool_claudeAgent",
-        memberInstanceIds: ["claudeAgent", "claudeAgent_off", "claudeAgent_icloud"],
-      },
-    ]);
-  });
-
-  it("retains a configured pool when accounts are disabled or removed", () => {
-    expect(
-      resolve({ claudeAgent: { memberInstanceIds: ["claudeAgent", "claudeAgent_off"] } }),
-    ).toEqual([
-      {
-        driver: claude,
-        instanceId: "pool_claudeAgent",
-        memberInstanceIds: ["claudeAgent", "claudeAgent_off"],
-      },
-    ]);
-    expect(resolve({ codex: { memberInstanceIds: ["codex", "removed"] } })).toEqual([
-      { driver: codex, instanceId: "pool_codex", memberInstanceIds: ["codex"] },
-    ]);
-    expect(resolve({ codex: { memberInstanceIds: ["removed"] } })).toEqual([]);
-  });
-
-  it("leaves a turned-off pool inactive", () => {
-    expect(resolve({ codex: { enabled: false, memberInstanceIds: ["codex", "codex_2"] } })).toEqual(
-      [],
-    );
   });
 });
 
@@ -180,24 +103,5 @@ describe("ServerProvider.pool", () => {
     const decoded = provider("claudeAgent", claude, { pool: { role: "weighted", weight: 2 } });
     expect(decoded.instanceId).toBe("claudeAgent");
     expect(decoded.pool).toBeUndefined();
-  });
-});
-
-describe("poolable drivers", () => {
-  it("ignores a pool configured for a driver whose instances are not accounts of one service", () => {
-    const acp = ProviderDriverKind.make("acpRegistry");
-    const pools = resolveActiveProviderPools({
-      providerPools: decodePoolSettings({
-        acpRegistry: { enabled: true, memberInstanceIds: ["acpRegistry_a", "acpRegistry_b"] },
-        claudeAgent: { enabled: true, memberInstanceIds: ["claudeAgent", "claudeAgent_b"] },
-      }),
-      instances: [
-        provider("acpRegistry_a", acp),
-        provider("acpRegistry_b", acp),
-        provider("claudeAgent", claude),
-        provider("claudeAgent_b", claude),
-      ],
-    });
-    expect(pools.map((pool) => pool.driver)).toEqual([claude]);
   });
 });

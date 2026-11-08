@@ -14,7 +14,7 @@ import { isProviderSettingsEnvironmentAvailable } from "./ProviderSettingsPanel.
 import {
   filterAvailableSettingsSearchItems,
   getThreadAutoSettlementSearchAvailability,
-  hasProviderPoolsEnvironment,
+  hasInferenceProxyEnvironment,
 } from "./settingsSearch";
 
 export function useAvailableSettingsSearchItems() {
@@ -31,7 +31,7 @@ export function useAvailableSettingsSearchItems() {
     ) === true;
   const hasThreadAutoSettlement =
     getThreadAutoSettlementSearchAvailability(environments).eligibleEnvironmentIds.length > 0;
-  const hasProviderPools = hasProviderPoolsEnvironment(environments);
+  const hasInferenceProxy = hasInferenceProxyEnvironment(environments);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const canMaintain = useEnvironmentScope(primaryEnvironmentId, AuthEnvironmentMaintainScope);
   const hasPeerLinkHost = usePeerLinkHosts().length > 0;
@@ -57,7 +57,7 @@ export function useAvailableSettingsSearchItems() {
     canManageLocalBackend,
     isWslSettingsRowVisible: wslSettingsRowVisible,
     hasThreadAutoSettlement,
-    hasProviderPools,
+    hasInferenceProxy,
     managedTunnelActive,
     hasPeerLinkHost,
   });
