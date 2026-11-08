@@ -13,6 +13,7 @@ import {
 } from "@t3tools/provider-core/server/homeOverlay";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { parseSkillFrontmatter } from "@t3tools/shared/skillFrontmatter";
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -26,6 +27,7 @@ import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ServerConfig from "../config.ts";
 
 const CODEX_DEFAULTS = Schema.decodeSync(CodexSettings)({});
 const CLAUDE = ProviderDriverKind.make("claudeAgent");
@@ -83,6 +85,7 @@ type PendingRestore =
     };
 
 interface RootScan {
+  readonly active: boolean;
   readonly root: HarnessSkillRoot;
   readonly directory: string;
   readonly skills: ReadonlyArray<string>;
@@ -112,7 +115,7 @@ export class SkillsLibrary extends Context.Service<
     readonly apply: Effect.Effect<void, SkillsLibraryError>;
     /** Turns each link into the library back into a real folder. */
     readonly detach: Effect.Effect<void, SkillsLibraryError>;
-    /** Finishes copies a detach left staged, without detaching anything else. */
+    /** Finishes an interrupted detach, including recorded homes no longer configured. */
     readonly finishDetach: Effect.Effect<void, SkillsLibraryError>;
     /** Applies or detaches to match `skillsLibraryEnabled`, then reports status. */
     readonly refresh: Effect.Effect<SkillsLibraryStatus, SkillsLibraryError>;
@@ -127,6 +130,13 @@ export const make = Effect.gen(function* () {
   const home = yield* HostProcess.HomeDirectory;
   const environment = yield* HostProcess.Environment;
   const lock = yield* Semaphore.make(1);
+  const { stateDir } = yield* ServerConfig.ServerConfig;
+  const rootsPath = path.join(stateDir, "skills-library-roots.json");
+  const rootsSchema = Schema.fromJsonString(
+    Schema.Array(Schema.Struct({ driver: ProviderDriverKind, directory: Schema.NonEmptyString })),
+  );
+  const decodeRoots = Schema.decodeUnknownEffect(rootsSchema);
+  const encodeRoots = Schema.encodeEffect(rootsSchema);
 
   const fail = (operation: SkillsLibraryError["operation"], filePath: string) => (cause: unknown) =>
     new SkillsLibraryError({ operation, path: filePath, cause });
@@ -216,24 +226,84 @@ export const make = Effect.gen(function* () {
     return (yield* exists(path.join(entryPath, "SKILL.md"))) ? "skill" : "other";
   });
 
-  const resolveRoots = Effect.fn("SkillsLibrary.resolveRoots")(function* () {
+  const readRoots = Effect.fn("SkillsLibrary.readRoots")(function* () {
+    const contents = yield* fileSystem.readFileString(rootsPath).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.succeed("[]"),
+      ),
+      Effect.flatMap(decodeRoots),
+      Effect.mapError(fail("scan", rootsPath)),
+    );
+    const roots: Array<{ readonly root: HarnessSkillRoot; readonly directory: string }> = [];
+    for (const entry of contents) {
+      if (!path.isAbsolute(entry.directory)) {
+        return yield* fail("scan", rootsPath)("A recorded skill root must be absolute.");
+      }
+      const root = HARNESS_SKILL_ROOTS.find((root) => root.driver === entry.driver);
+      if (root !== undefined) roots.push({ root, directory: entry.directory });
+    }
+    return roots;
+  });
+
+  const writeRoots = Effect.fn("SkillsLibrary.writeRoots")(function* (
+    roots: ReadonlyArray<{ readonly root: HarnessSkillRoot; readonly directory: string }>,
+  ) {
+    const entries = new Map<
+      string,
+      { readonly driver: ProviderDriverKind; readonly directory: string }
+    >();
+    for (const { root, directory } of roots) {
+      const real = yield* realPath(directory);
+      entries.set(real, { driver: root.driver, directory: real });
+    }
+    if (entries.size === 0) {
+      return yield* fileSystem
+        .remove(rootsPath, { force: true })
+        .pipe(Effect.mapError(fail("detach", rootsPath)));
+    }
+    const contents = yield* encodeRoots([...entries.values()]).pipe(
+      Effect.map((contents) => `${contents}\n`),
+      Effect.mapError(fail("apply", rootsPath)),
+    );
+    const previous = yield* fileSystem.readFileString(rootsPath).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.void,
+      ),
+      Effect.mapError(fail("scan", rootsPath)),
+    );
+    if (previous !== contents) {
+      yield* writeFileStringAtomically({ filePath: rootsPath, contents }).pipe(
+        Effect.mapError(fail("apply", rootsPath)),
+      );
+    }
+  });
+
+  const resolveRoots = Effect.fn("SkillsLibrary.resolveRoots")(function* (includeRecorded = false) {
     const libraryPath = path.join(home, ".agents", "skills");
     const libraryReal = yield* realPath(libraryPath);
     const instances = (yield* registry.listInstances).filter((instance) => instance.enabled);
     const configuredDrivers = new Set(instances.map((instance) => instance.driverKind));
-    const roots: Array<{ readonly root: HarnessSkillRoot; readonly directory: string }> = [];
+    const roots: Array<{
+      readonly root: HarnessSkillRoot;
+      readonly directory: string;
+      readonly active: boolean;
+    }> = [];
     for (const root of HARNESS_SKILL_ROOTS) {
       const harnessHome = yield* root.home(environment, home);
       if (!configuredDrivers.has(root.driver) && !(yield* exists(harnessHome))) continue;
       const directory = path.join(harnessHome, "skills");
-      roots.push({ root, directory });
+      roots.push({ root, directory, active: true });
     }
     for (const instance of instances) {
       const root = HARNESS_SKILL_ROOTS.find((root) => root.driver === instance.driverKind);
       if (root !== undefined && instance.sharedSkillsDirectory !== undefined) {
-        roots.push({ root, directory: instance.sharedSkillsDirectory });
+        roots.push({ root, directory: instance.sharedSkillsDirectory, active: true });
       }
     }
+    if (includeRecorded)
+      roots.push(...(yield* readRoots()).map((root) => ({ ...root, active: false })));
     const unique = new Map<string, (typeof roots)[number]>();
     for (const candidate of roots) {
       const real = yield* realPath(candidate.directory);
@@ -266,12 +336,14 @@ export const make = Effect.gen(function* () {
   });
 
   const scan = Effect.fn("SkillsLibrary.scan")(function* () {
-    const { libraryPath, roots } = yield* resolveRoots();
+    const { libraryPath, roots } = yield* resolveRoots(true);
     const conflicts: Array<SkillsLibraryStatus["conflicts"][number]> = [];
     const conflicted = new Set<string>();
-    const conflict = (entry: SkillsLibraryStatus["conflicts"][number]) => {
-      if (conflicted.has(fold(entry.name))) return;
-      conflicted.add(fold(entry.name));
+    const reported = new Set<string>();
+    const conflict = (entry: SkillsLibraryStatus["conflicts"][number], blocks = true) => {
+      if (blocks) conflicted.add(fold(entry.name));
+      if (reported.has(fold(entry.name))) return;
+      reported.add(fold(entry.name));
       conflicts.push(entry);
     };
 
@@ -279,7 +351,7 @@ export const make = Effect.gen(function* () {
       exists(path.join(libraryPath, name, "SKILL.md")),
     );
     const rootScans: Array<RootScan> = [];
-    for (const { root, directory } of roots) {
+    for (const { root, directory, active } of roots) {
       const names = yield* readNames(directory);
       const kinds = yield* Effect.forEach(visible(names, root.private), (name) =>
         entryKind(directory, name, libraryPath).pipe(Effect.map((kind) => ({ name, kind }))),
@@ -288,9 +360,11 @@ export const make = Effect.gen(function* () {
         kinds.filter((entry) => entry.kind === kind).map((entry) => entry.name);
       const restores = yield* pendingRestores(directory, names);
       for (const restore of restores) {
-        if (restore.finish === "conflict") conflict({ name: restore.name, paths: restore.paths });
+        if (restore.finish === "conflict")
+          conflict({ name: restore.name, paths: restore.paths }, active);
       }
       rootScans.push({
+        active,
         root,
         directory,
         skills: named("skill"),
@@ -302,7 +376,7 @@ export const make = Effect.gen(function* () {
 
     const copies = new Map<string, Array<string>>();
     for (const name of librarySkills) copies.set(name, [path.join(libraryPath, name)]);
-    for (const rootScan of rootScans) {
+    for (const rootScan of rootScans.filter((root) => root.active)) {
       for (const name of rootScan.skills) {
         copies.set(name, [...(copies.get(name) ?? []), path.join(rootScan.directory, name)]);
       }
@@ -329,7 +403,7 @@ export const make = Effect.gen(function* () {
         if (link !== undefined) conflict({ name, paths: [copy, link], reason: "outsideLink" });
       }
     }
-    for (const rootScan of rootScans) {
+    for (const rootScan of rootScans.filter((root) => root.active)) {
       for (const name of rootScan.otherLinks) {
         const first = groups.get(fold(name))?.[0];
         if (first !== undefined) {
@@ -337,7 +411,7 @@ export const make = Effect.gen(function* () {
         }
       }
     }
-    for (const rootScan of rootScans) {
+    for (const rootScan of rootScans.filter((root) => root.active)) {
       for (const name of rootScan.skills) {
         const parked = discardPath(path, path.join(rootScan.directory, name));
         const first = groups.get(fold(name))?.[0];
@@ -388,10 +462,16 @@ export const make = Effect.gen(function* () {
 
   const apply = Effect.fn("SkillsLibrary.apply")(function* () {
     const current = yield* scan();
+    const remembered = current.roots.filter((root) => root.active);
+    for (const root of current.roots) {
+      if (!root.active && (yield* restore(current.libraryPath, root))) remembered.push(root);
+    }
+    // Persist ownership before linking so a restart or account edit cannot hide the way out.
+    yield* writeRoots(remembered);
     const linkable = [...current.copies.keys()].filter(
       (name) => !current.conflicted.has(fold(name)),
     );
-    for (const rootScan of current.roots) {
+    for (const rootScan of current.roots.filter((root) => root.active)) {
       // A skill deleted from the library leaves its links dangling; remove them with it.
       for (const name of rootScan.linked.filter((linked) => !current.copies.has(linked))) {
         const linkPath = path.join(rootScan.directory, name);
@@ -434,6 +514,7 @@ export const make = Effect.gen(function* () {
     rootScan: RootScan,
   ) {
     const { directory } = rootScan;
+    let unresolved = rootScan.pendingRestores.some((restore) => restore.finish === "conflict");
     yield* finishRestores(directory, rootScan.pendingRestores);
     for (const name of rootScan.linked) {
       const linkPath = path.join(directory, name);
@@ -441,7 +522,10 @@ export const make = Effect.gen(function* () {
       if (!rootScan.root.readsLibrary && (yield* exists(target))) {
         const stagedPath = path.join(directory, `.${name}${RESTORE_SUFFIX}`);
         // Left in place only when scan reported it as the user's; never copy over it.
-        if (yield* present(stagedPath)) continue;
+        if (yield* present(stagedPath)) {
+          unresolved = true;
+          continue;
+        }
         yield* fileSystem.copy(target, stagedPath).pipe(Effect.mapError(fail("detach", target)));
         yield* io("detach", linkPath, () => NodeFSP.unlink(linkPath));
         yield* io("detach", stagedPath, () => NodeFSP.rename(stagedPath, linkPath));
@@ -449,16 +533,20 @@ export const make = Effect.gen(function* () {
         yield* io("detach", linkPath, () => NodeFSP.unlink(linkPath));
       }
     }
+    return unresolved;
   });
 
   const detach = Effect.fn("SkillsLibrary.detach")(function* () {
     const current = yield* scan();
+    const remaining: RootScan[] = [];
     for (const rootScan of current.roots) {
-      yield* restore(current.libraryPath, rootScan);
+      if (yield* restore(current.libraryPath, rootScan)) remaining.push(rootScan);
     }
+    yield* writeRoots(remaining);
   });
 
   const finishDetach = Effect.fn("SkillsLibrary.finishDetach")(function* () {
+    if (yield* exists(rootsPath)) return yield* detach();
     for (const { directory } of (yield* resolveRoots()).roots) {
       yield* finishRestores(
         directory,
@@ -539,9 +627,9 @@ export const layer = Layer.effect(
       Stream.runForEach(() =>
         Effect.gen(function* () {
           const current = instanceRoots(yield* registry.listInstances);
-          const created = [...current].some((id) => !known.has(id));
+          const changed = current.size !== known.size || [...current].some((id) => !known.has(id));
           known = current;
-          if (created && enabled) yield* library.apply.pipe(logFailure);
+          if (changed && enabled) yield* library.apply.pipe(logFailure);
         }),
       ),
       Effect.forkScoped,

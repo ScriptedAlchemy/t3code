@@ -15,6 +15,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import { discoverAntigravitySkills } from "../provider/Drivers/AntigravitySkills.ts";
 import { prepareAntigravityProfile } from "../provider/antigravityAuthSupport.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ServerConfig from "../config.ts";
 import * as SkillsLibrary from "./SkillsLibrary.ts";
 
 const setup = Effect.fn("SkillsLibrary.test.setup")(function* (
@@ -29,36 +30,39 @@ const setup = Effect.fn("SkillsLibrary.test.setup")(function* (
   const library = path.join(home, ".agents", "skills");
   yield* fs.makeDirectory(claude, { recursive: true });
   yield* fs.makeDirectory(codex, { recursive: true });
-  const service = yield* SkillsLibrary.make.pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        ServerSettings.ServerSettingsService.layerTest(),
-        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-          listInstances: Effect.succeed(
-            drivers.map((driverKind) => ({
-              instanceId: ProviderInstanceId.make(driverKind),
-              driverKind,
-              enabled: configuredRoot?.enabled ?? true,
-              ...(configuredRoot ? { sharedSkillsDirectory: configuredRoot.directory } : {}),
-              displayName: undefined,
-              continuationIdentity: { driverKind, continuationKey: driverKind },
-              get orchestrationAdapter(): never {
-                throw new Error("Sharing skills must not start a provider session.");
-              },
-              get snapshot(): never {
-                throw new Error("Sharing skills must not probe a provider.");
-              },
-              get textGeneration(): never {
-                throw new Error("Sharing skills must not generate text.");
-              },
-            })),
-          ),
-        }),
+  const reopen = (root: typeof configuredRoot, stateHome = path.join(home, "environment")) =>
+    SkillsLibrary.make.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ServerSettings.ServerSettingsService.layerTest(),
+          ServerConfig.layerTest(home, stateHome),
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            listInstances: Effect.succeed(
+              drivers.map((driverKind) => ({
+                instanceId: ProviderInstanceId.make(driverKind),
+                driverKind,
+                enabled: root?.enabled ?? true,
+                ...(root ? { sharedSkillsDirectory: root.directory } : {}),
+                displayName: undefined,
+                continuationIdentity: { driverKind, continuationKey: driverKind },
+                get orchestrationAdapter(): never {
+                  throw new Error("Sharing skills must not start a provider session.");
+                },
+                get snapshot(): never {
+                  throw new Error("Sharing skills must not probe a provider.");
+                },
+                get textGeneration(): never {
+                  throw new Error("Sharing skills must not generate text.");
+                },
+              })),
+            ),
+          }),
+        ),
       ),
-    ),
-    Effect.provideService(HostProcess.HomeDirectory, home),
-    Effect.provideService(HostProcess.Environment, { HOME: home }),
-  );
+      Effect.provideService(HostProcess.HomeDirectory, home),
+      Effect.provideService(HostProcess.Environment, { HOME: home }),
+    );
+  const service = yield* reopen(configuredRoot);
   const skill = (root: string, name: string, body: string, frontmatterName = name) =>
     fs
       .makeDirectory(path.join(root, name), { recursive: true })
@@ -73,7 +77,7 @@ const setup = Effect.fn("SkillsLibrary.test.setup")(function* (
   const read = (root: string, name: string) => fs.readFileString(path.join(root, name, "SKILL.md"));
   const link = (root: string, name: string) =>
     fs.readLink(path.join(root, name)).pipe(Effect.orElseSucceed(() => undefined));
-  return { fs, path, home, claude, codex, library, service, skill, read, link };
+  return { fs, path, home, claude, codex, library, service, reopen, skill, read, link };
 });
 
 /** Every entry under `root`, links not followed, with what a write would change. */
@@ -403,6 +407,91 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
 
   describe("detach", () => {
     it.effect.skipIf(!symlinksSupported)(
+      "does not use another environment's ownership journal at startup",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const profiles = yield* fs.makeTempDirectoryScoped({ prefix: "t3-isolated-skills-" });
+          const directory = path.join(profiles, "skills");
+          const { service, reopen, home, claude, library, skill, link } = yield* setup(
+            [ProviderDriverKind.make("claudeAgent")],
+            { directory, enabled: true },
+          );
+          yield* skill(library, "shared", "shared instructions");
+          yield* service.apply;
+          const otherEnvironment = yield* reopen(undefined, path.join(home, "other-environment"));
+          yield* otherEnvironment.finishDetach;
+          expect(yield* link(directory, "shared")).toBe(path.join(library, "shared"));
+          expect(yield* link(claude, "shared")).toBe(path.join(library, "shared"));
+          yield* (yield* reopen(undefined)).finishDetach;
+          expect(yield* link(directory, "shared")).toBeUndefined();
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "restores former configured homes after reassignment and restart",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const profiles = yield* fs.makeTempDirectoryScoped({ prefix: "t3-old-skills-" });
+          const directory = path.join(profiles, "old", "skills");
+          const replacement = path.join(profiles, "new", "skills");
+          const { service, reopen, library, skill, read, link } = yield* setup(
+            [ProviderDriverKind.make("claudeAgent")],
+            { directory, enabled: true },
+          );
+          yield* skill(library, "shared", "shared instructions");
+          yield* service.apply;
+          const changed = yield* reopen({ directory: replacement, enabled: true });
+          yield* changed.apply;
+          expect(yield* link(directory, "shared")).toBeUndefined();
+          expect(yield* read(directory, "shared")).toContain("shared instructions");
+          yield* skill(directory, "shared", "edited outside the library");
+          expect((yield* changed.status).conflicts).toEqual([]);
+          expect(yield* link(replacement, "shared")).toBe(path.join(library, "shared"));
+          yield* skill(replacement, ".shared.t3-restore", "unrelated staged folder");
+          const restartedWithoutProfile = yield* reopen(undefined);
+          yield* restartedWithoutProfile.finishDetach;
+          expect(yield* link(replacement, "shared")).toBe(path.join(library, "shared"));
+          expect(yield* read(replacement, ".shared.t3-restore")).toContain(
+            "unrelated staged folder",
+          );
+          yield* fs.remove(path.join(replacement, ".shared.t3-restore"), { recursive: true });
+          yield* (yield* reopen(undefined)).finishDetach;
+          expect(yield* link(replacement, "shared")).toBeUndefined();
+          expect(yield* read(replacement, "shared")).toContain("shared instructions");
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "leaves a missing or reassigned former root alone during cleanup",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const profiles = yield* fs.makeTempDirectoryScoped({ prefix: "t3-missing-skills-" });
+          const directory = path.join(profiles, "skills");
+          const { service, reopen, library, skill } = yield* setup(
+            [ProviderDriverKind.make("claudeAgent")],
+            { directory, enabled: true },
+          );
+          yield* skill(library, "shared", "shared instructions");
+          yield* service.apply;
+          yield* fs.remove(directory, { recursive: true });
+          yield* (yield* reopen(undefined)).detach;
+          expect(yield* fs.exists(directory)).toBe(false);
+          yield* service.apply;
+          yield* fs.remove(directory, { recursive: true });
+          yield* skill(directory, "shared", "new owner");
+          const before = yield* snapshot(profiles);
+          yield* (yield* reopen(undefined)).detach;
+          expect(yield* snapshot(profiles)).toEqual(before);
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
       "restores real folders and removes only links into the library",
       () =>
         Effect.gen(function* () {
@@ -483,6 +572,7 @@ it.layer(NodeServices.layer)("SkillsLibrary", (it) => {
             Effect.provide(
               Layer.mergeAll(
                 ServerSettings.ServerSettingsService.layerTest(),
+                ServerConfig.layerTest(home, path.join(home, "environment")),
                 Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
                   listInstances: Effect.succeed([]),
                   subscribeChanges: PubSub.unbounded<void>().pipe(Effect.flatMap(PubSub.subscribe)),

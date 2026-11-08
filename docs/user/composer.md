@@ -351,8 +351,9 @@ only in case, and for a skill folder that links to a file outside itself, since 
 would break the link. A skill you add to `~/.agents/skills` by hand
 reaches Claude at the next refresh, server start, or new account.
 
-Turning it off copies each linked skill back into Claude's and Antigravity's folders and
-removes the links. Codex keeps reading `~/.agents/skills` directly. Each environment has
+At the next refresh, T3 restores library links in configured homes that are no longer shared.
+Homes still used by another account or the default profile stay shared. Turning the library off copies each linked skill back into
+Claude's and Antigravity's folders and removes the links, including previously used homes. Codex keeps reading `~/.agents/skills` directly. Each environment has
 its own library, so turn it on for every machine you want it on.
 
 Provider commands must start the message to run. T3 Code commands such as
