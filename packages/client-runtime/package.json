@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./skills-library-issues": {
+      "types": "./src/skillsLibraryIssues.ts",
+      "default": "./src/skillsLibraryIssues.ts"
+    },
     "./modelEvaluations": {
       "types": "./src/modelEvaluations/index.ts",
       "default": "./src/modelEvaluations/index.ts"

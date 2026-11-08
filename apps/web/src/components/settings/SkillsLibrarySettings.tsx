@@ -1,5 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { skillsLibraryIssueSummary } from "@t3tools/client-runtime/skills-library-issues";
+import { SkillsLibraryIssuesDialog } from "./SkillsLibraryIssuesDialog";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { useEffect, useRef, useState } from "react";
 
@@ -31,7 +33,7 @@ export function SkillsLibraryRows() {
     >
       <SkillsLibraryRow
         environmentId={environment.environmentId}
-        label={supported.length > 1 ? environment.label : null}
+        label={environment.label}
         isSearchTarget={index === 0}
       />
     </SettingsScopeProvider>
@@ -58,6 +60,7 @@ function SkillsLibraryRow({
   );
   const refreshStatus = status.refresh;
   const [refreshing, setRefreshing] = useState(false);
+  const [showIssues, setShowIssues] = useState(false);
   const statusEnabled = useRef(enabled);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the server moves skill folders when the switch changes; re-read them
@@ -75,43 +78,29 @@ function SkillsLibraryRow({
   };
 
   const searchable = searchableSetting("skills-library");
-  const conflicts = status.data?.conflicts ?? [];
-  const mismatches = status.data?.nameMismatches ?? [];
+  const issueSummary = status.data ? skillsLibraryIssueSummary(status.data) : null;
   return (
     <SettingsRow
       serverScoped
       settingKeys={["skillsLibraryEnabled"]}
       {...(isSearchTarget ? { id: searchable.id } : {})}
       title={label ? `${searchable.title} on ${label}` : searchable.title}
-      description="Keeps your skills in ~/.agents/skills and links them into Claude's and Antigravity's skill folders, so every harness and every account sees the same set. Codex, Cursor, OpenCode and the others read that folder directly."
+      description="Share skills across providers and accounts on this environment. Turning it off restores separate skill folders."
       status={
-        conflicts.length > 0 || mismatches.length > 0 ? (
-          <ul className="space-y-1">
-            {conflicts.map((conflict) => (
-              <li key={conflict.name}>
-                <span className="font-medium text-foreground">{conflict.name}</span>{" "}
-                {conflict.reason === "outsideLink" ? (
-                  <>
-                    in {conflict.paths[0]} has a link outside the skill at {conflict.paths[1]},
-                    which moving it would break. Replace the link with the file to link it.
-                  </>
-                ) : (
-                  <>
-                    differs between {conflict.paths[0]} and {conflict.paths[1]}. Keep one copy to
-                    link it.
-                  </>
-                )}
-              </li>
-            ))}
-            {mismatches.map((mismatch) => (
-              <li key={mismatch.name}>
-                <span className="font-medium text-foreground">{mismatch.name}</span> is named "
-                {mismatch.frontmatterName}" in its SKILL.md. Some harnesses use the folder name,
-                others the frontmatter name.
-              </li>
-            ))}
-          </ul>
-        ) : null
+        <>
+          {issueSummary ? (
+            <Button size="xs" variant="outline" onClick={() => setShowIssues(true)}>
+              Review {issueSummary}
+            </Button>
+          ) : null}
+          {showIssues && status.data ? (
+            <SkillsLibraryIssuesDialog
+              status={status.data}
+              environmentLabel={label ?? "This environment"}
+              onClose={() => setShowIssues(false)}
+            />
+          ) : null}
+        </>
       }
       resetAction={
         enabled !== DEFAULT_UNIFIED_SETTINGS.skillsLibraryEnabled ? (
