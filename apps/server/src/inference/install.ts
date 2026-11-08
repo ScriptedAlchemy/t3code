@@ -65,7 +65,7 @@ const UpstreamRelease = Schema.Struct({
   ),
 });
 
-const decodeUpstream = Schema.decodeEffect(UpstreamRelease);
+const decodeUpstream = Schema.decodeUnknownEffect(UpstreamRelease);
 const decodeRelease = Schema.decodeEffect(Release);
 export const latestRelease = Effect.fn("InferenceProxy.latestRelease")(function* () {
   const platform = yield* HostProcess.Platform;

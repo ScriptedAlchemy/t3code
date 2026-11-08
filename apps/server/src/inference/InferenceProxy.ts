@@ -431,7 +431,7 @@ const make = Effect.gen(function* () {
         return { ...identity, baseUrl: runtime.baseUrl, key: runtime.key };
       if (sharingDenial) return yield* failure(sharingDenial);
       if (!state.sharing) return yield* failure("Enable sharing on the inference host first.");
-      const [baseUrl, ...alternates] = yield* sharingUrls;
+      const [baseUrl, ...alternates] = (yield* sharingUrls).slice(0, 33);
       const existing = state.grants.find((g) => g.environmentId === consumer.environmentId);
       const key = existing?.key ?? (yield* newKey);
       if (!existing || existing.label !== consumer.label)
@@ -504,7 +504,7 @@ const make = Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make(
         `inference_${driver}_${Buffer.from(hash).toString("hex").slice(0, 16)}`,
       );
-      const home = path.join(config.stateDir, "providers", "inference", driver);
+      const home = path.join(config.stateDir, "providers", "inference", instanceId);
       yield* fs.makeDirectory(home, { recursive: true, mode: 0o700 });
       const instance = routeProvider(driver, baseUrl, grant.key, hostLabel, models, home);
       yield* settings.updateProviderInstance(

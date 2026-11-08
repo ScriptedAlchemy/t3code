@@ -1,3 +1,4 @@
+import { inferenceRouteIssue } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { InferenceDriver, InferenceProxyAction } from "@t3tools/contracts";
@@ -20,6 +21,10 @@ const labels = { codex: "Codex", claudeAgent: "Claude" };
 function Route({ host, consumer }: { host: EnvironmentPresentation; consumer: SettingsTarget }) {
   const grant = useAtomValue(inferenceProxy.canGrant(host.environmentId));
   const connect = useAtomValue(inferenceProxy.canConnect(consumer.environmentId));
+  const status = useEnvironmentQuery(
+    inferenceProxy.inferenceStatus({ environmentId: host.environmentId, input: {} }),
+  );
+  const issue = inferenceRouteIssue(status.data, host.environmentId === consumer.environmentId);
   const route = useAtomCommand(inferenceProxy.routeInference, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -39,7 +44,8 @@ function Route({ host, consumer }: { host: EnvironmentPresentation; consumer: Se
         <ListActionRow
           key={driver}
           label={`Route ${labels[driver]} through ${host.label}`}
-          disabled={busy || !grant || !connect}
+          description={issue ?? undefined}
+          disabled={busy || !grant || !connect || !!issue}
           onPress={() => void add(driver)}
         />
       ))}

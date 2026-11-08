@@ -1,3 +1,4 @@
+import { inferenceRouteIssue } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -28,6 +29,10 @@ function InferenceRoute({
 }) {
   const canGrant = useAtomValue(inferenceProxy.canGrant(host.environmentId));
   const canConnect = useAtomValue(inferenceProxy.canConnect(consumer.environmentId));
+  const status = useEnvironmentQuery(
+    inferenceProxy.inferenceStatus({ environmentId: host.environmentId, input: {} }),
+  );
+  const issue = inferenceRouteIssue(status.data, host.environmentId === consumer.environmentId);
   const route = useAtomCommand(inferenceProxy.routeInference, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -46,9 +51,10 @@ function InferenceRoute({
     <SettingsRow
       title={host.label}
       description={
-        host.environmentId === consumer.environmentId
+        issue ??
+        (host.environmentId === consumer.environmentId
           ? "Use accounts on this environment."
-          : "Use this host’s accounts over Tailscale or your trusted LAN."
+          : "Use this host’s accounts over Tailscale or your trusted LAN.")
       }
       status={notice || undefined}
       control={
@@ -58,7 +64,7 @@ function InferenceRoute({
               key={driver}
               size="sm"
               variant="outline"
-              disabled={!canGrant || !canConnect || busy}
+              disabled={!canGrant || !canConnect || busy || !!issue}
               onClick={() => void add(driver)}
             >
               {labels[driver]}

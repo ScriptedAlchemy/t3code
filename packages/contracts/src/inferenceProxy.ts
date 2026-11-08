@@ -29,6 +29,15 @@ export const InferenceProxyStatus = Schema.Struct({
 });
 export type InferenceProxyStatus = typeof InferenceProxyStatus.Type;
 
+export function inferenceRouteIssue(host: InferenceProxyStatus | null, local: boolean) {
+  if (!host) return "Host status unavailable.";
+  if (!host.enabled) return "Enable inference hosting on this environment first.";
+  if (!host.running) return host.problem ?? "The inference host is stopped.";
+  if (!local && !host.sharing) return "Enable sharing on the host first.";
+  if (!host.accounts.length) return "Add a provider account on the host first.";
+  return null;
+}
+
 export const InferenceProxyAction = Schema.Union([
   Schema.Struct({ operation: Schema.Literals(["checkUpdate", "update"]) }),
   Schema.Struct({
