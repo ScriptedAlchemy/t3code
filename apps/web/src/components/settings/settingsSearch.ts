@@ -730,15 +730,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["zack lauren tan skills workflows plugin pack architect setup models"],
   },
   {
-    id: "group-conversations",
-    title: "Group conversations",
-    to: "/settings/labs",
-    scope: "environment",
-    searchTerms: [
-      "zack invite models multiple providers peers seats talk each other discuss roster @ chat together",
-    ],
-  },
-  {
     id: "composer-rich-text",
     title: "Rich text composer",
     to: "/settings/chat",
@@ -817,6 +808,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/labs",
     scope: "environment",
     searchTerms: ["zack codex native cli app vscode chatgpt export conversation search history"],
+  },
+  {
+    id: "group-conversations",
+    title: "Group conversations",
+    to: "/settings/labs",
+    scope: "environment",
+    searchTerms: [
+      "zack invite models multiple providers peers seats talk each other discuss roster @ chat together",
+    ],
   },
   {
     id: "start-from-origin",
