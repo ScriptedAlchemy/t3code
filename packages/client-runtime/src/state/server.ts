@@ -13,6 +13,7 @@ import {
   shouldRecommendDatabaseCompaction,
   WS_METHODS,
 } from "@t3tools/contracts";
+import { createInferenceProxyAtoms } from "./inferenceProxy.ts";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
@@ -1258,6 +1259,7 @@ export function createServerEnvironmentAtoms<R, E>(
   });
 
   return {
+    inferenceProxy: createInferenceProxyAtoms(runtime),
     configValueAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",

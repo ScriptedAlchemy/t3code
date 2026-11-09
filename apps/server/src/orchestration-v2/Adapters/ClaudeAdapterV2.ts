@@ -185,6 +185,7 @@ import { spawnClaudeProcess } from "../../provider/Drivers/ClaudeProcess.ts";
 import {
   claudeSignedOutMessage,
   claudeAccountSettings,
+  claudePrivateSettings,
   parseClaudeAccountDir,
   resolveClaudeHomePath,
   type ClaudeRuntime,
@@ -1162,6 +1163,10 @@ export const layerQueryRunner: Layer.Layer<
           // Jobs the agent starts inherit the thread, so port discovery can attribute their servers.
           const queryOptions = {
             ...sdkOptions,
+            settings:
+              typeof sdkOptions.settings === "string"
+                ? sdkOptions.settings
+                : claudePrivateSettings(sdkOptions.settings),
             env: {
               ...(sdkOptions.env ?? hostEnvironment),
               [PortScanner.AGENT_THREAD_ENV]: input.threadId,

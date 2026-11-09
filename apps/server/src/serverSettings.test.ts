@@ -135,70 +135,21 @@ function strictSecretReferencePaths(
 }
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings", (it) => {
-  it.effect("refuses a pool whose members are unknown, repeated, or on another driver", () =>
+  it.effect("rejects creation of legacy CLI account pools", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;
-      const claude = ProviderDriverKind.make("claudeAgent");
-      yield* service.updateProviderInstance({
-        operation: "create",
-        instanceId: ProviderInstanceId.make("claudeAgent_work"),
-        instance: { driver: claude, config: {} },
-      });
-      for (const members of [
-        ["claudeAgent", "claudeAgent_missing"],
-        ["claudeAgent", "claudeAgent"],
-        ["claudeAgent", "codex"],
-      ]) {
-        const result = yield* service
-          .updateSettings({
-            providerPools: {
-              [claude]: {
-                enabled: true,
-                memberInstanceIds: members.map((member) => ProviderInstanceId.make(member)),
-              },
+      const result = yield* service
+        .updateSettings({
+          providerPools: {
+            [ProviderDriverKind.make("codex")]: {
+              enabled: true,
+              memberInstanceIds: [ProviderInstanceId.make("codex")],
             },
-          })
-          .pipe(Effect.result);
-        assert.equal(result._tag, "Failure", members.join(","));
-        if (result._tag === "Failure") {
-          assert.equal(result.failure.operation, "validate-provider-pool");
-          assert.equal(result.failure.providerInstanceId, members[1]);
-        }
-      }
-      assert.deepEqual((yield* service.getSettings).providerPools, {});
-    }).pipe(Effect.provide(layerServerSettings())),
-  );
-
-  it.effect("pools a built-in default with a configured account and prunes a removed one", () =>
-    Effect.gen(function* () {
-      const service = yield* ServerSettingsModule.ServerSettingsService;
-      const claude = ProviderDriverKind.make("claudeAgent");
-      const work = ProviderInstanceId.make("claudeAgent_work");
-      yield* service.updateProviderInstance({
-        operation: "create",
-        instanceId: work,
-        instance: { driver: claude, config: {} },
-      });
-      const pooled = yield* service.updateSettings({
-        providerPools: {
-          [claude]: {
-            enabled: true,
-            memberInstanceIds: [ProviderInstanceId.make("claudeAgent"), work],
           },
-        },
-      });
-      assert.deepEqual(pooled.providerPools[claude]?.memberInstanceIds, [
-        ProviderInstanceId.make("claudeAgent"),
-        work,
-      ]);
-
-      const removed = yield* service.updateProviderInstance({
-        operation: "remove",
-        instanceId: work,
-      });
-      assert.deepEqual(removed.providerPools[claude]?.memberInstanceIds, [
-        ProviderInstanceId.make("claudeAgent"),
-      ]);
+        })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      assert.deepEqual((yield* service.getSettings).providerPools, {});
     }).pipe(Effect.provide(layerServerSettings())),
   );
 

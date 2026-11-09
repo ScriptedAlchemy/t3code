@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderInstanceId } from "@t3tools/contracts";
+import { providerProcessEnvironment } from "@t3tools/provider-core/server/providerTelemetry";
 import { totalTokens } from "@t3tools/provider-core/server/usage";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
@@ -215,11 +216,10 @@ describe("Muse history discovery", () => {
         ]);
         expect(create).toHaveBeenCalledWith({
           binaryPath: path.join("/test-home", "bin/custom-muse"),
-          environment: {
-            PATH: "/host/bin",
-            XDG_DATA_HOME: xdg ?? "/host/data",
-            MUSE_NO_AUTO_UPDATE: "1",
-          },
+          environment: providerProcessEnvironment(
+            { PATH: "/host/bin", XDG_DATA_HOME: xdg ?? "/host/data", MUSE_NO_AUTO_UPDATE: "1" },
+            yield* HostProcess.Platform,
+          ),
           readOnly: true,
           startupTimeoutMs: 5_000,
         });

@@ -40,59 +40,14 @@ export type ServerProviderPool = typeof ServerProviderPool.Type;
 
 const PROVIDER_POOL_ID_PREFIX = "pool_";
 
-export const providerPoolInstanceId = (driver: ProviderDriverKind): ProviderInstanceId =>
-  ProviderInstanceId.make(`${PROVIDER_POOL_ID_PREFIX}${driver}`);
-
 export const isReservedProviderInstanceId = (instanceId: string): boolean =>
   instanceId.startsWith(PROVIDER_POOL_ID_PREFIX);
 
-/**
- * Only drivers whose instances are accounts of one service pool. ACP registry
- * instances are different agents, and the other drivers' usage-limit and
- * handoff behavior has not been checked.
- */
-const POOLABLE_DRIVERS: ReadonlySet<ProviderDriverKind> = new Set([
-  ProviderDriverKind.make("claudeAgent"),
-  ProviderDriverKind.make("codex"),
-]);
-
-export const isPoolableDriver = (driver: ProviderDriverKind): boolean =>
-  POOLABLE_DRIVERS.has(driver);
-
-export const providerPoolDriver = (instanceId: ProviderInstanceId): ProviderDriverKind | null => {
+export const providerPoolDriver = (instanceId: string): ProviderDriverKind | null => {
   if (!isReservedProviderInstanceId(instanceId)) return null;
   const driver = instanceId.slice(PROVIDER_POOL_ID_PREFIX.length);
   return isProviderDriverKind(driver) ? driver : null;
 };
-
-export interface ActiveProviderPool {
-  readonly driver: ProviderDriverKind;
-  readonly instanceId: ProviderInstanceId;
-  readonly memberInstanceIds: ReadonlyArray<ProviderInstanceId>;
-}
-
-/**
- * Settings may name instances that were removed or never matched the driver;
- * those are ignored here rather than rejected, so a stale entry only shrinks
- * the pool.
- */
-export function resolveActiveProviderPools(input: {
-  readonly providerPools: ProviderPoolSettings;
-  readonly instances: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver" | "enabled">>;
-}): ReadonlyArray<ActiveProviderPool> {
-  return Object.entries(input.providerPools).flatMap(([key, config]) => {
-    const driver = ProviderDriverKind.make(key);
-    if (!config.enabled || !isPoolableDriver(driver)) return [];
-    const memberInstanceIds = [...new Set(config.memberInstanceIds)].filter((memberId) =>
-      input.instances.some(
-        (instance) => instance.instanceId === memberId && instance.driver === driver,
-      ),
-    );
-    return memberInstanceIds.length > 0
-      ? [{ driver, instanceId: providerPoolInstanceId(driver), memberInstanceIds }]
-      : [];
-  });
-}
 
 /** Finds the pool by its own id or by any member id. Members come in pool order. */
 export function findProviderPool(

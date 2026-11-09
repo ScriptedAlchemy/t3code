@@ -1,3 +1,4 @@
+import { inferenceModelSlugs } from "../../inference/routes.ts";
 import { CodexSettings, ProviderDriverKind, TextGenerationError } from "@t3tools/contracts";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Digest from "effect/crypto/Digest";
@@ -246,9 +247,13 @@ export const CodexDriver: ProviderDriver<
       : undefined;
     const withAccess = <A, E, R>(task: Effect.Effect<A, E, R>) =>
       auth?.withAccess ? auth.withAccess(task) : task;
+    const hostedModels = inferenceModelSlugs(config);
     const stampSnapshot = (draft: Parameters<typeof stampIdentity>[0]) =>
       stampIdentity({
         ...draft,
+        ...(hostedModels
+          ? { models: draft.models.filter((model) => hostedModels.has(model.slug)) }
+          : {}),
         ...(cliAccount
           ? {
               setup: {

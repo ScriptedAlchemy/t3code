@@ -144,7 +144,7 @@ export function musePermissionProfile(runtimeMode: RuntimeMode) {
 export function museServeArgs(
   options: Pick<MuseSdkHostOptions, "readOnly" | "sessionLogging" | "runtimeMode">,
 ) {
-  const args = ["serve"];
+  const args = ["serve", "-c", "telemetry.enabled=false"];
   if (options.readOnly) {
     args.push("--disable-shell", "--disable-write");
     if (options.sessionLogging !== true) args.push("--no-session-log");

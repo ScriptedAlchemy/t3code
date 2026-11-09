@@ -1,3 +1,4 @@
+import { codexTelemetryConfig } from "@t3tools/provider-core/server/providerTelemetry";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 
 const T3CODE_CODEX_LAUNCH_ARGS_ENV = "T3CODE_CODEX_LAUNCH_ARGS";
@@ -7,11 +8,19 @@ export const resolveCodexLaunchArgs = (
   environment: NodeJS.ProcessEnv = process.env,
 ) => environment[T3CODE_CODEX_LAUNCH_ARGS_ENV]?.trim() || launchArgs?.trim() || "";
 
+const codexTelemetryArgs = Object.entries(codexTelemetryConfig).flatMap(([group, settings]) =>
+  Object.entries(settings).flatMap(([key, value]) => [
+    "--config",
+    `${group}.${key}=${typeof value === "string" ? `"${value}"` : value}`,
+  ]),
+);
+
 const codexLaunchArgv = (launchArgs?: string): ReadonlyArray<string> => tokenizeCliArgs(launchArgs);
 
 export const codexAppServerArgs = (launchArgs?: string) => [
   "app-server",
   ...codexLaunchArgv(launchArgs),
+  ...codexTelemetryArgs,
 ];
 
 export const codexExecLaunchArgs = (launchArgs?: string) => {
@@ -35,5 +44,5 @@ export const codexExecLaunchArgs = (launchArgs?: string) => {
     }
   }
 
-  return execArgs;
+  return [...execArgs, ...codexTelemetryArgs];
 };

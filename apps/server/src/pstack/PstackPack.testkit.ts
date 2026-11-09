@@ -76,7 +76,7 @@ export const makeFixture = Effect.fn("PstackPackTest.makeFixture")(function* (
         ServerConfig.layerTest(root, root),
         settingsLayer,
         Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getPublishedProviders: Effect.succeed(providers),
+          getProviders: Effect.succeed(providers),
         }),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed(providers.map((provider) => provider.instanceId)),

@@ -52,6 +52,7 @@ interface FakeCodexInput {
   forbidReasoningEffort?: boolean;
   requireArg?: string;
   forbidArg?: string;
+  disabledFeatures?: ReadonlyArray<string>;
   stdinMustContain?: string;
   stdinMustNotContain?: string;
   mcpServers?: ReadonlyArray<{ name: string; enabled: boolean }> | number;
@@ -67,6 +68,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
     forbidReasoningEffort: input.forbidReasoningEffort ?? false,
     requireArg: input.requireArg ?? null,
     forbidArg: input.forbidArg ?? null,
+    disabledFeatures: input.disabledFeatures ?? [],
     stdinMustContain: input.stdinMustContain ?? null,
     stdinMustNotContain: input.stdinMustNotContain ?? null,
     mcpServers: input.mcpServers ?? [],
@@ -120,6 +122,10 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         "    index += 1;",
         "    outputPath = args[index] ?? null;",
         "  }",
+        "}",
+        "for (const name of check.disabledFeatures) {",
+        '  const last = args.filter(arg => arg.startsWith("features." + name + "=")).at(-1);',
+        '  if (last !== "features." + name + "=false") fail("feature not disabled: " + name, 8);',
         "}",
         "const chunks = [];",
         "for await (const chunk of process.stdin) chunks.push(chunk);",
@@ -447,8 +453,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
       {
         output: JSON.stringify({ title: "Remove default shapes" }),
         launchArgs: "--config features.plugins=true --config features.apps=true",
-        requireArg:
-          "--config features.plugins=true --config features.apps=true --config features.plugins=false --config features.apps=false --ephemeral",
+        disabledFeatures: ["plugins", "apps"],
       },
       (textGeneration) =>
         Effect.gen(function* () {

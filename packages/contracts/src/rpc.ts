@@ -1,3 +1,12 @@
+import {
+  InferenceConsumer,
+  InferenceProxyStatus,
+  InferenceProxyAction,
+  InferenceProxyActionResult,
+  InferenceRouteGrant,
+  InferenceRouteInput,
+  InferenceProxyError,
+} from "./inferenceProxy.ts";
 import { ThreadSplitSuggestionInput, ThreadSplitSuggestionResult } from "./threadSplit.ts";
 import {
   ConversationSummaryDescribeInput,
@@ -595,6 +604,10 @@ export const WS_METHODS = {
   serverRunStorageCleanup: "server.runStorageCleanup",
   serverGetStorageCleanupReport: "server.getStorageCleanupReport",
   serverGetDatabaseStorage: "server.getDatabaseStorage",
+  inferenceStatus: "inference.status",
+  inferenceManage: "inference.manage",
+  inferenceGrant: "inference.grant",
+  inferenceConnect: "inference.connect",
   peerLinksList: "peerLinks.list",
   peerLinksLink: "peerLinks.link",
   peerLinksUnlink: "peerLinks.unlink",
@@ -910,6 +923,26 @@ const WsServerGetDatabaseStorageRpc = Rpc.make(WS_METHODS.serverGetDatabaseStora
   error: EnvironmentAuthorizationError,
 });
 
+const WsInferenceStatusRpc = Rpc.make(WS_METHODS.inferenceStatus, {
+  payload: Schema.Struct({}),
+  success: InferenceProxyStatus,
+  error: Schema.Union([InferenceProxyError, EnvironmentAuthorizationError]),
+});
+const WsInferenceManageRpc = Rpc.make(WS_METHODS.inferenceManage, {
+  payload: InferenceProxyAction,
+  success: InferenceProxyActionResult,
+  error: Schema.Union([InferenceProxyError, EnvironmentAuthorizationError]),
+});
+const WsInferenceGrantRpc = Rpc.make(WS_METHODS.inferenceGrant, {
+  payload: InferenceConsumer,
+  success: InferenceRouteGrant,
+  error: Schema.Union([InferenceProxyError, EnvironmentAuthorizationError]),
+});
+const WsInferenceConnectRpc = Rpc.make(WS_METHODS.inferenceConnect, {
+  payload: InferenceRouteInput,
+  success: Schema.Void,
+  error: Schema.Union([InferenceProxyError, EnvironmentAuthorizationError]),
+});
 const WsPeerLinksListRpc = Rpc.make(WS_METHODS.peerLinksList, {
   payload: Schema.Struct({}),
   success: Schema.Struct({ links: Schema.Array(PeerLinkSummary) }),
@@ -2320,6 +2353,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetStorageCleanupReportRpc,
   WsServerGetDatabaseStorageRpc,
   WsServerUpdateSettingsRpc,
+  WsInferenceStatusRpc,
+  WsInferenceManageRpc,
+  WsInferenceGrantRpc,
+  WsInferenceConnectRpc,
   WsPeerLinksListRpc,
   WsPeerLinksLinkRpc,
   WsPeerLinksUnlinkRpc,

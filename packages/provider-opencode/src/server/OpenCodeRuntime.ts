@@ -1,3 +1,4 @@
+import { mergeTelemetryConfig } from "@t3tools/provider-core/server/providerTelemetry";
 import * as NodeURL from "node:url";
 
 import type { ChatAttachment, ProviderApprovalDecision } from "@t3tools/contracts";
@@ -39,7 +40,6 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
-const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 
 export const MINIMUM_OPENCODE_VERSION = "1.14.19";
 const OPENCODE_HEALTH_TIMEOUT = "5 seconds";
@@ -54,10 +54,9 @@ function resolveOpenCodeConfigContent(
   inputEnvironment: Readonly<Record<string, string | undefined>> | undefined,
   inheritedEnvironment: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
-  return (
-    inputEnvironment?.OPENCODE_CONFIG_CONTENT ??
-    inheritedEnvironment.OPENCODE_CONFIG_CONTENT ??
-    OPENCODE_EMPTY_CONFIG_CONTENT
+  return mergeTelemetryConfig(
+    inputEnvironment?.OPENCODE_CONFIG_CONTENT ?? inheritedEnvironment.OPENCODE_CONFIG_CONTENT,
+    { experimental: { openTelemetry: false } },
   );
 }
 

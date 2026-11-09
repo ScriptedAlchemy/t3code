@@ -55,6 +55,10 @@
       "types": "./src/server/homeOverlay.ts",
       "import": "./src/server/homeOverlay.ts"
     },
+    "./server/providerTelemetry": {
+      "types": "./src/server/providerTelemetry.ts",
+      "import": "./src/server/providerTelemetry.ts"
+    },
     "./server/instanceEnvironment": {
       "types": "./src/server/instanceEnvironment.ts",
       "import": "./src/server/instanceEnvironment.ts"

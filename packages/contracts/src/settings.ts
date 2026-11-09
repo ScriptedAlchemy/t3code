@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
+import { isInferenceConfig } from "./inferenceProxy.ts";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
   EnvironmentId,
@@ -713,9 +714,9 @@ export function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fi
 
 export const CodexSettings = makeProviderSettingsSchema(
   {
-    setupMode: Schema.optionalKey(Schema.Literals(["managed", "existing", "cli"])).pipe(
-      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
-    ),
+    setupMode: Schema.optionalKey(
+      Schema.Literals(["managed", "existing", "cli", "inference"]),
+    ).pipe(Schema.annotateKey({ providerSettingsForm: { hidden: true } })),
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
@@ -794,7 +795,7 @@ const InstanceIdleCompaction = Schema.Literals(
 
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
-    setupMode: Schema.optionalKey(Schema.Literals(["existing", "cli"])).pipe(
+    setupMode: Schema.optionalKey(Schema.Literals(["existing", "cli", "inference"])).pipe(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     enabled: Schema.Boolean.pipe(
@@ -1529,6 +1530,7 @@ export const ServerSettings = Schema.Struct({
   providerInstances: Schema.Record(ProviderInstanceId, ProviderInstanceConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  retiredPoolRoutes: Schema.optionalKey(Schema.Record(ProviderDriverKind, ProviderInstanceId)),
   providerPools: ProviderPoolSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   sourceControlHosts: Schema.Record(Schema.String, SourceControlHostSettings).pipe(
@@ -1592,26 +1594,34 @@ export const resolveProviderInstanceEnabled = (
   return instance.enabled ?? configEnabled ?? defaultEnabledForDriver(instance.driver);
 };
 
-/**
- * A pool id is enabled when any of its configured members is, so a pooled
- * selection is never rejected while one account can still take the turn.
- */
+export function retiredPoolRoute(
+  settings: Pick<ServerSettings, "providerInstances" | "retiredPoolRoutes">,
+  instanceId: string,
+): ProviderInstanceId | undefined {
+  const driver = providerPoolDriver(instanceId);
+  if (driver === null) return undefined;
+  const target = settings.retiredPoolRoutes?.[driver];
+  if (target === undefined) return undefined;
+  const instance = settings.providerInstances[target];
+  return instance?.driver === driver && isInferenceConfig(instance.config) ? target : undefined;
+}
+
 export const resolveProjectProviderInstanceEnabled = (
   settings: Pick<
     ServerSettings,
-    "providerInstances" | "projectSettingsOverrides" | "providerPools"
+    "providerInstances" | "projectSettingsOverrides" | "providerPools" | "retiredPoolRoutes"
   >,
   projectId: ProjectId | null,
   instanceId: ProviderInstanceId,
 ): boolean => {
-  const poolDriver = providerPoolDriver(instanceId);
-  if (poolDriver === null) {
-    return resolveConcreteInstanceEnabled(settings, projectId, instanceId);
-  }
-  const pool = settings.providerPools[poolDriver];
+  const driver = providerPoolDriver(instanceId);
+  if (driver === null) return resolveConcreteInstanceEnabled(settings, projectId, instanceId);
+  const target = retiredPoolRoute(settings, instanceId);
+  if (target !== undefined) return resolveConcreteInstanceEnabled(settings, projectId, target);
+  // Older paired environments still publish the members of their pools.
   return (
-    pool?.memberInstanceIds.some((memberId) =>
-      resolveConcreteInstanceEnabled(settings, projectId, memberId),
+    settings.providerPools[driver]?.memberInstanceIds.some((id) =>
+      resolveConcreteInstanceEnabled(settings, projectId, id),
     ) ?? false
   );
 };

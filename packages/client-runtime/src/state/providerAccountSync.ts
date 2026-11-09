@@ -1,4 +1,5 @@
 import {
+  isInferenceConfig,
   EnvironmentAuthorizationError,
   type EnvironmentId,
   type ExecutionEnvironmentCapabilities,
@@ -329,7 +330,9 @@ export function planProviderAccountSync(input: {
   const configured = source.settings?.providerInstances ?? {};
   const accounts = source.providers
     .filter(
-      (provider) => provider.instanceId in configured || provider.auth.status === "authenticated",
+      (provider) =>
+        !isInferenceConfig(configured[provider.instanceId]?.config) &&
+        (provider.instanceId in configured || provider.auth.status === "authenticated"),
     )
     .map((provider) => ({
       instanceId: provider.instanceId,
@@ -341,25 +344,30 @@ export function planProviderAccountSync(input: {
     destination.environmentId === source.environmentId
       ? "same-environment"
       : environmentBlock(destination);
-  const cells = instanceIds.flatMap((instanceId) =>
-    destinations.map((destination): ProviderAccountSyncPlan["cells"][number] => {
-      const key = { instanceId, destinationEnvironmentId: destination.environmentId };
-      const block = destinationBlock(destination) ?? sourceBlock;
-      if (block !== null) return { ...key, action: "blocked", reason: block };
-      const existing = driverOf(destination, instanceId);
-      if (existing === undefined) return { ...key, action: "create" };
-      const sourceDriver = driverOf(source, instanceId);
-      if (sourceDriver !== undefined && existing !== sourceDriver)
-        return { ...key, action: "blocked", reason: "instance-id-conflict" };
-      return {
-        ...key,
-        action: "update",
-        signedInAs: signedInAs(
-          destination.providers.find((provider) => provider.instanceId === instanceId),
-        ),
-      };
-    }),
-  );
+  const cells = instanceIds
+    .filter((id) => !isInferenceConfig(configured[id]?.config))
+    .flatMap((instanceId) =>
+      destinations.map((destination): ProviderAccountSyncPlan["cells"][number] => {
+        const key = { instanceId, destinationEnvironmentId: destination.environmentId };
+        const block = destinationBlock(destination) ?? sourceBlock;
+        if (block !== null) return { ...key, action: "blocked", reason: block };
+        const existing = driverOf(destination, instanceId);
+        if (existing === undefined) return { ...key, action: "create" };
+        const sourceDriver = driverOf(source, instanceId);
+        if (
+          isInferenceConfig(destination.settings?.providerInstances[instanceId]?.config) ||
+          (sourceDriver !== undefined && existing !== sourceDriver)
+        )
+          return { ...key, action: "blocked", reason: "instance-id-conflict" };
+        return {
+          ...key,
+          action: "update",
+          signedInAs: signedInAs(
+            destination.providers.find((provider) => provider.instanceId === instanceId),
+          ),
+        };
+      }),
+    );
   return {
     sourceBlock,
     accounts,

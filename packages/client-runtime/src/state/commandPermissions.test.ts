@@ -32,7 +32,13 @@ import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import { createCommandPermissions } from "./commandPermissions.ts";
 import { createEnvironmentRpcCommand } from "./runtime.ts";
-import { AVAILABLE_CONNECTION_STATE, BearerConnectionTarget } from "../connection/model.ts";
+import type { ConnectionCatalogEntry } from "../connection/catalog.ts";
+import {
+  AVAILABLE_CONNECTION_STATE,
+  BearerConnectionTarget,
+  type NetworkStatus,
+} from "../connection/model.ts";
+import { createInferenceProxyAtoms } from "./inferenceProxy.ts";
 import { createPeerLinkEnvironmentAtoms } from "./peerLinks.ts";
 
 vi.mock("./session.ts", () => ({
@@ -68,6 +74,42 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
+  it.effect("checks consumer permission before requesting an inference grant from the host", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        registry.mount(sessions(other));
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        const contacted: EnvironmentId[] = [];
+        const routeRuntime = Atom.runtime(
+          Layer.mock(EnvironmentRegistry)({
+            entries: yield* SubscriptionRef.make<
+              ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
+            >(new Map()),
+            networkStatus: yield* SubscriptionRef.make<NetworkStatus>("online"),
+            run: (id) => {
+              contacted.push(id);
+              return Effect.die("unexpected connection");
+            },
+          }),
+        );
+        const { routeInference } = createInferenceProxyAtoms(routeRuntime);
+        const result = yield* Effect.promise(() =>
+          routeInference.run(registry, {
+            host: { environmentId: env, label: "Host" },
+            consumer: { environmentId: other, label: "Consumer" },
+            driver: "codex",
+          }),
+        );
+        expect(contacted).toEqual([]);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure")
+          expect(Cause.squash(result.cause)).toMatchObject({
+            _tag: "EnvironmentAuthorizationError",
+          });
+      }),
+    ),
+  );
   it.effect("requires the destination orchestration grant to mutate project knowledge", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -158,28 +200,36 @@ describe("command permissions", () => {
     ),
   );
 
-  it.effect("requires the destination provider grant to remove an incomplete connection", () =>
+  it.effect("requires the destination provider grant to manage an account or inference route", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const registry = yield* setup;
-        const remove = createCommandPermissions(runtime, WS_METHODS.providerAuthRemoveMethod);
-        registry.set(sessions(env), AsyncResult.success(grant(true)));
-        expect(registry.get(remove.permissionAtom(env))).toBe(false);
-        expect((yield* remove.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
-          "EnvironmentAuthorizationError",
-        );
-        registry.set(
-          sessions(env),
-          AsyncResult.success({
-            ...grant(false),
-            scopes: [AuthProvidersManageScope],
-            permissions: [AuthProvidersManageScope],
-          }),
-        );
-        expect(registry.get(remove.permissionAtom(env))).toBe(true);
-        yield* remove.authorize(registry, env);
-        registry.set(sessions(other), AsyncResult.success(grant(false)));
-        expect(registry.get(remove.permissionAtom(other))).toBe(false);
+        for (const tag of [
+          WS_METHODS.providerAuthRemoveMethod,
+          WS_METHODS.inferenceStatus,
+          WS_METHODS.inferenceManage,
+          WS_METHODS.inferenceGrant,
+          WS_METHODS.inferenceConnect,
+        ] as const) {
+          const remove = createCommandPermissions(runtime, tag);
+          registry.set(sessions(env), AsyncResult.success(grant(true)));
+          expect(registry.get(remove.permissionAtom(env))).toBe(false);
+          expect((yield* remove.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+            "EnvironmentAuthorizationError",
+          );
+          registry.set(
+            sessions(env),
+            AsyncResult.success({
+              ...grant(false),
+              scopes: [AuthProvidersManageScope],
+              permissions: [AuthProvidersManageScope],
+            }),
+          );
+          expect(registry.get(remove.permissionAtom(env))).toBe(true);
+          yield* remove.authorize(registry, env);
+          registry.set(sessions(other), AsyncResult.success(grant(false)));
+          expect(registry.get(remove.permissionAtom(other))).toBe(false);
+        }
       }),
     ),
   );

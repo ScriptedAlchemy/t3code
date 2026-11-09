@@ -417,7 +417,7 @@ const make = Effect.gen(function* () {
       if (DateTime.formatIso(records.run.requestedAt) <= generation.reset_at) return;
       const evaluatorSelection =
         initial.modelEvaluationModelSelection ?? initial.textGenerationModelSelection;
-      const provider = (yield* providers.getPublishedProviders).find(
+      const provider = (yield* providers.getProviders).find(
         (candidate) => candidate.instanceId === records.run.providerInstanceId,
       );
       const candidateModel = provider?.models.find(

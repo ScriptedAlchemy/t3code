@@ -566,6 +566,38 @@ describe("resolveProjectProviderInstanceEnabled for a pool id", () => {
     expect(resolveProjectProviderInstanceEnabled(overridden, null, poolId)).toBe(true);
   });
 
+  it("uses the bound inference route and honors its project override", () => {
+    const route = ProviderInstanceId.make("inference_claude_host");
+    const migrated: ServerSettings = {
+      ...settings,
+      providerPools: {},
+      retiredPoolRoutes: { [claude]: route },
+      providerInstances: {
+        ...settings.providerInstances,
+        [route]: { driver: claude, config: { setupMode: "inference" } },
+      },
+      projectSettingsOverrides: {
+        [projectId]: { providerInstances: { [route]: { enabled: false } } },
+      },
+    };
+    expect(resolveProjectProviderInstanceEnabled(migrated, null, poolId)).toBe(true);
+    expect(resolveProjectProviderInstanceEnabled(migrated, projectId, poolId)).toBe(false);
+    expect(
+      resolveProjectProviderInstanceEnabled(
+        { ...migrated, providerInstances: settings.providerInstances },
+        null,
+        poolId,
+      ),
+    ).toBe(false);
+    expect(
+      resolveProjectProviderInstanceEnabled(
+        { ...migrated, retiredPoolRoutes: { [claude]: work } },
+        null,
+        poolId,
+      ),
+    ).toBe(false);
+  });
+
   it("is disabled when no pool is configured for the driver", () => {
     expect(
       resolveProjectProviderInstanceEnabled({ ...settings, providerPools: {} }, projectId, poolId),

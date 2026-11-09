@@ -32,6 +32,7 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { AgentScope, AgentScopeThreadId, RAISE_OOM_SCORE_LINE } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
+import { providerProcessEnvironment } from "@t3tools/provider-core/server/providerTelemetry";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { appendAcpStderrTail, sanitizeAcpStderrExcerpt } from "./stderr.ts";
 import {
@@ -1372,11 +1373,12 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       ),
     );
 
+  const providerEnv = providerProcessEnvironment(options.spawn.env, yield* HostProcess.Platform);
   const spawnCommand =
     options.spawn.shell === false
       ? { command: options.spawn.command, args: options.spawn.args, shell: false }
       : yield* resolveSpawnCommand(options.spawn.command, options.spawn.args, {
-          ...(options.spawn.env ? { env: options.spawn.env } : {}),
+          env: providerEnv,
           extendEnv: options.spawn.extendEnv ?? true,
         });
   const linuxCgroupLease =
@@ -1407,7 +1409,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           const resolved = resolveLinuxCgroupTargetCommand(
             spawnCommand.command,
             options.spawn.cwd ?? options.cwd,
-            { ...process.env, ...options.spawn.env },
+            { ...process.env, ...providerEnv },
           );
           if (resolved !== undefined) return resolved;
           return yield* new EffectAcpErrors.AcpSpawnError({
@@ -1424,7 +1426,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           args: spawnCommand.args,
           name: "acp",
           threadId: yield* AgentScopeThreadId,
-          env: { ...process.env, ...options.spawn.env },
+          env: { ...process.env, ...providerEnv },
         });
   const scopedSpawnCommand =
     scopedLaunch === undefined ? spawnCommand : { ...scopedLaunch, shell: false };
@@ -1442,9 +1444,9 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         };
   const spawnEnvironment =
     linuxCgroupLease === undefined
-      ? options.spawn.env
+      ? providerEnv
       : {
-          ...options.spawn.env,
+          ...providerEnv,
           ELECTRON_RUN_AS_NODE: "1",
           T3_ACP_CGROUP_WRAPPER: "1",
         };
@@ -1452,7 +1454,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     .spawn(
       ChildProcess.make(containedSpawnCommand.command, containedSpawnCommand.args, {
         ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
-        ...(spawnEnvironment ? { env: spawnEnvironment } : {}),
+        env: spawnEnvironment,
         extendEnv: options.spawn.extendEnv ?? true,
         ...(options.ownDetachedProcessGroup === undefined
           ? {}

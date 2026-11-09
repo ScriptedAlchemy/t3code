@@ -113,6 +113,7 @@ export type ProviderAccountImportResult = typeof ProviderAccountImportResult.Typ
 export const ProviderAccountTransferFailure = Schema.Literals([
   "instance-not-found",
   "driver-unavailable",
+  "inference-route",
   /** Import: the destination uses this id for a different driver. */
   "instance-id-conflict",
   /** Import: the destination's driver allows one instance, and it already has it. */
@@ -133,6 +134,8 @@ export class ProviderAccountTransferError extends Schema.TaggedError<ProviderAcc
     switch (this.reason) {
       case "instance-not-found":
         return "This account no longer exists on the source.";
+      case "inference-route":
+        return "Add an inference route on the destination so the host can grant it access.";
       case "driver-unavailable":
         return "This environment doesn't have this provider. Update it, then sync again.";
       case "instance-id-conflict":

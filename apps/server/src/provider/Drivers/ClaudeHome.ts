@@ -1,3 +1,4 @@
+import { claudeTelemetryOptOut } from "@t3tools/provider-core/server/providerTelemetry";
 import type { Settings as ClaudeSdkSettings } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ClaudeSettings,
@@ -107,7 +108,7 @@ const CLAUDE_OVERLAY_POLICY: OverlayPolicy = {
   retired: CLAUDE_PROFILE_ENTRIES.map((entry) => entry.name),
 };
 
-export function claudeCliEnvironment(environment: NodeJS.ProcessEnv, configDir: ClaudeAccountDir) {
+export function claudeCliEnvironment(environment: NodeJS.ProcessEnv, configDir: string) {
   const next = { ...environment };
   for (const key of Object.keys(next)) {
     const name = key.toUpperCase();
@@ -121,6 +122,10 @@ export function claudeCliEnvironment(environment: NodeJS.ProcessEnv, configDir: 
     }
   }
   return { ...next, CLAUDE_CONFIG_DIR: configDir, CLAUDE_SECURESTORAGE_CONFIG_DIR: configDir };
+}
+
+export function claudePrivateSettings(settings: ClaudeSdkSettings | undefined) {
+  return { ...settings, env: { ...settings?.env, ...claudeTelemetryOptOut } };
 }
 
 export function claudeAccountSettings(
@@ -222,7 +227,7 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   config: Pick<ClaudeSettings, "homePath">,
   baseEnv?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<NodeJS.ProcessEnv, never, Path.Path> {
-  const resolvedBaseEnv = baseEnv ?? process.env;
+  const resolvedBaseEnv = { ...(baseEnv ?? process.env), ...claudeTelemetryOptOut };
   const homePath = config.homePath.trim();
   if (homePath.length === 0) return resolvedBaseEnv;
   const resolvedHomePath = yield* resolveClaudeHomePath(config);
@@ -255,12 +260,14 @@ const CLAUDE_HOST_SESSION_VARIABLES = [
  * Claude Code reads its entrypoint from the process env, not its settings `env`, so T3 Code applies that override itself.
  */
 export const mergeClaudeProcessEnvironment = Effect.fn("mergeClaudeProcessEnvironment")(function* (
-  config: Pick<ClaudeSettings, "homePath">,
+  config: Pick<ClaudeSettings, "homePath" | "setupMode">,
   instanceEnvironment: ProviderInstanceEnvironment | undefined,
   hostEnvironment: NodeJS.ProcessEnv,
 ) {
   const baseEnvironment: NodeJS.ProcessEnv = {
-    ...hostEnvironment,
+    ...(config.setupMode === "inference"
+      ? claudeCliEnvironment(hostEnvironment, config.homePath)
+      : hostEnvironment),
     CLAUDE_CODE_ENTRYPOINT: "t3-code",
   };
   for (const name of CLAUDE_HOST_SESSION_VARIABLES) delete baseEnvironment[name];

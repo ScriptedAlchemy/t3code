@@ -8,6 +8,7 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceMutation,
   defaultInstanceIdForDriver,
+  isInferenceConfig,
   isProviderDriverKind,
   isReservedProviderInstanceId,
   ProviderDriverKind,
@@ -191,6 +192,17 @@ export function applyProviderInstanceMutation(
   const providerInstances = { ...settings.providerInstances };
   if (mutation.operation === "upsert" || mutation.operation === "create") {
     providerInstances[mutation.instanceId] = mutation.instance;
+    const { driver, config } = mutation.instance;
+    if (isInferenceConfig(config) && !settings.retiredPoolRoutes?.[driver]) {
+      const providerPools = { ...settings.providerPools };
+      delete providerPools[driver];
+      return {
+        ...settings,
+        providerInstances,
+        providerPools,
+        retiredPoolRoutes: { ...settings.retiredPoolRoutes, [driver]: mutation.instanceId },
+      };
+    }
     return { ...settings, providerInstances };
   }
   delete providerInstances[mutation.instanceId];
@@ -264,37 +276,16 @@ function ensureProviderInstanceMutationAllowed(
   return Effect.void;
 }
 
-/**
- * A built-in driver's default instance exists without a settings entry, and
- * its id is the driver kind, so an unconfigured member resolves that way.
- */
-const configuredInstanceDriver = (
-  settings: ServerSettings,
-  instanceId: ProviderInstanceId,
-): ProviderDriverKind | undefined =>
-  settings.providerInstances[instanceId]?.driver ??
-  (isProviderDriverKind(instanceId) ? instanceId : undefined);
-
-function ensureProviderPoolsValid(
-  settings: ServerSettings,
-  settingsPath: string,
-): Effect.Effect<void, ServerSettingsError> {
-  for (const [driver, pool] of Object.entries(settings.providerPools)) {
-    const seen = new Set<ProviderInstanceId>();
-    for (const memberId of pool.memberInstanceIds) {
-      if (seen.has(memberId) || configuredInstanceDriver(settings, memberId) !== driver) {
-        return Effect.fail(
-          new ServerSettingsError({
-            settingsPath,
-            operation: "validate-provider-pool",
-            providerInstanceId: memberId,
-          }),
-        );
-      }
-      seen.add(memberId);
-    }
-  }
-  return Effect.void;
+function rejectLegacyPoolWrites(patch: ServerSettingsPatch, settingsPath: string) {
+  return Object.values(patch.providerPools ?? {}).some((pool) => pool !== null)
+    ? Effect.fail(
+        new ServerSettingsError({
+          settingsPath,
+          operation: "validate-provider-pool",
+          cause: new Error("Configure inference hosting to pool provider accounts."),
+        }),
+      )
+    : Effect.void;
 }
 
 export class ServerSettingsService extends Context.Service<
@@ -407,12 +398,15 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
     getSettings,
     updateSettings: (patch) =>
       updateTestSettings((currentSettings) =>
-        Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
+        rejectLegacyPoolWrites(patch, "test settings").pipe(
+          Effect.as(applyServerSettingsPatch(currentSettings, patch)),
+        ),
       ),
     updateProviderInstance: (mutation, patch = {}) =>
       updateTestSettings((currentSettings) =>
         Effect.gen(function* () {
           yield* ensureProviderInstanceMutationAllowed(currentSettings, mutation, "test settings");
+          yield* rejectLegacyPoolWrites(patch, "test settings");
           const patched = applyServerSettingsPatch(currentSettings, patch);
           return applyProviderInstanceMutation(patched, mutation);
         }),
@@ -1455,9 +1449,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
           const next = applyServerSettingsPatch(current, patch);
-          if (patch.providerPools !== undefined) {
-            yield* ensureProviderPoolsValid(next, settingsPath);
-          }
+          yield* rejectLegacyPoolWrites(patch, settingsPath);
           return next;
         }),
       ),
@@ -1470,9 +1462,7 @@ const make = Effect.gen(function* () {
             applyServerSettingsPatch(current, patch),
             mutation,
           );
-          if (patch.providerPools !== undefined) {
-            yield* ensureProviderPoolsValid(next, settingsPath);
-          }
+          yield* rejectLegacyPoolWrites(patch, settingsPath);
           return next;
         }),
       ),

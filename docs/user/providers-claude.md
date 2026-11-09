@@ -4,21 +4,9 @@ T3 Code uses Claude Code's login and configuration. Start with the default provi
 for one account; [provider setup](./install.md#providers) covers installation and
 shared provider settings.
 
-## Add another account
+## Connect Claude Code
 
-In **Settings > Providers**, add Claude and choose **Sign in with Claude Code**.
-Name the account and continue to sign-in. Open the browser link, then paste the
-code from Claude into T3 Code. You can sign in from another device when the
-T3 Code environment runs remotely. To sign out, open that account's provider
-settings.
-
-Accounts added with **Sign in with Claude Code** share your Claude profile in
-`~/.claude`, including settings, skills, plugins, agents, and `CLAUDE.md`. Changes
-from any account, such as enabling a plugin or allowing a tool, apply to all
-accounts. Each account keeps its own login, trust decisions, MCP servers, and
-conversation history. Accounts added before this version start sharing too. Turn
-off **Use your Claude profile** in an account's provider settings to give it a
-profile of its own.
+For multiple accounts, open **Inference accounts** on the environment where you want to sign in. [Host and share inference accounts](#host-and-share-inference-accounts)
 
 To reuse an installed CLI account, choose **Use existing Claude Code**. Leave
 **CLAUDE_CONFIG_DIR path** empty to use the CLI's default configuration. For a
@@ -30,30 +18,49 @@ For API keys, custom endpoints, and routers, choose **Use existing Claude Code**
 and configure its **Environment variables**. Independent subscription accounts
 use their own Claude login and ignore credential and endpoint overrides.
 
-On mobile, tap **Add Claude account** in **Settings > Providers** and enter a name and
-the config folder of an account already signed in on the environment's machine.
-
 Claude Code's verbose mode can stay enabled when you use Claude for text generation, including
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
 T3 Code uses the Claude configuration on the connected server.
 
-## Account pools
+## Host and share inference accounts
 
-With two or more Claude accounts, you can offer them as one. In **Settings >
-Labs > Zack > Account pools**, tick the Claude accounts to share and turn on **Pool these
-accounts**. The model picker then shows a single Claude entry in place of the
-ticked accounts. Each turn runs on an account that still has usage left. If an
-account reaches its usage limit mid-turn, the turn continues on another account,
-and the thread's model picker shows the account that ran it.
+In **Settings > Providers**, select the environment that will hold your accounts.
+Open **Inference accounts** (under **Advanced** on web and desktop) and turn on hosting. T3 Code
+downloads CLIProxyAPI on that machine and verifies the release before starting it.
+Add each account, sign in with its provider, paste the final localhost URL back
+into Settings, and check its status. The host keeps the provider login and handles
+account selection and refresh. Desktop includes compatible CLIProxyAPI releases in **Update everything**.
+You can also check for updates in **Inference accounts** on any client. Updating restarts the host, so finish active turns first.
 
-A thread stays on its account while that account is available. Moving a thread to
-another Claude account continues from a summary of the conversation, because each
-account keeps its own history.
+For another machine to use those accounts, enable **Tailscale HTTPS** or LAN access on the host and turn on **Share inference with paired environments**.
+Connect your client to both T3 environments with provider management access.
+Select the environment where you want to run agents in Settings. Under **Route
+requests through an environment**, choose Codex or Claude beside the host name.
+That environment must be able to reach the host over Tailscale or its private LAN address and run the
+corresponding agent CLI. You can also choose the current host for local use.
 
-Pooled accounts stay in **Settings**, where you can still select them and where
-**Settings > Providers** shows which pool each belongs to and when a limited account
-is available again. To bring an account back into the model picker, untick it or
-turn the pool off. Threads stay on the account that last ran them.
+Use LAN HTTP only on a trusted network. Prompts, responses, and revocable route keys travel unencrypted on that connection.
+
+Select **Codex via …** or **Claude via …** in a thread on web, desktop, or mobile.
+The host receives the model request, including its prompt and tool results.
+The agent runs tools and stores files and thread history on its executing environment.
+A second host gets its own model picker entry. Choose that entry to switch hosts.
+Choose the route again in Settings to refresh its model list after changing accounts.
+
+Under **Model pools**, choose a source and load its model IDs or enter one manually. Give equivalent
+models the same pool name. For example, map your Codex model and the ID reported
+by Traex bridge to `work`. Apply the Codex route on each consuming environment
+to refresh its model picker, then select `codex-pool-work`. The Traex bridge
+must be running on the host with its key in `~/.traex-bridge/api-key`. Claude
+pools have separate `claude-pool-…` IDs. The routing switches apply across
+the host. Round-robin distributes new sessions, and session affinity keeps a
+conversation on its credential while that credential is available.
+
+The first inference route for a provider replaces its old CLI account pool. Threads saved with that pool use the replacement route. Threads pinned to an individual CLI account keep that selection. You can switch either kind of thread in the provider picker.
+
+Remove a provider login on its host, revoke one consuming environment, or turn
+off sharing to revoke all remote grants. Remove the route in **Inference accounts** on the executing machine. Stopping hosting keeps the host's accounts
+for the next start.
 
 ## Compact long conversations
 

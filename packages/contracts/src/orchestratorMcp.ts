@@ -91,8 +91,7 @@ export type OrchestratorMcpTargetOptions = typeof OrchestratorMcpTargetOptions.T
 export const OrchestratorMcpTarget = Schema.Struct({
   providerInstanceId: Schema.optional(
     ProviderInstanceId.annotate({
-      description:
-        "Provider instance id from `orchestrator_capabilities`. Account pools route to a concrete member; results report that member's id. Verify it against the pool's poolMemberInstanceIds, and check model and options separately.",
+      description: "Provider instance id from `orchestrator_capabilities`.",
     }),
   ),
   driverKind: Schema.optional(
@@ -217,8 +216,7 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   latestTerminalSummary: Schema.NullOr(Schema.String),
   latestTerminalResultContextTransferId: Schema.NullOr(ContextTransferId),
   providerInstanceId: ProviderInstanceId.annotate({
-    description:
-      "Concrete provider account used by the task. For a pool target, this is a member id from orchestrator_capabilities, not the pool id.",
+    description: "Provider instance used by the task.",
   }),
   model: Schema.NullOr(Schema.String),
   options: Schema.optional(Schema.Array(ProviderOptionSelection)),
@@ -602,12 +600,6 @@ export type OrchestratorMcpModelOption = typeof OrchestratorMcpModelOption.Type;
 
 export const OrchestratorMcpProviderCapability = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
-  poolMemberInstanceIds: Schema.optional(
-    Schema.Array(ProviderInstanceId).annotate({
-      description:
-        "Present for account pools. Configured member ids, including temporarily unavailable accounts. Delegation reports the selected concrete member as providerInstanceId; a listed member is expected pool routing. Model and options must still match.",
-    }),
-  ),
   driverKind: ProviderDriverKind,
   displayName: Schema.NullOr(Schema.String),
   models: Schema.Array(
@@ -648,15 +640,7 @@ export const OrchestratorMcpEnvironmentLinksResult = Schema.Struct({
 export type OrchestratorMcpEnvironmentLinksResult =
   typeof OrchestratorMcpEnvironmentLinksResult.Type;
 
-export const OrchestratorMcpModelGuidance = Schema.Struct({
-  ...ModelEvaluationGuidance.fields,
-  routingProviderInstanceId: Schema.optional(
-    ProviderInstanceId.annotate({
-      description:
-        "Advertised pool route for this observed member. modelSelection identifies the actual evaluated member; its scores do not describe the whole pool.",
-    }),
-  ),
-});
+export const OrchestratorMcpModelGuidance = ModelEvaluationGuidance;
 export type OrchestratorMcpModelGuidance = typeof OrchestratorMcpModelGuidance.Type;
 
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({

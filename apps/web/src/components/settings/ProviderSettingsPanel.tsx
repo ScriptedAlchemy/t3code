@@ -1,6 +1,8 @@
+import { Link } from "@tanstack/react-router";
 import { SettingsGroup } from "./SettingsGroup";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import {
+  isInferenceConfig,
   AuthSettingsWriteScope,
   AuthProvidersManageScope,
   AuthOrchestrationReadScope,
@@ -104,7 +106,7 @@ import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSectio
 import { readProviderConfigString } from "./ProviderSettingsForm";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import { providerClients } from "./providerDriverMeta";
-import { resolveProviderPoolName } from "./ProviderPoolsSettings.logic";
+import { resolveProviderPoolName } from "./providerAccountStatus";
 import { searchableSetting } from "./settingsSearch";
 import { CompactIdleThreadsRow } from "./SettingsPanels";
 import {
@@ -565,6 +567,10 @@ export function EnvironmentProviderSettings({
   const supportsProjectProviderOverrides = useAtomValue(
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.projectProviderInstanceOverrides === true,
+  );
+  const supportsInference = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.environment.capabilities.inferenceProxy === true,
   );
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
@@ -1101,6 +1107,21 @@ export function EnvironmentProviderSettings({
       />
 
       <SettingsSection title="Advanced">
+        {supportsInference && (
+          <SettingsRow
+            title="Inference accounts"
+            description="Host Codex and Claude accounts here, or use accounts from a paired environment over LAN or Tailscale."
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                render={<Link to="/settings/account-pools" search={{ machine: environmentId }} />}
+              >
+                Manage accounts
+              </Button>
+            }
+          />
+        )}
         <SettingsRow
           id={searchableSetting("provider-health-check-interval").id}
           title={
@@ -1396,7 +1417,7 @@ function ProviderInstanceRow({
           : undefined
       }
       syncAction={
-        mode === "editor" ? (
+        mode === "editor" && !isInferenceConfig(instance.config) ? (
           <SyncProviderAccountsAction
             sourceEnvironmentId={environmentId}
             readOnly={readOnly}

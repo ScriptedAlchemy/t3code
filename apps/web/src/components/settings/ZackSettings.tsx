@@ -11,7 +11,7 @@ import { ScopedSwitch } from "./ScopedSwitch";
 import { scopedAssistedLearningUnavailableReason } from "./scopedSettings";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
-import { hasProviderPoolsEnvironment, searchableSetting } from "./settingsSearch";
+import { hasInferenceProxyEnvironment, searchableSetting } from "./settingsSearch";
 import { SkillsLibraryRows } from "./SkillsLibrarySettings";
 import {
   useScopedSettings,
@@ -316,11 +316,11 @@ function ThreadSplitRows() {
 /** Pools stay on their own page because they edit one environment at a time. */
 function AccountPoolsRow() {
   const { environments } = useEnvironments();
-  if (!hasProviderPoolsEnvironment(environments)) return null;
+  if (!hasInferenceProxyEnvironment(environments)) return null;
   return (
     <SettingsRow
-      title="Account pools"
-      description="Pool accounts of the same provider so turns run on an account that still has quota."
+      title="Inference accounts"
+      description="Host provider accounts and route inference through an environment over Tailscale or your trusted LAN."
       control={
         <Button size="sm" variant="outline" render={<Link to="/settings/account-pools" />}>
           Open

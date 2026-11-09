@@ -30,6 +30,7 @@ import {
 } from "../provider/ClaudeModelCatalog.ts";
 import {
   claudeAccountSettings,
+  claudePrivateSettings,
   parseClaudeAccountDir,
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
@@ -187,7 +188,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         : undefined;
     const fastMode =
       fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
-    const settings = {
+    const settings = claudePrivateSettings({
       disableAllHooks: true,
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
@@ -197,7 +198,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ? parseClaudeAccountDir(claudeSettings.homePath)
           : undefined,
       ),
-    };
+    });
     const settingsJson = yield* encodeJsonForOperation(
       operation,
       settings,

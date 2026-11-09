@@ -404,9 +404,16 @@ const environment = (
 });
 
 describe("planProviderAccountSync", () => {
+  const route = ProviderInstanceId.make("inference_codex_host");
   const source = environment(laptop, {
-    settings: { providerInstances: { [workCodex]: { driver: codex } } },
+    settings: {
+      providerInstances: {
+        [workCodex]: { driver: codex },
+        [route]: { driver: codex, config: { setupMode: "inference" } },
+      },
+    },
     providers: [
+      { instanceId: route, driver: codex, auth: { status: "authenticated" } },
       { instanceId: workCodex, driver: codex, auth: { status: "unauthenticated" } },
       {
         instanceId: defaultCursor,
@@ -426,8 +433,9 @@ describe("planProviderAccountSync", () => {
         environment(server, { serverConfig: null }),
         environment(EnvironmentId.make("locked"), { canManageProviders: false }),
       ],
-      instanceIds: [workCodex],
+      instanceIds: [workCodex, route],
     });
+    expect(plan.cells.some((cell) => cell.instanceId === route)).toBe(false);
     expect(plan.sourceBlock).toBeNull();
     expect(plan.accounts.map((account) => [account.instanceId, account.signedInAs])).toEqual([
       [workCodex, undefined],

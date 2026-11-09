@@ -57,7 +57,7 @@ import {
   makeProviderFailureTurnItem,
 } from "@t3tools/provider-core/server/failure";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
-import { ProviderUsageLimitHook } from "./ProviderPoolFailover.ts";
+import { ProviderUsageLimitHook } from "./ProviderUsageLimitHook.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import { userFacingDatabaseErrorMessage } from "./UserFacingErrors.ts";
 
@@ -1150,64 +1150,14 @@ export const layer: Layer.Layer<
         >(new Set(inheritedBackgroundTurnItemsById.keys()));
         const openRunOwnedSubagents = yield* Ref.make(emptyOpenRunOwnedSubagentProjection());
         const finalizeRootRun = Effect.fn("RunExecutionService.finalizeRootRun")(function* (
-          reported: ProviderTerminalEvent,
+          terminal: ProviderTerminalEvent,
         ) {
           if (yield* Ref.get(rootRunFinalized)) {
             return;
           }
-          const resolution =
-            reported.status === "failed" && reported.failure.class === "usage_limit"
-              ? yield* usageLimitHook.onUsageLimit({
-                  threadId: input.run.threadId,
-                  runId: input.run.id,
-                  attemptId: input.attempt.id,
-                  providerInstanceId: input.run.providerInstanceId,
-                  failure: reported.failure,
-                })
-              : null;
-          if (resolution?.type === "failed_over") {
-            // The orchestrator closed this attempt and opened the next on
-            // another account; as after a steering restart, this attempt's
-            // ingestion stops writing. Its children die with it unless their turns continue;
-            // the run now has a newer attempt, so a run-current gate would drop these.
-            if (!childTurnsContinue(reported)) {
-              const cascaded = yield* cascadeTerminalizeRunOwnedSubagents({
-                run: input.run,
-                open: yield* Ref.getAndSet(
-                  openRunOwnedSubagents,
-                  emptyOpenRunOwnedSubagentProjection(),
-                ),
-                status: "failed",
-                completedAt: yield* DateTime.now,
-                allocateEventId: () => idAllocator.allocate.event({ threadId: input.run.threadId }),
-              }).pipe(
-                Effect.mapError(
-                  (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
-                ),
-              );
-              if (cascaded.length > 0) {
-                yield* eventSink
-                  .writeWithEffects({ events: cascaded, effects: [] })
-                  .pipe(
-                    Effect.mapError(
-                      (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
-                    ),
-                  );
-              }
-            }
-            yield* Ref.set(rootRunFinalized, true);
-            return;
+          if (terminal.status === "failed" && terminal.failure.class === "usage_limit") {
+            yield* usageLimitHook.onUsageLimit(input.run.providerInstanceId, terminal.failure);
           }
-          // A pooled run fails with the pool's earliest reset so the banner
-          // and auto-resume wait for the first account back. The error item
-          // is keyed by provider turn, so re-emitting it upserts.
-          const terminal =
-            reported.status === "failed" &&
-            resolution !== null &&
-            resolution.resetAt !== null &&
-            resolution.resetAt !== reported.failure.resetAt
-              ? { ...reported, failure: { ...reported.failure, resetAt: resolution.resetAt } }
-              : reported;
           const providerThread = yield* Ref.get(latestProviderThread);
           const openSubagents = yield* Ref.get(openRunOwnedSubagents);
           yield* writeFinalRunEvents({
@@ -1220,10 +1170,8 @@ export const layer: Layer.Layer<
             ...(input.shouldFinalizeRun === undefined
               ? {}
               : { shouldFinalizeRun: input.shouldFinalizeRun }),
-            // Stop, or a pool failover that won, may commit between the
-            // ownership read and this terminal write. Gate the events and
-            // checkpoint together.
-            ...(input.shouldFinalizeRun === undefined && resolution === null
+            // A stop can commit between the ownership check and this write.
+            ...(input.shouldFinalizeRun === undefined
               ? {}
               : {
                   writeIfRunCurrent: {
@@ -1242,7 +1190,7 @@ export const layer: Layer.Layer<
             loadRunOpenItems: input.loadRunOpenItems,
             openRunOwnedSubagents: openSubagents,
             terminal,
-            failureItemPersisted: terminal === reported && terminal.status === "failed",
+            failureItemPersisted: terminal.status === "failed",
             refreshAfterTurn,
           }).pipe(
             Effect.mapError((cause) => new RunExecutionIngestError({ runId: input.run.id, cause })),

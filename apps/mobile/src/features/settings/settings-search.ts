@@ -73,6 +73,10 @@ const SETTINGS_SEARCH_TERMS = {
   SettingsArchive: ["archive", "archived", "restore", "unarchive"],
   SettingsProviderAccounts: [
     "provider accounts",
+    "inference accounts",
+    "CLIProxyAPI",
+    "host accounts",
+    "route requests",
     "codex",
     "claude",
     "cursor",

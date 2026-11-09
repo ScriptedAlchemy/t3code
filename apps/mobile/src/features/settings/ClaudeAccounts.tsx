@@ -15,7 +15,6 @@ import { TextInput, View } from "react-native";
 import * as Dialog from "../../components/ui/Dialog";
 import { AppText as Text } from "../../components/ui/AppText";
 import { ControlPill } from "../../components/ui/ControlPill";
-import { ListActionRow } from "../../components/ui/ListActionRow";
 import { Menu } from "../../components/ui/Menu";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -160,29 +159,6 @@ export function ClaudeAccount({
   );
 }
 
-export function AddClaudeAccount({ environment }: { readonly environment: SettingsTarget }) {
-  const [adding, setAdding] = useState(false);
-  return (
-    <View className="border-t border-border-subtle">
-      {adding ? (
-        <ClaudeAccountForm
-          environment={environment}
-          instanceId={null}
-          initial={{ name: "", configDir: "" }}
-          onDone={() => setAdding(false)}
-        />
-      ) : (
-        <ListActionRow
-          icon="plus"
-          label="Add Claude account"
-          description="Use a Claude config folder that is already signed in on this server."
-          onPress={() => setAdding(true)}
-        />
-      )}
-    </View>
-  );
-}
-
 function ClaudeAccountForm({
   environment,
   instanceId,
@@ -190,7 +166,7 @@ function ClaudeAccountForm({
   onDone,
 }: {
   readonly environment: SettingsTarget;
-  readonly instanceId: ProviderInstanceId | null;
+  readonly instanceId: ProviderInstanceId;
   readonly initial: ClaudeAccountDraft;
   readonly onDone: () => void;
 }) {
@@ -240,12 +216,7 @@ function ClaudeAccountForm({
       ) : null}
       <View className="flex-row justify-end gap-2">
         <ControlPill variant="pill" label="Cancel" disabled={pending} onPress={onDone} />
-        <ControlPill
-          variant="primary"
-          label={instanceId === null ? "Add" : "Save"}
-          disabled={pending}
-          onPress={save}
-        />
+        <ControlPill variant="primary" label="Save" disabled={pending} onPress={save} />
       </View>
     </View>
   );

@@ -193,6 +193,18 @@ it.effect.each(["early", "after-response", "missing-id"])(
         'model_provider="openai"',
         "-c",
         'chatgpt_base_url="https://chatgpt.com/backend-api/"',
+        "--config",
+        "analytics.enabled=false",
+        "--config",
+        "feedback.enabled=false",
+        "--config",
+        'otel.exporter="none"',
+        "--config",
+        'otel.trace_exporter="none"',
+        "--config",
+        'otel.metrics_exporter="none"',
+        "--config",
+        "otel.log_user_prompt=false",
       ]);
       expect(fixture.requests.map(({ method }) => method)).toEqual([
         "initialize",

@@ -1,3 +1,5 @@
+import * as InferenceProxy from "./inference/InferenceProxy.ts";
+import * as InferenceHttp from "./inference/http.ts";
 import * as ThreadSplitSuggestions from "./orchestration-v2/ThreadSplitSuggestions.ts";
 import * as SkillsLibrary from "./skills/SkillsLibrary.ts";
 import * as PstackPack from "./pstack/PstackPack.ts";
@@ -857,6 +859,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
     GuestHttp.layer,
+    InferenceHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
@@ -903,6 +906,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(SpeechModelStore.layer),
     ),
   ),
+  Layer.provide(InferenceProxy.layer),
   Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
   Layer.provide(layerServerSettings),
   Layer.provide(PreviewAutomationBroker.layer),

@@ -1,3 +1,4 @@
+import { providerProcessEnvironment } from "@t3tools/provider-core/server/providerTelemetry";
 import type {
   SpawnOptions as ClaudeSpawnOptions,
   SpawnedProcess as ClaudeSpawnedProcess,
@@ -27,7 +28,10 @@ export function spawnClaudeProcess(
       : ["-c", CLAUDE_GROUP_WATCH_SCRIPT, "t3-claude", options.command, ...options.args],
     {
       cwd: options.cwd,
-      env: configDir === undefined ? options.env : claudeCliEnvironment(options.env, configDir),
+      env: providerProcessEnvironment(
+        configDir === undefined ? options.env : claudeCliEnvironment(options.env, configDir),
+        platform,
+      ),
       signal: options.signal,
       stdio: platform === "win32" ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "pipe"],
       detached: platform !== "win32",

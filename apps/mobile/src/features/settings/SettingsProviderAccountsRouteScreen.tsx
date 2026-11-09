@@ -9,6 +9,7 @@ import {
 import {
   AuthProvidersManageScope,
   isManagedDriverAllowed,
+  isInferenceConfig,
   type ProviderAuthResponse,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -32,8 +33,9 @@ import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActi
 import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
+import { InferenceAccounts } from "./InferenceAccounts";
 import { ProviderAccountSync } from "./ProviderAccountSync";
-import { AddClaudeAccount, ClaudeAccount } from "./ClaudeAccounts";
+import { ClaudeAccount } from "./ClaudeAccounts";
 import { CLAUDE_DRIVER } from "./claude-accounts";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 
@@ -84,17 +86,19 @@ function EnvironmentProviders({
   readonly environment: SettingsTarget;
   readonly providers: ReadonlyArray<ServerProvider>;
 }) {
-  const accounts = providers.filter(canManageProvider);
-  // Claude has no in-app sign-in; each account is its own instance on a signed-in config folder.
-  const claudeAccounts = providers.filter(
-    (provider) => provider.driver === CLAUDE_DRIVER && !canManageProvider(provider),
+  const directProviders = providers.filter(
+    (p) =>
+      !isInferenceConfig(environment.serverConfig.settings.providerInstances[p.instanceId]?.config),
   );
-  const canAddClaude = isManagedDriverAllowed(
-    environment.serverConfig.managedPolicy,
-    CLAUDE_DRIVER,
+  const accounts = directProviders.filter(canManageProvider);
+  const claudeAccounts = directProviders.filter(
+    (provider) => provider.driver === CLAUDE_DRIVER && !canManageProvider(provider),
   );
   return (
     <>
+      {environment.serverConfig.environment.capabilities.inferenceProxy && (
+        <InferenceAccounts environment={environment} />
+      )}
       {accounts.map((provider, index) => (
         <ProviderAccount
           key={provider.instanceId}
@@ -111,7 +115,6 @@ function EnvironmentProviders({
       {claudeAccounts.map((provider) => (
         <ClaudeAccount key={provider.instanceId} environment={environment} provider={provider} />
       ))}
-      {canAddClaude ? <AddClaudeAccount environment={environment} /> : null}
     </>
   );
 }
