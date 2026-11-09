@@ -6,7 +6,8 @@ import { Atom } from "effect/reactivity";
 import { applyProviderInstanceBranding, deriveProviderInstanceEntry } from "~/providerInstances";
 import { serverEnvironment } from "~/state/server";
 import { ContextChipPopover } from "../contextChipParts";
-import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
+import { contextChipAccentWithHueOf } from "~/themePalette";
+import { ProviderInstanceIcon, providerLogoColor } from "./ProviderInstanceIcon";
 import { getDisplayModelName, getProviderRowLabel } from "./providerIconUtils";
 
 interface ModelMentionPresentation {
@@ -91,7 +92,11 @@ export function ModelMentionChip(props: {
   if (!presentation) return props.source;
   return (
     <ContextChipPopover
-      kind="model"
+      kind="neutral"
+      accent={(() => {
+        const color = providerLogoColor(presentation.driverKind);
+        return (color && contextChipAccentWithHueOf("model", color)) || undefined;
+      })()}
       icon={
         <ProviderInstanceIcon
           driverKind={presentation.driverKind}

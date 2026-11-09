@@ -47,6 +47,10 @@
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"
     },
+    "./composer-model-mentions": {
+      "types": "./src/composerModelMentions.ts",
+      "default": "./src/composerModelMentions.ts"
+    },
     "./composerModelMentions": {
       "types": "./src/composerModelMentions.ts",
       "default": "./src/composerModelMentions.ts"

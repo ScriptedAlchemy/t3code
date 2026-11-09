@@ -55,7 +55,7 @@ interface ComposerSelectionInput {
 }
 
 /**
- * The composer's choices for the next turn: provider and model, runtime and interaction mode,
+ * The composer's choices for the next turn: provider and model, runtime mode,
  * and where a new thread runs (local or a new worktree, from the remote's tip or not).
  */
 export function useComposerSelection(input: ComposerSelectionInput) {

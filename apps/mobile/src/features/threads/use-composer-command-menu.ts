@@ -59,7 +59,7 @@ import {
 import {
   formatComposerModelMention,
   rankComposerModelMentions,
-} from "@t3tools/client-runtime/composerModelMentions";
+} from "@t3tools/client-runtime/composer-model-mentions";
 import { useAtomRefresh } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";

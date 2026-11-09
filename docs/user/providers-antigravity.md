@@ -80,8 +80,7 @@ workspace when a session starts. Runtime 1.4.5 also writes
 The empty folders do not appear in Git, but the workflow skill can appear as an
 untracked file in the project.
 
-Use Antigravity's native `/plan` command for planning. T3 Code's separate Plan mode
-is unavailable. Tool approvals follow [Permission modes](./permission-modes.md).
+Use Antigravity's native `/plan` command for planning. Tool approvals follow [Permission modes](./permission-modes.md).
 Questions with fixed choices still need one of the offered answers, even in
 **Full access**.
 

@@ -29,7 +29,7 @@ describe("resolveComposerControlsOwnership", () => {
     });
   });
 
-  it("gives an overflowed chip's Permissions to the overflow menu when it has no Plan toggle", () => {
+  it("gives an overflowed chip's Permissions to the overflow menu", () => {
     const result = resolveComposerControlsOwnership({
       ...base,
       matchesDefault: false,

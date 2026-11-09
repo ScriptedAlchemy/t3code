@@ -21,6 +21,7 @@ import {
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { providerInstanceEntriesFor } from "../../providerInstances";
+import { useTextGenerationTargets } from "../../textGenerators";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
@@ -112,12 +113,21 @@ export function SourceControlWritingSettingsSection() {
     settings,
     target?.projectId ?? null,
   );
+  // Text generators may write source control text, but never review guides.
+  const writerTargets = useTextGenerationTargets({
+    environmentId,
+    settings,
+    providers: textGenerationProviders,
+    projectId: target?.projectId ?? null,
+    selections: [settings.sourceControlWriterModelSelection, settings.textGenerationModelSelection],
+  });
+  const writerEntries = writerTargets.entries;
   const projectEnabledInstanceIds = new Set(
-    instanceEntries
+    writerEntries
       .filter((entry) => entry.enabled && entry.isAvailable)
       .map((entry) => entry.instanceId),
   );
-  const projectEffectiveTextGenerationProviders = textGenerationProviders.filter((provider) =>
+  const projectEffectiveTextGenerationProviders = writerTargets.providers.filter((provider) =>
     projectEnabledInstanceIds.has(provider.instanceId),
   );
   const defaultModelSelection = resolveAppModelSelectionState(
@@ -136,7 +146,7 @@ export function SourceControlWritingSettingsSection() {
     },
     projectEffectiveTextGenerationProviders,
   );
-  const canEnableDedicatedModel = instanceEntries.some(
+  const canEnableDedicatedModel = writerEntries.some(
     (entry) =>
       entry.instanceId === defaultModelSelection.instanceId && entry.enabled && entry.isAvailable,
   );
@@ -146,7 +156,7 @@ export function SourceControlWritingSettingsSection() {
     activeSelection.instanceId,
     activeSelection.model,
   );
-  const writerModelDisabledReason = useScopedModelDisabledReason(settings, instanceEntries, [
+  const writerModelDisabledReason = useScopedModelDisabledReason(settings, writerEntries, [
     "generateCommitMessage",
     "generatePrContent",
     "generateBranchName",
@@ -180,26 +190,36 @@ export function SourceControlWritingSettingsSection() {
   })();
   const canEnableDedicatedReviewGuideModel =
     canEnableDedicatedModel && initialReviewGuideSelection !== undefined;
-  const writerInstanceEntry = instanceEntries.find(
+  const writerInstanceEntry = writerEntries.find(
     (entry) => entry.instanceId === activeSelection.instanceId,
   );
   const usesReviewGuideModel = settings.reviewGuideModelSelection !== null;
+  // Resolve against agents this project can use, so the fallback never lands on one it turned off.
+  const projectAgentProviders = textGenerationProviders.filter((provider) =>
+    instanceEntries.some(
+      (entry) => entry.instanceId === provider.instanceId && entry.enabled && entry.isAvailable,
+    ),
+  );
   const reviewGuideSelection = resolveAppModelSelectionState(
     {
       ...settings,
       textGenerationModelSelection: resolveReviewGuideModelSelection(
         settings,
-        textGenerationProviders,
+        projectAgentProviders,
         target?.projectId ?? null,
       ),
     },
-    textGenerationProviders,
+    projectAgentProviders,
   );
   const reviewGuideModelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
-    textGenerationProviders,
+    projectAgentProviders,
     reviewGuideSelection.instanceId,
     reviewGuideSelection.model,
+  );
+  const canEnableReviewGuideModel = instanceEntries.some(
+    (entry) =>
+      entry.instanceId === reviewGuideSelection.instanceId && entry.enabled && entry.isAvailable,
   );
   const reviewGuideInstanceEntry = instanceEntries.find(
     (entry) => entry.instanceId === reviewGuideSelection.instanceId,
@@ -367,7 +387,7 @@ export function SourceControlWritingSettingsSection() {
                 </span>
               ) : (
                 <div className="flex flex-wrap items-center justify-end gap-2">
-                  {(usesReviewGuideModel || mixedReviewGuideModel) && canEnableDedicatedModel ? (
+                  {(usesReviewGuideModel || mixedReviewGuideModel) && canEnableReviewGuideModel ? (
                     <ProviderModelPicker
                       environmentId={environmentId}
                       activeInstanceId={reviewGuideSelection.instanceId}
@@ -396,7 +416,7 @@ export function SourceControlWritingSettingsSection() {
                     />
                   ) : null}
                   {usesReviewGuideModel &&
-                  canEnableDedicatedModel &&
+                  canEnableReviewGuideModel &&
                   !mixedReviewGuideModel &&
                   reviewGuideInstanceEntry ? (
                     <TraitsPicker
@@ -565,7 +585,7 @@ export function SourceControlWritingSettingsSection() {
                     activeInstanceId={activeSelection.instanceId}
                     model={activeSelection.model}
                     lockedProvider={null}
-                    instanceEntries={instanceEntries}
+                    instanceEntries={writerEntries}
                     modelOptionsByInstance={modelOptionsByInstance}
                     triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                     triggerAriaLabel="Source control writer model"

@@ -16,6 +16,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as ServerSettings from "../serverSettings.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as TextGeneration from "./TextGeneration.ts";
+import * as TextGenerators from "./TextGenerators.ts";
 
 const selected = ProviderInstanceId.make("selected");
 const decodeProvider = Schema.decodeSync(ServerProvider);
@@ -67,6 +68,7 @@ const make = (
             resolveLink: () => undefined,
           }),
           ServerSettings.layerTest({}),
+          Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.undefined }),
         ),
       ),
     ),

@@ -50,6 +50,7 @@ describe("Enriched link presentation", () => {
     const models = buildEnrichedModelReferences([
       {
         instanceId: "codex",
+        driver: "codex",
         models: [
           { slug: "gpt-6.1", name: "OpenAI GPT-6.1", subProvider: "OpenAI" },
           { slug: "gpt-6.1-sol[1m]", name: "GPT-6.1 Sol" },

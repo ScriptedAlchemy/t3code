@@ -30,6 +30,8 @@ export interface SelectableMarkdownSkill {
 export interface SelectableMarkdownModel {
   readonly source: string;
   readonly label: string;
+  readonly providerLabel: string;
+  readonly driver: string;
   readonly iconUrl?: string | undefined;
 }
 

@@ -7,7 +7,7 @@ import {
   type ContextChipIconRef,
   UNAVAILABLE_CONTEXT_CHIP_PRESENTATION,
 } from "./composerChipPresentation";
-import { formatComposerModelMention } from "@t3tools/client-runtime/composerModelMentions";
+import { formatComposerModelMention } from "@t3tools/client-runtime/composer-model-mentions";
 import type {
   SelectableMarkdownModel,
   SelectableMarkdownSkill,
@@ -131,6 +131,8 @@ export function enrichedSkillInstructionsPath(skill: SelectableMarkdownSkill) {
 export function buildEnrichedModelReferences(
   providers: ReadonlyArray<{
     readonly instanceId: string;
+    readonly driver: string;
+    readonly displayName?: string | undefined;
     readonly iconUrl?: string | undefined;
     readonly models: ReadonlyArray<{
       readonly slug: string;
@@ -162,6 +164,8 @@ export function buildEnrichedModelReferences(
         return {
           source: formatComposerModelMention(provider.instanceId, model.slug),
           label,
+          providerLabel: qualifier || provider.displayName || provider.instanceId,
+          driver: provider.driver,
           iconUrl: provider.iconUrl,
         };
       }),
@@ -185,6 +189,10 @@ export function enrichedModelReference(
   models?: ReadonlyArray<SelectableMarkdownModel>,
 ) {
   return models?.find((model) => model.source === source);
+}
+
+export function enrichedModelDetails(model: SelectableMarkdownModel) {
+  return `${model.providerLabel}\n${model.source}`;
 }
 
 export function enrichedTextLinkRegex(

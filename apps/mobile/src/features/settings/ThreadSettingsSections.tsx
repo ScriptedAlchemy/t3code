@@ -9,7 +9,11 @@ import { AutoSettleDaysField } from "./components/AutoSettleDaysField";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
+import { SettingsRow } from "./components/SettingsRow";
+import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
+import type { ToolCallVisibility } from "@t3tools/contracts/settings";
 import { AsyncResult } from "effect/reactivity";
+import type { ComponentProps } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -20,11 +24,8 @@ import { useEnvironments } from "../../state/environments";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
-import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
-import type { ToolCallVisibility } from "@t3tools/contracts/settings";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { planAutoSettleSettingsSync, type AutoSettleSettings } from "./autoSettleSettingsSync";
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
@@ -56,8 +57,28 @@ export function SettingsLabsRouteScreen() {
           />
         </SettingsSection>
         <ToolCallVisibilitySection />
-        <BetaSettingsSection />
         <LegacySettingsSection />
+        <MachineBetaSection
+          title="Linked environments"
+          icon="link"
+          capability="peerLinks"
+          setting="linkedEnvironmentsEnabled"
+          description="Let agents on a machine work on your other machines, and theirs on it. Turn it on for each machine. While off, nothing new starts over a link; running tasks finish."
+        />
+        <MachineBetaSection
+          title="Fast worktree checkout"
+          icon="bolt.circle"
+          capability="fastWorktreeCheckout"
+          setting="fastWorktreeCheckout"
+          description="On a Mac, clone new worktrees from a checkout cached in the T3 home folder instead of writing every file. Uses Git’s normal checkout when it can’t. Turning it off deletes the cache."
+        />
+        <MachineBetaSection
+          title="Automatic code indexing"
+          icon="magnifyingglass"
+          capability="projectCode"
+          setting="autoCodeIndexEnabled"
+          description="Index a project when you add it, and a worktree while an agent works in it. A worktree's index is removed when its thread settles. While this is off, a checkout only indexes when something asks it a code question."
+        />
       </ScrollView>
     </SettingsScreen>
   );
@@ -239,89 +260,73 @@ export function NewThreadSettingsSection() {
   );
 }
 
-/** Per machine, since each machine's own setting decides whether it links and answers links. */
-function BetaSettingsSection() {
+type MachineBetaSetting =
+  | "linkedEnvironmentsEnabled"
+  | "fastWorktreeCheckout"
+  | "autoCodeIndexEnabled";
+
+/** One switch per connected machine that offers the beta, since each machine's own setting decides. */
+function MachineBetaSection({
+  title,
+  icon,
+  capability,
+  setting,
+  description,
+}: {
+  readonly title: string;
+  readonly icon: ComponentProps<typeof SettingsSwitchRow>["icon"];
+  readonly capability: "peerLinks" | "fastWorktreeCheckout" | "projectCode";
+  readonly setting: MachineBetaSetting;
+  readonly description: string;
+}) {
   const { environments } = useEnvironments();
   const supported = environments.filter(
     (environment) =>
       environment.connection.phase === "connected" &&
-      environment.serverConfig?.environment.capabilities.peerLinks === true,
+      environment.serverConfig?.environment.capabilities[capability] === true,
   );
-  const indexing = environments.filter(
-    (environment) =>
-      environment.connection.phase === "connected" &&
-      environment.serverConfig?.environment.capabilities.projectCode === true,
-  );
-  const writable = useEnvironmentsWithScope(environments, AuthSettingsWriteScope);
+  const writable = useEnvironmentsWithScope(supported, AuthSettingsWriteScope);
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
-    label: "linked environments beta update",
+    label: `${setting} beta update`,
     reportFailure: true,
   });
-  if (supported.length === 0 && indexing.length === 0) return null;
+  if (supported.length === 0) return null;
   return (
-    <View className="gap-6">
-      {supported.length === 0 ? null : (
-        <View className="gap-3">
-          <SettingsSection title="Beta: Linked environments">
-            {supported.map((environment) => {
-              const policy = environment.serverConfig?.managedPolicy;
-              const managed = isManagedSettingPath(policy, "linkedEnvironmentsEnabled");
-              return (
-                <SettingsSwitchRow
-                  key={environment.environmentId}
-                  icon="link"
-                  label={environment.label}
-                  {...(managed ? { subtitle: `Managed by ${policy?.organization}.` } : {})}
-                  value={environment.serverConfig?.settings.linkedEnvironmentsEnabled === true}
-                  disabled={managed || !writable.has(environment.environmentId)}
-                  onValueChange={(value) =>
-                    void updateSettings({
-                      environmentId: environment.environmentId,
-                      input: { patch: { linkedEnvironmentsEnabled: value } },
-                    })
-                  }
-                />
-              );
-            })}
-          </SettingsSection>
-          <Text className="px-2 text-sm text-foreground-muted">
-            Let agents on a machine work on your other machines, and theirs on it. Turn it on for
-            each machine. While it is off, nothing new starts over a link; tasks already running
-            finish.
-          </Text>
-        </View>
-      )}
-      {indexing.length === 0 ? null : (
-        <View className="gap-3">
-          <SettingsSection title="Beta: Automatic code indexing">
-            {indexing.map((environment) => {
-              const policy = environment.serverConfig?.managedPolicy;
-              const managed = isManagedSettingPath(policy, "autoCodeIndexEnabled");
-              return (
-                <SettingsSwitchRow
-                  key={environment.environmentId}
-                  icon="magnifyingglass"
-                  label={environment.label}
-                  {...(managed ? { subtitle: `Managed by ${policy?.organization}.` } : {})}
-                  value={environment.serverConfig?.settings.autoCodeIndexEnabled !== false}
-                  disabled={managed || !writable.has(environment.environmentId)}
-                  onValueChange={(value) =>
-                    void updateSettings({
-                      environmentId: environment.environmentId,
-                      input: { patch: { autoCodeIndexEnabled: value } },
-                    })
-                  }
-                />
-              );
-            })}
-          </SettingsSection>
-          <Text className="px-2 text-sm text-foreground-muted">
-            Index a project when you add it, and a worktree while an agent works in it. A worktree's
-            index is removed when its thread settles. While this is off, a checkout only indexes
-            when something asks it a code question.
-          </Text>
-        </View>
-      )}
+    <View className="gap-3">
+      <SettingsSection title={`Beta: ${title}`}>
+        {supported.map((environment) => {
+          const policy = environment.serverConfig?.managedPolicy;
+          const managed = isManagedSettingPath(policy, setting);
+          return (
+            <SettingsSwitchRow
+              key={environment.environmentId}
+              icon={icon}
+              label={environment.label}
+              {...(managed ? { subtitle: `Managed by ${policy?.organization}.` } : {})}
+              value={
+                setting === "autoCodeIndexEnabled"
+                  ? environment.serverConfig?.settings[setting] !== false
+                  : environment.serverConfig?.settings[setting] === true
+              }
+              disabled={managed || !writable.has(environment.environmentId)}
+              onValueChange={(value) =>
+                void updateSettings({
+                  environmentId: environment.environmentId,
+                  input: {
+                    patch:
+                      setting === "linkedEnvironmentsEnabled"
+                        ? { linkedEnvironmentsEnabled: value }
+                        : setting === "fastWorktreeCheckout"
+                          ? { fastWorktreeCheckout: value }
+                          : { autoCodeIndexEnabled: value },
+                  },
+                })
+              }
+            />
+          );
+        })}
+      </SettingsSection>
+      <Text className="px-2 text-sm text-foreground-muted">{description}</Text>
     </View>
   );
 }

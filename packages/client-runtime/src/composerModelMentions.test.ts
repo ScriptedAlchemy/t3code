@@ -51,9 +51,12 @@ describe("rankComposerModelMentions", () => {
     expect(rank("gpt-6.1").toSorted()).toEqual(["opencode:traex-gpt", "traex:gpt"]);
   });
 
-  it("does not fuzzy-match words that only resemble a model", () => {
-    expect(rank("src")).toEqual([]);
-  });
+  it.each(["src", "g", "agent", "pus"])(
+    "does not offer models whose words only contain @%s",
+    (query) => {
+      expect(rank(query)).toEqual([]);
+    },
+  );
 });
 
 describe("formatComposerModelMention", () => {
