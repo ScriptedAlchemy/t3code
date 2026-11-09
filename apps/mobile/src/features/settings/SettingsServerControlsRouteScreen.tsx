@@ -451,7 +451,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     onValueChange={(value) => write({ groupConversationsEnabled: value })}
                   />
                 </SettingsSection>
-                <SettingsSection title="Project memory">
+                <SettingsSection title="Holographic memory">
                   <SettingsSwitchRow
                     icon="brain"
                     label="Save facts from finished runs"
@@ -467,7 +467,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     onValueChange={(value) => write({ enableAssistedLearning: value })}
                   />
                 </SettingsSection>
-                <SettingsSection title="Conversation summaries">
+                <SettingsSection title="LCM: conversation summaries">
                   <SettingsSwitchRow
                     icon="doc.text"
                     label="Summarize older messages"
@@ -481,7 +481,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                 selectedTargets.some(
                   (target) => target.serverConfig.environment.capabilities.externalHistory === 1,
                 ) ? (
-                  <SettingsSection title="External history">
+                  <SettingsSection title="LCM: external history">
                     {selectedTargets
                       .filter(
                         (target) =>

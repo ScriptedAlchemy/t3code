@@ -817,21 +817,27 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Save facts from finished runs",
     to: "/settings/labs",
     scope: "project-defaults",
-    searchTerms: ["zack automatic assisted learning project memory knowledge facts extract model"],
+    searchTerms: [
+      "zack holographic memory automatic assisted learning project knowledge facts extract model",
+    ],
   },
   {
     id: "conversation-summaries",
     title: "Summarize older messages",
     to: "/settings/labs",
     scope: "project-defaults",
-    searchTerms: ["zack conversation summaries history context handoff fork provider switch model"],
+    searchTerms: [
+      "zack lcm lossless context conversation summaries history handoff fork provider switch model",
+    ],
   },
   {
     id: "external-history",
     title: "External history",
     to: "/settings/labs",
     scope: "environment",
-    searchTerms: ["zack codex native cli app vscode chatgpt export conversation search history"],
+    searchTerms: [
+      "zack lcm lossless context codex native cli app vscode chatgpt export conversation search history",
+    ],
   },
   {
     id: "group-conversations",
