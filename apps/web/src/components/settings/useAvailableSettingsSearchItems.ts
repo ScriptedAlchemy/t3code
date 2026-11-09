@@ -75,5 +75,6 @@ export function useAvailableSettingsSearchItems() {
     hasPeerLinkHost,
     hasFastWorktreeCheckoutEnvironment,
     hasTextGeneratorsEnvironment,
+    hasPrimaryEnvironment: primaryEnvironmentId !== null,
   });
 }
