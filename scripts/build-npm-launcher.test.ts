@@ -392,65 +392,65 @@ fs.readFileSync = (file, ...rest) => {
         );
       }),
   );
-  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
-    "does not publish an unusable release",
+});
+
+for (const { name, executable } of [
+  { name: "missing loader", executable: "#!/t3-test-missing-loader\n" },
+  {
+    name: "loader failure",
+    executable: '#!/bin/sh\necho "runtime loader failed" >&2\nexit 42\n',
+  },
+  { name: "terminated probe", executable: "#!/bin/sh\nkill -TERM $$\n" },
+  {
+    name: "unresponsive probe",
+    executable: `#!/bin/sh
+trap 'echo caught > "$T3CODE_TEST_TERM"; exit 42' TERM
+mkfifo "$T3CODE_TEST_READY.fifo" || exit 1
+exec 3<>"$T3CODE_TEST_READY.fifo"
+echo ready > "$T3CODE_TEST_READY"
+read -r unused <&3
+`,
+  },
+]) {
+  it.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    `does not publish an unusable release: ${name}`,
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        for (const executable of [
-          "#!/t3-test-missing-loader\n",
-          '#!/bin/sh\necho "runtime loader failed" >&2\nexit 42\n',
-          "#!/bin/sh\nkill -TERM $$\n",
-          '#!/bin/sh\ntrap \'echo caught > "$T3CODE_TEST_TERM"; exit 42\' TERM\necho ready > "$T3CODE_TEST_READY"\nwhile :; do :; done\n',
-        ]) {
-          const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-npm-validation-test-" });
-          const output = yield* buildNpmLauncher({
-            version: VERSION,
-            outputDir: path.join(root, "out"),
-          });
-          const release = yield* serveFakeRelease(root, executable);
-          const home = path.join(root, "home");
-          const dir = path.join(home, "runtime/versions", VERSION);
-          const probeTimeoutHook = path.join(root, "probe-timeout.mjs");
-          yield* fs.writeFileString(
-            probeTimeoutHook,
-            `import childProcess from "node:child_process";
-import { syncBuiltinESMExports } from "node:module";
-const { spawnSync } = childProcess;
-childProcess.spawnSync = (command, args, options) => spawnSync(command, args,
-  options?.timeout === undefined ? options : { ...options, timeout: 500 });
-syncBuiltinESMExports();
-`,
-          );
-          const env = {
-            PATH: (yield* HostProcess.Environment).PATH,
-            T3CODE_HOME: home,
-            T3CODE_RELEASE_BASE_URL: release.baseUrl,
-            T3CODE_TEST_READY: path.join(root, "probe-ready"),
-            T3CODE_TEST_TERM: path.join(root, "probe-term"),
-          };
-          const launcher = path.join(output.packageDir, "bin/t3.mjs");
-          const failed = yield* run(
-            process.execPath,
-            ["--import", probeTimeoutHook, launcher, "serve"],
-            { cwd: root, env },
-          );
-          assert.equal(failed.exitCode, 1, failed.stderr);
-          assert.deepStrictEqual(yield* fs.readDirectory(path.dirname(dir)), [], failed.stderr);
-          assert.include(failed.stderr, "could not run");
-          if (executable.includes("runtime loader failed")) {
-            assert.include(failed.stderr, "runtime loader failed");
-          }
-          if (executable.includes("trap")) {
-            assert.isTrue(yield* fs.exists(env.T3CODE_TEST_READY), failed.stderr);
-            assert.isFalse(yield* fs.exists(env.T3CODE_TEST_TERM));
-          }
-          if ((yield* HostProcess.Platform) === "linux") {
-            assert.include(failed.stderr, "glibc");
-            assert.include(failed.stderr, "musl");
-          }
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-npm-validation-test-" });
+        const output = yield* buildNpmLauncher({
+          version: VERSION,
+          outputDir: path.join(root, "out"),
+        });
+        const release = yield* serveFakeRelease(root, executable);
+        const home = path.join(root, "home");
+        const dir = path.join(home, "runtime/versions", VERSION);
+        const env = {
+          PATH: (yield* HostProcess.Environment).PATH,
+          T3CODE_HOME: home,
+          T3CODE_RELEASE_BASE_URL: release.baseUrl,
+          T3CODE_TEST_READY: path.join(root, "probe-ready"),
+          T3CODE_TEST_TERM: path.join(root, "probe-term"),
+        };
+        const launcher = path.join(output.packageDir, "bin/t3.mjs");
+        const failed = yield* run(process.execPath, [launcher, "serve"], { cwd: root, env });
+        assert.equal(failed.exitCode, 1, failed.stderr);
+        assert.deepStrictEqual(yield* fs.readDirectory(path.dirname(dir)), [], failed.stderr);
+        assert.include(failed.stderr, "could not run");
+        if (executable.includes("runtime loader failed")) {
+          assert.include(failed.stderr, "runtime loader failed");
         }
-      }),
+        if (name === "terminated probe") assert.include(failed.stderr, "SIGTERM");
+        if (name === "unresponsive probe") {
+          assert.isTrue(yield* fs.exists(env.T3CODE_TEST_READY), failed.stderr);
+          assert.isFalse(yield* fs.exists(env.T3CODE_TEST_TERM));
+          assert.include(failed.stderr, "ETIMEDOUT");
+        }
+        if ((yield* HostProcess.Platform) === "linux") {
+          assert.include(failed.stderr, "glibc");
+          assert.include(failed.stderr, "musl");
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
-});
+}
