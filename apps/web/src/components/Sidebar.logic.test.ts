@@ -869,7 +869,9 @@ describe("filterSidebarV2VisibleThreads", () => {
     expect(visibleIds(null, null)).toEqual(["local", "remote", "local-other"]);
     expect(visibleIds(null, hidden())).toEqual(["local", "local-other"]);
     expect(visibleIds(localScope, hidden())).toEqual(["local"]);
-    expect(visibleIds(remoteScope, hidden())).toEqual([]);
+    // Explicitly scoping to the offline environment's project keeps its
+    // threads listed, so they stay discoverable under that scope.
+    expect(visibleIds(remoteScope, hidden())).toEqual(["remote"]);
     // The open thread's row stays listed, but only within the project scope.
     expect(visibleIds(null, hidden(remoteKey))).toEqual(["local", "remote", "local-other"]);
     expect(visibleIds(localScope, hidden(remoteKey))).toEqual(["local"]);
@@ -877,6 +879,7 @@ describe("filterSidebarV2VisibleThreads", () => {
     expect(hidesOffline(null, null)).toBe(false);
     expect(hidesOffline(null, hidden())).toBe(true);
     expect(hidesOffline(localScope, hidden())).toBe(false);
+    expect(hidesOffline(remoteScope, hidden())).toBe(false);
     expect(hidesOffline(null, hidden(remoteKey))).toBe(false);
   });
 
@@ -900,11 +903,14 @@ describe("filterSidebarV2VisibleThreads", () => {
     const delegated = new Set([
       threadKey({ environmentId: task.environmentId, threadId: task.id }),
     ]);
-    const visibleIds = (hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null) =>
+    const visibleIds = (
+      hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null,
+      scope: ReadonlySet<string> | null = null,
+    ) =>
       filterSidebarV2VisibleThreads(
         threads,
-        null,
-        withoutHiddenDelegationParents(delegated, threads, hiddenEnvironmentIds),
+        scope,
+        withoutHiddenDelegationParents(delegated, threads, hiddenEnvironmentIds, scope),
         hiddenEnvironmentIds === null
           ? null
           : { environmentIds: hiddenEnvironmentIds, keptThreadKey: null },
@@ -913,6 +919,20 @@ describe("filterSidebarV2VisibleThreads", () => {
     expect(visibleIds(null)).toEqual(["thread-parent"]);
     expect(visibleIds(new Set([parentEnvironmentId]))).toEqual(["thread-task"]);
     expect(visibleIds(new Set([taskEnvironmentId]))).toEqual(["thread-parent"]);
+    const hiddenParents = new Set([parentEnvironmentId]);
+    const bothProjects = new Set([
+      `${parentEnvironmentId}:${parent.projectId}`,
+      `${taskEnvironmentId}:${task.projectId}`,
+    ]);
+    expect(visibleIds(hiddenParents, bothProjects)).toEqual(["thread-parent"]);
+    expect(
+      visibleIds(
+        hiddenParents,
+        new Set([`${parentEnvironmentId}:other-project`, `${taskEnvironmentId}:${task.projectId}`]),
+      ),
+    ).toEqual(["thread-task"]);
+    // Widening a route back to all projects hides the offline parent again.
+    expect(visibleIds(hiddenParents, null)).toEqual(["thread-task"]);
   });
 });
 
