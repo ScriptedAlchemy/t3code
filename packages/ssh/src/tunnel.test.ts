@@ -142,7 +142,16 @@ const runArchiveRunner = Effect.fn("test.runArchiveRunner")(
 );
 
 describe("ssh tunnel scripts", () => {
-  it.live.each(["launchd", "systemd", "none"] as const)(
+  const serviceManagers = [
+    "launchd",
+    "systemd",
+    "systemd-unavailable",
+    "systemd-unavailable-xdg",
+    "systemd-unavailable-relative-xdg",
+    "systemd-unavailable-login-xdg",
+    "none",
+  ] as const;
+  it.live.each(serviceManagers)(
     "respects %s service ownership when the server is stopped",
     (manager) =>
       Effect.gen(function* () {
@@ -175,12 +184,27 @@ esac
           yield* fs.makeDirectory(agents, { recursive: true });
           yield* fs.writeFileString(`${agents}/com.t3tools.t3code.service.plist`, "installed");
         }
+        const xdgConfigHome =
+          manager === "systemd-unavailable-xdg" || manager === "systemd-unavailable-login-xdg"
+            ? `${root}/custom config`
+            : manager === "systemd-unavailable-relative-xdg"
+              ? "relative-config"
+              : undefined;
+        if (manager.startsWith("systemd-unavailable")) {
+          const units = `${manager === "systemd-unavailable-xdg" ? xdgConfigHome : `${root}/.config`}/systemd/user`;
+          yield* fs.makeDirectory(units, { recursive: true });
+          yield* fs.writeFileString(`${units}/t3code.service`, "installed");
+        }
         const ssh = ChildProcessSpawner.make((command) => {
           if (command._tag !== "StandardCommand") return Effect.die("Expected SSH command");
           return spawner.spawn(
             ChildProcess.make("sh", ["-s", "--", "test-peer"], {
               ...command.options,
-              env: { HOME: root, PATH: `${bin}:/usr/bin:/bin` },
+              env: {
+                HOME: root,
+                PATH: `${bin}:/usr/bin:/bin`,
+                ...(xdgConfigHome === undefined ? {} : { XDG_CONFIG_HOME: xdgConfigHome }),
+              },
               extendEnv: false,
             }),
           );
