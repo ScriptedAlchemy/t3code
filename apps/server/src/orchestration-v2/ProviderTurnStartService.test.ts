@@ -1451,74 +1451,115 @@ effectIt.effect("recovers an abandoned failed turn before continuing its native 
   }),
 );
 
-effectIt.effect("offers bounded fact references to unattended first turns only", () =>
-  Effect.gen(function* () {
-    const text = "Review SQLite migrations for project memory";
-    const projectId = ProjectId.make("project-native-account-command");
-    const suggest = vi.fn<ProjectKnowledge.ProjectKnowledge["Service"]["suggest"]>(() =>
-      Effect.succeed([
-        {
-          fact: {
-            id: ProjectFactId.make("fact-migrations"),
-            projectId,
-            status: "saved",
-            kind: "decision",
-            origin: { kind: "user" },
-            content: "Private assertion body",
-            entities: [],
-            tags: [],
-            sources: [{ kind: "user" }],
-            revision: 1,
-            trust: 0.8,
-            retrievalCount: 0,
-            createdAt: "2026-09-04T12:00:00.000Z",
-            updatedAt: "2026-09-04T12:00:00.000Z",
-            forgottenAt: null,
+effectIt.effect.each([
+  "success",
+  "error",
+  "defect",
+  "interrupted",
+  "interrupted-error",
+  "interrupted-defect",
+] as const)(
+  "offers bounded fact references to unattended first turns with lookup outcome %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const text = "Review SQLite migrations for project memory. ".repeat(100);
+      const projectId = ProjectId.make("project-native-account-command");
+      const suggest = vi.fn<ProjectKnowledge.ProjectKnowledge["Service"]["suggest"]>(() => {
+        if (outcome === "error")
+          return Effect.fail(new ProjectKnowledgeError({ reason: "storage", projectId }));
+        if (outcome === "defect") return Effect.die(new Error("Memory search encoding failed"));
+        if (outcome === "interrupted") return Effect.interrupt;
+        if (outcome === "interrupted-error" || outcome === "interrupted-defect")
+          return Effect.failCause(
+            Cause.combine(
+              Cause.interrupt(),
+              outcome === "interrupted-error"
+                ? Cause.fail(new ProjectKnowledgeError({ reason: "storage", projectId }))
+                : Cause.die(new Error("Memory cleanup failed")),
+            ),
+          );
+        return Effect.succeed([
+          {
+            fact: {
+              id: ProjectFactId.make("fact-migrations"),
+              projectId,
+              status: "saved",
+              kind: "decision",
+              origin: { kind: "user" },
+              content: "Private assertion body",
+              entities: [],
+              tags: [],
+              sources: [{ kind: "user" }],
+              revision: 1,
+              trust: 0.8,
+              retrievalCount: 0,
+              createdAt: "2026-09-04T12:00:00.000Z",
+              updatedAt: "2026-09-04T12:00:00.000Z",
+              forgottenAt: null,
+            },
+            score: {
+              holographic: 1,
+              lexical: 1,
+              tokenOverlap: 1,
+              temporalDecay: 1,
+              reinforcement: 0,
+              trust: 0.8,
+              combined: 1,
+            },
+            reason: "Private match explanation",
           },
-          score: {
-            holographic: 1,
-            lexical: 1,
-            tokenOverlap: 1,
-            temporalDecay: 1,
-            reinforcement: 0,
-            trust: 0.8,
-            combined: 1,
-          },
-          reason: "Private match explanation",
-        },
-      ]),
-    );
-    for (const [source, ordinal] of [
-      ["web", 1],
-      ["mobile", 1],
-      ["mcp", 2],
-      ["mcp", 1],
-    ] as const) {
-      const harness = makeLocalCommandHarness({
-        text,
-        previousTurn: { runStatus: "completed", turnStatus: "completed" },
-        suggestKnowledge: suggest,
+        ]);
       });
-      const projection = harness.projection();
-      harness.setProjection({
-        ...projection,
-        runs: projection.runs.map((run) => (run.status === "starting" ? { ...run, ordinal } : run)),
-        messages: projection.messages.map((message) => ({ ...message, creationSource: source })),
-      });
-      yield* harness.start;
-      const prompt = harness.startRootRun.mock.calls[0]?.[0].message.text;
-      if (source === "mcp" && ordinal === 1) {
-        expect(suggest).toHaveBeenCalledOnce();
-        expect(suggest.mock.calls[0]?.[0]).toMatchObject({ projectId, query: text });
-        expect(prompt).toContain("fact-migrations");
-        expect(prompt).toContain(text);
-        expect(prompt).not.toContain("Private");
-      } else {
-        expect(suggest).not.toHaveBeenCalled();
-        expect(prompt).toBe(text);
+      for (const [source, ordinal] of [
+        ["web", 1],
+        ["mobile", 1],
+        ["mcp", 2],
+        ["mcp", 1],
+        ["server", 1],
+      ] as const) {
+        suggest.mockClear();
+        const harness = makeLocalCommandHarness({
+          text,
+          previousTurn: { runStatus: "completed", turnStatus: "completed" },
+          suggestKnowledge: suggest,
+        });
+        const projection = harness.projection();
+        harness.setProjection({
+          ...projection,
+          runs: projection.runs.map((run) =>
+            run.status === "starting" ? { ...run, ordinal } : run,
+          ),
+          messages: projection.messages.map((message) => ({ ...message, creationSource: source })),
+        });
+        const exit = yield* Effect.exit(harness.start);
+        const unattended = (source === "mcp" || source === "server") && ordinal === 1;
+        if (unattended && outcome.startsWith("interrupted")) {
+          expect(suggest).toHaveBeenCalledOnce();
+          expect(exit._tag).toBe("Failure");
+          if (exit._tag === "Failure") expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+          expect(harness.startRootRun).not.toHaveBeenCalled();
+          expect(harness.nativeStart).not.toHaveBeenCalled();
+          continue;
+        }
+        expect(exit._tag).toBe("Success");
+        yield* dispatchKnowledge(harness.startRootRun.mock.calls[0]![0]);
+        const prompt = harness.nativeStart.mock.calls[0]?.[0].message.text;
+        if (unattended) {
+          expect(suggest).toHaveBeenCalledOnce();
+          expect(suggest.mock.calls[0]?.[0]).toMatchObject({ projectId, query: text });
+          if (outcome === "success") {
+            expect(prompt).toContain("fact-migrations");
+            expect(prompt).toContain(text);
+            expect(prompt).not.toContain("Private");
+          } else {
+            expect(prompt).toBe(text);
+          }
+        } else {
+          expect(suggest).not.toHaveBeenCalled();
+          expect(prompt).toBe(text);
+        }
       }
-    }
-  }),
+    }),
 );
 
 effectIt.effect.each([

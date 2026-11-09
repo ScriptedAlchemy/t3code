@@ -16,6 +16,7 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
+  type ResponseStreamingMode,
   type RunId,
   RuntimeRequestId,
   ThreadId,
@@ -380,6 +381,7 @@ const makeHarness = Effect.fn("GroupConversationTest.makeHarness")(function* (
   name: string,
   options: {
     readonly enabled?: boolean;
+    readonly responseStreamingMode?: ResponseStreamingMode;
     /** Runs right after a seat's records are read, to land a change behind that read. */
     readonly afterSeatRead?: (threadId: ThreadId) => Effect.Effect<void>;
     readonly runEffectWorker?: boolean;
@@ -469,7 +471,10 @@ const makeHarness = Effect.fn("GroupConversationTest.makeHarness")(function* (
         registry,
         {
           databaseLayer: database,
-          settings: { providerInstances: options.orchestratorInstances ?? CONFIGURED_INSTANCES },
+          settings: {
+            providerInstances: options.orchestratorInstances ?? CONFIGURED_INSTANCES,
+            responseStreamingMode: options.responseStreamingMode ?? "turn",
+          },
           ...(options.runEffectWorker === undefined
             ? {}
             : { runEffectWorker: options.runEffectWorker }),
@@ -1019,7 +1024,7 @@ describe("group conversations", () => {
   it.live("stops every running member and publishes what a seat had said", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const harness = yield* makeHarness("stop");
+        const harness = yield* makeHarness("stop", { responseStreamingMode: "paragraph" });
         const threadId = ThreadId.make("thread:group:stop");
         yield* withReactor(
           Effect.gen(function* () {
@@ -1029,7 +1034,7 @@ describe("group conversations", () => {
             const silent = yield* invite(threadId, OPUS);
             const holds = [
               yield* hold(harness.control, threadId, "Primary was saying"),
-              yield* hold(harness.control, talker, "STREAMEDMARK half a thought"),
+              yield* hold(harness.control, talker, "STREAMEDMARK half a thought\n\n"),
               yield* hold(harness.control, silent),
             ];
             yield* say(threadId, "go", "Go");
@@ -1046,7 +1051,11 @@ describe("group conversations", () => {
                   seats.every((projection) =>
                     projection.providerTurns.some((turn) => turn.status === "running"),
                   ) &&
-                  seats[1]!.turnItems.some((item) => item.text === "STREAMEDMARK half a thought")
+                  seats[1]!.turnItems.some(
+                    (item) =>
+                      item.type === "assistant_message" &&
+                      item.text === "STREAMEDMARK half a thought\n\n",
+                  )
                 );
               }),
             );
@@ -1075,7 +1084,7 @@ describe("group conversations", () => {
             const rows = publishedRows(after);
             assert.deepEqual(
               rows.map((row) => row.text),
-              ["STREAMEDMARK half a thought"],
+              ["STREAMEDMARK half a thought\n\n"],
               "a seat with no text publishes nothing",
             );
             assert.equal(
