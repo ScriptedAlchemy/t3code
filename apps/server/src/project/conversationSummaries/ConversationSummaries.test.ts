@@ -1134,6 +1134,107 @@ it.effect("continues coverage and handoff lookup beyond the first 500 summaries"
   }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
 });
 
+it.effect("offers the summaries nearest the present first, within the candidate limit", () => {
+  const model = citing();
+  return Effect.gen(function* () {
+    const summaryCount = 45;
+    yield* seedThread(summaryCount * 2 + 6);
+    for (let index = 0; index < summaryCount; index++)
+      yield* persistSummary(index, [index * 2, index * 2 + 1]);
+    const service = yield* ConversationSummaries.ConversationSummaries;
+    const offered = yield* service.forHandoff({
+      projectId,
+      handoffs: [yield* prepareHandoff(summaryCount * 2 + 6)],
+      itemIds: new Set(Array.from({ length: summaryCount * 2 }, (_, index) => itemId(index))),
+    });
+    assert.equal(offered.length, 40);
+    assert.deepEqual(offered[0]!.coveredItemIds, [itemId(88), itemId(89)]);
+    assert.deepEqual(offered.at(-1)!.coveredItemIds, [itemId(10), itemId(11)]);
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
+
+it.effect(
+  "offers a summary citing tool evidence that the handoff covers but does not carry",
+  () => {
+    const model = citing();
+    return Effect.gen(function* () {
+      yield* seed;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      yield* projections.apply({
+        id: EventId.make("covered-run"),
+        type: "run.updated",
+        threadId,
+        runId,
+        providerInstanceId: instanceId,
+        occurredAt: at,
+        payload: {
+          id: runId,
+          threadId,
+          ordinal: 1,
+          providerInstanceId: instanceId,
+          modelSelection: { instanceId, model: "gpt-5" },
+          providerThreadId: null,
+          userMessageId: messageId(0),
+          rootNodeId: NodeId.make("covered-run-root"),
+          activeAttemptId: null,
+          status: "completed",
+          requestedAt: at,
+          startedAt: at,
+          completedAt: at,
+          checkpointId: null,
+          contextHandoffId: null,
+        },
+      });
+      const tool: Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }> = {
+        ...item(0),
+        id: TurnItemId.make("uncarried-tool"),
+        type: "dynamic_tool",
+        toolName: "t3_thread_read",
+        input: { view: "activity" },
+        output: "Tool output. ".repeat(40),
+        completedAt: DateTime.subtract(at, { minutes: 1 }),
+      };
+      yield* projections.apply({
+        id: EventId.make("uncarried-tool-completed"),
+        type: "turn-item.updated",
+        threadId,
+        providerInstanceId: instanceId,
+        occurredAt: at,
+        payload: tool,
+      });
+      yield* summarize;
+      const summary = yield* onlySummary;
+      assert.isTrue(summary.sources.some((source) => source.kind === "turn_item"));
+      const carried = summary.sources.flatMap((source) =>
+        source.kind === "message"
+          ? [itemId(Number(source.messageId.slice("message-".length)))]
+          : [],
+      );
+      const service = yield* ConversationSummaries.ConversationSummaries;
+      // A recovery handoff reads history without MCP tool results, so it never names this item.
+      const handoff = yield* prepareHandoff(MESSAGE_COUNT);
+      const offered = yield* service.forHandoff({
+        projectId,
+        handoffs: [handoff],
+        itemIds: new Set(carried),
+      });
+      assert.deepEqual(
+        offered.map((offer) => offer.coveredItemIds),
+        [carried],
+      );
+      assert.deepEqual(
+        yield* service.forHandoff({
+          projectId,
+          handoffs: [{ ...handoff, coveredRunOrdinals: { from: 2, to: 2 } }],
+          itemIds: new Set(carried),
+        }),
+        [],
+        "evidence outside the runs a handoff covers stays out",
+      );
+    }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+  },
+);
+
 it.effect("does not spend the handoff candidate limit on stale summaries", () => {
   const model = citing();
   return Effect.gen(function* () {

@@ -600,6 +600,73 @@ describe("handoff delivery", () => {
       }),
   );
 
+  it.effect("uses a summary only when it adds history without losing any", () =>
+    Effect.gen(function* () {
+      const history = Array.from({ length: 30 }, (_, index) =>
+        message(`item:h${index}`, index % 2 === 0 ? "user" : "assistant", "x".repeat(700)),
+      );
+      const source: OrchestrationV2ContextHandoff = {
+        ...handoff,
+        history: { messages: history, coverage: "Coverage.", omittedItems: 0 },
+      };
+      const ids = (from: number, to: number) =>
+        history.slice(from, to + 1).map((entry) => entry.itemId);
+      const deliver = Effect.fn("test.deliverWithSummaries")(function* (
+        summaries: ReadonlyArray<{
+          readonly id: `summary:${string}`;
+          readonly coveredItemIds: ReadonlyArray<TurnItemId>;
+          readonly text: string;
+        }>,
+      ) {
+        let verbatim: ReadonlyArray<TurnItemId> = [];
+        let context = "";
+        let summarized: ReadonlyArray<TurnItemId> = [];
+        yield* deliverContextHandoffs({
+          handoffs: [source],
+          providerThread,
+          budget: 16_000,
+          alreadyDeliveredItemIds: new Set(),
+          summaries: () => Effect.succeed(summaries),
+          inject: (input) => {
+            verbatim = input.messages.map((entry) => entry.itemId);
+            context = input.context;
+            return Effect.succeed(true);
+          },
+          persist: (value) =>
+            Effect.sync(() => {
+              summarized = value.delivery?.summarizedItemIds ?? [];
+            }),
+        });
+        return { represented: new Set([...verbatim, ...summarized]), summarized, context };
+      });
+      const baseline = yield* deliver([]);
+      const old = {
+        id: `summary:${"a".repeat(64)}` as const,
+        coveredItemIds: ids(1, 8),
+        text: `OLD ${"o".repeat(8_000)}`,
+      };
+      const withOld = yield* deliver([old]);
+      assert.deepEqual(
+        [...baseline.represented].filter((id) => !withOld.represented.has(id)),
+        [],
+        "history that fit without summaries must still arrive",
+      );
+      const recent = {
+        id: `summary:${"b".repeat(64)}` as const,
+        coveredItemIds: ids(16, 23),
+        text: `RECENT ${"r".repeat(1_200)}`,
+      };
+      const chained = yield* deliver([recent, old]);
+      assert.deepEqual(chained.summarized, ids(16, 23));
+      assert.include(chained.context, "RECENT");
+      assert.deepEqual(
+        [...baseline.represented].filter((id) => !chained.represented.has(id)),
+        [],
+      );
+      assert.isAbove(chained.represented.size, baseline.represented.size);
+    }),
+  );
+
   it.effect.each([
     { native: true, label: "injected" },
     { native: false, label: "inline" },
