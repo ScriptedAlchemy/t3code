@@ -598,6 +598,7 @@ export const CodexDriver: ProviderDriver<
     return {
       instanceId,
       driverKind: DRIVER_KIND,
+      sharedSkillsDirectory: pathService.join(homeLayout.sharedHomePath, "skills"),
       continuationIdentity,
       displayName,
       accentColor,

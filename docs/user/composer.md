@@ -340,7 +340,9 @@ folder from `~/.claude/skills`, `~/.codex/skills`, and Antigravity's user skill 
 into `~/.agents/skills` and links it back, and links every skill there into Claude's
 and Antigravity's skill folders. Codex,
 Cursor, OpenCode, and other agents that read `~/.agents/skills` see the same set. Claude's
-account-synced skills and Codex's bundled skills stay where they are.
+account-synced skills and Codex's bundled skills stay where they are. Configured Claude and
+Codex homes participate too. Claude accounts with **Use your Claude profile** turned off keep
+their private skills.
 
 A skill found in two places with identical contents is kept once. When the contents
 differ, nothing is moved for that skill and the setting lists both paths; delete or
@@ -349,8 +351,9 @@ only in case, and for a skill folder that links to a file outside itself, since 
 would break the link. A skill you add to `~/.agents/skills` by hand
 reaches Claude at the next refresh, server start, or new account.
 
-Turning it off copies each linked skill back into Claude's and Antigravity's folders and
-removes the links. Codex keeps reading `~/.agents/skills` directly. Each environment has
+At the next refresh, T3 restores library links in configured homes that are no longer shared.
+Homes still used by another account or the default profile stay shared. Turning the library off copies each linked skill back into
+Claude's and Antigravity's folders and removes the links, including previously used homes. Codex keeps reading `~/.agents/skills` directly. Each environment has
 its own library, so turn it on for every machine you want it on.
 
 Provider commands must start the message to run. T3 Code commands such as
