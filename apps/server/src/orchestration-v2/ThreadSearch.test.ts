@@ -302,12 +302,16 @@ it.layer(layerTest)("ThreadSearch", (it) => {
       for (const id of ["page-a", "page-b", "page-c"]) {
         const threadId = ThreadId.make(id);
         yield* projections.apply(
-          thread(threadId, projectId, id === "page-c" ? { archivedAt: at(2) } : {}),
+          thread(threadId, projectId, {
+            title: `Thread ${id}`,
+            ...(id === "page-c" ? { archivedAt: at(2) } : {}),
+          }),
         );
         yield* projections.apply(message(threadId, `${id}-message`, "user", "paged-match"));
       }
       const first = yield* search.search({ projectId, query: "paged-match", limit: 1 });
       assert.equal(first.matches[0]?.messageId, MessageId.make("page-a-message"));
+      assert.include(first.matches[0], { title: "Thread page-a" });
       assert.match(first.matches[0]?.digest ?? "", /^[a-f0-9]{64}$/);
       if (!first.nextCursor) return assert.fail("First page must have continuation");
       const second = yield* search.search({

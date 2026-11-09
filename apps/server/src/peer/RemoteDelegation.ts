@@ -300,13 +300,14 @@ const make = Effect.gen(function* () {
       target.projectId,
     );
     const task = taskPrompt(input);
+    const title = input.title ?? parent.thread.title;
     const launched = yield* forwarding.call(
       scope,
       ProjectToolkit.tools.t3_thread_launch,
       target.environmentId,
       {
         projectId,
-        title: input.title ?? parent.thread.title,
+        title,
         modelSelection: { instanceId, model, ...(options === undefined ? {} : { options }) },
         ...(runtimeMode === undefined ? {} : { runtimeMode }),
         ...(interactionMode === undefined ? {} : { interactionMode }),
@@ -328,6 +329,7 @@ const make = Effect.gen(function* () {
       environmentId: target.environmentId,
       threadId: launched.threadId,
       label: link?.label ?? target.environmentId,
+      title,
       ...(launched.runId === null ? {} : { runId: launched.runId }),
     };
     const recorded = yield* threads

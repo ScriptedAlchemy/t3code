@@ -1352,10 +1352,10 @@ const withProductFields = (name: string, value: unknown, child: boolean): unknow
     return typeof id === "string"
       ? {
           ...thread,
-          link: formatThreadLink({
-            environmentId: EVAL_ENVIRONMENT_ID,
-            threadId: ThreadId.make(id),
-          }),
+          link: formatThreadLink(
+            { environmentId: EVAL_ENVIRONMENT_ID, threadId: ThreadId.make(id) },
+            typeof thread.title === "string" ? thread.title : undefined,
+          ),
         }
       : thread;
   };

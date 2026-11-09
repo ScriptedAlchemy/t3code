@@ -144,7 +144,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         ...result,
         matches: result.matches.map((match) => ({
           ...match,
-          link: McpInvocationContext.threadLinkFor(scope, match.threadId),
+          link: McpInvocationContext.threadLinkFor(scope, match.threadId, match.title),
         })),
       };
     }),

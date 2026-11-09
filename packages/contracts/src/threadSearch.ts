@@ -40,6 +40,7 @@ export type OrchestrationSearchThreadsInput = typeof OrchestrationSearchThreadsI
 export const OrchestrationThreadSearchMatch = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  title: Schema.optionalKey(Schema.String),
   source: OrchestrationThreadSearchSource,
   messageId: Schema.optionalKey(MessageId),
   digest: Schema.optionalKey(Schema.String),

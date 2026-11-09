@@ -74,6 +74,7 @@ const ExactSearchRequest = Schema.Struct({
 const ExactSearchRow = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  title: Schema.String,
   source: OrchestrationThreadSearchSource,
   messageId: MessageId,
   updatedAt: IsoDateTime,
@@ -381,6 +382,7 @@ export const make = Effect.gen(function* () {
         SELECT
           threads.thread_id,
           threads.project_id,
+          json_extract(threads.payload_json, '$.title') AS thread_title,
           threads.archived_at,
           messages.role,
           json_extract(messages.payload_json, '$.text') AS match_text,
@@ -406,6 +408,7 @@ export const make = Effect.gen(function* () {
         SELECT
           thread_id,
           project_id,
+          thread_title,
           role AS source,
           message_id,
           archived_at,
@@ -425,6 +428,7 @@ export const make = Effect.gen(function* () {
       SELECT
         thread_id AS "threadId",
         project_id AS "projectId",
+        thread_title AS title,
         source,
         message_id AS "messageId",
         thread_updated_at AS "updatedAt",
@@ -496,6 +500,7 @@ export const make = Effect.gen(function* () {
             Effect.map((hash) => ({
               threadId: row.threadId,
               projectId: row.projectId,
+              title: row.title,
               source: row.source,
               messageId: row.messageId,
               digest: Hex.encode(hash),
