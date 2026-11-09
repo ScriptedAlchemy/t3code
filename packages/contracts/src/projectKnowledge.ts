@@ -18,6 +18,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   OrchestrationSearchThreadsInput,
   OrchestrationSearchThreadsResult,
+  THREAD_SEARCH_QUERY_MAX_LENGTH,
 } from "./threadSearch.ts";
 
 export const ProjectFactId = TrimmedNonEmptyString.pipe(Schema.brand("ProjectFactId"));
@@ -500,10 +501,8 @@ export interface ProjectMemorySuggestion {
   readonly reason: string;
 }
 
-const PROJECT_MEMORY_SUGGESTION_QUERY_MAX_LENGTH = 1000;
-
 export function boundProjectMemorySuggestionQuery(query: string): string {
-  return query.trim().slice(0, PROJECT_MEMORY_SUGGESTION_QUERY_MAX_LENGTH);
+  return query.trim().slice(0, THREAD_SEARCH_QUERY_MAX_LENGTH);
 }
 
 const memoryQueryFiller = new Set([

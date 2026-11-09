@@ -2,10 +2,15 @@ import { RegistryContext } from "@effect/atom-react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
-import { Atom, AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 
 vi.mock("./atom-registry", () => ({ appAtomRegistry: AtomRegistry.make() }));
+vi.mock("./orchestration", () => ({
+  orchestrationEnvironment: {
+    threadLinkMetadata: () => Atom.make(AsyncResult.success({})),
+  },
+}));
 vi.mock("./projects", () => ({ environmentProjects: {} }));
 vi.mock("./server", () => ({
   environmentServerConfigsAtom: Atom.make(new Map()),

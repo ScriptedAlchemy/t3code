@@ -23,6 +23,7 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -140,7 +141,15 @@ const unattendedMemoryHint = Effect.fn("ProviderTurnStartService.unattendedMemor
     })
     .pipe(
       Effect.timeoutOption("150 millis"),
-      Effect.orElseSucceed(() => Option.none()),
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+        if (Cause.hasDies(cause))
+          return Effect.logWarning("Optional project memory lookup failed", {
+            projectId,
+            runId,
+          }).pipe(Effect.andThen(Effect.succeedNone));
+        return Effect.succeedNone;
+      }),
     );
   // IDs can also be supplied by clients. Only opaque identifiers belong in a provider hint.
   const opaqueId = /^[a-zA-Z0-9_:.-]{1,128}$/;
