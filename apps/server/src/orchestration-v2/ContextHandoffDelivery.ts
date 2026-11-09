@@ -15,8 +15,14 @@ import {
   selectHistory,
 } from "@t3tools/provider-core/server/handoffBudget";
 
-// Matches the tail summaries never cover, so the latest exchange always arrives verbatim.
-const FRESH_TAIL_ITEMS = 6;
+// Matches the messages the summary pass never covers, so the latest exchange stays verbatim.
+const FRESH_TAIL_MESSAGES = 6;
+
+const MESSAGE_KINDS: ReadonlySet<string> = new Set([
+  "user_message",
+  "assistant_message",
+  "peer_reply",
+]);
 
 /** The provider prompt for a turn that carries inline context ahead of the user's text. */
 export const withInlineContext = (context: string, userText: string): string =>
@@ -48,8 +54,8 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       messages: ReadonlyArray<OrchestrationV2HistoricalMessage>,
     ) => Effect.Effect<ReadonlyMap<string, string>, EvidenceError>;
     /**
-     * Current conversation summaries whose sources are all among `itemIds`, oldest first. One
-     * may replace the history items it covers when the budget would otherwise omit them.
+     * Current conversation summaries that cover some of `itemIds`, nearest the present first. One
+     * may take the place of the history items it covers when the budget omits history.
      */
     readonly summaries?: (
       itemIds: ReadonlySet<string>,
@@ -123,21 +129,21 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       input.summaries !== undefined &&
       (priorOmitted.size > 0 || selected.omittedItemIds.length > 0)
     ) {
-      // The newest messages stay verbatim; summaries only stand in for older history.
-      const tail = new Set<string>(
-        messages.slice(-FRESH_TAIL_ITEMS).map((message) => message.itemId),
+      // The newest messages stay verbatim when they fit. Tool results around them may give way
+      // to a summary.
+      const pinned = new Set<string>(
+        messages
+          .filter((message) => message.kind !== undefined && MESSAGE_KINDS.has(message.kind))
+          .slice(-FRESH_TAIL_MESSAGES)
+          .flatMap((message) => (selected.messages.includes(message) ? [message.itemId] : [])),
       );
       const eligible = new Set(
         [...priorOmitted, ...messages.map((message) => message.itemId)].filter(
-          (id) => !tail.has(id) && !input.alreadyDeliveredItemIds.has(id),
+          (id) => !pinned.has(id) && !input.alreadyDeliveredItemIds.has(id),
         ),
       );
       for (const candidate of yield* input.summaries(eligible)) {
-        const omittedNow = new Set([...priorOmitted, ...selected.omittedItemIds]);
-        if (
-          !candidate.coveredItemIds.some((id) => omittedNow.has(id)) ||
-          candidate.coveredItemIds.some((id) => summarized.has(id) || !eligible.has(id))
-        )
+        if (candidate.coveredItemIds.some((id) => summarized.has(id) || !eligible.has(id)))
           continue;
         const proposed = new Set([...summarized, ...candidate.coveredItemIds]);
         const summaryBlock = [...chosen, candidate].map((summary) => summary.text).join("\n\n");
@@ -148,12 +154,12 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
             priorOmittedCount - [...proposed].filter((id) => priorOmitted.has(id)).length,
           budget,
         });
-        const keptTail = selected.messages.filter((message) => tail.has(message.itemId));
+        // A summary earns its space only when more history arrives with it than without it.
+        const kept = new Set<string>(reduced.messages.map((message) => message.itemId));
         if (
           historyCost(reduced.messages, reduced.context) > budget ||
-          keptTail.some(
-            (message) => !reduced.messages.some((kept) => kept.itemId === message.itemId),
-          )
+          [...pinned].some((id) => !kept.has(id)) ||
+          kept.size + proposed.size <= selected.messages.length + summarized.size
         )
           continue;
         chosen.push(candidate);

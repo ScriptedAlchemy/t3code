@@ -70,8 +70,9 @@ export interface ConversationSummaryRuntimeShape {
     readonly runId: RunId;
   }) => Effect.Effect<{ readonly hasMore: boolean }, ConversationSummaryPassError>;
   /**
-   * Current summaries, oldest first, whose sources are all among `itemIds` of the pending
-   * handoffs. Never fails: a summary that cannot be verified is simply not offered.
+   * Current summaries that cover some of `itemIds`, nearest the present first. Every other
+   * source lies in a run the pending handoffs cover. Never fails: a summary that cannot be
+   * verified is simply not offered.
    */
   readonly forHandoff: (input: {
     readonly projectId: ProjectId;

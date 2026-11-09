@@ -600,7 +600,7 @@ describe("handoff delivery", () => {
       }),
   );
 
-  it.effect("uses a summary only when it adds history without losing any", () =>
+  it.effect("uses a summary only when more history arrives with it than without it", () =>
     Effect.gen(function* () {
       const history = Array.from({ length: 30 }, (_, index) =>
         message(`item:h${index}`, index % 2 === 0 ? "user" : "assistant", "x".repeat(700)),
@@ -637,7 +637,12 @@ describe("handoff delivery", () => {
               summarized = value.delivery?.summarizedItemIds ?? [];
             }),
         });
-        return { represented: new Set([...verbatim, ...summarized]), summarized, context };
+        return {
+          represented: new Set([...verbatim, ...summarized]),
+          verbatim,
+          summarized,
+          context,
+        };
       });
       const baseline = yield* deliver([]);
       const old = {
@@ -664,6 +669,8 @@ describe("handoff delivery", () => {
         [],
       );
       assert.isAbove(chained.represented.size, baseline.represented.size);
+      for (const delivery of [baseline, withOld, chained])
+        assert.includeMembers([...delivery.verbatim], ids(24, 29), "the six newest messages");
     }),
   );
 
