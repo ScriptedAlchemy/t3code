@@ -18,23 +18,39 @@ import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 
 /**
- * Threads an agent starts over MCP are `mcp:<uuid>`, and agents often paste the
- * bare uuid. The id is never rewritten, so permission checks keyed on it still
- * hold; the miss only names a live thread the caller could read by its full id.
+ * Agents paste the bare uuid of an `mcp:<uuid>` thread, or the session id their provider exposes.
+ * The id is never rewritten, so permission checks keyed on it still hold; the miss only names a
+ * live thread the caller could read by its full id.
  */
 export const threadNotFound = Effect.fn("OrchestratorMcpService.threadNotFound")(function* (
-  threads: Pick<ThreadManagement.ThreadManagementService["Service"], "getThreadShell">,
+  threads: Pick<
+    ThreadManagement.ThreadManagementService["Service"],
+    "getThreadShell" | "findThreadIdByNativeThreadId"
+  >,
   threadId: ThreadId,
   message: string,
 ) {
+  const isLive = (id: ThreadId) =>
+    threads.getThreadShell(id).pipe(
+      Effect.map((shell) => shell !== null && shell.deletedAt === null),
+      Effect.orElseSucceed(() => false),
+    );
   const prefixed = ThreadId.make(`mcp:${threadId}`);
-  const shell = yield* threads.getThreadShell(prefixed).pipe(Effect.orElseSucceed(() => null));
+  if (yield* isLive(prefixed)) {
+    return yield* new OrchestratorMcpFailure({
+      code: "thread_not_found",
+      message: `${message} Did you mean \`${prefixed}\`?`,
+    });
+  }
+  const owner = yield* threads
+    .findThreadIdByNativeThreadId(threadId)
+    .pipe(Effect.orElseSucceed(() => null));
   return yield* new OrchestratorMcpFailure({
     code: "thread_not_found",
     message:
-      shell === null || shell.deletedAt !== null
-        ? message
-        : `${message} Did you mean \`${prefixed}\`?`,
+      owner !== null && (yield* isLive(owner))
+        ? `${message} That is a provider's session id. This thread's T3 id is \`${owner}\`.`
+        : message,
   });
 });
 
