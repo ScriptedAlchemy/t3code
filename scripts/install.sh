@@ -19,6 +19,10 @@ set -eu
 
 repo="ScriptedAlchemy/t3code"
 base_url="${T3CODE_RELEASE_BASE_URL:-https://github.com/${repo}/releases/download}"
+base_url="${base_url%%#*}"
+base_path="${base_url%%\?*}"
+base_query="${base_url#"$base_path"}"
+while [ "${base_path%/}" != "$base_path" ]; do base_path="${base_path%/}"; done
 t3_home="${T3CODE_HOME:-$HOME/.t3}"
 case "$t3_home" in
   /*) ;;
@@ -59,18 +63,30 @@ fi
 step "Finding your release..."
 
 # Exit 44 on a 404 so callers can tell "no such asset" from a network failure.
+display_url() {
+  display_path="${1%%\?*}"
+  display_path="${display_path%%#*}"
+  case "$display_path" in
+    *://*@*)
+      display_rest="${display_path#*://}"
+      display_authority="${display_rest%%/*}"
+      printf '%s://%s%s' "${display_path%%://*}" "${display_authority##*@}" "${display_rest#"$display_authority"}"
+      ;;
+    *) printf '%s' "$display_path" ;;
+  esac
+}
 fetch() {
   if command -v curl >/dev/null 2>&1; then
-    status="$(curl -sSL -H "Accept: ${3:-*/*}" -w '%{http_code}' "$1" -o "$2")" || return 1
+    status="$(curl -sSL -H "Accept: ${3:-*/*}" -w '%{http_code}' "$1" -o "$2" 2>/dev/null)" || { printf 'GET %s failed to connect\n' "$(display_url "$1")" >&2; return 1; }
     case "$status" in
       2??) return 0 ;;
       404) return 44 ;;
-      *) printf 'GET %s returned HTTP %s\n' "$1" "$status" >&2; return 1 ;;
+      *) printf 'GET %s returned HTTP %s\n' "$(display_url "$1")" "$status" >&2; return 1 ;;
     esac
   elif command -v wget >/dev/null 2>&1; then
     wget -q --server-response --header="Accept: ${3:-*/*}" "$1" -O "$2" 2>"$2.headers" && rm -f "$2.headers" && return 0
     if grep -q ' 404 ' "$2.headers" 2>/dev/null; then rm -f "$2.headers"; return 44; fi
-    cat "$2.headers" >&2; rm -f "$2.headers"; return 1
+    printf 'GET %s failed\n' "$(display_url "$1")" >&2; rm -f "$2.headers"; return 1
   else
     fail "curl or wget is required"
   fi
@@ -123,7 +139,7 @@ download() {
   download_pid=
   if [ "$result" -ne 0 ]; then
     printf '\n' >&2
-    if [ -f "$2.errors" ]; then cat "$2.errors" >&2; else cat "$2.headers" >&2; fi
+    printf 'GET %s failed (downloader exit %s)\n' "$(display_url "$1")" "$result" >&2
     return "$result"
   fi
   size="$(mb "$(wc -c < "$2")")"
@@ -211,7 +227,7 @@ else
   printf '  %sInstalling%s T3 Code %s%s%s\n\n' "$muted" "$reset" "$bold" "$version" "$reset" >&2
   step "Downloading..."
   fetch_status=0
-  fetch "${base_url}/v${version}/SHA256SUMS" "${staging}/SHA256SUMS" || fetch_status=$?
+  fetch "${base_path}/v${version}/SHA256SUMS${base_query}" "${staging}/SHA256SUMS" || fetch_status=$?
   if [ "$fetch_status" -eq 44 ]; then
     fail "t3 ${version} has no release archive for ${platform}-${arch}; choose a published fork build from https://github.com/${repo}/releases"
   elif [ "$fetch_status" -ne 0 ]; then
@@ -219,7 +235,7 @@ else
   fi
   expected="$(grep " \*\{0,1\}${archive}\$" "${staging}/SHA256SUMS" | cut -d' ' -f1)"
   [ -n "$expected" ] || fail "t3 ${version} has no release archive for ${platform}-${arch}"
-  download "${base_url}/v${version}/${archive}" "${staging}/${archive}"
+  download "${base_path}/v${version}/${archive}${base_query}" "${staging}/${archive}"
 
   step "Verifying the download..."
   actual="$(checksum "${staging}/${archive}")"

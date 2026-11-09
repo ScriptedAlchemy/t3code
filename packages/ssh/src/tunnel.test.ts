@@ -90,7 +90,11 @@ const runArchiveRunner = Effect.fn("test.runArchiveRunner")(
   function* (
     installedVersion: string,
     installDirectory = ".local/bin",
-    options?: { readonly cliScript?: string; readonly fifo?: boolean },
+    options?: {
+      readonly cliScript?: string;
+      readonly fifo?: boolean;
+      readonly releaseBaseUrl?: string;
+    },
   ) {
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectoryScoped();
@@ -110,9 +114,20 @@ const runArchiveRunner = Effect.fn("test.runArchiveRunner")(
       );
       yield* fs.chmod(`${root}/${installDirectory}/t3`, 0o700);
     }
-    yield* fs.writeFileString(`${root}/bin/curl`, '#!/bin/sh\necho "HTTP 404" >&2\nexit 22\n');
+    yield* fs.writeFileString(
+      `${root}/bin/curl`,
+      '#!/bin/sh\nprintf "%s\\n" "$@" > "$HOME/request"\necho "HTTP 404 $*" >&2\nexit 22\n',
+    );
     yield* fs.chmod(`${root}/bin/curl`, 0o700);
-    yield* fs.writeFileString(`${root}/runner.sh`, SshTunnel.buildRemoteT3RunnerScript(ARCHIVE));
+    yield* fs.writeFileString(
+      `${root}/runner.sh`,
+      SshTunnel.buildRemoteT3RunnerScript({
+        ...ARCHIVE,
+        ...(options?.releaseBaseUrl === undefined
+          ? {}
+          : { releaseBaseUrl: options.releaseBaseUrl }),
+      }),
+    );
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
       ChildProcess.make("sh", [`${root}/runner.sh`, "pair", "--json"], {
@@ -134,6 +149,9 @@ const runArchiveRunner = Effect.fn("test.runArchiveRunner")(
       stdout,
       stderr,
       exitCode,
+      request: (yield* fs.exists(`${root}/request`))
+        ? yield* fs.readFileString(`${root}/request`)
+        : "",
       runtimeExists: yield* fs.exists(`${root}/.t3/runtime/versions/${ARCHIVE.archiveVersion}`),
     };
   },
@@ -290,6 +308,28 @@ esac
         assert.include(result.stderr, `Install the exact T3 CLI (${ARCHIVE.archiveVersion})`);
         assert.isFalse(result.runtimeExists);
       }),
+  );
+
+  it.live("keeps signed mirror credentials in the request and out of diagnostics", () =>
+    Effect.gen(function* () {
+      const result = yield* runArchiveRunner("0.0.1", ".t3/bin", {
+        releaseBaseUrl:
+          "https://mirror-user:mirror-pass@mirror.example/releases/?signature=test-secret#download",
+      });
+      assert.notEqual(result.exitCode, 0);
+      assert.include(
+        result.stderr,
+        `https://mirror.example/releases/v${ARCHIVE.archiveVersion}/SHA256SUMS`,
+      );
+      assert.include(
+        result.request,
+        `https://mirror-user:mirror-pass@mirror.example/releases/v${ARCHIVE.archiveVersion}/SHA256SUMS?signature=test-secret`,
+      );
+      for (const secret of ["mirror-user", "mirror-pass", "signature", "test-secret", "download"]) {
+        assert.notInclude(result.stderr, secret === "download" ? "#download" : secret);
+      }
+      assert.isFalse(result.runtimeExists);
+    }),
   );
 
   it.live(

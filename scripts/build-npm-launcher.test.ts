@@ -77,9 +77,13 @@ exit 7
   const requests: Array<string> = [];
   const server = NodeHttp.createServer((request, response) => {
     requests.push(request.url ?? "");
-    if (request.url === `/v${VERSION}/SHA256SUMS`) {
+    const url = new URL(request.url ?? "", "http://localhost");
+    const prefix = url.pathname.startsWith("/mirror/") ? "/mirror" : "";
+    if (prefix && url.search !== "?region=test") {
+      response.writeHead(400).end();
+    } else if (url.pathname === `${prefix}/v${VERSION}/SHA256SUMS`) {
       response.end(`${checksum}  ${archiveName}\n`);
-    } else if (request.url === `/v${VERSION}/${archiveName}`) {
+    } else if (url.pathname === `${prefix}/v${VERSION}/${archiveName}`) {
       response.writeHead(200, { "Content-Length": archive.length }).end(archive);
     } else {
       response.writeHead(404).end();
@@ -147,13 +151,53 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
         assert.equal(unpack.exitCode, 0, unpack.stderr);
         const packageDir = path.join(installed, "package");
 
+        const diagnosticHook = path.join(root, "diagnostic-hook.mjs");
+        for (const status of [404, 403, 0]) {
+          yield* fs.writeFileString(
+            diagnosticHook,
+            `globalThis.fetch = async (url) => {
+              if (url !== "https://mirror-user:mirror-pass@mirror.example/releases/v${VERSION}/SHA256SUMS?signature=test-secret#download") throw new Error("wrong request");
+              if (${status} === 0) throw new Error("transport signature=test-secret mirror-pass");
+              return new Response("", { status: ${status} });
+            };`,
+          );
+          const failed = yield* run(
+            process.execPath,
+            ["--import", diagnosticHook, path.join(packageDir, "bin/t3.mjs")],
+            {
+              cwd: root,
+              env: {
+                PATH: (yield* HostProcess.Environment).PATH,
+                T3CODE_HOME: path.join(root, `failed-${status}`),
+                T3CODE_RELEASE_BASE_URL:
+                  "https://mirror-user:mirror-pass@mirror.example/releases/?signature=test-secret#download",
+              },
+            },
+          );
+          assert.equal(failed.exitCode, 1);
+          assert.include(failed.stderr, `https://mirror.example/releases/v${VERSION}/SHA256SUMS`);
+          assert.include(
+            failed.stderr,
+            status === 404 ? "does not exist" : status === 403 ? "HTTP 403" : "failed to connect",
+          );
+          for (const secret of [
+            "mirror-user",
+            "mirror-pass",
+            "signature",
+            "test-secret",
+            "#download",
+          ]) {
+            assert.notInclude(failed.stdout + failed.stderr, secret);
+          }
+        }
+
         const release = yield* serveFakeRelease(root);
         const home = path.join(root, "home");
         const env = {
           PATH: (yield* HostProcess.Environment).PATH,
           T3CODE_HOME: home,
           T3CODE_TEST_CALLS: path.join(root, "calls"),
-          T3CODE_RELEASE_BASE_URL: release.baseUrl,
+          T3CODE_RELEASE_BASE_URL: `${release.baseUrl}/mirror///?region=test#download`,
         };
         const launcher = yield* fs.realPath(path.join(packageDir, "bin/t3.mjs"));
         const first = yield* run(process.execPath, [launcher, "serve", "a b"], {
@@ -177,6 +221,10 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
           [VERSION],
         );
 
+        assert.deepStrictEqual(release.requests, [
+          `/mirror/v${VERSION}/SHA256SUMS?region=test`,
+          `/mirror/v${VERSION}/t3-${VERSION}-${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}.tar.gz?region=test`,
+        ]);
         const requestsAfterFirst = release.requests.length;
         const second = yield* run(process.execPath, [launcher, "--version"], { cwd: root, env });
         assert.equal(second.exitCode, 0);

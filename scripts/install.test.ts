@@ -130,14 +130,20 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chan
   });
 });
 
-describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer checksum", () => {
+describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("installer checksum", () => {
   it.each(
     ["home\\data", "home\ndata"].flatMap((homeName) =>
-      [true, false].map((validChecksum) => ({ homeName, validChecksum })),
+      [true, false].flatMap((validChecksum) =>
+        ["", "/mirror/", "/mirror///?region=test#download"].map((releaseSuffix) => ({
+          homeName,
+          validChecksum,
+          releaseSuffix,
+        })),
+      ),
     ),
   )(
-    "verifies home $homeName with valid checksum $validChecksum",
-    async ({ homeName, validChecksum }) => {
+    "verifies home $homeName with valid checksum $validChecksum using mirror $releaseSuffix",
+    async ({ homeName, validChecksum, releaseSuffix }) => {
       const availableTools = ["sha256sum", "shasum"].filter(
         (tool) =>
           NodeChildProcess.spawnSync("sh", ["-c", 'command -v "$1"', "sh", tool]).status === 0,
@@ -147,7 +153,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
         const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-checksum-"));
         const home = NodePath.join(root, homeName);
         const version = "1.2.3";
-        const stem = `t3-${version}-linux-${HostProcess.Architecture.defaultValue()}`;
+        const stem = `t3-${version}-${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}`;
         const archiveName = `${stem}.tar.gz`;
         const server = NodeHttp.createServer();
         try {
@@ -185,9 +191,18 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
           NodeChildProcess.execFileSync("tar", ["-czf", archivePath, "-C", root, stem]);
           const archive = await NodeFSP.readFile(archivePath);
           const digest = NodeCrypto.createHash("sha256").update(archive).digest("hex");
+          const prefix = releaseSuffix ? "/mirror" : "";
+          const search = releaseSuffix.includes("?") ? "?region=test" : "";
+          const requests: string[] = [];
           server.on("request", (request, response) => {
+            requests.push(request.url ?? "");
+            const url = new URL(request.url ?? "", "http://localhost");
+            if (!url.pathname.startsWith(`${prefix}/v${version}/`) || url.search !== search) {
+              response.writeHead(404).end();
+              return;
+            }
             response.end(
-              request.url?.endsWith("/SHA256SUMS")
+              url.pathname.endsWith("/SHA256SUMS")
                 ? `${validChecksum ? digest : "0".repeat(64)}  ${archiveName}\n`
                 : archive,
             );
@@ -207,7 +222,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
                     T3CODE_VERSION: version,
                     T3CODE_HOME: home,
                     T3CODE_INSTALL_BIN_DIR: NodePath.join(root, "bin"),
-                    T3CODE_RELEASE_BASE_URL: `http://127.0.0.1:${address.port}`,
+                    T3CODE_RELEASE_BASE_URL: `http://127.0.0.1:${address.port}${releaseSuffix}`,
                   },
                   stdio: ["ignore", "pipe", "pipe"],
                 },
@@ -219,6 +234,10 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
               child.on("close", (code) => resolve({ code, output }));
             },
           );
+          expect(requests).toEqual([
+            `${prefix}/v${version}/SHA256SUMS${search}`,
+            `${prefix}/v${version}/${archiveName}${search}`,
+          ]);
           const versions = NodePath.join(home, "runtime/versions");
           if (validChecksum) {
             expect(code, `${checksumTool}: ${output}`).toBe(0);
@@ -245,3 +264,66 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
     },
   );
 });
+
+describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+  "installer download diagnostics",
+  () => {
+    it.each([false, true])(
+      "redacts signed mirror URLs on transport failure %s",
+      async (transportFailure) => {
+        const source = await NodeFSP.readFile(new URL("./install.sh", import.meta.url), "utf8");
+        const functions = source.slice(
+          source.indexOf("display_url() {"),
+          source.indexOf("\nmb() {"),
+        );
+        const root = await NodeFSP.mkdtemp(
+          NodePath.join(NodeOS.tmpdir(), "t3-install-diagnostic-"),
+        );
+        try {
+          const request =
+            "https://mirror-user:mirror-pass@mirror.example/v1.2.3/SHA256SUMS?signature=test-secret#download";
+          const child = NodeChildProcess.spawnSync(
+            "sh",
+            [
+              "-c",
+              `
+        curl() {
+          printf '%s\\n' "$@" > "$REQUEST_FILE"
+          printf '%s\\n' "$*" >&2
+          printf '403'
+          return ${transportFailure ? 7 : 0}
+        }
+        ${functions}
+        fetch "$REQUEST_URL" "$DESTINATION"
+      `,
+            ],
+            {
+              encoding: "utf8",
+              env: {
+                ...process.env,
+                REQUEST_URL: request,
+                REQUEST_FILE: NodePath.join(root, "request"),
+                DESTINATION: NodePath.join(root, "asset"),
+              },
+            },
+          );
+          expect(child.status).toBe(1);
+          expect(await NodeFSP.readFile(NodePath.join(root, "request"), "utf8")).toContain(request);
+          expect(child.stderr).toContain("https://mirror.example/v1.2.3/SHA256SUMS");
+          expect(child.stderr).toContain(transportFailure ? "failed to connect" : "HTTP 403");
+          for (const secret of [
+            "mirror-user",
+            "mirror-pass",
+            "signature",
+            "test-secret",
+            "#download",
+          ]) {
+            expect(child.stdout + child.stderr).not.toContain(secret);
+          }
+        } finally {
+          await NodeFSP.rm(root, { recursive: true, force: true });
+        }
+      },
+    );
+  },
+);
