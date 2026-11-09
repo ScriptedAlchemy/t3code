@@ -1488,12 +1488,15 @@ effectIt.effect("offers bounded fact references to unattended first turns only",
         },
       ]),
     );
-    for (const [source, ordinal] of [
-      ["web", 1],
-      ["mobile", 1],
-      ["mcp", 2],
-      ["mcp", 1],
+    for (const [source, ordinal, defects] of [
+      ["web", 1, false],
+      ["mobile", 1, false],
+      ["mcp", 2, false],
+      ["mcp", 1, false],
+      ["mcp", 1, true],
     ] as const) {
+      suggest.mockClear();
+      if (defects) suggest.mockImplementationOnce(() => Effect.die(new Error("memory defect")));
       const harness = makeLocalCommandHarness({
         text,
         previousTurn: { runStatus: "completed", turnStatus: "completed" },
@@ -1510,6 +1513,11 @@ effectIt.effect("offers bounded fact references to unattended first turns only",
       if (source === "mcp" && ordinal === 1) {
         expect(suggest).toHaveBeenCalledOnce();
         expect(suggest.mock.calls[0]?.[0]).toMatchObject({ projectId, query: text });
+        if (defects) {
+          expect(harness.startRootRun).toHaveBeenCalledOnce();
+          expect(prompt).toBe(text);
+          continue;
+        }
         expect(prompt).toContain("fact-migrations");
         expect(prompt).toContain(text);
         expect(prompt).not.toContain("Private");

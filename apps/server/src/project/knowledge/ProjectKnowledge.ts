@@ -161,8 +161,8 @@ const encodeText = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const encodeMutation = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ actor: KnowledgeOrigin, input: ProjectKnowledgeMutation })),
 );
-const encodeSearch = Schema.encodeSync(Schema.fromJsonString(ProjectKnowledgeSearchInput));
-const encodeQuery = Schema.encodeSync(
+const encodeSearch = Schema.encodeEffect(Schema.fromJsonString(ProjectKnowledgeSearchInput));
+const encodeQuery = Schema.encodeEffect(
   Schema.fromJsonString(
     Schema.Struct({
       projectId: ProjectKnowledgeSearchInput.fields.projectId,
@@ -844,19 +844,18 @@ const make = Effect.gen(function* () {
         ...new Set((input.entities ?? []).map((entity) => entity.toLowerCase())),
       ].sort();
       const minTrust = input.minTrust ?? 0.3;
-      const queryDigest = yield* digest(
-        encodeQuery({
-          projectId: input.projectId,
-          query: input.query,
-          entities,
-          entityMatch: input.entityMatch ?? "any",
-          includeArchived: input.includeArchived ?? false,
-          minTrust,
-          ...(input.includeSuperseded ? { includeSuperseded: true } : {}),
-        }),
-      ).pipe(Effect.mapError(storageError(input.projectId)));
+      const queryDigest = yield* encodeQuery({
+        projectId: input.projectId,
+        query: input.query,
+        entities,
+        entityMatch: input.entityMatch ?? "any",
+        includeArchived: input.includeArchived ?? false,
+        minTrust,
+        ...(input.includeSuperseded ? { includeSuperseded: true } : {}),
+      }).pipe(Effect.flatMap(digest), Effect.mapError(storageError(input.projectId)));
       const { cursor: _messageCursor, ...factInput } = input;
-      const requestDigest = yield* digest(encodeSearch(factInput)).pipe(
+      const requestDigest = yield* encodeSearch(factInput).pipe(
+        Effect.flatMap(digest),
         Effect.mapError(storageError(input.projectId)),
       );
       const searchedAt = yield* DateTime.now;

@@ -141,6 +141,13 @@ const unattendedMemoryHint = Effect.fn("ProviderTurnStartService.unattendedMemor
     .pipe(
       Effect.timeoutOption("150 millis"),
       Effect.orElseSucceed(() => Option.none()),
+      Effect.catchDefect((cause) =>
+        Effect.logWarning("Optional project memory lookup failed", {
+          projectId,
+          runId,
+          cause,
+        }).pipe(Effect.as(Option.none())),
+      ),
     );
   // IDs can also be supplied by clients. Only opaque identifiers belong in a provider hint.
   const opaqueId = /^[a-zA-Z0-9_:.-]{1,128}$/;
