@@ -107,7 +107,7 @@ class SeederTest(unittest.TestCase):
                         logged = None
                     if logged:
                         self.assertIn(f'(limit hit at {logged})', result.stdout)
-                    self.assertIn(f'Run: vp run dev --home-dir {home}', result.stdout)
+                    self.assertIn(f'Run: vp run dev --home-dir {home.resolve()}', result.stdout)
                     expected = {'matching': snooze, 'absent': None, 'unrelated': '2026-10-24T08:50:00.000Z'}[mode]
                     actual = self.thread_payload(home)['snoozedUntil']
                     if expected is None:
