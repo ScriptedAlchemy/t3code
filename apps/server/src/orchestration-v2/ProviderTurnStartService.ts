@@ -1648,8 +1648,7 @@ export const layer: Layer.Layer<
         const budget = handoffBudgetAssumptions({
           tokenCap,
           modelContextWindow,
-          userText:
-            turnNotes === "" ? composer.baseText : `${turnNotes}\n\n${composer.baseText}`,
+          userText: turnNotes === "" ? composer.baseText : `${turnNotes}\n\n${composer.baseText}`,
           attachments: message.attachments,
           providerThread: budgetProviderThread,
           nativeContextEstimate:

@@ -72,6 +72,7 @@ describe("V2 preview upgrade", () => {
         [90, "ScheduledTaskThreadMode"],
         [91, "DropProjectLoomIndexes"],
         [92, "ProjectKnowledgeSavedLifecycle"],
+        [93, "ProjectKnowledgeLearningQueue"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -187,6 +188,7 @@ describe("V2 preview upgrade", () => {
         [90, "ScheduledTaskThreadMode"],
         [91, "DropProjectLoomIndexes"],
         [92, "ProjectKnowledgeSavedLifecycle"],
+        [93, "ProjectKnowledgeLearningQueue"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
