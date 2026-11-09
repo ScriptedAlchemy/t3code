@@ -222,9 +222,11 @@ vi.mock("../lib/composerImages", () => ({
   composerAttachmentInlineUri: () => undefined,
   isFileBackedComposerAttachment: () => false,
 }));
+vi.mock("../native/useOpenPullRequest", () => ({ useOpenPullRequest: () => vi.fn() }));
+vi.mock("../features/files/SourceFileSurface", () => ({ SourceFileSurface: () => null }));
 vi.mock("../lib/contextImageGallery", () => ({ contextImageGallery: () => [] }));
-vi.mock("./FilePreviewModal", () => ({ FilePreviewModal: () => null }));
-vi.mock("./VideoPreviewModal", () => ({ VideoPreviewModal: () => null }));
+vi.mock("./ui/FilePreviewModal", () => ({ FilePreviewModal: () => null }));
+vi.mock("./ui/VideoPreviewModal", () => ({ VideoPreviewModal: () => null }));
 vi.mock("./ComposerContextAttachment", () => ({ ComposerContextAttachment: () => null }));
 vi.mock("../features/settings/appearance/AppearancePreferencesProvider", () => ({
   useAppearancePreferences: () => ({ themeId: "default", themeAppearance: "dark" }),

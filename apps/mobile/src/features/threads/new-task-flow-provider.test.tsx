@@ -62,6 +62,9 @@ vi.mock("../../state/orchestration", () => ({ orchestrationEnvironment: {} }));
 vi.mock("../../state/threads", () => ({ olderSettledThreads: {}, threadFamilies: {} }));
 vi.mock("../../state/pull-requests", () => ({ composerPullRequests: {} }));
 vi.mock("../../state/olderSettledShelf", () => ({ useOlderSettledCount: () => 0 }));
+vi.mock("../../state/preferences", () => ({
+  mobilePreferencesAtom: Atom.make(AsyncResult.success({ planModeEnabled: false })),
+}));
 vi.mock("../../state/project-grouping", () => ({
   useMobileProjectGroupingSettings: () => ({ sidebarProjectGroupingMode: "none" }),
 }));
