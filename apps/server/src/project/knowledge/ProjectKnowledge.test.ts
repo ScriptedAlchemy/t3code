@@ -17,6 +17,7 @@ import {
   ProviderThreadId,
   RunAttemptId,
   RunId,
+  THREAD_SEARCH_QUERY_MAX_LENGTH,
   ThreadId,
   TurnItemId,
   type OrchestrationV2DomainEvent,
@@ -1716,22 +1717,6 @@ it.effect.each(["rolled", "edited", "deleted", "project-deleted", "archive"] as 
     }).pipe(Effect.provide(receiptTestLayer)),
 );
 
-it.effect("accepts long delegated prompts for optional memory suggestions", () =>
-  Effect.gen(function* () {
-    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
-    const projectId = ProjectId.make("long-delegated-prompt");
-    yield* createProject(projectId);
-    assert.deepEqual(
-      yield* knowledge.suggest({
-        projectId,
-        requestId: CommandId.make("suggest-long-delegated-prompt"),
-        query: "Review SQLite migrations for project memory. ".repeat(100),
-      }),
-      [],
-    );
-  }).pipe(Effect.provide(layerTest)),
-);
-
 it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
   Effect.gen(function* () {
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
@@ -1764,20 +1749,27 @@ it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
       }),
       [],
     );
-    const suggestions = yield* knowledge.suggest({
-      projectId,
-      requestId: CommandId.make("suggest-relevant"),
-      query: "cache keys tenant",
-    });
-    assert.equal(suggestions.length, 1);
-    assert.equal(suggestions[0]?.fact.id, ProjectFactId.make("fact-one"));
-    assert.equal(suggestions[0]?.fact.sources[0]?.kind, "user");
     const sql = yield* SqlClient.SqlClient;
-    assert.equal(
-      (yield* sql`SELECT command_id FROM project_knowledge_commands WHERE command_id = ${"suggest-relevant"}`)
-        .length,
-      0,
-    );
+    const longQuery = "cache keys tenant ".repeat(100);
+    for (const [name, query] of [
+      ["short", "cache keys tenant"],
+      ["limit", longQuery.slice(0, THREAD_SEARCH_QUERY_MAX_LENGTH)],
+      ["over-limit", longQuery.slice(0, THREAD_SEARCH_QUERY_MAX_LENGTH + 1)],
+      ["long-with-whitespace", ` \n\t${longQuery}\n\t `],
+    ] as const) {
+      const requestId = CommandId.make(`suggest-relevant-${name}`);
+      const suggestions = yield* knowledge.suggest({ projectId, requestId, query });
+      assert.equal(suggestions.length, 1);
+      assert.equal(suggestions[0]?.fact.id, ProjectFactId.make("fact-one"));
+      assert.equal(suggestions[0]?.fact.sources[0]?.kind, "user");
+      assert.equal(suggestions[0]?.fact.retrievalCount, 0);
+      assert.equal(yield* storedCount, 0);
+      assert.equal(
+        (yield* sql`SELECT command_id FROM project_knowledge_commands WHERE command_id = ${requestId}`)
+          .length,
+        0,
+      );
+    }
 
     assert.deepEqual(
       yield* knowledge.suggest({
