@@ -755,7 +755,9 @@ export function HomeScreen(props: HomeScreenProps) {
         detail={`No threads matching "${props.searchQuery}".`}
         variant={Platform.OS === "android" ? "plain" : undefined}
       />
-    ) : props.hideOfflineEnvironments ? (
+    ) : props.hideOfflineEnvironments &&
+      props.selectedEnvironmentId === null &&
+      v2ScopedProjectGroup === null ? (
       <EmptyState
         title="No visible threads"
         detail="Turn off Hide offline environments in Settings → Labs → Zack settings, or choose another filter."

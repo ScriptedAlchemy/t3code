@@ -309,6 +309,13 @@ const resolveProject = Effect.fn("cli.thread.resolveProject")(function* (
   return containing.project;
 });
 
+/** A peer's reply names its speaker. The thread's own model and the user go by their role. */
+export const messageHeading = (entry: {
+  readonly role: string;
+  readonly speaker?: { readonly label: string; readonly model: string } | undefined;
+}) =>
+  entry.speaker === undefined ? entry.role : `${entry.speaker.label} (${entry.speaker.model})`;
+
 /** Every item on a timeline view, oldest first. */
 const readTimeline = Effect.fn("cli.thread.readTimeline")(function* (
   tools: ThreadTools,
@@ -736,6 +743,7 @@ const threadShowCommand = Command.make("show", {
             readFullText(tools, threadId, item).pipe(
               Effect.map((text) => ({
                 role: item.type === "user_message" ? "user" : "assistant",
+                ...(item.speaker === undefined ? {} : { speaker: item.speaker }),
                 runId: item.runId,
                 text,
               })),
@@ -757,7 +765,7 @@ const threadShowCommand = Command.make("show", {
             yield* Console.log(`Waiting for ${thread.pendingRequestCount} answer(s).`);
           }
           for (const entry of messages) {
-            yield* Console.log(`\n[${entry.role}]\n${entry.text}`);
+            yield* Console.log(`\n[${messageHeading(entry)}]\n${entry.text}`);
           }
         }),
       );

@@ -120,6 +120,7 @@ import { modelMentionKey, modelMentionKeysAtom } from "./chat/ModelMentionChip";
 import { ComposerModelExtension } from "./ComposerModelMentionNode";
 import { getTimelinePageScrollKey } from "./chat/pageScrollController";
 import { ContextChip } from "./ContextChip";
+import { GroupMemberChip } from "./chat/GroupMemberChip";
 import {
   CHIP_NODE_SELECTION_CLASS_NAME,
   ComposerContextActionsContext,
@@ -266,6 +267,16 @@ const ComposerMentionExtension = Node.create({
 function ComposerMentionNodeView({ node }: NodeViewProps) {
   const actions = use(ComposerContextActionsContext);
   const path = (node.attrs.path as string) ?? "";
+  const member = actions.groupParticipants?.find(
+    (participant) => participant.handle.toLowerCase() === path.toLowerCase(),
+  );
+  if (member !== undefined) {
+    return (
+      <NodeViewWrapper as="span" className={CHIP_NODE_SELECTION_CLASS_NAME}>
+        <GroupMemberChip label={member.label} isPrimary={member.isPrimary} />
+      </NodeViewWrapper>
+    );
+  }
   const chip = (
     <ContextChip
       kind={documentChipKindForFileName(path) ?? "mention"}

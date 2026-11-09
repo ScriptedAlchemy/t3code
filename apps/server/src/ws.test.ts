@@ -143,6 +143,7 @@ import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import * as ServerSettings from "./serverSettings.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 
+import * as ThreadGroupService from "./orchestration-v2/ThreadGroupService.ts";
 import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as OrchestrationEventStore from "./persistence/OrchestrationEventStore.ts";
@@ -930,6 +931,7 @@ it.effect.each([
           resolveFileManagerRevealKind: () => Effect.undefined,
         }),
         Layer.mock(SkillsLibrary.SkillsLibrary)({}),
+        Layer.mock(ThreadGroupService.ThreadGroupService)({}),
         Layer.mock(PstackPack.PstackPack)({
           catalog: settings.getSettings.pipe(
             Effect.map((settings) =>
@@ -1314,6 +1316,7 @@ it.effect(
         }),
         Layer.mock(PstackPack.PstackPack)({ catalog: Effect.undefined }),
         Layer.mock(SkillsLibrary.SkillsLibrary)({}),
+        Layer.mock(ThreadGroupService.ThreadGroupService)({}),
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
           scratchRoot: Effect.succeedNone,
           namedProjectsRoot: process.cwd(),
@@ -1545,6 +1548,7 @@ it.effect("a publish whose push fails still refreshes the new remote", () =>
     const services = Layer.mergeAll(
       Layer.mock(PstackPack.PstackPack)({ catalog: Effect.undefined }),
       Layer.mock(SkillsLibrary.SkillsLibrary)({}),
+      Layer.mock(ThreadGroupService.ThreadGroupService)({}),
       Layer.mock(ThreadSplitSuggestions.ThreadSplitSuggestions)({
         suggest: () => Effect.succeed({ suggest: false }),
       }),

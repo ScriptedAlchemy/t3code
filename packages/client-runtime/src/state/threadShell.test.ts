@@ -250,6 +250,59 @@ describe("v2 thread shell lists", () => {
     registry.dispose();
   });
 
+  it("keeps seated seats out of side chats and names the ones running", () => {
+    const { registry, threads, snapshotAtom } = makeHarness();
+    const seat = (id: string, running: boolean) => ({
+      ...v2ThreadShell,
+      id: ThreadId.make(id),
+      status: running ? ("running" as const) : ("completed" as const),
+      activityRunStatus: running ? ("running" as const) : null,
+      latestRunId: RunId.make(`${id}-run`),
+      lineage: {
+        ...v2ThreadShell.lineage,
+        parentThreadId: v2ThreadShell.id,
+        relationshipToParent: "fork" as const,
+        sideChat: true,
+      },
+    });
+    const astra = seat("astra", true);
+    const opus = seat("opus", true);
+    const plain = seat("plain", false);
+    const group = {
+      status: "active" as const,
+      primary: { model: "fable", label: "Fable", handle: "fable" },
+      seats: [
+        { threadId: astra.id, handle: "astra", label: "Astra", status: "seated" as const },
+        { threadId: opus.id, handle: "opus", label: "Opus", status: "left" as const },
+      ].map((entry) => ({ ...entry, joinedAfterRun: 0 })),
+      discussion: null,
+      closedBecause: null,
+      closedAt: null,
+    };
+    const parentRef = { environmentId, threadId: v2ThreadShell.id };
+    const sideChats = threads.sideChatsAtom(parentRef);
+    const running = threads.runningGroupSeatsAtom(parentRef);
+    const disposeSideChats = registry.mount(sideChats);
+    const disposeRunning = registry.mount(running);
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [{ ...v2ThreadShell, group }, astra, opus, plain],
+    });
+    expect(registry.get(sideChats).map((thread) => thread.id)).toEqual([opus.id, plain.id]);
+    expect(registry.get(running)).toEqual([astra.id]);
+    expect(registry.get(threads.threadShellAtom(parentRef))?.group).toEqual(group);
+
+    const stillRunning = registry.get(running);
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [{ ...v2ThreadShell, group }, { ...astra, updatedAt: v2Now }, opus, plain],
+    });
+    expect(registry.get(running)).toBe(stillRunning);
+    disposeRunning();
+    disposeSideChats();
+    registry.dispose();
+  });
+
   it("brings a parent back from Working while a nested subagent waits for approval", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
     const child = {

@@ -1,3 +1,8 @@
+import {
+  groupParticipants,
+  isGroupActive,
+  type ThreadGroup,
+} from "@t3tools/client-runtime/state/thread-group";
 import * as Dialog from "../../components/ui/Dialog";
 import type {
   EnvironmentId,
@@ -113,6 +118,7 @@ export function buildComposerSlashCommandItems(input: {
   /** T3's `/clear` replaces the provider's, which would clear a session T3 still treats as live. */
   readonly offersFreshSession?: boolean;
   readonly offersSideChat?: boolean;
+  readonly offersGroupInvite?: boolean;
   readonly allowInteractionMode: boolean;
   readonly selectedProviderStatus: Pick<
     ServerProvider,
@@ -148,6 +154,16 @@ export function buildComposerSlashCommandItems(input: {
   const items: ComposerCommandItem[] = builtIn.filter(
     (item) => item.command.includes(query) && (item.command === "model" || allowInteractionMode),
   );
+
+  if (input.offersGroupInvite && "invite".includes(query)) {
+    items.push({
+      id: "cmd:invite",
+      type: "slash-command",
+      command: "invite",
+      label: "/invite",
+      description: "Invite a model to this thread",
+    });
+  }
 
   // Providers expand commands only at the start of a message. T3 commands
   // change local state and do not have this restriction, except `/clear`.
@@ -277,6 +293,8 @@ export function resolveComposerCommandSelection(input: {
     replacement = `/${item.command} `;
   } else if (item.type === "provider-slash-command") {
     replacement = `/${item.command.name} `;
+  } else if (item.type === "group-member") {
+    replacement = `@${item.handle} `;
   } else if (item.type === "model") {
     replacement = `${formatComposerModelMention(item.option.selection.instanceId, item.option.selection.model)} `;
   }
@@ -309,8 +327,10 @@ export function useComposerCommandMenu({
   onUsageLimits,
   modelOptions,
   modelProviders,
+  group,
   onFreshSession,
   offersSideChat = false,
+  onGroupInvite,
 }: {
   readonly draftMessage: string;
   readonly ownerKey: string | null;
@@ -336,9 +356,11 @@ export function useComposerCommandMenu({
   /** Models an `@` mention can name in the prompt. */
   readonly modelOptions?: ReadonlyArray<ModelOption>;
   readonly modelProviders?: ReadonlyArray<ServerProvider>;
+  readonly group?: ThreadGroup | null;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   readonly onFreshSession?: () => void;
   readonly offersSideChat?: boolean;
+  readonly onGroupInvite?: () => void;
 }) {
   const [localSelection, setLocalSelection] = useState(() => ({
     ownerKey,
@@ -442,6 +464,7 @@ export function useComposerCommandMenu({
         offersUsageLimits,
         offersFreshSession: onFreshSession !== undefined,
         offersSideChat,
+        offersGroupInvite: onGroupInvite !== undefined,
         allowInteractionMode: onUpdateInteractionMode !== undefined,
         selectedProviderStatus: selectedProviderStatus
           ? {
@@ -568,7 +591,20 @@ export function useComposerCommandMenu({
         modelOptions && modelProviders
           ? buildComposerModelItems(modelOptions, trigger.query, modelProviders)
           : [];
+      const members = isGroupActive(group) ? groupParticipants(group) : [];
+      const groupItems = members
+        .filter((member) =>
+          `${member.handle} ${member.label}`.toLowerCase().includes(trigger.query.toLowerCase()),
+        )
+        .map((member) => ({
+          id: `group:${member.member}`,
+          type: "group-member" as const,
+          handle: member.handle,
+          label: `@${member.handle}`,
+          description: `${member.label}${member.isPrimary ? " · primary" : " · group member"}`,
+        }));
       return [
+        ...groupItems,
         ...threadItems,
         ...environmentItems,
         ...modelItems,
@@ -680,6 +716,13 @@ export function useComposerCommandMenu({
       return;
     }
 
+    if (item.type === "slash-command" && item.command === "invite" && onGroupInvite) {
+      const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
+      setSelection({ start: cleared.cursor, end: cleared.cursor });
+      onChangeDraftMessage(cleared.text);
+      onGroupInvite();
+      return;
+    }
     if (item.type === "slash-command" && item.command === "clear" && onFreshSession) {
       const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
       setSelection({ start: cleared.cursor, end: cleared.cursor });

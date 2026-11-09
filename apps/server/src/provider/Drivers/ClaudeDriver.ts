@@ -467,6 +467,9 @@ export const ClaudeDriver: ProviderDriver<
     return {
       instanceId,
       driverKind: DRIVER_KIND,
+      ...(runtime.overlay?.active === false
+        ? {}
+        : { sharedSkillsDirectory: path.join(runtime.overlay?.sharedRoot ?? configDir, "skills") }),
       continuationIdentity: {
         ...fallbackContinuationIdentity,
         continuationKey: continuationGroupKey,

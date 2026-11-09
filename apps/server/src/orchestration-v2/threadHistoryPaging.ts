@@ -1,9 +1,10 @@
-import type {
-  OrchestrationV2ProjectedTurnItem,
-  OrchestrationV2ThreadProjection,
-  OrchestrationV2TurnItem,
-  ThreadId,
-  TurnItemId,
+import {
+  isOrchestrationV2PublicationRun,
+  type OrchestrationV2ProjectedTurnItem,
+  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2TurnItem,
+  type ThreadId,
+  type TurnItemId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -571,7 +572,10 @@ function messagesForBoundedProjection(
   }
 
   const latestRun = projection.runs.reduce<(typeof projection.runs)[number] | null>(
-    (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),
+    (latest, run) =>
+      !isOrchestrationV2PublicationRun(run) && (latest === null || run.ordinal > latest.ordinal)
+        ? run
+        : latest,
     null,
   );
   const retainedRunIds = new Set<string>();

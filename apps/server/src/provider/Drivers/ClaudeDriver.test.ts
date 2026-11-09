@@ -139,6 +139,7 @@ it.effect(
           shareProfile: false,
         },
       });
+      expect(instance.sharedSkillsDirectory).toBeUndefined();
       expect((yield* instance.snapshot.refresh).auth.email).toBe("before@example.test");
       expect((yield* instance.snapshot.refresh).auth.email).toBe("before@example.test");
       const auth = instance.auth!;
@@ -206,6 +207,7 @@ for (const conflict of [false, true]) {
           expect(yield* fs.readLink(path.join(account, "settings.json"))).toBe(
             path.join(shared, "settings.json"),
           );
+          expect(instance.sharedSkillsDirectory).toBe(path.join(shared, "skills"));
           expect(instance.continuationIdentity.continuationKey).toBe(`claude:home:${account}`);
           expect(instance.auth?.credentialBinding).toEqual({ owner: "provider", key: account });
         }

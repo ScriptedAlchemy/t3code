@@ -242,8 +242,19 @@ import { observeResize } from "~/lib/observeResize";
 
 const isEnvironmentRequestInvalidError = Schema.is(EnvironmentRequestInvalidError);
 import { toastManager } from "../ui/toast";
-import { BuildingIcon, PlayIcon } from "lucide-react";
+import {
+  groupParticipants as listGroupParticipants,
+  isGroupActive,
+  type ThreadGroup,
+} from "@t3tools/client-runtime/state/thread-group";
+import { BuildingIcon, PlayIcon, UserPlusIcon } from "lucide-react";
+import { useAtomValue } from "@effect/atom-react";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { GroupInviteDialog } from "./GroupInviteDialog";
+import { GroupRosterBar } from "./GroupRosterBar";
+import { groupInviteRequestAtom, requestGroupInvite } from "./groupAvailability";
 import { Button } from "../ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useManagedPolicy } from "../../state/managedPolicy";
 import { proposedPlanTitle } from "@t3tools/shared/proposedPlanText";
 import { hasProviderSetup } from "./ProviderStatusBanner";
@@ -395,6 +406,10 @@ export interface ChatComposerProps {
   onUsageLimitsCommand?: (() => void) | undefined;
   sideChatAvailable?: boolean;
   sideChatDisabledReason?: string | null;
+  /** The thread's group; its roster bar shows above the composer until the group ends. */
+  threadGroup?: ThreadGroup | null | undefined;
+  /** Whether this thread offers Invite: the setting is on and it can host a group. */
+  groupInviteOffered?: boolean;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   onFreshSession?: (() => void) | undefined;
   environmentUnavailable: {
@@ -516,6 +531,7 @@ export interface ChatComposerProps {
 }
 
 const NO_PROVIDER_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
+const NO_GROUP_PARTICIPANTS: ReturnType<typeof listGroupParticipants> = [];
 
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
   const {
@@ -742,6 +758,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const previewFile = composerFiles.find((file) => file.id === previewFileId);
   const composerContextActions = {
     environmentId,
+    groupParticipants: isGroupActive(props.threadGroup)
+      ? listGroupParticipants(props.threadGroup)
+      : NO_GROUP_PARTICIPANTS,
     cwd: gitCwd ?? undefined,
     projectId: activeProjectId ?? undefined,
     expandImage: (imageId: string) => {
@@ -1156,6 +1175,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerPreviewAnnotations.length === 0 &&
     composerReviewComments.length === 0;
   const linkedEnvironments = useLinkedEnvironments(environmentId);
+  const groupInviteRequest = useAtomValue(groupInviteRequestAtom);
   const {
     items: composerMenuItems,
     isLoading: isComposerMenuLoading,
@@ -1180,6 +1200,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     showSkillsInSlashMenu: settings.showSkillsInSlashMenu,
     workspaceSkillsScanning,
     questionAttachmentTarget,
+    groupParticipants: isGroupActive(props.threadGroup)
+      ? listGroupParticipants(props.threadGroup)
+      : NO_GROUP_PARTICIPANTS,
+    groupInviteAvailable: props.groupInviteOffered === true,
     modelMentions: !providerCatalogPending
       ? {
           instanceEntries: providerInstanceEntries,
@@ -1977,6 +2001,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
         return;
       }
+      if (item.command === "invite") {
+        const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+          expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+          focusEditorAfterReplace: false,
+        });
+        if (applied) {
+          setComposerHighlightedItemId(null);
+          requestGroupInvite(routeThreadRef);
+        }
+        return;
+      }
       if (item.command === "side" || item.command === "btw") {
         if (props.sideChatDisabledReason) return;
         const applied = applyPromptReplacement(
@@ -2086,6 +2121,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         });
         setComposerHighlightedItemId(null);
       }
+      return;
+    }
+    if (item.type === "group-member") {
+      if (trigger.kind !== "path") return;
+      const replacement = `@${item.handle} `;
+      const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+        snapshot.value,
+        trigger.rangeEnd,
+        replacement,
+      );
+      const applied = applyPromptReplacement(trigger.rangeStart, replacementRangeEnd, replacement, {
+        expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd),
+      });
+      if (applied) setComposerHighlightedItemId(null);
       return;
     }
     if (item.type === "model") {
@@ -3365,6 +3414,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       <ComposerBanner.Dock>
         <ComposerBanner.Column>
           <ComposerBannerStack items={shelfItems} />
+          {props.threadGroup?.status === "active" ? (
+            <ComposerBanner.Attachment>
+              <GroupRosterBar threadRef={routeThreadRef} group={props.threadGroup} />
+            </ComposerBanner.Attachment>
+          ) : null}
           {showComposerTopDrawer ? (
             <ComposerBanner.Attachment>
               <ComposerBanner.Root data-chat-composer-top-drawer="true" variant="info">
@@ -3669,6 +3723,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 )}
               >
                 {composerAttachButton ? <div className="me-2">{composerAttachButton}</div> : null}
+                {props.groupInviteOffered === true ? (
+                  <div className="me-2">
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label="Invite a model"
+                            onPointerDown={(event) => event.preventDefault()}
+                            onClick={() => requestGroupInvite(routeThreadRef)}
+                          />
+                        }
+                      >
+                        <UserPlusIcon />
+                      </TooltipTrigger>
+                      <TooltipPopup>Invite a model</TooltipPopup>
+                    </Tooltip>
+                  </div>
+                ) : null}
                 <div
                   data-chat-composer-actions="right"
                   data-chat-composer-transition-actions="true"
@@ -3811,6 +3886,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           </div>
         </ComposerSurface.Main>
       </div>
+      {props.groupInviteOffered === true ? (
+        <GroupInviteDialog
+          threadRef={
+            groupInviteRequest !== null &&
+            groupInviteRequest.environmentId === routeThreadRef.environmentId &&
+            groupInviteRequest.threadId === routeThreadRef.threadId
+              ? routeThreadRef
+              : null
+          }
+          onClose={() => appAtomRegistry.set(groupInviteRequestAtom, null)}
+          activeInstanceId={selectedInstanceId}
+          model={selectedModelForPicker}
+          instanceEntries={providerInstanceEntries}
+          modelOptionsByInstance={modelOptionsByInstance}
+          terminalOpen={false}
+        />
+      ) : null}
     </form>
   );
 });

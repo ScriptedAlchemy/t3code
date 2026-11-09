@@ -1,3 +1,4 @@
+import { canInviteToGroupAtom, requestGroupInvite } from "./chat/groupAvailability";
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
@@ -77,6 +78,7 @@ import {
   SquarePenIcon,
   TextSearchIcon,
   UserPlusIcon,
+  UsersIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
 import {
@@ -489,6 +491,9 @@ function OpenCommandPaletteDialog(props: {
   );
   const canShareActiveThreadWithGuest = useAtomValue(
     canShareWithGuestAtom(activeThread?.environmentId ?? ("" as EnvironmentId)),
+  );
+  const canInviteToActiveThreadGroup = useAtomValue(
+    canInviteToGroupAtom(activeThread?.environmentId ?? ("" as EnvironmentId)),
   );
   const activeThreadReferenceCopyTarget =
     referenceThreadRef === null || (pathname === "/pull-requests" && !openPanelPullRequestUrl)
@@ -1444,6 +1449,26 @@ function OpenCommandPaletteDialog(props: {
       icon: <PullRequestGlyph.link className={ITEM_ICON_CLASS} />,
       run: async () => {
         useRightPanelStore.getState().open(threadRef, "pull-requests");
+      },
+    });
+  }
+
+  if (
+    activeThread !== null &&
+    canInviteToActiveThreadGroup &&
+    activeThread.lineage.sideChat !== true &&
+    activeThread.lineage.relationshipToParent !== "subagent"
+  ) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:invite-to-group",
+      searchTerms: ["invite", "model", "group", "peer", "add", "another", "provider"],
+      title: "Invite a model",
+      description: "Add a model from any provider to this thread",
+      icon: <UsersIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        requestGroupInvite(threadRef);
       },
     });
   }

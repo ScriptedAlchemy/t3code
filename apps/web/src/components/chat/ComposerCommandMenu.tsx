@@ -22,6 +22,7 @@ import {
   PackageIcon,
   SettingsIcon,
   UserRoundIcon,
+  UsersIcon,
   type LucideIcon,
 } from "lucide-react";
 import { memo, useLayoutEffect, useRef } from "react";
@@ -88,6 +89,13 @@ export type ComposerCommandItem =
       type: "environment";
       environmentId: EnvironmentId;
       machine: EnvironmentMachineKind;
+      label: string;
+      description: string;
+    }
+  | {
+      id: string;
+      type: "group-member";
+      handle: string;
       label: string;
       description: string;
     }
@@ -234,6 +242,9 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
           aria-hidden="true"
           className="size-4 shrink-0 text-secondary-label"
         />
+      ) : null}
+      {props.item.type === "group-member" ? (
+        <UsersIcon aria-hidden="true" className="size-4 shrink-0 text-secondary-label" />
       ) : null}
       {props.item.type === "model" ? (
         <ProviderInstanceIcon

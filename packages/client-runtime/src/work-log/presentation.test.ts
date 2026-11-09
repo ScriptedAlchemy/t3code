@@ -109,6 +109,21 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("resolveWorkEntryToolPresentation", () => {
+  it.each([
+    ["T3-code.t3_worktree_handoff", "Started handing off thread to a git worktree"],
+    ["T3-code.t3_project_clone", "Stopped cloning a repository"],
+  ])("words a stopped %s", (label, displayName) => {
+    const entry: WorkLogPresentationEntry = {
+      id: "stopped",
+      createdAt: "2026-09-19T00:00:00.000Z",
+      tone: "tool",
+      label,
+      toolLifecycleStatus: "stopped",
+      itemType: "dynamic_tool",
+    };
+    expect(resolveWorkEntryToolPresentation(entry)?.displayName).toBe(displayName);
+  });
+
   it("shows returned MCP errors as failures even in the live activity row", () => {
     const entry: WorkLogPresentationEntry = {
       id: "clone",

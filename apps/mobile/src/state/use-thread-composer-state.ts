@@ -1,3 +1,4 @@
+import { groupAudienceForPrompt } from "@t3tools/client-runtime/state/thread-group";
 import { useComposerAttachmentActions } from "./use-composer-attachment-actions";
 import * as Dialog from "../components/ui/Dialog";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
@@ -413,7 +414,8 @@ export function useThreadComposerState(input: {
     ? deriveProviderSubagentStatus(selectedThreadProjection.projection)
     : null;
 
-  const activeThreadBusy = threadRuntimeIsActive(selectedThreadRuntime);
+  const groupDiscussionOpen = selectedThreadShell?.groupDiscussionOpen === true;
+  const activeThreadBusy = groupDiscussionOpen || threadRuntimeIsActive(selectedThreadRuntime);
   const interruptibleRunId = threadRuntimeHasInterruptibleRun(selectedThreadRuntime)
     ? (selectedThreadRuntime?.activeRunId ?? null)
     : null;
@@ -777,6 +779,7 @@ export function useThreadComposerState(input: {
       messageId,
       commandId: CommandId.make(metadata.commandId),
       text,
+      groupAudience: groupAudienceForPrompt(selectedThreadShell.group, text),
       attachments,
       context: draft.context,
       modelSelection,

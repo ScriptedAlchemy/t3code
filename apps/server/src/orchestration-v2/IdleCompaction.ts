@@ -1,4 +1,8 @@
-import { isListedThreadLineage, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import {
+  isListedThreadLineage,
+  isOrchestrationV2PublicationRun,
+  type OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts";
 import { COMPACTION_SUGGESTION_MIN_TOKENS } from "@t3tools/shared/claudeCompaction";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
@@ -51,9 +55,15 @@ export function idleCompactionWindow(
   if (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs)
     return null;
   if (!isListedThreadLineage(thread.lineage)) return null;
+  // Members still have turns coming, and each would pay to rebuild a compacted context.
+  if (thread.group?.discussion != null) return null;
   // A removed or steered queued message leaves a cancelled run that never started.
   const latestRun = runs
-    .filter((run) => run.status !== "cancelled" || run.startedAt !== null)
+    .filter(
+      (run) =>
+        (run.status !== "cancelled" || run.startedAt !== null) &&
+        !isOrchestrationV2PublicationRun(run),
+    )
     .reduce<(typeof runs)[number] | null>(
       (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),
       null,
