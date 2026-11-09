@@ -1,4 +1,4 @@
-import { OrchestratorMcpFailure } from "@t3tools/contracts";
+import { OrchestratorMcpFailure, type OrchestratorMcpThreadSendInput } from "@t3tools/contracts";
 import { OrchestratorToolkit } from "./tools.ts";
 import * as Effect from "effect/Effect";
 
@@ -10,6 +10,13 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
+
+// Both routes share the service's tracing boundary.
+const sendToThread = Effect.fnUntraced(function* (input: OrchestratorMcpThreadSendInput) {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+  return yield* service.sendToThread(scope, input);
+});
 
 const handlers = {
   orchestrator_capabilities: McpToolAccess.reads((input) =>
@@ -170,12 +177,8 @@ const handlers = {
   ),
   t3_thread_send: McpToolAccess.writesThreads(
     (input) => [input.threadId],
-    (input) =>
-      Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.McpInvocationContext;
-        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        return yield* service.sendToThread(scope, input);
-      }),
+    sendToThread,
+    sendToThread,
   ),
   t3_thread_wait: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
