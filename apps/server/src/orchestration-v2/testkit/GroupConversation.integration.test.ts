@@ -1042,8 +1042,11 @@ describe("group conversations", () => {
                 const seats = yield* Effect.forEach([threadId, talker, silent], (id) =>
                   orchestrator.getThreadProjection(id),
                 );
-                return seats.every((projection) =>
-                  projection.providerTurns.some((turn) => turn.status === "running"),
+                return (
+                  seats.every((projection) =>
+                    projection.providerTurns.some((turn) => turn.status === "running"),
+                  ) &&
+                  seats[1]!.turnItems.some((item) => item.text === "STREAMEDMARK half a thought")
                 );
               }),
             );
