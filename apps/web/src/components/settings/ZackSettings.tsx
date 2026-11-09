@@ -72,8 +72,8 @@ function AssistedLearningRow() {
       description={
         unavailableReason ??
         (isProjectScope
-          ? "After each run in this project, your text generation model saves up to three cited facts to Project memory. Each run costs one model call."
-          : "After each run, your text generation model saves up to three cited facts to Project memory. Each run costs one model call. Projects can override it.")
+          ? "Completed runs in this project are grouped into background learning batches. Your text generation model saves up to three cited facts per batch; eligible batches use at most one model call."
+          : "Completed runs are grouped into background learning batches. Your text generation model saves up to three cited facts per batch; eligible batches use at most one model call. Projects can override it.")
       }
       resetAction={
         unavailableReason === null &&

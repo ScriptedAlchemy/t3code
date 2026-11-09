@@ -694,7 +694,7 @@ export const layerExecutor: Layer.Layer<
             );
           case "project-knowledge.extract":
             return assistedLearning
-              .extractRun({
+              .enqueueRun({
                 threadId: effect.threadId,
                 runId: effect.request.runId,
                 runOutcome: effect.request.runOutcome,

@@ -18,6 +18,12 @@ import {
   type ProjectKnowledgeSource,
   type ThreadId,
 } from "@t3tools/contracts";
+import {
+  addProjectMemorySuggestion,
+  boundProjectMemorySuggestionQuery,
+  isSubstantiveProjectMemoryQuery,
+  selectProjectMemorySuggestions,
+} from "@t3tools/client-runtime/projectKnowledge";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 import {
@@ -64,6 +70,7 @@ type Scope = {
   readonly projectId: ProjectId;
   readonly draftKey: string;
   readonly disabled: boolean;
+  readonly suggest?: boolean;
 };
 type MessageCitation = { readonly threadId: ThreadId; readonly messageId: MessageId };
 // The digest is optional so a feed message can be cited before the server has
@@ -108,7 +115,11 @@ export function useOpenProjectMemory(
 export function ProjectKnowledgeEntry(props: Scope) {
   const isFocused = useIsFocused();
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
-  const [open, setOpen] = useState<{ readonly seed: MessageCitation | null } | null>(null);
+  const [open, setOpen] = useState<{
+    readonly seed: MessageCitation | null;
+    readonly fact?: ProjectFact;
+    readonly source?: KnowledgeMessageRef;
+  } | null>(null);
   const { environmentId, projectId, draftKey } = props;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this entry with the header and feed open requests while mounted
   useEffect(() => {
@@ -126,18 +137,31 @@ export function ProjectKnowledgeEntry(props: Scope) {
       openListeners.delete(listener);
     };
   }, [environmentId, projectId, draftKey, isFocused]);
-  if (config?.environment.capabilities.projectKnowledge !== true || !open || !isFocused)
-    return null;
+  if (config?.environment.capabilities.projectKnowledge !== true || !isFocused) return null;
   return (
-    <ProjectKnowledgeSheet
-      key={`${props.environmentId}:${props.projectId}:${props.draftKey}:${open.seed?.messageId ?? ""}`}
-      {...props}
-      // Older servers lack readFact, status and supersede.
-      history={config.environment.capabilities.projectKnowledgeHistory === true}
-      assisted={config.environment.capabilities.projectKnowledgeAssistedLearning === true}
-      seedMessage={open.seed}
-      onClose={() => setOpen(null)}
-    />
+    <>
+      {props.suggest && config.environment.capabilities.projectKnowledgePreview === true ? (
+        <ProjectMemorySuggestions
+          key={`${props.environmentId}:${props.projectId}:${props.draftKey}`}
+          {...props}
+          onUse={(fact) => setOpen({ seed: null, fact })}
+          onSource={(source) => setOpen({ seed: null, source })}
+        />
+      ) : null}
+      {open ? (
+        <ProjectKnowledgeSheet
+          key={`${props.environmentId}:${props.projectId}:${props.draftKey}:${open.seed?.messageId ?? open.source?.messageId ?? open.fact?.id ?? ""}`}
+          {...props}
+          // Older servers lack readFact, status and supersede.
+          history={config.environment.capabilities.projectKnowledgeHistory === true}
+          assisted={config.environment.capabilities.projectKnowledgeAssistedLearning === true}
+          seedMessage={open.seed}
+          suggestedFact={open.fact}
+          suggestedSource={open.source}
+          onClose={() => setOpen(null)}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -146,6 +170,8 @@ function ProjectKnowledgeSheet(
     readonly history: boolean;
     readonly assisted: boolean;
     readonly seedMessage: MessageCitation | null;
+    readonly suggestedFact?: ProjectFact;
+    readonly suggestedSource?: KnowledgeMessageRef;
     readonly onClose: () => void;
   },
 ) {
@@ -158,14 +184,23 @@ function ProjectKnowledgeSheet(
   const attachedInScope =
     attached && projectKnowledgeRecordInScope(attached, scope) ? attached : undefined;
   const [selections, setSelections] = useState<ReadonlyArray<KnowledgeSelection>>(
-    attachedInScope?.knowledge.selections ?? [],
+    props.suggestedFact
+      ? addProjectMemorySuggestion(attachedInScope?.knowledge.selections ?? [], props.suggestedFact)
+      : (attachedInScope?.knowledge.selections ?? []),
   );
   // Set when a selection change removed the reference this sheet opened with.
   const [detached, setDetached] = useState(false);
   const [stack, setStack] = useState<ReadonlyArray<Page>>(
-    props.seedMessage
-      ? [{ kind: "list" }, { kind: "remember", ref: props.seedMessage }]
-      : [{ kind: "list" }],
+    props.suggestedFact
+      ? [
+          { kind: "list" },
+          { kind: "fact", factId: props.suggestedFact.id, snapshot: props.suggestedFact },
+        ]
+      : props.suggestedSource
+        ? [{ kind: "list" }, { kind: "source", ref: props.suggestedSource }]
+        : props.seedMessage
+          ? [{ kind: "list" }, { kind: "remember", ref: props.seedMessage }]
+          : [{ kind: "list" }],
   );
   const page = stack.at(-1)!;
   const [hints, setHints] = useState<{
@@ -632,5 +667,97 @@ function RememberEditor(props: {
       onCancel={props.onCancel}
       onDirtyChange={props.onDirtyChange}
     />
+  );
+}
+
+function ProjectMemorySuggestions(
+  props: Scope & {
+    readonly onUse: (fact: ProjectFact) => void;
+    readonly onSource: (source: KnowledgeMessageRef) => void;
+  },
+) {
+  const canUse = useAtomValue(projectKnowledge.prepareContext.permissionAtom(props.environmentId));
+  const draft = useComposerDraft(props.draftKey);
+  const [request, setRequest] = useState<{ query: string; requestId: CommandId } | null>(null);
+  const [dismissed, setDismissed] = useState<ReadonlyArray<string>>([]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- issues one recall request after the user pauses composing a substantive draft
+  useEffect(() => {
+    if (request || !isSubstantiveProjectMemoryQuery(draft.text)) return;
+    const timer = setTimeout(
+      () =>
+        setRequest({
+          query: boundProjectMemorySuggestionQuery(draft.text),
+          requestId: CommandId.make(uuidv4()),
+        }),
+      1000,
+    );
+    return () => clearTimeout(timer);
+  }, [draft.text, request]);
+  const result = useEnvironmentQuery(
+    request
+      ? projectKnowledge.search({
+          environmentId: props.environmentId,
+          input: {
+            ...request,
+            projectId: props.projectId,
+            recordRetrieval: false,
+            preview: true,
+            minTrust: 0.5,
+            limit: 8,
+            messageLimit: 1,
+          },
+        })
+      : null,
+  );
+  const suggestions = result.data
+    ? selectProjectMemorySuggestions(result.data, request?.query).filter(
+        ({ fact }) => !dismissed.includes(fact.id),
+      )
+    : [];
+  if (!request || !draft.text.trimStart().startsWith(request.query) || !suggestions.length)
+    return null;
+  return (
+    <View accessibilityLabel="Related project memory" className="gap-1">
+      {suggestions.map(({ fact, reason }) => (
+        <View key={fact.id} className="gap-1">
+          <AppText numberOfLines={2}>Project memory: {fact.content}</AppText>
+          <AppText>{reason}</AppText>
+          <View className="flex-row gap-1">
+            {fact.sources.some((source) => source.kind === "user") ? (
+              <AppText>Saved by you</AppText>
+            ) : null}
+            {fact.sources
+              .filter((source) => source.kind === "message")
+              .slice(0, 1)
+              .flatMap((source) =>
+                source.kind === "message"
+                  ? [
+                      <Button
+                        key={source.messageId}
+                        label="Source"
+                        size="compact"
+                        tone="text"
+                        onPress={() => props.onSource(source)}
+                      />,
+                    ]
+                  : [],
+              )}
+            <Button
+              label="Use"
+              size="compact"
+              tone="text"
+              disabled={props.disabled || !canUse}
+              onPress={() => props.onUse(fact)}
+            />
+            <Button
+              label="Dismiss"
+              size="compact"
+              tone="text"
+              onPress={() => setDismissed([...dismissed, fact.id])}
+            />
+          </View>
+        </View>
+      ))}
+    </View>
   );
 }

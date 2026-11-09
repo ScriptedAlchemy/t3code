@@ -469,8 +469,8 @@ function AssistedLearningRow(props: {
         />
       </View>
       <AppText className="text-xs text-foreground-muted">
-        After each run in this project, your text generation model saves up to three cited facts.
-        Each run costs one model call.
+        Completed runs are grouped into background learning batches. Your text generation model
+        saves up to three cited facts per batch; eligible batches use at most one model call.
       </AppText>
       {props.lastRun ? (
         <AppText className="text-xs">{assistedLearningRunLabel(props.lastRun)}</AppText>

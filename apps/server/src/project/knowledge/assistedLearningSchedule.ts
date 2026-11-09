@@ -45,6 +45,8 @@ export class AssistedLearningError extends Schema.TaggedError<AssistedLearningEr
 ) {}
 
 export interface AssistedLearningRunnerShape {
+  readonly drainDue: Effect.Effect<void, AssistedLearningError>;
+  readonly enqueueRun: AssistedLearningRunnerShape["extractRun"];
   readonly extractRun: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
@@ -55,6 +57,10 @@ export interface AssistedLearningRunnerShape {
 export class AssistedLearningRunner extends Context.Reference<AssistedLearningRunnerShape>(
   "t3/project/knowledge/AssistedLearningRunner",
   {
-    defaultValue: () => ({ extractRun: () => Effect.void }),
+    defaultValue: () => ({
+      extractRun: () => Effect.void,
+      enqueueRun: () => Effect.void,
+      drainDue: Effect.void,
+    }),
   },
 ) {}

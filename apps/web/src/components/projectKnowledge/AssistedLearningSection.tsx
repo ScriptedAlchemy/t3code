@@ -59,8 +59,8 @@ export function AssistedLearningSection(props: {
         />
       </div>
       <p className="text-xs text-muted-foreground">
-        After each run in this project, your text generation model reads that run and saves up to
-        three cited facts. Each run costs one model call.
+        Completed runs are grouped into background learning batches. Your text generation model
+        saves up to three cited facts per batch; eligible batches use at most one model call.
       </p>
       {lastRun ? <p className="text-xs">{assistedLearningRunLabel(lastRun)}</p> : null}
       {!canWrite ? (

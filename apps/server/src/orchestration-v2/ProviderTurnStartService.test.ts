@@ -292,6 +292,7 @@ function makeLocalCommandHarness(input: {
   readonly initialDeliveries?: ReadonlyArray<ProjectKnowledgeDelivery>;
   readonly recoveryNativeId?: string;
   readonly modelContextWindow?: number;
+  readonly suggestKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["suggest"];
   readonly resolveKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["resolveForTurn"];
   readonly readSentDeliveries?: ProjectKnowledge.ProjectKnowledge["Service"]["readSentDeliveries"];
   readonly worktreePath?: string;
@@ -985,6 +986,7 @@ function makeLocalCommandHarness(input: {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+          ...(input.suggestKnowledge ? { suggest: input.suggestKnowledge } : {}),
           ...(input.resolveKnowledge ? { resolveForTurn: input.resolveKnowledge } : {}),
           ...(input.readSentDeliveries ? { readSentDeliveries: input.readSentDeliveries } : {}),
           nativeDeliveryEstimate: (target) =>
@@ -1446,6 +1448,76 @@ effectIt.effect("recovers an abandoned failed turn before continuing its native 
     expect(harness.startRootRun.mock.calls[0]?.[0].providerThread.nativeThreadRef?.nativeId).toBe(
       "existing-native-conversation",
     );
+  }),
+);
+
+effectIt.effect("offers bounded fact references to unattended first turns only", () =>
+  Effect.gen(function* () {
+    const text = "Review SQLite migrations for project memory";
+    const projectId = ProjectId.make("project-native-account-command");
+    const suggest = vi.fn<ProjectKnowledge.ProjectKnowledge["Service"]["suggest"]>(() =>
+      Effect.succeed([
+        {
+          fact: {
+            id: ProjectFactId.make("fact-migrations"),
+            projectId,
+            status: "saved",
+            kind: "decision",
+            origin: { kind: "user" },
+            content: "Private assertion body",
+            entities: [],
+            tags: [],
+            sources: [{ kind: "user" }],
+            revision: 1,
+            trust: 0.8,
+            retrievalCount: 0,
+            createdAt: "2026-09-04T12:00:00.000Z",
+            updatedAt: "2026-09-04T12:00:00.000Z",
+            forgottenAt: null,
+          },
+          score: {
+            holographic: 1,
+            lexical: 1,
+            tokenOverlap: 1,
+            temporalDecay: 1,
+            reinforcement: 0,
+            trust: 0.8,
+            combined: 1,
+          },
+          reason: "Private match explanation",
+        },
+      ]),
+    );
+    for (const [source, ordinal] of [
+      ["web", 1],
+      ["mobile", 1],
+      ["mcp", 2],
+      ["mcp", 1],
+    ] as const) {
+      const harness = makeLocalCommandHarness({
+        text,
+        previousTurn: { runStatus: "completed", turnStatus: "completed" },
+        suggestKnowledge: suggest,
+      });
+      const projection = harness.projection();
+      harness.setProjection({
+        ...projection,
+        runs: projection.runs.map((run) => (run.status === "starting" ? { ...run, ordinal } : run)),
+        messages: projection.messages.map((message) => ({ ...message, creationSource: source })),
+      });
+      yield* harness.start;
+      const prompt = harness.startRootRun.mock.calls[0]?.[0].message.text;
+      if (source === "mcp" && ordinal === 1) {
+        expect(suggest).toHaveBeenCalledOnce();
+        expect(suggest.mock.calls[0]?.[0]).toMatchObject({ projectId, query: text });
+        expect(prompt).toContain("fact-migrations");
+        expect(prompt).toContain(text);
+        expect(prompt).not.toContain("Private");
+      } else {
+        expect(suggest).not.toHaveBeenCalled();
+        expect(prompt).toBe(text);
+      }
+    }
   }),
 );
 

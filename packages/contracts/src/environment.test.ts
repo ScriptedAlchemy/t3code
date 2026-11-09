@@ -22,6 +22,13 @@ describe("ExecutionEnvironmentDescriptor", () => {
     expect(decodeDescriptor(oldServer).capabilities).not.toHaveProperty(
       "projectKnowledgeDeliveries",
     );
+    expect(decodeDescriptor(oldServer).capabilities.projectKnowledgePreview).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...oldServer,
+        capabilities: { ...oldServer.capabilities, projectKnowledgePreview: true },
+      }).capabilities.projectKnowledgePreview,
+    ).toBe(true);
     for (const supported of [false, true]) {
       expect(
         decodeDescriptor({

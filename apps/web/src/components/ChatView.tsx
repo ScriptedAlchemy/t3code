@@ -4033,6 +4033,7 @@ export default function ChatView(props: ChatViewProps) {
                 />
 
                 <ProjectMemoryDialogHost
+                  suggest={serverThread === null || serverThread.latestUserMessageAt === null}
                   environmentId={activeThread.environmentId}
                   projectId={activeThread.projectId}
                   composerDraftTarget={composerDraftTarget}

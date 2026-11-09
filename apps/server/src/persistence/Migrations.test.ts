@@ -26,6 +26,7 @@ const delegatedRecoveryMigration = [89, "DelegatedRecoveryIndexes"] as const;
 const scheduledTaskThreadModeMigration = [90, "ScheduledTaskThreadMode"] as const;
 const dropProjectLoomIndexesMigration = [91, "DropProjectLoomIndexes"] as const;
 const savedLifecycleMigration = [92, "ProjectKnowledgeSavedLifecycle"] as const;
+const learningQueueMigration = [93, "ProjectKnowledgeLearningQueue"] as const;
 
 it.effect("upgrades attempt receipts atomically and preserves distinct steering messages", () =>
   Effect.gen(function* () {
@@ -53,6 +54,7 @@ it.effect("upgrades attempt receipts atomically and preserves distinct steering 
       scheduledTaskThreadModeMigration,
       dropProjectLoomIndexesMigration,
       savedLifecycleMigration,
+      learningQueueMigration,
     ]);
     assert.deepStrictEqual(yield* sql`SELECT * FROM project_knowledge_deliveries`, before);
     yield* sql`INSERT INTO project_knowledge_deliveries (
@@ -195,7 +197,10 @@ it.effect("rebuilds knowledge facts as saved or forgotten, atomically and in pla
     yield* sql`DROP VIEW project_knowledge_facts_saved`;
     assert.deepStrictEqual(yield* schema, schemaBefore);
 
-    assert.deepStrictEqual(yield* runMigrations(), [savedLifecycleMigration]);
+    assert.deepStrictEqual(yield* runMigrations(), [
+      savedLifecycleMigration,
+      learningQueueMigration,
+    ]);
 
     const cleared = new Set([
       "edited-pending",
@@ -286,6 +291,8 @@ it.effect("rebuilds knowledge facts as saved or forgotten, atomically and in pla
     const savedCommands = yield* commands;
     const savedRuns = yield* sql`SELECT * FROM project_knowledge_assisted_runs`;
     const savedSchema = yield* schema;
+    yield* sql`DROP TABLE project_knowledge_learning_queue`;
+    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 93`;
     yield* ProjectLoomTimeIndexes;
     yield* ProjectLoomBoundedReads;
     yield* previewLoomIndexes;
@@ -325,7 +332,10 @@ it.effect("rebuilds knowledge facts as saved or forgotten, atomically and in pla
     assert.deepStrictEqual(yield* schema, rollbackSchema);
     yield* sql`DROP TRIGGER reject_saved_preview_receipt`;
 
-    assert.deepStrictEqual(yield* runMigrations(), [dropProjectLoomIndexesMigration]);
+    assert.deepStrictEqual(yield* runMigrations(), [
+      dropProjectLoomIndexesMigration,
+      learningQueueMigration,
+    ]);
     assert.deepStrictEqual(yield* facts, savedFacts);
     assert.deepStrictEqual(yield* history, savedHistory);
     assert.deepStrictEqual(yield* commands, savedCommands);
@@ -676,6 +686,7 @@ describe("runMigrations", () => {
             scheduledTaskThreadModeMigration,
             dropProjectLoomIndexesMigration,
             savedLifecycleMigration,
+            learningQueueMigration,
           ],
         );
         yield* assertConsolidatedSchema;
@@ -719,6 +730,7 @@ describe("runMigrations", () => {
           scheduledTaskThreadModeMigration,
           dropProjectLoomIndexesMigration,
           savedLifecycleMigration,
+          learningQueueMigration,
         ],
       );
       assert.deepStrictEqual(yield* runMigrations(), [
@@ -735,6 +747,7 @@ describe("runMigrations", () => {
         scheduledTaskThreadModeMigration,
         dropProjectLoomIndexesMigration,
         savedLifecycleMigration,
+        learningQueueMigration,
       ]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(
@@ -773,6 +786,7 @@ describe("runMigrations", () => {
           scheduledTaskThreadModeMigration,
           dropProjectLoomIndexesMigration,
           savedLifecycleMigration,
+          learningQueueMigration,
         ]);
 
         yield* assertConsolidatedSchema;
@@ -881,6 +895,7 @@ describe("runMigrations", () => {
         scheduledTaskThreadModeMigration,
         dropProjectLoomIndexesMigration,
         savedLifecycleMigration,
+        learningQueueMigration,
       ]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(yield* sql`SELECT secret_name, fenced FROM peer_environment_links`, [
@@ -938,6 +953,7 @@ describe("runMigrations", () => {
           scheduledTaskThreadModeMigration,
           dropProjectLoomIndexesMigration,
           savedLifecycleMigration,
+          learningQueueMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(
@@ -1000,6 +1016,7 @@ describe("runMigrations", () => {
           scheduledTaskThreadModeMigration,
           dropProjectLoomIndexesMigration,
           savedLifecycleMigration,
+          learningQueueMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, routes);

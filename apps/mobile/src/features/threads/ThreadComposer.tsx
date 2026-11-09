@@ -928,6 +928,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
 
         {!props.hidden && composerDraftKey ? (
           <ProjectKnowledgeEntry
+            key={`${props.environmentId}:${props.selectedThread.projectId}:${composerDraftKey}`}
+            suggest={props.selectedThread.latestUserMessageAt === null}
             environmentId={props.environmentId}
             projectId={props.selectedThread.projectId}
             draftKey={composerDraftKey}

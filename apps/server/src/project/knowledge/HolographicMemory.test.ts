@@ -23,12 +23,12 @@ const candidate = (
   ...overrides,
 });
 
-it("retains the distinct ASCII search tokenizer", () => {
+it("retains Unicode words in the distinct search tokenizer", () => {
   assert.deepEqual(
     projectMemorySearchTokens(
       "The AND a src/lib.rs crate::Thing foo.bar _ GrüßE 東京 SQLite sqlite",
     ),
-    ["and", "crate::thing", "foo.bar", "gr", "sqlite", "src/lib.rs", "the"],
+    ["and", "crate::thing", "foo.bar", "grüße", "sqlite", "src/lib.rs", "the", "東京"],
   );
 });
 

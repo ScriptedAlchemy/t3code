@@ -22,7 +22,7 @@ import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKn
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
-import { act, render, type Screen } from "../../../test/render";
+import { act, fakeTimers, render, type Screen } from "../../../test/render";
 
 const state = vi.hoisted(() => ({
   config: null as unknown,
@@ -76,7 +76,7 @@ vi.mock(
           state.readSource(input);
           return state.source;
         },
-        prepareContext: { label: "prepare" },
+        prepareContext: { label: "prepare", permissionAtom: () => state.permission },
         mutate: { label: "mutate", permissionAtom: () => state.permission },
       },
     }) as never,
@@ -165,7 +165,13 @@ async function setup(viewport: "desktop" | "narrow" = "desktop") {
   await page.viewport(viewport === "desktop" ? 1280 : 390, 900);
   const registry = AtomRegistry.make();
   state.config = Atom.make({
-    environment: { capabilities: { projectKnowledge: true, projectKnowledgeHistory: true } },
+    environment: {
+      capabilities: {
+        projectKnowledge: true,
+        projectKnowledgePreview: true,
+        projectKnowledgeHistory: true,
+      },
+    },
   });
   state.permission = Atom.make(true);
   state.list = Atom.make(AsyncResult.success({ facts: [fact], nextCursor: null }));
@@ -1228,4 +1234,66 @@ it("shows automatic facts as saved, with citations and the project switch", asyn
       },
     },
   });
+});
+
+it("suggests cited memory for a completed first draft and keeps dismissal independent of attachment", async () => {
+  const registry = await setup();
+  await using _screen = await render(
+    <RegistryContext.Provider value={registry}>
+      <div className="mx-auto w-[640px] p-6">
+        <p>New request</p>
+        <ProjectMemoryDialogHost {...scope} suggest composerDraftTarget={target} />
+      </div>
+    </RegistryContext.Provider>,
+  );
+  using _timers = fakeTimers();
+  {
+    expect(state.searchRequest).not.toHaveBeenCalled();
+    await act(() =>
+      useComposerDraftStore
+        .getState()
+        .setPrompt(target, "Change cache keys to include tenant IDs."),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    await expect
+      .element(page.getByText(/Project memory: Cache keys include tenant IDs/))
+      .toBeVisible();
+    expect(state.searchRequest.mock.calls[0]?.[0].input).toMatchObject({
+      preview: true,
+      recordRetrieval: false,
+      query: "Change cache keys to include tenant IDs.",
+    });
+    await act(() =>
+      useComposerDraftStore
+        .getState()
+        .setPrompt(
+          target,
+          "Change cache keys to include tenant IDs. Keep the existing conventions.",
+        ),
+    );
+    await expect
+      .element(page.getByText(/Project memory: Cache keys include tenant IDs/))
+      .toBeVisible();
+    await act(() =>
+      useComposerDraftStore
+        .getState()
+        .setPrompt(target, "Replace the sign in page with a new layout."),
+    );
+    await expect
+      .element(page.getByText(/Project memory: Cache keys include tenant IDs/))
+      .not.toBeInTheDocument();
+    await act(() =>
+      useComposerDraftStore
+        .getState()
+        .setPrompt(target, "Change cache keys to include tenant IDs."),
+    );
+    await expect
+      .element(page.getByText(/Project memory: Cache keys include tenant IDs/))
+      .toBeVisible();
+    await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await expect
+      .element(page.getByText(/Project memory: Cache keys include tenant IDs/))
+      .not.toBeInTheDocument();
+    expect(state.prepare).not.toHaveBeenCalled();
+  }
 });

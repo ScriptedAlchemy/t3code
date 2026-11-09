@@ -1,5 +1,9 @@
 import {
   ActiveProjectFact,
+  boundProjectMemorySuggestionQuery,
+  isSubstantiveProjectMemoryQuery,
+  selectProjectMemorySuggestions,
+  type ProjectMemorySuggestion,
   type AssistedLearningRun,
   type KnowledgeConflictHint,
   type KnowledgeFactSource,
@@ -95,6 +99,9 @@ export class ProjectKnowledge extends Context.Service<
     readonly search: (
       input: ProjectKnowledgeSearchInput,
     ) => Effect.Effect<ProjectKnowledgeSearchResult, ProjectKnowledgeError>;
+    readonly suggest: (
+      input: Pick<ProjectKnowledgeSearchInput, "projectId" | "query" | "requestId">,
+    ) => Effect.Effect<ReadonlyArray<ProjectMemorySuggestion>, ProjectKnowledgeError>;
     readonly prepareContext: (
       input: ProjectKnowledgeContext,
     ) => Effect.Effect<ProjectKnowledgePreparedContext, ProjectKnowledgeError>;
@@ -124,7 +131,7 @@ export class ProjectKnowledge extends Context.Service<
     }) => Effect.Effect<string | null, ProjectKnowledgeError>;
     /**
      * Saves an automatically learned fact through the normal create path. An exact duplicate
-     * creates nothing; lexical similarities never block saving or replace an existing fact.
+     * adds only new validated citations; lexical similarities never replace an existing fact.
      */
     readonly saveAutomatic: (
       input: Extract<ProjectKnowledgeMutation, { readonly action: "create" }>,
@@ -289,6 +296,7 @@ const make = Effect.gen(function* () {
             threadId: input.threadId,
             messageId: source.messageId,
             digest: contentDigest,
+            ...(message.runId === null ? {} : { runId: message.runId }),
           },
           text: message.text,
           title: projection.thread.title,
@@ -312,7 +320,11 @@ const make = Effect.gen(function* () {
     for (const source of fact.sources) {
       if (source.kind === "user") continue;
       const result = yield* readSource({ projectId: fact.projectId, ...source, includeArchived });
-      if (result.state !== "available") return false;
+      if (
+        result.state !== "available" ||
+        (source.runId !== undefined && result.source.runId !== source.runId)
+      )
+        return false;
     }
     return true;
   });
@@ -347,11 +359,12 @@ const make = Effect.gen(function* () {
       WHERE ${sql.in("thread_id", [...new Set(refs.map((ref) => ref.source.threadId))])}`;
     const messageRows = yield* sql<{
       readonly messageId: string;
+      readonly runId: string | null;
       readonly threadId: string;
       readonly role: string;
       readonly streaming: number;
       readonly text: string | null;
-    }>`SELECT message_id AS "messageId", thread_id AS "threadId", role, streaming,
+    }>`SELECT message_id AS "messageId", run_id AS "runId", thread_id AS "threadId", role, streaming,
         json_extract(payload_json, '$.text') AS text
       FROM orchestration_v2_projection_messages
       WHERE ${sql.in("message_id", [...new Set(refs.map((ref) => ref.source.messageId))])}
@@ -378,7 +391,11 @@ const make = Effect.gen(function* () {
           contentDigest = yield* digest(message.text ?? "");
           digests.set(message.messageId, contentDigest);
         }
-        if (contentDigest !== source.digest) reason = "changed";
+        if (
+          contentDigest !== source.digest ||
+          (source.runId !== undefined && source.runId !== message.runId)
+        )
+          reason = "changed";
       }
       if (reason !== null) reasons.set(factId, reason);
     }
@@ -789,14 +806,40 @@ const make = Effect.gen(function* () {
     };
   });
   const search: ProjectKnowledge["Service"]["search"] = Effect.fn("ProjectKnowledge.search")(
-    function* (input) {
+    function* (request) {
+      const {
+        factCursor: _previewFactCursor,
+        cursor: _previewMessageCursor,
+        ...previewRequest
+      } = request;
+      const input =
+        request.preview === true
+          ? {
+              ...previewRequest,
+              query: boundProjectMemorySuggestionQuery(request.query),
+              limit: 8,
+            }
+          : request;
       yield* requireProject(input.projectId);
-      const messages = yield* threads
-        .search({
-          ...input,
-          ...(input.messageLimit === undefined ? {} : { limit: input.messageLimit }),
-        })
-        .pipe(Effect.mapError(storageError(input.projectId)));
+      if (input.preview === true && !isSubstantiveProjectMemoryQuery(input.query))
+        return {
+          messages: { matches: [] },
+          facts: {
+            state: "available" as const,
+            matches: [],
+            coverage: "complete" as const,
+            nextCursor: null,
+          },
+        };
+      const messages =
+        input.preview === true
+          ? { matches: [] }
+          : yield* threads
+              .search({
+                ...input,
+                ...(input.messageLimit === undefined ? {} : { limit: input.messageLimit }),
+              })
+              .pipe(Effect.mapError(storageError(input.projectId)));
       const entities = [
         ...new Set((input.entities ?? []).map((entity) => entity.toLowerCase())),
       ].sort();
@@ -1008,6 +1051,27 @@ const make = Effect.gen(function* () {
       const early = yield* resolveMatches(prior?.search ?? null).pipe(
         Effect.mapError(storageError(input.projectId)),
       );
+      if (input.preview === true)
+        return {
+          messages,
+          facts: {
+            state: "available" as const,
+            matches: selectProjectMemorySuggestions(
+              {
+                messages: { matches: [] },
+                facts: {
+                  state: "available",
+                  matches: early.resolved.map(({ fact, score }) => ({ fact, score })),
+                  coverage: early.ranked.coverage,
+                  nextCursor: null,
+                },
+              },
+              input.query,
+            ).map(({ fact, score }) => ({ fact, score })),
+            coverage: early.ranked.coverage,
+            nextCursor: null,
+          },
+        };
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
@@ -1096,6 +1160,22 @@ const make = Effect.gen(function* () {
     );
     yield* store.recordDelivery(checked).pipe(Effect.mapError(storageError(delivery.projectId)));
   });
+  const suggest: ProjectKnowledge["Service"]["suggest"] = Effect.fn("ProjectKnowledge.suggest")(
+    function* (input) {
+      if (!isSubstantiveProjectMemoryQuery(input.query)) return [];
+      const result = yield* search({
+        ...input,
+        query: boundProjectMemorySuggestionQuery(input.query),
+        recordRetrieval: false,
+        preview: true,
+        minTrust: 0.5,
+        limit: 8,
+        messageLimit: 1,
+      });
+      return selectProjectMemorySuggestions(result, input.query);
+    },
+  );
+
   // A fact edit is not a source edit: check the citations of the revision actually sent.
   // Scrubbing is monotone, so restoring a thread cannot restore retained excerpts.
   const revalidateDelivery = Effect.fn("ProjectKnowledge.revalidateDelivery")(function* (
@@ -1305,8 +1385,67 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           if ((yield* store.find(input.projectId, input.factId)) !== null)
             return { outcome: "existing" as const };
-          if (yield* store.hasDuplicateContent(input.projectId, input.content))
+          const duplicate = yield* store.findDuplicateContent(input.projectId, input.content);
+          if (
+            duplicate !== null &&
+            duplicate.status === "saved" &&
+            duplicate.supersededBy == null
+          ) {
+            if (
+              input.sources.length === 0 ||
+              input.sources.some((source) => source.kind === "user") ||
+              !(yield* sourcesAvailable(input, true))
+            )
+              return yield* new ProjectKnowledgeError({
+                reason: "invalid_source",
+                projectId: input.projectId,
+                factId: input.factId,
+              });
+            const sourceKey = (source: KnowledgeFactSource) =>
+              source.kind === "user"
+                ? "user"
+                : JSON.stringify([source.threadId, source.messageId, source.digest]);
+            const known = new Set(duplicate.sources.map(sourceKey));
+            const sources = [...duplicate.sources];
+            for (const source of input.sources) {
+              const key = sourceKey(source);
+              if (!known.has(key) && sources.length < 16) {
+                sources.push(source);
+                known.add(key);
+              }
+            }
+            if (sources.length > duplicate.sources.length) {
+              const now = DateTime.formatIso(yield* DateTime.now);
+              const fact = {
+                ...duplicate,
+                sources,
+                revision: duplicate.revision + 1,
+                updatedAt: now,
+              };
+              if (!(yield* store.update(fact, duplicate.revision)))
+                return yield* new ProjectKnowledgeError({
+                  reason: "conflict",
+                  projectId: input.projectId,
+                  factId: duplicate.id,
+                });
+              yield* store.recordHistory({
+                projectId: input.projectId,
+                factId: fact.id,
+                revision: fact.revision,
+                event: "edited",
+                actor,
+                at: now,
+                contentDigest: yield* digest(fact.content ?? ""),
+                content: fact.content,
+                sources,
+                trustBefore: null,
+                trustAfter: fact.trust,
+                helpful: null,
+                relatedFactId: null,
+              });
+            }
             return { outcome: "duplicate" as const };
+          }
           yield* mutate(input, actor);
           return { outcome: "saved" as const };
         }),
@@ -1425,6 +1564,7 @@ const make = Effect.gen(function* () {
     readSource,
     readSources,
     search,
+    suggest,
     prepareContext,
     resolveForTurn,
     recordDelivery,

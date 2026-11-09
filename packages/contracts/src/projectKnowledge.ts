@@ -24,6 +24,7 @@ export const ProjectFactId = TrimmedNonEmptyString.pipe(Schema.brand("ProjectFac
 export type ProjectFactId = typeof ProjectFactId.Type;
 export const KnowledgeDigest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
 export const KnowledgeMessageRef = Schema.Struct({
+  runId: Schema.optionalKey(RunId),
   kind: Schema.Literal("message"),
   threadId: ThreadId,
   messageId: MessageId,
@@ -464,6 +465,8 @@ export const ProjectKnowledgeSearchInput = Schema.Struct({
   // Retrieval reinforces ranking. Browsing surfaces (as-you-type, previews) pass false so only
   // deliberate lookups count; omitted means true.
   recordRetrieval: Schema.optionalKey(Schema.Boolean),
+  /** Passive suggestions do not record receipts, reinforce retrieval, or return continuations. */
+  preview: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectKnowledgeSearchInput = typeof ProjectKnowledgeSearchInput.Type;
 export const KnowledgeScore = Schema.Struct({
@@ -491,6 +494,89 @@ const ProjectKnowledgeSearchResultSchema = Schema.Struct({
   ]),
 });
 export type ProjectKnowledgeSearchResult = typeof ProjectKnowledgeSearchResultSchema.Type;
+export interface ProjectMemorySuggestion {
+  readonly fact: ProjectFact;
+  readonly score: typeof KnowledgeScore.Type;
+  readonly reason: string;
+}
+
+const PROJECT_MEMORY_SUGGESTION_QUERY_MAX_LENGTH = 1000;
+
+export function boundProjectMemorySuggestionQuery(query: string): string {
+  return query.trim().slice(0, PROJECT_MEMORY_SUGGESTION_QUERY_MAX_LENGTH);
+}
+
+const memoryQueryFiller = new Set([
+  "the",
+  "and",
+  "for",
+  "this",
+  "that",
+  "with",
+  "please",
+  "help",
+  "can",
+  "you",
+  "could",
+  "would",
+  "want",
+  "need",
+  "hello",
+  "there",
+  "thanks",
+]);
+const memoryQueryTerms = (query: string) => [
+  ...new Set(
+    (
+      boundProjectMemorySuggestionQuery(query)
+        .toLowerCase()
+        .match(/[\p{L}\p{N}_/:.]+/gu) ?? []
+    ).filter((term) => term.length >= 3 && !memoryQueryFiller.has(term)),
+  ),
+];
+
+export function isSubstantiveProjectMemoryQuery(query: string): boolean {
+  const terms = memoryQueryTerms(query);
+  return (
+    terms.length >= 3 ||
+    terms.some(
+      (term) =>
+        /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(term) && term.length >= 6,
+    )
+  );
+}
+
+export function selectProjectMemorySuggestions(
+  result: ProjectKnowledgeSearchResult,
+  query = "",
+): ReadonlyArray<ProjectMemorySuggestion> {
+  if (result.facts.state !== "available") return [];
+  const terms = memoryQueryTerms(query);
+  return result.facts.matches
+    .filter(
+      ({ fact, score }) =>
+        fact.status === "saved" &&
+        fact.supersededBy == null &&
+        fact.sources.length > 0 &&
+        score.trust >= 0.5 &&
+        score.combined > 0 &&
+        (score.tokenOverlap >= 0.15 || (score.lexical >= 0.65 && score.tokenOverlap >= 0.05)),
+    )
+    .slice(0, 2)
+    .map(({ fact, score }) => {
+      const content = [fact.content ?? "", ...fact.entities, ...fact.tags].join(" ").toLowerCase();
+      const matched = terms.filter((term) => content.includes(term)).slice(0, 3);
+      return {
+        fact,
+        score,
+        reason:
+          matched.length > 0
+            ? `Matches ${matched.map((term) => `“${term}”`).join(", ")} in saved project knowledge.`
+            : "Strong lexical match in saved project knowledge.",
+      };
+    });
+}
+
 export const ProjectKnowledgeSearchResult: Schema.Codec<
   ProjectKnowledgeSearchResult,
   typeof ProjectKnowledgeSearchResultSchema.Encoded
