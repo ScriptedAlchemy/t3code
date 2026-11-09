@@ -1716,6 +1716,22 @@ it.effect.each(["rolled", "edited", "deleted", "project-deleted", "archive"] as 
     }).pipe(Effect.provide(receiptTestLayer)),
 );
 
+it.effect("accepts long delegated prompts for optional memory suggestions", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("long-delegated-prompt");
+    yield* createProject(projectId);
+    assert.deepEqual(
+      yield* knowledge.suggest({
+        projectId,
+        requestId: CommandId.make("suggest-long-delegated-prompt"),
+        query: "Review SQLite migrations for project memory. ".repeat(100),
+      }),
+      [],
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
   Effect.gen(function* () {
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
