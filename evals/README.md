@@ -4,19 +4,20 @@ An eval runs a real model against T3 Code's real text or code and scores what th
 
 Write or run an eval when a change affects what a model sees or does: agent instructions, MCP tool descriptions and schemas, tool results, generated titles, or the guidance an agent gets for a feature such as Device Manager.
 
-| Eval                                    | Measures                                                                                                                                   |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| [mcp-tool-use](mcp-tool-use/)           | Whether agents use T3's MCP tools correctly, including device routing and recovery, in fake threads.                                       |
-| [thread-titles](thread-titles/)         | Whether generated thread titles name the right subject.                                                                                    |
-| [pr-content](pr-content/)               | Whether PR generation describes the diff when project instructions try to redirect it.                                                     |
-| [thread-split](thread-split/)           | Offline local-model evaluation of whether a message can start an independent thread.                                                       |
-| [model-evaluations](model-evaluations/) | Whether blind judges use outcome evidence, respect task scope, ignore injected scoring instructions, and abstain when evidence is missing. |
-| [voice-cleanup](voice-cleanup/)         | Whether optional dictation cleanup edits only the spoken text and preserves its meaning.                                                   |
-| [test-signal](test-signal/)             | Whether a cheap model running the test-signal check flags low-signal tests.                                                                |
+| Eval                                      | Measures                                                                                                                                                                        |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [mcp-tool-use](mcp-tool-use/)             | Whether agents use T3's MCP tools correctly, including device routing and recovery, in fake threads.                                                                            |
+| [group-conversation](group-conversation/) | Whether peers engage, preserve attribution, use PASS and handles, edit with the real side chat digest, and continue through delegation. Compares parallel and serial reactions. |
+| [thread-titles](thread-titles/)           | Whether generated thread titles name the right subject.                                                                                                                         |
+| [pr-content](pr-content/)                 | Whether PR generation describes the diff when project instructions try to redirect it.                                                                                          |
+| [thread-split](thread-split/)             | Offline local-model evaluation of whether a message can start an independent thread.                                                                                            |
+| [model-evaluations](model-evaluations/)   | Whether blind judges use outcome evidence, respect task scope, ignore injected scoring instructions, and abstain when evidence is missing.                                      |
+| [voice-cleanup](voice-cleanup/)           | Whether optional dictation cleanup edits only the spoken text and preserves its meaning.                                                                                        |
+| [test-signal](test-signal/)               | Whether a cheap model running the test-signal check flags low-signal tests.                                                                                                     |
 
 ## Run an eval
 
-1. Run `vp i` at the repo root.
+1. Run `vp i` at the repo root. Use the Node version pinned in the root `package.json`, since `mcp-tool-use` fails to parse on older ones.
 2. Put the API keys the eval needs in the repo root `.env`. It is gitignored, and the eval scripts load it. Never print or commit a key.
 3. From `evals/`, run `pnpm <eval> --out runs/<name>`. `runs/` is gitignored.
 

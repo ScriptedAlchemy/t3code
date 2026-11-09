@@ -103,6 +103,8 @@ const SETTINGS_SEARCH_TERMS = {
     "start from remote",
   ],
   SettingsLabs: [
+    "group conversations",
+    "invite models",
     "hide offline environments",
     "legacy",
     "plan mode",

@@ -133,6 +133,30 @@ function persistedLink(
 }
 
 describe("isAutoSettlementCandidate", () => {
+  it("holds a thread while its group has a discussion open, and releases it after", () => {
+    const group = {
+      status: "active" as const,
+      primary: { model: "fable", label: "Fable", handle: "fable" },
+      seats: [],
+      closedBecause: null,
+      closedAt: null,
+    };
+    expect(
+      ThreadSettlementService.isAutoSettlementCandidate(
+        shell({
+          group: { ...group, discussion: { mode: "everyone", turnsLeft: 2, delivering: [] } },
+        }),
+        NOW_MS,
+      ),
+    ).toBe(false);
+    expect(
+      ThreadSettlementService.isAutoSettlementCandidate(
+        shell({ group: { ...group, discussion: null } }),
+        NOW_MS,
+      ),
+    ).toBe(true);
+  });
+
   it("settles a thread whose only background work is a command left running", () => {
     expect(
       ThreadSettlementService.isAutoSettlementCandidate(

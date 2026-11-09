@@ -150,6 +150,33 @@ describe("thread links", () => {
         "After [New](t3-thread://v2/local/t1)",
       ].join("\n"),
     );
+    for (const literal of [
+      "`multiline\n<t3-thread://v1/t1>\ncode`",
+      "`multiline\r\n<t3-thread://v1/t1>\r\ncode`",
+      "`multiline\r<t3-thread://v1/t1>\rcode`",
+      "```md\n\n<t3-thread://v1/t1>\n\n```",
+      "~~~md\n\n<t3-thread://v1/t1>\n\n~~~",
+    ]) {
+      expect(threadLinkRefs(literal, local)).toEqual([]);
+      expect(relabelThreadLinks(literal, local, () => "New")).toBe(literal);
+    }
+    for (const newline of ["\n", "\r\n", "\r"]) {
+      for (const blank of ["", " \t"]) {
+        const paragraphs = [
+          "An unmatched ` in one paragraph.",
+          blank,
+          "< t3-thread://v1/t1 >",
+          blank,
+          "Another ` in a later paragraph.",
+        ].join(newline);
+        const normalized = paragraphs.replace("< t3-thread://v1/t1 >", "<t3-thread://v1/t1>");
+        expect(trimThreadAutolinkPadding(paragraphs)).toBe(normalized);
+        expect(threadLinkRefs(normalized, local)).toEqual([ref("local", "t1")]);
+        expect(relabelThreadLinks(normalized, local, () => "New")).toBe(
+          paragraphs.replace("< t3-thread://v1/t1 >", "[New](t3-thread://v1/t1)"),
+        );
+      }
+    }
   });
 
   it("trims the whitespace a model writes inside a thread autolink's brackets, and nothing else", () => {

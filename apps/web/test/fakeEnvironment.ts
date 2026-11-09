@@ -20,7 +20,9 @@ import {
   type VcsStatusStreamEvent,
   type OrchestrationProjectShell,
   type OrchestrationV2ProjectedTurnItem,
+  type OrchestrationV2RuntimeRequest,
   type OrchestrationV2Run,
+  type OrchestrationV2ThreadGroup,
   type OrchestrationV2ShellStreamItem,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
@@ -185,6 +187,8 @@ function run(threadId: ThreadId, id: RunId, ordinal: number, userMessageId: stri
 export interface FakeThread {
   /** Makes this a side chat of that thread. */
   readonly sideChatOf?: ThreadId;
+  readonly group?: OrchestrationV2ThreadGroup;
+  readonly runtimeRequests?: ReadonlyArray<OrchestrationV2RuntimeRequest>;
   readonly id: ThreadId;
   readonly title: string;
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
@@ -241,6 +245,7 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     // Idle reads as waiting on the user, which shows a per-second duration in the sidebar.
     status: latest ? "completed" : "idle",
     pendingRuntimeRequest: null,
+    ...(thread.group === undefined ? {} : { group: thread.group }),
     latestVisibleMessage: null,
     latestUserMessageAt: AT,
     hasActionableProposedPlan: false,
@@ -280,6 +285,7 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
       worktreePath: shell.worktreePath,
       activeProviderThreadId: null,
       lineage: shell.lineage,
+      ...(thread.group === undefined ? {} : { group: thread.group }),
       forkedFrom: null,
       createdBy: "user",
       creationSource: "web",
@@ -298,7 +304,7 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
     providerSessions: [],
     providerThreads: [],
     providerTurns: [],
-    runtimeRequests: [],
+    runtimeRequests: [...(thread.runtimeRequests ?? [])],
     messages: [],
     plans: [],
     turnItems: [...thread.items],

@@ -24,6 +24,7 @@ import {
   CommandId,
   type GuestMessageId,
   isCompactionCommandMessage,
+  isOrchestrationV2PublicationRun,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   MessageId,
@@ -191,6 +192,42 @@ import {
   isForkableSourceRunStatus,
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
+import {
+  groupEntries,
+  hasOpenRun,
+  planWave,
+  primaryWakeCursor,
+  readTurnOutcome,
+  seatDeliveredCursor,
+  seatForThread,
+  seatLostTurn,
+  seatWakeCursor,
+  unseenFor,
+  finalReplyText,
+  type GroupMember,
+  groupSenderLabel,
+  isAfterWakeFloor,
+  seatRunPublishes,
+} from "./GroupConversation.ts";
+import {
+  groupEndedNotice,
+  groupParticipants,
+  primaryWakeSummary,
+  renderPrimaryWakePrompt,
+  renderSeatFirstPrompt,
+  renderSeatTurnPrompt,
+} from "./GroupPrompt.ts";
+import {
+  decideGroupMembership,
+  groupAfterDelivered,
+  groupAfterStop,
+  groupAfterMessage,
+  groupCanAffordMessage,
+  groupWithPrimaryModel,
+  groupAfterWave,
+  planGroupPublication,
+  resolveGroupAudience,
+} from "./ThreadGroupDecider.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
@@ -478,6 +515,9 @@ export interface OrchestratorV2Shape {
   readonly getThreadShell: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2ThreadShell | null, OrchestratorV2Error>;
+  readonly findThreadIdByNativeThreadId: (
+    nativeThreadId: string,
+  ) => Effect.Effect<ThreadId | null, OrchestratorV2Error>;
   readonly findGuestShareThreadId: (
     shareId: GuestShareId,
   ) => Effect.Effect<ThreadId | null, OrchestratorV2Error>;
@@ -496,6 +536,11 @@ export interface OrchestratorV2Shape {
     readonly eventType?: OrchestrationV2DomainEvent["type"];
   }) => Stream.Stream<OrchestrationV2StoredEvent, OrchestratorV2Error>;
   readonly streamDomainEvents: Stream.Stream<OrchestrationV2DomainEvent, OrchestratorV2Error>;
+  /** Every event after a position from `getLatestEventSequence`, so a reader can catch up. */
+  readonly streamDomainEventsAfter: (
+    afterSequence: number,
+  ) => Stream.Stream<OrchestrationV2DomainEvent, OrchestratorV2Error>;
+  readonly getLatestEventSequence: () => Effect.Effect<number, OrchestratorV2Error>;
 }
 
 export class OrchestratorV2 extends Context.Service<OrchestratorV2, OrchestratorV2Shape>()(
@@ -557,6 +602,16 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.archive":
     case "thread.unarchive":
     case "thread.delete":
+    case "thread.group.publish":
+    case "thread.group.invite":
+    case "thread.group.remove":
+    case "thread.group.end":
+    case "thread.group.advance":
+    case "thread.group.deliver":
+    case "thread.group.stop-seat":
+    case "thread.group.delivered":
+    case "thread.group.steer-accepted":
+    case "thread.group.notice":
     case "thread.guest-share.open":
     case "thread.guest-share.redeem":
     case "thread.guest-share.close":
@@ -875,7 +930,11 @@ function latestStableRun(
 ): OrchestrationV2Run | null {
   return (
     projection.runs
-      .filter((run) => run.status === "completed" && run.checkpointId !== null)
+      .filter(
+        (run) =>
+          run.status === "completed" &&
+          (run.checkpointId !== null || isOrchestrationV2PublicationRun(run)),
+      )
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null
   );
 }
@@ -910,6 +969,19 @@ function providerThreadForRun(
   return run.providerThreadId === null
     ? undefined
     : projection.providerThreads.find((candidate) => candidate.id === run.providerThreadId);
+}
+
+/** A publication run has no conversation of its own, so name the one that preceded it. */
+function conversationRunFor(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs">,
+  run: OrchestrationV2Run,
+): OrchestrationV2Run {
+  if (run.providerThreadId !== null) return run;
+  return (
+    projection.runs.findLast(
+      (candidate) => candidate.ordinal < run.ordinal && candidate.providerThreadId !== null,
+    ) ?? run
+  );
 }
 
 function providerTurnForRun(
@@ -1094,6 +1166,62 @@ function lastDeliveredRunForProviderThread(
       run.providerThreadId === providerThreadId &&
       (run.status === "completed" ||
         projection.providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId)),
+  );
+}
+
+/** Automatic wakes, continuations, and slash commands belong to the thread's own model. */
+function groupAudienceForMessage(
+  thread: OrchestrationV2AppThread,
+  command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+) {
+  const { group } = thread;
+  if (
+    group?.status !== "active" ||
+    (command.createdBy !== "user" && command.groupAudience === undefined) ||
+    command.notification !== undefined ||
+    command.delegatedCompletion !== undefined ||
+    command.restartContinuationOfRunId !== undefined ||
+    command.usageLimitContinuationOfRunId !== undefined ||
+    command.manualContinuationOfRunId !== undefined ||
+    command.freshContext === true ||
+    isNativeMaintenanceCommand(command) ||
+    parseGoalCommand(command) !== null
+  ) {
+    return null;
+  }
+  return resolveGroupAudience(group, command.groupAudience);
+}
+
+/** Names the primary on a row a seat inherits, so the seat cannot mistake the words for its own. */
+function withPrimarySpeaker(
+  item: OrchestrationV2TurnItem,
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  thread: OrchestrationV2AppThread,
+): OrchestrationV2TurnItem {
+  if (item.type !== "assistant_message" || item.speaker !== undefined) return item;
+  const model =
+    runs.find((run) => run.id === item.runId)?.modelSelection.model ?? thread.modelSelection.model;
+  const { group } = thread;
+  const label = group?.primary.model === model ? group.primary.label : model;
+  return { ...item, speaker: { label, model } };
+}
+
+/** Publication runs recorded after this provider thread's conversation last took a turn. */
+function unseenPublicationRuns(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "providerTurns">,
+  providerThreadId: OrchestrationV2ProviderThread["id"] | undefined,
+  contextBoundary: number,
+): ReadonlyArray<OrchestrationV2Run> {
+  const lastDelivered =
+    providerThreadId === undefined
+      ? undefined
+      : lastDeliveredRunForProviderThread(projection, providerThreadId);
+  return projection.runs.filter(
+    (run) =>
+      isOrchestrationV2PublicationRun(run) &&
+      isHandoffSourceRun(run) &&
+      run.ordinal >= contextBoundary &&
+      run.ordinal > (lastDelivered?.ordinal ?? 0),
   );
 }
 
@@ -1846,16 +1974,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
       // Move queued ordinals after runs that started while they waited to preserve transcript and checkpoint order.
-      // Started runs have prompts; cancelled queued messages do not.
-      const newerRunIds = projection.runs
-        .filter((run) => run.status !== "queued" && run.ordinal > queuedRun.ordinal)
-        .map((run) => run.id);
+      // Started runs have prompts; cancelled queued messages do not. Publication runs have words.
+      const newerRuns = projection.runs.filter(
+        (run) => run.status !== "queued" && run.ordinal > queuedRun.ordinal,
+      );
       const startedAhead =
-        newerRunIds.length > 0 &&
-        (yield* projectionStore.getThreadRecords(threadId, ["turnItems"], {
-          turnItemTypes: ["user_message", "notification"],
-          turnItemRunIds: newerRunIds,
-        })).turnItems.length > 0;
+        newerRuns.some(isOrchestrationV2PublicationRun) ||
+        (newerRuns.length > 0 &&
+          (yield* projectionStore.getThreadRecords(threadId, ["turnItems"], {
+            turnItemTypes: ["user_message", "notification"],
+            turnItemRunIds: newerRuns.map((run) => run.id),
+          })).turnItems.length > 0);
       const ordinal = startedAhead ? nextRunOrdinal(projection) : queuedRun.ordinal;
       const rootNodeId = queuedRun.rootNodeId;
       const attemptId = queuedRun.activeAttemptId;
@@ -2058,24 +2187,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       );
-      const latestCompletedRun = projection.runs.findLast((run) => run.status === "completed");
+      const latestCompletedRun = projection.runs.findLast(
+        (run) => run.status === "completed" && !isOrchestrationV2PublicationRun(run),
+      );
       const latestHandoffRun = projection.runs.findLast(isHandoffSourceRun);
       const targetLastCompletedRun = lastDeliveredRunForProviderThread(
         projection,
         queuedProviderThread.id,
       );
-      const coveredRuns =
-        freshContext ||
+      // Peers on the target's own instance count as unseen, so ask where the provider work ran.
+      const latestProviderRunInstanceId = projection.runs.findLast(
+        (run) => isHandoffSourceRun(run) && !isOrchestrationV2PublicationRun(run),
+      )?.providerInstanceId;
+      const staysOnConversation =
         canResumeAcrossInstances ||
-        latestHandoffRun === undefined ||
-        latestHandoffRun.providerInstanceId === queuedRun.providerInstanceId
+        latestProviderRunInstanceId === undefined ||
+        latestProviderRunInstanceId === queuedRun.providerInstanceId;
+      const unseenPublications =
+        freshContext || !staysOnConversation
           ? []
+          : unseenPublicationRuns(projection, queuedProviderThread.id, contextBoundary);
+      const coveredRuns =
+        freshContext || staysOnConversation
+          ? unseenPublications
           : projection.runs.filter(
               (run) =>
                 isHandoffSourceRun(run) &&
                 run.ordinal >= contextBoundary &&
                 run.ordinal > (targetLastCompletedRun?.ordinal ?? 0) &&
-                run.ordinal <= latestHandoffRun.ordinal,
+                run.ordinal <= (latestHandoffRun?.ordinal ?? 0),
             );
       const needsFullContext = deliveryProviderThread.nativeThreadRef === null;
       const legacyImportItems =
@@ -2104,7 +2244,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
-      if (transferId !== null) {
+      // Peer text falls back to the inline prompt, so no capability can refuse it.
+      if (transferId !== null && unseenPublications.length === 0) {
         yield* commandPolicy.ensureContextHandoff({
           commandId,
           threadId,
@@ -2291,10 +2432,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         startedAt: now,
         completedAt: now,
         updatedAt: now,
-        ...(activeHandoff === null ? modelSwitchSince(projection, queuedRun.modelSelection) : {}),
+        ...(activeHandoff === null || unseenPublications.length > 0
+          ? modelSwitchSince(projection, queuedRun.modelSelection)
+          : {}),
       };
+      // A group repeats this delta every turn, so its row would only be noise.
       const handoffTurnItem: OrchestrationV2TurnItem | null =
-        activeHandoff === null
+        activeHandoff === null ||
+        (unseenPublications.length > 0 && projection.thread.group?.status === "active")
           ? null
           : {
               id: idAllocator.derive.runSignalTurnItem({
@@ -3517,7 +3662,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         command.expectedLatestRunId !== undefined &&
         projection.runs.reduce<OrchestrationV2Run | undefined>(
-          (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),
+          (latest, run) =>
+            !isOrchestrationV2PublicationRun(run) &&
+            (latest === undefined || run.ordinal > latest.ordinal)
+              ? run
+              : latest,
           undefined,
         )?.id !== command.expectedLatestRunId
       ) {
@@ -3751,6 +3900,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             archivedAt: now,
             titleRegeneration: null,
             guestShare: null,
+            ...(thread.group == null ? {} : { group: groupAfterStop(thread.group) }),
             pullRequests: thread.pullRequests?.map((link) => withPullRequestWatch(link, undefined)),
             updatedAt: now,
           };
@@ -4652,6 +4802,562 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
+  const dispatchGroupPublish = Effect.fn("orchestrationV2.dispatch.groupPublish")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.group.publish" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(command.threadId, ["runs"])
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+        ),
+      );
+    if (projection.thread.deletedAt !== null) return;
+    const now = yield* DateTime.now;
+    const { run, message, turnItem } = planGroupPublication({
+      command,
+      thread: projection.thread,
+      ordinal: nextRunOrdinal(projection),
+      turnItemOrdinal: yield* nextTurnItemOrdinal(projection),
+      now,
+    });
+    if (projection.runs.some((existing) => existing.id === run.id)) return;
+    const emitEvent = emit(events, command);
+    const common = {
+      threadId: command.threadId,
+      runId: run.id,
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+    };
+    yield* emitEvent({ ...common, type: "run.created", payload: run });
+    yield* emitEvent({ ...common, type: "message.updated", payload: message });
+    yield* emitEvent({ ...common, type: "turn-item.updated", payload: turnItem });
+  });
+
+  const emitThreadGroup = Effect.fn("orchestrationV2.dispatch.emitThreadGroup")(function* (
+    command: OrchestrationV2ServerCommand,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    thread: OrchestrationV2AppThread,
+    group: NonNullable<OrchestrationV2AppThread["group"]>,
+    now: DateTime.Utc,
+  ) {
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "thread.group-updated",
+      threadId: thread.id,
+      providerInstanceId: thread.providerInstanceId,
+      occurredAt: now,
+      payload: { ...thread, group, updatedAt: now },
+    });
+  });
+
+  const emitGroupNotice = Effect.fn("orchestrationV2.dispatch.emitGroupNotice")(function* (
+    command: OrchestrationV2ServerCommand,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs">,
+    message: string,
+    now: DateTime.Utc,
+    options: { readonly quiet?: boolean } = {},
+  ) {
+    // The timeline shows a row only through its run. A thread with no runs has nothing to report.
+    const anchorRun = projection.runs.findLast((run) => run.status !== "queued");
+    if (anchorRun === undefined) return;
+    const { thread } = projection;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      threadId: thread.id,
+      runId: anchorRun.id,
+      providerInstanceId: thread.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        id: TurnItemId.make(`turn-item:group-notice:${command.commandId}`),
+        threadId: thread.id,
+        runId: anchorRun.id,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: yield* nextTurnItemOrdinal(projection),
+        status: "completed",
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "system_notice",
+        message,
+        ...(options.quiet ? { quiet: true } : {}),
+      },
+    });
+  });
+
+  const groupDeliverEffect = (
+    command: { readonly commandId: CommandId },
+    threadId: ThreadId,
+    member: GroupMember,
+    messageId?: MessageId,
+  ): PendingOrchestrationEffectV2 => ({
+    id: `effect:${command.commandId}:thread-group.deliver:${member}`,
+    commandId: command.commandId,
+    threadId,
+    request: {
+      type: "thread-group.deliver",
+      member,
+      ...(messageId === undefined ? {} : { messageId }),
+    },
+  });
+
+  const groupStopSeatsEffect = (
+    command: { readonly commandId: CommandId },
+    threadId: ThreadId,
+    seatThreadIds: ReadonlyArray<ThreadId>,
+  ): PendingOrchestrationEffectV2 => ({
+    id: `effect:${command.commandId}:thread-group.stop-seats`,
+    commandId: command.commandId,
+    threadId,
+    request: { type: "thread-group.stop-seats", seatThreadIds },
+  });
+
+  const dispatchGroupMembership = Effect.fn("orchestrationV2.dispatch.groupMembership")(function* (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "thread.group.invite" | "thread.group.remove" | "thread.group.end" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(command.threadId, ["runs", "turnItems"], {
+        turnItemTypes: ["assistant_message"],
+      })
+      .pipe(mapDispatchError(command));
+    const { thread } = projection;
+    if (thread.deletedAt !== null || thread.archivedAt !== null) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.threadId} is not active.`,
+      });
+    }
+    // Ending again, or removing a seat that already left, changes nothing.
+    if (command.type === "thread.group.end" && thread.group?.status === "ended") return;
+    if (
+      command.type === "thread.group.remove" &&
+      thread.group != null &&
+      !thread.group.seats.some(
+        (seat) => seat.threadId === command.seatThreadId && seat.status === "seated",
+      )
+    )
+      return;
+    const seatLatestRunOrdinal =
+      command.type === "thread.group.invite"
+        ? nextRunOrdinal(
+            yield* projectionStore
+              .getThreadRecords(command.seat.threadId, ["runs"])
+              .pipe(mapDispatchError(command)),
+          ) - 1
+        : 0;
+    const decided = decideGroupMembership({ thread, command, seatLatestRunOrdinal });
+    if (Result.isFailure(decided)) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: decided.failure,
+      });
+    }
+    const now = yield* DateTime.now;
+    const { group, stopSeats } = decided.success;
+    yield* emitThreadGroup(command, events, thread, group, now);
+    if (stopSeats.length > 0) {
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        groupStopSeatsEffect(command, thread.id, stopSeats),
+      ]);
+    }
+    if (command.type !== "thread.group.end") return;
+    // A turn still running already took everything published before it started.
+    const primaryCursor = primaryWakeCursor(projection.runs);
+    const unseen = projection.runs.filter(
+      (run) =>
+        run.publication?.type === "peer_reply" &&
+        run.ordinal > primaryCursor &&
+        projection.turnItems.some(
+          (item) =>
+            item.runId === run.id &&
+            item.type === "assistant_message" &&
+            readTurnOutcome(item.text).type !== "pass",
+        ),
+    );
+    yield* emitGroupNotice(
+      command,
+      events,
+      projection,
+      groupEndedNotice(group.primary.label, unseen.length),
+      now,
+      { quiet: true },
+    );
+  });
+
+  const dispatchGroupNotice = Effect.fn("orchestrationV2.dispatch.groupNotice")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.group.notice" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(command.threadId, ["runs"])
+      .pipe(mapDispatchError(command));
+    if (projection.thread.deletedAt !== null) return;
+    yield* emitGroupNotice(command, events, projection, command.message, yield* DateTime.now);
+  });
+
+  /** Reads under the parent's lock. Seat runs can only move from open to settled meanwhile. */
+  const dispatchGroupAdvance = Effect.fn("orchestrationV2.dispatch.groupAdvance")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.group.advance" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const parent = yield* projectionStore
+      .getThreadRecords(command.threadId, ["runs", "turnItems", "messages"], {
+        turnItemTypes: ["user_message", "assistant_message"],
+        messageRoles: ["user"],
+      })
+      .pipe(mapDispatchError(command));
+    const { thread } = parent;
+    const stored = thread.group ?? null;
+    if (
+      stored === null ||
+      stored.status !== "active" ||
+      stored.discussion === null ||
+      thread.deletedAt !== null
+    ) {
+      return;
+    }
+    // An archived thread starts no new turns, so nothing could ever close this discussion.
+    if (thread.archivedAt !== null) {
+      yield* emitThreadGroup(command, events, thread, groupAfterStop(stored), yield* DateTime.now);
+      return;
+    }
+    const seats = yield* Effect.forEach(
+      stored.seats.filter((seat) => seat.status === "seated"),
+      (seat) =>
+        projectionStore.getThreadRecords(seat.threadId, ["runs"]).pipe(
+          Effect.map((records) =>
+            records.thread.deletedAt === null && records.thread.archivedAt === null
+              ? { seat, runs: records.runs }
+              : null,
+          ),
+          Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+          mapDispatchError(command),
+        ),
+    );
+    const live = seats.flatMap((row) => (row === null ? [] : [row]));
+    const liveIds = new Set(live.map((row) => row.seat.threadId));
+    const published = new Set(
+      parent.runs.flatMap((run) =>
+        run.publication?.type === "peer_reply" ? [run.publication.seatRunId] : [],
+      ),
+    );
+    // A settled reply can be ahead of its publication, and closing now would lose what it wakes.
+    const publishing = yield* Effect.filter(live, ({ seat, runs }) => {
+      const pending = runs.filter((run) => seatRunPublishes(seat, run) && !published.has(run.id));
+      if (pending.length === 0) return Effect.succeed(false);
+      return projectionStore
+        .getThreadRecords(seat.threadId, ["turnItems"], {
+          turnItemTypes: ["assistant_message"],
+          turnItemRunIds: pending.map((run) => run.id),
+        })
+        .pipe(
+          Effect.map(({ turnItems }) =>
+            pending.some((run) => finalReplyText(turnItems, run.id) !== null),
+          ),
+          mapDispatchError(command),
+        );
+    });
+    const group = {
+      ...stored,
+      seats: stored.seats.map((seat) =>
+        seat.status === "seated" && !liveIds.has(seat.threadId)
+          ? { ...seat, status: "left" as const }
+          : seat,
+      ),
+    };
+    const { entries, wakeFloorRun } = groupEntries({
+      group,
+      runs: parent.runs,
+      turnItems: parent.turnItems,
+      messages: parent.messages,
+    });
+    const since = stored.discussion.since ?? 0;
+    const current = entries.filter((entry) => isAfterWakeFloor(entry, wakeFloorRun, since));
+    const primaryCursor = primaryWakeCursor(parent.runs);
+    const cursorFor = (member: GroupMember) => {
+      if (member === "primary") return primaryCursor;
+      const row = live.find((candidate) => candidate.seat.threadId === member);
+      return row === undefined ? Number.POSITIVE_INFINITY : seatWakeCursor(row.runs);
+    };
+    const active: ReadonlyArray<GroupMember> = [
+      ...(hasOpenRun(parent.runs) ? (["primary"] as const) : []),
+      ...live.filter((row) => hasOpenRun(row.runs)).map((row) => row.seat.threadId),
+      ...publishing.map((row) => row.seat.threadId),
+      ...stored.discussion.delivering,
+    ];
+    const wave = planWave(
+      group,
+      (member) => unseenFor(member, current, cursorFor(member)),
+      active,
+      live.filter((row) => seatLostTurn(row.runs)).map((row) => row.seat.threadId),
+    );
+    const now = yield* DateTime.now;
+    const next = groupAfterWave(group, wave, now);
+    if (next === group) return;
+    yield* emitThreadGroup(command, events, thread, next, now);
+    yield* Ref.update(effects, (existing) => [
+      ...existing,
+      ...wave.start.map((member) => groupDeliverEffect(command, thread.id, member)),
+    ]);
+  });
+
+  const dispatchGroupDelivered = Effect.fn("orchestrationV2.dispatch.groupDelivered")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.group.delivered" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const thread = yield* findThread(command.threadId);
+    if (thread === null || thread.group == null) return;
+    const group = groupAfterDelivered(thread.group, command.member);
+    if (group === thread.group) return;
+    yield* emitThreadGroup(command, events, thread, group, yield* DateTime.now);
+  });
+
+  const dispatchGroupSteerAccepted = Effect.fn("orchestrationV2.dispatch.groupSteerAccepted")(
+    function* (
+      command: Extract<
+        OrchestrationV2ServerCommand,
+        { readonly type: "thread.group.steer-accepted" }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const { runs, messages } = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs", "messages"], {
+          messageIds: [command.messageId],
+        })
+        .pipe(mapDispatchError(command));
+      const message = messages.find((row) => row.id === command.messageId);
+      const run = runs.find((row) => row.id === message?.runId);
+      if (message?.groupThrough === undefined || run === undefined) return;
+      if ((run.groupThrough ?? -1) >= message.groupThrough) return;
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "run.updated",
+        threadId: command.threadId,
+        runId: run.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: yield* DateTime.now,
+        payload: { ...run, groupThrough: message.groupThrough },
+      });
+    },
+  );
+
+  /** Computes the delta under the member's lock, so a retry after a crash finds nothing new. */
+  const dispatchGroupDeliver = Effect.fn("orchestrationV2.dispatch.groupDeliver")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.group.deliver" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const parent = yield* projectionStore
+      .getThreadRecords(command.parentThreadId, ["runs", "turnItems", "messages"], {
+        turnItemTypes: ["user_message", "assistant_message"],
+        messageRoles: ["user"],
+      })
+      .pipe(mapDispatchError(command));
+    const group = parent.thread.group ?? null;
+    // A stop or an end may have overtaken this effect. Then nothing should start.
+    if (
+      group === null ||
+      group.status !== "active" ||
+      group.discussion === null ||
+      parent.thread.deletedAt !== null
+    ) {
+      return undefined;
+    }
+    const {
+      entries,
+      settledThrough,
+      wakeFloorRun: floorRun,
+    } = groupEntries({
+      group,
+      runs: parent.runs,
+      turnItems: parent.turnItems,
+      messages: parent.messages,
+    });
+    const participants = groupParticipants(group);
+    if (command.threadId === command.parentThreadId) {
+      const unseen = unseenFor("primary", entries, primaryWakeCursor(parent.runs)).filter(
+        (entry) => entry.speaker !== "user",
+      );
+      if (unseen.length === 0) return undefined;
+      const from = Array.from(new Set(unseen.map((entry) => entry.label)));
+      return yield* dispatchMessage(
+        {
+          type: "message.dispatch",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          messageId: MessageId.make(`message:group-wake:${command.commandId}`),
+          text: renderPrimaryWakePrompt({
+            self: group.primary,
+            others: participants.slice(1),
+            from,
+          }),
+          attachments: [],
+          notification: {
+            source: { kind: "group" },
+            outcome: "updated",
+            summary: primaryWakeSummary(from),
+          },
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "agent",
+          creationSource: "server",
+        },
+        events,
+        effects,
+      );
+    }
+    const seat = seatForThread(group, command.threadId);
+    if (seat === undefined || seat.status !== "seated") return undefined;
+    const member = yield* projectionStore
+      .getThreadRecords(command.threadId, ["runs", "providerTurns", "messages"], {
+        messageRoles: ["user"],
+      })
+      .pipe(mapDispatchError(command));
+    if (member.thread.deletedAt !== null || member.thread.archivedAt !== null) return undefined;
+    // A seat runs on its own thread, so the check a user's own message gets never sees it.
+    const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+    if (
+      !resolveProjectProviderInstanceEnabled(
+        settings,
+        member.thread.projectId,
+        member.thread.modelSelection.instanceId,
+      )
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Provider instance ${member.thread.modelSelection.instanceId} is turned off for this project.`,
+      });
+    }
+    const seatMessageId = (source: MessageId | string) =>
+      MessageId.make(`message:group:${command.threadId}:${source}`);
+    // A restart can cancel the turn that carried a message, and the seat still owes it an answer.
+    const cancelled = new Set(
+      member.runs.filter((run) => run.status === "cancelled").map((run) => run.userMessageId),
+    );
+    const handed = new Set(
+      member.messages.filter((message) => !cancelled.has(message.id)).map((message) => message.id),
+    );
+    const delivered = seatDeliveredCursor(member);
+    // A first turn gets the side chat digest for history, so it only needs the current exchange.
+    const unseen = entries.filter(
+      (entry) =>
+        (delivered === undefined ? entry.runOrdinal >= floorRun : entry.ordinal > delivered) &&
+        entry.speaker !== command.threadId &&
+        entry.ordinal <= settledThrough &&
+        (entry.messageId === null || !handed.has(seatMessageId(entry.messageId))),
+    );
+    const delta: Array<{
+      readonly label: string;
+      readonly model: string | null;
+      readonly text: string;
+    }> = [...unseen];
+    const addressed =
+      command.messageId === undefined
+        ? undefined
+        : parent.messages.find((message) => message.id === command.messageId);
+    if (
+      addressed !== undefined &&
+      !handed.has(seatMessageId(addressed.id)) &&
+      !unseen.some((entry) => entry.messageId === addressed.id)
+    ) {
+      delta.push({
+        label: groupSenderLabel(addressed.createdBy),
+        model: null,
+        text: addressed.text,
+      });
+    }
+    if (delta.length === 0) return undefined;
+    const through = Math.max(delivered ?? 0, settledThrough);
+    const reaction = command.messageId === undefined;
+    const others = participants.filter((person) => person.handle !== seat.handle);
+    // Seats run under the thread's current permissions and checkout, not the ones it had at invite.
+    // A turn already running keeps its session, so a move waits for the next one.
+    const { branch, worktreePath } = parent.thread;
+    const seatMoved =
+      !hasOpenRun(member.runs) &&
+      (member.thread.worktreePath !== worktreePath || member.thread.branch !== branch);
+    if (seatMoved) {
+      yield* dispatchThreadMutation(
+        {
+          type: "thread.metadata.update",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          branch,
+          worktreePath,
+        },
+        events,
+        effects,
+      );
+    }
+    const seatThread = seatMoved ? { ...member.thread, branch, worktreePath } : member.thread;
+    if (
+      seatThread.runtimeMode !== parent.thread.runtimeMode ||
+      seatThread.interactionMode !== parent.thread.interactionMode
+    ) {
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.runtime-mode-updated",
+        threadId: command.threadId,
+        providerInstanceId: seatThread.providerInstanceId,
+        occurredAt: yield* DateTime.now,
+        payload: {
+          ...seatThread,
+          runtimeMode: parent.thread.runtimeMode,
+          interactionMode: parent.thread.interactionMode,
+        },
+      });
+    }
+    return yield* dispatchMessage(
+      {
+        type: "message.dispatch",
+        commandId: command.commandId,
+        threadId: command.threadId,
+        messageId: seatMessageId(command.messageId ?? `wave:${through}`),
+        text:
+          delivered === undefined
+            ? renderSeatFirstPrompt({ self: seat, others, delta, reaction })
+            : renderSeatTurnPrompt({ delta, reaction }),
+        attachments: addressed?.attachments ?? [],
+        ...(addressed?.context === undefined ? {} : { context: addressed.context }),
+        dispatchMode: { type: "queue_after_active" },
+        deliveryIntent: "auto",
+        createdBy: "agent",
+        creationSource: "server",
+      },
+      events,
+      effects,
+      {
+        groupThrough: through,
+        ...(floorRun === 0 ? {} : { digestBeforeRunOrdinal: floorRun }),
+      },
+    );
+  });
+
   const dispatchThreadFork = Effect.fn("orchestrationV2.dispatch.threadFork")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "thread.fork" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -4756,6 +5462,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         targetThreadId: command.targetThreadId,
         ...(command.title === undefined ? {} : { title: command.title }),
         ...(command.sideChat ? { sideChat: true } : {}),
+        ...(command.modelSelection === undefined ? {} : { modelSelection: command.modelSelection }),
         createdBy: command.createdBy,
         creationSource: command.creationSource,
         createdAt: now,
@@ -4887,7 +5594,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
 
-    const sourceProviderThread = providerThreadForRun(sourceProjection, sourceRun);
+    const sourceProviderThread = providerThreadForRun(
+      sourceProjection,
+      conversationRunFor(sourceProjection, sourceRun),
+    );
     const now = command.createdAt ?? (yield* DateTime.now);
     const emitEvent = emit(events, command);
     const transferId = yield* mapDispatchError(command)(
@@ -5430,6 +6140,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly idleCompaction?: OrchestrationV2ConversationMessage["idleCompaction"];
     readonly delegatedCompletion?: OrchestrationV2ConversationMessage["delegatedCompletion"];
     readonly notification?: OrchestrationV2ConversationMessage["notification"];
+    readonly groupThrough?: number | undefined;
     readonly forceRestart: boolean;
   }) {
     const targetRun = input.projection.runs.find((candidate) => candidate.id === input.targetRunId);
@@ -5584,6 +6295,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? {}
             : { delegatedCompletion: input.delegatedCompletion }),
           ...(input.notification === undefined ? {} : { notification: input.notification }),
+          ...(input.groupThrough === undefined ? {} : { groupThrough: input.groupThrough }),
           ...(input.scheduledTaskId === undefined
             ? {}
             : { scheduledTaskId: input.scheduledTaskId }),
@@ -5791,6 +6503,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    group: {
+      /** The parent's turn item ordinal this message delivers through. Seat threads only. */
+      readonly groupThrough?: number;
+      /** This message excludes the primary, so it is a run with no provider turn. */
+      readonly peersOnly?: ReadonlyArray<ThreadId>;
+      /** A seat's first digest stops here: the current exchange arrives in its prompt. */
+      readonly digestBeforeRunOrdinal?: number;
+    } = {},
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
     if (command.manualContinuationOfRunId !== undefined) {
@@ -6002,7 +6722,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ]);
       projection = applyToProjection(projection, event);
     }
+    if (group.peersOnly !== undefined) {
+      yield* dispatchGroupPublish(
+        {
+          type: "thread.group.publish",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          status: "completed",
+          text: command.text,
+          entry: {
+            type: "user_to_peers",
+            seatThreadIds: group.peersOnly,
+            messageId: command.messageId,
+            attachments: command.attachments,
+            ...(command.context === undefined ? {} : { context: command.context }),
+            createdBy: command.createdBy,
+            creationSource: command.creationSource,
+          },
+        },
+        events,
+      );
+      return;
+    }
+    // A steer that came too late starts its own turn, and that turn still delivers the same delta.
+    // A continuation answers what the run it continues was told, so it publishes the same way.
+    const continuedRunId =
+      command.restartContinuationOfRunId ??
+      command.usageLimitContinuationOfRunId ??
+      command.manualContinuationOfRunId;
+    const groupThrough =
+      group.groupThrough ??
+      projection.messages.find((message) => message.id === command.messageId)?.groupThrough ??
+      projection.runs.find((run) => run.id === continuedRunId)?.groupThrough;
+    const groupThroughField = groupThrough === undefined ? {} : { groupThrough };
     const modelSelection = yield* routeSelection({
+
       commandId: command.commandId,
       commandType: command.type,
       selection: command.modelSelection ?? projection.thread.modelSelection,
@@ -6253,6 +7007,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               modelSelection),
         delegatedCompletion,
         ...(command.notification === undefined ? {} : { notification: command.notification }),
+        groupThrough,
         targetRunId: dispatchMode.targetRunId,
         messageId: command.messageId,
         text: dispatchText,
@@ -6466,6 +7221,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : { usageLimitContinuationOfRunId: command.usageLimitContinuationOfRunId }),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...(freshContext ? { freshContext: true } : {}),
+        ...groupThroughField,
       };
       const attempt: OrchestrationV2RunAttempt = {
         id: attemptId,
@@ -6668,7 +7424,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const ordinal = nextRunOrdinal(projection);
     const runId = idAllocator.derive.run({ threadId: command.threadId, ordinal });
     const contextBoundary = freshContext ? ordinal : contextBoundaryOrdinal(projection.runs);
-    const latestCompletedRun = projection.runs.findLast((run) => run.status === "completed");
+    const latestCompletedRun = projection.runs.findLast(
+      (run) => run.status === "completed" && !isOrchestrationV2PublicationRun(run),
+    );
     const latestHandoffRun = projection.runs.findLast(isHandoffSourceRun);
     const legacyImportItems =
       projection.thread.historyOrigin === "v1_import" && contextBoundary === 0
@@ -6701,6 +7459,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       isProviderSwitch &&
       activeProviderThread.nativeThreadRef !== null &&
       providerSwitchPlan?.transition.type === "restart_and_resume";
+    // A switch that replaces the conversation already covers every run the target has not seen.
+    const unseenPublications =
+      pendingForkTransfer === undefined && (!isProviderSwitch || canResumeAcrossInstances)
+        ? unseenPublicationRuns(projection, activeProviderThread?.id, contextBoundary)
+        : [];
     const sessionsToDetach = uniqueSessions([
       ...projection.providerSessions.filter(
         (session) =>
@@ -6725,7 +7488,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       pendingForkTransfer === undefined &&
       pendingMergeBackTransfer === undefined &&
-      (!isProviderSwitch || freshContext)
+      (!isProviderSwitch || freshContext) &&
+      unseenPublications.length === 0
     ) {
       const reusableProviderThread = freshContext ? undefined : activeProviderThread;
       const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
@@ -6853,6 +7617,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...wakeWorkStartedAt(projection.runs, command),
         ...(freshContext ? { freshContext: true } : {}),
+        ...groupThroughField,
       };
       const attempt: OrchestrationV2RunAttempt = {
         id: attemptId,
@@ -7119,7 +7884,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const sourceProviderThread =
       sourceProjection === null || sourceRun === null
         ? undefined
-        : providerThreadForRun(sourceProjection, sourceRun);
+        : providerThreadForRun(sourceProjection, conversationRunFor(sourceProjection, sourceRun));
     const sourceProviderTurnId =
       sourceProjection === null || sourceRun === null || sourceRun.activeAttemptId === null
         ? undefined
@@ -7134,7 +7899,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const sideChatWithoutSource =
       sideChatFork && pendingForkTransfer.sourcePoint.runId === undefined;
     if (pendingForkTransfer !== undefined) {
-      if (!sideChatWithoutSource && (sourceRun === null || sourceProviderThread === undefined)) {
+      if (
+        !sideChatWithoutSource &&
+        (sourceRun === null ||
+          (sourceProviderThread === undefined && !isOrchestrationV2PublicationRun(sourceRun)))
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -7205,23 +7974,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : sourceProjection.runs.filter(
             (candidate) => sourceRun === null || candidate.ordinal > sourceRun.ordinal,
           );
+    // A seat that natively forked the primary would read the primary's words as its own. Portable
+    // context also needs no capability check, since it can always arrive inside the prompt.
+    const seatFork =
+      pendingForkTransfer !== undefined &&
+      seatForThread(sourceProjection?.thread.group, command.threadId) !== undefined;
     const forkExecution =
       pendingForkTransfer === undefined || sourceRun === null
         ? null
-        : yield* mapDispatchError(command)(
-            commandPolicy.decideForkExecution({
-              commandId: command.commandId,
-              threadId: command.threadId,
-              providerInstanceId: modelSelection.instanceId,
-              capabilities,
-              sameProvider:
-                pendingForkTransfer.sourceProviderInstanceId === modelSelection.instanceId,
-              hasStrongNativeSource: sourceProviderThread?.nativeThreadRef?.strength === "strong",
-              sourceRunStatus: sourceRun.status,
-              fromSpecificTurn: sourceRun !== null,
-              sourceBusy: sourceRunsAfterFork.some(isActiveRun),
-            }),
-          );
+        : seatFork
+          ? ("portable_context" as const)
+          : yield* mapDispatchError(command)(
+              commandPolicy.decideForkExecution({
+                commandId: command.commandId,
+                threadId: command.threadId,
+                providerInstanceId: modelSelection.instanceId,
+                capabilities,
+                sameProvider:
+                  pendingForkTransfer.sourceProviderInstanceId === modelSelection.instanceId,
+                // The provider's copy of the conversation lacks words published after its last turn.
+                hasStrongNativeSource:
+                  !isOrchestrationV2PublicationRun(sourceRun) &&
+                  sourceProviderThread?.nativeThreadRef?.strength === "strong",
+                sourceRunStatus: sourceRun.status,
+                fromSpecificTurn: sourceRun !== null,
+                sourceBusy: sourceRunsAfterFork.some(isActiveRun),
+              }),
+            );
     const canResolveForkNatively = forkExecution === "native_fork";
     const requiresPortableFork = forkExecution === "portable_context";
 
@@ -7276,11 +8055,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const portableForkItems =
       !requiresPortableFork || sourceProjection === null || sourceRun === null
         ? []
-        : yield* readForkHistoryItems(projectionStore, sourceProjection, sourceRun).pipe(
+        : (yield* readForkHistoryItems(projectionStore, sourceProjection, sourceRun).pipe(
             Effect.mapError(
               (cause) =>
                 new OrchestratorProjectionError({ threadId: sourceProjection.thread.id, cause }),
             ),
+          )).map((item) =>
+            seatFork
+              ? withPrimarySpeaker(item, sourceProjection.runs, sourceProjection.thread)
+              : item,
           );
     const portableForkHandoff =
       !requiresPortableFork ||
@@ -7318,7 +8101,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // first, so the cap truncates them first, then imported and run items.
     const sideChatParentRunIds = [
       // Queued messages have not reached the main thread yet.
-      ...sourceRunsAfterFork.filter((run) => run.status !== "queued").map((run) => run.id),
+      ...sourceRunsAfterFork
+        .filter(
+          (run) =>
+            run.status !== "queued" &&
+            (group.digestBeforeRunOrdinal === undefined ||
+              run.ordinal < group.digestBeforeRunOrdinal),
+        )
+        .map((run) => run.id),
       ...(sourceRun === null && sourceProjection?.thread.historyOrigin === "v1_import"
         ? [null]
         : []),
@@ -7351,6 +8141,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               toProviderInstanceId: modelSelection.instanceId,
               coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, sideChatParentItems),
               parentItems: sideChatParentItems,
+              ...(seatFork ? { seat: true } : {}),
               createdAt: now,
             })
             .pipe(mapDispatchError(command));
@@ -7360,19 +8151,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       targetProviderThread === undefined
         ? undefined
         : lastDeliveredRunForProviderThread(projection, targetProviderThread.id);
-    const providerSwitchCoveredRuns =
-      !isProviderSwitch || canResumeAcrossInstances || latestHandoffRun === undefined
-        ? []
-        : projection.runs.filter(
-            (run) =>
-              isHandoffSourceRun(run) &&
-              run.ordinal >= contextBoundary &&
-              run.ordinal >
-                (requiresFullProviderSwitchContext ? 0 : (targetLastCompletedRun?.ordinal ?? 0)) &&
-              run.ordinal <= latestHandoffRun.ordinal,
-          );
-    const providerSwitchItems =
-      providerSwitchCoveredRuns.length === 0
+    const providerHandoffCoveredRuns =
+      unseenPublications.length > 0
+        ? unseenPublications
+        : !isProviderSwitch || canResumeAcrossInstances || latestHandoffRun === undefined
+          ? []
+          : projection.runs.filter(
+              (run) =>
+                isHandoffSourceRun(run) &&
+                run.ordinal >= contextBoundary &&
+                run.ordinal >
+                  (requiresFullProviderSwitchContext
+                    ? 0
+                    : (targetLastCompletedRun?.ordinal ?? 0)) &&
+                run.ordinal <= latestHandoffRun.ordinal,
+            );
+    const providerHandoffItems =
+      providerHandoffCoveredRuns.length === 0
         ? []
         : [
             ...(latestCompletedRun !== undefined &&
@@ -7381,11 +8176,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : []),
             ...(yield* readHandoffItems(
               command.threadId,
-              providerSwitchCoveredRuns.map((run) => run.id),
+              providerHandoffCoveredRuns.map((run) => run.id),
             )),
           ];
-    const providerSwitchTransferId =
-      providerSwitchCoveredRuns.length === 0 || latestHandoffRun === undefined
+    const providerHandoffTransferId =
+      providerHandoffCoveredRuns.length === 0 || latestHandoffRun === undefined
         ? null
         : yield* mapDispatchError(command)(
             idAllocator.allocate.contextTransfer({
@@ -7394,7 +8189,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               type: "provider_handoff",
             }),
           );
-    if (providerSwitchTransferId !== null) {
+    // Peer text falls back to the inline prompt, so no capability can refuse it.
+    if (providerHandoffTransferId !== null && unseenPublications.length === 0) {
       yield* mapDispatchError(command)(
         commandPolicy.ensureContextHandoff({
           commandId: command.commandId,
@@ -7408,17 +8204,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }),
       );
     }
-    const providerSwitchHandoff =
-      providerSwitchTransferId === null || latestHandoffRun === undefined
+    const providerHandoff =
+      providerHandoffTransferId === null || latestHandoffRun === undefined
         ? null
         : yield* contextHandoffService
             .prepareProviderHandoff({
               threadId: command.threadId,
               targetRunId: runId,
-              transferId: providerSwitchTransferId,
+              transferId: providerHandoffTransferId,
               fromProviderThreadIds: Array.from(
                 new Set(
-                  providerSwitchCoveredRuns.flatMap((run) =>
+                  providerHandoffCoveredRuns.flatMap((run) =>
                     run.providerThreadId === null ? [] : [run.providerThreadId],
                   ),
                 ),
@@ -7427,14 +8223,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               fromProviderInstanceId: latestHandoffRun.providerInstanceId,
               toProviderInstanceId: modelSelection.instanceId,
               coveredRunOrdinals: {
-                from: providerSwitchCoveredRuns[0]!.ordinal,
-                to: providerSwitchCoveredRuns.at(-1)!.ordinal,
+                from: providerHandoffCoveredRuns[0]!.ordinal,
+                to: providerHandoffCoveredRuns.at(-1)!.ordinal,
               },
               strategy:
                 targetProviderThread === undefined || requiresFullProviderSwitchContext
                   ? "full_thread_summary"
                   : "delta_since_target_last_seen",
-              items: providerSwitchItems,
+              items: providerHandoffItems,
               runs: projection.runs,
               createdAt: now,
             })
@@ -7474,7 +8270,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...[
           portableForkHandoff,
           sideChatContextHandoff,
-          providerSwitchHandoff,
+          providerHandoff,
           legacyImportRecoveryHandoff,
         ].flatMap((handoff) => (handoff === null ? [] : [handoff.id])),
       ],
@@ -7520,7 +8316,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const mergeBackSourceProviderThread =
       mergeBackSourceProjection === null || mergeBackSourceRun === null
         ? undefined
-        : providerThreadForRun(mergeBackSourceProjection, mergeBackSourceRun);
+        : providerThreadForRun(
+            mergeBackSourceProjection,
+            conversationRunFor(mergeBackSourceProjection, mergeBackSourceRun),
+          );
     if (pendingMergeBackTransfer !== undefined && mergeBackSourceProviderThread === undefined) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -7625,7 +8424,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       checkpointId: null,
       contextHandoffId:
         portableForkHandoff?.id ??
-        providerSwitchHandoff?.id ??
+        providerHandoff?.id ??
         mergeBackHandoff?.id ??
         legacyImportRecoveryHandoff?.id ??
         null,
@@ -7638,6 +8437,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : { usageLimitContinuationOfRunId: command.usageLimitContinuationOfRunId }),
       ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
       ...wakeWorkStartedAt(projection.runs, command),
+      ...groupThroughField,
     };
     const attempt: OrchestrationV2RunAttempt = {
       id: attemptId,
@@ -7719,7 +8519,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       text: dispatchText,
       ...(command.context ? { context: command.context } : {}),
       attachments: command.attachments,
-      ...(run.contextHandoffId === null
+      ...(run.contextHandoffId === null || unseenPublications.length > 0
         ? modelSwitchSince(
             projection,
             modelSelection,
@@ -7728,17 +8528,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           )
         : {}),
     };
-    const activeHandoff = portableForkHandoff ?? mergeBackHandoff ?? providerSwitchHandoff;
+    const activeHandoff = portableForkHandoff ?? mergeBackHandoff ?? providerHandoff;
     const handoffSourceRuns =
       portableForkHandoff !== null
         ? sourceRun === null
           ? []
           : [sourceRun]
-        : providerSwitchHandoff === null
+        : providerHandoff === null
           ? mergeBackSourceRun === null
             ? []
             : [mergeBackSourceRun]
-          : providerSwitchCoveredRuns;
+          : providerHandoffCoveredRuns;
     const handoffFromModelSelections = Array.from(
       new Map(
         handoffSourceRuns.map((run) => [
@@ -7747,8 +8547,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ]),
       ).values(),
     );
+    // A group repeats this delta every turn, so its row would only be noise.
     const handoffTurnItem: OrchestrationV2TurnItem | null =
-      activeHandoff === null
+      activeHandoff === null ||
+      (activeHandoff === providerHandoff &&
+        unseenPublications.length > 0 &&
+        projection.thread.group?.status === "active")
         ? null
         : {
             id: idAllocator.derive.runSignalTurnItem({
@@ -7767,7 +8571,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             title:
               portableForkHandoff !== null
                 ? "Fork context"
-                : providerSwitchHandoff !== null
+                : providerHandoff !== null
                   ? "Provider handoff"
                   : "Merge-back context",
             startedAt: now,
@@ -7884,12 +8688,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (
-      providerSwitchTransferId !== null &&
-      providerSwitchHandoff !== null &&
+      providerHandoffTransferId !== null &&
+      providerHandoff !== null &&
       latestHandoffRun !== undefined
     ) {
       const transfer: OrchestrationV2ContextTransfer = {
-        id: providerSwitchTransferId,
+        id: providerHandoffTransferId,
         type: "provider_handoff",
         sourceThreadId: command.threadId,
         targetThreadId: command.threadId,
@@ -7904,10 +8708,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         status: "consumed",
         resolution: {
           strategy:
-            providerSwitchHandoff.strategy === "full_thread_summary"
+            providerHandoff.strategy === "full_thread_summary"
               ? "portable_context"
               : "delta_context",
-          contextHandoffId: providerSwitchHandoff.id,
+          contextHandoffId: providerHandoff.id,
         },
         createdBy: command.createdBy,
         error: null,
@@ -7929,7 +8733,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId,
         providerInstanceId: modelSelection.instanceId,
         occurredAt: now,
-        payload: providerSwitchHandoff,
+        payload: providerHandoff,
       });
     }
     if (mergeBackHandoff !== null) {
@@ -10445,7 +11249,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
 
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
-    command: OrchestrationV2Command,
+    command: OrchestrationV2ServerCommand,
     fields: ReadonlyArray<K>,
     filter?: ProjectionRecordFilter,
   ) =>
@@ -11794,7 +12598,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? undefined
         : projection.providerThreads.find((candidate) => candidate.id === run?.providerThreadId);
     const hasBackgroundWork =
-      run?.id === projection.runs.findLast((candidate) => candidate.status !== "queued")?.id &&
+      run?.id ===
+        projection.runs.findLast(
+          (candidate) =>
+            candidate.status !== "queued" && !isOrchestrationV2PublicationRun(candidate),
+        )?.id &&
       derivePendingBackgroundWork({
         latestRun: run,
         providerThreads: projection.providerThreads,
@@ -12378,6 +13186,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.stop" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    scope: "thread" | "group" = "thread",
   ) {
     const projection = yield* projectionStore
       .getThreadRecords(command.threadId, ["runs", "providerThreads", "turnItems", "subagents"], {
@@ -12398,7 +13207,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       )
         ? Effect.void
         : Ref.update(effects, (existing) => [...existing, delegatedTasksStopEffect(command)]);
-    const latestRun = projection.runs.findLast((run) => run.status !== "queued");
+    const latestRun = projection.runs.findLast(
+      (run) => run.status !== "queued" && !isOrchestrationV2PublicationRun(run),
+    );
     const target =
       projection.runs.findLast(
         (run) =>
@@ -12413,6 +13224,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }).length > 0
         ? latestRun
         : undefined);
+    // The parent can end a group before its stop reaches this seat's lock.
+    if (scope === "group" && (target ?? latestRun)?.groupThrough === undefined) return undefined;
+    const holdQueue =
+      scope === "thread" ||
+      !projection.runs.some((run) => run.status === "queued" && run.groupThrough === undefined);
     if (target !== undefined) {
       const interruptEvents = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
       const interruptEffects = yield* Ref.make<Array<PendingOrchestrationEffectV2>>([]);
@@ -12423,7 +13239,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             commandId: command.commandId,
             threadId: command.threadId,
             runId: target.id,
-            holdQueue: true,
+            holdQueue,
             ...(command.reason === undefined ? {} : { reason: command.reason }),
           },
           interruptEvents,
@@ -12456,7 +13272,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     for (const run of reached.values()) {
       yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
     }
-    yield* holdStoppedThread({ command, events, projection, cohortRunIds: [], now });
+    if (holdQueue) yield* holdStoppedThread({ command, events, projection, cohortRunIds: [], now });
     yield* cancelIdleOrphans({ command, events, projection });
     yield* stopDelegatedTasks;
     return undefined;
@@ -12473,6 +13289,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ["providerThreads", "checkpoints", "checkpointScopes", "runs", "providerTurns", "attempts"],
         { turnItemTypes: [], messageRoles: ["user"] },
       );
+      if (projection.thread.group?.discussion != null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Stop the group's discussion before rewinding this thread.",
+        });
+      }
       const providerThread = projection.providerThreads.find(
         (candidate) => candidate.id === projection.thread.activeProviderThreadId,
       );
@@ -13546,6 +14369,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }),
     );
 
+  /** A seat holds the files of the messages it was handed, and those files stay with the parent. */
+  const attachmentsOnlyThisThreadHolds = Effect.fn("orchestrationV2.dispatch.ownAttachments")(
+    function* (thread: OrchestrationV2AppThread) {
+      const own = yield* projectionStore.getThreadAttachmentIds(thread.id);
+      const parentId = thread.lineage.sideChat === true ? thread.lineage.parentThreadId : null;
+      if (parentId === null || own.length === 0) return own;
+      const held = new Set(yield* projectionStore.getThreadAttachmentIds(parentId));
+      return own.filter((id) => !held.has(id));
+    },
+  );
+
   const dispatchOnce = Effect.fn("orchestrationV2.dispatch.once")(function* (
     command: OrchestrationV2ServerCommand,
     sideChatIds: ReadonlyArray<ThreadId>,
@@ -13637,9 +14471,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             planThreadDeletion({
               command: deletion,
               projection,
-              attachmentIds: yield* projectionStore
-                .getThreadAttachmentIds(deletion.threadId)
-                .pipe(mapDispatchError(command)),
+              attachmentIds: yield* attachmentsOnlyThisThreadHolds(projection.thread).pipe(
+                mapDispatchError(command),
+              ),
               now,
               idAllocator,
             }),
@@ -13743,7 +14577,61 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 text: guestSend.text,
                 context: { version: 1 as const, records: [], guest: guestSend.guest },
               };
-        cancelUnsettledEffects = yield* dispatchMessage(dispatched, events, effects);
+        if (dispatched.groupAudience !== undefined && thread.group?.status !== "active") {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "This group is no longer active. Review the recipients before sending again.",
+          });
+        }
+        const audience = groupAudienceForMessage(thread, dispatched);
+        if (audience !== null && audience.seats.length === 0 && !audience.includesPrimary) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Nobody in that audience is still in the group.",
+          });
+        }
+        if (audience !== null && thread.group != null) {
+          if (!groupCanAffordMessage(thread.group, audience, dispatched.createdBy)) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause:
+                "There are not enough turns for that audience. Address fewer members to continue.",
+            });
+          }
+          const now = yield* DateTime.now;
+          const primaryModel = audience.includesPrimary
+            ? (dispatched.modelSelection ?? thread.modelSelection).model
+            : thread.modelSelection.model;
+          // Emitted first, so `dispatchMessage`, which reads pending events, keeps the group.
+          const current = yield* getProjectionWithPendingEvents(command.threadId, events);
+          yield* emitThreadGroup(
+            command,
+            events,
+            current.thread,
+            groupAfterMessage(
+              groupWithPrimaryModel(thread.group, primaryModel),
+              audience,
+              dispatched.createdBy,
+              nextRunOrdinal(current),
+            ),
+            now,
+          );
+          yield* Ref.update(effects, (existing) => [
+            ...existing,
+            ...audience.seats.map((seat) =>
+              groupDeliverEffect(command, command.threadId, seat, command.messageId),
+            ),
+          ]);
+        }
+        cancelUnsettledEffects = yield* dispatchMessage(
+          dispatched,
+          events,
+          effects,
+          audience === null || audience.includesPrimary ? {} : { peersOnly: audience.seats },
+        );
         yield* recordSubagentFollowup(dispatched, events).pipe(mapDispatchError(command));
         break;
       }
@@ -13799,9 +14687,46 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ]);
         }
         break;
-      case "thread.stop":
+      case "thread.group.stop-seat": {
+        const { runs } = yield* loadProjectionForCommand(command, ["runs"], {
+          runStatuses: ["queued"],
+        });
+        cancelUnsettledEffects = yield* dispatchThreadStop(
+          { ...command, type: "thread.stop", reason: "Stopped with the group" },
+          events,
+          effects,
+          "group",
+        );
+        for (const run of runs) {
+          if (run.groupThrough !== undefined) {
+            yield* dispatchQueuedRunCancel(
+              { ...command, type: "queued-run.cancel", runId: run.id },
+              events,
+            );
+          }
+        }
+        break;
+      }
+      case "thread.stop": {
+        const thread = yield* findThread(command.threadId);
+        const group = thread?.group;
+        // The composer's one Stop stops every member, and a seat's own stop stops only that seat.
+        if (thread != null && group?.status === "active") {
+          const stopped = groupAfterStop(group);
+          if (stopped !== group) {
+            yield* emitThreadGroup(command, events, thread, stopped, yield* DateTime.now);
+          }
+          const seated = group.seats.flatMap((seat) =>
+            seat.status === "seated" ? [seat.threadId] : [],
+          );
+          yield* Ref.update(effects, (existing) => [
+            ...existing,
+            groupStopSeatsEffect(command, thread.id, seated),
+          ]);
+        }
         cancelUnsettledEffects = yield* dispatchThreadStop(command, events, effects);
         break;
+      }
       case "queued-message.promote-to-steer":
         cancelUnsettledEffects = yield* dispatchQueuedMessagePromoteToSteer(
           command,
@@ -13912,6 +14837,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "thread.interrupt.unresponsive":
         yield* dispatchInterruptUnresponsive(command, events);
+        break;
+      case "thread.group.publish":
+        yield* dispatchGroupPublish(command, events);
+        break;
+      case "thread.group.invite":
+      case "thread.group.remove":
+      case "thread.group.end":
+        yield* dispatchGroupMembership(command, events, effects);
+        break;
+      case "thread.group.advance":
+        yield* dispatchGroupAdvance(command, events, effects);
+        break;
+      case "thread.group.deliver":
+        cancelUnsettledEffects = yield* dispatchGroupDeliver(command, events, effects);
+        break;
+      case "thread.group.delivered":
+        yield* dispatchGroupDelivered(command, events);
+        break;
+      case "thread.group.steer-accepted":
+        yield* dispatchGroupSteerAccepted(command, events);
+        break;
+      case "thread.group.notice":
+        yield* dispatchGroupNotice(command, events);
         break;
       case "thread.fork":
         yield* dispatchThreadFork(command, events);
@@ -14060,6 +15008,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "subagent.stop" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||
+          // The same words arrive again after a crash or sweep.
+          command.type === "thread.group.publish" ||
+          // Group commands read current state, and it may already be where they would put it.
+          command.type === "thread.group.advance" ||
+          command.type === "thread.group.deliver" ||
+          command.type === "thread.group.delivered" ||
+          command.type === "thread.group.stop-seat" ||
+          command.type === "thread.group.remove" ||
+          command.type === "thread.group.end" ||
+          command.type === "thread.group.steer-accepted" ||
+          command.type === "thread.group.notice" ||
           (command.type === "thread.delete" && command.onlyIfUnused === true),
         (_planned) =>
           new OrchestratorDispatchError({
@@ -14565,6 +15524,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const shellProjectionError = (cause: unknown) =>
     new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell"), cause });
 
+  const domainEventsAfter = (afterSequence: number) =>
+    eventSink.stream({ afterSequence }).pipe(
+      Stream.map((stored) => stored.event),
+      Stream.mapError((cause) => new OrchestratorDomainEventStreamError({ cause })),
+    );
+
   return OrchestratorV2.of({
     resumeQueuedRuns,
     recoverDelegatedTasks,
@@ -14735,6 +15700,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .getThreadShell(threadId)
         .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
     }),
+    findThreadIdByNativeThreadId: Effect.fn("OrchestratorV2.findThreadIdByNativeThreadId")(
+      function (nativeThreadId) {
+        return projectionStore
+          .findThreadIdByNativeThreadId(nativeThreadId)
+          .pipe(Effect.mapError(shellProjectionError));
+      },
+    ),
     findGuestShareThreadId: Effect.fn("OrchestratorV2.findGuestShareThreadId")(function (shareId) {
       return projectionStore
         .findGuestShareThreadId(shareId)
@@ -14767,17 +15739,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     // Start at the latest sequence; awareness needs no historical replay.
     streamDomainEvents: Stream.unwrap(
+      eventSink.latestSequence().pipe(
+        Effect.mapError((cause) => new OrchestratorDomainEventStreamError({ cause })),
+        Effect.map(domainEventsAfter),
+      ),
+    ),
+    streamDomainEventsAfter: domainEventsAfter,
+    getLatestEventSequence: Effect.fn("OrchestratorV2.getLatestEventSequence")(() =>
       eventSink
         .latestSequence()
-        .pipe(Effect.map((latest) => eventSink.stream({ afterSequence: latest }))),
-    ).pipe(
-      Stream.map((stored) => stored.event),
-      Stream.mapError(
-        (cause) =>
-          new OrchestratorDomainEventStreamError({
-            cause,
-          }),
-      ),
+        .pipe(Effect.mapError((cause) => new OrchestratorDomainEventStreamError({ cause }))),
     ),
   });
 });

@@ -115,6 +115,23 @@ describe("pending context handoff", () => {
     });
   });
 
+  it("ignores a peer's model when the thread's own model has not changed", () => {
+    const published = {
+      ...projection,
+      runs: [
+        ...projection.runs,
+        {
+          ...projection.runs[0]!,
+          ...run("peer", 2, to, "peer-model"),
+          status: "completed" as const,
+          publication: { type: "user_to_peers" as const, seatThreadIds: [] },
+        },
+      ],
+    };
+
+    expect(resolvePendingHandoff(published, { instanceId: from, model: "source" }, [])).toBeNull();
+  });
+
   it.each(["preparing", "queued", "failed", "cancelled", "rolled_back"] as const)(
     "keeps the preview when an unstarted handoff run is %s",
     (status) => {

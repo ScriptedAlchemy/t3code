@@ -187,3 +187,43 @@ it.effect(
       expect(test.getInstance.mock.calls).toEqual([[selected]]);
     }),
 );
+
+it.effect.each([undefined, "2999-01-01T00:00:00.000Z", "1970-01-01T00:00:00.000Z"])(
+  "avoids automatic memory calls until an exhausted allowance resets (%s)",
+  (reset) =>
+    Effect.gen(function* () {
+      const generateKnowledgeCandidates = vi.fn(() => Effect.succeed({ candidates: [] }));
+      const test = make(
+        {
+          ...fromRunner("Fixture", () => Effect.die("Unexpected generation operation")),
+          supportedOperations: ["generateKnowledgeCandidates"],
+          generateKnowledgeCandidates,
+        },
+        {
+          ...providerSnapshot,
+          usageLimits: {
+            checkedAt: "1970-01-01T00:00:00.000Z",
+            windows: [
+              {
+                id: "session",
+                kind: "session",
+                label: "Session",
+                usedPercent: 100,
+                resetsAt: reset,
+              },
+            ],
+          },
+        },
+      );
+      const service = yield* test.service;
+      const result = yield* service
+        .generateKnowledgeCandidates({ ...input, runOutcome: "completed" })
+        .pipe(Effect.result);
+      if (reset === "1970-01-01T00:00:00.000Z") {
+        expect(generateKnowledgeCandidates).toHaveBeenCalledOnce();
+      } else {
+        expect(result._tag).toBe("Failure");
+        expect(generateKnowledgeCandidates).not.toHaveBeenCalled();
+      }
+    }),
+);

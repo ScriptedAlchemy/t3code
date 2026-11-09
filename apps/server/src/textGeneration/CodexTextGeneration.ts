@@ -304,6 +304,10 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           ...execLaunchArgs,
           // A user's MCP server could act on the text-generation prompt.
           ...CODEX_NO_PLUGIN_ARGS,
+          // Memory candidates cite the supplied exchange; checkout instructions add unrelated input.
+          ...(operation === "generateKnowledgeCandidates"
+            ? ["--config", "project_doc_max_bytes=0"]
+            : []),
           ...(mcpServersOff ? ["--config", mcpServersOff] : []),
           "--ephemeral",
           "--skip-git-repo-check",

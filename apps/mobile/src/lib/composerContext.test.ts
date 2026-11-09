@@ -217,6 +217,15 @@ describe("mobile composer context", () => {
         .filter((token) => token.type === "skill")
         .map((token) => token.source),
     ).toEqual(["$babysit"]);
+    const mentions = "@opus check @README.md and @Opus ";
+    expect(
+      composerContextEditorTokens(
+        mentions,
+        collectComposerInlineTokens(mentions),
+        composerSkillLabels([]),
+        ["opus"],
+      ).map((token) => token.source),
+    ).toEqual(["@README.md"]);
   });
 
   it("removes deleted payloads but keeps the screenshot linked to a remaining annotation", () => {

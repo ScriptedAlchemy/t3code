@@ -81,8 +81,19 @@ const make = Effect.gen(function* () {
       source.thread.deletedAt
     )
       return noSuggestion;
+    const hiddenRuns = source.runs.filter(
+      (run) =>
+        run.status === "rolled_back" || (run.status === "cancelled" && run.startedAt === null),
+    );
+    const hiddenRunIds = new Set(hiddenRuns.map((run) => run.id));
+    const hiddenMessageIds = new Set(hiddenRuns.map((run) => run.userMessageId));
     const prior: Array<{ user: string; assistant_final: string }> = [];
     for (const message of source.messages) {
+      if (
+        (message.runId !== null && hiddenRunIds.has(message.runId)) ||
+        hiddenMessageIds.has(message.id)
+      )
+        continue;
       if (
         message.streaming ||
         message.attachments.length ||

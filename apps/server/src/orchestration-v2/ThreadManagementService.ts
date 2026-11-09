@@ -11,6 +11,7 @@ import type {
 import {
   type ChatAttachment,
   CommandId,
+  isOrchestrationV2PublicationRun,
   isListedThreadLineage,
   MessageId,
   OrchestrationV2StopWorkflowError,
@@ -422,6 +423,7 @@ export interface ThreadManagementServiceShape {
     Orchestrator.OrchestratorV2Error
   >;
   readonly getThreadShell: Orchestrator.OrchestratorV2["Service"]["getThreadShell"];
+  readonly findThreadIdByNativeThreadId: Orchestrator.OrchestratorV2["Service"]["findThreadIdByNativeThreadId"];
   readonly listAppOwnedChildThreadIds: Orchestrator.OrchestratorV2["Service"]["listAppOwnedChildThreadIds"];
   readonly getThreadTitles: Orchestrator.OrchestratorV2["Service"]["getThreadTitles"];
   /** Omit `projectId` to list every project's threads. Side chats are never listed. */
@@ -527,7 +529,9 @@ export function isTerminalRunStatus(
 export function latestRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs">,
 ): OrchestrationV2Run | undefined {
-  return projection.runs.toSorted((left, right) => right.ordinal - left.ordinal)[0];
+  return projection.runs
+    .filter((run) => !isOrchestrationV2PublicationRun(run))
+    .toSorted((left, right) => right.ordinal - left.ordinal)[0];
 }
 
 function latestRestartContinuation(
@@ -1601,6 +1605,7 @@ const make = Effect.gen(function* () {
     listOlderSettledThreads: orchestrator.listOlderSettledThreads,
     readShellSnapshot: orchestrator.readShellSnapshot,
     getThreadShell: orchestrator.getThreadShell,
+    findThreadIdByNativeThreadId: orchestrator.findThreadIdByNativeThreadId,
     listAppOwnedChildThreadIds: Effect.fn("ThreadManagementService.listAppOwnedChildThreadIds")(
       function (threadId) {
         return ensureProjectionTranscript(threadId).pipe(

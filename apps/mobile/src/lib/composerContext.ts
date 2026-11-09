@@ -167,6 +167,7 @@ export function composerContextEditorTokens(
   text: string,
   tokens: readonly ComposerInlineToken[],
   knownSkills: { has(name: string): boolean },
+  groupHandles: ReadonlyArray<string> = [],
 ) {
   const references = collectComposerContextReferences(text);
   return [
@@ -174,6 +175,8 @@ export function composerContextEditorTokens(
       (token) =>
         // `$HOME` and other `$name` text that is not one of the provider's skills stays prose.
         (token.type !== "skill" || knownSkills.has(token.value)) &&
+        // `@name` of someone in the group is not a file.
+        (token.type !== "mention" || !groupHandles.includes(token.value.toLowerCase())) &&
         !references.some((ref) => token.start < ref.end && token.end > ref.start),
     ),
     ...references.map((ref) => ({

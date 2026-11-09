@@ -253,6 +253,9 @@ export function summarizeT3ToolCalls(
     case "thread-organize":
       label = phrase("Organized", "organize", `threads ${times}`);
       break;
+    case "thread-group":
+      label = phrase("Updated", "update", `a thread group ${times}`);
+      break;
     case "thread-update":
       label = phrase("Updated", "update", quantity(countEntities(threadIds), "thread"));
       break;
@@ -314,13 +317,19 @@ export function summarizeT3ToolCalls(
     case "secret-request":
       label = phrase("Asked for", "ask for", quantity(selected.length, "secret"));
       break;
-    case "worktree-handoff":
-      label = phrase(
-        "Handed off to",
-        "hand off to",
-        quantity(countEntities(entityIds("worktreePath")), "worktree"),
-      );
+    case "worktree-handoff": {
+      // Moving a thread ends its provider session, often before the call can report success.
+      const unfinished = results.filter((call) => call.outcome === "unfinished").length;
+      label =
+        completed.length === 0 && unfinished > 0
+          ? `Started a handoff to ${quantity(unfinished, "worktree")}`
+          : phrase(
+              "Handed off to",
+              "hand off to",
+              quantity(countEntities(entityIds("worktreePath")), "worktree"),
+            );
       break;
+    }
     case "worktree-list":
       label = phrase("Listed", "list", `workspace branches ${times}`);
       break;

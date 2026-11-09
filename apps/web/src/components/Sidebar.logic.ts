@@ -625,6 +625,10 @@ export function filterSidebarV2VisibleThreads<
       thread.archivedAt === null &&
       (hidden === null ||
         !hidden.environmentIds.has(thread.environmentId) ||
+        // Explicitly scoping to a project keeps its threads listed even when
+        // their environment counts as offline.
+        (scopedProjectKeys !== null &&
+          scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)) ||
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) ===
           hidden.keptThreadKey) &&
       !isShownUnderParent(
@@ -640,13 +644,32 @@ export function filterSidebarV2VisibleThreads<
 /** A task whose parent's environment is hidden lists on its own, as under an archived parent. */
 export function withoutHiddenDelegationParents(
   delegatedUnderParent: ReadonlySet<string>,
-  threads: readonly Pick<SidebarThreadSummary, "delegatedFrom" | "environmentId" | "id">[],
+  threads: readonly Pick<
+    SidebarThreadSummary,
+    "delegatedFrom" | "environmentId" | "id" | "projectId"
+  >[],
   hiddenEnvironmentIds: ReadonlySet<EnvironmentId> | null,
+  scopedProjectKeys: ReadonlySet<string> | null = null,
 ): ReadonlySet<string> {
   if (hiddenEnvironmentIds === null) return delegatedUnderParent;
+  const scopedParentKeys =
+    scopedProjectKeys === null
+      ? null
+      : new Set(
+          threads
+            .filter((thread) =>
+              scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`),
+            )
+            .map((thread) =>
+              threadKey({ environmentId: thread.environmentId, threadId: thread.id }),
+            ),
+        );
   const orphanKeys = threads.flatMap((thread) => {
-    const parentEnvironmentId = thread.delegatedFrom?.environmentId;
-    return parentEnvironmentId !== undefined && hiddenEnvironmentIds.has(parentEnvironmentId)
+    const parent = thread.delegatedFrom;
+    return parent !== null &&
+      parent !== undefined &&
+      hiddenEnvironmentIds.has(parent.environmentId) &&
+      !scopedParentKeys?.has(threadKey(parent))
       ? [threadKey({ environmentId: thread.environmentId, threadId: thread.id })]
       : [];
   });
@@ -735,6 +758,7 @@ type ThreadStatusInput = Pick<
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
   blockedOnThreadWait?: boolean | undefined;
+  groupDiscussionOpen?: boolean | undefined;
 };
 
 /**
@@ -923,6 +947,7 @@ type SidebarThreadStatusInput = Pick<
   | "pendingGuestMessageCount"
   | "runtime"
   | "blockedOnThreadWait"
+  | "groupDiscussionOpen"
 >;
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
@@ -943,8 +968,9 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
     return "preparing";
   }
   if (
-    thread.runtime !== null &&
-    ["queued", "starting", "running", "waiting"].includes(thread.runtime.status)
+    thread.groupDiscussionOpen === true ||
+    (thread.runtime !== null &&
+      ["queued", "starting", "running", "waiting"].includes(thread.runtime.status))
   ) {
     return "working";
   }
@@ -1196,9 +1222,11 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  // A seat runs on its own thread, so the parent has no run of its own while a discussion is open.
   if (
     (thread.runtime?.status === "running" && thread.blockedOnThreadWait !== true) ||
-    thread.runtime?.status === "waiting"
+    thread.runtime?.status === "waiting" ||
+    thread.groupDiscussionOpen === true
   ) {
     return {
       label: "Working",

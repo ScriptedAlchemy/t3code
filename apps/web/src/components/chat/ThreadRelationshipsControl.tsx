@@ -1,3 +1,4 @@
+import { isSeatedSeatThread } from "@t3tools/client-runtime/state/thread-group";
 import { useAtomValue } from "@effect/atom-react";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
@@ -500,7 +501,13 @@ export function ThreadRelationshipsPanel(props: {
     mergeTargetThreadId,
   })
     // The graph rebuilds missing parents from lineage, so filter the rows it returns.
-    .filter((row) => !isHiddenRelation(row.threadId) && !isHiddenUnloadedRelation(row))
+    .filter(
+      (row) =>
+        !isHiddenRelation(row.threadId) &&
+        !isHiddenUnloadedRelation(row) &&
+        // The group's roster lists its seats; they are not ordinary side chats.
+        !isSeatedSeatThread(currentThread?.group, row.threadId),
+    )
     .map((row) => {
       const agent =
         row.edge.kind === "subagent" && !isParentThreadRelationship(row.edge, props.threadId)

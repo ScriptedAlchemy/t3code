@@ -810,6 +810,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["zack codex native cli app vscode chatgpt export conversation search history"],
   },
   {
+    id: "group-conversations",
+    title: "Group conversations",
+    to: "/settings/labs",
+    scope: "environment",
+    searchTerms: [
+      "zack invite models multiple providers peers seats talk each other discuss roster @ chat together",
+    ],
+  },
+  {
     id: "start-from-origin",
     title: "Start from remote",
     to: "/settings/worktrees",

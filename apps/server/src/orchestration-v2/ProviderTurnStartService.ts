@@ -41,7 +41,8 @@ import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
-import { isActiveRun } from "./CommandPolicy.ts";
+import { isActiveRun, isNativeMaintenanceCommand } from "./CommandPolicy.ts";
+import { groupParticipants, renderPrimaryGroupNote } from "./GroupPrompt.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
@@ -297,18 +298,35 @@ export const layer: Layer.Layer<
               }),
             )
             .pipe(Effect.catchCause(() => Effect.succeed(false))),
-        loadRunInterruptReason: () =>
+        loadRunInterrupt: () =>
           projectionStore
-            .getThreadRecords(input.threadId, ["turnItems"], {
-              turnItemTypes: ["run_interrupt_request"],
-              turnItemRunIds: [input.runId],
-            })
+            .getThreadRecords(
+              input.threadId,
+              ["turnItems", "providerThreads", "providerSessions"],
+              {
+                turnItemTypes: ["run_interrupt_request"],
+                turnItemRunIds: [input.runId],
+              },
+            )
             .pipe(
-              Effect.map(({ turnItems }) => {
-                const request = turnItems.find((item) => item.type === "run_interrupt_request");
-                return request?.type === "run_interrupt_request" ? request.message : undefined;
-              }),
+              Effect.map((records) =>
+                RunExecutionService.resolveRunInterrupt(records, input.providerThreadId),
+              ),
               Effect.catchCause(() => Effect.undefined),
+            ),
+        loadRunOpenItems: () =>
+          projectionStore
+            .getThreadRecords(input.threadId, ["turnItems"], { turnItemRunIds: [input.runId] })
+            .pipe(
+              Effect.map(({ turnItems }) =>
+                turnItems.filter(
+                  (item) =>
+                    item.status === "running" &&
+                    item.type !== "subagent" &&
+                    item.providerThreadId === input.providerThreadId,
+                ),
+              ),
+              Effect.orElseSucceed(() => []),
             ),
       };
     };
@@ -880,6 +898,22 @@ export const layer: Layer.Layer<
         restartCancelledWork.length === 0
           ? ""
           : restartCancelledBackgroundWorkNote(restartCancelledWork);
+      const { group } = projection.thread;
+      const groupOthers = group == null ? [] : groupParticipants(group).slice(1);
+      // A wake turn has its own prompt, and maintenance commands go to the provider bare.
+      const groupNote =
+        group?.status !== "active" ||
+        groupOthers.length === 0 ||
+        message.createdBy !== "user" ||
+        isNativeMaintenanceCommand(message) ||
+        parseGoalCommand(message) !== null
+          ? ""
+          : renderPrimaryGroupNote({
+              self: group.primary,
+              others: groupOthers,
+              everyoneAddressed: group.discussion?.mode === "everyone",
+            });
+      const turnNotes = [restartNote, groupNote].filter((note) => note !== "").join("\n\n");
       const tokenCap = yield* handoffTokenCapConfig.pipe(
         Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
       );
@@ -982,7 +1016,7 @@ export const layer: Layer.Layer<
             return handoffBudget({
               tokenCap,
               modelContextWindow,
-              userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
+              userText: turnNotes === "" ? userText : `${turnNotes}\n\n${userText}`,
               attachments: message.attachments,
               providerThread: budgetProviderThread,
               nativeContextEstimate:
@@ -1585,8 +1619,7 @@ export const layer: Layer.Layer<
           handoffBudgetAssumptions({
             tokenCap,
             modelContextWindow,
-            userText:
-              restartNote === "" ? composer.baseText : `${restartNote}\n\n${composer.baseText}`,
+            userText: turnNotes === "" ? composer.baseText : `${turnNotes}\n\n${composer.baseText}`,
             attachments: message.attachments,
             providerThread: budgetProviderThread,
             nativeContextEstimate:
@@ -1641,7 +1674,7 @@ export const layer: Layer.Layer<
               return handoffBudget({
                 tokenCap,
                 modelContextWindow,
-                userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
+                userText: turnNotes === "" ? userText : `${turnNotes}\n\n${userText}`,
                 attachments: message.attachments,
                 providerThread: budgetProviderThread,
                 nativeContextEstimate:
@@ -1704,7 +1737,7 @@ export const layer: Layer.Layer<
             sideChatHandoff === undefined || compact || goalCommand
               ? ""
               : sideChatHandoff.summaryText;
-          const context = [delivery.context, sideChatContext, restartNote]
+          const context = [delivery.context, sideChatContext, turnNotes]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
@@ -1780,7 +1813,7 @@ export const layer: Layer.Layer<
         effectiveHandoffs.length === 0 &&
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
-        restartNote === "" &&
+        turnNotes === "" &&
         !noteContinuation &&
         composer.byteLength === 0 &&
         composer.omissions.length === 0
@@ -1819,7 +1852,8 @@ export const layer: Layer.Layer<
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
-        loadRunInterruptReason: runControls.loadRunInterruptReason,
+        loadRunInterrupt: runControls.loadRunInterrupt,
+        loadRunOpenItems: runControls.loadRunOpenItems,
         message: {
           messageId: message.id,
           text: userText,

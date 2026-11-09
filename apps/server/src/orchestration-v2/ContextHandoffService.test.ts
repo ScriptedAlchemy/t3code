@@ -345,8 +345,92 @@ it.effect("caps the side chat context block without summarizing discarded parent
       parentThreadId,
       digest: [],
     });
-    assert.isTrue(framingOnly.startsWith("You are in a side chat beside the main thread."));
-    assert.notInclude(framingOnly, "Main thread activity");
+    const framing =
+      "You are in a side chat beside the main thread. The main thread may still be running in the same worktree. Answer the user's questions; do not continue or redo the main thread's task.";
+    const pointer = `Use t3_thread_read on thread ${parentThreadId} to see the main thread's live state.`;
+    assert.equal(framingOnly, [framing, "", pointer].join("\n"));
+    assert.equal(
+      ContextHandoffService.makeSideChatContext({ parentThreadId, digest: ["- User: hello"] }),
+      [
+        framing,
+        "",
+        "Main thread activity since this side chat's starting point:",
+        "- User: hello",
+        "",
+        pointer,
+      ].join("\n"),
+    );
+
+    assert.equal(
+      ContextHandoffService.makeSideChatContext({ parentThreadId, digest: [], seat: true }),
+      "",
+      "a seat takes part, so it gets no side chat framing or pointer at the main thread",
+    );
+
+    const withPeer = ContextHandoffService.makeSideChatContext({
+      parentThreadId,
+      digest: [
+        {
+          id: TurnItemId.make("turn-item:peer"),
+          threadId: parentThreadId,
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "completed",
+          title: null,
+          startedAt: null,
+          completedAt: null,
+          updatedAt: DateTime.makeUnsafe("2026-07-20T00:00:00.000Z"),
+          type: "assistant_message",
+          messageId: MessageId.make("message:peer"),
+          text: "Use an event log",
+          streaming: false,
+          speaker: { label: "Astra", model: "gpt-6-astra" },
+        },
+      ],
+    });
+    assert.include(withPeer, "- Astra: Use an event log");
+
+    const agentRow: OrchestrationV2TurnItem = {
+      id: TurnItemId.make("turn-item:agent"),
+      threadId: parentThreadId,
+      runId: null,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 2,
+      status: "completed",
+      title: null,
+      startedAt: null,
+      completedAt: null,
+      updatedAt: DateTime.makeUnsafe("2026-07-20T00:00:00.000Z"),
+      type: "user_message",
+      messageId: MessageId.make("message:agent"),
+      inputIntent: "turn_start",
+      text: "From an agent",
+      attachments: [],
+      createdBy: "agent",
+      creationSource: "mcp",
+    };
+    assert.include(
+      ContextHandoffService.makeSideChatContext({
+        parentThreadId,
+        digest: [agentRow],
+        seat: true,
+      }),
+      "- Agent: From an agent",
+    );
+    assert.include(
+      ContextHandoffService.makeSideChatContext({ parentThreadId, digest: [agentRow] }),
+      "- User: From an agent",
+      "an ordinary side chat keeps its text",
+    );
 
     const multiFilePatch = ContextHandoffService.makeSideChatContext({
       parentThreadId,

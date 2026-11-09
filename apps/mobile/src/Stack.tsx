@@ -1,3 +1,4 @@
+import { ThreadGroupInviteScreen } from "./features/threads/ThreadGroupInviteScreen";
 import { isDraftThreadRoute } from "./features/threads/thread-route-state";
 import { ComponentCatalogScreen } from "./features/development/ComponentCatalogScreen";
 import { PullRequestGuideStopScreen } from "./features/pull-requests/guide/PullRequestGuideScreen";
@@ -673,6 +674,10 @@ const RootStackConfig = createWorkspaceStackNavigator({
       screen: AttachmentFileScreen,
       linking: `${THREAD_LINKING_PREFIX}/attachments/:attachmentId`,
       options: pageRoute({ header: "solid" }),
+    }),
+    ThreadGroupInvite: createNativeStackScreen({
+      screen: ThreadGroupInviteScreen,
+      options: THREAD_SETTINGS_ROUTE,
     }),
     ThreadSettingsSheet: createNativeStackScreen({
       screen: ExistingThreadSettingsRouteScreen,

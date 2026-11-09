@@ -1,11 +1,12 @@
-import type {
-  ModelSelection,
-  OrchestrationV2ModelSwitch,
-  OrchestrationV2Run,
-  OrchestrationV2TurnItem,
-  ProviderInstanceId,
-  ServerProvider,
-  ServerProviderModel,
+import {
+  isOrchestrationV2PublicationRun,
+  type ModelSelection,
+  type OrchestrationV2ModelSwitch,
+  type OrchestrationV2Run,
+  type OrchestrationV2TurnItem,
+  type ProviderInstanceId,
+  type ServerProvider,
+  type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
   getModelSelectionStringOptionValue,
@@ -36,6 +37,7 @@ export function resolvePendingHandoff(
   const from = projection.runs.findLast(
     (run) =>
       run.status !== "rolled_back" &&
+      !isOrchestrationV2PublicationRun(run) &&
       (run.startedAt !== null || (run.status === "starting" && run.contextHandoffId !== null)),
   )?.modelSelection;
   if (from === undefined || selection == null) return null;

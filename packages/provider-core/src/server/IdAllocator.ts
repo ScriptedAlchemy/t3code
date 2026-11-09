@@ -155,6 +155,12 @@ export interface IdAllocatorV2Derive {
     readonly runId: RunId;
     readonly signal: string;
   }) => TurnItemId;
+  readonly publicationRun: (input: {
+    readonly threadId: ThreadId;
+    readonly source: RunId | MessageId;
+  }) => RunId;
+  readonly publicationMessage: (input: { readonly runId: RunId }) => MessageId;
+  readonly publicationTurnItem: (input: { readonly runId: RunId }) => TurnItemId;
   readonly providerThread: (input: {
     readonly driver: ProviderDriverKind;
     readonly nativeThreadId: string;
@@ -275,6 +281,10 @@ export const derive: IdAllocatorV2Derive = {
   userTurnItem: (input) => TurnItemId.make(joinId("turn-item", "message", input.messageId)),
   runSignalTurnItem: (input) =>
     TurnItemId.make(joinId("turn-item", "run", input.runId, "signal", input.signal)),
+  publicationRun: (input) =>
+    RunId.make(joinId("run", "thread", input.threadId, "publication", input.source)),
+  publicationMessage: (input) => MessageId.make(joinId("message", "publication", input.runId)),
+  publicationTurnItem: (input) => TurnItemId.make(joinId("turn-item", "publication", input.runId)),
   providerThread: deriveProviderThread,
   providerTurn: (input) =>
     ProviderTurnId.make(
