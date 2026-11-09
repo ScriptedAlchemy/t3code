@@ -1,5 +1,6 @@
 import { expect, it } from "vite-plus/test";
 import {
+  ComposerContextId,
   MessageId,
   type ModelEvaluationVerdict,
   NodeId,
@@ -8,6 +9,7 @@ import {
   RunId,
   ThreadId,
   TurnItemId,
+  type OrchestrationMessageContext,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2TurnItem,
   type BlindModelEvaluationPacket,
@@ -360,4 +362,65 @@ it("abstains when there is no finalized outcome and rejects fabricated citations
       packet,
     ),
   ).toBe(true);
+});
+
+it.each([
+  "request",
+  "request-item",
+  "earlier-context",
+  "interleaved-user",
+  "empty-context",
+] as const)("marks omitted composer artifacts from %s", (scenario) => {
+  const source = fixture();
+  const context: OrchestrationMessageContext = {
+    version: 1,
+    records:
+      scenario === "empty-context"
+        ? []
+        : [
+            {
+              version: 1,
+              contextId: ComposerContextId.make("terminal-log"),
+              label: "Test output",
+              kind: "terminal",
+              terminalId: "terminal",
+              terminalLabel: "Tests",
+              lineStart: 1,
+              lineEnd: 2,
+              text: "Error: expected success but got failure",
+            },
+          ],
+  };
+  const request = source.messages[0]!;
+  const requestItem = source.turnItems[0]!;
+  if (requestItem.type !== "user_message") throw new Error("Expected request item");
+  if (scenario === "request-item") {
+    source.messages.shift();
+    const { textOmitted: _textOmitted, ...inlineItem } = requestItem;
+    source.turnItems[0] = { ...inlineItem, text: request.text, context };
+  } else if (scenario === "earlier-context") {
+    source.messages.unshift({
+      ...request,
+      id: MessageId.make("earlier-request"),
+      runId: null,
+      createdAt: DateTime.makeUnsafe("2026-01-01T23:59:59Z"),
+      context,
+    });
+  } else if (scenario === "interleaved-user") {
+    const followup = { ...request, id: MessageId.make("followup"), context };
+    source.messages.push(followup);
+    source.turnItems[3] = {
+      ...requestItem,
+      id: TurnItemId.make("followup-item"),
+      messageId: followup.id,
+      ordinal: 4,
+    };
+  } else {
+    source.messages[0] = { ...request, context };
+  }
+  const packet = buildModelEvaluationEvidence(source)!.packet;
+  expect(packet.missingArtifacts).toBe(scenario !== "empty-context");
+  expect(validateModelEvaluationVerdict({ ...verdict(), confidence: "high" }, packet)).toBe(
+    scenario === "empty-context",
+  );
 });
