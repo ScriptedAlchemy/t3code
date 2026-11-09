@@ -115,8 +115,8 @@ function ConversationSummariesRow() {
       {...searchableSetting("conversation-summaries")}
       description={
         isProjectScope
-          ? "After turns complete in this project, your text model summarizes older messages so switches and forks keep the gist of history that no longer fits. Each summary costs one model call."
-          : "After turns complete, your text model summarizes older messages so switches and forks keep the gist of history that no longer fits. Each summary costs one model call. Projects can override it."
+          ? "After each turn in this project, your text model summarizes older messages so switches and forks keep their gist. The running conversation stays as it is. Each summary costs one model call."
+          : "After each turn, your text model summarizes older messages so switches and forks keep their gist. The running conversation stays as it is. Each summary costs one model call. Projects can override it."
       }
       resetAction={
         settings.enableConversationSummaries ? (

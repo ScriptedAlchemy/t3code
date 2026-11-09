@@ -44,8 +44,12 @@ open in bounded pages that can be continued without skipping the rest of the cur
 also shows what the last pass did, including why it wrote nothing or failed and how many older
 sources are still waiting. If a summarized source is edited or removed,
 or the thread is deleted or archived, that summary is marked outdated, its text is hidden, and agents
-no longer receive it; the changed stretch is summarized again from the current history. Summaries
-do not replace a provider's own compaction.
+no longer receive it; the changed stretch is summarized again from the current history.
+
+T3 Code reads summaries only when it builds a handoff. A running conversation stays as it is, so
+summaries do not lower its cost per request and do not change its prompt cache. To shorten a long
+conversation, use the provider's own compaction. For Claude, see
+[Compact long conversations](./providers-claude.md#compact-long-conversations).
 
 For remote connections, update both the client and server to inspect tool evidence and the complete
 text of long sources. Search is available when the server supports it. Older clients can still read compatible

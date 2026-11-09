@@ -471,7 +471,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   <SettingsSwitchRow
                     icon="doc.text"
                     label="Summarize older messages"
-                    subtitle="After turns complete, your text generation model summarizes older messages so provider switches and forks keep their gist. Each summary costs one model call."
+                    subtitle="After turns complete, your text generation model summarizes older messages so provider switches and forks keep their gist. The running conversation stays as it is. Each summary costs one model call."
                     value={uniform("enableConversationSummaries")}
                     disabled={disabledFor("enableConversationSummaries")}
                     onValueChange={(value) => write({ enableConversationSummaries: value })}
