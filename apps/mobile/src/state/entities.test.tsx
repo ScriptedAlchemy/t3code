@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
 import { Atom, AtomRegistry } from "effect/reactivity";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 
 vi.mock("./atom-registry", () => ({ appAtomRegistry: AtomRegistry.make() }));
 vi.mock("./projects", () => ({ environmentProjects: {} }));
@@ -18,11 +18,15 @@ vi.mock("../native/ProjectChipIconImages", () => ({
 }));
 vi.mock("./threads", () => {
   const shell = Atom.make<{ title: string } | null>(null);
+  const absent = Atom.make(null);
   return {
     environmentThreadDetails: {},
-    environmentThreadShells: { threadShellAtom: () => shell },
+    environmentThreadShells: {
+      threadShellAtom: (ref: ScopedThreadRef) => (ref.threadId === childId ? shell : absent),
+    },
     threadFamilies: {
-      mount: (registry: AtomRegistry.AtomRegistry) => {
+      mount: (registry: AtomRegistry.AtomRegistry, _env: EnvironmentId, id: ThreadId) => {
+        if (id !== childId) return () => {};
         registry.set(shell, { title: "Child result" });
         return () => registry.set(shell, null);
       },
@@ -31,8 +35,10 @@ vi.mock("./threads", () => {
 });
 
 import { appAtomRegistry } from "./atom-registry";
-import { useLiveThreadLinkLabels } from "./entities";
+import { resolveThreadLink, useLiveThreadLinkLabels } from "./entities";
 import { environmentThreadShells } from "./threads";
+
+const childId = ThreadId.make("thread:delegated-task:command%3Amcp%3Achild");
 
 it("keeps a linked child title mounted until the message stops citing it", async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -47,11 +53,15 @@ it("keeps a linked child title mounted until the message stops citing it", async
     await act(async () =>
       root.render(
         <RegistryContext.Provider value={appAtomRegistry}>
-          <Probe text="[Child](t3-thread://v2/local/child)" />
+          <Probe text={`<t3-thread://v2/local/${childId}>`} />
         </RegistryContext.Provider>,
       ),
     );
-    expect(container.textContent).toBe("[Child result](t3-thread://v2/local/child)");
+    expect(container.textContent).toBe(`[Child result](t3-thread://v2/local/${childId})`);
+    const target = { environmentId: EnvironmentId.make("local"), threadId: childId };
+    expect(
+      resolveThreadLink((atom) => appAtomRegistry.get(atom), target, target.environmentId),
+    ).toEqual(target);
     expect(renders).toBeLessThan(20);
     await act(async () =>
       root.render(
@@ -65,7 +75,7 @@ it("keeps a linked child title mounted until the message stops citing it", async
       appAtomRegistry.get(
         environmentThreadShells.threadShellAtom({
           environmentId: EnvironmentId.make("local"),
-          threadId: ThreadId.make("child"),
+          threadId: childId,
         }),
       ),
     ).toBeNull();
