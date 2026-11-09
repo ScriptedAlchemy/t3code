@@ -21,13 +21,23 @@ function t3Home() {
 }
 
 async function get(url) {
-  const response = await fetch(url);
+  const display = new URL(url);
+  display.username = "";
+  display.password = "";
+  display.search = "";
+  display.hash = "";
+  let response;
+  try {
+    response = await fetch(url);
+  } catch {
+    throw new Error(`GET ${display.href} failed to connect`);
+  }
   if (response.status === 404) {
     throw new Error(
-      `${url} does not exist yet. If ${version} was just released, try again in a few minutes.`,
+      `${display.href} does not exist yet. If ${version} was just released, try again in a few minutes.`,
     );
   }
-  if (!response.ok) throw new Error(`GET ${url} returned HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`GET ${display.href} returned HTTP ${response.status}`);
   return response;
 }
 

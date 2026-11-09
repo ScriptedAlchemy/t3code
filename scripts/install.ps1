@@ -24,6 +24,7 @@ $binDir = if ($env:T3CODE_INSTALL_BIN_DIR) { $env:T3CODE_INSTALL_BIN_DIR } else 
 function Release-Url([string] $file) {
   $url = New-Object System.UriBuilder($baseUrl)
   $url.Path = "$($url.Path.TrimEnd("/"))/v$version/$file"
+  $url.Fragment = ""
   return $url.Uri.AbsoluteUri
 }
 
@@ -69,6 +70,19 @@ function Draw-Download([long] $bytes, [long] $total) {
   }
 }
 function Fetch([string] $uri, [string] $destination, [switch] $progress) {
+  try {
+    Fetch-Request $uri $destination -progress:$progress
+  } catch {
+    $status = $_.Exception.Response.StatusCode.value__
+    $display = New-Object System.UriBuilder($uri)
+    $display.UserName = $display.Password = $display.Query = $display.Fragment = ""
+    $detail = if ($status) { "returned HTTP $status" } else { "failed to download" }
+    $failure = New-Object System.Exception("GET $($display.Uri.AbsoluteUri) $detail")
+    $failure.Data["HttpStatus"] = $status
+    throw $failure
+  }
+}
+function Fetch-Request([string] $uri, [string] $destination, [switch] $progress) {
   if (-not $progress -or -not $interactive) {
     $ProgressPreference = if ($progress -and $terminal) { "Continue" } else { "SilentlyContinue" }
     Invoke-WebRequest -Uri $uri -OutFile $destination -UseBasicParsing
@@ -181,7 +195,7 @@ if ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $version)) {
     try {
       Fetch (Release-Url "SHA256SUMS") (Join-Path $staging "SHA256SUMS")
     } catch {
-      $status = $_.Exception.Response.StatusCode.value__
+      $status = $_.Exception.Data["HttpStatus"]
       if ($status -eq 404) {
         Fail "t3 $version has no release archive for win32-$arch; choose a published fork build from https://github.com/$repo/releases"
       }

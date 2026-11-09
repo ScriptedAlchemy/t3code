@@ -264,3 +264,66 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("installer chec
     },
   );
 });
+
+describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+  "installer download diagnostics",
+  () => {
+    it.each([false, true])(
+      "redacts signed mirror URLs on transport failure %s",
+      async (transportFailure) => {
+        const source = await NodeFSP.readFile(new URL("./install.sh", import.meta.url), "utf8");
+        const functions = source.slice(
+          source.indexOf("display_url() {"),
+          source.indexOf("\nmb() {"),
+        );
+        const root = await NodeFSP.mkdtemp(
+          NodePath.join(NodeOS.tmpdir(), "t3-install-diagnostic-"),
+        );
+        try {
+          const request =
+            "https://mirror-user:mirror-pass@mirror.example/v1.2.3/SHA256SUMS?signature=test-secret#download";
+          const child = NodeChildProcess.spawnSync(
+            "sh",
+            [
+              "-c",
+              `
+        curl() {
+          printf '%s\\n' "$@" > "$REQUEST_FILE"
+          printf '%s\\n' "$*" >&2
+          printf '403'
+          return ${transportFailure ? 7 : 0}
+        }
+        ${functions}
+        fetch "$REQUEST_URL" "$DESTINATION"
+      `,
+            ],
+            {
+              encoding: "utf8",
+              env: {
+                ...process.env,
+                REQUEST_URL: request,
+                REQUEST_FILE: NodePath.join(root, "request"),
+                DESTINATION: NodePath.join(root, "asset"),
+              },
+            },
+          );
+          expect(child.status).toBe(1);
+          expect(await NodeFSP.readFile(NodePath.join(root, "request"), "utf8")).toContain(request);
+          expect(child.stderr).toContain("https://mirror.example/v1.2.3/SHA256SUMS");
+          expect(child.stderr).toContain(transportFailure ? "failed to connect" : "HTTP 403");
+          for (const secret of [
+            "mirror-user",
+            "mirror-pass",
+            "signature",
+            "test-secret",
+            "#download",
+          ]) {
+            expect(child.stdout + child.stderr).not.toContain(secret);
+          }
+        } finally {
+          await NodeFSP.rm(root, { recursive: true, force: true });
+        }
+      },
+    );
+  },
+);

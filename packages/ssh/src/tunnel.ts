@@ -442,6 +442,7 @@ fi
 # Self-contained release archive: no Node, npm, or compiler on the remote.
 # Unpacked into the pinned-runtime layout so \`t3 service install\` reuses it.
 T3_RELEASE_BASE_URL=@@T3_RELEASE_BASE_URL@@
+T3_RELEASE_DISPLAY_URL=@@T3_RELEASE_DISPLAY_URL@@
 T3_RELEASE_QUERY=@@T3_RELEASE_QUERY@@
 T3_RUNTIME_DIR="$HOME/.t3/runtime/versions/$T3_ARCHIVE_VERSION"
 t3_runtime_ready() {
@@ -530,12 +531,12 @@ if ! t3_runtime_ready; then
   trap 'rm -rf "$T3_STAGING" "$T3_LOCK"' EXIT
   t3_fetch() {
     if command -v curl >/dev/null 2>&1; then
-      if curl -fsSL --connect-timeout 30 --max-time "$3" "$1" -o "$2"; then return; fi
+      if curl -fsSL --connect-timeout 30 --max-time "$3" "$1" -o "$2" 2>/dev/null; then return; else T3_FETCH_EXIT=$?; fi
     elif command -v wget >/dev/null 2>&1; then
-      if wget -q --timeout=30 --tries=1 "$1" -O "$2"; then return; fi
+      if wget -q --timeout=30 --tries=1 "$1" -O "$2" 2>/dev/null; then return; else T3_FETCH_EXIT=$?; fi
     else printf 'Remote host needs curl or wget to download %s.\\n' "$T3_ARCHIVE" >&2; exit 1
     fi
-    printf 'Could not download T3 release artifact: %s\\nInstall the exact T3 CLI (%s) on the remote host, or use a desktop version with published CLI archives.\\n' "$1" "$T3_ARCHIVE_VERSION" >&2
+    printf 'Could not download T3 release artifact: %s (downloader exit %s)\\nInstall the exact T3 CLI (%s) on the remote host, or use a desktop version with published CLI archives.\\n' "$T3_RELEASE_DISPLAY_URL/\${2##*/}" "$T3_FETCH_EXIT" "$T3_ARCHIVE_VERSION" >&2
     return 1
   }
   t3_fetch "$T3_RELEASE_BASE_URL/SHA256SUMS$T3_RELEASE_QUERY" "$T3_STAGING/SHA256SUMS" @@T3_ARCHIVE_CHECKSUMS_SECONDS@@
@@ -875,12 +876,16 @@ export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string
   releaseUrl.search = "";
   releaseUrl.hash = "";
   const releaseBaseUrl = releaseUrl.toString();
+  releaseUrl.username = "";
+  releaseUrl.password = "";
+  const releaseDisplayUrl = releaseUrl.toString();
   return stripTrailingNewlines(
     applyScriptPlaceholders(REMOTE_RUNNER_SCRIPT, {
       T3_NODE_SCRIPT_PATH: shellSingleQuote(nodeScriptPath),
       T3_ARCHIVE_VERSION: shellSingleQuote(archiveVersion),
       T3_RELEASE_BASE_URL: shellSingleQuote(releaseBaseUrl),
       T3_RELEASE_QUERY: shellSingleQuote(releaseQuery),
+      T3_RELEASE_DISPLAY_URL: shellSingleQuote(releaseDisplayUrl),
       T3_ARCHIVE_LOCK_WAIT_SECONDS: String(REMOTE_ARCHIVE_LOCK_WAIT_SECONDS),
       T3_INSTALLED_PROBE_SECONDS: String(REMOTE_INSTALLED_PROBE_SECONDS),
       T3_ARCHIVE_DOWNLOAD_SECONDS: String(REMOTE_ARCHIVE_DOWNLOAD_SECONDS),

@@ -151,6 +151,46 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
         assert.equal(unpack.exitCode, 0, unpack.stderr);
         const packageDir = path.join(installed, "package");
 
+        const diagnosticHook = path.join(root, "diagnostic-hook.mjs");
+        for (const status of [404, 403, 0]) {
+          yield* fs.writeFileString(
+            diagnosticHook,
+            `globalThis.fetch = async (url) => {
+              if (url !== "https://mirror-user:mirror-pass@mirror.example/releases/v${VERSION}/SHA256SUMS?signature=test-secret#download") throw new Error("wrong request");
+              if (${status} === 0) throw new Error("transport signature=test-secret mirror-pass");
+              return new Response("", { status: ${status} });
+            };`,
+          );
+          const failed = yield* run(
+            process.execPath,
+            ["--import", diagnosticHook, path.join(packageDir, "bin/t3.mjs")],
+            {
+              cwd: root,
+              env: {
+                PATH: (yield* HostProcess.Environment).PATH,
+                T3CODE_HOME: path.join(root, `failed-${status}`),
+                T3CODE_RELEASE_BASE_URL:
+                  "https://mirror-user:mirror-pass@mirror.example/releases/?signature=test-secret#download",
+              },
+            },
+          );
+          assert.equal(failed.exitCode, 1);
+          assert.include(failed.stderr, `https://mirror.example/releases/v${VERSION}/SHA256SUMS`);
+          assert.include(
+            failed.stderr,
+            status === 404 ? "does not exist" : status === 403 ? "HTTP 403" : "failed to connect",
+          );
+          for (const secret of [
+            "mirror-user",
+            "mirror-pass",
+            "signature",
+            "test-secret",
+            "#download",
+          ]) {
+            assert.notInclude(failed.stdout + failed.stderr, secret);
+          }
+        }
+
         const release = yield* serveFakeRelease(root);
         const home = path.join(root, "home");
         const env = {
