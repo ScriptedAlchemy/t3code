@@ -6756,7 +6756,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection.runs.find((run) => run.id === continuedRunId)?.groupThrough;
     const groupThroughField = groupThrough === undefined ? {} : { groupThrough };
     const modelSelection = yield* routeSelection({
-
       commandId: command.commandId,
       commandType: command.type,
       selection: command.modelSelection ?? projection.thread.modelSelection,
