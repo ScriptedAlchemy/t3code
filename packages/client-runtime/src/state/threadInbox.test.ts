@@ -67,6 +67,7 @@ describe("createInboxReturnTracker", () => {
     tracker.observe([thread("a", true)]);
     tracker.observe([thread("a", false)]);
     expect(isThreadWorking(thread("a", false))).toBe(false);
+    expect(isThreadWorking({ ...thread("a", false), groupDiscussionOpen: true })).toBe(true);
     expect(tracker.isWorking(thread("a", false))).toBe(true);
     vi.advanceTimersByTime(1_999);
     tracker.observe([thread("a", false)]);

@@ -1,5 +1,5 @@
 import type { ProjectThreadAwarenessV2Input } from "@t3tools/shared/agentAwareness";
-import { pendingGuestMessageCount } from "@t3tools/contracts";
+import { isOrchestrationV2PublicationRun, pendingGuestMessageCount } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
@@ -193,6 +193,25 @@ export type ProjectionThreadPullRequests = Pick<
   "id" | "projectId" | "lineage" | "settledOverride" | "settledAt" | "pullRequests"
 >;
 
+/**
+ * A discussion finishing reads as a turn finishing, so a user who walked away sees it unread. Peer
+ * replies alone cannot do this, since the shell skips publication runs. A presented run with no
+ * completion is still going, and a thread whose primary never ran has only the discussion to go by.
+ */
+function shellCompletedAt(
+  latestRunId: RunId | null,
+  completedAt: DateTime.Utc | null,
+  group: OrchestrationV2AppThread["group"],
+): DateTime.Utc | null {
+  if (group == null || group.closedAt === null) return completedAt;
+  if (latestRunId !== null && completedAt === null) return null;
+  const closedAt = DateTime.makeUnsafe(group.closedAt);
+  return completedAt === null ||
+    DateTime.toEpochMillis(closedAt) > DateTime.toEpochMillis(completedAt)
+    ? closedAt
+    : completedAt;
+}
+
 export type ProjectionSettlementCandidate = Pick<
   OrchestrationV2ThreadShell,
   | "id"
@@ -221,6 +240,7 @@ export type ProjectionSettlementCandidate = Pick<
   | "pendingRuntimeRequest"
   | "pendingBackgroundTasks"
   | "pendingGuestMessageCount"
+  | "group"
 > &
   Pick<OrchestrationV2AppThread, "lastSnoozeWakeAt"> & {
     readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
@@ -469,6 +489,11 @@ export interface ProjectionStoreV2Shape {
   readonly listAppOwnedChildThreadIds: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionStoreV2Error>;
+  /** Every live thread whose group is active, for resuming after a restart. */
+  readonly getActiveGroupThreadIds: () => Effect.Effect<
+    ReadonlyArray<ThreadId>,
+    ProjectionStoreV2Error
+  >;
   readonly getNextTurnItemOrdinal: (
     threadId: ThreadId,
   ) => Effect.Effect<number, ProjectionStoreV2Error>;
@@ -858,6 +883,7 @@ export function applyToProjection(
     case "thread.model-selection-updated":
     case "thread.provider-switched":
     case "thread.guest-share-updated":
+    case "thread.group-updated":
       return {
         ...base,
         thread: event.payload,
@@ -1650,7 +1676,11 @@ export function threadShellFromProjection(
     latestRunId: latestRun?.id ?? null,
     latestRunRequestedAt: latestRun?.requestedAt ?? null,
     latestRunStartedAt: latestRun?.startedAt ?? null,
-    latestRunCompletedAt: latestRun?.completedAt ?? null,
+    latestRunCompletedAt: shellCompletedAt(
+      latestRun?.id ?? null,
+      latestRun?.completedAt ?? null,
+      projection.thread.group,
+    ),
     latestRunStopRequested:
       latestRun != null &&
       projection.turnItems.some(
@@ -1668,6 +1698,7 @@ export function threadShellFromProjection(
     ),
     pendingRuntimeRequest,
     pendingGuestMessageCount: pendingGuestMessageCount(projection.thread.guestShare),
+    ...(projection.thread.group == null ? {} : { group: projection.thread.group }),
     // Thread detail owns message bodies. Keeping them out of shell rows makes
     // initial hydration and streaming updates independent of transcript size.
     latestVisibleMessage: null,
@@ -1740,6 +1771,7 @@ function isSilentRunForShell(
   run: OrchestrationV2ThreadProjection["runs"][number],
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems">,
 ): boolean {
+  if (isOrchestrationV2PublicationRun(run)) return true;
   return (
     run.status !== "failed" &&
     projection.messages.some(
@@ -1931,7 +1963,11 @@ function shellFromState(input: {
     latestRunId: input.state.latestRunId,
     latestRunRequestedAt: input.state.latestRunRequestedAt,
     latestRunStartedAt: input.state.latestRunStartedAt,
-    latestRunCompletedAt: input.state.latestRunCompletedAt,
+    latestRunCompletedAt: shellCompletedAt(
+      input.state.latestRunId,
+      input.state.latestRunCompletedAt,
+      input.state.thread.group,
+    ),
     latestRunStopRequested: input.state.latestRunStopRequested,
     activeRunId: input.state.activeRunId,
     blockedOnThreadWait: input.state.blockedOnThreadWait,
@@ -1944,6 +1980,7 @@ function shellFromState(input: {
     usageLimitResetAt: input.state.usageLimitResetAt,
     pendingRuntimeRequest: input.state.pendingRuntimeRequest,
     pendingGuestMessageCount: pendingGuestMessageCount(input.state.thread.guestShare),
+    ...(input.state.thread.group == null ? {} : { group: input.state.thread.group }),
     latestVisibleMessage: null,
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
@@ -2043,7 +2080,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             case "thread.interaction-mode-updated":
             case "thread.model-selection-updated":
             case "thread.provider-switched":
-            case "thread.guest-share-updated": {
+            case "thread.guest-share-updated":
+            case "thread.group-updated": {
               const payloadJson = yield* encodeThreadPayload(event.payload);
               const payload = parseEncodedPayload(payloadJson);
               yield* sql`
@@ -2858,7 +2896,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             event.type !== "thread.interaction-mode-updated" &&
             event.type !== "thread.model-selection-updated" &&
             event.type !== "thread.provider-switched" &&
-            event.type !== "thread.guest-share-updated"
+            event.type !== "thread.guest-share-updated" &&
+            event.type !== "thread.group-updated"
           ) {
             const updatedAt = yield* encodeThreadUpdatedAt(event.occurredAt);
             yield* sql`
@@ -5567,6 +5606,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError(controlReadError(threadId)),
       );
 
+    const getActiveGroupThreadIds: ProjectionStoreV2Shape["getActiveGroupThreadIds"] = () =>
+      sql<{ thread_id: ThreadId }>`SELECT thread_id
+        FROM orchestration_v2_projection_threads
+        WHERE deleted_at IS NULL
+          AND json_extract(payload_json, '$.group.status') = 'active'`.pipe(
+        Effect.map((rows) => rows.map((row) => row.thread_id)),
+        Effect.mapError(controlReadError(ThreadId.make("group-sweep"))),
+      );
+
     const getTurnItem: ProjectionStoreV2Shape["getTurnItem"] = ({ threadId, itemId }) =>
       sql<{ payload_json: string }>`SELECT payload_json
         FROM orchestration_v2_projection_turn_items
@@ -6186,7 +6234,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     const isSilentShellRun = (alias: string) => {
       const run = sql.literal(alias);
       return sql`(
-        ${run}.status <> 'failed'
+        json_extract(${run}.payload_json, '$.publication') IS NOT NULL
+        OR ${run}.status <> 'failed'
         AND EXISTS (
           SELECT 1 FROM orchestration_v2_projection_messages prompt
           WHERE prompt.message_id = json_extract(${run}.payload_json, '$.userMessageId')
@@ -6385,6 +6434,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               FROM orchestration_v2_projection_runs candidate
               WHERE candidate.thread_id = t.thread_id
                 AND candidate.status <> 'queued'
+                AND json_extract(candidate.payload_json, '$.publication') IS NULL
                 AND NOT (
                   candidate.status = 'cancelled'
                   AND json_extract(candidate.payload_json, '$.startedAt') IS NULL
@@ -6696,6 +6746,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   activityRunStartedAt: null,
                   pendingRuntimeRequest: null,
                   pendingGuestMessageCount: pendingGuestMessageCount(thread.guestShare),
+                  ...(thread.group == null ? {} : { group: thread.group }),
                   pendingBackgroundTasks: derivePendingBackgroundWork({
                     latestRun:
                       latestRunId === null || status === "idle"
@@ -7536,6 +7587,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getSubagentCount: readOnReader(getSubagentCount),
       listAppOwnedChildThreadIds: readOnReader(listAppOwnedChildThreadIds),
       getNextTurnItemOrdinal: readOnReader(getNextTurnItemOrdinal),
+      getActiveGroupThreadIds: readOnReader(getActiveGroupThreadIds),
       getTurnItem: readOnReader(getTurnItem),
       getMessagesById: readOnReader(getMessagesById),
       getThreadRecords: (threadId, fields, filter) =>

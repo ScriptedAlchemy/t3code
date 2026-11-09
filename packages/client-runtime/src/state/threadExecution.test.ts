@@ -226,6 +226,14 @@ describe("thread execution presentation", () => {
 
     expect(deriveLatestThreadRun(projection)?.runId).toBe(failed.id);
     expect(deriveThreadActivityRun(projection)?.runId).toBe(failed.id);
+    const peerAfterLimit = {
+      ...run("run-peer", 9, "completed"),
+      completedAt: DateTime.add(now, { minutes: 1 }),
+      publication: { type: "user_to_peers" as const, seatThreadIds: [] },
+    };
+    expect(
+      usageLimitBlockedRun([failed, queued, peerAfterLimit], projection.turnItems, null)?.id,
+    ).toBe(failed.id);
     expect(deriveThreadRuntime(projection)).toMatchObject({
       status: "failed",
       lastError: "Plan limit reached",
@@ -299,6 +307,22 @@ describe("thread execution presentation", () => {
       status: "running",
       turnEnded: true,
     });
+  });
+
+  it("keeps the thread's own run as the latest when a peer publishes", () => {
+    const publication = {
+      ...run("run-peer", 2, "completed"),
+      completedAt: now,
+      publication: { type: "user_to_peers" as const, seatThreadIds: [] },
+    };
+    const working = { ...v2Projection, runs: [run("run-primary", 1, "running"), publication] };
+    expect(deriveLatestThreadRun(working)).toMatchObject({
+      runId: "run-primary",
+      status: "running",
+    });
+    expect(deriveThreadRuntime(working)).toMatchObject({ status: "running" });
+    const onlyPeers = { ...v2Projection, runs: [publication] };
+    expect(deriveLatestThreadRun(onlyPeers)).toBeNull();
   });
 
   it("presents a held queue as the stopped run instead of queued work", () => {

@@ -1,6 +1,7 @@
 import {
   CommandId,
   IDLE_COMPACTION_TEXT,
+  isOrchestrationV2PublicationRun,
   MessageId,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
@@ -89,7 +90,11 @@ export const make = Effect.gen(function* () {
         )
           return;
         const latestRun = records.runs
-          .filter((run) => run.status !== "cancelled" || run.startedAt !== null)
+          .filter(
+            (run) =>
+              (run.status !== "cancelled" || run.startedAt !== null) &&
+              !isOrchestrationV2PublicationRun(run),
+          )
           .reduce<(typeof records.runs)[number] | undefined>(
             (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),
             undefined,

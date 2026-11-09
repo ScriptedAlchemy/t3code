@@ -69,6 +69,7 @@ import {
   type ServerProvider,
   type ServerProviderModel,
   ThreadId,
+  isOrchestrationV2PublicationRun,
   isOrchestrationV2WorkActive,
   resolveActiveProviderPools,
   resolveProjectProviderInstanceEnabled,
@@ -616,6 +617,7 @@ function latestTerminalResultRun(
         ThreadManagementService.isTerminalRunStatus(run.status) &&
         !monitorRunIds.has(run.id) &&
         run.status !== "rolled_back" &&
+        !isOrchestrationV2PublicationRun(run) &&
         (run.id === delegatedRun?.id || run.startedAt !== null),
     )
     .reduce<OrchestrationV2Run | undefined>(
@@ -961,6 +963,9 @@ function timelineItem(input: {
     createdBy: message?.createdBy ?? null,
     creationSource: message?.creationSource ?? null,
     ...(message?.senderThreadId === undefined ? {} : { senderThreadId: message.senderThreadId }),
+    ...(input.row.item.type === "assistant_message" && input.row.item.speaker !== undefined
+      ? { speaker: input.row.item.speaker }
+      : {}),
     type: input.row.item.type,
     status: input.row.item.status,
     title: input.row.item.title,

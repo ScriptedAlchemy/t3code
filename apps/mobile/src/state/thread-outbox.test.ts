@@ -331,6 +331,7 @@ describe("thread outbox", () => {
       interactionMode: "plan",
       dispatchMode: "queue",
       compactBeforeSend: true,
+      groupAudience: [ThreadId.make("seat")],
     } satisfies QueuedThreadMessage;
 
     expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(selectedMessage))).toEqual(

@@ -154,6 +154,9 @@ export interface EnvironmentThreadShell {
   readonly latestRun: ThreadRunSummary | null;
   readonly runtime: ThreadRuntimeSummary | null;
   readonly blockedOnThreadWait?: boolean;
+  /** A group's seats are answering on their own threads, so this one has no run of its own. */
+  readonly groupDiscussionOpen?: boolean;
+  readonly group?: OrchestrationV2ThreadShell["group"];
   readonly latestUserMessageAt: string | null;
   readonly latestUserAuthoredMessageAt?: string | null;
   readonly hasPendingApprovals: boolean;
@@ -303,6 +306,8 @@ export function presentThreadShell(
     latestRun,
     runtime,
     blockedOnThreadWait: thread.blockedOnThreadWait ?? false,
+    ...(thread.group === undefined ? {} : { group: thread.group }),
+    ...(thread.group?.discussion == null ? {} : { groupDiscussionOpen: true }),
     latestUserMessageAt: nullableIso(thread.latestUserMessageAt),
     ...(thread.latestUserAuthoredMessageAt === undefined
       ? {}

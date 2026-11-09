@@ -137,6 +137,18 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:stop-workflow",
       tag: ORCHESTRATION_V2_WS_METHODS.stopWorkflow,
     }),
+    inviteToGroup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:group-invite",
+      tag: ORCHESTRATION_V2_WS_METHODS.threadGroupInvite,
+    }),
+    removeFromGroup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:group-remove",
+      tag: ORCHESTRATION_V2_WS_METHODS.threadGroupRemove,
+    }),
+    endGroup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:group-end",
+      tag: ORCHESTRATION_V2_WS_METHODS.threadGroupEnd,
+    }),
     forceStopThread: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:orchestration:force-stop-thread",
       tag: ORCHESTRATION_V2_WS_METHODS.forceStopThread,

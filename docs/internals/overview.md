@@ -78,6 +78,10 @@ what the newest client sends.
 
 ## Turn completion and checkpoints
 
+Not every run has a provider turn. [Publication runs](./glossary.md) record words
+from a group conversation without provider execution. Readers looking for the
+latest provider work must skip them, even when a publication is the newest run.
+
 A provider turn ending and its follow-up work settling are separate milestones. Orchestration
 records provider turn and run state independently from
 [run finalization](../../apps/server/src/orchestration-v2/RunFinalizationService.ts). A late

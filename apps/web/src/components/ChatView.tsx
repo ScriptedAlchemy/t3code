@@ -63,6 +63,7 @@ import {
   isProviderNativeSubagentThread,
   orchestrationV2WorktreePending,
   type EnvironmentId,
+  isOrchestrationV2PublicationRun,
   type MessageId,
   type ModelSelection,
   type PreviewAnnotationPayload,
@@ -259,8 +260,12 @@ import {
   useThreadStatus,
   useThreadHistory,
   useQuietThreadShell,
+  useRunningGroupSeats,
   useThreadCheckpointSummaries,
 } from "../state/entities";
+import { groupIsWorking } from "@t3tools/client-runtime/state/thread-group";
+import { useCanInviteToGroup } from "./chat/groupAvailability";
+import { GroupLiveRow } from "./chat/GroupLiveRow";
 import { useEnvironmentShellHasSnapshot } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -405,6 +410,8 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       /** A side chat in its parent's right panel; the parent keeps the keyboard and workspace UI. */
       embedded?: SideChatParentPanel;
+      /** A seated group member's work: talk to it from the thread's own composer. Only its requests are answered here. */
+      composerHidden?: boolean;
       routeKind: "server";
       draftId?: never;
     }
@@ -415,6 +422,7 @@ type ChatViewProps =
       reserveTitleBarControlInset?: boolean;
       forceExpandedMobileComposer?: boolean;
       embedded?: never;
+      composerHidden?: never;
       routeKind: "draft";
       draftId: DraftId;
     };
@@ -991,6 +999,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const browserAvailable = isPreviewSupportedInRuntime() || activeEnvironmentServerBrowser;
   const activeThreadShell = serverThread;
+  const threadGroup = activeThreadShell?.source.group ?? null;
   const limitRecoveryRun =
     serverRuntime?.status === "failed" && serverRuntime.lastErrorClass === "usage_limit"
       ? (activeThreadShell?.latestRun ?? null)
@@ -1328,8 +1337,10 @@ export default function ChatView(props: ChatViewProps) {
   const conversationProviderStatus =
     providerStatuses.find((status) => status.instanceId === activeRuntime?.providerInstanceId) ??
     activeProviderStatus;
+  // The server refuses a rewind while a discussion is open.
   const supportsConversationRollback =
     canOperateThread &&
+    threadGroup?.discussion == null &&
     conversationProviderStatus !== null &&
     conversationProviderStatus.supportsConversationRollback !== false;
   const phase = derivePhase(activeRuntime);
@@ -1614,6 +1625,9 @@ export default function ChatView(props: ChatViewProps) {
   );
   const turnDiffSummaries = useThreadCheckpointSummaries(routeThreadDetailRef);
   const availableRevertTurnCounts = deriveAvailableRevertTurnCounts(serverProjection);
+  const publicationRunIds = new Set(
+    serverProjection?.runs.filter(isOrchestrationV2PublicationRun).map((run) => run.id),
+  );
   // A paged history window cannot identify the first loaded run as the thread start.
   const threadStartCheckpointReady =
     !serverThreadHistory.hasMoreHistory &&
@@ -1735,7 +1749,10 @@ export default function ChatView(props: ChatViewProps) {
   const isGitRepo = liveIsGitRepo ?? recallCheckoutIsRepo(environmentId, gitStatusCwd) ?? true;
   // Provider-native subagents cannot take messages; approvals and questions go to the top-level parent.
   const showProviderSubagentBar = isProviderSubagent;
-  const composerMounted = !showProviderSubagentBar;
+  // The composer is the only place requests are answered, and a seat waiting on one hangs its group.
+  const composerMounted =
+    !showProviderSubagentBar &&
+    (props.composerHidden !== true || pendingApprovals.length > 0 || pendingUserInputs.length > 0);
   const providerSubagentModels = selectedProviderEntry?.models ?? EMPTY_PROVIDER_MODELS;
   // Providers can report dated model ids or aliases.
   const providerSubagentModelSlug = selectedProviderEntry
@@ -1826,8 +1843,12 @@ export default function ChatView(props: ChatViewProps) {
     composerRef.current?.focusAtEnd();
   };
   const focusComposerStable = useStableCallback(focusComposer);
+  const runningGroupSeats = useRunningGroupSeats(isServerThread ? activeThreadRef : null);
+  const groupWorking = groupIsWorking(threadGroup, runningGroupSeats.length);
+  // Stop covers every member: a seat can run while the thread's own model is idle.
   const canInterruptRunningThread =
-    canOperateThread && deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime);
+    canOperateThread &&
+    (groupWorking || deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime));
   const onInterrupt = async () => {
     if (
       !activeThread ||
@@ -2826,6 +2847,13 @@ export default function ChatView(props: ChatViewProps) {
     activeThread?.lineage.sideChat !== true &&
     !isSubagentThread &&
     serverConfig?.environment.capabilities.sideChats === true;
+  const canInviteToGroup = useCanInviteToGroup(environmentId);
+  const groupInviteOffered =
+    canInviteToGroup &&
+    !embedded &&
+    isServerThread &&
+    activeThread?.lineage.sideChat !== true &&
+    !isSubagentThread;
   const sideChat = useSideChat({
     threadRef: sideChatsOffered && isServerThread ? activeThreadRef : null,
     readSettings: () => ({
@@ -3027,6 +3055,7 @@ export default function ChatView(props: ChatViewProps) {
     handleInteractionModeChange,
     onSideChat: sideChat.available ? sendSideChatStable : undefined,
     sideChatDisabledReason,
+    threadGroup,
     handleNewThreadInActiveProject,
     persistThreadSettingsForNextTurn,
   });
@@ -3175,6 +3204,7 @@ export default function ChatView(props: ChatViewProps) {
     !hasThreadNow &&
     threadStatusLine === null &&
     pendingGuestMessageCount === 0 &&
+    runningGroupSeats.length === 0 &&
     !hasQueuedTurns ? null : (
       <>
         {pendingHandoff === null ? null : (
@@ -3195,6 +3225,9 @@ export default function ChatView(props: ChatViewProps) {
           goal={goalNow}
         />
         {threadStatusLine}
+        {threadGroup !== null && activeThreadRef !== null ? (
+          <GroupLiveRow threadRef={activeThreadRef} group={threadGroup} />
+        ) : null}
         {pendingGuestMessageCount > 0 && isServerThread && activeThread ? (
           <GuestPendingMessages
             threadRef={scopeThreadRef(activeThread.environmentId, activeThread.id)}
@@ -3505,6 +3538,7 @@ export default function ChatView(props: ChatViewProps) {
                   footer={timelineFooter}
                   listRef={legendListRef}
                   runs={serverProjection?.runs ?? []}
+                  group={threadGroup}
                   latestRun={activeActivityRun}
                   announcedRun={announcedRun(activeActivityRun, serverProjection?.runs ?? [])}
                   detailBehindShell={isDetailBehindShell(
@@ -3530,6 +3564,7 @@ export default function ChatView(props: ChatViewProps) {
                   supportsConversationRollback={supportsConversationRollback}
                   threadStartCheckpointReady={threadStartCheckpointReady}
                   availableRevertTurnCounts={availableRevertTurnCounts}
+                  publicationRunIds={publicationRunIds}
                   onRevertToTurnCount={onRevertTimelineTurnStable}
                   onUseArtifactTemplate={insertArtifactTemplateStable}
                   onSendAppMessage={sendAppMessageStable}
@@ -3712,6 +3747,8 @@ export default function ChatView(props: ChatViewProps) {
                                 resumeCompactionTokens={resumeCompactionTokens}
                                 keepFullHistory={keepFullHistory}
                                 onToggleKeepFullHistory={toggleKeepFullHistoryStable}
+                                threadGroup={threadGroup}
+                                groupInviteOffered={groupInviteOffered}
                                 sideChatAvailable={sideChat.available}
                                 sideChatDisabledReason={sideChatDisabledReason}
                                 onFreshSession={

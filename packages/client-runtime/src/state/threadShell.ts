@@ -16,6 +16,7 @@ import { Atom } from "effect/reactivity";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
 import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
+import { runningSeats } from "./threadGroup.ts";
 import { hiddenThreadKeys, NO_HIDDEN_THREADS } from "./threadTagFilter.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import {
@@ -36,6 +37,7 @@ const EMPTY_SIDE_CHATS_BY_PARENT: ReadonlyMap<
   ReadonlyArray<OrchestrationV2ThreadShell>
 > = new Map();
 const EMPTY_THREAD_SHELLS: ReadonlyArray<EnvironmentThreadShell> = Object.freeze([]);
+const EMPTY_THREAD_IDS: ReadonlyArray<ThreadId> = Object.freeze([]);
 const EMPTY_THREAD_REFS_BY_PROJECT: ReadonlyMap<
   ProjectId,
   ReadonlyArray<ScopedThreadRef>
@@ -258,9 +260,19 @@ export function createEnvironmentThreadShellAtoms(input: {
   const environmentSideChatsByParentAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) => {
       let byParent: Map<ThreadId, OrchestrationV2ThreadShell[]> | undefined;
-      for (const thread of get(environmentThreadsAtom(environmentId))) {
+      const threads = get(environmentThreadsAtom(environmentId));
+      // A seat is a side chat the group runs; the group's roster lists it, not the side chats.
+      const seated = new Set(
+        threads.flatMap((thread) =>
+          (thread.group?.seats ?? []).flatMap((seat) =>
+            seat.status === "seated" ? [seat.threadId] : [],
+          ),
+        ),
+      );
+      for (const thread of threads) {
         const parentId = thread.lineage.parentThreadId;
-        if (thread.lineage.sideChat !== true || parentId === null) continue;
+        if (thread.lineage.sideChat !== true || parentId === null || seated.has(thread.id))
+          continue;
         byParent ??= new Map();
         const siblings = byParent.get(parentId);
         if (siblings) siblings.push(thread);
@@ -531,6 +543,31 @@ export function createEnvironmentThreadShellAtoms(input: {
     }).pipe(Atom.withLabel(`environment-side-chats:${key}`));
   });
 
+  // The seats of a group whose own thread has an open run, in invite order. The ids alone
+  // are kept, so streaming inside a seat never wakes a reader of who is running.
+  const runningGroupSeatsAtomFamily = Atom.family((key: string) => {
+    const ref = parseThreadKey(key);
+    let previous = EMPTY_THREAD_IDS;
+    return Atom.make((get) => {
+      const index = get(environmentThreadIndexAtom(ref.environmentId));
+      const group = index.get(ref.threadId)?.group;
+      const next =
+        group == null
+          ? EMPTY_THREAD_IDS
+          : runningSeats(group, (threadId) => {
+              const seat = index.get(threadId);
+              return seat === undefined
+                ? null
+                : scopedThread(ref.environmentId, seat, EMPTY_SUBAGENT_REQUESTS);
+            }).map((seat) => seat.threadId);
+      if (next.length === previous.length && next.every((id, i) => id === previous[i])) {
+        return previous;
+      }
+      previous = next.length === 0 ? EMPTY_THREAD_IDS : next;
+      return previous;
+    }).pipe(Atom.withLabel(`environment-running-group-seats:${key}`));
+  });
+
   const threadShellsForProjectRefsAtomFamily = Atom.family((key: string) => {
     const projectRefs = parseProjectRefCollectionKey(key);
     let previous: ReadonlyArray<EnvironmentThreadShell> = [];
@@ -734,5 +771,6 @@ export function createEnvironmentThreadShellAtoms(input: {
     quietThreadShellAtom: (ref: ScopedThreadRef) => quietThreadShellAtomFamily(threadKey(ref)),
     childThreadInputsAtom: (ref: ScopedThreadRef) => childThreadInputsAtomFamily(threadKey(ref)),
     sideChatsAtom: (ref: ScopedThreadRef) => sideChatsAtomFamily(threadKey(ref)),
+    runningGroupSeatsAtom: (ref: ScopedThreadRef) => runningGroupSeatsAtomFamily(threadKey(ref)),
   };
 }

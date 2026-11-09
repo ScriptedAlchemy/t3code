@@ -5299,6 +5299,149 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       }),
   );
 
+  it.effect("keeps both shell paths on the thread's own run when a peer publishes", () =>
+    Effect.gen(function* () {
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:projection-shell-publication");
+      const primaryId = RunId.make("run:projection-shell-publication:primary");
+      const peerId = RunId.make("run:projection-shell-publication:peer");
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-shell-publication:thread"),
+        type: "thread.created",
+        threadId,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("project:projection-shell-publication"),
+          title: "Publication",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      const baseRun = {
+        threadId,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId: null,
+        rootNodeId: null,
+        activeAttemptId: null,
+        requestedAt: now,
+        startedAt: now,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      const primary = {
+        ...baseRun,
+        id: primaryId,
+        ordinal: 1,
+        userMessageId: MessageId.make("message:projection-shell-publication:primary"),
+        status: "running" as const,
+        completedAt: null,
+      };
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-shell-publication:primary"),
+        type: "run.created",
+        threadId,
+        runId: primaryId,
+        occurredAt: now,
+        payload: primary,
+      });
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-shell-publication:peer"),
+        type: "run.created",
+        threadId,
+        runId: peerId,
+        occurredAt: now,
+        payload: {
+          ...baseRun,
+          id: peerId,
+          ordinal: 2,
+          userMessageId: MessageId.make("message:projection-shell-publication:peer"),
+          status: "completed",
+          completedAt: DateTime.add(now, { minutes: 1 }),
+          publication: { type: "user_to_peers", seatThreadIds: [] },
+        },
+      });
+      const presented = Effect.gen(function* () {
+        const sqlShell = (yield* projectionStore.getShellSnapshot()).threads.find(
+          (thread) => thread.id === threadId,
+        );
+        const memoryShell = ProjectionStore.threadShellFromProjection(
+          yield* projectionStore.getThreadProjection(threadId),
+        );
+        return [sqlShell, memoryShell].map((shell) => ({
+          latestRunId: shell?.latestRunId,
+          status: shell?.status,
+          lastErrorClass: shell?.lastErrorClass ?? null,
+        }));
+      });
+      const running = { latestRunId: primaryId, status: "running" as const, lastErrorClass: null };
+      assert.deepStrictEqual(yield* presented, [running, running]);
+
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-shell-publication:failed"),
+        type: "run.updated",
+        threadId,
+        runId: primaryId,
+        occurredAt: now,
+        payload: { ...primary, status: "failed", completedAt: now },
+      });
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-shell-publication:error"),
+        type: "turn-item.updated",
+        threadId,
+        runId: primaryId,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make("item:projection-shell-publication:error"),
+          threadId,
+          runId: primaryId,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          type: "error",
+          status: "failed",
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          failure: {
+            class: "usage_limit",
+            message: "Plan limit reached",
+            code: "usageLimitExceeded",
+            retryable: null,
+          },
+        },
+      });
+      const limited = {
+        latestRunId: primaryId,
+        status: "failed" as const,
+        lastErrorClass: "usage_limit" as const,
+      };
+      assert.deepStrictEqual(yield* presented, [limited, limited]);
+    }),
+  );
+
   it.effect("only exposes interruptible runs through the shell activeRunId", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;

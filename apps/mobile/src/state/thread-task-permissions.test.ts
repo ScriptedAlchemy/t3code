@@ -8,6 +8,8 @@ import {
   RunId,
   RuntimeRequestId,
   TurnItemId,
+  ThreadId,
+  type OrchestrationV2ThreadGroup,
   type ModelSelection,
   type OrchestrationV2ThreadProjection,
   type RuntimeMode,
@@ -62,6 +64,8 @@ const state = vi.hoisted(() => ({
     interactionMode: "default",
     runtime: null,
     latestRun: null as unknown,
+    group: undefined as OrchestrationV2ThreadGroup | undefined,
+    groupDiscussionOpen: false,
   },
 }));
 
@@ -205,6 +209,8 @@ beforeEach(() => {
   state.freshPending = false;
   state.compactDue = false;
   state.thread.latestRun = null;
+  state.thread.group = undefined;
+  state.thread.groupDiscussionOpen = false;
   state.projection = null;
   state.serverConfig = {
     providers: [{ instanceId: "codex", driver: "codex", enabled: true }],
@@ -228,6 +234,34 @@ beforeEach(() => {
 });
 
 describe("mobile task permissions", () => {
+  it("keeps a peer-only discussion working and addresses its unique handle", async () => {
+    state.grantedEnvironments.add("secondary");
+    state.thread.group = {
+      status: "active",
+      primary: { model: "gpt-5.4", label: "Codex", handle: "codex" },
+      seats: [
+        {
+          threadId: ThreadId.make("astra"),
+          handle: "astra-2",
+          label: "Astra",
+          status: "seated",
+          joinedAfterRun: 0,
+        },
+      ],
+      discussion: { mode: "direct", turnsLeft: 2, delivering: [] },
+      closedBecause: null,
+      closedAt: null,
+    };
+    state.thread.groupDiscussionOpen = true;
+    state.draft.text = "@astra-2 review this";
+    const composer = useThreadComposerState(NO_SIDE_CHATS);
+    expect(composer.activeThreadBusy).toBe(true);
+    expect(composer.interruptibleRunId).toBeNull();
+    expect(await composer.onSendMessage()).toBe("message");
+    expect(state.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ groupAudience: ["astra"] }),
+    );
+  });
   it("consumes an approval reply without queueing a parent message", async () => {
     state.grantedEnvironments.add("secondary");
     const composer = useThreadComposerState(NO_SIDE_CHATS);

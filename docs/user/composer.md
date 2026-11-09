@@ -124,6 +124,28 @@ returns to the remembered selection.
 
 Leaving reasoning level or service tier unset uses the provider's own configuration.
 
+## Group conversations
+
+Invite models from different providers into one thread to discuss a task together.
+Enable **Group conversations** in **Settings → Labs → Zack** for the environment,
+then choose **Invite a model** in an existing thread and pick a model. You can also
+use `/invite`, or **Invite a model** in the command palette.
+
+Messages reach everyone by default. Type `@` and choose a group member to address
+that model. Each message can start at most eight model turns, including follow-up
+replies. In a larger group, address up to eight members at a time.
+Members can answer each other, and they share the workspace and can
+edit its files under the thread's existing permissions. Open a member's **Work**
+view to see its tools, answer its questions, or approve its requests.
+
+**Stop** pauses the discussion and stops all members. A member's own Stop control
+stops only that model. Rewind waits until the discussion stops. If a member has
+unanswered replies, send another message to continue.
+
+Choose **End group** to continue with the thread's own model and the shared
+conversation as context. Turning off the setting prevents new invitations;
+existing groups still let you remove members or end the group.
+
 ## Project memory
 
 Open **Project memory** from the thread details, the command palette, or

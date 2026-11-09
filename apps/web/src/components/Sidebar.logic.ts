@@ -758,6 +758,7 @@ type ThreadStatusInput = Pick<
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
   blockedOnThreadWait?: boolean | undefined;
+  groupDiscussionOpen?: boolean | undefined;
 };
 
 /**
@@ -946,6 +947,7 @@ type SidebarThreadStatusInput = Pick<
   | "pendingGuestMessageCount"
   | "runtime"
   | "blockedOnThreadWait"
+  | "groupDiscussionOpen"
 >;
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
@@ -966,8 +968,9 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
     return "preparing";
   }
   if (
-    thread.runtime !== null &&
-    ["queued", "starting", "running", "waiting"].includes(thread.runtime.status)
+    thread.groupDiscussionOpen === true ||
+    (thread.runtime !== null &&
+      ["queued", "starting", "running", "waiting"].includes(thread.runtime.status))
   ) {
     return "working";
   }
@@ -1219,9 +1222,11 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  // A seat runs on its own thread, so the parent has no run of its own while a discussion is open.
   if (
     (thread.runtime?.status === "running" && thread.blockedOnThreadWait !== true) ||
-    thread.runtime?.status === "waiting"
+    thread.runtime?.status === "waiting" ||
+    thread.groupDiscussionOpen === true
   ) {
     return {
       label: "Working",
