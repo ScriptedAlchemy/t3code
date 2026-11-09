@@ -94,9 +94,9 @@ function SummariesToggle(props: Scope) {
         />
       </div>
       <p className="text-muted-foreground text-xs">
-        After turns complete in this project, your text generation model summarizes settled
-        stretches of older messages and tool output for switches and forks. The running conversation
-        stays as it is. Each summary costs one model call.
+        After turns complete in this project, your text generation model can summarize settled
+        stretches of older messages and tool output for provider switches and forks. The current
+        provider conversation is unchanged. Each summary costs one model call.
       </p>
       {!canWrite ? (
         <p className="text-xs">This connection cannot change project settings.</p>

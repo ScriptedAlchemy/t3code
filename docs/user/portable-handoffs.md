@@ -46,9 +46,11 @@ sources are still waiting. If a summarized source is edited or removed,
 or the thread is deleted or archived, that summary is marked outdated, its text is hidden, and agents
 no longer receive it; the changed stretch is summarized again from the current history.
 
-T3 Code reads summaries only when it builds a handoff. A running conversation stays as it is, so
-summaries do not lower its cost per request and do not change its prompt cache. To shorten a long
-conversation, use the provider's own compaction. For Claude, see
+During handoffs, T3 Code can automatically use summaries for older history that would not fit.
+Agents can also inspect saved summaries and their sources during a conversation. Turning this setting
+on does not by itself compact the current provider conversation, reduce its input tokens, or control
+the provider's prompt cache. To shorten a long conversation, use the provider's own compaction. For
+Claude, see
 [Compact long conversations](./providers-claude.md#compact-long-conversations).
 
 For remote connections, update both the client and server to inspect tool evidence and the complete
