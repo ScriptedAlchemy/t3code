@@ -210,19 +210,17 @@ export function useSideChats(ref: ScopedThreadRef) {
 
 export function useLiveThreadLinkLabels(markdown: string, environmentId: EnvironmentId): string {
   const refs = hasThreadLinks(markdown) ? threadLinkRefs(markdown, environmentId) : [];
-  const titles = useAtomValue(
-    refs.length === 0
-      ? EMPTY_THREAD_LINK_TITLES_ATOM
-      : threadLinkTitlesAtom(JSON.stringify(refs.map(threadKey))),
-  );
-  // Shells leave out idle subagent children and older settled threads, so a cited thread the
-  // shell lacks is read with its family until it lands; only a settled empty read proves it gone.
   const refsKey = JSON.stringify(refs.map(threadKey));
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps cited families mounted until the links change; releasing on title arrival removes that title again
+  const titles = useAtomValue(
+    refs.length === 0 ? EMPTY_THREAD_LINK_TITLES_ATOM : threadLinkTitlesAtom(refsKey),
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps cited rows mounted for the message's lifetime, independently of the family data it loads
   useEffect(() => {
-    const releases = (JSON.parse(refsKey) as ReadonlyArray<string>).map((key) => {
+    const releases = decodeThreadKeys(JSON.parse(refsKey)).map((key) => {
       const ref = scopeThreadRef(...decodeThreadKey(JSON.parse(key)));
-      return threadFamilies.mount(appAtomRegistry, ref.environmentId, ref.threadId);
+      return threadFamilies.mount(appAtomRegistry, ref.environmentId, ref.threadId, {
+        onlyWhenMissing: true,
+      });
     });
     return () => {
       for (const release of releases) release();

@@ -33,7 +33,8 @@ export function ZackSettings() {
           <PstackRow />
           <SkillsLibraryRows />
         </SettingsSection>
-        <SettingsSection title="Thread suggestions">
+        <SettingsSection title="Thread conversations">
+          <GroupConversationsRow />
           <ThreadSplitRows />
         </SettingsSection>
         <SettingsSection title="Agent tools and accounts">
@@ -193,6 +194,42 @@ function PstackRow() {
           checked={settings.pstackEnabled}
           onCheckedChange={(checked) => updateSettings({ pstackEnabled: Boolean(checked) })}
           aria-label="pstack"
+        />
+      }
+    />
+  );
+}
+
+function GroupConversationsRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["groupConversationsEnabled"]}
+      {...searchableSetting("group-conversations")}
+      description="Invite models from any provider into one thread. Talk to all of them or one with @, and let them answer each other. Off stops new invites; a running group keeps its End and Remove controls."
+      resetAction={
+        settings.groupConversationsEnabled !==
+        DEFAULT_UNIFIED_SETTINGS.groupConversationsEnabled ? (
+          <SettingResetButton
+            label="group conversations"
+            onClick={() =>
+              updateSettings({
+                groupConversationsEnabled: DEFAULT_UNIFIED_SETTINGS.groupConversationsEnabled,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <ScopedSwitch
+          settingKeys={["groupConversationsEnabled"]}
+          checked={settings.groupConversationsEnabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ groupConversationsEnabled: Boolean(checked) })
+          }
+          aria-label="Group conversations"
         />
       }
     />

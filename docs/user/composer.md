@@ -124,6 +124,28 @@ returns to the remembered selection.
 
 Leaving reasoning level or service tier unset uses the provider's own configuration.
 
+## Group conversations
+
+Invite models from different providers into one thread to discuss a task together.
+Enable **Group conversations** in **Settings → Labs → Zack** for the environment,
+then choose **Invite a model** in an existing thread and pick a model. You can also
+use `/invite`, or **Invite a model** in the command palette.
+
+Messages reach everyone by default. Type `@` and choose a group member to address
+that model. Each message can start at most eight model turns, including follow-up
+replies. In a larger group, address up to eight members at a time.
+Members can answer each other, and they share the workspace and can
+edit its files under the thread's existing permissions. Open a member's **Work**
+view to see its tools, answer its questions, or approve its requests.
+
+**Stop** pauses the discussion and stops all members. A member's own Stop control
+stops only that model. Rewind waits until the discussion stops. If a member has
+unanswered replies, send another message to continue.
+
+Choose **End group** to continue with the thread's own model and the shared
+conversation as context. Turning off the setting prevents new invitations;
+existing groups still let you remove members or end the group.
+
 ## Project memory
 
 Open **Project memory** from the thread details, the command palette, or
@@ -345,7 +367,9 @@ folder from `~/.claude/skills`, `~/.codex/skills`, and Antigravity's user skill 
 into `~/.agents/skills` and links it back, and links every skill there into Claude's
 and Antigravity's skill folders. Codex,
 Cursor, OpenCode, and other agents that read `~/.agents/skills` see the same set. Claude's
-account-synced skills and Codex's bundled skills stay where they are.
+account-synced skills and Codex's bundled skills stay where they are. Configured Claude and
+Codex homes participate too. Claude accounts with **Use your Claude profile** turned off keep
+their private skills.
 
 A skill found in two places with identical contents is kept once. When the contents
 differ, nothing is moved for that skill and the setting lists both paths; delete or
@@ -354,8 +378,9 @@ only in case, and for a skill folder that links to a file outside itself, since 
 would break the link. A skill you add to `~/.agents/skills` by hand
 reaches Claude at the next refresh, server start, or new account.
 
-Turning it off copies each linked skill back into Claude's and Antigravity's folders and
-removes the links. Codex keeps reading `~/.agents/skills` directly. Each environment has
+At the next refresh, T3 restores library links in configured homes that are no longer shared.
+Homes still used by another account or the default profile stay shared. Turning the library off copies each linked skill back into
+Claude's and Antigravity's folders and removes the links, including previously used homes. Codex keeps reading `~/.agents/skills` directly. Each environment has
 its own library, so turn it on for every machine you want it on.
 
 Provider commands must start the message to run. T3 Code commands such as

@@ -6,6 +6,7 @@ import {
   OrchestrationSearchThreadsResult,
   OrchestrationThreadSearchMatch,
   OrchestrationV2ThreadForkSourcePoint,
+  OrchestrationV2ThreadGroup,
   OrchestrationV2ContextTransfer,
   TrimmedNonEmptyString,
   ModelSelection,
@@ -27,6 +28,7 @@ import { Tool, Toolkit } from "effect/ai";
 
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
+import * as ThreadGroupService from "../../../orchestration-v2/ThreadGroupService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
@@ -163,6 +165,23 @@ const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   success: Schema.Union([threadConfiguration, OrchestrationV2DispatchCommandResult]),
 }).annotate(Tool.Destructive, true);
 
+const ThreadGroupTool = Tool.make("t3_thread_group", {
+  ...commandTool,
+  description:
+    "Bring models from any provider into a visible thread as peers who talk to the user and each other, for a shared discussion. To hand off work, use `delegate_task`. Omit `threadId` for this thread. status: read the group. invite: seat `modelSelection`, with values from `orchestrator_capabilities`; fails while group conversations are off in Settings. remove: the seat `handle`. discuss: say `message` to everyone, or only to the `to` handles. end: the thread's own model continues with the full discussion in context.",
+  parameters: Schema.Struct({
+    action: Schema.Literals(["status", "invite", "remove", "discuss", "end"]),
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    threadId: Schema.optional(ThreadId),
+    modelSelection: Schema.optional(ModelSelection),
+    handle: Schema.optional(TrimmedNonEmptyString),
+    message: Schema.optional(Schema.String.check(Schema.isMaxLength(100000))),
+    to: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  }),
+  success: Schema.NullOr(OrchestrationV2ThreadGroup),
+  dependencies: [...commandTool.dependencies, ThreadGroupService.ThreadGroupService],
+}).annotate(Tool.Destructive, true);
+
 const ThreadTransferTool = Tool.make("t3_thread_transfer", {
   ...commandTool,
   description:
@@ -238,6 +257,7 @@ export const ThreadToolkit = Toolkit.make(
   ScheduledTaskRunTool,
   ThreadSearchTool,
   ThreadConfigureTool,
+  ThreadGroupTool,
   ThreadTransferTool,
   ThreadOrganizeTool,
   PendingRequestTool,

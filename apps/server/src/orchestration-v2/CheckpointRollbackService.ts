@@ -1,6 +1,7 @@
 import {
   CheckpointId,
   CheckpointScopeId,
+  isOrchestrationV2PublicationRun,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   ProviderThreadId,
@@ -281,14 +282,14 @@ export const layer: Layer.Layer<
           (turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId)),
       );
 
-      const snapshot =
-        runsToRollback.length === 0
-          ? { providerThread }
-          : yield* session.rollbackThread({
-              providerThread,
-              target: rollbackTarget,
-              providerThreadTurns,
-            });
+      // Publication runs never reached the provider, so they leave it nothing to undo.
+      const snapshot = runsToRollback.every(isOrchestrationV2PublicationRun)
+        ? { providerThread }
+        : yield* session.rollbackThread({
+            providerThread,
+            target: rollbackTarget,
+            providerThreadTurns,
+          });
       if (input.restoreFiles !== false) yield* checkpoints.restore({ scope, checkpoint });
       if (staleCheckpoints.length > 0) {
         yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpoints });

@@ -201,6 +201,13 @@ const make = Effect.gen(function* () {
     }>`SELECT generation, reset_at FROM model_evaluation_resets WHERE project_id = ${projectId}`;
     return rows[0] ?? { generation: 0, reset_at: "" };
   });
+  // A canonical user request can precede its run and keep a null run_id.
+  const discardedRequest = sql`message.run_id IS NULL AND message.role = 'user' AND EXISTS (
+    SELECT 1 FROM orchestration_v2_projection_runs AS owner
+    WHERE owner.thread_id = message.thread_id AND owner.status IN ('rolled_back', 'cancelled')
+      AND (owner.status = 'rolled_back' OR json_extract(owner.payload_json, '$.startedAt') IS NULL)
+      AND json_extract(owner.payload_json, '$.userMessageId') = message.message_id
+  )`;
   const loadSource = Effect.fn("ModelEvaluations.loadSource")(function* (
     threadId: ThreadId,
     runId: RunId,
@@ -235,6 +242,7 @@ const make = Effect.gen(function* () {
         AND message.role IN ('user', 'assistant') AND message.streaming = 0
         AND (source_run.status IS NULL OR source_run.status <> 'rolled_back')
         AND NOT (source_run.status IS 'cancelled' AND json_extract(source_run.payload_json, '$.startedAt') IS NULL)
+        AND NOT (${discardedRequest})
       ORDER BY message.created_at DESC, message.message_id DESC LIMIT 8
     `;
     const context =
@@ -307,6 +315,7 @@ const make = Effect.gen(function* () {
           WHERE message.message_id IS NULL OR message.thread_id <> evaluation.thread_id
             OR source_run.status = 'rolled_back'
             OR (source_run.status = 'cancelled' AND json_extract(source_run.payload_json, '$.startedAt') IS NULL)
+            OR (${discardedRequest})
         )
       ORDER BY evaluation.evaluated_at DESC, evaluation.run_id DESC LIMIT ${WINDOW_LIMIT}
     `;

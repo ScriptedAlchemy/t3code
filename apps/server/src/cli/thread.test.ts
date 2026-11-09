@@ -20,6 +20,7 @@ import {
   persistServerRuntimeState,
 } from "../serverRuntimeState.ts";
 import {
+  messageHeading,
   readLatestMessages,
   threadCommand,
   type ThreadTools,
@@ -232,6 +233,13 @@ const timelineTools = (types: ReadonlyArray<string>) => {
       .map((item) => item.itemId);
   return { tools: { call } satisfies ThreadTools, served, latest };
 };
+
+it("show names who said a peer's reply", () => {
+  const speaker = { label: "Astra", model: "gpt-6-astra" };
+  assert.strictEqual(messageHeading({ role: "assistant", speaker }), "Astra (gpt-6-astra)");
+  assert.strictEqual(messageHeading({ role: "assistant" }), "assistant");
+  assert.strictEqual(messageHeading({ role: "user" }), "user");
+});
 
 const tail = (tools: number) => [...Array<string>(tools).fill("tool_call"), "assistant_message"];
 

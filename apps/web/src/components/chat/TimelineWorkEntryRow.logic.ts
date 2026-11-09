@@ -162,6 +162,8 @@ export function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconNa
         return "zap";
       case "system":
         return "t3-code";
+      case "group":
+        return "bot";
       default:
         source satisfies never;
         return "zap";

@@ -671,7 +671,7 @@ function ThreadRouteContent(
     if (
       !selectedThread ||
       !readEnvironmentScope(selectedThread.environmentId, AuthOrchestrationOperateScope) ||
-      composer.interruptibleRunId === null
+      (composer.interruptibleRunId === null && !selectedThread.groupDiscussionOpen)
     ) {
       return;
     }
@@ -679,7 +679,9 @@ function ThreadRouteContent(
       environmentId: selectedThread.environmentId,
       input: {
         threadId: selectedThread.id,
-        runId: composer.interruptibleRunId,
+        ...(selectedThread.groupDiscussionOpen || composer.interruptibleRunId === null
+          ? {}
+          : { runId: composer.interruptibleRunId }),
       },
     });
   };
@@ -1061,7 +1063,11 @@ function ThreadRouteContent(
           threadSyncStatus={selectedThreadDetailState.status}
           historyControls={historyControls}
           activeThreadBusy={composer.activeThreadBusy}
-          canStopThread={awaitingBootstrapTurn || composer.interruptibleRunId !== null}
+          canStopThread={
+            awaitingBootstrapTurn ||
+            composer.interruptibleRunId !== null ||
+            selectedThread.groupDiscussionOpen === true
+          }
           queuedRunEdit={composer.queuedRunEdit}
           composerDraftKey={composer.composerDraftKey}
           followUpBehavior={composer.followUpBehavior}

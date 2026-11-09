@@ -438,6 +438,19 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
 
             {props.page === "zack" ? (
               <>
+                <SettingsSection title="Group conversations">
+                  <SettingsSwitchRow
+                    icon="person.2"
+                    label="Group conversations"
+                    subtitle={managedSubtitle(
+                      "groupConversationsEnabled",
+                      "Invite models into one thread. Everyone can edit the shared workspace.",
+                    )}
+                    value={uniform("groupConversationsEnabled")}
+                    disabled={disabledFor("groupConversationsEnabled")}
+                    onValueChange={(value) => write({ groupConversationsEnabled: value })}
+                  />
+                </SettingsSection>
                 <SettingsSection title="Project memory">
                   <SettingsSwitchRow
                     icon="brain"

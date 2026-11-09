@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { isListedThreadLineage, type EnvironmentId } from "@t3tools/contracts";
 import { useMemo, useSyncExternalStore } from "react";
 
 import { offlineEnvironmentIdsAtom } from "../../state/presentation";
@@ -71,17 +71,53 @@ export function useThreadListV2(input: {
 }) {
   const { workingShelfEnabled } = input;
   const offlineEnvironmentIds = useAtomValue(offlineEnvironmentIdsAtom);
-  const hiddenEnvironmentIds = useMemo(
-    () => new Set(input.hideOfflineEnvironments ? offlineEnvironmentIds : []),
-    [input.hideOfflineEnvironments, offlineEnvironmentIds],
-  );
-  const threads = useMemo(
-    () =>
-      hiddenEnvironmentIds.size === 0
-        ? input.threads
-        : input.threads.filter((thread) => !hiddenEnvironmentIds.has(thread.environmentId)),
-    [input.threads, hiddenEnvironmentIds],
-  );
+  // An explicitly selected environment, or one whose project is explicitly
+  // scoped to, stays listed even when it counts as offline; hiding it would
+  // leave its own filter with nothing to open.
+  const hiddenEnvironmentIds = useMemo(() => {
+    if (!input.hideOfflineEnvironments) return new Set<EnvironmentId>();
+    const scopedEnvironmentIds = new Set(input.projectRefs?.map((ref) => ref.environmentId));
+    return new Set(
+      offlineEnvironmentIds.filter(
+        (id) => id !== input.environmentId && !scopedEnvironmentIds.has(id),
+      ),
+    );
+  }, [
+    input.hideOfflineEnvironments,
+    offlineEnvironmentIds,
+    input.environmentId,
+    input.projectRefs,
+  ]);
+  const threads = useMemo(() => {
+    const visible = input.threads.filter(
+      (thread) =>
+        thread.archivedAt === null &&
+        isListedThreadLineage(thread.lineage) &&
+        !hiddenEnvironmentIds.has(thread.environmentId),
+    );
+    const projectKeys =
+      input.projectRefs === null || input.projectRefs === undefined
+        ? null
+        : new Set(input.projectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`));
+    const parentKeys = new Set(
+      visible
+        .filter(
+          (thread) =>
+            (input.environmentId === null || thread.environmentId === input.environmentId) &&
+            (projectKeys === null ||
+              projectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
+        )
+        .map((thread) => `${thread.environmentId}:${thread.id}`),
+    );
+    return visible.filter((thread) => {
+      const parent = thread.delegatedFrom;
+      return (
+        parent === null ||
+        parent === undefined ||
+        !parentKeys.has(`${parent.environmentId}:${parent.threadId}`)
+      );
+    });
+  }, [input.threads, input.environmentId, input.projectRefs, hiddenEnvironmentIds]);
   const layoutTime = useMemo(
     () => threadListV2LayoutTime({ threads, now: input.now, searchQuery: input.searchQuery }),
     [threads, input.now, input.searchQuery],

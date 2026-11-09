@@ -4317,6 +4317,8 @@ describe("OrchestratorMcpService thread lookup", () => {
   const bareId = ThreadId.make("5d0b4a3e-8c1f-4a52-9d37-2f6c7e1b9a04");
   const launched = liveThreadShell(ThreadId.make(`mcp:${bareId}`));
   const deletedLaunched = { ...launched, deletedAt: DateTime.makeUnsafe("2026-10-05T00:00:00Z") };
+  const owner = liveThreadShell(ThreadId.make("thread:native-session-owner"));
+  const deletedOwner = { ...owner, deletedAt: DateTime.makeUnsafe("2026-10-05T00:00:00Z") };
   const client: McpInvocationScope = {
     environmentId: EnvironmentId.make("environment:thread-lookup"),
     requestNamespace: "client:thread-lookup",
@@ -4338,6 +4340,7 @@ describe("OrchestratorMcpService thread lookup", () => {
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadShell: (threadId) =>
               Effect.succeed(shells.find((shell) => shell.id === threadId) ?? null),
+            findThreadIdByNativeThreadId: () => Effect.succeed(owner.id),
             sendToThread: () => Ref.update(sent, (count) => count + 1).pipe(Effect.as({} as never)),
             ...overrides,
           }),
@@ -4375,6 +4378,24 @@ describe("OrchestratorMcpService thread lookup", () => {
         assert.include(error.message, `mcp:${bareId}`);
       }
       assert.equal(sends, 0);
+    }),
+  );
+
+  it.effect("points a provider's native session id at the thread it belongs to", () =>
+    Effect.gen(function* () {
+      const { read, send, wait, sends } = yield* failuresFor([owner]);
+      for (const error of [read, send, wait]) {
+        assert.equal(error.code, "thread_not_found");
+        assert.include(error.message, owner.id);
+      }
+      assert.equal(sends, 0);
+    }),
+  );
+
+  it.effect("does not name a deleted thread behind a native session id", () =>
+    Effect.gen(function* () {
+      const { send } = yield* failuresFor([deletedOwner]);
+      assert.equal(send.message, `Thread ${bareId} was not found.`);
     }),
   );
 

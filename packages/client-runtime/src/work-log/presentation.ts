@@ -182,7 +182,8 @@ function resolveT3McpToolPresentation(
           : status === "declined"
             ? `Declined to ${action.toLowerCase()}`
             : status === "stopped"
-              ? `Stopped ${running.toLowerCase()}`
+              ? // Moving a thread ends its provider session, often before the call can report success.
+                `${definition.summaryAction === "worktree-handoff" ? "Started" : "Stopped"} ${running.toLowerCase()}`
               : running;
 
   const actionKind =
@@ -531,6 +532,7 @@ function summaryActionPriority(action: ToolGroupAction | T3McpToolSummaryAction)
     case "thread-fork":
     case "thread-merge":
     case "thread-organize":
+    case "thread-group":
     case "thread-update":
     case "queue-edit":
     case "queue-cancel":

@@ -562,40 +562,47 @@ it.effect(
     }).pipe(Effect.provide(makeLayer((request) => Effect.succeed(verdict(request.packet))))),
 );
 
-it.effect("excludes a follow-up evaluation after its cited context is rolled back", () =>
-  Effect.gen(function* () {
-    const seeded = yield* seed();
-    const followup = RunId.make("followup-run");
-    yield* seed({
-      existingThread: seeded.thread,
-      run: followup,
-      requestedAt: DateTime.add(at, { seconds: 10 }),
-    });
-    const service = yield* ModelEvaluations.ModelEvaluations;
-    yield* service.evaluateRun({ ...input, runId: followup });
-    assert.equal((yield* service.list(scope)).records.length, 1);
-    yield* persist({
-      id: EventId.make("rollback-prior-context"),
-      type: "run.updated",
-      threadId,
-      runId,
-      occurredAt: at,
-      payload: { ...seeded.run, status: "rolled_back" },
-    });
-    assert.deepEqual((yield* service.list(scope)).records, []);
-  }).pipe(
-    Effect.provide(
-      makeLayer((request) => {
-        assert.equal(request.packet.context.length, 2);
-        return Effect.succeed(verdict(request.packet));
-      }),
+it.effect.each([false, true])(
+  "excludes a follow-up evaluation after its cited context is rolled back (missing reply: %s)",
+  (missingReply) =>
+    Effect.gen(function* () {
+      const seeded = yield* seed({ missingReply });
+      const followup = RunId.make("followup-run");
+      yield* seed({
+        existingThread: seeded.thread,
+        run: followup,
+        requestedAt: DateTime.add(at, { seconds: 10 }),
+      });
+      const service = yield* ModelEvaluations.ModelEvaluations;
+      yield* service.evaluateRun({ ...input, runId: followup });
+      assert.equal((yield* service.list(scope)).records.length, 1);
+      yield* persist({
+        id: EventId.make("rollback-prior-context"),
+        type: "run.updated",
+        threadId,
+        runId,
+        occurredAt: at,
+        payload: { ...seeded.run, status: "rolled_back" },
+      });
+      assert.deepEqual((yield* service.list(scope)).records, []);
+    }).pipe(
+      Effect.provide(
+        makeLayer((request) => {
+          assert.equal(request.packet.context.length, missingReply ? 1 : 2);
+          return Effect.succeed(verdict(request.packet));
+        }),
+      ),
     ),
-  ),
 );
 
-it.effect.each([false, true])(
-  "includes cancelled context only when the run started (%s)",
-  (started) =>
+it.effect.each([
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+] as const)(
+  "includes cancelled context only when the run started (started: %s, linked request: %s)",
+  (started, linkedRequest) =>
     Effect.gen(function* () {
       const seeded = yield* seed({ missingReply: true });
       yield* persist({
@@ -604,7 +611,11 @@ it.effect.each([false, true])(
         threadId,
         runId,
         occurredAt: at,
-        payload: { ...seeded.messages[0]!, runId, text: "Discard this queued request." },
+        payload: {
+          ...seeded.messages[0]!,
+          runId: linkedRequest ? runId : null,
+          text: "Discard this queued request.",
+        },
       });
       yield* persist({
         id: EventId.make("cancelled-queued-run"),

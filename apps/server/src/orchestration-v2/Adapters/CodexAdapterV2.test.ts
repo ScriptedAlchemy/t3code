@@ -1346,6 +1346,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         beforeEmitInbound === undefined ? {} : { beforeEmitInbound },
       );
       const clientFactory: CodexAdapterV2.CodexAppServerClientFactoryShape = {
+        threadReleases: yield* CodexAdapterV2.makeCodexThreadReleases,
         open: (openInput) =>
           Layer.build(CodexReplay.layerReplayWithDriver(driver)).pipe(
             Effect.mapError(
@@ -3945,6 +3946,118 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             ),
           );
         }
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("does not retry an external writer because of an old completed release", () =>
+    Effect.gen(function* () {
+      const releases = yield* CodexAdapterV2.makeCodexThreadReleases;
+      yield* releases.begin("old-thread");
+      yield* releases.begin("pending-thread");
+      yield* releases.finish("old-thread");
+      yield* TestClock.adjust("91 seconds");
+      assert.equal(yield* releases.awaitRelease("old-thread"), false);
+      yield* releases.begin("recent-thread");
+      yield* releases.finish("recent-thread");
+      assert.equal(yield* releases.awaitRelease("recent-thread"), true);
+      assert.equal(yield* releases.awaitRelease("recent-thread"), false);
+      const cancelledWait = yield* releases
+        .awaitRelease("pending-thread")
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Fiber.interrupt(cancelledWait);
+      yield* releases.finish("pending-thread");
+      assert.equal(yield* releases.awaitRelease("pending-thread"), true);
+    }),
+  );
+
+  it.effect("resumes a thread once this server's unsubscribed copy closes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativeThreadId = "thread-switching-accounts";
+        const resume = (id: number): CodexReplay.CodexAppServerReplayEntry => ({
+          type: "expect_outbound",
+          label: `thread/resume ${id}`,
+          frame: {
+            id,
+            method: "thread/resume",
+            params: {
+              threadId: nativeThreadId,
+              modelProvider: "openai",
+              excludeTurns: true,
+              cwd: CODEX_TEST_RUNTIME_POLICY.cwd,
+              model: CODEX_TEST_MODEL_SELECTION.model,
+              config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+            },
+          },
+        });
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "codex-resume-after-release",
+            entries: [
+              ...codexReplayPreamble({
+                nativeThreadId,
+                nativeTurnId: "unused-turn",
+                prompt: "unused-prompt",
+              }).slice(0, 5),
+              {
+                type: "expect_outbound",
+                label: "unsubscribe",
+                frame: {
+                  id: 3,
+                  method: "thread/unsubscribe",
+                  params: { threadId: nativeThreadId },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "unsubscribed",
+                frame: { id: 3, result: { status: "unsubscribed" } },
+              },
+              resume(4),
+              {
+                type: "emit_inbound",
+                label: "active writer",
+                frame: {
+                  id: 4,
+                  error: {
+                    code: -32600,
+                    message: `thread ${nativeThreadId} already has an active writer`,
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "closed",
+                frame: { method: "thread/closed", params: { threadId: nativeThreadId } },
+              },
+              resume(5),
+              {
+                type: "emit_inbound",
+                label: "resumed",
+                frame: { id: 5, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+              },
+            ],
+          }),
+        );
+
+        yield* harness.runtime.unloadThread!({ providerThread: harness.providerThread });
+        const resumed = yield* harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        });
+
+        assert.equal(resumed.nativeThreadRef?.nativeId, nativeThreadId);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(

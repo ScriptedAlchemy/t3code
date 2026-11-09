@@ -53,6 +53,19 @@ describe("modelSwitchSince", () => {
     ).toEqual({ modelSwitch: { from: selection("b"), to: selection("a") } });
   });
 
+  it("measures from the thread's own model when a peer spoke last", () => {
+    const peer = {
+      ...run("to peers", 2, "peer-model"),
+      publication: { type: "user_to_peers", seatThreadIds: [] },
+    } as OrchestrationV2ThreadProjection["runs"][number];
+    expect(
+      modelSwitchSince(
+        { runs: [run("first", 1, "a"), peer], turnItems: shown("first", "to peers") },
+        selection("a"),
+      ),
+    ).toEqual({});
+  });
+
   it("skips messages clients hide", () => {
     const [first, pending, compact, answer] = shown(
       "first",

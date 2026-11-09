@@ -366,6 +366,22 @@ describe("V2 session presentation", () => {
       ).toEqual({ "user-1": 0, "user-3": 2 });
     });
 
+    it("rewinds the next turn past a publication run, which never has a checkpoint", () => {
+      const peer = runId(2);
+      const timelineEntries = [...turn(1), ...turn(2), ...turn(3)];
+      const available = (publicationRunIds?: ReadonlySet<RunId>) =>
+        Object.fromEntries(
+          deriveRevertTurnCountByUserMessageId({
+            timelineEntries,
+            checkpoints: [checkpoint(1), checkpoint(3)],
+            threadStartCheckpointReady: true,
+            publicationRunIds,
+          }),
+        );
+      expect(available()).toEqual({ "user-1": 0, "user-2": 1 });
+      expect(available(new Set([peer]))).toEqual({ "user-1": 0, "user-2": 1, "user-3": 1 });
+    });
+
     it("hides edit when the predecessor is unavailable or the run is unsettled", () => {
       expect(targets([1, 2], [checkpoint(2)])).toEqual({ "user-1": 0 });
       expect(targets([1, 2], [checkpoint(1, "stale"), checkpoint(2)])).toEqual({ "user-1": 0 });

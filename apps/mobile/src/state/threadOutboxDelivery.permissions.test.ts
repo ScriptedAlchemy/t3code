@@ -328,7 +328,7 @@ afterEach(() => {
 
 describe("queued task operation access", () => {
   it("parks a connected read-only target, then delivers its unchanged queue after a grant", async () => {
-    const queued = message();
+    const queued = message({ groupAudience: [ThreadId.make("seat")] });
     await state.manager.enqueue(queued);
     startDelivery();
     expect(state.start).not.toHaveBeenCalled();
@@ -337,6 +337,11 @@ describe("queued task operation access", () => {
     setOperateGrant("secondary", true);
     await runDrain();
     expect(state.start).toHaveBeenCalledOnce();
+    expect(state.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({ groupAudience: queued.groupAudience }),
+      }),
+    );
     expect(remaining()).toEqual([]);
   });
 
