@@ -318,10 +318,7 @@ const make = Effect.gen(function* () {
   const ensure = Effect.fn("InferenceProxy.start")(function* (state: Saved) {
     if (!state.enabled)
       return yield* failure("Enable inference hosting on this environment first.");
-    if (running && (yield* running.child.isRunning)) {
-      yield* startProxyAccountWatch;
-      return running;
-    }
+    if (running && (yield* running.child.isRunning)) return running;
     yield* stop;
     yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
     const executable = yield* install(directory, state.release).pipe(
@@ -369,7 +366,6 @@ const make = Effect.gen(function* () {
       );
       running = { child, scope, key, management, baseUrl };
       yield* Queue.offer(children, child);
-      yield* startProxyAccountWatch;
       return running;
     }).pipe(
       Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, Exit.void) : Effect.void)),
@@ -665,7 +661,9 @@ const make = Effect.gen(function* () {
         .withPermit(
           Effect.gen(function* () {
             const state = yield* read;
-            return state.enabled ? (yield* syncLocalAuth(yield* ensure(state))).changed : false;
+            return state.enabled
+              ? (yield* syncLocalAuth(yield* ensureWatched(state))).changed
+              : false;
           }),
         )
         .pipe(
@@ -701,7 +699,9 @@ const make = Effect.gen(function* () {
           .withPermit(
             Effect.gen(function* () {
               const state = yield* read;
-              return state.enabled ? (yield* syncLocalAuth(yield* ensure(state))).changed : false;
+              return state.enabled
+                ? (yield* syncLocalAuth(yield* ensureWatched(state))).changed
+                : false;
             }),
           )
           .pipe(
@@ -731,7 +731,8 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const startProxyAccountWatch = Effect.gen(function* () {
+  // Annotated: the watcher refreshes routes, which start the proxy, which starts this watcher.
+  const startProxyAccountWatch: Effect.Effect<void> = Effect.gen(function* () {
     if (proxyAccountWatch) return;
     proxyAccountWatch = yield* watchProxyCodexAuth.pipe(
       Effect.ignoreCause({ log: true }),
@@ -743,6 +744,10 @@ const make = Effect.gen(function* () {
       Effect.forkIn(serviceScope),
     );
   });
+
+  // The watcher writes rotated tokens back to the CLI, so it runs whenever the proxy does.
+  const ensureWatched = (state: Saved) =>
+    ensure(state).pipe(Effect.tap(() => startProxyAccountWatch));
 
   const stopProxyAccountWatch = Effect.gen(function* () {
     if (!proxyAccountWatch) return;
@@ -760,7 +765,7 @@ const make = Effect.gen(function* () {
       .withPermit(
         Effect.gen(function* () {
           const state = yield* read;
-          if (state.enabled && (!running || running.child === child)) yield* ensure(state);
+          if (state.enabled && (!running || running.child === child)) yield* ensureWatched(state);
         }),
       )
       .pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("1 second") }));
@@ -793,7 +798,7 @@ const make = Effect.gen(function* () {
         };
         if (!state.enabled) return { ...summary, running: false, accounts: [], problem: null };
         return yield* Effect.gen(function* () {
-          const runtime = yield* ensure(state);
+          const runtime = yield* ensureWatched(state);
           const sync = yield* syncLocalAuth(runtime);
           const { files } = yield* jsonRequest(
             runtime.baseUrl + "/v0/management/auth-files",
@@ -877,9 +882,9 @@ const make = Effect.gen(function* () {
         const next = { ...before, release: { version: release.version } };
         yield* Effect.uninterruptibleMask((restore) =>
           stop.pipe(
-            Effect.andThen(restore(ensure(next))),
+            Effect.andThen(restore(ensureWatched(next))),
             Effect.andThen(save(next)),
-            Effect.onError(() => stop.pipe(Effect.andThen(ensure(before)), Effect.ignore)),
+            Effect.onError(() => stop.pipe(Effect.andThen(ensureWatched(before)), Effect.ignore)),
           ),
         );
       }),
@@ -927,7 +932,7 @@ const make = Effect.gen(function* () {
           grants: input.sharing ? state.grants : [],
         };
         yield* Effect.uninterruptibleMask((restore) =>
-          restore(ensure(next)).pipe(
+          restore(ensureWatched(next)).pipe(
             Effect.andThen(save(next)),
             Effect.onError(() => (state.enabled ? Effect.void : stop)),
           ),
@@ -944,7 +949,7 @@ const make = Effect.gen(function* () {
           sessionAffinity: input.sessionAffinity ?? routing.sessionAffinity,
         },
       };
-      const runtime = yield* ensure(state);
+      const runtime = yield* ensureWatched(state);
       yield* writeConfig(next, runtime.key, runtime.management).pipe(
         Effect.andThen(
           save(next).pipe(
@@ -980,7 +985,7 @@ const make = Effect.gen(function* () {
       });
       return {};
     }
-    const runtime = yield* ensure(state);
+    const runtime = yield* ensureWatched(state);
     const base = runtime.baseUrl + "/v0/management/";
     const admin = runtime.management;
     switch (input.operation) {
@@ -1079,7 +1084,7 @@ const make = Effect.gen(function* () {
   const grant = Effect.fn("InferenceProxy.grant")(
     function* (consumer: InferenceConsumer) {
       const state = yield* read;
-      const runtime = yield* ensure(state);
+      const runtime = yield* ensureWatched(state);
       const hostId = yield* environment.getEnvironmentId;
       const identity = { hostId, consumerId: consumer.environmentId };
       if (hostId === consumer.environmentId)
@@ -1178,7 +1183,7 @@ const make = Effect.gen(function* () {
             !state.grants.some((g) => g.key === key)
           )
             return null;
-          const runtime = yield* ensure(state);
+          const runtime = yield* ensureWatched(state);
           // The watchers carry token rotation; this only covers one that stopped.
           const now = yield* Clock.currentTimeMillis;
           if (now - lastRequestSync >= REQUEST_SYNC_INTERVAL_MS) {
@@ -1314,7 +1319,7 @@ const make = Effect.gen(function* () {
   yield* read.pipe(
     Effect.flatMap((state) =>
       state.enabled
-        ? ensure(state).pipe(Effect.flatMap((runtime) => syncLocalAuth(runtime)))
+        ? ensureWatched(state).pipe(Effect.flatMap((runtime) => syncLocalAuth(runtime)))
         : Effect.void,
     ),
     mutex.withPermit,
