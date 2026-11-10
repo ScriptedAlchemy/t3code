@@ -52,6 +52,7 @@ import { DirectEndpoints } from "../environment/DirectEndpoints.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import { claudeKeychainEntry } from "./claudeKeychain.ts";
 import { install, proxyVersion, resolveRelease, Release } from "./install.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import { validateRouteUrl } from "./routes.ts";
@@ -459,11 +460,10 @@ const make = Effect.gen(function* () {
       if ((yield* HostProcess.Platform) === "darwin" && !env.CLAUDE_CONFIG_DIR?.trim()) {
         const username = yield* HostProcess.Username;
         if (!username) return false;
-        const keyring = yield* Effect.tryPromise({
-          try: () => import("@napi-rs/keyring"),
+        const entry = yield* Effect.try({
+          try: () => claudeKeychainEntry(username),
           catch: safeFailure("Could not access Claude credentials in macOS Keychain."),
         });
-        const entry = new keyring.AsyncEntry("Claude Code-credentials", username);
         const secret = yield* Effect.tryPromise({
           try: async () => {
             try {

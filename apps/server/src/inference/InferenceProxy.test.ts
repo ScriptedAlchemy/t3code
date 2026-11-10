@@ -34,15 +34,16 @@ import * as InferenceProxy from "./InferenceProxy.ts";
 import { proxyVersion } from "./install.ts";
 
 const keychainState = vi.hoisted(() => ({ password: "" }));
-vi.mock("@napi-rs/keyring", () => ({
-  AsyncEntry: class {
-    async getPassword() {
-      return keychainState.password || undefined;
-    }
-    async setPassword(password: string) {
-      keychainState.password = password;
-    }
-  },
+vi.mock("./claudeKeychain.ts", () => ({
+  claudeKeychainEntry: () =>
+    new (class {
+      async getPassword() {
+        return keychainState.password || undefined;
+      }
+      async setPassword(password: string) {
+        keychainState.password = password;
+      }
+    })(),
 }));
 
 it.effect(
