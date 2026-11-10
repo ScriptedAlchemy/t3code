@@ -1621,7 +1621,7 @@ it.effect("rolls up summaries written before migration 094 in conversation order
     // Before 094 the column held only the first source's time, which four leaves of one long
     // message share.
     yield* sql`ALTER TABLE conversation_summaries RENAME COLUMN position TO first_source_at`;
-    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 94`;
+    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= 94`;
     for (let index = 0; index < 4; index++) {
       const sources = Array.from({ length: 5 }, (_, part) => ({
         kind: "message" as const,
