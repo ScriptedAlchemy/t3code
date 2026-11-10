@@ -138,6 +138,9 @@ import {
   resolveSelectedProviderEnvironmentId,
 } from "./ProviderSettingsPanel.logic";
 
+const formatList = (names: ReadonlyArray<string>) =>
+  new Intl.ListFormat("en", { type: "conjunction" }).format(names);
+
 function providerInstanceName(instance: ProviderInstanceConfig): string {
   return (
     instance.displayName?.trim() ||
@@ -725,14 +728,20 @@ export function EnvironmentProviderSettings({
     ProviderDriverKind,
     Array<[ProviderInstanceId, ProviderInstanceConfig]>
   >();
+  const proxyHiddenNamesByDriver = new Map<ProviderDriverKind, Array<string>>();
   for (const [rawId, instance] of Object.entries(settings.providerInstances ?? {})) {
     const driver = instance.driver;
     if (
       rawId !== defaultInstanceIdForDriver(driver) &&
       inferenceAccountHostId(settings.providerInstances, driver, environmentId) &&
       !isCustomInferenceBackend(instance)
-    )
+    ) {
+      proxyHiddenNamesByDriver.set(driver, [
+        ...(proxyHiddenNamesByDriver.get(driver) ?? []),
+        providerInstanceName(instance),
+      ]);
       continue;
+    }
     const list = instancesByDriver.get(driver) ?? [];
     list.push([rawId as ProviderInstanceId, instance]);
     instancesByDriver.set(driver, list);
@@ -961,6 +970,9 @@ export function EnvironmentProviderSettings({
         driver={row.driver}
         explicitInstance={row.explicitInstance}
         isDefault={row.isDefault}
+        proxyHiddenNames={
+          (row.isDefault ? proxyHiddenNamesByDriver.get(row.driver) : undefined) ?? NO_MODELS
+        }
         isDirty={row.isDirty === true}
         mode={mode}
         selected={mode === "list" && selectedRow?.instanceId === row.instanceId}
@@ -1264,6 +1276,7 @@ function ProviderInstanceRow({
   driver,
   explicitInstance,
   isDefault,
+  proxyHiddenNames,
   isDirty,
   mode,
   selected,
@@ -1285,6 +1298,7 @@ function ProviderInstanceRow({
   readonly driver: ProviderDriverKind;
   readonly explicitInstance: ProviderInstanceConfig | undefined;
   readonly isDefault: boolean;
+  readonly proxyHiddenNames: ReadonlyArray<string>;
   readonly isDirty: boolean;
   readonly mode: "list" | "editor";
   readonly selected: boolean;
@@ -1355,6 +1369,7 @@ function ProviderInstanceRow({
         environmentId={accountHostId}
         driver={driver === "codex" ? "codex" : "claudeAgent"}
         readOnly={readOnly}
+        hostLabel={providerConfigString(instance.config, "inferenceHostLabel") ?? undefined}
       />
     ) : mode === "editor" && driver === "antigravity" ? (
       <ProviderSetupSection
@@ -1450,7 +1465,15 @@ function ProviderInstanceRow({
           <>
             <SettingsRow
               title="Use CLI proxy"
-              description="Route this provider through an inference host. Your standalone CLI keeps its own settings."
+              description={
+                proxyHiddenNames.length === 0
+                  ? "Route this provider through an inference host. Your standalone CLI keeps its own settings."
+                  : `Routed through an inference host. ${formatList(proxyHiddenNames)} ${
+                      proxyHiddenNames.length === 1 ? "is" : "are"
+                    } hidden while the proxy is on and return${
+                      proxyHiddenNames.length === 1 ? "s" : ""
+                    } when you turn it off.`
+              }
               control={
                 <Switch
                   aria-label="Use CLI proxy"

@@ -344,6 +344,9 @@ describe("EnvironmentProviderSettings routing", () => {
     };
     await screen.rerender(panel({ targetInstanceId: codexId }));
     await expect.element(screen.getByText("Personal", { exact: true })).not.toBeInTheDocument();
+    await expect
+      .element(screen.getByText("Personal is hidden while the proxy is on", { exact: false }))
+      .toBeVisible();
     await expect.element(screen.getByText("Traex", { exact: true })).toBeVisible();
     await userEvent.click(screen.getByRole("switch", { name: "Use CLI proxy" }));
     expect(state.mutateProviderInstance).toHaveBeenLastCalledWith(

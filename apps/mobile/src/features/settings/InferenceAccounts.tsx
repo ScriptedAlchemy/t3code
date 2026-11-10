@@ -274,6 +274,7 @@ function InferenceControls({ environment }: { environment: SettingsTarget }) {
         <ListActionRow
           key={route.instanceId}
           label={`Use native ${route.instanceId === "claudeAgent" ? "Claude" : "Codex"}`}
+          description={`Now: ${route.label}`}
           disabled={disabled}
           onPress={() => void run({ operation: "removeRoute", instanceId: route.instanceId })}
         />

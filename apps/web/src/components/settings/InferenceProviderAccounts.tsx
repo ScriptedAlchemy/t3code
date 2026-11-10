@@ -5,6 +5,7 @@ import {
   type InferenceDriver,
   type InferenceProxyAction,
 } from "@t3tools/contracts";
+import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { serverEnvironment } from "../../state/server";
 import { useEnvironmentQuery } from "../../state/query";
@@ -20,13 +21,15 @@ export function InferenceProviderAccounts({
   environmentId,
   driver,
   readOnly,
+  hostLabel,
 }: {
   readonly environmentId: EnvironmentId;
   readonly driver?: InferenceDriver;
   readonly readOnly?: boolean;
+  readonly hostLabel?: string | undefined;
 }) {
-  const canManage =
-    useAtomValue(inferenceProxy.manageInference.permissionAtom(environmentId)) && !readOnly;
+  const permitted = useAtomValue(inferenceProxy.manageInference.permissionAtom(environmentId));
+  const canManage = permitted && !readOnly;
   const query = useEnvironmentQuery(
     canManage ? inferenceProxy.inferenceStatus({ environmentId, input: {} }) : null,
   );
@@ -61,11 +64,37 @@ export function InferenceProviderAccounts({
       setNotice("Sign-in failed or expired. Start a new sign-in.");
     }
   }
-  if (!canManage)
-    return <SettingsRow title="Provider management access to the inference host is required." />;
+  const hostName = hostLabel || "the inference host";
+  if (!permitted)
+    return (
+      <SettingsRow
+        title={`Connect to ${hostName} to manage its accounts`}
+        description="This client needs a connection to that environment with provider management access."
+        control={
+          <Button size="sm" variant="outline" render={<Link to="/settings/connections" />}>
+            Connections
+          </Button>
+        }
+      />
+    );
+  if (readOnly) return <SettingsRow title="Accounts cannot be changed from this view." />;
   if (!host) return <SettingsRow title={query.error ?? "Loading accounts…"} />;
   if (!host.enabled)
-    return <SettingsRow title="Enable inference hosting on the account host first." />;
+    return (
+      <SettingsRow
+        title={`Inference hosting is off on ${hostName}`}
+        description="Turn hosting on there to add and share accounts."
+        control={
+          <Button
+            size="sm"
+            variant="outline"
+            render={<Link to="/settings/inference" search={{ machine: environmentId }} />}
+          >
+            Inference accounts
+          </Button>
+        }
+      />
+    );
   return (
     <>
       {host.accounts
