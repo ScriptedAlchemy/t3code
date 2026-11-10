@@ -27,6 +27,7 @@ const scheduledTaskThreadModeMigration = [90, "ScheduledTaskThreadMode"] as cons
 const dropProjectLoomIndexesMigration = [91, "DropProjectLoomIndexes"] as const;
 const savedLifecycleMigration = [92, "ProjectKnowledgeSavedLifecycle"] as const;
 const learningQueueMigration = [93, "ProjectKnowledgeLearningQueue"] as const;
+const summaryPositionMigration = [94, "ConversationSummaryPosition"] as const;
 
 it.effect("upgrades attempt receipts atomically and preserves distinct steering messages", () =>
   Effect.gen(function* () {
@@ -55,6 +56,7 @@ it.effect("upgrades attempt receipts atomically and preserves distinct steering 
       dropProjectLoomIndexesMigration,
       savedLifecycleMigration,
       learningQueueMigration,
+      summaryPositionMigration,
     ]);
     assert.deepStrictEqual(yield* sql`SELECT * FROM project_knowledge_deliveries`, before);
     yield* sql`INSERT INTO project_knowledge_deliveries (
@@ -200,6 +202,7 @@ it.effect("rebuilds knowledge facts as saved or forgotten, atomically and in pla
     assert.deepStrictEqual(yield* runMigrations(), [
       savedLifecycleMigration,
       learningQueueMigration,
+      summaryPositionMigration,
     ]);
 
     const cleared = new Set([
@@ -291,6 +294,8 @@ it.effect("rebuilds knowledge facts as saved or forgotten, atomically and in pla
     const savedCommands = yield* commands;
     const savedRuns = yield* sql`SELECT * FROM project_knowledge_assisted_runs`;
     const savedSchema = yield* schema;
+    yield* sql`ALTER TABLE conversation_summaries RENAME COLUMN position TO first_source_at`;
+    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 94`;
     yield* sql`DROP TABLE project_knowledge_learning_queue`;
     yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 93`;
     yield* ProjectLoomTimeIndexes;
@@ -335,6 +340,7 @@ it.effect("rebuilds knowledge facts as saved or forgotten, atomically and in pla
     assert.deepStrictEqual(yield* runMigrations(), [
       dropProjectLoomIndexesMigration,
       learningQueueMigration,
+      summaryPositionMigration,
     ]);
     assert.deepStrictEqual(yield* facts, savedFacts);
     assert.deepStrictEqual(yield* history, savedHistory);
@@ -687,6 +693,7 @@ describe("runMigrations", () => {
             dropProjectLoomIndexesMigration,
             savedLifecycleMigration,
             learningQueueMigration,
+            summaryPositionMigration,
           ],
         );
         yield* assertConsolidatedSchema;
@@ -731,6 +738,7 @@ describe("runMigrations", () => {
           dropProjectLoomIndexesMigration,
           savedLifecycleMigration,
           learningQueueMigration,
+          summaryPositionMigration,
         ],
       );
       assert.deepStrictEqual(yield* runMigrations(), [
@@ -748,6 +756,7 @@ describe("runMigrations", () => {
         dropProjectLoomIndexesMigration,
         savedLifecycleMigration,
         learningQueueMigration,
+        summaryPositionMigration,
       ]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(
@@ -787,6 +796,7 @@ describe("runMigrations", () => {
           dropProjectLoomIndexesMigration,
           savedLifecycleMigration,
           learningQueueMigration,
+          summaryPositionMigration,
         ]);
 
         yield* assertConsolidatedSchema;
@@ -896,6 +906,7 @@ describe("runMigrations", () => {
         dropProjectLoomIndexesMigration,
         savedLifecycleMigration,
         learningQueueMigration,
+        summaryPositionMigration,
       ]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(yield* sql`SELECT secret_name, fenced FROM peer_environment_links`, [
@@ -954,6 +965,7 @@ describe("runMigrations", () => {
           dropProjectLoomIndexesMigration,
           savedLifecycleMigration,
           learningQueueMigration,
+          summaryPositionMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(
@@ -1017,6 +1029,7 @@ describe("runMigrations", () => {
           dropProjectLoomIndexesMigration,
           savedLifecycleMigration,
           learningQueueMigration,
+          summaryPositionMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, routes);

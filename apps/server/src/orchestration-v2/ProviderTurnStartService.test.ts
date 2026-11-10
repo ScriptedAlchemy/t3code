@@ -70,6 +70,7 @@ import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import { ConversationSummaryRuntime } from "../project/conversationSummaries/conversationSummarySchedule.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -3117,4 +3118,96 @@ effectIt.effect.each([
       }
     }).pipe(Effect.provide(Layer.merge(fixture.layer, fixture.settingsLayer)));
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+effectIt.effect("declares no replayed runs to the summary lookup on a provider switch back", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Return to this provider",
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    });
+    const projection = harness.projection();
+    const targetRun = projection.runs.at(-1)!;
+    const sourceRunId = RunId.make("peer-run");
+    const peerThreadId = ProviderThreadId.make("peer-thread");
+    // More history than the handoff budget holds, so delivery asks for summaries.
+    const messages: Array<OrchestrationV2HistoricalMessage> = Array.from(
+      { length: 16 },
+      (_, index) => ({
+        itemId: TurnItemId.make(`peer-item-${index}`),
+        role: index % 2 === 0 ? "user" : "assistant",
+        text: `Peer message ${index}. ${"Detail. ".repeat(180)}`,
+        threadId: projection.thread.id,
+        runId: sourceRunId,
+        providerThreadId: peerThreadId,
+        status: "completed",
+        kind: index % 2 === 0 ? "user_message" : "assistant_message",
+      }),
+    );
+    const handoff: OrchestrationV2ContextHandoff = {
+      id: ContextHandoffId.make("return-handoff"),
+      transferId: null,
+      threadId: projection.thread.id,
+      targetRunId: targetRun.id,
+      fromProviderThreadIds: [peerThreadId],
+      toProviderThreadId: targetRun.providerThreadId!,
+      coveredRunOrdinals: { from: 2, to: 2 },
+      strategy: "delta_since_target_last_seen",
+      status: "ready",
+      summaryMessageId: null,
+      summaryText: "",
+      history: {
+        messages,
+        coverage: "History from the provider used in between.",
+        omittedItems: 0,
+        omittedItemIds: [],
+      },
+      createdByProviderInstanceId: null,
+      createdAt: targetRun.requestedAt,
+      updatedAt: targetRun.requestedAt,
+    };
+    harness.setProjection({
+      ...projection,
+      runs: [
+        projection.runs[0]!,
+        {
+          ...projection.runs[0]!,
+          id: sourceRunId,
+          ordinal: 2,
+          providerThreadId: peerThreadId,
+          providerInstanceId: harness.oldInstanceId,
+        },
+        { ...targetRun, ordinal: 3 },
+      ],
+      contextHandoffs: [handoff],
+    });
+    const lookups: Array<unknown> = [];
+    yield* harness.start.pipe(
+      Effect.provideService(ConversationSummaryRuntime, {
+        summarizeThread: () => Effect.succeed({ hasMore: false }),
+        forHandoff: (input) =>
+          Effect.sync(() => {
+            lookups.push(input.replayed);
+            return [];
+          }),
+      }),
+    );
+    const start = harness.startRootRun.mock.calls.at(-1)![0];
+    yield* start.session.startTurn({
+      appThread: start.appThread,
+      threadId: start.appThread.id,
+      runId: start.run.id,
+      runOrdinal: start.run.ordinal,
+      providerTurnOrdinal: start.providerTurnOrdinal,
+      attemptId: start.attemptId,
+      rootNodeId: start.rootNode.id,
+      providerThread: start.providerThread,
+      message: start.message,
+      modelSelection: start.modelSelection,
+      runtimePolicy: start.runtimePolicy,
+    });
+    // Only a recovery replays earlier runs. Anything else here would admit history that the
+    // handoff does not carry into an ordinary switch.
+    expect(lookups).toEqual([undefined]);
+  }),
 );

@@ -45,6 +45,7 @@ import {
   shellRequest,
   shellResponsesRequest,
   summarize,
+  caseMock,
   t3Default,
   t3SystemAppend,
   t3SubagentContext,
@@ -808,6 +809,22 @@ it("validates PR case regexes and decodes read mocks against product result sche
       expect(() => decodeResult(mock), `${testCase.id}: ${tool}`).not.toThrow();
     }
   }
+});
+
+it("answers a call from the mock keyed by its argument, else the tool's mock", () => {
+  const mocks = {
+    "t3_conversation_summary_expand?summaryId=summary:a": "child a",
+    "t3_conversation_summary_expand?summaryId=summary:b": "child b",
+    t3_conversation_summary_expand: "any",
+  };
+  const expand = (summaryId: string) =>
+    caseMock(mocks, "t3_conversation_summary_expand", { summaryId });
+  assert.equal(expand("summary:b"), "child b");
+  assert.equal(expand("summary:a"), "child a");
+  assert.equal(expand("summary:c"), "any");
+  assert.isUndefined(
+    caseMock(mocks, "t3_conversation_summary_describe", { summaryId: "summary:a" }),
+  );
 });
 
 it("tells the simulator that paths the case names exist, whatever the template's cwd", () => {

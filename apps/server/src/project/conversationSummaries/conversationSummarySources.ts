@@ -2,7 +2,7 @@ import {
   CONVERSATION_SUMMARY_MAX_SOURCES,
   conversationSummarySourceIdentity,
   conversationSummarySourceKey,
-  type ConversationSummarySourceRef,
+  type ConversationSummaryRangeRef,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -11,7 +11,7 @@ const MAX_PROMPT_CHARS = 32_000;
 const MIN_LEAF_SOURCES = 8;
 
 export interface SummarySource {
-  readonly ref: ConversationSummarySourceRef;
+  readonly ref: ConversationSummaryRangeRef;
   readonly role: "user" | "assistant" | "tool";
   readonly text: string;
   readonly createdAt: DateTime.Utc;
@@ -110,9 +110,9 @@ export function planLeafChunks(input: {
 
 /** A handoff can omit a canonical item only when the union contains its complete source. */
 export function sourcesCoverWholeItems(
-  sources: ReadonlyArray<ConversationSummarySourceRef>,
+  sources: ReadonlyArray<ConversationSummaryRangeRef>,
 ): boolean {
-  const groups = new Map<string, Array<ConversationSummarySourceRef>>();
+  const groups = new Map<string, Array<ConversationSummaryRangeRef>>();
   for (const source of sources) {
     const id = conversationSummarySourceIdentity(source);
     const group = groups.get(id) ?? [];

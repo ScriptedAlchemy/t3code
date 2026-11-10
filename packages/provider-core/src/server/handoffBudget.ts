@@ -339,6 +339,8 @@ export function selectHistory(input: {
   readonly coverage: string;
   readonly omittedItems?: number;
   readonly budget: number;
+  /** Items to keep ahead of the usual order, newest first, while they fit. */
+  readonly first?: ReadonlySet<string>;
 }) {
   const messages = input.messages;
   const selected = new Set<number>();
@@ -362,6 +364,9 @@ export function selectHistory(input: {
     selected.add(index);
     remaining -= cost;
   };
+  if (input.first !== undefined)
+    for (let index = messages.length - 1; index >= 0; index--)
+      if (input.first.has(messages[index]!.itemId)) tryAdd(index);
   tryAdd(messages.findLastIndex((message) => message.role === "user"));
   tryAdd(messages.findLastIndex((message) => message.role === "assistant"));
   tryAdd(messages.findIndex((message) => message.role === "user"));

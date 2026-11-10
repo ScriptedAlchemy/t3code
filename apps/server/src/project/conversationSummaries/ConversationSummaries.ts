@@ -11,10 +11,12 @@ import {
   type ConversationSummaryExpansion,
   type ConversationSummaryList,
   type ConversationSummaryListInput,
+  type ConversationSummaryRangeRef,
   type ConversationSummaryRead,
   type ConversationSummaryStatement,
   type ConversationSummarySourceRef,
   type ConversationSummarySourceResult,
+  type KnowledgeSourceUnavailableReason,
   type MessageId,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2RunStatus,
@@ -59,14 +61,29 @@ import {
   MAX_SOURCE_CHARS,
   planLeafChunks,
   sourceRanges,
-  sourcesCoverWholeItems,
   type SummarySource,
 } from "./conversationSummarySources.ts";
+import {
+  buildSummaryTree,
+  childIds,
+  condensedPosition,
+  handoffCover,
+  isRangeRef,
+  leafPosition,
+  planCondensation,
+  type StoredSummary,
+  type SummaryNode,
+  type SummaryTree,
+} from "./conversationSummaryTree.ts";
 
 // The newest messages stay out of summaries: handoffs replay them verbatim.
 const FRESH_TAIL_MESSAGES = 6;
 // Bounds the cost of opting in on a long thread; later passes continue where this one stopped.
-const MAX_LEAVES_PER_PASS = 3;
+// Leaves and roll-ups share it.
+const MAX_SUMMARIES_PER_PASS = 3;
+// Measured as delivery measures it, so a few roll-ups fit beside the verbatim tail of a 16 KB
+// handoff in any script. The prompt asks for fewer characters, so this cut is a backstop.
+const CONDENSED_MAX_BYTES = 1_536;
 const MAX_STATEMENTS = 8;
 const MAX_STATEMENT_CHARS = 600;
 const MAX_CITATIONS = 8;
@@ -98,6 +115,9 @@ const decodeSources = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ConversationSummary.fields.sources),
 );
 const encodeSummary = Schema.encodeSync(Schema.fromJsonString(ConversationSummary));
+const encodeStatements = Schema.encodeSync(
+  Schema.fromJsonString(ConversationSummary.fields.statements),
+);
 const encodeIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 const decodePass = Schema.decodeUnknownEffect(Schema.fromJsonString(ConversationSummaryPass));
 const encodePass = Schema.encodeSync(Schema.fromJsonString(ConversationSummaryPass));
@@ -107,13 +127,46 @@ const isConversationSummaryPassError = Schema.is(ConversationSummaryPassError);
 type FinalizedMessage = OrchestrationV2ConversationMessage & {
   readonly role: "user" | "assistant";
 };
-type SummarySources = Pick<ConversationSummary, "id" | "sources" | "scrubbed">;
 interface SummaryCursor {
-  readonly first_source_at: string;
-  readonly first_source_id: string;
-  readonly first_source_offset: number;
+  readonly position: string;
   readonly summary_id: string;
 }
+type StaleReason = KnowledgeSourceUnavailableReason;
+
+const jsonBytes = (text: string) => Buffer.byteLength(JSON.stringify(text));
+const isScrubbed = (summary: ConversationSummary) =>
+  summary.scrubbed === true || summary.statements[0]?.text === SCRUBBED_TEXT;
+
+/** Each statement with the 1-based positions of the sources it cites. */
+const renderStatements = (summary: Pick<ConversationSummary, "sources" | "statements">) => {
+  const position = new Map(
+    summary.sources.map((source, index) => [conversationSummarySourceKey(source), index + 1]),
+  );
+  return summary.statements.map(
+    (statement) =>
+      `- ${statement.text} [${statement.citations.map((id) => `#${position.get(id)}`).join(", ")}]`,
+  );
+};
+
+/** Keep statements in order while the rendered roll-up fits its byte budget. */
+const fitCondensed = (
+  sources: ReadonlyArray<ConversationSummarySourceRef>,
+  statements: ReadonlyArray<ConversationSummaryStatement>,
+) => {
+  const bytes = (kept: ReadonlyArray<ConversationSummaryStatement>) =>
+    jsonBytes(renderStatements({ sources, statements: kept }).join("\n"));
+  const kept: Array<ConversationSummaryStatement> = [];
+  for (const statement of statements) {
+    if (bytes([...kept, statement]) > CONDENSED_MAX_BYTES) break;
+    kept.push(statement);
+  }
+  const first = statements[0];
+  if (kept.length > 0 || first === undefined) return kept;
+  let text = first.text;
+  while (text !== "" && bytes([{ ...first, text }]) > CONDENSED_MAX_BYTES)
+    text = text.slice(0, boundedTextEnd(text, 0, Math.floor(text.length * 0.9))).trim();
+  return text === "" ? [] : [{ ...first, text }];
+};
 
 const byConversationOrder = (left: FinalizedMessage, right: FinalizedMessage) =>
   DateTime.toEpochMillis(left.createdAt) - DateTime.toEpochMillis(right.createdAt) ||
@@ -129,20 +182,10 @@ const make = Effect.gen(function* () {
   const textGeneration = yield* TextGeneration.TextGeneration;
   const digest = (text: string) =>
     crypto.digest(Digest.sha256, new TextEncoder().encode(text)).pipe(Effect.map(Hex.encode));
-  // Several leaves of a long source share a timestamp. Its identity and range offset keep
-  // those leaves in source order, independently of their content-addressed summary ids.
-  const firstSourceId = sql`CASE json_extract(payload_json, '$.sources[0].kind')
-    WHEN 'message' THEN 'message:' || json_extract(payload_json, '$.sources[0].messageId')
-    ELSE 'turn_item:' || json_extract(payload_json, '$.sources[0].itemId') END`;
-  const firstSourceOffset = sql`coalesce(json_extract(payload_json, '$.sources[0].range.start'), 0)`;
-  const summaryOrder = sql`first_source_at, ${firstSourceId}, ${firstSourceOffset}, summary_id`;
   const afterSummary = (after: SummaryCursor | undefined) =>
     after === undefined
       ? sql``
-      : sql`
-    AND (first_source_at, ${firstSourceId}, ${firstSourceOffset}, summary_id) >
-      (${after.first_source_at}, ${after.first_source_id}, ${after.first_source_offset}, ${after.summary_id})
-  `;
+      : sql`AND (position, summary_id) > (${after.position}, ${after.summary_id})`;
 
   const storageError = (projectId: ProjectId) => (cause: unknown) =>
     isConversationSummaryError(cause)
@@ -158,49 +201,56 @@ const make = Effect.gen(function* () {
     return project.value;
   });
 
-  const scanThreadSummarySources = Effect.fn("ConversationSummaries.scanThreadSummarySources")(
-    function* <E, R>(
-      projectId: ProjectId,
-      threadId: ThreadId,
-      // Return false when the caller has enough results; true continues through every page.
-      visit: (page: ReadonlyArray<SummarySources>) => Effect.Effect<boolean, E, R>,
-    ) {
-      let after: SummaryCursor | undefined;
-      while (true) {
-        const rows = yield* sql<{
-          readonly first_source_at: string;
-          readonly summary_id: string;
-          readonly first_source_id: string;
-          readonly first_source_offset: number;
-          readonly sources_json: string;
-          readonly scrubbed: number;
-        }>`
-          SELECT first_source_at, summary_id,
-            ${firstSourceId} AS first_source_id, ${firstSourceOffset} AS first_source_offset,
-            json_extract(payload_json, '$.sources') AS sources_json,
-            (coalesce(json_extract(payload_json, '$.scrubbed'), 0) = 1
-              OR json_extract(payload_json, '$.statements[0].text') = ${SCRUBBED_TEXT}) AS scrubbed
-          FROM conversation_summaries
-          WHERE project_id = ${projectId} AND thread_id = ${threadId}
-          ${afterSummary(after)}
-          ORDER BY ${summaryOrder}
-          LIMIT ${THREAD_SUMMARY_PAGE_SIZE}
-        `;
-        if (rows.length === 0) return;
-        const page = yield* Effect.forEach(rows, (row) =>
-          decodeSources(row.sources_json).pipe(
-            Effect.map((sources) => ({
-              id: row.summary_id,
-              sources,
-              scrubbed: row.scrubbed === 1,
-            })),
-          ),
-        );
-        if (!(yield* visit(page)) || rows.length < THREAD_SUMMARY_PAGE_SIZE) return;
-        after = rows.at(-1)!;
-      }
-    },
-  );
+  /** Every summary of a thread, without statements. Each read is bounded by a page. */
+  const loadThreadSummaries = Effect.fn("ConversationSummaries.loadThreadSummaries")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+  ) {
+    const summaries: Array<StoredSummary> = [];
+    let after: SummaryCursor | undefined;
+    while (true) {
+      const rows = yield* sql<{
+        readonly position: string;
+        readonly summary_id: string;
+        readonly sources_json: string;
+        readonly scrubbed: number;
+      }>`
+        SELECT position, summary_id,
+          json_extract(payload_json, '$.sources') AS sources_json,
+          (coalesce(json_extract(payload_json, '$.scrubbed'), 0) = 1
+            OR json_extract(payload_json, '$.statements[0].text') = ${SCRUBBED_TEXT}) AS scrubbed
+        FROM conversation_summaries
+        WHERE project_id = ${projectId} AND thread_id = ${threadId}
+        ${afterSummary(after)}
+        ORDER BY position, summary_id
+        LIMIT ${THREAD_SUMMARY_PAGE_SIZE}
+      `;
+      for (const row of rows)
+        summaries.push({
+          id: row.summary_id,
+          sources: yield* decodeSources(row.sources_json),
+          scrubbed: row.scrubbed === 1,
+          position: row.position,
+        });
+      if (rows.length < THREAD_SUMMARY_PAGE_SIZE) return summaries;
+      after = rows.at(-1)!;
+    }
+  });
+
+  const loadSummaries = Effect.fn("ConversationSummaries.loadSummaries")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+    ids: ReadonlyArray<string>,
+  ) {
+    if (ids.length === 0) return new Map<string, ConversationSummary>();
+    const rows = yield* sql<{ readonly payload_json: string }>`
+      SELECT payload_json FROM conversation_summaries
+      WHERE project_id = ${projectId} AND thread_id = ${threadId}
+        AND summary_id IN (SELECT value FROM json_each(${encodeIds(ids)}))
+    `;
+    const summaries = yield* Effect.forEach(rows, (row) => decodeSummary(row.payload_json));
+    return new Map(summaries.map((summary) => [summary.id, summary]));
+  });
 
   const findSummary = Effect.fn("ConversationSummaries.findSummary")(function* (
     input: ConversationSummaryDescribeInput,
@@ -262,10 +312,10 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const readSources = Effect.fn("ConversationSummaries.readSources")(function* (input: {
+  const readRanges = Effect.fn("ConversationSummaries.readRanges")(function* (input: {
     readonly projectId: ProjectId;
     readonly threadId: ThreadId;
-    readonly sources: ReadonlyArray<ConversationSummarySourceRef>;
+    readonly sources: ReadonlyArray<ConversationSummaryRangeRef>;
   }) {
     // Read/hash each canonical body once, even if a leaf cites several ranges of it.
     const unique = [
@@ -274,7 +324,7 @@ const make = Effect.gen(function* () {
       ).values(),
     ];
     const messages = unique.filter(
-      (source): source is Extract<ConversationSummarySourceRef, { kind: "message" }> =>
+      (source): source is Extract<ConversationSummaryRangeRef, { kind: "message" }> =>
         source.kind === "message",
     );
     const messageResults = yield* knowledge.readSources({ ...input, sources: messages });
@@ -295,7 +345,7 @@ const make = Effect.gen(function* () {
       ),
     );
     const tools = unique.filter(
-      (source): source is Extract<ConversationSummarySourceRef, { kind: "turn_item" }> =>
+      (source): source is Extract<ConversationSummaryRangeRef, { kind: "turn_item" }> =>
         source.kind === "turn_item",
     );
     if (tools.length > 0) {
@@ -352,7 +402,7 @@ const make = Effect.gen(function* () {
       if (source.threadId !== input.threadId) return { state: "unavailable", reason: "missing" };
       if (result === undefined) return { state: "unavailable", reason: "missing" };
       if (result.state !== "available") return result;
-      if (result.source.digest !== source.digest)
+      if (result.source.kind === "summary" || result.source.digest !== source.digest)
         return { state: "unavailable", reason: "changed" };
       const range = source.range;
       if (
@@ -372,51 +422,183 @@ const make = Effect.gen(function* () {
     });
   });
 
-  // Validate canonical scope, deletion, archive, final status, full digest and exact range.
-  const read = Effect.fn("ConversationSummaries.read")(function* (summary: ConversationSummary) {
-    const current = yield* readSources({
-      projectId: summary.projectId,
-      threadId: summary.threadId,
-      sources: summary.sources,
-    });
-    const unavailable = current.find((source) => source.state === "unavailable");
-    const scrubbed = summary.scrubbed === true || summary.statements[0]?.text === SCRUBBED_TEXT;
-    // Old leaves claimed a complete source while their model only saw the first 6,000 units.
-    const legacyTruncated = current.some(
-      (result, index) =>
-        result.state === "available" &&
-        summary.sources[index]!.range === undefined &&
-        result.text.length > MAX_SOURCE_CHARS,
-    );
-    const reason =
-      unavailable?.state === "unavailable"
-        ? unavailable.reason
-        : scrubbed || legacyTruncated
-          ? "changed"
-          : null;
-    if (reason !== null && reason !== "archived" && !summary.scrubbed) {
+  /**
+   * Why each summary, and every summary beneath it, is stale, or null when it is current. Every
+   * range beneath them is re-read once. A leaf checks canonical scope, deletion, archive, final
+   * status, full digest and exact range; a condensed summary is current when every child is.
+   */
+  const verify = Effect.fn("ConversationSummaries.verify")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+    rows: ReadonlyMap<string, StoredSummary>,
+    ids: ReadonlyArray<string>,
+  ) {
+    const leaves: Array<StoredSummary> = [];
+    const visited = new Set<string>();
+    const collect = (id: string) => {
+      const row = rows.get(id);
+      if (visited.has(id) || row === undefined) return;
+      visited.add(id);
+      const children = childIds(row);
+      if (children.length === 0) leaves.push(row);
+      else children.forEach(collect);
+    };
+    ids.forEach(collect);
+    const ranges = leaves.flatMap((row) => row.sources.filter(isRangeRef));
+    const read =
+      ranges.length === 0 ? [] : yield* readRanges({ projectId, threadId, sources: ranges });
+    const results = new Map(ranges.map((source, index) => [source, read[index]!]));
+    const reasons = new Map<string, StaleReason | null>();
+    const reasonOf = (id: string, path: ReadonlySet<string>): StaleReason | null => {
+      const known = reasons.get(id);
+      if (known !== undefined) return known;
+      const row = rows.get(id);
+      if (row === undefined || path.has(id)) return "missing";
+      const children = childIds(row);
+      let reason: StaleReason | null;
+      if (children.length === 0) {
+        const current = row.sources.flatMap((source) => {
+          const result = isRangeRef(source) ? results.get(source) : undefined;
+          return result === undefined ? [] : [{ source, result }];
+        });
+        const unavailable = current.find(({ result }) => result.state === "unavailable")?.result;
+        // Old leaves claimed a complete source while their model only saw the first 6,000 units.
+        const legacyTruncated = current.some(
+          ({ source, result }) =>
+            result.state === "available" &&
+            isRangeRef(source) &&
+            source.range === undefined &&
+            result.text.length > MAX_SOURCE_CHARS,
+        );
+        reason =
+          unavailable?.state === "unavailable"
+            ? unavailable.reason
+            : row.scrubbed || legacyTruncated
+              ? "changed"
+              : null;
+      } else {
+        const inner = new Set([...path, id]);
+        reason =
+          children.map((child) => reasonOf(child, inner)).find((found) => found !== null) ??
+          (row.scrubbed ? "changed" : null);
+      }
+      reasons.set(id, reason);
+      return reason;
+    };
+    for (const id of visited) reasonOf(id, new Set());
+    for (const [id, reason] of reasons) {
+      const row = rows.get(id);
+      if (row === undefined || reason === null || reason === "archived" || row.scrubbed) continue;
       // Handoff references keep the summary skeleton, not text derived from a removed source.
-      yield* sql`UPDATE conversation_summaries SET payload_json = ${encodeSummary({
-        ...summary,
-        scrubbed: true,
-        statements: [
-          {
-            text: SCRUBBED_TEXT,
-            citations: [conversationSummarySourceKey(summary.sources[0]!)],
-          },
-        ],
-      })} WHERE summary_id = ${summary.id}`;
+      yield* sql`UPDATE conversation_summaries SET payload_json = json_set(payload_json,
+        '$.scrubbed', json('true'),
+        '$.statements', json(${encodeStatements([
+          { text: SCRUBBED_TEXT, citations: [conversationSummarySourceKey(row.sources[0]!)] },
+        ])})) WHERE summary_id = ${id}`;
     }
-    return reason !== null
-      ? ({
-          state: "stale",
-          id: summary.id,
-          sourceCount: summary.sources.length,
-          createdAt: summary.createdAt,
-          reason,
-        } satisfies ConversationSummaryRead)
-      : ({ state: "available", summary } satisfies ConversationSummaryRead);
+    return reasons;
   });
+
+  const storedOf = (summary: ConversationSummary): StoredSummary => ({
+    id: summary.id,
+    sources: summary.sources,
+    scrubbed: isScrubbed(summary),
+    position: "",
+  });
+
+  /** Rows a verification of these summaries needs: themselves, or the thread for a roll-up. */
+  const rowsFor = Effect.fn("ConversationSummaries.rowsFor")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+    summaries: ReadonlyArray<ConversationSummary>,
+  ) {
+    return summaries.some((summary) => childIds(storedOf(summary)).length > 0)
+      ? new Map((yield* loadThreadSummaries(projectId, threadId)).map((row) => [row.id, row]))
+      : new Map(summaries.map((summary) => [summary.id, storedOf(summary)]));
+  });
+
+  const readAll = Effect.fn("ConversationSummaries.readAll")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+    summaries: ReadonlyArray<ConversationSummary>,
+  ) {
+    if (summaries.length === 0) return [];
+    const reasons = yield* verify(
+      projectId,
+      threadId,
+      yield* rowsFor(projectId, threadId, summaries),
+      summaries.map((summary) => summary.id),
+    );
+    return summaries.map((summary): ConversationSummaryRead => {
+      const reason = reasons.get(summary.id);
+      return reason === null
+        ? { state: "available", summary }
+        : {
+            state: "stale",
+            id: summary.id,
+            sourceCount: summary.sources.length,
+            createdAt: summary.createdAt,
+            reason: reason ?? "missing",
+          };
+    });
+  });
+
+  const read = (summary: ConversationSummary) =>
+    readAll(summary.projectId, summary.threadId, [summary]).pipe(Effect.map((reads) => reads[0]!));
+
+  /** A child summary reads as its statements, or as unavailable with the reason it is stale. */
+  const readChildSummaries = Effect.fn("ConversationSummaries.readChildSummaries")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+    refs: ReadonlyArray<Extract<ConversationSummarySourceRef, { kind: "summary" }>>,
+  ) {
+    const ids = refs.map((ref) => ref.summaryId);
+    const rows = new Map(
+      (yield* loadThreadSummaries(projectId, threadId)).map((row) => [row.id, row]),
+    );
+    const reasons = yield* verify(projectId, threadId, rows, ids);
+    const children = yield* loadSummaries(projectId, threadId, ids);
+    const threads = yield* sql<{ readonly title: string }>`
+      SELECT title FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}
+    `;
+    return refs.map((ref): ConversationSummarySourceResult => {
+      const child = children.get(ref.summaryId);
+      const reason = reasons.get(ref.summaryId);
+      if (
+        ref.threadId !== threadId ||
+        child === undefined ||
+        reason === undefined ||
+        threads[0] === undefined
+      )
+        return { state: "unavailable", reason: "missing" };
+      if (reason !== null) return { state: "unavailable", reason };
+      return {
+        state: "available",
+        source: ref,
+        text: renderStatements(child).join("\n"),
+        title: threads[0].title,
+        role: "summary",
+        createdAt: child.createdAt,
+        archived: false,
+      };
+    });
+  });
+
+  const readSources = (input: {
+    readonly projectId: ProjectId;
+    readonly threadId: ThreadId;
+    readonly sources: ReadonlyArray<ConversationSummarySourceRef>;
+  }) => {
+    const ranges = input.sources.filter(isRangeRef);
+    const refs = input.sources.filter(
+      (source): source is Extract<ConversationSummarySourceRef, { kind: "summary" }> =>
+        source.kind === "summary",
+    );
+    // A summary's sources are all ranges or all summaries.
+    return refs.length > 0
+      ? readChildSummaries(input.projectId, input.threadId, refs)
+      : readRanges({ ...input, sources: ranges });
+  };
 
   const list: ConversationSummaries["Service"]["list"] = Effect.fn("ConversationSummaries.list")(
     function* (input) {
@@ -431,9 +613,7 @@ const make = Effect.gen(function* () {
       let after: SummaryCursor | undefined;
       if (input.cursor !== undefined) {
         const cursorRows = yield* sql<SummaryCursor>`
-          SELECT first_source_at, summary_id,
-            ${firstSourceId} AS first_source_id, ${firstSourceOffset} AS first_source_offset
-          FROM conversation_summaries
+          SELECT position, summary_id FROM conversation_summaries
           WHERE project_id = ${input.projectId} AND thread_id = ${input.threadId}
             AND summary_id = ${input.cursor}
         `;
@@ -454,16 +634,12 @@ const make = Effect.gen(function* () {
         const rows = yield* sql<{
           readonly payload_json: string;
           readonly summary_id: string;
-          readonly first_source_at: string;
-          readonly first_source_id: string;
-          readonly first_source_offset: number;
+          readonly position: string;
         }>`
-          SELECT payload_json, summary_id, first_source_at,
-            ${firstSourceId} AS first_source_id, ${firstSourceOffset} AS first_source_offset
-          FROM conversation_summaries
+          SELECT payload_json, summary_id, position FROM conversation_summaries
           WHERE project_id = ${input.projectId} AND thread_id = ${input.threadId}
           ${afterSummary(after)}
-          ORDER BY ${summaryOrder} LIMIT ${scanLimit}
+          ORDER BY position, summary_id LIMIT ${scanLimit}
         `;
         for (const row of rows) {
           const summary = yield* decodeSummary(row.payload_json);
@@ -483,7 +659,7 @@ const make = Effect.gen(function* () {
         enabled: resolveProjectSettings(settings, input.projectId).settings
           .enableConversationSummaries,
         lastPass,
-        summaries: yield* Effect.forEach(page, read),
+        summaries: yield* readAll(input.projectId, input.threadId, page),
         nextCursor: matching.length > limit ? (page.at(-1)?.id ?? null) : null,
       };
     },
@@ -618,51 +794,17 @@ const make = Effect.gen(function* () {
   });
 
   const cleanupSuperseded = Effect.fn("ConversationSummaries.cleanupSuperseded")(function* (
-    projectId: ProjectId,
-    threadId: ThreadId,
-    digests: ReadonlyMap<string, string>,
-    covered: ReadonlySet<string>,
-    validSourceKeys: ReadonlySet<string>,
+    ids: ReadonlyArray<string>,
   ) {
-    // Reuse the pass's validated coverage. Re-reading every source here would hash the whole
-    // history again on every completed turn, even when no summary needs replacing.
-    if (covered.size === 0) return;
-    let deleted = 0;
-    yield* scanThreadSummarySources(
-      projectId,
-      threadId,
-      Effect.fnUntraced(function* (summaries) {
-        const replaced = summaries.filter(
-          (summary) =>
-            summary.sources.every((source) =>
-              covered.has(conversationSummarySourceIdentity(source)),
-            ) &&
-            (summary.scrubbed ||
-              summary.sources.some(
-                (source) =>
-                  digests.get(conversationSummarySourceIdentity(source)) !== source.digest ||
-                  !validSourceKeys.has(conversationSummarySourceKey(source)),
-              )),
-        );
-        if (replaced.length > 0) {
-          const removed = yield* sql<{ readonly summary_id: string }>`
-            DELETE FROM conversation_summaries
-            WHERE summary_id IN (
-              SELECT summary_id FROM conversation_summaries
-              WHERE ${sql.in(
-                "summary_id",
-                replaced.map((summary) => summary.id),
-              )}
-                AND ${unreferenced}
-              ORDER BY summary_id LIMIT ${CLEANUP_LIMIT - deleted}
-            ) AND ${unreferenced}
-            RETURNING summary_id
-          `;
-          deleted += removed.length;
-        }
-        return deleted < CLEANUP_LIMIT;
-      }),
-    );
+    if (ids.length === 0) return;
+    yield* sql`
+      DELETE FROM conversation_summaries
+      WHERE summary_id IN (
+        SELECT summary_id FROM conversation_summaries
+        WHERE ${sql.in("summary_id", ids)} AND ${unreferenced}
+        ORDER BY summary_id LIMIT ${CLEANUP_LIMIT}
+      ) AND ${unreferenced}
+    `;
   });
 
   const summarizeThread: ConversationSummaries["Service"]["summarizeThread"] = Effect.fn(
@@ -682,7 +824,7 @@ const make = Effect.gen(function* () {
       const digests = new Map<string, string>();
       const covered = new Set<string>();
       const validSources = new Map<string, SummarySource>();
-      let hasStaleSummaries = false;
+      let tree: SummaryTree = { roots: [], dead: [] };
       const coveredOrigins = () => {
         const all = new Map<string, Array<string>>();
         for (const [key, source] of validSources) {
@@ -695,6 +837,20 @@ const make = Effect.gen(function* () {
           [...all].filter(([, keys]) => keys.every((key) => covered.has(key))).map(([id]) => id),
         );
       };
+      // A dead roll-up loses nothing: its current children are roots again. A dead leaf goes only
+      // once current summaries cover all of its sources, so a stale stretch stays visible until
+      // it is replaced. Reusing the pass's validated coverage avoids hashing the history again.
+      const superseded = () => {
+        if (tree.dead.length === 0) return [];
+        const origins = coveredOrigins();
+        return tree.dead
+          .filter(
+            (row) =>
+              childIds(row).length > 0 ||
+              row.sources.every((source) => origins.has(conversationSummarySourceIdentity(source))),
+          )
+          .map((row) => row.id);
+      };
       const finish = (
         result: ConversationSummaryPass["result"],
         reason: string | null,
@@ -702,16 +858,7 @@ const make = Effect.gen(function* () {
         waitingMessages: number,
         hasMore = false,
       ) =>
-        (hasStaleSummaries
-          ? cleanupSuperseded(
-              projectId,
-              threadId,
-              digests,
-              coveredOrigins(),
-              new Set(validSources.keys()),
-            )
-          : Effect.void
-        ).pipe(
+        cleanupSuperseded(superseded()).pipe(
           Effect.andThen(DateTime.now),
           Effect.flatMap((now) =>
             recordPass(projectId, threadId, {
@@ -807,25 +954,24 @@ const make = Effect.gen(function* () {
           settled.push(...ranges);
         }
       }
-      yield* scanThreadSummarySources(projectId, threadId, (summaries) =>
-        Effect.sync(() => {
-          for (const summary of summaries) {
-            if (
-              !summary.scrubbed &&
-              summary.sources.every(
-                (source) =>
-                  source.threadId === threadId &&
-                  digests.get(conversationSummarySourceIdentity(source)) === source.digest &&
-                  validSources.has(conversationSummarySourceKey(source)),
-              )
-            ) {
-              for (const source of summary.sources)
-                covered.add(conversationSummarySourceKey(source));
-            } else hasStaleSummaries = true;
-          }
-          return true;
-        }),
+      const rows = new Map(
+        (yield* loadThreadSummaries(projectId, threadId)).map((row) => [row.id, row]),
       );
+      const isCurrentLeaf = (row: StoredSummary) =>
+        row.sources.every(
+          (source) =>
+            isRangeRef(source) &&
+            source.threadId === threadId &&
+            digests.get(conversationSummarySourceIdentity(source)) === source.digest &&
+            validSources.has(conversationSummarySourceKey(source)),
+        );
+      const rebuild = () => {
+        tree = buildSummaryTree([...rows.values()], isCurrentLeaf);
+        covered.clear();
+        for (const root of tree.roots)
+          for (const source of root.leafSources) covered.add(conversationSummarySourceKey(source));
+      };
+      rebuild();
       const waiting = () =>
         new Set(
           settled
@@ -837,16 +983,26 @@ const make = Effect.gen(function* () {
         finish("failed", reason.slice(0, 300), generated, waiting()).pipe(
           Effect.andThen(Effect.fail(new ConversationSummaryPassError({ runId, cause: reason }))),
         );
-      for (const chunk of planLeafChunks({ settled, covered }).slice(0, MAX_LEAVES_PER_PASS)) {
+
+      const publish = Effect.fnUntraced(function* (input: {
+        readonly messages: ReadonlyArray<{
+          readonly role: "user" | "assistant" | "tool" | "summary";
+          readonly text: string;
+          readonly range?: ConversationSummaryRangeRef["range"];
+        }>;
+        readonly sources: ReadonlyArray<ConversationSummarySourceRef>;
+        readonly ranges: ReadonlyArray<ConversationSummaryRangeRef>;
+        readonly position: string;
+      }) {
         const refs = new Map<string, string>();
-        const messages = chunk.map((source, index) => {
+        const messages = input.messages.map((message, index) => {
           const ref = `M${index + 1}`;
-          refs.set(ref, conversationSummarySourceKey(source.ref));
+          refs.set(ref, conversationSummarySourceKey(input.sources[index]!));
           return {
             ref,
-            role: source.role,
-            text: source.text,
-            ...(source.ref.range === undefined ? {} : { range: source.ref.range }),
+            role: message.role,
+            text: message.text,
+            ...(message.range === undefined ? {} : { range: message.range }),
           };
         });
         const reply = yield* textGeneration
@@ -862,42 +1018,52 @@ const make = Effect.gen(function* () {
                 Effect.succeed({ ok: false as const, detail: error.detail }),
             }),
           );
-        if (!reply.ok) return yield* failPass(reply.detail);
-        const statements: Array<ConversationSummaryStatement> = [];
+        if (!reply.ok) return { ok: false as const, reason: reply.detail };
+        const cited: Array<ConversationSummaryStatement> = [];
         for (const statement of reply.statements.slice(0, MAX_STATEMENTS)) {
           const text = statement.text.trim().slice(0, MAX_STATEMENT_CHARS).trim();
           const citations = [
             ...new Set(statement.citations.flatMap((ref) => refs.get(ref.trim()) ?? [])),
           ].slice(0, MAX_CITATIONS);
-          if (text !== "" && citations.length > 0) statements.push({ text, citations });
+          if (text !== "" && citations.length > 0) cited.push({ text, citations });
         }
+        const statements = input.sources.some((source) => source.kind === "summary")
+          ? fitCondensed(input.sources, cited)
+          : cited;
         if (statements.length === 0)
-          return yield* failPass("The model returned no statements citing the summarized sources.");
-        const sources = chunk.map((source) => source.ref);
-        const current = yield* readSources({ projectId, threadId, sources });
+          return {
+            ok: false as const,
+            reason: "The model returned no statements citing the summarized sources.",
+          };
+        const current = yield* readRanges({ projectId, threadId, sources: input.ranges });
         if (current.some((source) => source.state !== "available"))
-          return yield* failPass("A source changed while it was being summarized.");
+          return { ok: false as const, reason: "A source changed while it was being summarized." };
+        // A child id already digests the child's exact ranges, so it stands in for a digest.
         const id = `summary:${yield* digest(
           [
             "v2",
             threadId,
-            ...sources.map((source) => `${conversationSummarySourceKey(source)}:${source.digest}`),
+            ...input.sources.map((source) =>
+              source.kind === "summary"
+                ? source.summaryId
+                : `${conversationSummarySourceKey(source)}:${source.digest}`,
+            ),
           ].join("\n"),
         )}`;
         const summary: ConversationSummary = {
           id,
           projectId,
           threadId,
-          sources,
+          sources: input.sources,
           statements,
           modelSelection: settings.textGenerationModelSelection,
           createdAt: DateTime.formatIso(yield* DateTime.now),
         };
         yield* sql`
           INSERT INTO conversation_summaries (
-            summary_id, project_id, thread_id, first_source_at, created_at, payload_json
+            summary_id, project_id, thread_id, position, created_at, payload_json
           ) VALUES (
-            ${id}, ${projectId}, ${threadId}, ${DateTime.formatIso(chunk[0]!.createdAt)},
+            ${id}, ${projectId}, ${threadId}, ${input.position},
             ${summary.createdAt}, ${encodeSummary(summary)}
           )
           ON CONFLICT (summary_id) DO UPDATE SET
@@ -905,7 +1071,66 @@ const make = Effect.gen(function* () {
           WHERE coalesce(json_extract(conversation_summaries.payload_json, '$.scrubbed'), 0) = 1
             OR json_extract(conversation_summaries.payload_json, '$.statements[0].text') = ${SCRUBBED_TEXT}
         `;
-        for (const source of sources) covered.add(conversationSummarySourceKey(source));
+        return {
+          ok: true as const,
+          row: { id, sources: input.sources, scrubbed: false, position: input.position },
+        };
+      });
+
+      const summarizeLeaf = (chunk: ReadonlyArray<SummarySource>) =>
+        publish({
+          messages: chunk.map((source) => ({
+            role: source.role,
+            text: source.text,
+            ...(source.ref.range === undefined ? {} : { range: source.ref.range }),
+          })),
+          sources: chunk.map((source) => source.ref),
+          ranges: chunk.map((source) => source.ref),
+          position: leafPosition(DateTime.formatIso(chunk[0]!.createdAt), chunk[0]!.ref),
+        });
+
+      const condense = Effect.fnUntraced(function* (group: ReadonlyArray<SummaryNode>) {
+        const children = yield* loadSummaries(
+          projectId,
+          threadId,
+          group.map((node) => node.row.id),
+        );
+        return yield* publish({
+          messages: group.map((node) => ({
+            role: "summary" as const,
+            text: (children.get(node.row.id)?.statements ?? [])
+              .map((statement) => `- ${statement.text}`)
+              .join("\n"),
+          })),
+          sources: group.map((node) => ({
+            kind: "summary" as const,
+            threadId,
+            summaryId: node.row.id,
+          })),
+          ranges: group.flatMap((node) => node.leafSources),
+          position: condensedPosition(
+            group[0]!.row.position,
+            Math.max(...group.map((node) => node.depth)) + 1,
+          ),
+        });
+      });
+
+      // Leaves first: a replacement leaf must exist before its stretch rolls up, or its old
+      // neighbours would roll up without it and the broken path could never be rebuilt alone.
+      const nextWork = () => {
+        const chunk = planLeafChunks({ settled, covered })[0];
+        if (chunk !== undefined) return { kind: "leaf" as const, chunk };
+        const group = planCondensation(tree.roots);
+        return group === null ? null : { kind: "condense" as const, group };
+      };
+      while (generated < MAX_SUMMARIES_PER_PASS) {
+        const work = nextWork();
+        if (work === null) break;
+        const published =
+          work.kind === "leaf" ? yield* summarizeLeaf(work.chunk) : yield* condense(work.group);
+        if (!published.ok) return yield* failPass(published.reason);
+        rows.set(published.row.id, published.row);
+        rebuild();
         generated += 1;
       }
       return yield* finish(
@@ -913,7 +1138,7 @@ const make = Effect.gen(function* () {
         generated > 0 ? null : "No settled stretch is long enough to summarize yet.",
         generated,
         waiting(),
-        planLeafChunks({ settled, covered }).length > 0,
+        nextWork() !== null,
       );
     },
     (effect, { runId }) =>
@@ -927,16 +1152,11 @@ const make = Effect.gen(function* () {
   );
 
   const renderForHandoff = (summary: ConversationSummary) => {
-    const position = new Map(
-      summary.sources.map((source, index) => [conversationSummarySourceKey(source), index + 1]),
-    );
+    const condensed = summary.sources.some((source) => source.kind === "summary");
     return [
-      `[Conversation summary ${summary.id}: written by a model from ${summary.sources.length} earlier source ranges of thread ${summary.threadId}. It is a summary, not the original evidence.]`,
-      `Read the exact source ranges with t3_conversation_summary_expand({projectId:"${summary.projectId}",threadId:"${summary.threadId}",summaryId:"${summary.id}"}); #n is the nth source. Follow nextOffset and nextTextOffset together to retrieve all text.`,
-      ...summary.statements.map(
-        (statement) =>
-          `- ${statement.text} [${statement.citations.map((id) => `#${position.get(id)}`).join(", ")}]`,
-      ),
+      `[Conversation summary ${summary.id}: written by a model from ${summary.sources.length} earlier ${condensed ? "summaries" : "source ranges"} of thread ${summary.threadId}. It is a summary, not the original evidence.]`,
+      `Read the exact source ranges with t3_conversation_summary_expand({projectId:"${summary.projectId}",threadId:"${summary.threadId}",summaryId:"${summary.id}"}); #n is the nth source.${condensed ? " A source that is a summary expands the same way, down to the original text." : ""} Follow nextOffset and nextTextOffset together to retrieve all text.`,
+      ...renderStatements(summary),
     ].join("\n");
   };
 
@@ -1026,83 +1246,65 @@ const make = Effect.gen(function* () {
           ),
         );
         if (itemBySource.size === 0) continue;
-        const stored: Array<SummarySources> = [];
-        yield* scanThreadSummarySources(projectId, threadId, (summaries) =>
-          Effect.sync(() => {
-            for (const metadata of summaries)
-              if (
-                !metadata.scrubbed &&
-                metadata.sources.some((source) =>
-                  itemBySource.has(conversationSummarySourceIdentity(source)),
-                )
-              )
-                stored.push(metadata);
-            return true;
-          }),
-        );
+        const rows = yield* loadThreadSummaries(projectId, threadId);
         const uncarried = yield* coveredUncarriedSources(
           threadId,
-          stored.flatMap((metadata) =>
-            metadata.sources.filter(
-              (source) => !itemBySource.has(conversationSummarySourceIdentity(source)),
+          rows.flatMap((row) =>
+            row.sources.filter(
+              (source) =>
+                isRangeRef(source) && !itemBySource.has(conversationSummarySourceIdentity(source)),
             ),
           ),
           replayed?.threadId === threadId ? [replayed] : [],
         );
-        // The stretch next to the verbatim tail matters most, so the newest summaries win the
-        // candidate limit. Grouping below still needs them in conversation order.
-        const candidates: Array<ConversationSummary> = [];
-        for (const metadata of stored.toReversed()) {
-          if (candidates.length >= HANDOFF_CANDIDATE_LIMIT) break;
-          if (
-            !metadata.sources.every((source) => {
-              const identity = conversationSummarySourceIdentity(source);
-              return itemBySource.has(identity) || uncarried.has(identity);
-            })
-          )
-            continue;
-          const summary = yield* findSummary({ projectId, threadId, summaryId: metadata.id });
-          if ((yield* read(summary)).state !== "available") continue;
-          candidates.unshift(summary);
-        }
-        // Leaves sharing a split source form one atomic offer. Omitting the item after only
-        // one of its ranges was summarized would silently discard the remaining evidence.
-        const groups: Array<{ summaries: Array<ConversationSummary>; identities: Set<string> }> =
-          [];
-        for (const summary of candidates) {
-          const group = {
-            summaries: [summary],
-            identities: new Set(summary.sources.map(conversationSummarySourceIdentity)),
-          };
-          for (let index = groups.length - 1; index >= 0; index--) {
-            const previous = groups[index]!;
-            if (![...previous.identities].some((id) => group.identities.has(id))) continue;
-            group.summaries.unshift(...previous.summaries);
-            for (const id of previous.identities) group.identities.add(id);
-            groups.splice(index, 1);
-          }
-          groups.push(group);
-        }
+        const eligible = (identity: string) =>
+          itemBySource.has(identity) || uncarried.has(identity);
+        // Re-read every leaf the handoff could use. A roll-up is current only when all of its
+        // leaves are, and a stale one gives way to its current children.
+        const reasons = yield* verify(
+          projectId,
+          threadId,
+          new Map(rows.map((row) => [row.id, row])),
+          rows
+            .filter(
+              (row) =>
+                childIds(row).length === 0 &&
+                row.sources.every((source) => eligible(conversationSummarySourceIdentity(source))),
+            )
+            .map((row) => row.id),
+        );
+        const groups = handoffCover({
+          roots: buildSummaryTree(rows, (row) => reasons.get(row.id) === null).roots,
+          eligible,
+          requested: (identity) => itemBySource.has(identity),
+        });
+        const summaries = yield* loadSummaries(
+          projectId,
+          threadId,
+          groups.flatMap((group) => group.nodes.map((node) => node.row.id)),
+        );
+        // The stretch next to the verbatim tail matters most, so it wins the candidate limit.
         for (const group of groups.toReversed()) {
-          if (!sourcesCoverWholeItems(group.summaries.flatMap((summary) => summary.sources)))
-            continue;
           const sourceItems = [...group.identities].flatMap((id) => itemBySource.get(id) ?? []);
-          const evidence = yield* deliveredKnowledgeForHistory({
-            projectId,
-            messages: sourceItems.flatMap((item) =>
-              item.kind === "user_message" || item.kind === "assistant_message"
-                ? [{ ...item, kind: item.kind, threadId }]
-                : [],
-            ),
-            userItemId: (messageId) => itemByMessage.get(messageId)?.itemId,
-          }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge));
+          // A roll-up's evidence would be that of hundreds of items and never fit beside it.
+          const evidence = group.nodes.every((node) => node.depth === 0)
+            ? yield* deliveredKnowledgeForHistory({
+                projectId,
+                messages: sourceItems.flatMap((item) =>
+                  item.kind === "user_message" || item.kind === "assistant_message"
+                    ? [{ ...item, kind: item.kind, threadId }]
+                    : [],
+                ),
+                userItemId: (messageId) => itemByMessage.get(messageId)?.itemId,
+              }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge))
+            : new Map<string, string>();
+          const nodes = group.nodes.flatMap((node) => summaries.get(node.row.id) ?? []);
+          if (nodes.length !== group.nodes.length) continue;
           offered.push({
-            id: group.summaries[0]!.id,
-            ...(group.summaries.length > 1
-              ? { summaryIds: group.summaries.map((summary) => summary.id) }
-              : {}),
+            id: nodes[0]!.id,
+            ...(nodes.length > 1 ? { summaryIds: nodes.map((summary) => summary.id) } : {}),
             text: [
-              ...group.summaries.map(renderForHandoff),
+              ...nodes.map(renderForHandoff),
               ...sourceItems.flatMap((item) => {
                 const attached = evidence.get(item.itemId);
                 return attached === undefined

@@ -23,9 +23,9 @@ export function createConversationSummariesAtoms<R, E>(
   });
   return {
     list: (target: Parameters<typeof list>[0]) =>
-      list({ ...target, input: { ...target.input, sourceFormat: 2 } }),
+      list({ ...target, input: { ...target.input, sourceFormat: 3 } }),
     expand: (target: Parameters<typeof expand>[0]) =>
-      expand({ ...target, input: { ...target.input, sourceFormat: 2 } }),
+      expand({ ...target, input: { ...target.input, sourceFormat: 3 } }),
   };
 }
 
@@ -49,6 +49,24 @@ export interface ConversationSummarySourceCursor {
   readonly textOffset: number;
 }
 
+/** Who a source came from; a child summary is named by its id so it can be opened. */
+export function conversationSummarySourceLabel(
+  ref: ConversationSummarySourceRef,
+  result: ConversationSummarySourceResult,
+): string {
+  if (result.state !== "available") return "Unavailable";
+  switch (result.role) {
+    case "user":
+      return "User";
+    case "assistant":
+      return "Assistant";
+    case "tool":
+      return "Tool";
+    case "summary":
+      return ref.kind === "summary" ? `Summary ${ref.summaryId}` : "Summary";
+  }
+}
+
 export function conversationSummarySourceRangeLabel(
   ref: ConversationSummarySourceRef,
   result: ConversationSummarySourceResult,
@@ -56,9 +74,10 @@ export function conversationSummarySourceRangeLabel(
   if (result.state !== "available" || result.text.length === 0) return null;
   const textOffset = result.textOffset ?? 0;
   const totalChars = result.totalChars ?? result.text.length;
-  if (ref.range === undefined && textOffset === 0 && totalChars === result.text.length) return null;
-  const start = (ref.range?.start ?? 0) + textOffset;
+  const range = ref.kind === "summary" ? undefined : ref.range;
+  if (range === undefined && textOffset === 0 && totalChars === result.text.length) return null;
+  const start = (range?.start ?? 0) + textOffset;
   const end = start + result.text.length;
-  const total = ref.range?.total ?? totalChars;
+  const total = range?.total ?? totalChars;
   return `Characters ${(start + 1).toLocaleString()}–${end.toLocaleString()} of ${total.toLocaleString()}`;
 }

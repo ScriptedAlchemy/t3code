@@ -1152,6 +1152,21 @@ const linkedEntry = (sample: Sample, url: string) => {
   return { ...pr, state: seeded?.state ?? "open", title: seeded?.title ?? null };
 };
 
+/** A mock keyed `tool?arg=value` answers calls with that argument; a bare tool name, the rest. */
+export const caseMock = (
+  mocks: Readonly<Record<string, unknown>> | undefined,
+  name: string,
+  input: Readonly<Record<string, unknown>>,
+) => {
+  for (const [key, value] of Object.entries(mocks ?? {})) {
+    const query = key.indexOf("?");
+    const equals = key.indexOf("=", query);
+    if (query === -1 || equals === -1 || key.slice(0, query) !== name) continue;
+    if (String(input[key.slice(query + 1, equals)]) === key.slice(equals + 1)) return value;
+  }
+  return mocks?.[name];
+};
+
 /** A believable T3 result for a tool the case does not mock. */
 export const t3Default = (
   sample: Sample,
@@ -1670,7 +1685,7 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   if (isPageTool(name) && typeof input.path === "string" && !input.path.startsWith("/")) {
     return failed(`${input.path} is not a readable HTML document. Pass an absolute path.`);
   }
-  const mock = testCase.setup.mocks?.[name];
+  const mock = caseMock(testCase.setup.mocks, name, input);
   // T3 answers device calls from the world. A mock that is a T3 device error fails inside T3.
   const failure = deviceFailure(mock);
   const fromWorld = mock === undefined || mock === "default" || failure !== undefined;

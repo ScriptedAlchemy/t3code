@@ -3,9 +3,10 @@
 Portable provider handoffs select saved history within a context budget. Selected user and assistant
 messages retain their complete text and roles; activity is attributed as context. Generated
 conversation summaries may stand in for older items when the project has opted in, but only after
-their sources are revalidated and every range of a replaced item is covered. Delivery takes them
-nearest the present first and accepts one only when more history items arrive with it than without
-it, counting verbatim and summarized items alike. The six newest messages are never traded away,
+their sources are revalidated and every range of a replaced item is covered. The lookup offers the
+coarsest current summaries that do not overlap, and delivery tries them by covered items per byte,
+accepting one only when more history items arrive with it than without it, counting verbatim and
+summarized items alike. The six newest messages are never traded away,
 which matches the tail the summary pass never covers. A summary's sources must all be carried by the
 handoffs, with one exception that only the caller can declare. A recovery replays every earlier run
 of its thread onto a fresh native conversation but reads history without MCP tool results, so the
@@ -37,11 +38,22 @@ Projection rebuilds replay deletion, correction, and run-state events in order, 
 projection applies the same exclusion without a second removal registry. Do not interpret this
 as recalling copies already sent to a provider.
 
+A roll-up is an ordinary summary whose sources are four adjacent summaries of the same thread. Depth,
+roots and the exact ranges beneath a roll-up are derived from the rows on every pass and read, never
+stored, so there is no second owner of structure or validity to keep in sync. A roll-up is current
+only while every range beneath it is; a stale leaf therefore withholds its ancestors' text, and the
+pass deletes a dead roll-up (unless a handoff references it) so its current children become roots
+again. The pass generates any pending leaf before it rolls up: otherwise the old neighbours of a
+replaced leaf would roll up without it, and more than the broken path would be summarized again.
+A roll-up offer carries no delivered-knowledge evidence, unlike a leaf offer: the evidence of a few
+hundred items would never fit beside it. Roll-ups are capped by rendered bytes, as delivery
+measures them, so several fit beside the verbatim tail of a 16 KB handoff.
+
 Legacy v1 continuation uses a separate algorithm. It considers only user and assistant messages,
 walks backward from the newest message, and builds a transcript suffix within a 32,000-character
 budget. Do not describe that migration budget as the limit for portable handoffs.
 
 Rolling back across this format is one-way for conversation summaries. An older server cannot decode
-summaries with `turn_item` sources, so its list, describe, and expand calls return storage errors and
-its background pass fails on those rows. Summaries are derived data that a current server regenerates,
+summaries with `turn_item` or `summary` sources, or read the renamed `position` column, so its list,
+describe, and expand calls return storage errors and its background pass fails on those rows. Summaries are derived data that a current server regenerates,
 so this is accepted rather than guarded with a version check or a separate table.

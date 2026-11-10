@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   conversationSummaryPassLabel,
+  conversationSummarySourceLabel,
   conversationSummarySourceRangeLabel,
   type ConversationSummarySourceCursor,
 } from "@t3tools/client-runtime/conversationSummaries";
@@ -311,15 +312,8 @@ function SummarySourcePage(
           key={conversationSummarySourceKey(ref)}
           className="gap-2 rounded-xl border border-border p-4"
         >
-          <Text className="text-xs text-foreground-muted">
-            #{offset + index + 1} ·{" "}
-            {result.state === "available"
-              ? result.role === "user"
-                ? "User"
-                : result.role === "tool"
-                  ? "Tool"
-                  : "Assistant"
-              : "Unavailable"}
+          <Text selectable className="text-xs text-foreground-muted">
+            #{offset + index + 1} · {conversationSummarySourceLabel(ref, result)}
           </Text>
           {conversationSummarySourceRangeLabel(ref, result) ? (
             <Text className="text-xs text-foreground-muted">

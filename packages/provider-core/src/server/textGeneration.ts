@@ -126,10 +126,13 @@ export interface KnowledgeCandidatesGenerationResult {
 
 export interface ConversationSummaryGenerationInput {
   cwd: string;
-  /** Consecutive finalized source ranges, oldest first; `ref` is what citations name. */
+  /**
+   * Consecutive finalized source ranges, or consecutive summaries for a roll-up, oldest first;
+   * `ref` is what citations name.
+   */
   messages: ReadonlyArray<{
     readonly ref: string;
-    readonly role: "user" | "assistant" | "tool";
+    readonly role: "user" | "assistant" | "tool" | "summary";
     readonly text: string;
     readonly range?: { readonly start: number; readonly end: number; readonly total: number };
   }>;

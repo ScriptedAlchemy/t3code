@@ -674,6 +674,67 @@ describe("handoff delivery", () => {
     }),
   );
 
+  it.effect("keeps the newest messages ahead of tool results when a summary needs room", () =>
+    Effect.gen(function* () {
+      const tool = (id: string): OrchestrationV2HistoricalMessage => ({
+        ...message(id, "assistant", "t".repeat(1_500)),
+        kind: "command_execution",
+      });
+      const older = Array.from({ length: 20 }, (_, index) =>
+        message(`item:o${index}`, index % 2 === 0 ? "user" : "assistant", "o".repeat(700)),
+      );
+      // The oldest of the six newest messages is large and sits behind five tool results.
+      const tail = [
+        message("item:m1", "assistant", "m".repeat(2_000)),
+        tool("item:t1"),
+        message("item:m2", "user", "m".repeat(300)),
+        tool("item:t2"),
+        message("item:m3", "assistant", "m".repeat(300)),
+        tool("item:t3"),
+        message("item:m4", "user", "m".repeat(300)),
+        tool("item:t4"),
+        message("item:m5", "assistant", "m".repeat(300)),
+        tool("item:t5"),
+        message("item:m6", "user", "m".repeat(300)),
+      ];
+      const history = [...older, ...tail];
+      const source: OrchestrationV2ContextHandoff = {
+        ...handoff,
+        history: { messages: history, coverage: "Coverage.", omittedItems: 0 },
+      };
+      const newest = ["m1", "m2", "m3", "m4", "m5", "m6"].map((id) =>
+        TurnItemId.make(`item:${id}`),
+      );
+      let verbatim: ReadonlyArray<TurnItemId> = [];
+      let summarized: ReadonlyArray<TurnItemId> = [];
+      yield* deliverContextHandoffs({
+        handoffs: [source],
+        providerThread,
+        // Room for the first request and the whole tail, and little else.
+        budget: historyCost([older[0]!, ...tail], "c".repeat(600)) + 200,
+        alreadyDeliveredItemIds: new Set(),
+        summaries: () =>
+          Effect.succeed([
+            {
+              id: `summary:${"c".repeat(64)}` as const,
+              coveredItemIds: older.slice(1).map((entry) => entry.itemId),
+              text: `OLDER ${"s".repeat(1_600)}`,
+            },
+          ]),
+        inject: (input) => {
+          verbatim = input.messages.map((entry) => entry.itemId);
+          return Effect.succeed(true);
+        },
+        persist: (value) =>
+          Effect.sync(() => {
+            summarized = value.delivery?.summarizedItemIds ?? [];
+          }),
+      });
+      assert.includeMembers([...verbatim], newest, "the six newest messages");
+      assert.lengthOf(summarized, 19, "the summary of older history is delivered");
+    }),
+  );
+
   it.effect.each([
     { native: true, label: "injected" },
     { native: false, label: "inline" },
