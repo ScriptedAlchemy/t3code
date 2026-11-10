@@ -3,6 +3,7 @@ import { historyResponseItems, renderHistory } from "@t3tools/provider-core/serv
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  ConversationSummaryId,
   type ChatAttachment,
   EventId,
   MessageId,
@@ -35,6 +36,10 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import {
+  ConversationSummaryRuntime,
+  type ConversationSummaryRuntimeShape,
+} from "../../project/conversationSummaries/conversationSummarySchedule.ts";
 import { CommandPolicyCapabilityUnsupportedError } from "../CommandPolicy.ts";
 import {
   ClaudeAgentSdkQueryRunnerError,
@@ -3818,5 +3823,179 @@ describe("orchestration v2 provider switching", () => {
   it.live(
     "reissues imported v1 context when a queued provider starts after the first provider fails",
     () => importedFailureScenario(true),
+  );
+});
+
+describe("orchestration v2 context restart", () => {
+  const restartThreadId = ThreadId.make("thread:context-restart");
+  const words = (label: string) => `${label} ${"w".repeat(8_000)}`;
+  const summaryText = "[Generated summary] The earliest runs settled the plan.";
+  const summaries = (gap: boolean): ConversationSummaryRuntimeShape => ({
+    summarizeThread: () => Effect.succeed({ hasMore: false }),
+    hasPendingPass: () => Effect.succeed(false),
+    forHandoff: ({ itemIds }) =>
+      Effect.succeed(
+        itemIds.size === 0
+          ? []
+          : [
+              {
+                id: ConversationSummaryId.make(`summary:${"a".repeat(64)}`),
+                text: summaryText,
+                // The first offered item is the oldest one that does not arrive verbatim.
+                coveredItemIds: [...itemIds].slice(gap ? 1 : 0).map((id) => TurnItemId.make(id)),
+              },
+            ],
+      ),
+  });
+
+  it.live.each([
+    "restarts",
+    "claude",
+    "setting-empty",
+    "summaries-off",
+    "background-work",
+    "gap",
+  ] as const)("a thread above the mark: %s", (scenario) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cwd = yield* checkpointWorkspace(`context-restart-${scenario}`);
+        const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+        const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
+        const generation = yield* Ref.make(0);
+        const pendingBackgroundWork = yield* Ref.make(false);
+        const claude = scenario === "claude";
+        const selection = claude ? CLAUDE_MODEL_SELECTION : CODEX_MODEL_SELECTION;
+        const usage = (usedTokens: number) => ({ usedTokens, maxTokens: 1_000_000 });
+        const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
+          makeTestAdapter({
+            instanceId: selection.instanceId,
+            driver: claude ? CLAUDE_DRIVER : CODEX_DRIVER,
+            capabilities: claude ? ClaudeProviderCapabilitiesV2 : CodexProviderCapabilitiesV2,
+            modelSelection: selection,
+            responseByRunOrdinal: Object.fromEntries(
+              [1, 2, 3, 4, 5].map((ordinal) => [ordinal, words(`Answer ${ordinal}`)]),
+            ),
+            capturedTurns,
+            injectedHistory,
+            nativeThreadGeneration: generation,
+            pendingBackgroundWork,
+            getModelContextWindow: () => 1_000_000,
+            tokenUsageByRunOrdinal: {
+              1: usage(20_000),
+              2: usage(80_000),
+              3: usage(140_000),
+              4: usage(190_000),
+              5: usage(250_000),
+              // Above the mark, but the fresh conversation has not grown since it started.
+              6: usage(210_000),
+              7: usage(215_000),
+            },
+          }),
+        ]);
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const dispatch = (ordinal: number, text: string) =>
+            orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`context-restart:${ordinal}`),
+              threadId: restartThreadId,
+              messageId: MessageId.make(`context-restart:${ordinal}`),
+              createdBy: "user",
+              creationSource: "web",
+              text,
+              attachments: [],
+              modelSelection: selection,
+              dispatchMode: { type: "start_immediately" },
+            });
+          const run = (ordinal: number, text: string) =>
+            dispatch(ordinal, text).pipe(
+              Effect.andThen(
+                orchestrator.streamStoredEvents.pipe(
+                  Stream.filter(
+                    ({ event }) =>
+                      event.type === "run.updated" &&
+                      event.payload.ordinal === ordinal &&
+                      (event.payload.status === "completed" || event.payload.status === "failed"),
+                  ),
+                  Stream.runHead,
+                ),
+              ),
+              Effect.andThen(worker.drain()),
+            );
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("context-restart:create"),
+            threadId: restartThreadId,
+            projectId,
+            createdBy: "user",
+            creationSource: "web",
+            title: "Context restart",
+            modelSelection: selection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+          });
+          for (const ordinal of [1, 2, 3, 4, 5]) yield* run(ordinal, words(`Request ${ordinal}`));
+          if (scenario === "background-work") yield* Ref.set(pendingBackgroundWork, true);
+          yield* run(6, "Continue work");
+          const projection = yield* orchestrator.getThreadProjection(restartThreadId);
+          assert.equal(projection.runs.at(-1)?.status, "completed");
+          const turns = yield* Ref.get(capturedTurns);
+          const receipts = projection.turnItems.filter(
+            (item) => item.type === "handoff" && item.contextRestart !== undefined,
+          );
+          if (scenario !== "restarts") {
+            assert.equal(yield* Ref.get(generation), 1);
+            assert.equal(turns[5]!.nativeThreadId, turns[4]!.nativeThreadId);
+            assert.lengthOf(receipts, 0);
+            return;
+          }
+          assert.equal(yield* Ref.get(generation), 2);
+          assert.notEqual(turns[5]!.nativeThreadId, turns[4]!.nativeThreadId);
+          assert.equal(turns[5]!.text, "Continue work");
+          const history = yield* encodeJson(yield* Ref.get(injectedHistory));
+          for (const ordinal of [3, 4, 5]) {
+            assert.include(history, words(`Request ${ordinal}`));
+            assert.include(history, words(`Answer ${ordinal}`));
+          }
+          assert.notInclude(history, words(`Request 2`));
+          assert.include(history, summaryText);
+          assert.deepEqual(
+            receipts.map((item) => (item.type === "handoff" ? item.contextRestart : null)),
+            [{ usedTokens: 250_000, aboveTokens: 200_000 }],
+          );
+
+          yield* run(7, "Next step");
+          assert.equal(yield* Ref.get(generation), 2);
+          assert.equal(
+            (yield* Ref.get(capturedTurns))[6]!.nativeThreadId,
+            turns[5]!.nativeThreadId,
+          );
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry(
+              {
+                name: `context-restart-${scenario}`,
+                runtimePolicyOverride: {
+                  cwd,
+                  approvalPolicy: "never",
+                  sandboxPolicy: { type: "readOnly" },
+                },
+              },
+              layerRegistry,
+              {
+                settings: {
+                  enableConversationSummaries: scenario !== "summaries-off",
+                  contextRestartAboveTokens: scenario === "setting-empty" ? null : 200_000,
+                },
+              },
+            ),
+          ),
+          Effect.provideService(ConversationSummaryRuntime, summaries(scenario === "gap")),
+        );
+      }),
+    ),
   );
 });
