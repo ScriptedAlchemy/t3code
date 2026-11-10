@@ -984,7 +984,6 @@ const make = Effect.gen(function* () {
           Effect.andThen(Effect.fail(new ConversationSummaryPassError({ runId, cause: reason }))),
         );
 
-      /** Ask the model, keep only statements citing given refs, and publish the summary. */
       const publish = Effect.fnUntraced(function* (input: {
         readonly messages: ReadonlyArray<{
           readonly role: "user" | "assistant" | "tool" | "summary";

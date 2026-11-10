@@ -20,7 +20,6 @@ export interface StoredSummary {
 /** A current summary with its derived structure. Depth and leaf ranges are never stored. */
 export interface SummaryNode {
   readonly row: StoredSummary;
-  /** 0 for a leaf; one more than its deepest child otherwise. */
   readonly depth: number;
   readonly children: ReadonlyArray<SummaryNode>;
   /** The exact message and tool ranges beneath this summary, in conversation order. */

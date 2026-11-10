@@ -28,7 +28,7 @@ export const ConversationSummariesToolkit = Toolkit.make(
   Tool.make("t3_conversation_summary_list", {
     ...shared,
     description:
-      "List stored thread summaries (messages/tool evidence), oldest first, for long-thread recall or handoffs. A roll-up summarizes adjacent summaries and is listed before them. Includes enabled status and last pass. query matches statement text as a literal case-insensitive substring. Follow cursor=nextCursor with the same query. Stale summaries expose no text; this never generates summaries.",
+      "List stored thread summaries (messages/tool evidence), oldest first, for long-thread recall or handoffs. Includes enabled status and last pass. query matches statement text as a literal case-insensitive substring. Follow cursor=nextCursor with the same query. Stale summaries expose no text; this never generates summaries.",
     parameters: Schema.Struct({
       ...ConversationSummaryListInput.fields,
       environmentId: OrchestratorMcpEnvironmentTarget,
