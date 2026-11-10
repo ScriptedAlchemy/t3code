@@ -484,9 +484,9 @@ const make = Effect.gen(function* () {
           catch: safeFailure("Could not access Claude credentials in macOS Keychain."),
         });
         const secret = yield* Effect.tryPromise({
-          try: async () => {
+          try: async (signal) => {
             try {
-              return await entry.getPassword();
+              return await entry.getPassword(signal);
             } catch (cause) {
               const message = String((cause as { message?: unknown } | undefined)?.message ?? "");
               if (/no (matching )?entry|not found/i.test(message)) return undefined;
@@ -570,7 +570,7 @@ const make = Effect.gen(function* () {
         });
         if (keychainEntry) {
           const current = yield* Effect.tryPromise({
-            try: () => keychainEntry!.getPassword(),
+            try: (signal) => keychainEntry!.getPassword(signal),
             catch: safeFailure("Could not read Claude credentials in macOS Keychain."),
           }).pipe(
             Effect.timeout("5 seconds"),
@@ -578,7 +578,7 @@ const make = Effect.gen(function* () {
           );
           if (current !== nativeRaw) return false;
           yield* Effect.tryPromise({
-            try: () => keychainEntry!.setPassword(contents),
+            try: (signal) => keychainEntry!.setPassword(contents, signal),
             catch: safeFailure("Could not update Claude credentials in macOS Keychain."),
           }).pipe(
             Effect.timeout("5 seconds"),
