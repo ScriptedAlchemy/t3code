@@ -1153,6 +1153,86 @@ it.effect("offers the summaries nearest the present first, within the candidate 
   }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
 });
 
+// Replies as long as the statement contract allows, so byte budgets meet their worst case.
+const verbose = () =>
+  scripted((input) =>
+    Effect.succeed({
+      statements: Array.from({ length: 8 }, (_, index) => ({
+        text: `Statement ${index} about ${input.messages.length} sources. ${"Said and done. ".repeat(38)}`,
+        citations: [input.messages[index % input.messages.length]!.ref],
+      })),
+    }),
+  );
+const isRollup = (call: Parameters<Generate>[0]) =>
+  call.messages.some((message) => message.role === "summary");
+
+it.effect("hands off almost all omitted history of a 600-item thread as summaries", () => {
+  const model = verbose();
+  return Effect.gen(function* () {
+    const itemCount = 600;
+    const settledCount = itemCount - 6;
+    yield* seedThread(itemCount);
+    for (let pass = 0, hasMore = true; hasMore; pass++) {
+      assert.isBelow(pass, 60, "the pass converges");
+      hasMore = (yield* summarize).hasMore;
+    }
+    const rollups = model.calls.filter(isRollup);
+    assert.isAbove(rollups.length, 0);
+    for (const call of rollups)
+      assert.equal(call.messages.length, 4, "one call per four summaries");
+    const spent = model.calls.length;
+    yield* summarize;
+    assert.equal(
+      model.calls.length,
+      spent,
+      "a repeated pass over unchanged sources spends nothing",
+    );
+
+    const service = yield* ConversationSummaries.ConversationSummaries;
+    const handoff = yield* prepareHandoff(itemCount);
+    const deliver = Effect.fn("test.deliverLongThread")(function* (withSummaries: boolean) {
+      let verbatim: ReadonlyArray<{ readonly itemId: TurnItemId; readonly text: string }> = [];
+      let summarized: ReadonlyArray<TurnItemId> = [];
+      yield* deliverContextHandoffs({
+        handoffs: [handoff],
+        providerThread,
+        budget: 16_000,
+        alreadyDeliveredItemIds: new Set(),
+        ...(withSummaries
+          ? {
+              summaries: (itemIds: ReadonlySet<string>) =>
+                service.forHandoff({ projectId, handoffs: [handoff], itemIds }),
+            }
+          : {}),
+        inject: (history) =>
+          Effect.sync(() => {
+            verbatim = history.messages;
+            return true;
+          }),
+        persist: (next) =>
+          Effect.sync(() => {
+            summarized = next.delivery?.summarizedItemIds ?? [];
+          }),
+      });
+      return { verbatim, summarized: new Set(summarized) };
+    });
+    const baseline = yield* deliver(false);
+    const delivered = yield* deliver(true);
+    const verbatimIds = new Set(baseline.verbatim.map((message) => message.itemId));
+    const omitted = Array.from({ length: settledCount }, (_, index) => itemId(index)).filter(
+      (id) => !verbatimIds.has(id),
+    );
+    const represented = omitted.filter((id) => delivered.summarized.has(id));
+    assert.isAtLeast(represented.length / omitted.length, 0.9);
+    for (let index = settledCount; index < itemCount; index++)
+      assert.equal(
+        delivered.verbatim.find((message) => message.itemId === itemId(index))?.text,
+        rawText(index),
+        "the six newest messages arrive word for word",
+      );
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
+
 it.effect("offers a summary citing uncarried tool evidence only inside the replayed runs", () => {
   const model = citing();
   return Effect.gen(function* () {
