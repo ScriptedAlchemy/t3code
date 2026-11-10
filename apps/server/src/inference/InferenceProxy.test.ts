@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -32,12 +33,25 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as InferenceProxy from "./InferenceProxy.ts";
 import { proxyVersion } from "./install.ts";
 
+const keychainState = vi.hoisted(() => ({ password: "" }));
+vi.mock("@napi-rs/keyring", () => ({
+  AsyncEntry: class {
+    async getPassword() {
+      return keychainState.password || undefined;
+    }
+    async setPassword(password: string) {
+      keychainState.password = password;
+    }
+  },
+}));
+
 it.effect(
   "restores hosted accounts, scopes grants to consumers and cuts over a working route atomically",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
+        keychainState.password = "";
         const config = yield* ServerConfig.ServerConfig;
         const state = yield* ServerSecretStore.ServerSecretStore;
         const home = yield* fs.makeTempDirectoryScoped();
@@ -126,15 +140,21 @@ it.effect(
         let peerId = hostId;
         let connectionDown = false;
         const importedCodexAuth: Record<string, unknown>[] = [];
+        const importedClaudeAuth: Record<string, unknown>[] = [];
         const remoteCatalogKeys: (string | undefined)[] = [];
         const http = HttpClient.make((request) => {
           if (request.method === "POST" && request.url.includes("/v0/management/auth-files?")) {
             const body = request.body;
             if (body._tag !== "Uint8Array" || !body.text) throw new Error("Missing auth JSON");
             const credential = JSON.parse(body.text) as Record<string, unknown>;
-            importedCodexAuth.push(credential);
+            const claude = credential.type === "claude";
+            (claude ? importedClaudeAuth : importedCodexAuth).push(credential);
             return fs
-              .writeFileString(config.stateDir + "/inference-proxy/accounts/one.json", body.text)
+              .writeFileString(
+                config.stateDir +
+                  `/inference-proxy/accounts/${claude ? "claude.json" : "one.json"}`,
+                body.text,
+              )
               .pipe(
                 Effect.orDie,
                 Effect.as(HttpClientResponse.fromWeb(request, Response.json({ status: "ok" }))),
@@ -256,12 +276,16 @@ it.effect(
         );
         const settings = yield* ServerSettings.ServerSettingsService;
         const cliHome = home + "/.codex";
+        const claudeHome = home + "/.claude";
+        const claudeAuthFile = claudeHome + "/.credentials.json";
+        const claudeProxyFile = config.stateDir + "/inference-proxy/accounts/claude.json";
         const accountFile = config.stateDir + "/inference-proxy/accounts/one.json";
         const accessToken =
           "header." +
           Buffer.from(JSON.stringify({ exp: 4102444800 })).toString("base64url") +
           ".sig";
         yield* fs.makeDirectory(cliHome, { recursive: true });
+        yield* fs.makeDirectory(claudeHome, { recursive: true });
         yield* fs.makeDirectory(config.stateDir + "/inference-proxy/accounts", {
           recursive: true,
         });
@@ -291,6 +315,29 @@ it.effect(
             },
           }),
         );
+        yield* fs.writeFileString(
+          home + "/.claude.json",
+          JSON.stringify({
+            oauthAccount: {
+              accountUuid: "claude-account",
+              organizationUuid: "org",
+              emailAddress: "person@example.com",
+              organizationName: "Team",
+            },
+          }),
+        );
+        yield* fs.writeFileString(
+          claudeAuthFile,
+          JSON.stringify({
+            customSetting: "keep",
+            claudeAiOauth: {
+              accessToken: "native-access",
+              refreshToken: "native-refresh",
+              expiresAt: 4102444800000,
+              scopes: ["user:inference"],
+            },
+          }),
+        );
         const grant = yield* Effect.scoped(
           Effect.gen(function* () {
             const proxy = yield* InferenceProxy.InferenceProxy;
@@ -310,6 +357,86 @@ it.effect(
                 note: "keep this metadata",
               },
             ]);
+            expect(importedClaudeAuth).toMatchObject([
+              {
+                type: "claude",
+                account_uuid: "claude-account",
+                organization_uuid: "org",
+                refresh_token: "native-refresh",
+              },
+            ]);
+            yield* fs.writeFileString(
+              claudeProxyFile,
+              JSON.stringify({
+                type: "claude",
+                account_uuid: "claude-account",
+                organization_uuid: "org",
+                email: "person@example.com",
+                access_token: "proxy-access",
+                refresh_token: "proxy-refresh",
+                expired: "2101-01-01T00:00:00.000Z",
+              }),
+            );
+            yield* proxy.status;
+            expect(JSON.parse(yield* fs.readFileString(claudeAuthFile))).toMatchObject({
+              customSetting: "keep",
+              claudeAiOauth: {
+                accessToken: "proxy-access",
+                refreshToken: "proxy-refresh",
+                scopes: ["user:inference"],
+              },
+            });
+            yield* fs.writeFileString(
+              claudeAuthFile,
+              JSON.stringify({
+                customSetting: "keep",
+                claudeAiOauth: {
+                  accessToken: "new-native-access",
+                  refreshToken: "new-native-refresh",
+                  expiresAt: 4167849600000,
+                  scopes: ["user:inference"],
+                },
+              }),
+            );
+            yield* proxy.status;
+            expect(importedClaudeAuth.at(-1)).toMatchObject({
+              access_token: "new-native-access",
+              refresh_token: "new-native-refresh",
+            });
+            keychainState.password = JSON.stringify({
+              customSetting: "keychain",
+              claudeAiOauth: {
+                accessToken: "keychain-access",
+                refreshToken: "keychain-refresh",
+                expiresAt: 4199385600000,
+              },
+            });
+            yield* proxy.status;
+            expect(importedClaudeAuth.at(-1)).toMatchObject({
+              access_token: "keychain-access",
+              refresh_token: "keychain-refresh",
+            });
+            yield* fs.remove(claudeAuthFile);
+            yield* fs.writeFileString(
+              claudeProxyFile,
+              JSON.stringify({
+                type: "claude",
+                account_uuid: "claude-account",
+                organization_uuid: "org",
+                email: "person@example.com",
+                access_token: "new-proxy-access",
+                refresh_token: "new-proxy-refresh",
+                expired: "2104-01-01T00:00:00.000Z",
+              }),
+            );
+            yield* proxy.status;
+            expect(JSON.parse(keychainState.password)).toMatchObject({
+              customSetting: "keychain",
+              claudeAiOauth: {
+                accessToken: "new-proxy-access",
+                refreshToken: "new-proxy-refresh",
+              },
+            });
             expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("new-refresh");
             yield* proxy.status;
             expect(importedCodexAuth).toHaveLength(1);

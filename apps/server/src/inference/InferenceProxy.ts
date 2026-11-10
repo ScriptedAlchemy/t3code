@@ -118,8 +118,35 @@ const ProxyCodexAuth = Schema.Struct({
   id_token: Schema.String,
   disabled: Schema.optionalKey(Schema.Boolean),
 });
+const LocalClaudeAuth = Schema.Struct({
+  claudeAiOauth: Schema.Struct({
+    accessToken: Schema.String,
+    refreshToken: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+});
+const ClaudeAccount = Schema.Struct({
+  oauthAccount: Schema.Struct({
+    accountUuid: Schema.String,
+    organizationUuid: Schema.String,
+    emailAddress: Schema.String,
+    organizationName: Schema.optionalKey(Schema.String),
+  }),
+});
+const ProxyClaudeAuth = Schema.Struct({
+  type: Schema.Literal("claude"),
+  account_uuid: Schema.String,
+  organization_uuid: Schema.String,
+  access_token: Schema.String,
+  refresh_token: Schema.String,
+  expired: Schema.String,
+  disabled: Schema.optionalKey(Schema.Boolean),
+});
 const isLocalCodexAuth = Schema.is(LocalCodexAuth);
 const isProxyCodexAuth = Schema.is(ProxyCodexAuth);
+const isLocalClaudeAuth = Schema.is(LocalClaudeAuth);
+const isClaudeAccount = Schema.is(ClaudeAccount);
+const isProxyClaudeAuth = Schema.is(ProxyClaudeAuth);
 const isRecord = Schema.is(Schema.Record(Schema.String, Schema.Unknown));
 const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
@@ -216,6 +243,14 @@ const make = Effect.gen(function* () {
     expandHomePath(env.CODEX_HOME?.trim() || "~/.codex", homeDirectory),
   );
   const localCodexAuthPath = path.join(localCodexHome, "auth.json");
+  const localClaudeHome = path.resolve(
+    expandHomePath(env.CLAUDE_CONFIG_DIR?.trim() || "~/.claude", homeDirectory),
+  );
+  const localClaudeAuthPath = path.join(localClaudeHome, ".credentials.json");
+  const localClaudeAccountPath = path.join(
+    env.CLAUDE_CONFIG_DIR?.trim() ? localClaudeHome : homeDirectory,
+    ".claude.json",
+  );
   let cached: Saved | undefined;
   let proxyAccountWatch: Fiber.Fiber<void> | undefined;
   let running:
@@ -415,6 +450,166 @@ const make = Effect.gen(function* () {
     Effect.mapError(safeFailure("Could not sync the local Codex sign-in to CLIProxyAPI.")),
   );
 
+  const syncLocalClaudeAuth = Effect.fn("InferenceProxy.syncLocalClaudeAuth")(
+    function* (runtime: NonNullable<typeof running>) {
+      if (!(yield* fs.exists(localClaudeAccountPath))) return false;
+      const fileCredentials = yield* fs.exists(localClaudeAuthPath);
+      let keychainEntry: import("@napi-rs/keyring").AsyncEntry | undefined;
+      let nativeRaw: string | undefined;
+      if ((yield* HostProcess.Platform) === "darwin" && !env.CLAUDE_CONFIG_DIR?.trim()) {
+        const username = yield* HostProcess.Username;
+        if (!username) return false;
+        const keyring = yield* Effect.tryPromise({
+          try: () => import("@napi-rs/keyring"),
+          catch: safeFailure("Could not access Claude credentials in macOS Keychain."),
+        });
+        const entry = new keyring.AsyncEntry("Claude Code-credentials", username);
+        const secret = yield* Effect.tryPromise({
+          try: async () => {
+            try {
+              return await entry.getPassword();
+            } catch (cause) {
+              const message = String((cause as { message?: unknown } | undefined)?.message ?? "");
+              if (/no (matching )?entry|not found/i.test(message)) return undefined;
+              throw cause;
+            }
+          },
+          catch: safeFailure("Allow T3 Code to access Claude credentials in macOS Keychain."),
+        });
+        if (secret !== undefined) {
+          keychainEntry = entry;
+          nativeRaw = secret;
+        }
+      }
+      if (nativeRaw === undefined && fileCredentials)
+        nativeRaw = yield* fs.readFileString(localClaudeAuthPath);
+      if (nativeRaw === undefined) return false;
+      const nativeDecoded = decodeUnknownJson(nativeRaw);
+      const accountDecoded = decodeUnknownJson(yield* fs.readFileString(localClaudeAccountPath));
+      if (Option.isNone(nativeDecoded) || Option.isNone(accountDecoded)) return false;
+      const native = nativeDecoded.value;
+      const account = accountDecoded.value;
+      if (!isRecord(native) || !isLocalClaudeAuth(native) || !isClaudeAccount(account))
+        return false;
+      const oauth = native.claudeAiOauth;
+      const identity = account.oauthAccount;
+      if (
+        !oauth.accessToken ||
+        !oauth.refreshToken ||
+        !Number.isFinite(oauth.expiresAt) ||
+        !identity.accountUuid ||
+        !identity.organizationUuid ||
+        !identity.emailAddress.includes("@")
+      )
+        return false;
+      const authDir = path.join(directory, "accounts");
+      const names = yield* fs.readDirectory(authDir);
+      let existing:
+        | {
+            name: string;
+            data: Record<string, unknown> & typeof ProxyClaudeAuth.Type;
+            expiresAt: number;
+          }
+        | undefined;
+      for (const name of names) {
+        if (!name.endsWith(".json") || name !== path.basename(name)) continue;
+        const raw = yield* fs
+          .readFileString(path.join(authDir, name))
+          .pipe(Effect.orElseSucceed(() => ""));
+        const decoded = decodeUnknownJson(raw);
+        if (Option.isNone(decoded)) continue;
+        const data = decoded.value;
+        if (!isRecord(data) || !isProxyClaudeAuth(data)) continue;
+        if (
+          data.account_uuid !== identity.accountUuid ||
+          data.organization_uuid !== identity.organizationUuid
+        )
+          continue;
+        const expiresAt = Date.parse(data.expired);
+        if (!Number.isFinite(expiresAt)) continue;
+        if (!existing || expiresAt > existing.expiresAt) existing = { name, data, expiresAt };
+      }
+      if (existing?.data.disabled === true) return false;
+      if (existing && existing.expiresAt > oauth.expiresAt) {
+        if (!existing.data.access_token || !existing.data.refresh_token) return false;
+        const contents = yield* encodeConfig({
+          ...native,
+          claudeAiOauth: {
+            ...oauth,
+            accessToken: existing.data.access_token,
+            refreshToken: existing.data.refresh_token,
+            expiresAt: existing.expiresAt,
+          },
+        });
+        if (keychainEntry) {
+          const current = yield* Effect.tryPromise({
+            try: () => keychainEntry!.getPassword(),
+            catch: safeFailure("Could not read Claude credentials in macOS Keychain."),
+          });
+          if (current !== nativeRaw) return false;
+          yield* Effect.tryPromise({
+            try: () => keychainEntry!.setPassword(contents),
+            catch: safeFailure("Could not update Claude credentials in macOS Keychain."),
+          });
+        } else {
+          if ((yield* fs.readFileString(localClaudeAuthPath)) !== nativeRaw) return false;
+          yield* writeFileStringAtomically({
+            filePath: localClaudeAuthPath,
+            contents,
+            mode: 0o600,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+          );
+        }
+        return true;
+      }
+      if (existing && existing.expiresAt === oauth.expiresAt) return false;
+      if (oauth.expiresAt <= (yield* Clock.currentTimeMillis)) return false;
+      if (identity.accountUuid.length > 128 || identity.organizationUuid.length > 128)
+        return yield* failure("Local Claude account ID is too long.");
+      const name =
+        existing?.name ??
+        `claude-local-${Buffer.from(identity.accountUuid).toString("base64url")}-${Buffer.from(identity.organizationUuid).toString("base64url")}.json`;
+      yield* jsonRequest(
+        runtime.baseUrl + "/v0/management/auth-files?name=" + encodeURIComponent(name),
+        runtime.management,
+        UploadStatus,
+        "POST",
+        {
+          ...existing?.data,
+          type: "claude",
+          account_uuid: identity.accountUuid,
+          organization_uuid: identity.organizationUuid,
+          organization_name: identity.organizationName ?? "",
+          email: identity.emailAddress,
+          access_token: oauth.accessToken,
+          refresh_token: oauth.refreshToken,
+          expired: DateTime.formatIso(DateTime.makeUnsafe(oauth.expiresAt)),
+          last_refresh: DateTime.formatIso(yield* DateTime.now),
+        },
+      );
+      return true;
+    },
+    Effect.mapError(safeFailure("Could not sync the local Claude sign-in to CLIProxyAPI.")),
+  );
+
+  const syncLocalAuth = Effect.fn("InferenceProxy.syncLocalAuth")(function* (
+    runtime: NonNullable<typeof running>,
+  ) {
+    const codex = yield* syncLocalCodexAuth(runtime).pipe(Effect.result);
+    const claude = yield* syncLocalClaudeAuth(runtime).pipe(Effect.result);
+    return {
+      changed:
+        (Result.isSuccess(codex) && codex.success) || (Result.isSuccess(claude) && claude.success),
+      problem:
+        [codex, claude]
+          .filter(Result.isFailure)
+          .map((result) => result.failure.message)
+          .join(" ") || null,
+    };
+  });
+
   const watchLocalCodexAuth = Effect.gen(function* () {
     if (!(yield* fs.exists(localCodexHome))) {
       yield* fs.watch(path.dirname(localCodexHome)).pipe(
@@ -433,13 +628,49 @@ const make = Effect.gen(function* () {
         .withPermit(
           Effect.gen(function* () {
             const state = yield* read;
-            return state.enabled ? yield* syncLocalCodexAuth(yield* ensure(state)) : false;
+            return state.enabled ? (yield* syncLocalAuth(yield* ensure(state))).changed : false;
           }),
         )
         .pipe(
           Effect.flatMap((changed) => (changed ? refreshLocalProviders() : Effect.void)),
           Effect.ignoreCause({ log: true }),
         ),
+    );
+  });
+
+  const watchLocalClaudeAuth = Effect.gen(function* () {
+    if (!(yield* fs.exists(localClaudeHome))) {
+      yield* fs.watch(path.dirname(localClaudeHome)).pipe(
+        Stream.filter((event) => path.basename(event.path) === path.basename(localClaudeHome)),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+    }
+    if (!(yield* fs.exists(localClaudeHome))) return;
+    const credentialChanges = fs
+      .watch(localClaudeHome)
+      .pipe(Stream.filter((event) => path.basename(event.path) === ".credentials.json"));
+    const accountChanges = fs
+      .watch(path.dirname(localClaudeAccountPath))
+      .pipe(
+        Stream.filter(
+          (event) => path.basename(event.path) === path.basename(localClaudeAccountPath),
+        ),
+      );
+    yield* Stream.runForEach(
+      Stream.merge(credentialChanges, accountChanges).pipe(Stream.debounce(Duration.millis(100))),
+      () =>
+        mutex
+          .withPermit(
+            Effect.gen(function* () {
+              const state = yield* read;
+              return state.enabled ? (yield* syncLocalAuth(yield* ensure(state))).changed : false;
+            }),
+          )
+          .pipe(
+            Effect.flatMap((changed) => (changed ? refreshLocalProviders() : Effect.void)),
+            Effect.ignoreCause({ log: true }),
+          ),
     );
   });
 
@@ -453,7 +684,7 @@ const make = Effect.gen(function* () {
         .withPermit(
           Effect.gen(function* () {
             const state = yield* read;
-            return state.enabled ? yield* syncLocalCodexAuth(yield* ensure(state)) : false;
+            return state.enabled ? (yield* syncLocalAuth(yield* ensure(state))).changed : false;
           }),
         )
         .pipe(
@@ -526,7 +757,7 @@ const make = Effect.gen(function* () {
         if (!state.enabled) return { ...summary, running: false, accounts: [], problem: null };
         return yield* Effect.gen(function* () {
           const runtime = yield* ensure(state);
-          const sync = yield* syncLocalCodexAuth(runtime).pipe(Effect.result);
+          const sync = yield* syncLocalAuth(runtime);
           const { files } = yield* jsonRequest(
             runtime.baseUrl + "/v0/management/auth-files",
             runtime.management,
@@ -538,7 +769,7 @@ const make = Effect.gen(function* () {
             accounts: files
               .filter((file) => !file.runtime_only)
               .map(({ name, provider, status }) => ({ name, provider, status })),
-            problem: Result.isFailure(sync) ? sync.failure.message : null,
+            problem: sync.problem,
           };
         }).pipe(
           Effect.orElseSucceed((e) => ({
@@ -785,7 +1016,7 @@ const make = Effect.gen(function* () {
     function* (consumer: InferenceConsumer) {
       const state = yield* read;
       const runtime = yield* ensure(state);
-      yield* syncLocalCodexAuth(runtime).pipe(Effect.ignore);
+      yield* syncLocalAuth(runtime);
       const hostId = yield* environment.getEnvironmentId;
       const identity = { hostId, consumerId: consumer.environmentId };
       if (hostId === consumer.environmentId)
@@ -884,7 +1115,7 @@ const make = Effect.gen(function* () {
           )
             return null;
           const runtime = yield* ensure(state);
-          yield* syncLocalCodexAuth(runtime).pipe(Effect.ignore);
+          yield* syncLocalAuth(runtime);
           return { baseUrl: runtime.baseUrl, key: runtime.key };
         }),
       );
@@ -1009,11 +1240,12 @@ const make = Effect.gen(function* () {
     }
   });
   yield* watchLocalCodexAuth.pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
+  yield* watchLocalClaudeAuth.pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
   yield* read.pipe(
     Effect.flatMap((state) =>
       state.enabled
         ? ensure(state).pipe(
-            Effect.tap((runtime) => syncLocalCodexAuth(runtime).pipe(Effect.ignore)),
+            Effect.tap((runtime) => syncLocalAuth(runtime)),
             Effect.andThen(startProxyAccountWatch),
           )
         : Effect.void,

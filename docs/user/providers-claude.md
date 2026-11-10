@@ -31,6 +31,8 @@ into Settings, and check its status. The host keeps the provider login and handl
 account selection and refresh. Desktop includes compatible CLIProxyAPI releases in **Update everything**.
 You can also check for updates in **Inference accounts** on any client. Updating restarts the host, so finish active turns first.
 
+Hosting also picks up a matching Codex or Claude login made in that machine's normal CLI and keeps refreshed tokens in sync with the proxy. On macOS, Claude may ask you to allow T3 Code to access its Keychain credential. Signing out of a CLI does not remove an account already added to the inference host; remove it in **Inference accounts**.
+
 To let another machine use those accounts, turn on **Share inference with paired environments**.
 T3 reuses the selected host's existing connection, including SSH, LAN, Tailscale, or T3 Connect.
 You do not need an agent link or a separate proxy installation on the consuming machine.
@@ -54,7 +56,7 @@ Session affinity keeps a conversation on its credential while available. The mod
 picker always shows normal Claude and Codex models. Traex remains a separate backend.
 
 Routing is optional: turn off **Use CLI proxy** to return to this provider's normal
-T3 Code configuration. Standalone CLI logins and configuration are unchanged.
+T3 Code configuration. Standalone CLI configuration is unchanged.
 Existing threads with removed account selections can choose Claude or Codex again
 and continue; old selections are not remapped.
 
