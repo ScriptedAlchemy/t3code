@@ -51,6 +51,8 @@ import * as ServerConfig from "../config.ts";
 import { DirectEndpoints } from "../environment/DirectEndpoints.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
+import * as ProviderInstanceRegistryMutator from "../provider/ProviderInstanceRegistryMutator.ts";
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { claudeKeychainEntry } from "./claudeKeychain.ts";
 import { install, proxyVersion, resolveRelease, Release } from "./install.ts";
@@ -225,6 +227,7 @@ const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const store = yield* ServerSecretStore.ServerSecretStore;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const registry = yield* ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const links = yield* PeerLinks.PeerLinks;
   const direct = yield* DirectEndpoints;
@@ -933,7 +936,7 @@ const make = Effect.gen(function* () {
       return {};
     }
     if (input.operation === "removeRoute") {
-      yield* settings.reviseProviderInstance(input.instanceId, (current) => {
+      const revised = yield* settings.reviseProviderInstance(input.instanceId, (current) => {
         if (
           !current ||
           !isInferenceProviderConfig(current.config) ||
@@ -945,6 +948,7 @@ const make = Effect.gen(function* () {
           result: undefined,
         });
       });
+      yield* registry.reconcile(deriveProviderInstanceConfigMap(revised.settings));
       return {};
     }
     if (input.operation === "revoke") {
@@ -1068,6 +1072,7 @@ const make = Effect.gen(function* () {
           });
         });
       }
+      yield* registry.reconcile(deriveProviderInstanceConfigMap(yield* settings.getSettings));
     },
     Effect.mapError(safeFailure("Could not refresh inference providers.")),
   );
@@ -1190,7 +1195,7 @@ const make = Effect.gen(function* () {
         : baseUrl;
       const home = path.join(config.stateDir, "providers", "inference", instanceId);
       yield* fs.makeDirectory(home, { recursive: true, mode: 0o700 });
-      yield* settings.reviseProviderInstance(instanceId, (current) => {
+      const revised = yield* settings.reviseProviderInstance(instanceId, (current) => {
         const native =
           current && !isInferenceConfig(current.config)
             ? current
@@ -1225,6 +1230,7 @@ const make = Effect.gen(function* () {
           result: undefined,
         });
       });
+      yield* registry.reconcile(deriveProviderInstanceConfigMap(revised.settings));
     },
     Effect.mapError(safeFailure("Could not configure the routed provider.")),
   );

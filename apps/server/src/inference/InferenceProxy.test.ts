@@ -27,6 +27,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ProviderInstanceRegistryMutator from "../provider/ProviderInstanceRegistryMutator.ts";
 import { DirectEndpoints } from "../environment/DirectEndpoints.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -154,6 +155,7 @@ it.effect(
         let connectionDown = false;
         const importedCodexAuth: Record<string, unknown>[] = [];
         const importedClaudeAuth: Record<string, unknown>[] = [];
+        let activeCodexConfig: unknown;
         const remoteCatalogKeys: (string | undefined)[] = [];
         const http = HttpClient.make((request) => {
           if (request.method === "POST" && request.url.includes("/v0/management/auth-files?")) {
@@ -284,11 +286,21 @@ it.effect(
             }),
           ),
           Layer.provide(Layer.succeed(ServerConfig.ServerConfig, { ...config, port: 12345 })),
+          Layer.provide(
+            Layer.succeed(ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator, {
+              reconcile: (instances) =>
+                Effect.sync(() => {
+                  activeCodexConfig = instances[ProviderInstanceId.make("codex")]?.config;
+                }),
+              reloadSecrets: () => Effect.void,
+            }),
+          ),
           Layer.provide(Layer.mock(ProcessRunner.ProcessRunner)({})),
           Layer.provide(Layer.succeed(HostProcess.HomeDirectory, home)),
           Layer.provide(Layer.succeed(HostProcess.Platform, "darwin")),
           Layer.provide(Layer.succeed(HostProcess.Architecture, "arm64")),
           Layer.provide(Layer.succeed(HostProcess.Username, "test-user")),
+          Layer.provide(Layer.succeed(HostProcess.Environment, {})),
           Layer.provide(NetService.layer),
           Layer.fresh,
         );
@@ -594,6 +606,10 @@ it.effect(
               },
             });
             expect((yield* proxy.status).routes).toEqual([{ instanceId: "codex", label: "Codex" }]);
+            expect(activeCodexConfig).toMatchObject({
+              setupMode: "inference",
+              homePath: expect.stringContaining("/providers/inference/codex"),
+            });
             yield* proxy.bindRoutes(45678);
             expect(
               (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")],
@@ -627,6 +643,9 @@ it.effect(
               (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")]
                 ?.config,
             ).toMatchObject({
+              inferenceBaseUrl: expect.stringContaining("/api/inference/linked/host"),
+            });
+            expect(activeCodexConfig).toMatchObject({
               inferenceBaseUrl: expect.stringContaining("/api/inference/linked/host"),
             });
             yield* proxy.bindRoutes(45678);
@@ -701,6 +720,11 @@ it.effect(
             expect(yield* proxy.authorize(issued.key, hostId)).toBeNull();
             yield* proxy.manage({ operation: "removeRoute", instanceId: routes[0]!.instanceId });
             expect((yield* proxy.status).routes).toEqual([]);
+            expect(activeCodexConfig).toMatchObject({
+              setupMode: "existing",
+              homePath: "/native/home",
+              inferenceEnabled: false,
+            });
             expect(
               (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")]
                 ?.enabled,
