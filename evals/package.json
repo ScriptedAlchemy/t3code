@@ -10,6 +10,7 @@
     "mcp-tool-use:regrade": "node mcp-tool-use/regrade.ts",
     "thread-titles": "node --env-file-if-exists=../.env thread-titles/run.ts",
     "pr-content": "node --env-file-if-exists=../.env pr-content/run.ts",
+    "conversation-summaries": "node --env-file-if-exists=../.env conversation-summaries/run.ts",
     "voice-cleanup": "node --env-file-if-exists=../.env voice-cleanup/run.ts",
     "test-signal": "node --env-file-if-exists=../.env test-signal/run.ts",
     "typecheck": "effect-tsgo tsrs --noEmit",

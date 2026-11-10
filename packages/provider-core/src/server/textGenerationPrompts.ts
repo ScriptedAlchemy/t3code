@@ -573,7 +573,6 @@ export function buildConversationSummaryPrompt(input: ConversationSummaryPromptI
     ...(input.messages.some((message) => message.role === "summary")
       ? [
           "- a source with role summary was written by a model from earlier sources; restate only what it says, keep who said or did what, and never upgrade a claim to a verified outcome",
-          "- when a later source reverses or replaces an earlier decision, keep the later one and say that it changed",
           `- together, the statements must fit in ${CONDENSED_SUMMARY_MAX_CHARS.toLocaleString("en-US")} characters; keep the decisions, constraints and open questions that still matter`,
         ]
       : []),
