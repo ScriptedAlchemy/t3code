@@ -181,8 +181,10 @@ An existing fork PR can appear beside the branch even if you pushed without sett
 If its badge is missing because several remotes hold that branch, set the branch's upstream to
 the intended remote with `git branch --set-upstream-to=<remote>/<branch>`.
 
-Choose the writing style and model in **Settings → Source control**. **Repository conventions**
-uses the project's instructions and recent commit subjects.
+Choose how commit messages and pull request titles and descriptions are written in
+**Settings → Source control → Commits & pull requests**. **Repository conventions** uses the
+project's instructions and recent commit subjects. **Custom instructions** applies your own
+instructions to commits and pull requests.
 
 ## Review and merge
 
@@ -319,13 +321,14 @@ when requested. A settled thread's reviews stop refreshing until you unsettle it
 review is terminal. An open or unsynced link keeps it active.
 
 Ask the agent to monitor CI on a pull request. It waits for every reported check to finish,
-then stops watching and reports the result, including failures or cancelled checks. Accepting a
+then stops watching and reports the result, including failures, cancelled checks, and checks
+waiting for a maintainer's approval. Accepting a
 failure does not leave a CI watch running. If no checks have appeared yet, it keeps waiting;
 ask the agent to stop if the pull request has no CI. After pushing a fix, ask it to monitor the
 new run.
 
 For ongoing monitoring, ask the agent to keep watching checks and reviews. This continues after
-CI finishes and wakes the agent for new failures, comments, reviews, or conflicts. Comments from
+CI finishes and wakes the agent for new failures, checks waiting for approval, comments, reviews, or conflicts. Comments from
 your own account do not wake it. Existing watches and watches started from the **Linked pull
 requests** row menu keep this ongoing behavior. The monitor's description distinguishes waiting
 for CI from watching checks and reviews.

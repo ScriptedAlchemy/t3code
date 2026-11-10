@@ -120,6 +120,7 @@ function makeTestAdapter(input: {
   readonly failure?: ReturnType<typeof makeProviderFailure>;
   readonly failedRunOrdinals?: ReadonlySet<number>;
   readonly interruptedRunOrdinals?: ReadonlySet<number>;
+  readonly cancelledRunOrdinals?: ReadonlySet<number>;
   readonly holdRunOrdinal?: number;
   readonly pendingBackgroundWork?: Ref.Ref<boolean>;
   readonly subagentOnlyBackgroundWork?: boolean;
@@ -301,7 +302,9 @@ function makeTestAdapter(input: {
                 ? "failed"
                 : input.interruptedRunOrdinals?.has(turnInput.runOrdinal)
                   ? "interrupted"
-                  : "completed";
+                  : input.cancelledRunOrdinals?.has(turnInput.runOrdinal)
+                    ? "cancelled"
+                    : "completed";
               const response =
                 input.responseByThreadId?.[turnInput.threadId]?.[turnInput.runOrdinal] ??
                 input.responseByRunOrdinal[turnInput.runOrdinal] ??
@@ -1599,6 +1602,8 @@ describe("orchestration v2 provider switching", () => {
         ["failed", true, true, true],
         ["interrupted", false, true, false],
         ["interrupted", true, false, true],
+        ["cancelled", false, false, false],
+        ["cancelled", true, true, false],
       ] as const
     ).map(
       ([status, queued, returning, native]) =>
@@ -1643,6 +1648,7 @@ describe("orchestration v2 provider switching", () => {
                     interruptedRunOrdinals: new Set(
                       status === "interrupted" ? [sourceOrdinal] : [],
                     ),
+                    cancelledRunOrdinals: new Set(status === "cancelled" ? [sourceOrdinal] : []),
                     holdRunOrdinal: sourceOrdinal,
                     holdFirstTurn: started,
                     releaseFirstTurn: release,
@@ -1656,7 +1662,7 @@ describe("orchestration v2 provider switching", () => {
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
           const waitForRun = (
             ordinal: number,
-            expectedStatus: "completed" | "failed" | "interrupted",
+            expectedStatus: "completed" | "failed" | "interrupted" | "cancelled",
           ) =>
             orchestrator.streamStoredEvents.pipe(
               Stream.filter(

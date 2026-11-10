@@ -19,6 +19,7 @@ const makeFakePi = (
   reply: string,
   requestErrors: { readonly set_model?: string; readonly set_thinking_level?: string } = {},
   turnEvents: ReadonlyArray<Record<string, unknown>> = [],
+  models?: ReadonlyArray<Record<string, unknown>>,
 ) =>
   Effect.gen(function* () {
     const stdout = yield* Queue.unbounded<Uint8Array, Cause.Done>();
@@ -42,6 +43,8 @@ const makeFakePi = (
             yield* emit({ type: "agent_settled" });
           } else if (record["type"] === "get_last_assistant_text") {
             yield* emit({ ...response, success: true, data: { text: reply } });
+          } else if (record["type"] === "get_available_models" && models !== undefined) {
+            yield* emit({ ...response, success: true, data: { models } });
           } else if (record["type"] === "set_model" && requestErrors.set_model !== undefined) {
             yield* emit({ ...response, success: false, error: requestErrors.set_model });
           } else if (
@@ -176,9 +179,15 @@ it.effect(
       yield* textGeneration.generateModelEvaluation(input);
       assert.deepEqual(
         pi.received.map((request) => request["type"]),
-        ["set_model", "set_thinking_level", "prompt", "get_last_assistant_text"],
+        [
+          "get_available_models",
+          "set_model",
+          "set_thinking_level",
+          "prompt",
+          "get_last_assistant_text",
+        ],
       );
-      assert.equal(pi.received[1]?.["level"], "high");
+      assert.equal(pi.received[2]?.["level"], "high");
       assert.equal(pi.launchArguments.length, 1);
       for (const flag of [
         "--no-tools",
@@ -217,6 +226,36 @@ it.effect(
       assert.include(error.detail, "thinking level");
       assert.isUndefined(rejected.received.find((request) => request["type"] === "prompt"));
     }),
+);
+
+it.effect("selects the provider and id Pi reported when the provider contains a slash", () =>
+  Effect.gen(function* () {
+    const provider = "llama-server=http://127.0.0.1:8080";
+    const pi = yield* makeFakePi(
+      JSON.stringify({ subject: "Update README", body: "" }),
+      undefined,
+      [],
+      [{ provider, id: "qwen3" }],
+    );
+    const textGeneration = yield* makePiTextGeneration(
+      { enabled: true, binaryPath: "pi", launchArgs: "", customModels: [] },
+      {},
+    ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, pi.spawner));
+
+    yield* textGeneration.generateCommitMessage({
+      cwd: process.cwd(),
+      branch: "main",
+      stagedSummary: "M README.md",
+      stagedPatch: "diff --git a/README.md b/README.md",
+      modelSelection: createModelSelection(ProviderInstanceId.make("pi"), `${provider}/qwen3`),
+    });
+
+    const setModel = pi.received.find((record) => record["type"] === "set_model");
+    assert.deepEqual(
+      { provider: setModel?.["provider"], modelId: setModel?.["modelId"] },
+      { provider, modelId: "qwen3" },
+    );
+  }),
 );
 
 const failedTurnWith = (errorMessage: string) => ({
