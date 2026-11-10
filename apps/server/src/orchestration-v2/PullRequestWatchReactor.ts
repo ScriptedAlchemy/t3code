@@ -102,7 +102,6 @@ type WatchEndReason =
   | "merged"
   | "closed"
   | "unreadable"
-  | "checks-completed"
   | "comment-limit"
   | "settled"
   | "subagent"
@@ -174,7 +173,6 @@ function planRead(
 function watchesEqual(left: ThreadPullRequestWatch, right: ThreadPullRequestWatch): boolean {
   return (
     left.startedAt === right.startedAt &&
-    left.mode === right.mode &&
     left.headSha === right.headSha &&
     left.failedChecks.join("\n") === right.failedChecks.join("\n") &&
     left.passed === right.passed &&
@@ -469,7 +467,6 @@ export const make = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const last = lastReads.get(group.key);
     const plan = planRead(group, last, fingerprint, now);
-    const watchReviews = group.targets.some((target) => target.watch.mode !== "checks");
     if (!plan.detail) return;
     if (
       last === undefined ||
@@ -482,15 +479,12 @@ export const make = Effect.gen(function* () {
     const reference = referenceOf(group);
     // The reads are recorded against this fingerprint, so a cached answer older than it must not
     // stand in for them. Clients are not told: this only drops this pull request's cached reads.
-    // A bounded watch must not finish on a cached result from before a push or rerun.
-    if (fingerprint !== null || group.targets.some((target) => target.watch.mode === "checks")) {
-      yield* pullRequests.invalidate({ reference });
-    }
+    if (fingerprint !== null) yield* pullRequests.invalidate({ reference });
     const [detailRead, activityRead] = yield* Effect.all(
       [
         Effect.exit(pullRequests.detail({ ...reference, allowStale: false })),
         Effect.exit(
-          plan.activity && watchReviews
+          plan.activity
             ? pullRequests.activity(reference).pipe(Effect.asSome)
             : Effect.succeed(Option.none<PullRequestActivity>()),
         ),
@@ -564,8 +558,7 @@ export const make = Effect.gen(function* () {
       inFlight:
         detail.mergeability === "unknown" ||
         detail.checks.some((check) => check.status === "pending"),
-      remarksComplete:
-        !watchReviews || (plan.activity ? remarks !== null : (last?.remarksComplete ?? false)),
+      remarksComplete: plan.activity ? remarks !== null : (last?.remarksComplete ?? false),
       watches: new Set(group.targets.map(watchKey)),
       status: fingerprint?.status ?? null,
       remarks: fingerprint?.remarks ?? null,
@@ -582,18 +575,12 @@ export const make = Effect.gen(function* () {
         });
         // An ending watch keeps what this pass saw, so watching again starts from it.
         return (
-          report.exhausted || report.completed
+          report.exhausted
             ? record(target, null, wake, report.next)
             : record(target, report.next, wake)
         ).pipe(
           Effect.tap(() => woke(target)),
-          Effect.tap(() =>
-            report.completed
-              ? ended(target, "checks-completed")
-              : report.exhausted
-                ? ended(target, "comment-limit")
-                : Effect.void,
-          ),
+          Effect.tap(() => (report.exhausted ? ended(target, "comment-limit") : Effect.void)),
         );
       }
       return watchesEqual(report.next, target.watch) ? Effect.void : record(target, report.next);

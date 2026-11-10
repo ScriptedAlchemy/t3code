@@ -8885,7 +8885,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.deepEqual((yield* store.getThreadShell(threadId))?.pendingBackgroundTasks, [
         {
           taskId: "pull-request-watch:github.com/pingdotgg/t3code#7",
-          description: "Watching checks and reviews on pull request #7",
+          description: "Watching pull request #7",
           kind: "monitor",
           awaited: true,
         },

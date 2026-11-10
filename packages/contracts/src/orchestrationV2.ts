@@ -65,7 +65,6 @@ import {
   ThreadPullRequestSnapshot,
   ThreadPullRequestStack,
   ThreadPullRequestWatch,
-  ThreadPullRequestWatchMode,
 } from "./threadPullRequest.ts";
 import {
   ProviderApprovalDecision,
@@ -3231,9 +3230,6 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     ...ThreadPullRequestKey.fields,
     watching: Schema.Boolean,
-    mode: Schema.optional(ThreadPullRequestWatchMode),
-    /** Applies only to a new watch; an omitted mode preserves an active subscription. */
-    initialMode: Schema.optional(ThreadPullRequestWatchMode),
     link: Schema.optional(
       Schema.Struct({
         url: TrimmedNonEmptyString,
