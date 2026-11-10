@@ -1235,6 +1235,134 @@ it.effect(
   },
 );
 
+const seedRun = Effect.fn("test.seedSummaryRun")(function* (
+  id: RunId,
+  ordinal: number,
+  owner = threadId,
+) {
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  yield* projections.apply({
+    id: EventId.make(`run-${id}`),
+    type: "run.updated",
+    threadId: owner,
+    runId: id,
+    providerInstanceId: instanceId,
+    occurredAt: at,
+    payload: {
+      id,
+      threadId: owner,
+      ordinal,
+      providerInstanceId: instanceId,
+      modelSelection: { instanceId, model: "gpt-5" },
+      providerThreadId: null,
+      userMessageId: messageId(0),
+      rootNodeId: NodeId.make(`root-${id}`),
+      activeAttemptId: null,
+      status: "completed",
+      requestedAt: at,
+      startedAt: at,
+      completedAt: at,
+      checkpointId: null,
+      contextHandoffId: null,
+    },
+  });
+});
+
+it.effect("applies a fork delta's covered runs to the thread it forked from", () => {
+  const model = citing();
+  return Effect.gen(function* () {
+    yield* seed;
+    yield* persistSummary(0, [0, 1]);
+    yield* seedRun(runId, 1);
+    const handoffs = yield* ContextHandoffService.ContextHandoffServiceV2;
+    const service = yield* ConversationSummaries.ConversationSummaries;
+    const forkDelta = (input: {
+      readonly sourceThreadId: ThreadId;
+      readonly targetThreadId: ThreadId;
+      readonly to: number;
+      readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
+    }) =>
+      handoffs.prepareForkDelta({
+        sourceThreadId: input.sourceThreadId,
+        targetThreadId: input.targetThreadId,
+        targetRunId: RunId.make("fork-target-run"),
+        transferId: null,
+        fromProviderThreadIds: [],
+        toProviderThreadId: providerThread.id,
+        fromProviderInstanceId: instanceId,
+        toProviderInstanceId: instanceId,
+        coveredRunOrdinals: { from: 1, to: input.to },
+        deltaItems: input.deltaItems,
+        createdAt: at,
+      });
+
+    // This thread is the fork source: message 1 is in a covered run but is not carried.
+    const fromHere = yield* forkDelta({
+      sourceThreadId: threadId,
+      targetThreadId: ThreadId.make("fork-destination"),
+      to: 1,
+      deltaItems: [item(0)],
+    });
+    assert.deepEqual(
+      (yield* service.forHandoff({
+        projectId,
+        handoffs: [fromHere],
+        itemIds: new Set([itemId(0)]),
+      })).map((offer) => offer.coveredItemIds),
+      [[itemId(0)]],
+    );
+
+    // This thread is the fork destination: the other thread's runs say nothing about its own.
+    const laterRun = RunId.make("later-run");
+    yield* seedRun(laterRun, 3);
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const moved = messageEvent(1, rawText(1));
+    if (moved.type === "message.updated")
+      yield* projections.apply({ ...moved, payload: { ...moved.payload, runId: laterRun } });
+    yield* projections.apply({
+      id: EventId.make("item-1-moved"),
+      type: "turn-item.updated",
+      threadId,
+      providerInstanceId: instanceId,
+      occurredAt: at,
+      payload: { ...item(1), runId: laterRun },
+    });
+    const forkSource = ThreadId.make("fork-source");
+    yield* projections.apply({
+      id: EventId.make("fork-source-created"),
+      type: "thread.created",
+      threadId: forkSource,
+      providerInstanceId: instanceId,
+      occurredAt: at,
+      payload: { ...threadPayload, id: forkSource },
+    });
+    const forkRun = RunId.make("fork-source-run");
+    yield* seedRun(forkRun, 3, forkSource);
+    const intoHere = yield* forkDelta({
+      sourceThreadId: forkSource,
+      targetThreadId: threadId,
+      to: 3,
+      deltaItems: [
+        {
+          ...item(4),
+          id: TurnItemId.make("fork-source-item"),
+          threadId: forkSource,
+          runId: forkRun,
+        },
+      ],
+    });
+    assert.deepEqual(
+      yield* service.forHandoff({
+        projectId,
+        handoffs: [yield* prepareHandoff(1), intoHere],
+        itemIds: new Set([itemId(0)]),
+      }),
+      [],
+      "message 1 is in a later run of this thread than its own handoff covers",
+    );
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
+
 it.effect("does not spend the handoff candidate limit on stale summaries", () => {
   const model = citing();
   return Effect.gen(function* () {
