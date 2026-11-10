@@ -2759,6 +2759,134 @@ describe("orchestration v2 provider switching", () => {
       ),
   );
 
+  it.live("hands off when a thread returns to a provider whose home changed meanwhile", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cwd = yield* checkpointWorkspace("home-change-while-away");
+        const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+        const claudeHome = yield* Ref.make(0);
+        const claude = makeTestAdapter({
+          instanceId: CLAUDE_MODEL_SELECTION.instanceId,
+          driver: CLAUDE_DRIVER,
+          capabilities: ClaudeProviderCapabilitiesV2,
+          modelSelection: CLAUDE_MODEL_SELECTION,
+          responseByRunOrdinal: { 1: "Native work complete" },
+          capturedTurns,
+          nativeThreadGeneration: yield* Ref.make(0),
+        });
+        const codex = makeTestAdapter({
+          instanceId: CODEX_MODEL_SELECTION.instanceId,
+          driver: CODEX_DRIVER,
+          capabilities: CodexProviderCapabilitiesV2,
+          modelSelection: CODEX_MODEL_SELECTION,
+          responseByRunOrdinal: { 2: "Codex work complete" },
+          capturedTurns,
+        });
+        const claudeKey = Ref.get(claudeHome).pipe(
+          Effect.map((home) => `${CLAUDE_DRIVER}:home:${home}`),
+        );
+        const layerRegistry = Layer.succeed(
+          ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+          ProviderAdapterRegistry.ProviderAdapterRegistryV2.of({
+            get: (instanceId) =>
+              instanceId === CODEX_MODEL_SELECTION.instanceId
+                ? Effect.succeed(codex)
+                : claudeKey.pipe(
+                    Effect.map((continuationKey) => ({
+                      ...claude,
+                      continuationKey,
+                      requiresBoundContinuationIdentity: true,
+                    })),
+                  ),
+            list: () =>
+              Effect.succeed([CLAUDE_MODEL_SELECTION.instanceId, CODEX_MODEL_SELECTION.instanceId]),
+            getMetadata: (instanceId) =>
+              instanceId === CODEX_MODEL_SELECTION.instanceId
+                ? Effect.succeed({
+                    driver: CODEX_DRIVER,
+                    continuationKey: `${CODEX_DRIVER}:instance:${instanceId}`,
+                    requiresBoundContinuationIdentity: false,
+                    enabled: true,
+                    capabilities: CodexProviderCapabilitiesV2,
+                  })
+                : claudeKey.pipe(
+                    Effect.map((continuationKey) => ({
+                      driver: CLAUDE_DRIVER,
+                      continuationKey,
+                      requiresBoundContinuationIdentity: true,
+                      enabled: true,
+                      capabilities: ClaudeProviderCapabilitiesV2,
+                    })),
+                  ),
+          }),
+        );
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const id = ThreadId.make("thread:home-change-while-away");
+          const send = (ordinal: number, modelSelection: ModelSelection) =>
+            Effect.gen(function* () {
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                createdBy: "user",
+                creationSource: "web",
+                commandId: CommandId.make(`command:home-change-while-away:${ordinal}`),
+                threadId: id,
+                messageId: MessageId.make(`message:home-change-while-away:${ordinal}`),
+                text: `Prompt ${ordinal}`,
+                attachments: [],
+                modelSelection,
+                dispatchMode: { type: "start_immediately" },
+              });
+              yield* worker.drain();
+              return yield* waitForIdle(id);
+            });
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make("command:home-change-while-away:create"),
+            threadId: id,
+            projectId: ProjectId.make("project:home-change-while-away"),
+            title: "Home change while away",
+            modelSelection: CLAUDE_MODEL_SELECTION,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+          });
+          yield* send(1, CLAUDE_MODEL_SELECTION);
+          yield* send(2, CODEX_MODEL_SELECTION);
+          yield* Ref.set(claudeHome, 1);
+          const third = yield* send(3, CLAUDE_MODEL_SELECTION);
+          assert.deepEqual(
+            third.runs.map((run) => run.status),
+            ["completed", "completed", "completed"],
+          );
+          assert.notEqual(third.runs[2]!.providerThreadId, third.runs[0]!.providerThreadId);
+          const turns = yield* Ref.get(capturedTurns);
+          assert.notEqual(turns[2]!.nativeThreadId, turns[0]!.nativeThreadId);
+          assert.include(turns[2]!.text, "Native work complete");
+          assert.include(turns[2]!.text, "Codex work complete");
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry(
+              {
+                name: "home-change-while-away",
+                runtimePolicyOverride: {
+                  cwd,
+                  approvalPolicy: "never",
+                  sandboxPolicy: { type: "readOnly" },
+                },
+              },
+              layerRegistry,
+            ),
+          ),
+        );
+      }),
+    ),
+  );
+
   // regression: #20343 sending to an instance with separate history must release the old session
   it.live.each([
     [

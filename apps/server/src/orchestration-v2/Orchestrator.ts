@@ -1344,6 +1344,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  // A thread can return to an instance whose home changed while it ran elsewhere.
+  const resumableRootProviderThreads = Effect.fn("Orchestrator.resumableRootProviderThreads")(
+    function* (
+      projection: Parameters<typeof rootProviderThreadsForProvider>[0],
+      instanceId: ProviderInstanceId,
+    ) {
+      const resumable: Array<OrchestrationV2ProviderThread> = [];
+      for (const candidate of rootProviderThreadsForProvider(projection, instanceId)) {
+        if (!(yield* providerContinuationChanged(candidate, instanceId))) resumable.push(candidate);
+      }
+      return resumable;
+    },
+  );
+
   const providerSessionIdFor = Effect.fn("Orchestrator.providerSessionIdFor")(function* (input: {
     readonly adapter: ProviderAdapter.ProviderAdapterV2["Service"];
     readonly providerInstanceId: ProviderInstanceId;
@@ -2103,7 +2117,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? activeProviderThread?.providerInstanceId === queuedRun.providerInstanceId &&
             !providerThreadPredatesBoundary(activeProviderThread, contextBoundary)
             ? activeProviderThread
-            : rootProviderThreadsForProvider(projection, queuedRun.providerInstanceId)[0]
+            : (yield* resumableRootProviderThreads(projection, queuedRun.providerInstanceId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestratorDispatchError({
+                      commandId,
+                      commandType: "message.dispatch",
+                      cause,
+                    }),
+                ),
+              ))[0]
           : freshContext &&
               (storedProviderThread.firstRunOrdinal !== null ||
                 storedProviderThread.nativeThreadRef !== null)
@@ -5895,10 +5918,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           strategy: "full_thread_summary",
         }),
       );
-      const existingTargetProviderThread = rootProviderThreadsForProvider(
-        input.projection,
-        input.modelSelection.instanceId,
-      ).find((candidate) => candidate.id !== input.providerThread.id);
+      const existingTargetProviderThread = (yield* mapDispatchError(input.command)(
+        resumableRootProviderThreads(input.projection, input.modelSelection.instanceId),
+      )).find((candidate) => candidate.id !== input.providerThread.id);
       const targetProviderSessionId =
         existingTargetProviderThread?.providerSessionId ??
         (yield* mapDispatchError(input.command)(
@@ -7188,7 +7210,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? undefined
         : modelSelection.instanceId === queueProviderThread.providerInstanceId
           ? queueProviderThread
-          : rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0];
+          : (yield* resumableRootProviderThreads(projection, modelSelection.instanceId).pipe(
+              mapDispatchError(command),
+            ))[0];
       const queuedAdapter = yield* providerAdapters
         .get(modelSelection.instanceId)
         .pipe(mapDispatchError(command));
@@ -8025,7 +8049,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const targetProviderThread = continuationChanged
       ? undefined
       : isProviderSwitch && !canResumeAcrossInstances
-        ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
+        ? (yield* resumableRootProviderThreads(projection, modelSelection.instanceId).pipe(
+            mapDispatchError(command),
+          ))[0]
         : activeProviderThread;
     const providerSessionId =
       (canResumeAcrossInstances ? undefined : targetProviderThread?.providerSessionId) ??
