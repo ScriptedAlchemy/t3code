@@ -1016,6 +1016,44 @@ describe("handoff delivery", () => {
     }),
   );
 
+  it.effect.each([
+    { name: "nothing omitted", history: handoff.history!, summaryText: "", uncovered: 0 },
+    {
+      name: "omitted items an older record does not name",
+      history: { ...handoff.history!, omittedItems: 3 },
+      summaryText: "",
+      uncovered: 3,
+    },
+    {
+      name: "named omitted items",
+      history: {
+        ...handoff.history!,
+        omittedItems: 2,
+        omittedItemIds: [TurnItemId.make("item:gone-1"), TurnItemId.make("item:gone-2")],
+      },
+      summaryText: "",
+      uncovered: 2,
+    },
+    {
+      name: "a record without history whose text does not fit",
+      history: undefined,
+      summaryText: "x".repeat(70_000),
+      uncovered: 1,
+    },
+  ])("counts what a delivery leaves uncovered: $name", ({ history, summaryText, uncovered }) =>
+    Effect.gen(function* () {
+      const { history: _, ...rest } = handoff;
+      const result = yield* deliverContextHandoffs({
+        handoffs: [{ ...rest, summaryText, ...(history === undefined ? {} : { history }) }],
+        providerThread: { ...providerThread, nativeThreadRef: null },
+        budget: 64_000,
+        alreadyDeliveredItemIds: new Set(),
+        persist: () => Effect.void,
+      });
+      assert.equal(result.uncoveredItems, uncovered);
+    }),
+  );
+
   it.effect("fails before delivery when even the coverage marker cannot fit", () =>
     Effect.gen(function* () {
       let calls = 0;
