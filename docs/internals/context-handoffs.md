@@ -49,6 +49,22 @@ A roll-up offer carries no delivered-knowledge evidence, unlike a leaf offer: th
 hundred items would never fit beside it. Roll-ups are capped by rendered bytes, as delivery
 measures them, so several fit beside the verbatim tail of a 16 KB handoff.
 
+A context restart replaces a large native conversation with a fresh one seeded by the same
+`full_thread_summary` recovery handoff that a failed resume uses (`ContextRestart.ts` holds the
+rule, `ProviderTurnStartService` the effects). It exists because cache reads of long histories
+dominate cost, and it is shaped by the prompt cache: a restart pays one cache rebuild, so it fires
+only at turn start and only when the fresh conversation is estimated at no more than half the
+measured context. The estimate is the first usage measured on the current native conversation, which
+also makes the turn right after a restart ineligible. Restarts are refused, never forced: the turn
+continues natively on any gap (an older item delivered neither verbatim nor beneath a summary), a
+queued summary pass, background work, a control message, a restart continuation, or a group
+discussion. Native forks and threads held by another client never reach the check, because the fork
+path returns first and the resume that precedes it fails. Codex is the only driver for now. A
+replacement conversation, from a restart or a recovery, gets the 64,000-byte ceiling at preparation
+and delivery, because it has no native history to protect; switches and forks keep the configured
+cap. Checkpoint rollback reverts the native conversation each attempt recorded, so rolling back past
+a replacement points the thread at the older conversation instead of over-reverting the new one.
+
 Legacy v1 continuation uses a separate algorithm. It considers only user and assistant messages,
 walks backward from the newest message, and builds a transcript suffix within a 32,000-character
 budget. Do not describe that migration budget as the limit for portable handoffs.
