@@ -204,10 +204,10 @@ that was saved from that thread. Recalled facts are sent in a short form without
 their citations. A long fact is cut short, and the agent reads the rest when it
 needs it.
 
-When an agent relies on a recalled or searched fact, it rates the fact helpful or
-unhelpful. Helpful ratings raise the fact's trust and unhelpful ratings lower it,
-and only facts with enough trust are recalled. To remove a fact for good, forget
-it in Project memory.
+Each recalled fact asks the agent to rate it once it has relied on it. Helpful
+ratings raise the fact's trust and unhelpful ratings lower it, and only facts
+with enough trust are recalled. To remove a fact for good, forget it in Project
+memory.
 
 A fact's details show its history: when it was created, edited, superseded, and
 rated helpful or unhelpful, with the trust change from each rating. **Memory health** counts facts by status. When facts lose their cited

@@ -86,6 +86,9 @@ const RECALL_MIN_BYTES = 512;
 // A longer fact is cut here; its header carries the id that reads the rest.
 const RECALL_FACT_MAX_CHARS = 800;
 type KnowledgeFormat = "attached" | "recalled";
+// How to rate a fact travels with the facts, so a turn with no recall pays nothing for it.
+const recalledPreamble = (projectId: ProjectId) =>
+  `Saved facts from project ${projectId}, for reference. Rate any you rely on with t3_knowledge_mutate feedback: helpful, or unhelpful if it misled you.`;
 
 /** Whether a thread's own messages or agent produced this fact, so its agent already has it. */
 const cameFromThread = (fact: Pick<ProjectFact, "origin" | "sources">, threadId: ThreadId) =>
@@ -858,7 +861,7 @@ const make = Effect.gen(function* () {
       }
       const text =
         format === "recalled"
-          ? `Saved facts from project ${input.projectId}, for reference:\n${parts.join("\n")}`
+          ? `${recalledPreamble(input.projectId)}\n${parts.join("\n")}`
           : `Selected project knowledge (quoted source material):\n\n${parts.join("\n\n")}`;
       const byteLength = Buffer.byteLength(text, "utf8");
       if (byteLength > input.maxBytes)

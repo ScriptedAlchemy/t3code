@@ -1846,7 +1846,7 @@ it.effect(
       assert.deepEqual(
         composer.items.map((item) => item.text),
         [
-          "Saved facts from project automatic-recall, for reference:\n[fact fact-one rev 1, from user] Cache keys include tenant IDs.",
+          "Saved facts from project automatic-recall, for reference. Rate any you rely on with t3_knowledge_mutate feedback: helpful, or unhelpful if it misled you.\n[fact fact-one rev 1, from user] Cache keys include tenant IDs.",
         ],
       );
       assert.include(composer.text, composer.items[0]!.text);
@@ -1892,7 +1892,7 @@ it.effect(
       const [longText] = sentLong.items.map((item) => item.text);
       assert.include(longText, "[fact long rev 1, from user] Cache keys include tenant IDs.");
       assert.include(longText, "t3_knowledge_read_fact");
-      assert.isAtMost(longText!.length, 1000);
+      assert.isAtMost(longText!.length, 1100);
     }).pipe(Effect.provide(layerTest)),
 );
 
