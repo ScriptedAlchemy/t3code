@@ -685,6 +685,18 @@ export const makeStore = Effect.gen(function* () {
       ...(providerThreadId == null ? {} : { providerThreadId }),
     }));
   });
+  const sentFactIds = Effect.fn("ProjectKnowledgeStore.sentFactIds")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+  ) {
+    const rows = yield* sql<{ readonly factId: ProjectFactId }>`
+      SELECT DISTINCT json_extract(selection.value, '$.factId') AS "factId"
+      FROM project_knowledge_deliveries d, json_each(d.items_json) item,
+        json_each(item.value, '$.context.selections') selection
+      WHERE d.project_id = ${projectId} AND d.thread_id = ${threadId} AND d.status = 'sent'
+        AND json_extract(selection.value, '$.kind') = 'fact'`;
+    return new Set(rows.map((row) => row.factId));
+  });
   const assistedRunRecorded = Effect.fn("ProjectKnowledgeStore.assistedRunRecorded")(function* (
     runId: RunId,
   ) {
@@ -743,6 +755,7 @@ export const makeStore = Effect.gen(function* () {
     replaceDeliveryItems,
     deliveries,
     sentDeliveries,
+    sentFactIds,
     deliveryPage,
   };
 });

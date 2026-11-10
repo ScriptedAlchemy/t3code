@@ -192,15 +192,16 @@ or conflicting facts should supersede one another. Trust, age and retrieval
 history affect recall. Forgetting a fact removes its content, and a later run
 can supply new evidence for it.
 
-Pause while composing the first request in a thread to see up to two related
-facts. Each suggestion shows why it matched. Open its source, choose **Use** to
-review it for attachment, or **Dismiss** it for this draft. Previewing a
-suggestion costs no model tokens and does not increase its trust.
+You don't need to pick facts by hand. When you send a message, T3 sends up to two
+saved facts related to it along with your message, as **Recalled project memory**.
+A thread receives each fact once. Recall skips messages where you attached
+project knowledge yourself, and messages sent when the context window is nearly
+full. Agents can also search project memory at any point in a turn.
 
-Agents can search project memory on demand. On an unattended first turn with T3
-tools available and room in the context window, the agent can also receive up to
-two fact IDs. It can open a fact and follow its citations when the task needs
-the evidence.
+When an agent relies on a recalled or searched fact, it rates the fact helpful or
+unhelpful. Helpful ratings raise the fact's trust and unhelpful ratings lower it,
+and only facts with enough trust are recalled. To remove a fact for good, forget
+it in Project memory.
 
 A fact's details show its history: when it was created, edited, superseded, and
 rated helpful or unhelpful, with the trust change from each rating. **Memory health** counts facts by status. When facts lose their cited

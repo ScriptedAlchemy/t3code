@@ -19,10 +19,7 @@ import {
   type ProjectKnowledgeSearchInput,
   type ThreadId,
 } from "@t3tools/contracts";
-import {
-  addProjectMemorySuggestion,
-  projectKnowledgeContextRecord,
-} from "@t3tools/client-runtime/projectKnowledge";
+import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { BrainIcon } from "lucide-react";
@@ -52,7 +49,6 @@ import {
 import { ConflictHintRow, KnowledgeHealthStrip } from "./ProjectFactDetail";
 import { AssistedLearningSection } from "./AssistedLearningSection";
 import { ProjectFactEditor, type EditableFact, type FactEditorSeed } from "./ProjectFactEditor";
-import { useProjectMemorySuggestions } from "./ProjectMemorySuggestions";
 import { ProjectMemoryFactList } from "./ProjectMemoryFactList";
 import {
   FactInspector,
@@ -80,7 +76,6 @@ type OpenRequest = ProjectScope & {
   readonly message: MessageCitation | null;
   readonly fact: FactFocus | null;
   readonly key: number;
-  readonly selection?: KnowledgeSelection;
 };
 const openRequestAtom = Atom.make<OpenRequest | null>(null).pipe(
   Atom.keepAlive,
@@ -139,48 +134,6 @@ export function ProjectMemoryPanel(props: ProjectScope) {
   );
 }
 
-export function useProjectMemorySuggestionBanners(
-  props: Pick<Scope, "composerDraftTarget"> & {
-    readonly environmentId: EnvironmentId | null;
-    readonly projectId: ProjectId | null;
-    readonly suggest: boolean;
-  },
-) {
-  const environmentId = props.environmentId ?? ("" as EnvironmentId);
-  const projectId = props.projectId ?? ("" as ProjectId);
-  const available = useProjectMemoryAvailable(props.environmentId);
-  const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
-  const setRequest = useAtomSet(openRequestAtom);
-  return useProjectMemorySuggestions({
-    enabled:
-      props.suggest &&
-      props.projectId !== null &&
-      available &&
-      config?.environment.capabilities.projectKnowledgePreview === true,
-    scopeKey: `${environmentId}:${projectId}:${typeof props.composerDraftTarget === "string" ? props.composerDraftTarget : scopedThreadKey(props.composerDraftTarget)}`,
-    environmentId,
-    projectId,
-    composerDraftTarget: props.composerDraftTarget,
-    onUse: (fact, query) =>
-      setRequest({
-        environmentId,
-        projectId,
-        message: null,
-        fact: { id: fact.id, query },
-        selection: { kind: "fact", factId: fact.id, revision: fact.revision },
-        key: takeRequestKey(),
-      }),
-    onSource: (source) =>
-      setRequest({
-        environmentId,
-        projectId,
-        message: source,
-        fact: null,
-        key: takeRequestKey(),
-      }),
-  });
-}
-
 export function ProjectMemoryDialogHost(props: Scope) {
   const available = useProjectMemoryAvailable(props.environmentId);
   const [request, setRequest] = useAtom(openRequestAtom);
@@ -213,7 +166,6 @@ export function ProjectMemoryDialogHost(props: Scope) {
             {...props}
             seedMessage={active.message}
             focusFact={active.fact}
-            suggestedSelection={active.selection}
           />
         ) : null}
       </DialogPopup>
@@ -238,7 +190,6 @@ function MemoryContents(
   props: Scope & {
     readonly seedMessage: MessageCitation | null;
     readonly focusFact: FactFocus | null;
-    readonly suggestedSelection?: KnowledgeSelection | undefined;
   },
 ) {
   const target = props.composerDraftTarget;
@@ -251,12 +202,7 @@ function MemoryContents(
       ? candidate
       : undefined;
   const [selections, setSelections] = useState<ReadonlyArray<KnowledgeSelection>>(
-    props.suggestedSelection?.kind === "fact"
-      ? addProjectMemorySuggestion(attached?.knowledge.selections ?? [], {
-          id: props.suggestedSelection.factId,
-          revision: props.suggestedSelection.revision,
-        })
-      : (attached?.knowledge.selections ?? []),
+    attached?.knowledge.selections ?? [],
   );
   const [query, setQuery] = useState(props.focusFact?.query ?? "");
   const [searchInput, setSearchInput] = useState<ProjectKnowledgeSearchInput | null>(() =>

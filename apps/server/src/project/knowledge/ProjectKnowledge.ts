@@ -3,8 +3,12 @@ import {
   boundProjectMemorySuggestionQuery,
   isSubstantiveProjectMemoryQuery,
   selectProjectMemorySuggestions,
-  type ProjectMemorySuggestion,
   type AssistedLearningRun,
+  type CommandId,
+  ComposerContextId,
+  type ComposerContextRecord,
+  type ProjectKnowledgeContextRecord,
+  type ThreadId,
   type KnowledgeConflictHint,
   type KnowledgeFactSource,
   KnowledgeOrigin,
@@ -44,6 +48,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
@@ -62,6 +67,19 @@ import * as HolographicMemory from "./HolographicMemory.ts";
 import { projectMemorySearchTokens } from "./holographicScoring.ts";
 import { conflictHints } from "./knowledgeConflicts.ts";
 import { DeliveryScrubRunner } from "./deliveryScrubSchedule.ts";
+
+type RecallComposer = {
+  readonly text: string;
+  readonly records: ReadonlyArray<ComposerContextRecord>;
+};
+const RECALL_CONTEXT_ID = ComposerContextId.make("project-memory-recall");
+// Recall runs before every eligible turn starts, so a slow store skips it rather than stalling.
+const RECALL_TIMEOUT = "150 millis";
+// Recalled facts stay a small slice of the turn, and leave room for the context envelope
+// around them so the delivery's own budget check cannot refuse what recall accepted.
+const RECALL_MAX_BYTES = 8192;
+const RECALL_ENVELOPE_BYTES = 1024;
+const RECALL_MIN_BYTES = 512;
 
 export class ProjectKnowledge extends Context.Service<
   ProjectKnowledge,
@@ -99,9 +117,20 @@ export class ProjectKnowledge extends Context.Service<
     readonly search: (
       input: ProjectKnowledgeSearchInput,
     ) => Effect.Effect<ProjectKnowledgeSearchResult, ProjectKnowledgeError>;
-    readonly suggest: (
-      input: Pick<ProjectKnowledgeSearchInput, "projectId" | "query" | "requestId">,
-    ) => Effect.Effect<ReadonlyArray<ProjectMemorySuggestion>, ProjectKnowledgeError>;
+    /**
+     * Attaches saved facts related to a user message that its thread has not been sent yet, as
+     * a knowledge record the turn's delivery sends. Best effort: null when nothing fits, and a
+     * failed or slow lookup never fails the turn. Facts the user attached take precedence.
+     */
+    readonly recall: (input: {
+      readonly projectId: ProjectId;
+      readonly threadId: ThreadId;
+      readonly requestId: CommandId;
+      readonly query: string;
+      readonly composer: RecallComposer;
+      /** The turn's remaining knowledge budget, in bytes. */
+      readonly knowledgeAllowance: number;
+    }) => Effect.Effect<RecallComposer | null>;
     readonly prepareContext: (
       input: ProjectKnowledgeContext,
     ) => Effect.Effect<ProjectKnowledgePreparedContext, ProjectKnowledgeError>;
@@ -1159,19 +1188,76 @@ const make = Effect.gen(function* () {
     );
     yield* store.recordDelivery(checked).pipe(Effect.mapError(storageError(delivery.projectId)));
   });
-  const suggest: ProjectKnowledge["Service"]["suggest"] = Effect.fn("ProjectKnowledge.suggest")(
+  const recall: ProjectKnowledge["Service"]["recall"] = Effect.fn("ProjectKnowledge.recall")(
     function* (input) {
-      if (!isSubstantiveProjectMemoryQuery(input.query)) return [];
-      const result = yield* search({
-        ...input,
-        query: boundProjectMemorySuggestionQuery(input.query),
-        recordRetrieval: false,
-        preview: true,
-        minTrust: 0.5,
-        limit: 8,
-        messageLimit: 1,
+      if (
+        input.composer.records.some((record) => record.kind === "project-knowledge") ||
+        input.query.trimStart().startsWith("/") ||
+        !isSubstantiveProjectMemoryQuery(input.query)
+      )
+        return null;
+      const factBytes = Math.min(
+        RECALL_MAX_BYTES,
+        Math.floor(input.knowledgeAllowance) - RECALL_ENVELOPE_BYTES,
+      );
+      if (factBytes < RECALL_MIN_BYTES) return null;
+      const lookup = Effect.gen(function* () {
+        const result = yield* search({
+          projectId: input.projectId,
+          requestId: input.requestId,
+          query: boundProjectMemorySuggestionQuery(input.query),
+          recordRetrieval: false,
+          preview: true,
+          minTrust: 0.5,
+          limit: 8,
+          messageLimit: 1,
+        });
+        const matches = selectProjectMemorySuggestions(result, input.query);
+        if (matches.length === 0) return null;
+        const sent = yield* store
+          .sentFactIds(input.projectId, input.threadId)
+          .pipe(Effect.mapError(storageError(input.projectId)));
+        const selections = matches
+          .filter(({ fact }) => !sent.has(fact.id))
+          .map(({ fact }) => ({ kind: "fact" as const, factId: fact.id, revision: fact.revision }));
+        const environmentId = yield* environment.getEnvironmentId;
+        // Drop the weakest match until the rest resolve within the turn's knowledge budget.
+        for (let count = selections.length; count > 0; count--) {
+          const record: ProjectKnowledgeContextRecord = {
+            version: 1,
+            kind: "project-knowledge",
+            contextId: RECALL_CONTEXT_ID,
+            label: "Recalled project memory",
+            knowledge: {
+              environmentId,
+              projectId: input.projectId,
+              selections: selections.slice(0, count),
+              maxBytes: factBytes + RECALL_ENVELOPE_BYTES,
+            },
+          };
+          const resolved = yield* resolveForTurn({ ...record.knowledge, maxBytes: factBytes }).pipe(
+            Effect.option,
+          );
+          if (Option.isSome(resolved))
+            return {
+              text: `${input.composer.text}\n\n${formatComposerContextReference(record)}`,
+              records: [...input.composer.records, record],
+            };
+        }
+        return null;
       });
-      return selectProjectMemorySuggestions(result, input.query);
+      return yield* lookup.pipe(
+        Effect.timeoutOption(RECALL_TIMEOUT),
+        Effect.map(Option.getOrNull),
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.logWarning("Project memory recall failed", {
+                projectId: input.projectId,
+                threadId: input.threadId,
+              }).pipe(Effect.as(null)),
+        ),
+      );
     },
   );
 
@@ -1563,7 +1649,7 @@ const make = Effect.gen(function* () {
     readSource,
     readSources,
     search,
-    suggest,
+    recall,
     prepareContext,
     resolveForTurn,
     recordDelivery,

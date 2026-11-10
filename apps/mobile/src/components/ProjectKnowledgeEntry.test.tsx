@@ -26,7 +26,6 @@ const state = vi.hoisted(() => ({
   deliveries: null as unknown,
   readDeliveries: vi.fn(),
   focused: true,
-  previewSupported: true,
   androidSheet: false,
   draft: {} as { text: string; context?: { records: unknown[] } },
   list: null as unknown,
@@ -165,7 +164,6 @@ vi.mock("../state/server", () => ({
       environment: {
         capabilities: {
           projectKnowledge: true,
-          projectKnowledgePreview: state.previewSupported,
           projectKnowledgeHistory: true,
           projectKnowledgeDeliveries: state.deliveryCapabilities[environmentId],
         },
@@ -289,16 +287,12 @@ const deliveryRecord: ProjectKnowledgeDeliveries = {
     },
   ],
 };
-function setup(
-  entries: Array<typeof scope & { suggest?: boolean }> = [scope],
-  previewSupported = true,
-) {
+function setup(entries: Array<typeof scope> = [scope]) {
   state.uuidSequence = 0;
   state.deliveryCapabilities = {};
   state.deliveries = null;
   state.readDeliveries.mockReset();
   state.focused = true;
-  state.previewSupported = previewSupported;
   state.androidSheet = false;
   state.draft = { text: "" };
   state.list = { facts: [fact], nextCursor: null };
@@ -958,92 +952,3 @@ it.each(["Hardware Back", "Header Back", "Back", "Cancel"])(
     expect(screen.container.textContent).toContain("Edit");
   },
 );
-
-it("recalls a completed first draft once and dismisses a suggestion without attaching it", async () => {
-  using screen = setup([{ ...scope, suggest: true }]);
-  vi.useFakeTimers();
-  try {
-    expect(state.searchRequest).not.toHaveBeenCalled();
-    state.draft = { text: "Change the cache keys" };
-    screen.rerender();
-    await act(async () => vi.advanceTimersByTimeAsync(500));
-    expect(state.searchRequest).not.toHaveBeenCalled();
-    state.draft = { text: "Change the cache keys to include tenant IDs." };
-    state.search = {
-      messages: { matches: [], nextCursor: null },
-      facts: {
-        state: "available",
-        coverage: "complete",
-        nextCursor: null,
-        matches: [
-          {
-            fact: {
-              ...fact,
-              trust: 0.9,
-              sources: [
-                {
-                  kind: "message",
-                  threadId: ThreadId.make("source"),
-                  messageId: MessageId.make("source-message"),
-                  digest: "a".repeat(64),
-                },
-              ],
-            },
-            score: {
-              holographic: 0.9,
-              lexical: 0.9,
-              tokenOverlap: 0.9,
-              temporalDecay: 1,
-              reinforcement: 1,
-              trust: 0.9,
-              combined: 0.9,
-            },
-          },
-        ],
-      },
-    };
-    screen.rerender();
-    await act(async () => vi.advanceTimersByTimeAsync(1000));
-    expect(screen.container.textContent).toContain("Project memory:");
-    expect(state.searchRequest.mock.calls[0]?.[0].input).toMatchObject({
-      query: state.draft.text,
-      recordRetrieval: false,
-      projectId: scope.projectId,
-    });
-    const recalledDraft = state.draft.text;
-    state.draft = { text: `${recalledDraft} Keep the existing conventions.` };
-    screen.rerender();
-    expect(screen.container.textContent).toContain("Project memory:");
-    state.draft = { text: "Replace the sign in page with a new layout." };
-    screen.rerender();
-    expect(screen.container.textContent).not.toContain("Project memory:");
-    state.draft = { text: recalledDraft };
-    screen.rerender();
-    expect(screen.container.textContent).toContain("Project memory:");
-    await screen.click("Dismiss");
-    expect(screen.container.textContent).not.toContain("Project memory:");
-    expect(state.prepare).not.toHaveBeenCalled();
-    expect(state.insert).not.toHaveBeenCalled();
-    state.draft = { text: "Another request about tenant cache keys." };
-    screen.rerender();
-    await act(async () => vi.advanceTimersByTimeAsync(2000));
-    expect(
-      new Set(state.searchRequest.mock.calls.map(([request]) => request.input.requestId)).size,
-    ).toBe(1);
-  } finally {
-    vi.useRealTimers();
-  }
-});
-
-it("keeps passive draft recall off for servers without preview support", async () => {
-  using screen = setup([{ ...scope, suggest: true }], false);
-  vi.useFakeTimers();
-  try {
-    state.draft = { text: "Change cache keys to include tenant IDs." };
-    screen.rerender();
-    await act(async () => vi.advanceTimersByTimeAsync(2000));
-    expect(state.searchRequest).not.toHaveBeenCalled();
-  } finally {
-    vi.useRealTimers();
-  }
-});

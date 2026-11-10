@@ -22,7 +22,7 @@ import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKn
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
-import { act, fakeTimers, render, type Screen } from "../../../test/render";
+import { act, render, type Screen } from "../../../test/render";
 
 const state = vi.hoisted(() => ({
   config: null as unknown,
@@ -101,10 +101,8 @@ import {
   useComposerDraftStore,
   partializeComposerDraftStoreState,
 } from "../../composerDraftStore";
-import { ComposerBannerStack } from "../chat/ComposerBannerStack";
 import {
   ProjectMemoryDialogHost,
-  useProjectMemorySuggestionBanners,
   ProjectMemoryPanel,
   useOpenProjectMemory,
 } from "./ProjectMemoryPanel";
@@ -1236,75 +1234,4 @@ it("shows automatic facts as saved, with citations and the project switch", asyn
       },
     },
   });
-});
-
-function SuggestionHarness() {
-  const items = useProjectMemorySuggestionBanners({
-    ...scope,
-    suggest: true,
-    composerDraftTarget: target,
-  });
-  return (
-    <>
-      <ComposerBannerStack items={items} detached />
-      <ProjectMemoryDialogHost {...scope} composerDraftTarget={target} />
-    </>
-  );
-}
-
-it("suggests cited memory for a completed first draft and keeps dismissal independent of attachment", async () => {
-  const registry = await setup();
-  await using _screen = await render(
-    <RegistryContext.Provider value={registry}>
-      <div className="mx-auto w-[640px] p-6">
-        <p>New request</p>
-        <SuggestionHarness />
-      </div>
-    </RegistryContext.Provider>,
-  );
-  using _timers = fakeTimers();
-  {
-    expect(state.searchRequest).not.toHaveBeenCalled();
-    await act(() =>
-      useComposerDraftStore
-        .getState()
-        .setPrompt(target, "Change cache keys to include tenant IDs."),
-    );
-    await act(async () => vi.advanceTimersByTimeAsync(1000));
-    await expect.element(page.getByText(/Cache keys include tenant IDs/)).toBeVisible();
-    expect(state.searchRequest.mock.calls[0]?.[0].input).toMatchObject({
-      preview: true,
-      recordRetrieval: false,
-      query: "Change cache keys to include tenant IDs.",
-    });
-    await act(() =>
-      useComposerDraftStore
-        .getState()
-        .setPrompt(
-          target,
-          "Change cache keys to include tenant IDs. Keep the existing conventions.",
-        ),
-    );
-    await expect.element(page.getByText(/Cache keys include tenant IDs/)).toBeVisible();
-    await act(() =>
-      useComposerDraftStore
-        .getState()
-        .setPrompt(target, "Replace the sign in page with a new layout."),
-    );
-    await expect.element(page.getByText(/Cache keys include tenant IDs/)).not.toBeInTheDocument();
-    await act(() =>
-      useComposerDraftStore
-        .getState()
-        .setPrompt(target, "Change cache keys to include tenant IDs."),
-    );
-    await expect.element(page.getByText(/Cache keys include tenant IDs/)).toBeVisible();
-    await page.getByRole("button", { name: "Use", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Project memory" });
-    await expect.element(dialog.getByRole("checkbox", { name: /Select for draft/ })).toBeChecked();
-    await userEvent.keyboard("{Escape}");
-    await expect.element(dialog).not.toBeInTheDocument();
-    await page.getByRole("button", { name: "Dismiss project memory suggestion" }).click();
-    await expect.element(page.getByText(/Cache keys include tenant IDs/)).not.toBeInTheDocument();
-    expect(state.prepare).not.toHaveBeenCalled();
-  }
 });

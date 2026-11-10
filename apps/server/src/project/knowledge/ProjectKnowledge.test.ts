@@ -1741,14 +1741,23 @@ it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
       knowledge.list({ projectId }),
       (listed) => listed.facts[0]?.retrievalCount,
     );
-    assert.deepEqual(
-      yield* knowledge.suggest({
+    const recalled = Effect.fn("test.recalled")(function* (requestId: string, query: string) {
+      const composer = yield* knowledge.recall({
         projectId,
-        requestId: CommandId.make("suggest-greeting"),
-        query: "hello there",
-      }),
-      [],
-    );
+        threadId: ThreadId.make("recall-thread"),
+        requestId: CommandId.make(requestId),
+        query,
+        composer: { text: query, records: [] },
+        knowledgeAllowance: 48000,
+      });
+      const record = composer?.records.find((item) => item.kind === "project-knowledge");
+      return record?.kind === "project-knowledge" && "knowledge" in record
+        ? record.knowledge.selections.flatMap((selection) =>
+            selection.kind === "fact" ? [selection.factId] : [],
+          )
+        : [];
+    });
+    assert.deepEqual(yield* recalled("suggest-greeting", "hello there"), []);
     const sql = yield* SqlClient.SqlClient;
     const longQuery = "cache keys tenant ".repeat(100);
     for (const [name, query] of [
@@ -1758,11 +1767,7 @@ it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
       ["long-with-whitespace", ` \n\t${longQuery}\n\t `],
     ] as const) {
       const requestId = CommandId.make(`suggest-relevant-${name}`);
-      const suggestions = yield* knowledge.suggest({ projectId, requestId, query });
-      assert.equal(suggestions.length, 1);
-      assert.equal(suggestions[0]?.fact.id, ProjectFactId.make("fact-one"));
-      assert.equal(suggestions[0]?.fact.sources[0]?.kind, "user");
-      assert.equal(suggestions[0]?.fact.retrievalCount, 0);
+      assert.deepEqual(yield* recalled(requestId, query), [ProjectFactId.make("fact-one")]);
       assert.equal(yield* storedCount, 0);
       assert.equal(
         (yield* sql`SELECT command_id FROM project_knowledge_commands WHERE command_id = ${requestId}`)
@@ -1772,11 +1777,10 @@ it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
     }
 
     assert.deepEqual(
-      yield* knowledge.suggest({
-        projectId,
-        requestId: CommandId.make("suggest-weak"),
-        query: "tenant garden bicycle banana weather holiday mountain sunset",
-      }),
+      yield* recalled(
+        "suggest-weak",
+        "tenant garden bicycle banana weather holiday mountain sunset",
+      ),
       [],
     );
     yield* knowledge.mutate(
@@ -1788,27 +1792,83 @@ it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
       },
       { kind: "user" },
     );
-    const unicode = yield* knowledge.suggest({
-      projectId,
-      requestId: CommandId.make("suggest-unicode"),
-      query: "缓存键必须包含租户标识",
-    });
-    assert.equal(unicode[0]?.fact.id, ProjectFactId.make("unicode"));
-    assert.include(unicode[0]?.reason ?? "", "缓存键必须包含租户标识");
-    assert.deepEqual(
-      yield* knowledge.suggest({
-        projectId,
-        requestId: CommandId.make("suggest-filler"),
-        query: "please can you help",
-      }),
-      [],
-    );
+    assert.deepEqual(yield* recalled("suggest-unicode", "缓存键必须包含租户标识"), [
+      ProjectFactId.make("unicode"),
+    ]);
+    assert.deepEqual(yield* recalled("suggest-filler", "please can you help"), []);
     assert.equal(yield* storedCount, 0);
     assert.equal(yield* searchCount("browse", false), 0);
     assert.equal(yield* storedCount, 0);
     assert.equal(yield* searchCount("agent"), 1);
     assert.equal(yield* storedCount, 1);
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "recalls related facts once per thread, behind hand-picked knowledge and the budget",
+  () =>
+    Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projectId = ProjectId.make("automatic-recall");
+      yield* createProject(projectId);
+      yield* knowledge.mutate(createFact(projectId), { kind: "user" });
+      const threadId = ThreadId.make("recall-thread");
+      const query = "Change cache keys to include tenant IDs.";
+      const recall = (
+        overrides: Partial<Parameters<typeof knowledge.recall>[0]> = {},
+        requestId = "recall",
+      ) =>
+        knowledge.recall({
+          projectId,
+          threadId,
+          requestId: CommandId.make(requestId),
+          query,
+          composer: { text: query, records: [] },
+          knowledgeAllowance: 48000,
+          ...overrides,
+        });
+
+      const recalled = yield* recall();
+      const record = recalled?.records[0];
+      assert.equal(record?.kind, "project-knowledge");
+      if (record?.kind !== "project-knowledge" || !("knowledge" in record)) return;
+      assert.deepEqual(record.knowledge.selections, [
+        { kind: "fact", factId: ProjectFactId.make("fact-one"), revision: 1 },
+      ]);
+      assert.isAtMost(record.knowledge.maxBytes, 48000);
+      // The delivery path sends exactly what recall attached, the fact included.
+      const composer = yield* resolveKnowledgeComposer({
+        projectId,
+        text: recalled!.text,
+        records: recalled!.records,
+      });
+      assert.include(composer.text, "Cache keys include tenant IDs.");
+      assert.include(composer.text, "Fact fact-one");
+
+      // Knowledge the user attached by hand is the whole selection for that message.
+      assert.isNull(yield* recall({ composer: { text: query, records: [record] } }, "hand-picked"));
+      // A nearly full context has no room for recall.
+      assert.isNull(yield* recall({ knowledgeAllowance: 1200 }, "no-room"));
+
+      const sent = {
+        attemptId: RunAttemptId.make("recall-attempt"),
+        runId: RunId.make("recall-run"),
+        threadId,
+        messageId: MessageId.make("recall-message"),
+        projectId,
+        providerInstanceId,
+        items: composer.items,
+        omissions: [],
+        createdAt: DateTime.formatIso(at(1)),
+        updatedAt: DateTime.formatIso(at(1)),
+      };
+      yield* knowledge.recordDelivery({ ...sent, status: "prepared" });
+      assert.isNotNull(yield* recall({}, "prepared-only"));
+      yield* knowledge.recordDelivery({ ...sent, status: "sent" });
+      // A fact the thread already received is not sent again, but another thread still gets it.
+      assert.isNull(yield* recall({}, "already-sent"));
+      assert.isNotNull(yield* recall({ threadId: ThreadId.make("other-thread") }, "other-thread"));
+    }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("checks citations for one page of recall, not for every ranked fact", () =>
