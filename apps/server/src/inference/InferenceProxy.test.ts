@@ -336,6 +336,7 @@ it.effect(
               cliHome + "/auth.json",
               JSON.stringify({
                 auth_mode: "chatgpt",
+                customSetting: "keep",
                 last_refresh: "2026-11-09T00:00:00Z",
                 tokens: {
                   account_id: "same-account",
@@ -347,6 +348,22 @@ it.effect(
             );
             yield* proxy.status;
             expect(importedCodexAuth).toHaveLength(2);
+            yield* fs.writeFileString(
+              accountFile,
+              JSON.stringify({
+                type: "codex",
+                account_id: "same-account",
+                email: "person@example.com",
+                access_token: accessToken,
+                refresh_token: "proxy-refresh",
+                id_token: "proxy-id",
+                last_refresh: "2026-11-12T00:00:00Z",
+                note: "keep this metadata",
+              }),
+            );
+            yield* proxy.status;
+            expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("proxy-refresh");
+            expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("customSetting");
             expect((yield* proxy.grant(peer)).baseUrl).toBe("t3-environment:host");
             lan = true;
             yield* startSharing;

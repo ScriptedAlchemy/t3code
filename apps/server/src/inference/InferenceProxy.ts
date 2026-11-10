@@ -20,6 +20,7 @@ import {
   type InferenceRouteInput,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { NetService } from "@t3tools/shared/Net";
 import { readTailscaleServeRoutesTo } from "@t3tools/tailscale";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -33,6 +34,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -111,6 +113,9 @@ const ProxyCodexAuth = Schema.Struct({
   type: Schema.Literal("codex"),
   account_id: Schema.String,
   last_refresh: Schema.String,
+  access_token: Schema.String,
+  refresh_token: Schema.String,
+  id_token: Schema.String,
   disabled: Schema.optionalKey(Schema.Boolean),
 });
 const isLocalCodexAuth = Schema.is(LocalCodexAuth);
@@ -129,11 +134,11 @@ function jwtClaims(token: string): Record<string, unknown> | null {
   }
 }
 
-function parseLocalCodexAuth(raw: string, now: number) {
+function parseLocalCodexAuth(raw: string) {
   const decoded = decodeUnknownJson(raw);
   if (Option.isNone(decoded)) return null;
   const parsed = decoded.value;
-  if (!isLocalCodexAuth(parsed)) return null;
+  if (!isRecord(parsed) || !isLocalCodexAuth(parsed)) return null;
   const { tokens, last_refresh: lastRefresh } = parsed;
   const expiresAt = jwtClaims(tokens.access_token)?.exp;
   const refreshedAt = Date.parse(lastRefresh);
@@ -142,12 +147,10 @@ function parseLocalCodexAuth(raw: string, now: number) {
     !tokens.access_token ||
     !tokens.refresh_token ||
     !tokens.id_token ||
-    typeof expiresAt !== "number" ||
-    !Number.isFinite(refreshedAt) ||
-    expiresAt * 1000 <= now
+    !Number.isFinite(refreshedAt)
   )
     return null;
-  return { tokens, lastRefresh, refreshedAt, expiresAt };
+  return { data: parsed, tokens, lastRefresh, refreshedAt, expiresAt };
 }
 const failure = (message: string) => new InferenceProxyError({ message });
 const isInferenceFailure = Schema.is(InferenceProxyError);
@@ -189,6 +192,7 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const serviceScope = yield* Scope.Scope;
   const net = yield* NetService;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const store = yield* ServerSecretStore.ServerSecretStore;
@@ -213,6 +217,7 @@ const make = Effect.gen(function* () {
   );
   const localCodexAuthPath = path.join(localCodexHome, "auth.json");
   let cached: Saved | undefined;
+  let proxyAccountWatch: Fiber.Fiber<void> | undefined;
   let running:
     | {
         child: ChildProcessSpawner.ChildProcessHandle;
@@ -325,15 +330,17 @@ const make = Effect.gen(function* () {
   const syncLocalCodexAuth = Effect.fn("InferenceProxy.syncLocalCodexAuth")(
     function* (runtime: NonNullable<typeof running>) {
       if (!(yield* fs.exists(localCodexAuthPath))) return false;
-      const source = parseLocalCodexAuth(
-        yield* fs.readFileString(localCodexAuthPath),
-        yield* Clock.currentTimeMillis,
-      );
+      const localRaw = yield* fs.readFileString(localCodexAuthPath);
+      const source = parseLocalCodexAuth(localRaw);
       if (!source) return false;
       const authDir = path.join(directory, "accounts");
       const names = yield* fs.readDirectory(authDir);
       let existing:
-        | { name: string; data: Record<string, unknown>; refreshedAt: number }
+        | {
+            name: string;
+            data: Record<string, unknown> & typeof ProxyCodexAuth.Type;
+            refreshedAt: number;
+          }
         | undefined;
       for (const name of names) {
         if (!name.endsWith(".json") || name !== path.basename(name)) continue;
@@ -346,11 +353,35 @@ const make = Effect.gen(function* () {
         if (!isRecord(data) || !isProxyCodexAuth(data)) continue;
         if (data.account_id !== source.tokens.account_id) continue;
         const refreshedAt = Date.parse(data.last_refresh);
+        if (!Number.isFinite(refreshedAt)) continue;
         if (!existing || refreshedAt > existing.refreshedAt) existing = { name, data, refreshedAt };
       }
+      if (existing?.data.disabled === true) return false;
+      if (existing && existing.refreshedAt > source.refreshedAt) {
+        if ((yield* fs.readFileString(localCodexAuthPath)) !== localRaw) return false;
+        yield* writeFileStringAtomically({
+          filePath: localCodexAuthPath,
+          contents: yield* encodeConfig({
+            ...source.data,
+            last_refresh: existing.data.last_refresh,
+            tokens: {
+              ...source.tokens,
+              access_token: existing.data.access_token,
+              refresh_token: existing.data.refresh_token,
+              id_token: existing.data.id_token,
+            },
+          }),
+          mode: 0o600,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+        );
+        return true;
+      }
+      if (existing && existing.refreshedAt === source.refreshedAt) return false;
       if (
-        existing?.data.disabled === true ||
-        (existing && existing.refreshedAt >= source.refreshedAt)
+        typeof source.expiresAt !== "number" ||
+        source.expiresAt * 1000 <= (yield* Clock.currentTimeMillis)
       )
         return false;
       const accountId = source.tokens.account_id;
@@ -410,6 +441,45 @@ const make = Effect.gen(function* () {
           Effect.ignoreCause({ log: true }),
         ),
     );
+  });
+
+  const watchProxyCodexAuth = Effect.gen(function* () {
+    const changes = fs.watch(path.join(directory, "accounts")).pipe(
+      Stream.filter((event) => path.basename(event.path).endsWith(".json")),
+      Stream.debounce(Duration.millis(100)),
+    );
+    yield* Stream.runForEach(changes, () =>
+      mutex
+        .withPermit(
+          Effect.gen(function* () {
+            const state = yield* read;
+            return state.enabled ? yield* syncLocalCodexAuth(yield* ensure(state)) : false;
+          }),
+        )
+        .pipe(
+          Effect.flatMap((changed) => (changed ? refreshLocalProviders() : Effect.void)),
+          Effect.ignoreCause({ log: true }),
+        ),
+    );
+  });
+
+  const startProxyAccountWatch = Effect.gen(function* () {
+    if (proxyAccountWatch) return;
+    proxyAccountWatch = yield* watchProxyCodexAuth.pipe(
+      Effect.ignoreCause({ log: true }),
+      Effect.ensuring(
+        Effect.sync(() => {
+          proxyAccountWatch = undefined;
+        }),
+      ),
+      Effect.forkIn(serviceScope),
+    );
+  });
+
+  const stopProxyAccountWatch = Effect.gen(function* () {
+    if (!proxyAccountWatch) return;
+    yield* Fiber.interrupt(proxyAccountWatch);
+    proxyAccountWatch = undefined;
   });
 
   const watchChild = Effect.fn("InferenceProxy.watchChild")(function* () {
@@ -579,6 +649,7 @@ const make = Effect.gen(function* () {
           Effect.andThen(stop),
           Effect.uninterruptible,
         );
+        yield* stopProxyAccountWatch;
       } else {
         const next = {
           ...state,
@@ -593,6 +664,7 @@ const make = Effect.gen(function* () {
             Effect.onError(() => (state.enabled ? Effect.void : stop)),
           ),
         );
+        yield* startProxyAccountWatch;
       }
       return {};
     }
@@ -938,7 +1010,14 @@ const make = Effect.gen(function* () {
   });
   yield* watchLocalCodexAuth.pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
   yield* read.pipe(
-    Effect.flatMap((state) => (state.enabled ? Effect.asVoid(ensure(state)) : Effect.void)),
+    Effect.flatMap((state) =>
+      state.enabled
+        ? ensure(state).pipe(
+            Effect.tap((runtime) => syncLocalCodexAuth(runtime).pipe(Effect.ignore)),
+            Effect.andThen(startProxyAccountWatch),
+          )
+        : Effect.void,
+    ),
     mutex.withPermit,
     Effect.ignore,
     Effect.forkScoped,
