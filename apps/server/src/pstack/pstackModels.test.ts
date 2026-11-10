@@ -123,26 +123,6 @@ it.effect("leaves speed to the provider unless the models file sets it", () =>
   }),
 );
 
-it.effect("resolves seats saved against a retired route or pool to the normal provider", () =>
-  Effect.sync(() => {
-    const resolved = resolveRoles({
-      ...availability,
-      file: parseModelsFile(
-        "architect runners: inference_claudeAgent_1ce3f6740fb26811/claude-opus-5-5 effort=xhigh, pool_codex/gpt-6-astra reasoningEffort=high",
-      ),
-      defaults,
-      providers,
-      capableInstanceIds,
-    });
-    assert.deepEqual(
-      resolved.roles[0]!.seats.map((seat) =>
-        seat.kind === "target" ? seat.target.providerInstanceId : seat.kind,
-      ),
-      ["claudeAgent", "codex"],
-    );
-  }),
-);
-
 it.effect.each([
   { label: "arena runners", panel: true },
   { label: "architect runners", panel: true },

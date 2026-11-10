@@ -413,6 +413,32 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
       assert.include(expansion.text, "Provider is rate limited. Retry after its cooldown expires.");
     }),
   );
+  it.effect("rewrites role seats saved against a retired route instance", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture([claudeProvider]);
+      const fs = yield* FileSystem.FileSystem;
+      const modelsPath = `${fixture.stateDir}/pstack/models.md`;
+      yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
+      yield* fs.writeFileString(
+        modelsPath,
+        "architect runners: inference_claudeAgent_1ce3f6740fb26811/claude-opus-5-5",
+      );
+      const expansion = yield* Effect.gen(function* () {
+        return yield* (yield* PstackPack.PstackPack).expandComposer(
+          { text: "$pstack:architect", records: [], projectId: ProjectId.make("pack-test") },
+          { createdBy: "user" },
+        );
+      }).pipe(Effect.provide(fixture.layer));
+      assert.include(
+        expansion.text,
+        '- architect runners: [1] {"providerInstanceId":"claudeAgent"',
+      );
+      assert.equal(
+        yield* fs.readFileString(modelsPath),
+        "architect runners: claudeAgent/claude-opus-5-5",
+      );
+    }),
+  );
   it.effect.each(["cooling", "disabled", "available"] as const)(
     "an explicit inference seat honors availability when %s",
     (scenario) =>

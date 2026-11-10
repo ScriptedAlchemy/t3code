@@ -2887,19 +2887,74 @@ describe("orchestration v2 provider switching", () => {
     ),
   );
 
-  it.live("runs a thread saved against a retired route instance on the normal provider", () =>
+  it.live("hands a thread to the normal provider after its route instance is retired", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("retired-route-instance");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
-        const retired = {
+        const routeSelection = {
           ...CODEX_MODEL_SELECTION,
           instanceId: ProviderInstanceId.make("inference_codex_1ce3f6740fb26811"),
         };
+        const adapters = [routeSelection, CODEX_MODEL_SELECTION].map((modelSelection) =>
+          makeTestAdapter({
+            instanceId: modelSelection.instanceId,
+            driver: CODEX_DRIVER,
+            capabilities: CodexProviderCapabilitiesV2,
+            modelSelection,
+            responseByRunOrdinal: { 1: "Route work complete" },
+            capturedTurns,
+          }),
+        );
+        const retired = yield* Ref.make(false);
+        const registered = Ref.get(retired).pipe(
+          Effect.map((isRetired) => (isRetired ? adapters.slice(1) : adapters)),
+        );
+        const layerRegistry = Layer.succeed(
+          ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+          ProviderAdapterRegistry.ProviderAdapterRegistryV2.of({
+            get: (instanceId) =>
+              registered.pipe(
+                Effect.flatMap((available) => {
+                  const adapter = available.find(
+                    (candidate) => candidate.instanceId === instanceId,
+                  );
+                  return adapter === undefined
+                    ? Effect.fail(
+                        new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({
+                          instanceId,
+                        }),
+                      )
+                    : Effect.succeed(adapter);
+                }),
+              ),
+            list: () =>
+              registered.pipe(
+                Effect.map((available) => available.map((adapter) => adapter.instanceId)),
+              ),
+          }),
+        );
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
           const id = ThreadId.make("thread:retired-route-instance");
+          const send = (ordinal: number, modelSelection: ModelSelection) =>
+            Effect.gen(function* () {
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                createdBy: "user",
+                creationSource: "web",
+                commandId: CommandId.make(`command:retired-route-instance:${ordinal}`),
+                threadId: id,
+                messageId: MessageId.make(`message:retired-route-instance:${ordinal}`),
+                text: `Prompt ${ordinal}`,
+                attachments: [],
+                modelSelection,
+                dispatchMode: { type: "start_immediately" },
+              });
+              yield* worker.drain();
+              return yield* waitForIdle(id);
+            });
           yield* orchestrator.dispatch({
             type: "thread.create",
             createdBy: "user",
@@ -2908,34 +2963,24 @@ describe("orchestration v2 provider switching", () => {
             threadId: id,
             projectId: ProjectId.make("project:retired-route-instance"),
             title: "Retired route instance",
-            modelSelection: retired,
+            modelSelection: routeSelection,
             runtimeMode: "full-access",
             interactionMode: "default",
             branch: null,
             worktreePath: cwd,
           });
-          yield* orchestrator.dispatch({
-            type: "message.dispatch",
-            createdBy: "user",
-            creationSource: "web",
-            commandId: CommandId.make("command:retired-route-instance:send"),
-            threadId: id,
-            messageId: MessageId.make("message:retired-route-instance:send"),
-            text: "Prompt",
-            attachments: [],
-            modelSelection: retired,
-            dispatchMode: { type: "start_immediately" },
-          });
-          yield* worker.drain();
-          const projection = yield* waitForIdle(id);
-          assert.equal(
-            projection.thread.modelSelection.instanceId,
-            CODEX_MODEL_SELECTION.instanceId,
-          );
+          yield* send(1, routeSelection);
+          // Migration 095 leaves the thread selecting the default instance.
+          yield* Ref.set(retired, true);
+          const projection = yield* send(2, CODEX_MODEL_SELECTION);
           assert.deepEqual(
             projection.runs.map((run) => [run.status, run.providerInstanceId]),
-            [["completed", CODEX_MODEL_SELECTION.instanceId]],
+            [
+              ["completed", routeSelection.instanceId],
+              ["completed", CODEX_MODEL_SELECTION.instanceId],
+            ],
           );
+          assert.include((yield* Ref.get(capturedTurns))[1]!.text, "Route work complete");
         }).pipe(
           Effect.provide(
             ProviderReplayHarness.layerWithRegistry(
@@ -2947,16 +2992,7 @@ describe("orchestration v2 provider switching", () => {
                   sandboxPolicy: { type: "readOnly" },
                 },
               },
-              ProviderAdapterRegistry.layerFromAdapters([
-                makeTestAdapter({
-                  instanceId: CODEX_MODEL_SELECTION.instanceId,
-                  driver: CODEX_DRIVER,
-                  capabilities: CodexProviderCapabilitiesV2,
-                  modelSelection: CODEX_MODEL_SELECTION,
-                  responseByRunOrdinal: {},
-                  capturedTurns,
-                }),
-              ]),
+              layerRegistry,
             ),
           ),
         );

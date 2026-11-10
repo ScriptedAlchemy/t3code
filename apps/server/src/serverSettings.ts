@@ -1,7 +1,6 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   isInferenceProviderConfig,
-  isInferenceConfig,
   isCustomInferenceBackend,
   ModelSelection,
   ProjectId,
@@ -186,22 +185,63 @@ function withoutUnknownSecretProviderConfigs(
   ) as ServerSettings["secretProviders"];
 }
 
+const RETIRED_INSTANCE_ID =
+  /^(?:pool_(codex|claudeAgent)|inference_(codex|claudeAgent)_[0-9a-f]{16})$/;
+export const retiredInstanceSuccessor = (instanceId: string) => {
+  const match = RETIRED_INSTANCE_ID.exec(instanceId);
+  return match === null ? undefined : (match[1] ?? match[2]);
+};
+
+function retireInstanceReferences(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const next = value.map(retireInstanceReferences);
+    return next.some((entry, index) => entry !== value[index]) ? next : value;
+  }
+  if (typeof value !== "object" || value === null) return value;
+  let changed = false;
+  const next: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const successor = retiredInstanceSuccessor(key);
+    if (successor !== undefined) {
+      changed = true;
+      // The successor's own entry wins; a retired entry only fills a gap.
+      if (successor in value) continue;
+    }
+    const reference =
+      (key === "instanceId" || key === "provider") && typeof entry === "string"
+        ? retiredInstanceSuccessor(entry)
+        : undefined;
+    const nextEntry = reference ?? retireInstanceReferences(entry);
+    changed ||= nextEntry !== entry;
+    next[successor ?? key] = nextEntry;
+  }
+  return changed ? next : value;
+}
+
+/**
+ * Account pools and per-host route instances became a mode of the driver's default instance.
+ * Drops the old instances and points saved model choices at the default one.
+ */
+export function retireInferenceRouteInstances(settings: ServerSettings): ServerSettings {
+  const providerInstances = Object.fromEntries(
+    Object.entries(settings.providerInstances).filter(
+      ([id]) => retiredInstanceSuccessor(id) === undefined,
+    ),
+  );
+  const { providerInstances: current, ...rest } = settings;
+  const retired = retireInstanceReferences(rest);
+  const instancesChanged = Object.keys(providerInstances).length !== Object.keys(current).length;
+  return retired === rest && !instancesChanged
+    ? settings
+    : ({ ...(retired as typeof rest), providerInstances } as ServerSettings);
+}
+
 export function applyProviderInstanceMutation(
   settings: ServerSettings,
   mutation: ProviderInstanceMutation,
 ): ServerSettings {
   const providerInstances = { ...settings.providerInstances };
   if (mutation.operation === "upsert" || mutation.operation === "create") {
-    if (isInferenceProviderConfig(mutation.instance.config)) {
-      for (const [id, entry] of Object.entries(providerInstances)) {
-        if (
-          /^inference_(codex|claudeAgent)_[0-9a-f]{16}$/.test(id) &&
-          entry.driver === mutation.instance.driver &&
-          isInferenceConfig(entry.config)
-        )
-          delete providerInstances[ProviderInstanceId.make(id)];
-      }
-    }
     providerInstances[mutation.instanceId] = mutation.instance;
     return { ...settings, providerInstances };
   }
@@ -962,7 +1002,7 @@ const make = Effect.gen(function* () {
         : migrateLegacyProviderSettings(settings, legacyProviders, providerHistory),
     );
     const folded = settingsFileTrusted
-      ? foldLegacyProjectSettings(loaded, legacyProjectRows)
+      ? retireInferenceRouteInstances(foldLegacyProjectSettings(loaded, legacyProjectRows))
       : loaded;
     // Remove retired keys only after copying secrets and writing the new file; failures retry on next load.
     const legacySecretsCopied = yield* Effect.forEach(

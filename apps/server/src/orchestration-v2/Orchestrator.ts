@@ -23,7 +23,6 @@ import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type ChatAttachment,
   CommandId,
-  currentProviderInstanceId,
   type GuestMessageId,
   isCompactionCommandMessage,
   isOrchestrationV2PublicationRun,
@@ -1264,15 +1263,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
-  const currentSelection = Effect.fn("Orchestrator.currentSelection")(function* (
-    selection: ModelSelection,
-  ) {
-    const instanceId = currentProviderInstanceId(
-      selection.instanceId,
-      yield* providerAdapters.list(),
-    );
-    return instanceId === selection.instanceId ? selection : { ...selection, instanceId };
-  });
   // Read once: the policy is fixed for the server's life, and dispatch takes it as an input.
   const { managedPolicy } = serverSettings;
   const runtimeModeCeiling: RuntimeModeCeiling | undefined =
@@ -1976,9 +1966,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (candidate) => candidate.id === storedQueuedRun.userMessageId,
       );
       const commandId = CommandId.make(`command:system:start-queued:${storedQueuedRun.id}`);
-      const modelSelection = yield* currentSelection(
-        queuedRunModelSelection(projection, storedQueuedRun),
-      );
+      const modelSelection = queuedRunModelSelection(projection, storedQueuedRun);
       const queuedRun = {
         ...storedQueuedRun,
         modelSelection,
@@ -3269,7 +3257,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
 
-    const modelSelection = yield* currentSelection(command.modelSelection);
+    const modelSelection = command.modelSelection;
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
@@ -3607,7 +3595,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const modelSelection =
       command.type === "thread.model-selection.set" || command.type === "provider.switch"
-        ? yield* currentSelection(command.modelSelection)
+        ? command.modelSelection
         : thread.modelSelection;
     if (
       command.type === "thread.pull-request.watch" &&
@@ -6881,9 +6869,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection.messages.find((message) => message.id === command.messageId)?.groupThrough ??
       projection.runs.find((run) => run.id === continuedRunId)?.groupThrough;
     const groupThroughField = groupThrough === undefined ? {} : { groupThrough };
-    const modelSelection = yield* currentSelection(
-      command.modelSelection ?? projection.thread.modelSelection,
-    );
+    const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
     let dispatchMode = resolveMessageDispatchIntent(
       projection,
       command.dispatchMode,
@@ -9101,7 +9087,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
 
-      const modelSelection = yield* currentSelection(command.modelSelection);
+      const modelSelection = command.modelSelection;
       const targetAdapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
         Effect.mapError(
           (cause) =>

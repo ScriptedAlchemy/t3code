@@ -37,6 +37,16 @@ describe("limitCooldownUntilMs", () => {
     },
   );
 
+  it.each(["rateLimitExceeded", "usageLimitExceeded"] as const)(
+    "ignores one account's reset for %s on a pooled route",
+    (code) => {
+      assert.strictEqual(
+        limitCooldownUntilMs(failure(code, futureResetAt), nowMs, true),
+        nowMs + 60_000,
+      );
+    },
+  );
+
   it.each(["usageLimitExceeded", null] as const)(
     "uses the default cooldown for code %s without a future reset",
     (code) => {

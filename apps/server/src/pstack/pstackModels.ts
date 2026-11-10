@@ -1,7 +1,6 @@
 import {
-  currentProviderInstanceId,
   type ModelSelection,
-  ProviderInstanceId,
+  type ProviderInstanceId,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type ServerProvider,
@@ -270,10 +269,7 @@ export function resolveRoles(input: {
         return inherited.kind === "unavailable" && !panel ? undefined : inherited;
       if (seat.kind === "unresolved") return fallback(index, seat.model, seat.reason);
       const entry = seat.entry;
-      const instanceId = currentProviderInstanceId(
-        ProviderInstanceId.make(entry.providerInstanceId),
-        input.providers.map((provider) => provider.instanceId),
-      );
+      const instanceId = entry.providerInstanceId;
       const provider = input.providers.find((provider) => provider.instanceId === instanceId);
       const model = provider?.models.find((model) => model.slug === entry.model);
       const descriptors = model?.capabilities?.optionDescriptors ?? [];

@@ -297,7 +297,7 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
           names,
           "pstack is unavailable: this session does not expose T3 orchestration tools. Use a T3-managed session to run this workflow.",
         );
-      const file = yield* fs.readFileString(modelsPath).pipe(
+      const saved = yield* fs.readFileString(modelsPath).pipe(
         Effect.catchIf(
           (error) => error.reason._tag === "NotFound",
           () => Effect.void,
@@ -306,6 +306,20 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
           (cause) => new PstackPackError({ path: modelsPath, operation: "expand", cause }),
         ),
       );
+      // Seats saved before proxy routing became a provider mode name instances that are gone.
+      const file = saved?.replace(
+        /\w+(?=\/)/g,
+        (instanceId) => ServerSettings.retiredInstanceSuccessor(instanceId) ?? instanceId,
+      );
+      if (file !== undefined && file !== saved) {
+        yield* fs
+          .writeFileString(modelsPath, file)
+          .pipe(
+            Effect.mapError(
+              (cause) => new PstackPackError({ path: modelsPath, operation: "expand", cause }),
+            ),
+          );
+      }
       const providers = yield* readOrchestrationProviders().pipe(
         Effect.provideService(ProviderRegistry.ProviderRegistry, registry),
         Effect.provideService(ProviderAdapterRegistry.ProviderAdapterRegistryV2, adapters),

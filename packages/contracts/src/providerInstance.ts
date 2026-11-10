@@ -106,19 +106,3 @@ export type ProviderInstanceConfigMap = typeof ProviderInstanceConfigMap.Type;
 /** Driver-kind ids keep stored selections routable without migration. */
 export const defaultInstanceIdForDriver = (driver: ProviderDriverKind): ProviderInstanceId =>
   ProviderInstanceId.make(driver);
-
-const RETIRED_INSTANCE_ID = /^(?:pool_(\w+)|inference_(codex|claudeAgent)_[0-9a-f]{16})$/;
-
-/**
- * Account pools and per-host route instances became a mode of the driver's default instance.
- * Selections saved against them follow it once the old instance is gone.
- */
-export const currentProviderInstanceId = (
-  instanceId: ProviderInstanceId,
-  registered: ReadonlyArray<ProviderInstanceId>,
-): ProviderInstanceId => {
-  if (registered.includes(instanceId)) return instanceId;
-  const match = RETIRED_INSTANCE_ID.exec(instanceId);
-  const target = match === null ? undefined : (match[1] ?? match[2]);
-  return registered.find((candidate) => candidate === target) ?? instanceId;
-};
