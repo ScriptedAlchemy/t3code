@@ -31,27 +31,45 @@ export const ConversationSummarySourceRange = Schema.Struct({
   total: PositiveInt,
 });
 
+const ConversationSummaryMessageRef = Schema.Struct({
+  ...KnowledgeMessageRef.fields,
+  range: Schema.optionalKey(ConversationSummarySourceRange),
+});
+const ConversationSummaryTurnItemRef = Schema.Struct({
+  kind: Schema.Literal("turn_item"),
+  threadId: ThreadId,
+  itemId: TurnItemId,
+  digest: KnowledgeDigest,
+  range: Schema.optionalKey(ConversationSummarySourceRange),
+});
+/** A range of a finalized message or tool result: what a leaf summarizes. */
+export type ConversationSummaryRangeRef =
+  | typeof ConversationSummaryMessageRef.Type
+  | typeof ConversationSummaryTurnItemRef.Type;
+
 export const ConversationSummarySourceRef = Schema.Union([
+  ConversationSummaryMessageRef,
+  ConversationSummaryTurnItemRef,
+  // The id is already a digest of the child's exact sources, so the ref needs no digest of its own.
   Schema.Struct({
-    ...KnowledgeMessageRef.fields,
-    range: Schema.optionalKey(ConversationSummarySourceRange),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("turn_item"),
+    kind: Schema.Literal("summary"),
     threadId: ThreadId,
-    itemId: TurnItemId,
-    digest: KnowledgeDigest,
-    range: Schema.optionalKey(ConversationSummarySourceRange),
+    summaryId: ConversationSummaryId,
   }),
 ]);
 export type ConversationSummarySourceRef = typeof ConversationSummarySourceRef.Type;
 
 /** Identity of the complete source, independent of which part a leaf summarizes. */
 export const conversationSummarySourceIdentity = (source: ConversationSummarySourceRef): string =>
-  source.kind === "message" ? `message:${source.messageId}` : `turn_item:${source.itemId}`;
+  source.kind === "message"
+    ? `message:${source.messageId}`
+    : source.kind === "turn_item"
+      ? `turn_item:${source.itemId}`
+      : source.summaryId;
 
 /** Citation key; old whole-message citations retain their original message id. */
 export const conversationSummarySourceKey = (source: ConversationSummarySourceRef): string => {
+  if (source.kind === "summary") return source.summaryId;
   const id = source.kind === "message" ? source.messageId : `turn_item:${source.itemId}`;
   return source.range === undefined
     ? id
@@ -64,7 +82,8 @@ export const ConversationSummarySourceResult = Schema.Union([
     source: ConversationSummarySourceRef,
     text: Schema.String,
     title: Schema.String,
-    role: Schema.Literals(["user", "assistant", "tool"]),
+    /** "summary" when the source is a child summary; its text is that summary's statements. */
+    role: Schema.Literals(["user", "assistant", "tool", "summary"]),
     createdAt: IsoDateTime,
     archived: Schema.Boolean,
     /** Offset and total length within this source's recorded range. */
@@ -86,8 +105,9 @@ export const ConversationSummaryStatement = Schema.Struct({
 export type ConversationSummaryStatement = typeof ConversationSummaryStatement.Type;
 
 /**
- * An immutable leaf summary of consecutive finalized source ranges. Its text is only served while
- * every source still matches its digest.
+ * An immutable summary. A leaf summarizes consecutive finalized source ranges. A condensed summary
+ * summarizes consecutive summaries of the same thread, oldest first. Its text is only served while
+ * every range beneath it still matches its digest.
  */
 export const ConversationSummary = Schema.Struct({
   id: ConversationSummaryId,
@@ -96,6 +116,12 @@ export const ConversationSummary = Schema.Struct({
   sources: Schema.Array(ConversationSummarySourceRef).check(
     Schema.isMinLength(1),
     Schema.isMaxLength(CONVERSATION_SUMMARY_MAX_SOURCES),
+    Schema.makeFilter(
+      (sources) =>
+        sources.every((source) => source.kind === "summary") ||
+        sources.every((source) => source.kind !== "summary"),
+      { expected: "sources that are all summaries or all ranges" },
+    ),
   ),
   statements: Schema.Array(ConversationSummaryStatement).check(
     Schema.isMinLength(1),
