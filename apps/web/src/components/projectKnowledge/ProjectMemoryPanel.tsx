@@ -52,7 +52,7 @@ import {
 import { ConflictHintRow, KnowledgeHealthStrip } from "./ProjectFactDetail";
 import { AssistedLearningSection } from "./AssistedLearningSection";
 import { ProjectFactEditor, type EditableFact, type FactEditorSeed } from "./ProjectFactEditor";
-import { ProjectMemorySuggestions } from "./ProjectMemorySuggestions";
+import { useProjectMemorySuggestions } from "./ProjectMemorySuggestions";
 import { ProjectMemoryFactList } from "./ProjectMemoryFactList";
 import {
   FactInspector,
@@ -68,7 +68,6 @@ type Scope = {
   environmentId: EnvironmentId;
   projectId: ProjectId;
   composerDraftTarget: ComposerThreadTarget;
-  suggest?: boolean;
 };
 type ProjectScope = Pick<Scope, "environmentId" | "projectId">;
 type MessageCitation = { readonly threadId: ThreadId; readonly messageId: MessageId };
@@ -140,9 +139,50 @@ export function ProjectMemoryPanel(props: ProjectScope) {
   );
 }
 
+export function useProjectMemorySuggestionBanners(
+  props: Pick<Scope, "composerDraftTarget"> & {
+    readonly environmentId: EnvironmentId | null;
+    readonly projectId: ProjectId | null;
+    readonly suggest: boolean;
+  },
+) {
+  const environmentId = props.environmentId ?? ("" as EnvironmentId);
+  const projectId = props.projectId ?? ("" as ProjectId);
+  const available = useProjectMemoryAvailable(props.environmentId);
+  const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const setRequest = useAtomSet(openRequestAtom);
+  return useProjectMemorySuggestions({
+    enabled:
+      props.suggest &&
+      props.projectId !== null &&
+      available &&
+      config?.environment.capabilities.projectKnowledgePreview === true,
+    scopeKey: `${environmentId}:${projectId}:${typeof props.composerDraftTarget === "string" ? props.composerDraftTarget : scopedThreadKey(props.composerDraftTarget)}`,
+    environmentId,
+    projectId,
+    composerDraftTarget: props.composerDraftTarget,
+    onUse: (fact, query) =>
+      setRequest({
+        environmentId,
+        projectId,
+        message: null,
+        fact: { id: fact.id, query },
+        selection: { kind: "fact", factId: fact.id, revision: fact.revision },
+        key: takeRequestKey(),
+      }),
+    onSource: (source) =>
+      setRequest({
+        environmentId,
+        projectId,
+        message: source,
+        fact: null,
+        key: takeRequestKey(),
+      }),
+  });
+}
+
 export function ProjectMemoryDialogHost(props: Scope) {
   const available = useProjectMemoryAvailable(props.environmentId);
-  const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const [request, setRequest] = useAtom(openRequestAtom);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- releases the shared open request this host holds until unmount
   useEffect(() => () => setRequest(null), [setRequest]);
@@ -154,59 +194,30 @@ export function ProjectMemoryDialogHost(props: Scope) {
       ? request
       : null;
   return (
-    <>
-      {available &&
-      config?.environment.capabilities.projectKnowledgePreview === true &&
-      props.suggest ? (
-        <ProjectMemorySuggestions
-          key={`${props.environmentId}:${props.projectId}:${typeof props.composerDraftTarget === "string" ? props.composerDraftTarget : scopedThreadKey(props.composerDraftTarget)}`}
-          {...props}
-          onUse={(fact, query) =>
-            setRequest({
-              environmentId: props.environmentId,
-              projectId: props.projectId,
-              message: null,
-              fact: { id: fact.id, query },
-              selection: { kind: "fact", factId: fact.id, revision: fact.revision },
-              key: takeRequestKey(),
-            })
-          }
-          onSource={(source) =>
-            setRequest({
-              environmentId: props.environmentId,
-              projectId: props.projectId,
-              message: source,
-              fact: null,
-              key: takeRequestKey(),
-            })
-          }
-        />
-      ) : null}
-      <Dialog
-        open={active !== null}
-        onOpenChange={(open) => {
-          if (!open) setRequest(null);
-        }}
-      >
-        <DialogPopup className="h-[min(48rem,calc(100dvh-2rem))] max-w-5xl max-sm:h-[calc(100dvh-3rem)]">
-          <DialogHeader>
-            <DialogTitle>Project memory</DialogTitle>
-            <DialogDescription>
-              Browse saved project facts and their evidence, and choose what belongs in this draft.
-            </DialogDescription>
-          </DialogHeader>
-          {active ? (
-            <MemoryContents
-              key={`${active.key}:${typeof props.composerDraftTarget === "string" ? props.composerDraftTarget : scopedThreadKey(props.composerDraftTarget)}`}
-              {...props}
-              seedMessage={active.message}
-              focusFact={active.fact}
-              suggestedSelection={active.selection}
-            />
-          ) : null}
-        </DialogPopup>
-      </Dialog>
-    </>
+    <Dialog
+      open={active !== null}
+      onOpenChange={(open) => {
+        if (!open) setRequest(null);
+      }}
+    >
+      <DialogPopup className="h-[min(48rem,calc(100dvh-2rem))] max-w-5xl max-sm:h-[calc(100dvh-3rem)]">
+        <DialogHeader>
+          <DialogTitle>Project memory</DialogTitle>
+          <DialogDescription>
+            Browse saved project facts and their evidence, and choose what belongs in this draft.
+          </DialogDescription>
+        </DialogHeader>
+        {active ? (
+          <MemoryContents
+            key={`${active.key}:${typeof props.composerDraftTarget === "string" ? props.composerDraftTarget : scopedThreadKey(props.composerDraftTarget)}`}
+            {...props}
+            seedMessage={active.message}
+            focusFact={active.fact}
+            suggestedSelection={active.selection}
+          />
+        ) : null}
+      </DialogPopup>
+    </Dialog>
   );
 }
 

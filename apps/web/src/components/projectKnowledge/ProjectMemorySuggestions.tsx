@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect, useState } from "react";
+import { BrainIcon } from "lucide-react";
 import {
   CommandId,
   type EnvironmentId,
@@ -17,33 +18,51 @@ import { useEnvironmentQuery } from "../../state/query";
 import { projectKnowledge } from "../../state/projectKnowledge";
 import { randomUUID } from "../../lib/utils";
 import { Button } from "../ui/button";
+import type { ComposerBannerStackItem } from "../chat/ComposerBannerStack";
 
-export function ProjectMemorySuggestions(props: {
+type SuggestionState = {
+  readonly scopeKey: string;
+  readonly request: { query: string; requestId: CommandId } | null;
+  readonly dismissed: ReadonlyArray<string>;
+};
+
+/** Saved project facts related to the draft, as composer notices. */
+export function useProjectMemorySuggestions(props: {
+  enabled: boolean;
+  scopeKey: string;
   environmentId: EnvironmentId;
   projectId: ProjectId;
   composerDraftTarget: ComposerThreadTarget;
   onUse: (fact: ProjectFact, query: string) => void;
   onSource: (source: KnowledgeMessageRef) => void;
-}) {
+}): ReadonlyArray<ComposerBannerStackItem> {
   const canUse = useAtomValue(projectKnowledge.prepareContext.permissionAtom(props.environmentId));
   const draft = useComposerThreadDraft(props.composerDraftTarget);
-  const [request, setRequest] = useState<{ query: string; requestId: CommandId } | null>(null);
-  const [dismissed, setDismissed] = useState<ReadonlyArray<string>>([]);
+  const [stored, setStored] = useState<SuggestionState | null>(null);
+  const state =
+    stored?.scopeKey === props.scopeKey
+      ? stored
+      : { scopeKey: props.scopeKey, request: null, dismissed: [] };
+  const { request, dismissed } = state;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- issues one recall request after the user pauses composing a substantive draft
   useEffect(() => {
-    if (request || !isSubstantiveProjectMemoryQuery(draft.prompt)) return;
+    if (!props.enabled || request || !isSubstantiveProjectMemoryQuery(draft.prompt)) return;
     const timer = setTimeout(
       () =>
-        setRequest({
-          query: boundProjectMemorySuggestionQuery(draft.prompt),
-          requestId: CommandId.make(randomUUID()),
+        setStored({
+          scopeKey: props.scopeKey,
+          request: {
+            query: boundProjectMemorySuggestionQuery(draft.prompt),
+            requestId: CommandId.make(randomUUID()),
+          },
+          dismissed: [],
         }),
       1000,
     );
     return () => clearTimeout(timer);
-  }, [draft.prompt, request]);
+  }, [props.enabled, props.scopeKey, draft.prompt, request]);
   const result = useEnvironmentQuery(
-    request
+    props.enabled && request
       ? projectKnowledge.search({
           environmentId: props.environmentId,
           input: {
@@ -58,52 +77,44 @@ export function ProjectMemorySuggestions(props: {
         })
       : null,
   );
-  const suggestions = result.data
-    ? selectProjectMemorySuggestions(result.data, request?.query).filter(
-        ({ fact }) => !dismissed.includes(fact.id),
-      )
-    : [];
-  if (!request || !draft.prompt.trimStart().startsWith(request.query) || !suggestions.length)
-    return null;
-  return (
-    <div className="flex flex-col gap-1" aria-label="Related project memory">
-      {suggestions.map(({ fact, reason }) => (
-        <div key={fact.id} className="flex items-center gap-2 text-xs">
-          <span className="min-w-0 flex-1 truncate">
-            Project memory: {fact.content}
-            <span className="block text-muted-foreground">{reason}</span>
-          </span>
-          {fact.sources.some((source) => source.kind === "user") ? <span>Saved by you</span> : null}
-          {fact.sources
-            .filter((source) => source.kind === "message")
-            .slice(0, 1)
-            .flatMap((source) =>
-              source.kind === "message"
-                ? [
-                    <Button
-                      key={source.messageId}
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => props.onSource(source)}
-                    >
-                      Source
-                    </Button>,
-                  ]
-                : [],
-            )}
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!canUse}
-            onClick={() => props.onUse(fact, request!.query)}
-          >
-            Use
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setDismissed([...dismissed, fact.id])}>
-            Dismiss
-          </Button>
-        </div>
-      ))}
-    </div>
-  );
+  if (
+    !props.enabled ||
+    !request ||
+    !result.data ||
+    !draft.prompt.trimStart().startsWith(request.query)
+  ) {
+    return [];
+  }
+  return selectProjectMemorySuggestions(result.data, request.query)
+    .filter(({ fact }) => !dismissed.includes(fact.id))
+    .map(({ fact, reason }) => {
+      const source = fact.sources.find((candidate) => candidate.kind === "message");
+      const savedByYou = fact.sources.some((candidate) => candidate.kind === "user");
+      return {
+        id: `project-memory:${fact.id}`,
+        variant: "info",
+        icon: <BrainIcon />,
+        title: fact.content,
+        description: savedByYou ? `Saved by you. ${reason}` : reason,
+        actions: (
+          <>
+            {source?.kind === "message" ? (
+              <Button size="xs" variant="ghost" onClick={() => props.onSource(source)}>
+                Source
+              </Button>
+            ) : null}
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={!canUse}
+              onClick={() => props.onUse(fact, request.query)}
+            >
+              Use
+            </Button>
+          </>
+        ),
+        dismissLabel: "Dismiss project memory suggestion",
+        onDismiss: () => setStored({ ...state, dismissed: [...dismissed, fact.id] }),
+      } satisfies ComposerBannerStackItem;
+    });
 }

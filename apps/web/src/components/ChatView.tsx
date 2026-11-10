@@ -303,6 +303,7 @@ import {
   ProjectMemoryDialogHost,
   useOpenProjectMemory,
   useProjectMemoryAvailable,
+  useProjectMemorySuggestionBanners,
 } from "./projectKnowledge/ProjectMemoryPanel";
 import { CodeExplorerDialogHost } from "./codeExplorer/CodeExplorerDialogHost";
 import { NoActiveThreadState } from "./NoActiveThreadState";
@@ -1306,6 +1307,12 @@ export default function ChatView(props: ChatViewProps) {
     hasMultipleRegisteredEnvironments: environments.length > 1,
     automaticEnvironment,
     autoUpdateEnvironments,
+  });
+  const projectMemoryBannerItems = useProjectMemorySuggestionBanners({
+    suggest: serverThread === null || serverThread.latestUserMessageAt === null,
+    environmentId: activeThread?.environmentId ?? null,
+    projectId: activeThread?.projectId ?? null,
+    composerDraftTarget,
   });
   const providerInstanceEntries = deriveComposerProviderInstanceEntries(
     providerStatuses,
@@ -2691,6 +2698,7 @@ export default function ChatView(props: ChatViewProps) {
         ...projectCloneItems,
         ...freshSessionItems,
         ...systemComposerBannerItems,
+        ...projectMemoryBannerItems,
       ];
     }
     return [
@@ -2702,6 +2710,7 @@ export default function ChatView(props: ChatViewProps) {
       ...projectCloneItems,
       ...freshSessionItems,
       ...systemComposerBannerItems,
+      ...projectMemoryBannerItems,
       branchMismatchBannerItem({
         mismatchKey: activeBranchMismatchKey,
         mismatch: localCheckoutBranchMismatch,
@@ -4036,7 +4045,6 @@ export default function ChatView(props: ChatViewProps) {
                 />
 
                 <ProjectMemoryDialogHost
-                  suggest={serverThread === null || serverThread.latestUserMessageAt === null}
                   environmentId={activeThread.environmentId}
                   projectId={activeThread.projectId}
                   composerDraftTarget={composerDraftTarget}
