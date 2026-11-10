@@ -475,7 +475,12 @@ const make = Effect.gen(function* () {
             }
           },
           catch: safeFailure("Allow T3 Code to access Claude credentials in macOS Keychain."),
-        });
+        }).pipe(
+          Effect.timeout("5 seconds"),
+          Effect.mapError(
+            safeFailure("Allow T3 Code to access Claude credentials in macOS Keychain."),
+          ),
+        );
         if (secret !== undefined) {
           keychainEntry = entry;
           nativeRaw = secret;
@@ -545,12 +550,18 @@ const make = Effect.gen(function* () {
           const current = yield* Effect.tryPromise({
             try: () => keychainEntry!.getPassword(),
             catch: safeFailure("Could not read Claude credentials in macOS Keychain."),
-          });
+          }).pipe(
+            Effect.timeout("5 seconds"),
+            Effect.mapError(safeFailure("Could not read Claude credentials in macOS Keychain.")),
+          );
           if (current !== nativeRaw) return false;
           yield* Effect.tryPromise({
             try: () => keychainEntry!.setPassword(contents),
             catch: safeFailure("Could not update Claude credentials in macOS Keychain."),
-          });
+          }).pipe(
+            Effect.timeout("5 seconds"),
+            Effect.mapError(safeFailure("Could not update Claude credentials in macOS Keychain.")),
+          );
         } else {
           if ((yield* fs.readFileString(localClaudeAuthPath)) !== nativeRaw) return false;
           yield* writeFileStringAtomically({
@@ -1016,7 +1027,6 @@ const make = Effect.gen(function* () {
     function* (consumer: InferenceConsumer) {
       const state = yield* read;
       const runtime = yield* ensure(state);
-      yield* syncLocalAuth(runtime);
       const hostId = yield* environment.getEnvironmentId;
       const identity = { hostId, consumerId: consumer.environmentId };
       if (hostId === consumer.environmentId)

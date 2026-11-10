@@ -33,11 +33,19 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as InferenceProxy from "./InferenceProxy.ts";
 import { proxyVersion } from "./install.ts";
 
-const keychainState = vi.hoisted(() => ({ password: "" }));
+const keychainState = vi.hoisted(() => ({
+  password: "",
+  hang: false,
+  onRead: undefined as (() => void) | undefined,
+}));
 vi.mock("./claudeKeychain.ts", () => ({
   claudeKeychainEntry: () =>
     new (class {
       async getPassword() {
+        if (keychainState.hang) {
+          keychainState.onRead?.();
+          return await new Promise<string | undefined>(() => {});
+        }
         return keychainState.password || undefined;
       }
       async setPassword(password: string) {
@@ -53,6 +61,8 @@ it.effect(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         keychainState.password = "";
+        keychainState.hang = false;
+        keychainState.onRead = undefined;
         const config = yield* ServerConfig.ServerConfig;
         const state = yield* ServerSecretStore.ServerSecretStore;
         const home = yield* fs.makeTempDirectoryScoped();
@@ -272,6 +282,7 @@ it.effect(
           Layer.provide(Layer.succeed(HostProcess.HomeDirectory, home)),
           Layer.provide(Layer.succeed(HostProcess.Platform, "darwin")),
           Layer.provide(Layer.succeed(HostProcess.Architecture, "arm64")),
+          Layer.provide(Layer.succeed(HostProcess.Username, "test-user")),
           Layer.provide(NetService.layer),
           Layer.fresh,
         );
@@ -438,6 +449,17 @@ it.effect(
                 refreshToken: "new-proxy-refresh",
               },
             });
+            keychainState.hang = true;
+            const readStarted = new Promise<void>((resolve) => {
+              keychainState.onRead = resolve;
+            });
+            const stalledStatus = yield* proxy.status.pipe(Effect.forkChild);
+            yield* Effect.promise(() => readStarted);
+            yield* TestClock.adjust("6 seconds");
+            expect(stalledStatus.pollUnsafe()).toBeDefined();
+            expect((yield* Fiber.join(stalledStatus)).problem).toContain("Keychain");
+            keychainState.hang = false;
+            keychainState.onRead = undefined;
             expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("new-refresh");
             yield* proxy.status;
             expect(importedCodexAuth).toHaveLength(1);
