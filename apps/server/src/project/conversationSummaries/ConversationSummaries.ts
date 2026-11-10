@@ -990,7 +990,9 @@ const make = Effect.gen(function* () {
       )
         return [];
       // History inside the runs a handoff covers belongs to it even when the handoff does not
-      // carry it, such as the tool results a recovery handoff reads past.
+      // carry it, such as the tool results a recovery handoff reads past. The run ordinals
+      // describe the thread the history comes from: a fork delta is stored on its destination
+      // and covers runs of its source.
       const coveredRuns = new Map<
         ThreadId,
         Array<{ readonly from: number; readonly to: number }>
@@ -998,11 +1000,16 @@ const make = Effect.gen(function* () {
       const threadIds = new Set<ThreadId>();
       for (const handoff of handoffs) {
         threadIds.add(handoff.threadId);
-        coveredRuns.set(handoff.threadId, [
-          ...(coveredRuns.get(handoff.threadId) ?? []),
-          handoff.coveredRunOrdinals,
-        ]);
-        for (const message of handoff.history?.messages ?? []) threadIds.add(message.threadId);
+        const historyThreads = new Set(
+          (handoff.history?.messages ?? []).map((message) => message.threadId),
+        );
+        for (const id of historyThreads) threadIds.add(id);
+        const [historyThread] = historyThreads;
+        if (historyThreads.size === 1 && historyThread !== undefined)
+          coveredRuns.set(historyThread, [
+            ...(coveredRuns.get(historyThread) ?? []),
+            handoff.coveredRunOrdinals,
+          ]);
       }
       const offered: Array<HandoffSummary> = [];
       const requestedItems = encodeIds([...itemIds]);

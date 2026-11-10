@@ -8,7 +8,9 @@ nearest the present first and accepts one only when more history items arrive wi
 it, counting verbatim and summarized items alike. The six newest messages are never traded away,
 which matches the tail the summary pass never covers. A summary may cite history that the handoff
 covers but does not carry, such as tool results that a recovery handoff reads past; a source outside
-the runs the handoff covers still disqualifies it. These transfers do not
+the runs the handoff covers still disqualifies it. Those run ordinals describe the thread the
+handoff's history comes from. A fork delta is stored on its destination thread and covers runs of its
+source, so the handoff's own thread id must not be used to place them. These transfers do not
 reconstruct native provider session state, tool state, approvals, or attachments.
 
 Within a provider handoff payload, selected evidence is stored in `history.messages`. The
