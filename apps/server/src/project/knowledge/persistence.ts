@@ -66,6 +66,7 @@ const FactRow = Schema.Struct({
   sources: Schema.fromJsonString(Schema.Array(KnowledgeFactSource)),
 });
 const encodeOrigin = Schema.encodeSync(Schema.fromJsonString(KnowledgeOrigin));
+const encodeFactIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(ProjectFactId)));
 const encodeLabels = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 const encodeSources = Schema.encodeSync(Schema.fromJsonString(Schema.Array(KnowledgeFactSource)));
 const decodeRows = Schema.decodeUnknownEffect(Schema.Array(FactRow));
@@ -685,15 +686,30 @@ export const makeStore = Effect.gen(function* () {
       ...(providerThreadId == null ? {} : { providerThreadId }),
     }));
   });
-  const sentFactIds = Effect.fn("ProjectKnowledgeStore.sentFactIds")(function* (
+  const recordViews = Effect.fn("ProjectKnowledgeStore.recordViews")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+    factIds: ReadonlyArray<ProjectFactId>,
+  ) {
+    if (factIds.length === 0) return;
+    yield* sql`INSERT OR IGNORE INTO project_knowledge_views (project_id, thread_id, fact_id)
+      SELECT ${projectId}, ${threadId}, value FROM json_each(${encodeFactIds(factIds)})`;
+  });
+  // Every fact a thread's agent has been shown: read through its tools, or delivered with a
+  // message. An uncertain delivery may have arrived, so it counts.
+  const seenFactIds = Effect.fn("ProjectKnowledgeStore.seenFactIds")(function* (
     projectId: ProjectId,
     threadId: ThreadId,
   ) {
     const rows = yield* sql<{ readonly factId: ProjectFactId }>`
-      SELECT DISTINCT json_extract(selection.value, '$.factId') AS "factId"
+      SELECT fact_id AS "factId" FROM project_knowledge_views
+      WHERE project_id = ${projectId} AND thread_id = ${threadId}
+      UNION
+      SELECT json_extract(selection.value, '$.factId') AS "factId"
       FROM project_knowledge_deliveries d, json_each(d.items_json) item,
         json_each(item.value, '$.context.selections') selection
-      WHERE d.project_id = ${projectId} AND d.thread_id = ${threadId} AND d.status = 'sent'
+      WHERE d.project_id = ${projectId} AND d.thread_id = ${threadId}
+        AND d.status IN ('sent', 'uncertain')
         AND json_extract(selection.value, '$.kind') = 'fact'`;
     return new Set(rows.map((row) => row.factId));
   });
@@ -755,7 +771,8 @@ export const makeStore = Effect.gen(function* () {
     replaceDeliveryItems,
     deliveries,
     sentDeliveries,
-    sentFactIds,
+    recordViews,
+    seenFactIds,
     deliveryPage,
   };
 });

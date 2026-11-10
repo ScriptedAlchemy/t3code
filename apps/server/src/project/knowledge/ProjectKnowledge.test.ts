@@ -1842,8 +1842,14 @@ it.effect(
         text: recalled!.text,
         records: recalled!.records,
       });
-      assert.include(composer.text, "Cache keys include tenant IDs.");
-      assert.include(composer.text, "Fact fact-one");
+      // What the agent needs to use, rate or read the fact, and nothing else.
+      assert.deepEqual(
+        composer.items.map((item) => item.text),
+        [
+          "Saved facts from project automatic-recall, for reference:\n[fact fact-one rev 1, from user] Cache keys include tenant IDs.",
+        ],
+      );
+      assert.include(composer.text, composer.items[0]!.text);
 
       // Knowledge the user attached by hand is the whole selection for that message.
       assert.isNull(yield* recall({ composer: { text: query, records: [record] } }, "hand-picked"));
@@ -1868,7 +1874,212 @@ it.effect(
       // A fact the thread already received is not sent again, but another thread still gets it.
       assert.isNull(yield* recall({}, "already-sent"));
       assert.isNotNull(yield* recall({ threadId: ThreadId.make("other-thread") }, "other-thread"));
+
+      // A long fact is cut short and points at the tool that reads the rest.
+      yield* knowledge.mutate(
+        {
+          ...createFact(projectId, "long"),
+          content: `Cache keys include tenant IDs. ${"cache keys ".repeat(400)}`.trim(),
+        },
+        { kind: "user" },
+      );
+      const long = yield* recall({}, "long");
+      const sentLong = yield* resolveKnowledgeComposer({
+        projectId,
+        text: long!.text,
+        records: long!.records,
+      });
+      const [longText] = sentLong.items.map((item) => item.text);
+      assert.include(longText, "[fact long rev 1, from user] Cache keys include tenant IDs.");
+      assert.include(longText, "t3_knowledge_read_fact");
+      assert.isAtMost(longText!.length, 1000);
     }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("does not recall a fact the thread's agent has already been shown", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const projectId = ProjectId.make("recall-seen");
+    yield* createProject(projectId);
+    const query = "Change cache keys to include tenant IDs.";
+    // Distinct enough that reading one does not quote another as a look-alike.
+    const contents = {
+      one: "Cache keys include tenant IDs, rule one.",
+      two: "Tenant IDs go first in cache keys so shards stay balanced.",
+      three: "Changing cache keys needs a reviewed migration plan and a rollback for tenant IDs.",
+    };
+    const ids = Object.keys(contents).map((id) => ProjectFactId.make(id));
+    for (const [id, content] of Object.entries(contents))
+      yield* knowledge.mutate({ ...createFact(projectId, id), content }, { kind: "user" });
+    const recall = (threadId: ThreadId, requestId: string) =>
+      knowledge.recall({
+        projectId,
+        threadId,
+        requestId: CommandId.make(requestId),
+        query,
+        composer: { text: query, records: [] },
+        knowledgeAllowance: 48000,
+      });
+    const recalledIn = Effect.fn("test.recalledIn")(function* (thread: string, request = thread) {
+      const composer = yield* recall(ThreadId.make(thread), `recall-${request}`);
+      return (composer?.records ?? []).flatMap((record) =>
+        record.kind === "project-knowledge" && "knowledge" in record
+          ? record.knowledge.selections.flatMap((selection) =>
+              selection.kind === "fact" ? [selection.factId] : [],
+            )
+          : [],
+      );
+    });
+    assert.lengthOf(yield* recalledIn("fresh"), 2);
+    // Leaves only `rest` as candidates in a thread, so its ranking cannot decide the outcome.
+    const readAllBut = Effect.fn("test.readAllBut")(function* (
+      thread: string,
+      rest: ReadonlyArray<ProjectFactId>,
+    ) {
+      for (const factId of ids)
+        if (!rest.includes(factId))
+          yield* knowledge.readFact({ projectId, factId }, ThreadId.make(thread));
+    });
+
+    // Whatever the agent's own search or listing returned is not sent to it again.
+    const searched = yield* knowledge.search(
+      { projectId, query: "tenant cache keys", requestId: CommandId.make("agent-search") },
+      ThreadId.make("searched"),
+    );
+    if (searched.facts.state !== "available") return assert.fail("ranking must be available");
+    const found = searched.facts.matches.map(({ fact }) => fact.id);
+    assert.isNotEmpty(found);
+    yield* readAllBut("searched", found);
+    assert.deepEqual(yield* recalledIn("searched"), []);
+    yield* knowledge.list({ projectId }, ThreadId.make("listed"));
+    assert.deepEqual(yield* recalledIn("listed"), []);
+
+    // Reading two facts leaves the third, wherever it ranks.
+    for (const unseen of ids) {
+      yield* readAllBut(`read-all-but-${unseen}`, [unseen]);
+      assert.deepEqual(yield* recalledIn(`read-all-but-${unseen}`), [unseen]);
+    }
+
+    // Saving a near duplicate quotes the facts it resembles; the saving agent has seen those.
+    const duplicate = yield* knowledge.mutateWithHints(
+      {
+        ...createFact(projectId, "duplicate"),
+        content: "Cache keys include tenant IDs, rule one!",
+        sources: [],
+      },
+      { kind: "agent-thread", threadId: ThreadId.make("hinted"), providerInstanceId },
+    );
+    const hinted = (duplicate.hints ?? []).map((hint) => hint.factId);
+    assert.isNotEmpty(hinted);
+    yield* readAllBut("hinted", hinted);
+    assert.deepEqual(yield* recalledIn("hinted"), []);
+    // Reading a fact quotes its look-alikes in the same way.
+    yield* knowledge.readFact(
+      { projectId, factId: ProjectFactId.make("duplicate") },
+      ThreadId.make("quoted"),
+    );
+    yield* readAllBut("quoted", hinted);
+    assert.deepEqual(yield* recalledIn("quoted"), []);
+
+    // A delivery whose outcome is unknown may have reached the agent.
+    const [maybeSent] = yield* recalledIn("uncertain", "uncertain-first");
+    const unsure = yield* recall(ThreadId.make("uncertain"), "recall-uncertain-items");
+    const { items } = yield* resolveKnowledgeComposer({
+      projectId,
+      text: unsure!.text,
+      records: unsure!.records,
+    });
+    yield* knowledge.recordDelivery({
+      attemptId: RunAttemptId.make("uncertain-attempt"),
+      runId: RunId.make("uncertain-run"),
+      threadId: ThreadId.make("uncertain"),
+      messageId: MessageId.make("uncertain-message"),
+      projectId,
+      providerInstanceId,
+      status: "uncertain",
+      items,
+      omissions: [],
+      createdAt: DateTime.formatIso(at(1)),
+      updatedAt: DateTime.formatIso(at(1)),
+    });
+    assert.notInclude(yield* recalledIn("uncertain", "uncertain-second"), maybeSent);
+
+    // A fork replays what its parent was sent. Those facts are in the fork's context too.
+    const parent = ThreadId.make("parent");
+    const toParent = yield* recall(parent, "recall-parent");
+    const parentDelivery = yield* resolveKnowledgeComposer({
+      projectId,
+      text: toParent!.text,
+      records: toParent!.records,
+    });
+    yield* knowledge.recordDelivery({
+      attemptId: RunAttemptId.make("parent-attempt"),
+      runId: RunId.make("parent-run"),
+      threadId: parent,
+      messageId: MessageId.make("parent-message"),
+      projectId,
+      providerInstanceId,
+      status: "sent",
+      items: parentDelivery.items,
+      omissions: [],
+      createdAt: DateTime.formatIso(at(2)),
+      updatedAt: DateTime.formatIso(at(2)),
+    });
+    yield* deliveredKnowledgeForHistory({
+      projectId,
+      viewer: ThreadId.make("fork"),
+      messages: [
+        {
+          itemId: TurnItemId.make("item:parent"),
+          kind: "user_message",
+          threadId: parent,
+          runId: RunId.make("parent-run"),
+        },
+      ],
+      userItemId: () => "item:parent",
+    });
+    yield* readAllBut(
+      "fork",
+      parentDelivery.items.flatMap((item) =>
+        item.context.selections.flatMap((selection) =>
+          selection.kind === "fact" ? [selection.factId] : [],
+        ),
+      ),
+    );
+    assert.deepEqual(yield* recalledIn("fork"), []);
+
+    // A fact drawn from a thread's own message is news only to other threads, and is sent to
+    // them without its citation.
+    const origin = ThreadId.make("origin-thread");
+    yield* projections.apply(thread(origin, projectId));
+    yield* projections.apply(message(origin, "origin-message", "user", "tenant IDs in keys"));
+    const source = yield* knowledge.readSource({
+      projectId,
+      threadId: origin,
+      messageId: MessageId.make("origin-message"),
+    });
+    if (source.state !== "available") return yield* Effect.die("source unavailable");
+    yield* readAllBut("origin-thread", []);
+    yield* readAllBut("elsewhere", []);
+    yield* knowledge.mutate(
+      {
+        ...createFact(projectId, "cited"),
+        content: "Cache keys include tenant IDs, rule cited.",
+        sources: [source.source],
+      },
+      { kind: "user" },
+    );
+    assert.deepEqual(yield* recalledIn("origin-thread"), []);
+    const elsewhere = yield* recall(ThreadId.make("elsewhere"), "recall-elsewhere");
+    const delivered = yield* resolveKnowledgeComposer({
+      projectId,
+      text: elsewhere!.text,
+      records: elsewhere!.records,
+    });
+    assert.include(delivered.text, "[fact cited rev 1, from user] Cache keys include tenant IDs");
+    assert.notInclude(delivered.text, "sha256");
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("checks citations for one page of recall, not for every ranked fact", () =>

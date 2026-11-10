@@ -1820,6 +1820,7 @@ export const layer: Layer.Layer<
             evidence: (messages) =>
               deliveredKnowledgeForHistory({
                 projectId: projection.thread.projectId,
+                viewer: projection.thread.id,
                 messages,
                 userItemId: (messageId) => idAllocator.derive.userTurnItem({ messageId }),
               }).pipe(

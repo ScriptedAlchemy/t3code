@@ -1,6 +1,7 @@
 import { OrchestratorMcpFailure, type ProjectKnowledgeError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as ProjectKnowledge from "../../../project/knowledge/ProjectKnowledge.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { readCaller } from "../../threadAccess.ts";
 import { KnowledgeToolkit } from "./tools.ts";
@@ -11,19 +12,24 @@ const failure = (error: ProjectKnowledgeError) =>
     message: error.message,
   });
 const access = readCaller().pipe(Effect.andThen(ProjectKnowledge.ProjectKnowledge));
+// Reads from a thread's agent are recorded against that thread, so recall does not repeat them.
+const threadAccess = Effect.all({
+  service: access,
+  viewer: Effect.map(McpInvocationContext.McpInvocationContext, (scope) => scope.thread?.threadId),
+});
 export const layer = McpToolAccess.toLayer(KnowledgeToolkit, {
   t3_knowledge_search: McpToolAccess.reads((input) =>
-    Effect.flatMap(access, (service) => service.search(input)).pipe(
+    Effect.flatMap(threadAccess, ({ service, viewer }) => service.search(input, viewer)).pipe(
       Effect.mapError((error) => (error._tag === "ProjectKnowledgeError" ? failure(error) : error)),
     ),
   ),
   t3_knowledge_list: McpToolAccess.reads((input) =>
-    Effect.flatMap(access, (service) => service.list(input)).pipe(
+    Effect.flatMap(threadAccess, ({ service, viewer }) => service.list(input, viewer)).pipe(
       Effect.mapError((error) => (error._tag === "ProjectKnowledgeError" ? failure(error) : error)),
     ),
   ),
   t3_knowledge_read_fact: McpToolAccess.reads((input) =>
-    Effect.flatMap(access, (service) => service.readFact(input)).pipe(
+    Effect.flatMap(threadAccess, ({ service, viewer }) => service.readFact(input, viewer)).pipe(
       Effect.mapError((error) => (error._tag === "ProjectKnowledgeError" ? failure(error) : error)),
     ),
   ),

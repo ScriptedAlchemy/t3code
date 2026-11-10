@@ -1461,7 +1461,7 @@ effectIt.effect.each(["current", "stale"] as const)(
       const record = {
         version: 1 as const,
         kind: "project-knowledge" as const,
-        contextId: ComposerContextId.make("project-memory-recall"),
+        contextId: ComposerContextId.make("recall"),
         label: "Recalled project memory",
         knowledge: {
           environmentId: EnvironmentId.make("test"),

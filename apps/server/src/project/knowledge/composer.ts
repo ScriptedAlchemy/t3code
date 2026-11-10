@@ -3,6 +3,7 @@ import {
   type ComposerContextId,
   type ComposerContextRecord,
   type MessageId,
+  type ThreadId,
   type OrchestrationV2HistoricalMessage,
   type ProjectId,
   type ProjectKnowledgeDeliveryItem,
@@ -54,7 +55,10 @@ export const resolveKnowledgeComposer = Effect.fn("ProjectKnowledge.resolveCompo
             projectId: input.projectId,
           });
         }
-        const prepared = yield* knowledge.resolveForTurn(record.knowledge);
+        const prepared = yield* knowledge.resolveForTurn(
+          record.knowledge,
+          ProjectKnowledge.isRecalledMemory(record) ? "recalled" : "attached",
+        );
         resolvedKnowledge.set(record.contextId, prepared.text);
         items.push({
           contextId: record.contextId,
@@ -142,6 +146,8 @@ export const deliveredKnowledgeForHistory = Effect.fn("ProjectKnowledge.delivere
     >,
   >(input: {
     readonly projectId: ProjectId;
+    /** The thread whose agent receives the replay, when it goes to one. */
+    readonly viewer?: ThreadId;
     readonly messages: ReadonlyArray<Message>;
     readonly userItemId: (messageId: MessageId) => string | undefined;
   }) {
@@ -155,11 +161,14 @@ export const deliveredKnowledgeForHistory = Effect.fn("ProjectKnowledge.delivere
     const evidence = new Map<string, string>();
     if (candidates.size === 0) return evidence;
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
-    const rows = yield* knowledge.readSentDeliveries({
-      projectId: input.projectId,
-      threadIds: [...new Set([...candidates.values()].map((message) => message.threadId))],
-      runIds: [...new Set([...candidates.values()].flatMap((message) => message.runId ?? []))],
-    });
+    const rows = yield* knowledge.readSentDeliveries(
+      {
+        projectId: input.projectId,
+        threadIds: [...new Set([...candidates.values()].map((message) => message.threadId))],
+        runIds: [...new Set([...candidates.values()].flatMap((message) => message.runId ?? []))],
+      },
+      input.viewer,
+    );
     // Oldest first: a failover attempt's later record is what the latest conversation saw.
     for (const row of rows) {
       const itemId = input.userItemId(row.messageId);

@@ -1620,6 +1620,8 @@ it.effect("rolls up summaries written before migration 094 in conversation order
     const digest = yield* sha256(longText);
     // Before 094 the column held only the first source's time, which four leaves of one long
     // message share.
+    yield* sql`DROP TABLE project_knowledge_views`;
+    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 95`;
     yield* sql`ALTER TABLE conversation_summaries RENAME COLUMN position TO first_source_at`;
     yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 94`;
     for (let index = 0; index < 4; index++) {

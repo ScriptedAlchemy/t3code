@@ -168,7 +168,6 @@ async function setup(viewport: "desktop" | "narrow" = "desktop") {
     environment: {
       capabilities: {
         projectKnowledge: true,
-        projectKnowledgePreview: true,
         projectKnowledgeHistory: true,
       },
     },

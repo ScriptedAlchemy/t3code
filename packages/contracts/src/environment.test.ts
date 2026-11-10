@@ -22,13 +22,13 @@ describe("ExecutionEnvironmentDescriptor", () => {
     expect(decodeDescriptor(oldServer).capabilities).not.toHaveProperty(
       "projectKnowledgeDeliveries",
     );
-    expect(decodeDescriptor(oldServer).capabilities.projectKnowledgePreview).toBeUndefined();
+    // Older servers still send capabilities this build has retired; they are ignored.
     expect(
       decodeDescriptor({
         ...oldServer,
         capabilities: { ...oldServer.capabilities, projectKnowledgePreview: true },
-      }).capabilities.projectKnowledgePreview,
-    ).toBe(true);
+      }).capabilities,
+    ).not.toHaveProperty("projectKnowledgePreview");
     for (const supported of [false, true]) {
       expect(
         decodeDescriptor({

@@ -194,9 +194,15 @@ can supply new evidence for it.
 
 You don't need to pick facts by hand. When you send a message, T3 sends up to two
 saved facts related to it along with your message, as **Recalled project memory**.
-A thread receives each fact once. Recall skips messages where you attached
-project knowledge yourself, and messages sent when the context window is nearly
-full. Agents can also search project memory at any point in a turn.
+Recall skips messages where you attached project knowledge yourself, and messages
+sent when the context window is nearly full. Agents can also search project
+memory at any point in a turn.
+
+Recall is built to stay out of the way. A thread receives each fact once, and
+never a fact its agent has already found by searching or reading memory, or one
+that was saved from that thread. Recalled facts are sent in a short form without
+their citations. A long fact is cut short, and the agent reads the rest when it
+needs it.
 
 When an agent relies on a recalled or searched fact, it rates the fact helpful or
 unhelpful. Helpful ratings raise the fact's trust and unhelpful ratings lower it,
