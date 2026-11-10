@@ -24,8 +24,10 @@ export function ZackSettings() {
   return (
     <SettingsSection id="zack" title="Zack" variant="plain">
       <div className="space-y-6">
-        <SettingsSection title="Memory and history">
+        <SettingsSection title="Holographic memory">
           <AssistedLearningRow />
+        </SettingsSection>
+        <SettingsSection title="LCM (lossless context management)">
           <ConversationSummariesRow />
           <ExternalHistoryRow />
         </SettingsSection>
