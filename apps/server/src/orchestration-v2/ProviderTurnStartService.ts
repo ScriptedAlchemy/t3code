@@ -1437,7 +1437,7 @@ export const layer: Layer.Layer<
                 threadId: projection.thread.id,
               }),
               pendingBackgroundWork: hasPendingWork,
-              uncoveredItems: freshDelivery.value.omittedItemIds.length,
+              uncoveredItems: freshDelivery.value.uncoveredItems,
             });
             if (refusal !== null) {
               yield* Effect.logDebug("Continuing a large provider conversation", {
