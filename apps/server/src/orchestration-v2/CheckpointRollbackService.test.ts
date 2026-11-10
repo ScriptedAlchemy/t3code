@@ -753,13 +753,16 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
         const history = yield* seedRollbackHistory({ restartedAtRun: 4 });
         yield* history.rollback(5);
         yield* history.rollback(2);
+        yield* history.rollback(0);
 
         assert.deepEqual(history.rolledBackNativeIds, [
           "native-after-restart",
           "native-before-restart",
+          "native-before-restart",
         ]);
-        // Only run 3 follows the target inside the conversation that holds it.
-        assert.deepEqual(history.rollbackCounts, [1, 1]);
+        // Only run 3 follows run 2 inside the conversation that holds it. The start of the
+        // thread then drops what is left there, as it does without a restart.
+        assert.deepEqual(history.rollbackCounts, [1, 1, 3]);
         const records = yield* history.store.getThreadRecords(history.threadId, [
           "providerThreads",
         ]);

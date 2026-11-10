@@ -55,7 +55,8 @@ export function latestNativeContextUsage(
     )
       continue;
     const run = runs.get(attempt.runId);
-    if (!run) continue;
+    // A rolled-back turn is no longer in the conversation, so its usage overstates it.
+    if (!run || run.status === "rolled_back") continue;
     if (first === undefined || first.reportedAt > turn.tokenUsage.updatedAt)
       first = { usedTokens: turn.tokenUsage.usedTokens, reportedAt: turn.tokenUsage.updatedAt };
     if (latest && latest.reportedAt >= turn.tokenUsage.updatedAt) continue;
