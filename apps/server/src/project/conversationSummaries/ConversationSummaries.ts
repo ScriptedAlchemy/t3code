@@ -164,9 +164,7 @@ const make = Effect.gen(function* () {
       threadId: ThreadId,
       // Return false when the caller has enough results; true continues through every page.
       visit: (page: ReadonlyArray<SummarySources>) => Effect.Effect<boolean, E, R>,
-      sourceIds?: ReadonlyArray<string>,
     ) {
-      const selectedSources = sourceIds === undefined ? undefined : encodeIds(sourceIds);
       let after: SummaryCursor | undefined;
       while (true) {
         const rows = yield* sql<{
@@ -185,18 +183,6 @@ const make = Effect.gen(function* () {
           FROM conversation_summaries
           WHERE project_id = ${projectId} AND thread_id = ${threadId}
           ${afterSummary(after)}
-          ${
-            selectedSources === undefined
-              ? sql``
-              : sql`AND NOT EXISTS (
-                  SELECT 1 FROM json_each(payload_json, '$.sources') AS source
-                  WHERE CASE json_extract(source.value, '$.kind')
-                    WHEN 'message' THEN 'message:' || json_extract(source.value, '$.messageId')
-                    ELSE 'turn_item:' || json_extract(source.value, '$.itemId') END NOT IN (
-                    SELECT value FROM json_each(${selectedSources})
-                  )
-                )`
-          }
           ORDER BY ${summaryOrder}
           LIMIT ${THREAD_SUMMARY_PAGE_SIZE}
         `;
@@ -954,10 +940,49 @@ const make = Effect.gen(function* () {
     ].join("\n");
   };
 
+  const coveredUncarriedSources = Effect.fn("ConversationSummaries.coveredUncarriedSources")(
+    function* (
+      threadId: ThreadId,
+      sources: ReadonlyArray<ConversationSummarySourceRef>,
+      runs: ReadonlyArray<{ readonly from: number; readonly to: number }>,
+    ) {
+      if (sources.length === 0 || runs.length === 0) return new Set<string>();
+      const rows = yield* sql<{ readonly identity: string; readonly ordinal: number }>`
+        SELECT CASE WHEN item.type IN ('user_message', 'assistant_message')
+            THEN 'message:' || json_extract(item.payload_json, '$.messageId')
+            ELSE 'turn_item:' || item.turn_item_id END AS identity,
+          run.ordinal AS ordinal
+        FROM orchestration_v2_projection_turn_items AS item
+        JOIN orchestration_v2_projection_runs AS run ON run.run_id = item.run_id
+        WHERE item.thread_id = ${threadId}
+          AND (
+            item.turn_item_id IN (SELECT value FROM json_each(${encodeIds(
+              sources.flatMap((source) => (source.kind === "turn_item" ? [source.itemId] : [])),
+            )}))
+            OR (
+              item.type IN ('user_message', 'assistant_message')
+              AND json_extract(item.payload_json, '$.messageId') IN (
+                SELECT value FROM json_each(${encodeIds(
+                  sources.flatMap((source) =>
+                    source.kind === "message" ? [source.messageId] : [],
+                  ),
+                )})
+              )
+            )
+          )
+      `;
+      return new Set(
+        rows
+          .filter((row) => runs.some((run) => row.ordinal >= run.from && row.ordinal <= run.to))
+          .map((row) => row.identity),
+      );
+    },
+  );
+
   const forHandoff: ConversationSummaries["Service"]["forHandoff"] = Effect.fn(
     "ConversationSummaries.forHandoff",
   )(
-    function* ({ projectId, handoffs, itemIds }) {
+    function* ({ projectId, handoffs, itemIds, replayed }) {
       yield* requireProject(projectId);
       if (
         !resolveProjectSettings(yield* serverSettings.getSettings, projectId).settings
@@ -1001,28 +1026,45 @@ const make = Effect.gen(function* () {
           ),
         );
         if (itemBySource.size === 0) continue;
-        const candidates: Array<ConversationSummary> = [];
-        yield* scanThreadSummarySources(
-          projectId,
-          threadId,
-          Effect.fnUntraced(function* (summaries) {
-            for (const metadata of summaries) {
+        const stored: Array<SummarySources> = [];
+        yield* scanThreadSummarySources(projectId, threadId, (summaries) =>
+          Effect.sync(() => {
+            for (const metadata of summaries)
               if (
-                metadata.scrubbed ||
-                !metadata.sources.every((source) =>
+                !metadata.scrubbed &&
+                metadata.sources.some((source) =>
                   itemBySource.has(conversationSummarySourceIdentity(source)),
                 )
               )
-                continue;
-              const summary = yield* findSummary({ projectId, threadId, summaryId: metadata.id });
-              if ((yield* read(summary)).state !== "available") continue;
-              candidates.push(summary);
-              if (candidates.length >= HANDOFF_CANDIDATE_LIMIT) return false;
-            }
+                stored.push(metadata);
             return true;
           }),
-          [...itemBySource.keys()],
         );
+        const uncarried = yield* coveredUncarriedSources(
+          threadId,
+          stored.flatMap((metadata) =>
+            metadata.sources.filter(
+              (source) => !itemBySource.has(conversationSummarySourceIdentity(source)),
+            ),
+          ),
+          replayed?.threadId === threadId ? [replayed] : [],
+        );
+        // The stretch next to the verbatim tail matters most, so the newest summaries win the
+        // candidate limit. Grouping below still needs them in conversation order.
+        const candidates: Array<ConversationSummary> = [];
+        for (const metadata of stored.toReversed()) {
+          if (candidates.length >= HANDOFF_CANDIDATE_LIMIT) break;
+          if (
+            !metadata.sources.every((source) => {
+              const identity = conversationSummarySourceIdentity(source);
+              return itemBySource.has(identity) || uncarried.has(identity);
+            })
+          )
+            continue;
+          const summary = yield* findSummary({ projectId, threadId, summaryId: metadata.id });
+          if ((yield* read(summary)).state !== "available") continue;
+          candidates.unshift(summary);
+        }
         // Leaves sharing a split source form one atomic offer. Omitting the item after only
         // one of its ranges was summarized would silently discard the remaining evidence.
         const groups: Array<{ summaries: Array<ConversationSummary>; identities: Set<string> }> =
@@ -1041,10 +1083,10 @@ const make = Effect.gen(function* () {
           }
           groups.push(group);
         }
-        for (const group of groups) {
+        for (const group of groups.toReversed()) {
           if (!sourcesCoverWholeItems(group.summaries.flatMap((summary) => summary.sources)))
             continue;
-          const sourceItems = [...group.identities].map((id) => itemBySource.get(id)!);
+          const sourceItems = [...group.identities].flatMap((id) => itemBySource.get(id) ?? []);
           const evidence = yield* deliveredKnowledgeForHistory({
             projectId,
             messages: sourceItems.flatMap((item) =>

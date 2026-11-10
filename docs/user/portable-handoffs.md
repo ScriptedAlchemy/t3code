@@ -24,7 +24,9 @@ summaries turned on, a handoff is a budgeted selection, not a summary.
 ## Conversation summaries
 
 With conversation summaries on, older history that would not fit in a handoff can arrive as short
-summaries instead of being left out. The newest messages still arrive word for word. Each summary is
+summaries instead of being left out. T3 Code uses the summaries nearest the newest messages first,
+and uses one only when more history arrives with it than without it. The newest messages still arrive
+word for word, but a tool result near the end can give way to a summary. Each summary is
 labelled as model-written and names the messages and tool evidence it was written from, so the
 agent can open the exact originals. Long messages and command output are covered in sections,
 including the text at the end.

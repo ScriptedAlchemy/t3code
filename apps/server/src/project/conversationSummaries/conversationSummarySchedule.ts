@@ -70,13 +70,24 @@ export interface ConversationSummaryRuntimeShape {
     readonly runId: RunId;
   }) => Effect.Effect<{ readonly hasMore: boolean }, ConversationSummaryPassError>;
   /**
-   * Current summaries, oldest first, whose sources are all among `itemIds` of the pending
-   * handoffs. Never fails: a summary that cannot be verified is simply not offered.
+   * Current summaries that cover some of `itemIds`, nearest the present first. Every other
+   * source must lie in `replayed`. Never fails: a summary that cannot be verified is simply not
+   * offered.
    */
   readonly forHandoff: (input: {
     readonly projectId: ProjectId;
     readonly handoffs: ReadonlyArray<OrchestrationV2ContextHandoff>;
     readonly itemIds: ReadonlySet<string>;
+    /**
+     * Runs of one thread that this turn replays in full, so a summary may cite history inside
+     * them that no handoff carries. Only the caller can say this. A handoff record does not
+     * name the thread its run ordinals describe, and a fork's history spans its ancestors.
+     */
+    readonly replayed?: {
+      readonly threadId: ThreadId;
+      readonly from: number;
+      readonly to: number;
+    };
   }) => Effect.Effect<ReadonlyArray<HandoffSummary>>;
 }
 

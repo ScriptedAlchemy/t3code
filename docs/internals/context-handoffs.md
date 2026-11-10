@@ -3,7 +3,15 @@
 Portable provider handoffs select saved history within a context budget. Selected user and assistant
 messages retain their complete text and roles; activity is attributed as context. Generated
 conversation summaries may stand in for older items when the project has opted in, but only after
-their sources are revalidated and every range of a replaced item is covered. These transfers do not
+their sources are revalidated and every range of a replaced item is covered. Delivery takes them
+nearest the present first and accepts one only when more history items arrive with it than without
+it, counting verbatim and summarized items alike. The six newest messages are never traded away,
+which matches the tail the summary pass never covers. A summary's sources must all be carried by the
+handoffs, with one exception that only the caller can declare. A recovery replays every earlier run
+of its thread onto a fresh native conversation but reads history without MCP tool results, so the
+caller names those runs and a summary may cite history inside them. Nothing is inferred from a
+handoff record: it does not name the thread its run ordinals describe, and a fork's history spans
+its ancestors. These transfers do not
 reconstruct native provider session state, tool state, approvals, or attachments.
 
 Within a provider handoff payload, selected evidence is stored in `history.messages`. The
