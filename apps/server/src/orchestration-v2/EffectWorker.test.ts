@@ -112,6 +112,7 @@ it.effect(
         },
       } as const;
       const runner = Layer.succeed(ConversationSummaryRuntime, {
+        hasPendingPass: () => Effect.succeed(false),
         summarizeThread: () =>
           Ref.updateAndGet(calls, (count) => count + 1).pipe(
             Effect.map((count) => ({ hasMore: count < 3 })),
@@ -158,6 +159,7 @@ it.effect("retries a failed summary pass before scheduling its continuation", ()
       },
     } as const;
     const runner = Layer.succeed(ConversationSummaryRuntime, {
+      hasPendingPass: () => Effect.succeed(false),
       summarizeThread: ({ runId }) =>
         Ref.updateAndGet(calls, (count) => count + 1).pipe(
           Effect.flatMap((count) =>
@@ -386,6 +388,7 @@ it.effect.each(["project-knowledge.extract", "conversation-summary.generate"] as
           drainDue: Effect.void,
         }),
         Layer.succeed(ConversationSummaryRuntime, {
+          hasPendingPass: () => Effect.succeed(false),
           summarizeThread: () => hold.pipe(Effect.as({ hasMore: false })),
           forHandoff: () => Effect.succeed([]),
         }),

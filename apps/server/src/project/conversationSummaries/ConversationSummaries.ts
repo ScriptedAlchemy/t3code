@@ -106,6 +106,7 @@ export class ConversationSummaries extends Context.Service<
       input: ConversationSummaryExpandInput,
     ) => Effect.Effect<ConversationSummaryExpansion, ConversationSummaryError>;
     readonly summarizeThread: ConversationSummaryRuntimeShape["summarizeThread"];
+    readonly hasPendingPass: ConversationSummaryRuntimeShape["hasPendingPass"];
     readonly forHandoff: ConversationSummaryRuntimeShape["forHandoff"];
   }
 >()("t3/project/conversationSummaries/ConversationSummaries") {}
@@ -1330,7 +1331,37 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  return ConversationSummaries.of({ list, describe, expand, summarizeThread, forHandoff });
+  const hasPendingPass: ConversationSummaries["Service"]["hasPendingPass"] = Effect.fn(
+    "ConversationSummaries.hasPendingPass",
+  )(
+    function* ({ threadId }) {
+      const rows = yield* sql<{ readonly pending: number }>`
+        SELECT 1 AS pending FROM orchestration_v2_effect_outbox
+        WHERE thread_id = ${threadId}
+          AND effect_type = 'conversation-summary.generate'
+          AND status IN ('pending', 'running')
+        LIMIT 1
+      `;
+      return rows.length > 0;
+    },
+    (effect) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Conversation summary queue unreadable", { cause }).pipe(
+            Effect.as(true),
+          ),
+        ),
+      ),
+  );
+
+  return ConversationSummaries.of({
+    list,
+    describe,
+    expand,
+    summarizeThread,
+    hasPendingPass,
+    forHandoff,
+  });
 });
 
 export const layer = Layer.effect(ConversationSummaries, make);
@@ -1340,6 +1371,10 @@ export const layerRuntime = Layer.effect(
   ConversationSummaryRuntime,
   Effect.gen(function* () {
     const service = yield* ConversationSummaries;
-    return { summarizeThread: service.summarizeThread, forHandoff: service.forHandoff };
+    return {
+      summarizeThread: service.summarizeThread,
+      hasPendingPass: service.hasPendingPass,
+      forHandoff: service.forHandoff,
+    };
   }),
 );

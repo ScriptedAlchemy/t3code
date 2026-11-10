@@ -3184,6 +3184,7 @@ effectIt.effect("declares no replayed runs to the summary lookup on a provider s
     const lookups: Array<unknown> = [];
     yield* harness.start.pipe(
       Effect.provideService(ConversationSummaryRuntime, {
+        hasPendingPass: () => Effect.succeed(false),
         summarizeThread: () => Effect.succeed({ hasMore: false }),
         forHandoff: (input) =>
           Effect.sync(() => {
