@@ -2887,6 +2887,83 @@ describe("orchestration v2 provider switching", () => {
     ),
   );
 
+  it.live("runs a thread saved against a retired route instance on the normal provider", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cwd = yield* checkpointWorkspace("retired-route-instance");
+        const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+        const retired = {
+          ...CODEX_MODEL_SELECTION,
+          instanceId: ProviderInstanceId.make("inference_codex_1ce3f6740fb26811"),
+        };
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const id = ThreadId.make("thread:retired-route-instance");
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make("command:retired-route-instance:create"),
+            threadId: id,
+            projectId: ProjectId.make("project:retired-route-instance"),
+            title: "Retired route instance",
+            modelSelection: retired,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make("command:retired-route-instance:send"),
+            threadId: id,
+            messageId: MessageId.make("message:retired-route-instance:send"),
+            text: "Prompt",
+            attachments: [],
+            modelSelection: retired,
+            dispatchMode: { type: "start_immediately" },
+          });
+          yield* worker.drain();
+          const projection = yield* waitForIdle(id);
+          assert.equal(
+            projection.thread.modelSelection.instanceId,
+            CODEX_MODEL_SELECTION.instanceId,
+          );
+          assert.deepEqual(
+            projection.runs.map((run) => [run.status, run.providerInstanceId]),
+            [["completed", CODEX_MODEL_SELECTION.instanceId]],
+          );
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry(
+              {
+                name: "retired-route-instance",
+                runtimePolicyOverride: {
+                  cwd,
+                  approvalPolicy: "never",
+                  sandboxPolicy: { type: "readOnly" },
+                },
+              },
+              ProviderAdapterRegistry.layerFromAdapters([
+                makeTestAdapter({
+                  instanceId: CODEX_MODEL_SELECTION.instanceId,
+                  driver: CODEX_DRIVER,
+                  capabilities: CodexProviderCapabilitiesV2,
+                  modelSelection: CODEX_MODEL_SELECTION,
+                  responseByRunOrdinal: {},
+                  capturedTurns,
+                }),
+              ]),
+            ),
+          ),
+        );
+      }),
+    ),
+  );
+
   // regression: #20343 sending to an instance with separate history must release the old session
   it.live.each([
     [
