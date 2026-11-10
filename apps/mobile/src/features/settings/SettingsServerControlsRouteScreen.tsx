@@ -13,6 +13,7 @@ import {
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   type ProjectScopedServerSettingKey,
 } from "@t3tools/contracts";
+import { formatTokens } from "@t3tools/shared/usageFormat";
 import { useRef, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -76,7 +77,7 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "branchNameInstructions",
   ],
   maintenance: ["continueThreadsAfterServerUpdate"],
-  zack: ["enableAssistedLearning", "enableConversationSummaries"],
+  zack: ["enableAssistedLearning", "enableConversationSummaries", "contextRestartAboveTokens"],
 };
 
 const SUBMODULE_CHOICES: ReadonlyArray<{
@@ -135,6 +136,14 @@ const STREAMING_CHOICES: ReadonlyArray<{
     label: "Finished paragraphs",
     description: "Show each paragraph or code block as it completes.",
   },
+];
+
+const CONTEXT_RESTART_CHOICES: ReadonlyArray<number | null> = [
+  null,
+  150_000,
+  200_000,
+  300_000,
+  500_000,
 ];
 
 // Only servers with thread auto-settlement store these, so other targets get the rest of a patch.
@@ -476,6 +485,35 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     disabled={disabledFor("enableConversationSummaries")}
                     onValueChange={(value) => write({ enableConversationSummaries: value })}
                   />
+                </SettingsSection>
+                <SettingsSection
+                  title="LCM: restart large threads"
+                  footer="When a Codex thread's context reaches the limit, continue in a fresh conversation built from summaries and the newest messages. Needs summaries."
+                  trailing={
+                    pendingWrites === 0 && isMixed("contextRestartAboveTokens") ? (
+                      <MixedValuesLabel projectSelected={projectSelected} />
+                    ) : null
+                  }
+                >
+                  {[
+                    ...CONTEXT_RESTART_CHOICES,
+                    ...(reference === null ||
+                    CONTEXT_RESTART_CHOICES.includes(reference.settings.contextRestartAboveTokens)
+                      ? []
+                      : [reference.settings.contextRestartAboveTokens]),
+                  ].map((tokens, index) => (
+                    <SettingsChoiceRow
+                      key={tokens ?? "off"}
+                      label={tokens === null ? "Off" : `Above ${formatTokens(tokens)} tokens`}
+                      selected={
+                        !isMixed("contextRestartAboveTokens") &&
+                        reference?.settings.contextRestartAboveTokens === tokens
+                      }
+                      separated={index > 0}
+                      disabled={disabledFor("contextRestartAboveTokens")}
+                      onPress={() => write({ contextRestartAboveTokens: tokens })}
+                    />
+                  ))}
                 </SettingsSection>
                 {!projectSelected &&
                 selectedTargets.some(

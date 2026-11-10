@@ -624,6 +624,31 @@ it.effect("schedules and generates nothing for a project that has not opted in",
   }).pipe(Effect.provide(makeLayer(model.generate, {})));
 });
 
+it.effect("reports a summary pass as pending until it settles", () =>
+  Effect.gen(function* () {
+    const service = yield* ConversationSummaries.ConversationSummaries;
+    const sql = yield* SqlClient.SqlClient;
+    const pending = service.hasPendingPass({ threadId });
+    const now = DateTime.formatIso(at);
+    const [effect] = conversationSummaryEffects({
+      settings: yield* decodeSettings(optedIn),
+      projectId,
+      threadId,
+      runId,
+    });
+    assert.isFalse(yield* pending);
+    yield* sql`
+      INSERT INTO orchestration_v2_effect_outbox (
+        effect_id, command_id, thread_id, effect_type, payload_json, status, available_at,
+        created_at, updated_at
+      ) VALUES (${effect!.id}, ${effect!.commandId}, ${threadId}, ${effect!.request.type},
+        ${JSON.stringify(effect!.request)}, 'running', ${now}, ${now}, ${now})`;
+    assert.isTrue(yield* pending);
+    yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'succeeded'`;
+    assert.isFalse(yield* pending);
+  }).pipe(Effect.provide(makeLayer(citing().generate, optedIn))),
+);
+
 it.effect("records an unavailable model as a failed pass without publishing a summary", () => {
   const model = scripted(() =>
     Effect.fail(

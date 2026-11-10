@@ -231,6 +231,13 @@ export const OrchestrationV2ProviderTurnTokenUsage = Schema.Struct({
 export type OrchestrationV2ProviderTurnTokenUsage =
   typeof OrchestrationV2ProviderTurnTokenUsage.Type;
 
+/** Why a turn started a fresh native conversation from summaries: its context passed the setting. */
+export const OrchestrationV2ContextRestart = Schema.Struct({
+  usedTokens: NonNegativeInt,
+  aboveTokens: NonNegativeInt,
+});
+export type OrchestrationV2ContextRestart = typeof OrchestrationV2ContextRestart.Type;
+
 export const OrchestrationV2ContextTransfer = Schema.Struct({
   id: ContextTransferId,
   type: OrchestrationV2ContextTransferType,
@@ -1871,6 +1878,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
       "manual_context",
     ]),
     summary: Schema.optional(Schema.String),
+    contextRestart: Schema.optional(OrchestrationV2ContextRestart),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2713,6 +2721,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
       "manual_context",
     ]),
     summary: Schema.optional(Schema.String),
+    contextRestart: Schema.optional(OrchestrationV2ContextRestart),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,

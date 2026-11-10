@@ -126,6 +126,8 @@ const SETTINGS_SEARCH_TERMS = {
     "lcm",
     "lossless context",
     "conversation summaries",
+    "restart from summaries",
+    "context restart",
     "external history",
     "pstack",
     "skills library",

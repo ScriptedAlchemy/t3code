@@ -1,6 +1,7 @@
 import {
   isOrchestrationV2PublicationRun,
   type ModelSelection,
+  type OrchestrationV2ContextRestart,
   type OrchestrationV2ModelSwitch,
   type OrchestrationV2Run,
   type OrchestrationV2TurnItem,
@@ -12,6 +13,8 @@ import {
   getModelSelectionStringOptionValue,
   getProviderOptionCurrentValue,
 } from "@t3tools/shared/model";
+
+import { formatTokens } from "@t3tools/shared/usageFormat";
 
 import { isReasoningSelect } from "./modelTraits.ts";
 import type { ThreadStructure } from "./state/models.ts";
@@ -53,6 +56,14 @@ export function resolvePendingHandoff(
       source.driver !== target?.driver ||
       source.continuation.groupKey !== target.continuation?.groupKey);
   return needsHandoff ? { from: [from], to: selection } : null;
+}
+
+/** The timeline receipt for a conversation T3 restarted from summaries. */
+export function contextRestartReceipt(restart: OrchestrationV2ContextRestart) {
+  return {
+    label: "Restarted from summaries",
+    detail: `${formatTokens(restart.usedTokens)} tokens passed the ${formatTokens(restart.aboveTokens)} limit`,
+  };
 }
 
 export function resolveHandoffEndpoints(

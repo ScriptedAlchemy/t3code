@@ -69,6 +69,8 @@ export interface ConversationSummaryRuntimeShape {
     readonly threadId: ThreadId;
     readonly runId: RunId;
   }) => Effect.Effect<{ readonly hasMore: boolean }, ConversationSummaryPassError>;
+  /** Whether a summary pass for the thread is queued or running. Unknown counts as pending. */
+  readonly hasPendingPass: (input: { readonly threadId: ThreadId }) => Effect.Effect<boolean>;
   /**
    * Current summaries that cover some of `itemIds`, nearest the present first. Every other
    * source must lie in `replayed`. Never fails: a summary that cannot be verified is simply not
@@ -100,6 +102,7 @@ export class ConversationSummaryRuntime extends Context.Reference<ConversationSu
   {
     defaultValue: () => ({
       summarizeThread: () => Effect.succeed({ hasMore: false }),
+      hasPendingPass: () => Effect.succeed(false),
       forHandoff: () => Effect.succeed([]),
     }),
   },

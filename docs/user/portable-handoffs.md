@@ -59,6 +59,29 @@ To search conversations created outside T3, open **External history** from this 
 **Settings → Labs → Zack**. [External history](./external-history.md) can read the selected server's
 Codex conversations and configured ChatGPT exports without importing another transcript copy.
 
+## Restart large threads from summaries
+
+A long thread sends its whole history to the provider on every request. With conversation summaries
+on, T3 Code can instead continue a large Codex thread in a fresh provider conversation that starts
+from the newest messages, word for word, and summaries of everything older. Later requests then
+carry far less context.
+
+Set **Restart large threads from summaries** in **Settings → Labs → Zack** to a number of tokens,
+for one project or every project. Leave it empty to turn it off, which is the default. It needs
+**Summarize older messages** on. When a Codex thread's measured context reaches the number, the next
+message you send starts the fresh conversation. A divider in the thread shows that it happened and
+how many tokens the old conversation held.
+
+A restart rebuilds the provider's prompt cache once, so T3 Code keeps restarts rare. It restarts only
+when the fresh conversation would be at most half the old one, and never twice in a row. It keeps the
+current conversation when background work is still running, when summaries have not caught up, for
+`/compact` and `/goal`, in group discussions, and whenever any older message would arrive neither
+word for word nor in a summary. The provider's own reasoning and tool state do not carry over. The
+agent can open a summary's sources to read the exact original text. Rolling back to a turn before a
+restart returns to the earlier provider conversation.
+
+Other providers are not affected. Claude keeps its own [idle compaction](./providers-claude.md#compact-long-conversations).
+
 ## Context limits
 
 A handoff must leave room for existing provider context, your request and attachments, instructions,
@@ -71,7 +94,8 @@ never shortens your request to make it fit.
 Recovery leaves running background work intact. Let it finish or stop it before retrying the handoff.
 
 Server operators can set `T3CODE_CONTEXT_HANDOFF_TOKEN_CAP` to change the initial history allowance
-(default 16,000; clamped to 1,024–64,000). This is an upper bound, not a provider context-window
+(default 16,000; clamped to 1,024–64,000). A fresh provider conversation always gets 64,000,
+because it has no earlier context to protect. This is an upper bound, not a provider context-window
 guarantee. Text accounting conservatively charges one token per UTF-8 byte, including attribution
 and JSON escaping. Imported history has a separate 64,000-byte ceiling; your current input and
 attachment payloads do not consume that ceiling.

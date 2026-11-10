@@ -46,6 +46,7 @@ import {
   EraserIcon,
   GitForkIcon,
   MessageSquareIcon,
+  RotateCcwIcon,
 } from "lucide-react";
 
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
@@ -65,6 +66,8 @@ import { subagentResumedSince } from "./V2LifecycleRow.logic";
 import { Button, InlineButton } from "../ui/button";
 import { T3Wordmark } from "../T3Wordmark";
 
+import { contextRestartReceipt } from "@t3tools/client-runtime/handoff";
+
 export type { HandoffTimelineRun } from "@t3tools/client-runtime/handoff";
 
 export function V2LifecycleRow(props: {
@@ -83,6 +86,12 @@ export function V2LifecycleRow(props: {
         icon={CircleStopIcon}
         wrapDetail
       />
+    );
+  }
+  if (item.type === "handoff" && item.contextRestart !== undefined) {
+    const receipt = contextRestartReceipt(item.contextRestart);
+    return (
+      <TimelineSystemDivider label={receipt.label} detail={receipt.detail} icon={RotateCcwIcon} />
     );
   }
   if (item.type === "handoff") {

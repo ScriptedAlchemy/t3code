@@ -1,4 +1,9 @@
-import { DEFAULT_SERVER_SETTINGS, DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  DEFAULT_UNIFIED_SETTINGS,
+  MAX_CONTEXT_RESTART_ABOVE_TOKENS,
+  MIN_CONTEXT_RESTART_ABOVE_TOKENS,
+} from "@t3tools/contracts/settings";
 import { Link } from "@tanstack/react-router";
 
 import { useEnvironments } from "~/state/environments";
@@ -29,6 +34,7 @@ export function ZackSettings() {
         </SettingsSection>
         <SettingsSection title="LCM (lossless context management)">
           <ConversationSummariesRow />
+          <ContextRestartRow />
           <ExternalHistoryRow />
         </SettingsSection>
         <SettingsSection title="Skills">
@@ -135,6 +141,57 @@ function ConversationSummariesRow() {
           mixed={mixed}
           checked={mixed ? false : settings.enableConversationSummaries}
           onCheckedChange={(enabled) => updateSettings({ enableConversationSummaries: enabled })}
+        />
+      }
+    />
+  );
+}
+
+function ContextRestartRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixed = useScopedSettingsMixed(["contextRestartAboveTokens"]);
+  const current = settings.contextRestartAboveTokens;
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["contextRestartAboveTokens"]}
+      mixed={mixed}
+      {...searchableSetting("context-restart")}
+      description="When a Codex thread's context reaches this many tokens, continue in a fresh conversation built from summaries and the newest messages. Needs summaries. Empty is off."
+      resetAction={
+        current !== null ? (
+          <SettingResetButton
+            label="restart from summaries"
+            tooltip="Reset restart from summaries to off"
+            onClick={() => updateSettings({ contextRestartAboveTokens: null })}
+          />
+        ) : null
+      }
+      control={
+        <Input
+          key={mixed ? "mixed" : String(current)}
+          type="number"
+          inputMode="numeric"
+          min={MIN_CONTEXT_RESTART_ABOVE_TOKENS}
+          max={MAX_CONTEXT_RESTART_ABOVE_TOKENS}
+          step={10_000}
+          defaultValue={mixed || current === null ? "" : current}
+          placeholder={mixed ? "Mixed" : "Off"}
+          aria-label="Restart above tokens"
+          onBlur={(event) => {
+            const typed = event.target.value.trim();
+            if (mixed && typed === "") return;
+            const next =
+              typed === ""
+                ? null
+                : Math.min(
+                    MAX_CONTEXT_RESTART_ABOVE_TOKENS,
+                    Math.max(MIN_CONTEXT_RESTART_ABOVE_TOKENS, Math.round(Number(typed))),
+                  );
+            if (next !== null && !Number.isFinite(next)) return;
+            if (next !== current) updateSettings({ contextRestartAboveTokens: next });
+          }}
         />
       }
     />

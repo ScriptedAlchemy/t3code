@@ -70,7 +70,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         handoff.delivery.status === "pending",
     );
     if (pending.length === 0 || (input.deferInline && input.inject === undefined))
-      return { context: "", delivered: Effect.void, unsent: Effect.void };
+      return { context: "", delivered: Effect.void, unsent: Effect.void, uncoveredItems: 0 };
     const budget = typeof input.budget === "number" ? input.budget : yield* input.budget;
     let coverage = pending
       .map(
@@ -180,10 +180,27 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     }
     const estimatedTokens = historyCost(selected.messages, selected.context);
     if (estimatedTokens > budget) {
-      if (input.deferInline) return { context: "", delivered: Effect.void, unsent: Effect.void };
+      if (input.deferInline)
+        return { context: "", delivered: Effect.void, unsent: Effect.void, uncoveredItems: 0 };
       return yield* new ContextHandoffBudgetError();
     }
     const omittedItemIds = new Set(selected.omittedItemIds);
+    // Items that arrive neither verbatim nor beneath a delivered summary. An older record may
+    // count omitted items without naming them, or carry only text that did not fit: both count,
+    // because nothing shows they are covered. Deferred history waits for a later turn instead.
+    const uncoveredItems =
+      omittedItemIds.size +
+      pending.reduce((sum, handoff) => {
+        if (handoff.history === undefined)
+          return sum + (handoff.summaryText !== "" && fullCoverage === coverage ? 1 : 0);
+        const named = handoff.history.omittedItemIds;
+        return (
+          sum +
+          (named === undefined
+            ? handoff.history.omittedItems
+            : named.filter((id) => !summarized.has(id)).length)
+        );
+      }, 0);
     const summaryDelivery = (handoff: OrchestrationV2ContextHandoff) => {
       const own = new Set<string>([
         ...(handoff.history?.omittedItemIds ?? []),
@@ -249,7 +266,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       });
       if (injected) {
         yield* persist("injected");
-        return { context: "", delivered: Effect.void, unsent: Effect.void };
+        return { context: "", delivered: Effect.void, unsent: Effect.void, uncoveredItems };
       }
     } else {
       yield* persist("pending");
@@ -257,9 +274,10 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     if (input.deferInline) {
       // Compaction cannot carry inline transcripts; retain for the next turn if native injection is unsupported.
       yield* Effect.forEach(pending, input.persist, { discard: true });
-      return { context: "", delivered: Effect.void, unsent: Effect.void };
+      return { context: "", delivered: Effect.void, unsent: Effect.void, uncoveredItems: 0 };
     }
     return {
+      uncoveredItems,
       context: renderHistory(selected.messages, selected.context),
       delivered: persist("inline"),
       unsent: Effect.forEach(pending, input.persist, { discard: true }),

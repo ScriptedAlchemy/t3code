@@ -2,6 +2,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  contextRestartReceipt,
   resolveHandoffEndpoints,
   resolveModelSwitchChange,
   type HandoffEndpoints,
@@ -90,6 +91,16 @@ export function ThreadHandoffRow(props: {
     [props.environmentId, props.projectedItem],
   );
   const endpoints = useAtomValue(endpointsAtom);
+  if (item.type === "handoff" && item.contextRestart !== undefined) {
+    const receipt = contextRestartReceipt(item.contextRestart);
+    return (
+      <ThreadContextDivider
+        label={`${receipt.label} · ${receipt.detail}`}
+        icon="arrow.clockwise"
+        iconColor={props.iconColor}
+      />
+    );
+  }
   if (item.type !== "handoff" || endpoints === null) return null;
   const color = item.status === "failed" ? "#e11d48" : props.iconColor;
   return (
