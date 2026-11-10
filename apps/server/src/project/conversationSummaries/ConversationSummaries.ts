@@ -982,34 +982,17 @@ const make = Effect.gen(function* () {
   const forHandoff: ConversationSummaries["Service"]["forHandoff"] = Effect.fn(
     "ConversationSummaries.forHandoff",
   )(
-    function* ({ projectId, handoffs, itemIds }) {
+    function* ({ projectId, handoffs, itemIds, replayed }) {
       yield* requireProject(projectId);
       if (
         !resolveProjectSettings(yield* serverSettings.getSettings, projectId).settings
           .enableConversationSummaries
       )
         return [];
-      // History inside the runs a handoff covers belongs to it even when the handoff does not
-      // carry it, such as the tool results a recovery handoff reads past. The run ordinals
-      // describe the thread the history comes from: a fork delta is stored on its destination
-      // and covers runs of its source.
-      const coveredRuns = new Map<
-        ThreadId,
-        Array<{ readonly from: number; readonly to: number }>
-      >();
       const threadIds = new Set<ThreadId>();
       for (const handoff of handoffs) {
         threadIds.add(handoff.threadId);
-        const historyThreads = new Set(
-          (handoff.history?.messages ?? []).map((message) => message.threadId),
-        );
-        for (const id of historyThreads) threadIds.add(id);
-        const [historyThread] = historyThreads;
-        if (historyThreads.size === 1 && historyThread !== undefined)
-          coveredRuns.set(historyThread, [
-            ...(coveredRuns.get(historyThread) ?? []),
-            handoff.coveredRunOrdinals,
-          ]);
+        for (const message of handoff.history?.messages ?? []) threadIds.add(message.threadId);
       }
       const offered: Array<HandoffSummary> = [];
       const requestedItems = encodeIds([...itemIds]);
@@ -1064,7 +1047,7 @@ const make = Effect.gen(function* () {
               (source) => !itemBySource.has(conversationSummarySourceIdentity(source)),
             ),
           ),
-          coveredRuns.get(threadId) ?? [],
+          replayed?.threadId === threadId ? [replayed] : [],
         );
         // The stretch next to the verbatim tail matters most, so the newest summaries win the
         // candidate limit. Grouping below still needs them in conversation order.

@@ -1752,6 +1752,11 @@ export const layer: Layer.Layer<
                 projectId: projection.thread.projectId,
                 handoffs: [...effectiveHandoffs, ...retryHandoff],
                 itemIds,
+                // A recovery replays every earlier run of this thread onto a fresh native
+                // conversation, but reads its history without MCP tool results.
+                ...(resumeFellBack && run.ordinal > 1
+                  ? { replayed: { threadId: projection.thread.id, from: 1, to: run.ordinal - 1 } }
+                  : {}),
               }),
             evidence: (messages) =>
               deliveredKnowledgeForHistory({

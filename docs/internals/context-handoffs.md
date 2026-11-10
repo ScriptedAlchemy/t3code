@@ -6,11 +6,12 @@ conversation summaries may stand in for older items when the project has opted i
 their sources are revalidated and every range of a replaced item is covered. Delivery takes them
 nearest the present first and accepts one only when more history items arrive with it than without
 it, counting verbatim and summarized items alike. The six newest messages are never traded away,
-which matches the tail the summary pass never covers. A summary may cite history that the handoff
-covers but does not carry, such as tool results that a recovery handoff reads past; a source outside
-the runs the handoff covers still disqualifies it. Those run ordinals describe the thread the
-handoff's history comes from. A fork delta is stored on its destination thread and covers runs of its
-source, so the handoff's own thread id must not be used to place them. These transfers do not
+which matches the tail the summary pass never covers. A summary's sources must all be carried by the
+handoffs, with one exception that only the caller can declare. A recovery replays every earlier run
+of its thread onto a fresh native conversation but reads history without MCP tool results, so the
+caller names those runs and a summary may cite history inside them. Nothing is inferred from a
+handoff record: it does not name the thread its run ordinals describe, and a fork's history spans
+its ancestors. These transfers do not
 reconstruct native provider session state, tool state, approvals, or attachments.
 
 Within a provider handoff payload, selected evidence is stored in `history.messages`. The

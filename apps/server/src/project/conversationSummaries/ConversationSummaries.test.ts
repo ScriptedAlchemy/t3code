@@ -1153,87 +1153,81 @@ it.effect("offers the summaries nearest the present first, within the candidate 
   }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
 });
 
-it.effect(
-  "offers a summary citing tool evidence that the handoff covers but does not carry",
-  () => {
-    const model = citing();
-    return Effect.gen(function* () {
-      yield* seed;
-      const projections = yield* ProjectionStore.ProjectionStoreV2;
-      yield* projections.apply({
-        id: EventId.make("covered-run"),
-        type: "run.updated",
+it.effect("offers a summary citing uncarried tool evidence only inside the replayed runs", () => {
+  const model = citing();
+  return Effect.gen(function* () {
+    yield* seed;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* projections.apply({
+      id: EventId.make("covered-run"),
+      type: "run.updated",
+      threadId,
+      runId,
+      providerInstanceId: instanceId,
+      occurredAt: at,
+      payload: {
+        id: runId,
         threadId,
-        runId,
+        ordinal: 1,
         providerInstanceId: instanceId,
-        occurredAt: at,
-        payload: {
-          id: runId,
-          threadId,
-          ordinal: 1,
-          providerInstanceId: instanceId,
-          modelSelection: { instanceId, model: "gpt-5" },
-          providerThreadId: null,
-          userMessageId: messageId(0),
-          rootNodeId: NodeId.make("covered-run-root"),
-          activeAttemptId: null,
-          status: "completed",
-          requestedAt: at,
-          startedAt: at,
-          completedAt: at,
-          checkpointId: null,
-          contextHandoffId: null,
-        },
-      });
-      const tool: Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }> = {
-        ...item(0),
-        id: TurnItemId.make("uncarried-tool"),
-        type: "dynamic_tool",
-        toolName: "t3_thread_read",
-        input: { view: "activity" },
-        output: "Tool output. ".repeat(40),
-        completedAt: DateTime.subtract(at, { minutes: 1 }),
-      };
-      yield* projections.apply({
-        id: EventId.make("uncarried-tool-completed"),
-        type: "turn-item.updated",
-        threadId,
-        providerInstanceId: instanceId,
-        occurredAt: at,
-        payload: tool,
-      });
-      yield* summarize;
-      const summary = yield* onlySummary;
-      assert.isTrue(summary.sources.some((source) => source.kind === "turn_item"));
-      const carried = summary.sources.flatMap((source) =>
-        source.kind === "message"
-          ? [itemId(Number(source.messageId.slice("message-".length)))]
-          : [],
-      );
-      const service = yield* ConversationSummaries.ConversationSummaries;
-      // A recovery handoff reads history without MCP tool results, so it never names this item.
-      const handoff = yield* prepareHandoff(MESSAGE_COUNT);
-      const offered = yield* service.forHandoff({
-        projectId,
-        handoffs: [handoff],
-        itemIds: new Set(carried),
-      });
-      assert.deepEqual(
-        offered.map((offer) => offer.coveredItemIds),
-        [carried],
-      );
-      assert.deepEqual(
-        yield* service.forHandoff({
-          projectId,
-          handoffs: [{ ...handoff, coveredRunOrdinals: { from: 2, to: 2 } }],
-          itemIds: new Set(carried),
-        }),
-        [],
-        "evidence outside the runs a handoff covers stays out",
-      );
-    }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
-  },
-);
+        modelSelection: { instanceId, model: "gpt-5" },
+        providerThreadId: null,
+        userMessageId: messageId(0),
+        rootNodeId: NodeId.make("covered-run-root"),
+        activeAttemptId: null,
+        status: "completed",
+        requestedAt: at,
+        startedAt: at,
+        completedAt: at,
+        checkpointId: null,
+        contextHandoffId: null,
+      },
+    });
+    const tool: Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }> = {
+      ...item(0),
+      id: TurnItemId.make("uncarried-tool"),
+      type: "dynamic_tool",
+      toolName: "t3_thread_read",
+      input: { view: "activity" },
+      output: "Tool output. ".repeat(40),
+      completedAt: DateTime.subtract(at, { minutes: 1 }),
+    };
+    yield* projections.apply({
+      id: EventId.make("uncarried-tool-completed"),
+      type: "turn-item.updated",
+      threadId,
+      providerInstanceId: instanceId,
+      occurredAt: at,
+      payload: tool,
+    });
+    yield* summarize;
+    const summary = yield* onlySummary;
+    assert.isTrue(summary.sources.some((source) => source.kind === "turn_item"));
+    const carried = summary.sources.flatMap((source) =>
+      source.kind === "message" ? [itemId(Number(source.messageId.slice("message-".length)))] : [],
+    );
+    const service = yield* ConversationSummaries.ConversationSummaries;
+    // A recovery handoff reads history without MCP tool results, so it never names this item.
+    const handoff = yield* prepareHandoff(MESSAGE_COUNT);
+    const input = { projectId, handoffs: [handoff], itemIds: new Set(carried) };
+    assert.deepEqual(
+      (yield* service.forHandoff({ ...input, replayed: { threadId, from: 1, to: 1 } })).map(
+        (offer) => offer.coveredItemIds,
+      ),
+      [carried],
+    );
+    assert.deepEqual(
+      yield* service.forHandoff({ ...input, replayed: { threadId, from: 2, to: 2 } }),
+      [],
+      "evidence outside the replayed runs stays out",
+    );
+    assert.deepEqual(
+      yield* service.forHandoff(input),
+      [],
+      "a handoff record alone never admits history it does not carry",
+    );
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
 
 const seedRun = Effect.fn("test.seedSummaryRun")(function* (
   id: RunId,
@@ -1268,7 +1262,7 @@ const seedRun = Effect.fn("test.seedSummaryRun")(function* (
   });
 });
 
-it.effect("applies a fork delta's covered runs to the thread it forked from", () => {
+it.effect("does not read a fork delta's run ordinals as covering uncarried history", () => {
   const model = citing();
   return Effect.gen(function* () {
     yield* seed;
@@ -1276,89 +1270,129 @@ it.effect("applies a fork delta's covered runs to the thread it forked from", ()
     yield* seedRun(runId, 1);
     const handoffs = yield* ContextHandoffService.ContextHandoffServiceV2;
     const service = yield* ConversationSummaries.ConversationSummaries;
-    const forkDelta = (input: {
-      readonly sourceThreadId: ThreadId;
-      readonly targetThreadId: ThreadId;
-      readonly to: number;
-      readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
-    }) =>
+    const forkDelta = (sourceThreadId: ThreadId, targetThreadId: ThreadId) =>
       handoffs.prepareForkDelta({
-        sourceThreadId: input.sourceThreadId,
-        targetThreadId: input.targetThreadId,
+        sourceThreadId,
+        targetThreadId,
         targetRunId: RunId.make("fork-target-run"),
         transferId: null,
         fromProviderThreadIds: [],
         toProviderThreadId: providerThread.id,
         fromProviderInstanceId: instanceId,
         toProviderInstanceId: instanceId,
-        coveredRunOrdinals: { from: 1, to: input.to },
-        deltaItems: input.deltaItems,
+        coveredRunOrdinals: { from: 1, to: 3 },
+        deltaItems: [item(0)],
         createdAt: at,
       });
+    // The summary cites message 1, which neither delta carries. The ordinals describe the fork
+    // source, and a fork's history can span its ancestors, so they place nothing.
+    for (const delta of [
+      yield* forkDelta(threadId, ThreadId.make("fork-destination")),
+      yield* forkDelta(ThreadId.make("fork-source"), threadId),
+    ])
+      assert.deepEqual(
+        yield* service.forHandoff({
+          projectId,
+          handoffs: [yield* prepareHandoff(1), delta],
+          itemIds: new Set([itemId(0)]),
+        }),
+        [],
+      );
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
 
-    // This thread is the fork source: message 1 is in a covered run but is not carried.
-    const fromHere = yield* forkDelta({
-      sourceThreadId: threadId,
-      targetThreadId: ThreadId.make("fork-destination"),
-      to: 1,
-      deltaItems: [item(0)],
-    });
-    assert.deepEqual(
-      (yield* service.forHandoff({
-        projectId,
-        handoffs: [fromHere],
-        itemIds: new Set([itemId(0)]),
-      })).map((offer) => offer.coveredItemIds),
-      [[itemId(0)]],
-    );
-
-    // This thread is the fork destination: the other thread's runs say nothing about its own.
-    const laterRun = RunId.make("later-run");
-    yield* seedRun(laterRun, 3);
+it.effect("does not admit later ancestor history through a portable fork handoff", () => {
+  const model = citing();
+  return Effect.gen(function* () {
+    yield* seed;
+    yield* persistSummary(0, [0, 1]);
+    yield* seedRun(runId, 1);
+    const laterAncestorRun = RunId.make("later-ancestor-run");
+    yield* seedRun(laterAncestorRun, 3);
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const moved = messageEvent(1, rawText(1));
     if (moved.type === "message.updated")
-      yield* projections.apply({ ...moved, payload: { ...moved.payload, runId: laterRun } });
+      yield* projections.apply({
+        ...moved,
+        payload: { ...moved.payload, runId: laterAncestorRun },
+      });
     yield* projections.apply({
-      id: EventId.make("item-1-moved"),
+      id: EventId.make("moved-ancestor-item"),
       type: "turn-item.updated",
       threadId,
       providerInstanceId: instanceId,
       occurredAt: at,
-      payload: { ...item(1), runId: laterRun },
+      payload: { ...item(1), runId: laterAncestorRun },
     });
-    const forkSource = ThreadId.make("fork-source");
+    const sourceThread = ThreadId.make("portable-source");
     yield* projections.apply({
-      id: EventId.make("fork-source-created"),
+      id: EventId.make("portable-source-created"),
       type: "thread.created",
-      threadId: forkSource,
+      threadId: sourceThread,
       providerInstanceId: instanceId,
       occurredAt: at,
-      payload: { ...threadPayload, id: forkSource },
+      payload: {
+        ...threadPayload,
+        id: sourceThread,
+        forkedFrom: { type: "run", threadId, runId },
+      },
     });
-    const forkRun = RunId.make("fork-source-run");
-    yield* seedRun(forkRun, 3, forkSource);
-    const intoHere = yield* forkDelta({
-      sourceThreadId: forkSource,
-      targetThreadId: threadId,
-      to: 3,
-      deltaItems: [
-        {
-          ...item(4),
-          id: TurnItemId.make("fork-source-item"),
-          threadId: forkSource,
-          runId: forkRun,
+    const sourceRun = RunId.make("portable-source-run");
+    yield* seedRun(sourceRun, 3, sourceThread);
+    for (const index of [20, 21])
+      yield* projections.apply({
+        id: EventId.make(`portable-source-item-${index}`),
+        type: "turn-item.updated",
+        threadId: sourceThread,
+        providerInstanceId: instanceId,
+        occurredAt: at,
+        payload: {
+          ...item(index),
+          id: TurnItemId.make(`portable-source-item-${index}`),
+          threadId: sourceThread,
+          runId: sourceRun,
+          text: "x".repeat(80_000),
         },
-      ],
+      });
+    const source = yield* projections.getThreadRecords(sourceThread, ["runs", "attempts"]);
+    const throughRun = source.runs.find((run) => run.id === sourceRun)!;
+    const sourceItems = yield* ContextHandoffService.readForkHistoryItems(
+      projections,
+      source,
+      throughRun,
+    );
+    assert.isFalse(sourceItems.some((entry) => entry.id === itemId(1)));
+    const covered = ContextHandoffService.visibleDeltaRunOrdinals(source, sourceItems);
+    assert.deepEqual(covered, { from: 3, to: 3 });
+    const handoffs = yield* ContextHandoffService.ContextHandoffServiceV2;
+    const portable = yield* handoffs.prepareProviderHandoff({
+      threadId: ThreadId.make("portable-target"),
+      targetRunId: RunId.make("portable-target-run"),
+      transferId: null,
+      fromProviderThreadIds: [],
+      toProviderThreadId: providerThread.id,
+      fromProviderInstanceId: instanceId,
+      toProviderInstanceId: instanceId,
+      coveredRunOrdinals: covered,
+      strategy: "full_thread_summary",
+      items: sourceItems,
+      runs: source.runs,
+      createdAt: at,
     });
     assert.deepEqual(
-      yield* service.forHandoff({
-        projectId,
-        handoffs: [yield* prepareHandoff(1), intoHere],
-        itemIds: new Set([itemId(0)]),
-      }),
+      [...new Set(portable.history!.messages.map((entry) => entry.threadId))],
+      [threadId],
+    );
+    const service = yield* ConversationSummaries.ConversationSummaries;
+    const offered = yield* service.forHandoff({
+      projectId,
+      handoffs: [portable],
+      itemIds: new Set([itemId(0)]),
+    });
+    assert.deepEqual(
+      offered,
       [],
-      "message 1 is in a later run of this thread than its own handoff covers",
+      "ancestor run 3 happened after the source forked at ancestor run 1",
     );
   }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
 });
