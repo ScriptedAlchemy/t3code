@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { inferencePath, routeProvider, validateRouteUrl } from "./routes.ts";
+import { inferencePath, inferenceTarget, routeProvider, validateRouteUrl } from "./routes.ts";
 
 describe("inference routes", () => {
   it("forwards only the protocol endpoints at the mounted path", () => {
@@ -16,6 +16,14 @@ describe("inference routes", () => {
       expect(inferencePath("POST", "/api/inference" + path)).toBeNull();
     }
     expect(inferencePath("GET", "/api/inference/v1/messages")).toBeNull();
+    expect(inferenceTarget("POST", "/api/inference/linked/host/v1/responses")).toEqual({
+      path: "/v1/responses",
+      environmentId: "host",
+    });
+    expect(
+      inferenceTarget("GET", "/api/inference/linked/host/v0/management/auth-files"),
+    ).toBeNull();
+    expect(inferenceTarget("POST", "/api/inference/linked/%ZZ/v1/messages")).toBeNull();
   });
 
   it("accepts private LAN addresses and HTTPS tailnet routes and confines local keys to loopback", () => {

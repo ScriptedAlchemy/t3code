@@ -1,4 +1,4 @@
-import { isReservedProviderInstanceId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, type ServerSettings } from "@t3tools/contracts";
 
 export type WizardNavigation =
   | { readonly kind: "navigate"; readonly step: number }
@@ -52,9 +52,6 @@ export function validateInstanceId(id: string, existing: ReadonlySet<string>): s
   if (id.length > 64) return "Instance ID must be 64 characters or fewer.";
   if (!INSTANCE_ID_PATTERN.test(id)) {
     return "Instance ID must start with a letter and use only letters, digits, '-', or '_'.";
-  }
-  if (isReservedProviderInstanceId(id)) {
-    return "Instance IDs starting with 'pool_' are reserved for account pools.";
   }
   if (existing.has(id)) return `An instance named '${id}' already exists.`;
   return null;
@@ -135,3 +132,21 @@ const TRAEX_BRIDGE_PROVIDER =
   'model_providers.traex={name="traex-bridge",base_url="http://127.0.0.1:8317/v1",wire_api="responses",supports_websockets=false,auth={command="sh",args=["-c","cat ~/.traex-bridge/api-key"],timeout_ms=1000}}';
 
 export const TRAEX_BRIDGE_CODEX_LAUNCH_ARGS = `-c 'model_provider="traex"' -c '${TRAEX_BRIDGE_PROVIDER}'`;
+
+export function inferenceAccountHostId(
+  instances: ServerSettings["providerInstances"],
+  selection: string,
+  environmentId: EnvironmentId,
+): EnvironmentId | null {
+  if (selection !== "codex" && selection !== "claudeAgent") return null;
+  const config = instances[ProviderInstanceId.make(selection)]?.config;
+  if (
+    config === null ||
+    typeof config !== "object" ||
+    !("inferenceEnabled" in config) ||
+    config.inferenceEnabled !== true
+  )
+    return null;
+  const hostId = "inferenceHostId" in config ? config.inferenceHostId : undefined;
+  return typeof hostId === "string" && hostId.trim() ? EnvironmentId.make(hostId) : environmentId;
+}

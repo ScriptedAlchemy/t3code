@@ -1,3 +1,4 @@
+import { InferenceProviderFields } from "./inferenceProxy.ts";
 import { EasDeviceHostConfigs, SimlockDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
 import {
   AuthOrchestrationOperateScope,
@@ -9,7 +10,6 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
-import { isInferenceConfig } from "./inferenceProxy.ts";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
   EnvironmentId,
@@ -52,11 +52,6 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
 } from "./providerInstance.ts";
-import {
-  ProviderPoolSettings,
-  ProviderPoolSettingsPatch,
-  providerPoolDriver,
-} from "./providerPool.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
 import { ExternalHistorySettings } from "./externalHistory.ts";
 import {
@@ -721,6 +716,7 @@ export function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fi
 
 export const CodexSettings = makeProviderSettingsSchema(
   {
+    ...InferenceProviderFields,
     setupMode: Schema.optionalKey(
       Schema.Literals(["managed", "existing", "cli", "inference"]),
     ).pipe(Schema.annotateKey({ providerSettingsForm: { hidden: true } })),
@@ -802,6 +798,7 @@ const InstanceIdleCompaction = Schema.Literals(
 
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
+    ...InferenceProviderFields,
     setupMode: Schema.optionalKey(Schema.Literals(["existing", "cli", "inference"])).pipe(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
@@ -1635,8 +1632,6 @@ export const ServerSettings = Schema.Struct({
   providerInstances: Schema.Record(ProviderInstanceId, ProviderInstanceConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
-  retiredPoolRoutes: Schema.optionalKey(Schema.Record(ProviderDriverKind, ProviderInstanceId)),
-  providerPools: ProviderPoolSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   sourceControlHosts: Schema.Record(Schema.String, SourceControlHostSettings).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
@@ -1702,39 +1697,7 @@ export const resolveProviderInstanceEnabled = (
   return instance.enabled ?? configEnabled ?? defaultEnabledForDriver(instance.driver);
 };
 
-export function retiredPoolRoute(
-  settings: Pick<ServerSettings, "providerInstances" | "retiredPoolRoutes">,
-  instanceId: string,
-): ProviderInstanceId | undefined {
-  const driver = providerPoolDriver(instanceId);
-  if (driver === null) return undefined;
-  const target = settings.retiredPoolRoutes?.[driver];
-  if (target === undefined) return undefined;
-  const instance = settings.providerInstances[target];
-  return instance?.driver === driver && isInferenceConfig(instance.config) ? target : undefined;
-}
-
 export const resolveProjectProviderInstanceEnabled = (
-  settings: Pick<
-    ServerSettings,
-    "providerInstances" | "projectSettingsOverrides" | "providerPools" | "retiredPoolRoutes"
-  >,
-  projectId: ProjectId | null,
-  instanceId: ProviderInstanceId,
-): boolean => {
-  const driver = providerPoolDriver(instanceId);
-  if (driver === null) return resolveConcreteInstanceEnabled(settings, projectId, instanceId);
-  const target = retiredPoolRoute(settings, instanceId);
-  if (target !== undefined) return resolveConcreteInstanceEnabled(settings, projectId, target);
-  // Older paired environments still publish the members of their pools.
-  return (
-    settings.providerPools[driver]?.memberInstanceIds.some((id) =>
-      resolveConcreteInstanceEnabled(settings, projectId, id),
-    ) ?? false
-  );
-};
-
-const resolveConcreteInstanceEnabled = (
   settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">,
   projectId: ProjectId | null,
   instanceId: ProviderInstanceId,
@@ -1765,7 +1728,7 @@ export const textGeneratorForSelection = (
 export const resolveTextGenerationSelectionEnabled = (
   settings: Pick<
     ServerSettings,
-    "providerInstances" | "providerPools" | "projectSettingsOverrides" | "textGenerators"
+    "providerInstances" | "projectSettingsOverrides" | "textGenerators"
   >,
   projectId: ProjectId | null,
   instanceId: ProviderInstanceId,
@@ -2072,7 +2035,6 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Record(UsageLimitSourceId, Schema.NullOr(UsageLimitSourceConfig)),
   ),
   // Per-entry for the same reason as `usageLimitSources`.
-  providerPools: Schema.optionalKey(ProviderPoolSettingsPatch),
   // Merge per entry like usageLimitSources; null removes an entry.
   textGenerators: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, Schema.NullOr(TextGeneratorConfig)),
@@ -2102,7 +2064,6 @@ export function requiredScopesForServerSettingsPatch(
       key === "providers" ||
       key === "providerInstances" ||
       key === "usageLimitSources" ||
-      key === "providerPools" ||
       key === "textGenerators" ||
       key === "secretProviders"
     ) {

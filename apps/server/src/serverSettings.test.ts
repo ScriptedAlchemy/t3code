@@ -136,40 +136,62 @@ function strictSecretReferencePaths(
 }
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings", (it) => {
-  it.effect("rejects creation of legacy CLI account pools", () =>
-    Effect.gen(function* () {
-      const service = yield* ServerSettingsModule.ServerSettingsService;
-      const result = yield* service
-        .updateSettings({
-          providerPools: {
-            [ProviderDriverKind.make("codex")]: {
-              enabled: true,
-              memberInstanceIds: [ProviderInstanceId.make("codex")],
+  it.effect(
+    "keeps native profiles when proxy routing is enabled and retires duplicate proxy routes",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const driver = ProviderDriverKind.make("codex");
+        for (const [id, config] of [
+          ["codex_icloud", { setupMode: "cli" }],
+          ["inference_codex_0000000000000000", { setupMode: "inference" }],
+          ["codex_traex", { launchArgs: "-c 'model_provider=\"traex\"'" }],
+        ] as const) {
+          yield* service.updateProviderInstance({
+            operation: "upsert",
+            instanceId: ProviderInstanceId.make(id),
+            instance: { driver, config },
+          });
+        }
+        yield* service.updateProviderInstance({
+          operation: "upsert",
+          instanceId: ProviderInstanceId.make("codex"),
+          instance: {
+            driver,
+            config: {
+              inferenceEnabled: true,
+              inferenceHostId: "host",
+              inferenceHostLabel: "",
+              inferenceBaseUrl: "http://127.0.0.1:9876",
+              inferenceKey: "scoped",
+              inferenceModels: ["gpt-fixture"],
+              inferenceHomePath: "/proxy/home",
             },
           },
-        })
-        .pipe(Effect.result);
-      assert.equal(result._tag, "Failure");
-      assert.deepEqual((yield* service.getSettings).providerPools, {});
-    }).pipe(Effect.provide(layerServerSettings())),
+        });
+        const saved = yield* service.getSettings;
+        const redacted = ServerSettingsModule.redactServerSettingsForClient(saved, {
+          secretReferences: true,
+        });
+        assert.equal(JSON.stringify(redacted).includes('"scoped"'), false);
+        assert.equal(JSON.stringify(redacted).includes(SECRET_REDACTED), true);
+        assert.deepEqual(Object.keys((yield* service.getSettings).providerInstances).sort(), [
+          "codex",
+          "codex_icloud",
+          "codex_traex",
+        ]);
+        assert.equal(
+          (yield* service
+            .updateProviderInstance({
+              operation: "create",
+              instanceId: ProviderInstanceId.make("codex_work"),
+              instance: { driver, config: { setupMode: "cli" } },
+            })
+            .pipe(Effect.result))._tag,
+          "Failure",
+        );
+      }).pipe(Effect.provide(layerServerSettings())),
   );
-
-  it.effect("reserves the pool id prefix for pools", () =>
-    Effect.gen(function* () {
-      const service = yield* ServerSettingsModule.ServerSettingsService;
-      for (const operation of ["create", "upsert"] as const) {
-        const result = yield* service
-          .updateProviderInstance({
-            operation,
-            instanceId: ProviderInstanceId.make("pool_claudeAgent"),
-            instance: { driver: ProviderDriverKind.make("claudeAgent"), config: {} },
-          })
-          .pipe(Effect.result);
-        assert.equal(result._tag, "Failure", operation);
-      }
-    }).pipe(Effect.provide(layerServerSettings())),
-  );
-
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;

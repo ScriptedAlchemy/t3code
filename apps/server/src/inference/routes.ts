@@ -1,6 +1,8 @@
 import {
+  EnvironmentId,
   ProviderDriverKind,
   type CustomModelSetting,
+  type SettingsSecretValue,
   type InferenceDriver,
 } from "@t3tools/contracts";
 
@@ -23,6 +25,18 @@ export function inferencePath(method: string, rawUrl: string): string | null {
     : null;
 }
 
+export function inferenceTarget(method: string, rawUrl: string) {
+  const linked = /^\/api\/inference\/linked\/([^/]+)(\/.*)$/.exec(rawUrl);
+  const path = inferencePath(method, linked ? PREFIX + linked[2] : rawUrl);
+  if (!path) return null;
+  if (!linked) return { path, environmentId: undefined };
+  try {
+    return { path, environmentId: EnvironmentId.make(decodeURIComponent(linked[1]!)) };
+  } catch {
+    return null;
+  }
+}
+
 export function validateRouteUrl(value: string, local: boolean): boolean {
   const url = URL.parse(value);
   if (!url || url.origin + (local ? "" : PREFIX) !== value) return false;
@@ -37,8 +51,8 @@ export function validateRouteUrl(value: string, local: boolean): boolean {
 export function routeProvider(
   driver: InferenceDriver,
   baseUrl: string,
-  key: string,
-  label: string,
+  key: SettingsSecretValue,
+  label: string | null,
   models: readonly string[],
   homePath: string,
 ) {
@@ -46,17 +60,24 @@ export function routeProvider(
   const provider = `model_providers.t3proxy={name="T3 inference",base_url="${baseUrl}/v1",env_key="T3_INFERENCE_KEY",wire_api="responses",supports_websockets=false,requires_openai_auth=false}`;
   return {
     driver: ProviderDriverKind.make(driver),
-    displayName: `${codex ? "Codex" : "Claude"} via ${label}`,
+    displayName:
+      label === null ? (codex ? "Codex" : "Claude") : `${codex ? "Codex" : "Claude"} via ${label}`,
     enabled: true,
     config: {
       setupMode: "inference",
       customModels: models,
       homePath,
-      ...(codex ? { launchArgs: `-c 'model_provider="t3proxy"' -c '${provider}'` } : {}),
+      shadowHomePath: "",
+      launchArgs: codex ? `-c 'model_provider="t3proxy"' -c '${provider}'` : "",
     },
     environment: codex
       ? [
           { name: "T3_INFERENCE_KEY", value: key, sensitive: true },
+          ...["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "ACCESS_TOKEN"].map((name) => ({
+            name,
+            value: "",
+            sensitive: false,
+          })),
           { name: "T3CODE_CODEX_LAUNCH_ARGS", value: "", sensitive: false },
         ]
       : [
@@ -64,6 +85,10 @@ export function routeProvider(
           { name: "ANTHROPIC_API_KEY", value: "", sensitive: false },
           { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "", sensitive: false },
           { name: "ANTHROPIC_AUTH_TOKEN", value: key, sensitive: true },
+          { name: "ANTHROPIC_CUSTOM_HEADERS", value: "", sensitive: false },
+          ...["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].map(
+            (name) => ({ name, value: "0", sensitive: false }),
+          ),
         ],
   };
 }

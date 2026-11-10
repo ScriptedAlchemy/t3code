@@ -12,7 +12,6 @@ import {
   type ServerSettings,
   type ServerProviderState,
 } from "@t3tools/contracts";
-import { foldProviderPoolsForComposer } from "@t3tools/client-runtime/provider-pools";
 import {
   normalizeProviderAccentColor,
   resolveProviderInstanceDisplayName,
@@ -23,7 +22,7 @@ export { normalizeProviderAccentColor, shouldShowInstanceBadge };
 
 type ProviderInstanceSettings = Pick<
   ServerSettings,
-  "providerInstances" | "projectSettingsOverrides" | "providerPools"
+  "providerInstances" | "projectSettingsOverrides"
 >;
 
 /**
@@ -176,7 +175,7 @@ export function providerInstanceEntriesFor(
   );
 }
 
-export function sortProviderInstanceEntries(
+function sortProviderInstanceEntries(
   entries: ReadonlyArray<ProviderInstanceEntry>,
 ): ReadonlyArray<ProviderInstanceEntry> {
   const byKind = new Map<ProviderDriverKind, ProviderInstanceEntry[]>();
@@ -190,29 +189,20 @@ export function sortProviderInstanceEntries(
   }
   const sorted: ProviderInstanceEntry[] = [];
   for (const bucket of byKind.values()) {
-    const pools = bucket.filter((entry) => entry.snapshot.pool?.role === "pool");
     const defaults = bucket.filter((entry) => entry.isDefault);
-    const customs = bucket.filter((entry) => !entry.isDefault && !pools.includes(entry));
-    sorted.push(...pools, ...defaults, ...customs);
+    const customs = bucket.filter((entry) => !entry.isDefault);
+    sorted.push(...defaults, ...customs);
   }
   return sorted;
 }
 
-/**
- * The catalog composer-style pickers offer: an active pool stands in for its member accounts.
- * Settings pickers keep `deriveProviderInstanceEntries` so every account stays selectable there.
- */
 export function deriveComposerProviderInstanceEntries(
   providers: ReadonlyArray<ServerProvider>,
   settings: ProviderInstanceSettings,
   projectId: ProjectId | null,
 ): ReadonlyArray<ProviderInstanceEntry> {
   return sortProviderInstanceEntries(
-    applyProviderInstanceSettings(
-      deriveProviderInstanceEntries(foldProviderPoolsForComposer(providers)),
-      settings,
-      projectId,
-    ),
+    applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings, projectId),
   );
 }
 
@@ -273,31 +263,6 @@ export function resolveDefaultProviderModelSelection(
   if (selection?.instanceId === instanceId) return selection;
   const model = getDefaultProviderInstanceModel(providers, instanceId);
   return model ? { instanceId, model } : null;
-}
-
-/**
- * Names the account a pooled thread last ran on. Account names usually repeat the provider's
- * ("Claude - iCloud"), so the pool's name is dropped from the front to leave the part that tells
- * accounts apart.
- */
-export function resolvePoolMemberLabel(
-  providers: ReadonlyArray<ServerProvider>,
-  selectedInstanceId: ProviderInstanceId,
-  runtimeInstanceId: ProviderInstanceId | null | undefined,
-): { readonly poolName: string; readonly memberName: string } | null {
-  if (runtimeInstanceId == null) return null;
-  const pool = providers.find((provider) => provider.instanceId === selectedInstanceId);
-  if (pool?.pool?.role !== "pool" || !pool.pool.memberInstanceIds.includes(runtimeInstanceId)) {
-    return null;
-  }
-  const member = providers.find((provider) => provider.instanceId === runtimeInstanceId);
-  if (member === undefined) return null;
-  const poolName = resolveProviderInstanceDisplayName(pool);
-  const memberFullName = resolveProviderInstanceDisplayName(member);
-  const shortName = memberFullName.startsWith(poolName)
-    ? memberFullName.slice(poolName.length).replace(/^[\s\-–—·:_]+/u, "")
-    : memberFullName;
-  return { poolName, memberName: shortName.length > 0 ? shortName : memberFullName };
 }
 
 export function resolveProjectDefaultProviderModelSelection(

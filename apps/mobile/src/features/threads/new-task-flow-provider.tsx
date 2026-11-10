@@ -71,7 +71,6 @@ import {
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
 import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
-import { composerModelSelectionFor } from "@t3tools/client-runtime/provider-pools";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -448,7 +447,6 @@ export function NewTaskFlowProvider(
     draftModelSelection ?? projectDefaultModelSelection ?? stickyModelSelection,
     undefined,
     selectedProject?.id ?? null,
-    "composer",
   );
 
   const selectedDefaultModel = resolveNewTaskModelSelection({
@@ -469,9 +467,7 @@ export function NewTaskFlowProvider(
     projectId: selectedProject?.id ?? null,
     now: modelSelectionNow,
   }).selection;
-  const selectedModel = resolvedModel
-    ? composerModelSelectionFor(selectedEnvironmentServerConfig?.providers ?? [], resolvedModel)
-    : null;
+  const selectedModel = resolvedModel;
   const selectedModelKey = selectedModel
     ? `${selectedModel.instanceId}:${selectedModel.model}`
     : null;

@@ -46,8 +46,8 @@ describe("mobile model options", () => {
         },
       ],
     } as unknown as ServerConfig;
-    const options = buildModelOptions(config, null, undefined, null, "composer");
-    const providerNotices = buildProviderUpdateRequiredGroups(config, undefined, null, "composer");
+    const options = buildModelOptions(config, null, undefined, null);
+    const providerNotices = buildProviderUpdateRequiredGroups(config, undefined, null);
 
     expect(options).toEqual([]);
     expect(groupModelOptionsWithProviderNotices(options, providerNotices)).toEqual([
@@ -93,7 +93,7 @@ describe("mobile model options", () => {
       model: "github-copilot/claude-fable-5",
     };
 
-    const options = buildModelOptions(config, selection, undefined, null, "composer");
+    const options = buildModelOptions(config, selection, undefined, null);
 
     expect(options).toMatchObject(
       sources.map((source) => ({
@@ -155,7 +155,6 @@ describe("mobile model options", () => {
       },
       undefined,
       null,
-      "composer",
     );
 
     expect(option?.capabilities?.optionDescriptors?.[0]?.id).toBe("serviceTier");
@@ -170,7 +169,6 @@ describe("mobile model options", () => {
       },
       undefined,
       null,
-      "composer",
     );
     expect(emptyOption?.selection).toEqual(option?.selection);
 
@@ -183,7 +181,6 @@ describe("mobile model options", () => {
       },
       undefined,
       null,
-      "composer",
     );
     expect(explicitOption?.selection.options).toEqual([{ id: "serviceTier", value: "priority" }]);
   });
@@ -201,12 +198,10 @@ describe("mobile model options", () => {
     const selection = { instanceId: ProviderInstanceId.make("codex"), model: "test" };
 
     expect(
-      buildModelOptions(config, selection, undefined, null, "composer").map(
-        (option) => option.providerKey,
-      ),
+      buildModelOptions(config, selection, undefined, null).map((option) => option.providerKey),
     ).toEqual(["codex", "claudeAgent"]);
-    expect(buildModelOptions(config, selection, selection.instanceId, null, "composer")).toEqual(
-      buildModelOptions(config, selection, undefined, null, "composer").filter(
+    expect(buildModelOptions(config, selection, selection.instanceId, null)).toEqual(
+      buildModelOptions(config, selection, undefined, null).filter(
         (option) => option.providerKey === "codex",
       ),
     );
@@ -228,7 +223,7 @@ describe("mobile model options", () => {
       })),
     } as unknown as ServerConfig;
     expect(
-      buildModelOptions(config, null, ProviderInstanceId.make("codex"), null, "composer").map(
+      buildModelOptions(config, null, ProviderInstanceId.make("codex"), null).map(
         (option) => option.providerKey,
       ),
     ).toEqual(["codex", "codex_work"]);
@@ -250,12 +245,12 @@ describe("mobile model options", () => {
       })),
     } as unknown as ServerConfig;
     expect(
-      buildModelOptions(config, null, ProviderInstanceId.make("codex"), null, "composer").map(
+      buildModelOptions(config, null, ProviderInstanceId.make("codex"), null).map(
         (option) => option.providerKey,
       ),
     ).toEqual(["codex", "codex_work"]);
     expect(
-      buildModelOptions(config, null, ProviderInstanceId.make("google"), null, "composer").map(
+      buildModelOptions(config, null, ProviderInstanceId.make("google"), null).map(
         (option) => option.providerKey,
       ),
     ).toEqual(["google"]);
@@ -275,7 +270,7 @@ describe("mobile model options", () => {
       })),
     } as unknown as ServerConfig;
     const selection = { instanceId: ProviderInstanceId.make("codex_work"), model: "saved" };
-    const options = buildModelOptions(config, selection, undefined, null, "composer");
+    const options = buildModelOptions(config, selection, undefined, null);
     expect(options[0]?.providerBadge).toEqual({ displayName: "Personal", showBadge: true });
     expect(options[1]?.providerBadge).toEqual({
       displayName: "Work",
@@ -289,7 +284,6 @@ describe("mobile model options", () => {
         null,
         undefined,
         null,
-        "composer",
       )[0]?.providerBadge?.showBadge,
     ).toBe(false);
   });
@@ -313,7 +307,7 @@ describe("mobile model options", () => {
       })),
     } as unknown as ServerConfig;
     expect(
-      buildModelOptions(config, null, undefined, null, "composer").map(
+      buildModelOptions(config, null, undefined, null).map(
         (option) => option.providerBadge?.showBadge,
       ),
     ).toEqual([false, false]);
@@ -328,7 +322,7 @@ describe("mobile model options", () => {
       },
     };
     expect(
-      buildModelOptions(shared, null, undefined, null, "composer").map(
+      buildModelOptions(shared, null, undefined, null).map(
         (option) => option.providerBadge?.showBadge,
       ),
     ).toEqual([true, true]);
@@ -356,8 +350,8 @@ describe("mobile model options", () => {
         providers: state === "missing" ? [] : [provider],
         settings: { providerInstances: { google_work: { driver: "antigravity" } } },
       } as unknown as ServerConfig;
-      const options = buildModelOptions(config, selection, selection.instanceId, null, "composer");
-      expect(options).toEqual(buildModelOptions(config, selection, undefined, null, "composer"));
+      const options = buildModelOptions(config, selection, selection.instanceId, null);
+      expect(options).toEqual(buildModelOptions(config, selection, undefined, null));
       expect(options).toHaveLength(1);
       expect(options[0]).toMatchObject({ selection, isUnavailable: true });
     },
@@ -457,8 +451,8 @@ describe("mobile model options", () => {
       expect(resolveSelectableModelSelection(unavailableConfig, selection, null)).toBe(selection);
       expect(resolveDefaultableModelSelection(unavailableConfig, selection, null)).toBe(selection);
       expect(isModelSelectionUnavailable(unavailableConfig, selection, null)).toBe(true);
-      expect(buildModelOptions(unavailableConfig, null, undefined, null, "composer")).toEqual([]);
-      const [option] = buildModelOptions(unavailableConfig, selection, undefined, null, "composer");
+      expect(buildModelOptions(unavailableConfig, null, undefined, null)).toEqual([]);
+      const [option] = buildModelOptions(unavailableConfig, selection, undefined, null);
       expect(option).toMatchObject({
         key: `google_work:${selection.model}`,
         label: model.name,
@@ -485,7 +479,7 @@ describe("mobile model options", () => {
 
       expect(resolveDefaultableModelSelection(changedConfig, selection, null)).toBe(selection);
       expect(isModelSelectionUnavailable(changedConfig, selection, null)).toBe(true);
-      const options = buildModelOptions(changedConfig, selection, undefined, null, "composer");
+      const options = buildModelOptions(changedConfig, selection, undefined, null);
       const missing = options.find((option) => option.selection.model === selection.model);
       expect(missing).toMatchObject({
         label: selection.model,
@@ -504,13 +498,13 @@ describe("mobile model options", () => {
         }),
       ).toBe(selection);
 
-      const [restored] = buildModelOptions(config, selection, undefined, null, "composer");
+      const [restored] = buildModelOptions(config, selection, undefined, null);
       expect(isModelSelectionUnavailable(config, selection, null)).toBe(false);
       expect(restored?.isUnavailable).not.toBe(true);
       expect(restored?.selection).toBe(selection);
       expect(resolveDefaultableModelSelection(config, selection, null)).toBe(selection);
       expect(
-        buildModelOptions(config, null, undefined, null, "composer")[0]?.selection.options,
+        buildModelOptions(config, null, undefined, null)[0]?.selection.options,
       ).toBeUndefined();
     });
 
@@ -528,9 +522,7 @@ describe("mobile model options", () => {
         selection,
       );
       expect(isModelSelectionUnavailable(missingStatusConfig, selection, null)).toBe(true);
-      expect(
-        buildModelOptions(missingStatusConfig, selection, undefined, null, "composer"),
-      ).toMatchObject([
+      expect(buildModelOptions(missingStatusConfig, selection, undefined, null)).toMatchObject([
         {
           providerDriver: "antigravity",
           providerLabel: "Google Work",
@@ -545,12 +537,8 @@ describe("mobile model options", () => {
 
       expect(resolveDefaultableModelSelection(null, selection, null)).toBe(selection);
       expect(isModelSelectionUnavailable(null, selection, null)).toBe(false);
-      expect(buildModelOptions(null, selection, undefined, null, "composer")[0]?.selection).toBe(
-        selection,
-      );
-      expect(
-        buildModelOptions(null, selection, undefined, null, "composer")[0]?.isUnavailable,
-      ).not.toBe(true);
+      expect(buildModelOptions(null, selection, undefined, null)[0]?.selection).toBe(selection);
+      expect(buildModelOptions(null, selection, undefined, null)[0]?.isUnavailable).not.toBe(true);
       expect(isModelSelectionUnavailable(unknownConfig, selection, null)).toBe(false);
       expect(resolveSelectableModelSelection(unknownConfig, selection, null)).toBeNull();
     });
@@ -672,9 +660,7 @@ describe("mobile model options", () => {
         },
       };
 
-      expect(
-        buildModelOptions(configWith(settings), null, undefined, projectId, "composer"),
-      ).toEqual([]);
+      expect(buildModelOptions(configWith(settings), null, undefined, projectId)).toEqual([]);
     });
 
     it("hides a machine-disabled instance for a project with no override, even though another project's keep-alive left it running", () => {
@@ -689,9 +675,7 @@ describe("mobile model options", () => {
         },
       };
 
-      expect(
-        buildModelOptions(configWith(settings), null, undefined, projectId, "composer"),
-      ).toEqual([]);
+      expect(buildModelOptions(configWith(settings), null, undefined, projectId)).toEqual([]);
     });
 
     it("refuses to send an instance the project merely inherits as disabled, not just an explicit override", () => {
@@ -722,13 +706,7 @@ describe("mobile model options", () => {
       };
       const fallback = { instanceId, model: "model-a" };
 
-      const options = buildModelOptions(
-        configWith(settings),
-        fallback,
-        undefined,
-        projectId,
-        "composer",
-      );
+      const options = buildModelOptions(configWith(settings), fallback, undefined, projectId);
 
       expect(options).toHaveLength(1);
       expect(options[0]).toMatchObject({ selection: fallback, isUnavailable: true });
@@ -808,7 +786,7 @@ describe("synchronized mobile model visibility", () => {
   } as unknown as ServerConfig;
 
   it("applies server visibility and ordering independently to each provider instance", () => {
-    const options = buildModelOptions(config, null, undefined, null, "composer");
+    const options = buildModelOptions(config, null, undefined, null);
     expect(
       options
         .filter((option) => option.providerKey === provider)
@@ -827,7 +805,6 @@ describe("synchronized mobile model visibility", () => {
       { instanceId: provider, model: "hidden" },
       provider,
       null,
-      "composer",
       true,
     );
     expect(options.map((option) => option.selection.model)).toEqual([
@@ -848,7 +825,7 @@ describe("synchronized mobile model visibility", () => {
 
   it.each(["hidden", "missing"])("does not resurrect the hidden fallback %s", (model) => {
     expect(
-      buildModelOptions(config, { instanceId: provider, model }, provider, null, "composer").map(
+      buildModelOptions(config, { instanceId: provider, model }, provider, null).map(
         (option) => option.selection.model,
       ),
     ).toEqual(["second", "first", "custom"]);
@@ -857,19 +834,13 @@ describe("synchronized mobile model visibility", () => {
   // regression: #16816 sync model favorites and visibility across clients
   it("keeps custom models visible and restores built-in models when the server clears hidden models", () => {
     expect(
-      buildModelOptions(
-        config,
-        { instanceId: provider, model: "custom" },
-        provider,
-        null,
-        "composer",
-      ).map((option) => option.selection.model),
+      buildModelOptions(config, { instanceId: provider, model: "custom" }, provider, null).map(
+        (option) => option.selection.model,
+      ),
     ).toContain("custom");
     const cleared = { ...config, settings: { ...config.settings, providerModelPreferences: {} } };
     expect(
-      buildModelOptions(cleared, null, provider, null, "composer").map(
-        (option) => option.selection.model,
-      ),
+      buildModelOptions(cleared, null, provider, null).map((option) => option.selection.model),
     ).toEqual(["hidden", "first", "second", "custom"]);
   });
 
@@ -908,15 +879,13 @@ describe("synchronized mobile model visibility", () => {
 
     it("leaves drivers the policy does not allow out of the picker", () => {
       expect(
-        buildModelOptions(config, null, undefined, null, "composer").map(
-          (option) => option.providerKey,
-        ),
+        buildModelOptions(config, null, undefined, null).map((option) => option.providerKey),
       ).toEqual(["codex"]);
     });
 
     it("marks a thread's selection on a disallowed driver unavailable with the policy reason", () => {
       expect(
-        buildModelOptions(config, disallowed, undefined, null, "composer").find(
+        buildModelOptions(config, disallowed, undefined, null).find(
           (option) => option.providerKey === "claudeAgent",
         )?.isUnavailable,
       ).toBe(true);
@@ -950,7 +919,7 @@ describe("mobile unavailable provider model options", () => {
       ],
     } as unknown as ServerConfig;
 
-    const options = buildModelOptions(config, null, undefined, null, "composer");
+    const options = buildModelOptions(config, null, undefined, null);
 
     expect(options).toMatchObject([
       { providerKey: "claudeAgent", providerLabel: "Claude", isUnavailable: true },
@@ -963,95 +932,5 @@ describe("mobile unavailable provider model options", () => {
         modelOptions: options,
       }),
     ).toBeNull();
-  });
-});
-
-describe("mobile account pool model options", () => {
-  const memberId = ProviderInstanceId.make("claudeAgent_work");
-  const poolId = ProviderInstanceId.make("pool_claudeAgent");
-  const memberIds = [ProviderInstanceId.make("claudeAgent"), memberId];
-  const config = {
-    settings: {
-      ...DEFAULT_SERVER_SETTINGS,
-      providerInstances: {
-        [memberId]: { driver: "claudeAgent", enabled: true },
-      },
-      providerPools: {
-        claudeAgent: { enabled: true, memberInstanceIds: memberIds },
-      },
-    },
-    providers: [
-      ...memberIds.map((instanceId) => ({
-        instanceId,
-        driver: "claudeAgent",
-        displayName: instanceId === memberId ? "Claude Work" : "Claude",
-        enabled: true,
-        installed: true,
-        auth: { status: "authenticated" },
-        pool: { role: "member", poolInstanceId: poolId },
-        models: [{ slug: "opus", name: "Opus", capabilities: null }],
-      })),
-      {
-        instanceId: poolId,
-        driver: "claudeAgent",
-        displayName: "Claude",
-        enabled: true,
-        installed: true,
-        auth: { status: "authenticated" },
-        pool: { role: "pool", memberInstanceIds: memberIds, droppedModels: [] },
-        models: [
-          { slug: "opus", name: "Opus", capabilities: null },
-          { slug: "sonnet", name: "Sonnet", capabilities: null },
-        ],
-      },
-    ],
-  } as unknown as ServerConfig;
-  const selection = { instanceId: memberId, model: "opus" };
-
-  it("offers the pool under its driver without resurrecting a saved member selection", () => {
-    const options = buildModelOptions(config, selection, undefined, null, "composer");
-    expect(options.map((option) => option.key)).toEqual([
-      "pool_claudeAgent:opus",
-      "pool_claudeAgent:sonnet",
-    ]);
-    expect(groupByProvider(options)).toMatchObject([
-      {
-        providerKey: poolId,
-        providerLabel: "Claude",
-        models: [{ providerDriver: "claudeAgent" }, { providerDriver: "claudeAgent" }],
-      },
-    ]);
-  });
-
-  it("keeps every instance and the selected member in settings", () => {
-    const options = buildModelOptions(config, selection, undefined, null, "settings");
-    expect(groupByProvider(options).map((group) => group.providerKey)).toEqual([
-      ...memberIds,
-      poolId,
-    ]);
-    expect(options.find((option) => option.key === `${memberId}:opus`)?.selection).toEqual(
-      selection,
-    );
-  });
-
-  it.each([memberId, poolId])("resolves a hidden member with a lock on %s", (lock) => {
-    const options = buildModelOptions(config, selection, lock, null, "composer");
-    expect(options.map((option) => option.key)).toEqual([
-      "pool_claudeAgent:opus",
-      "pool_claudeAgent:sonnet",
-    ]);
-    expect(options[0]?.selection).toEqual({ instanceId: poolId, model: "opus" });
-  });
-
-  it("restores the member selection when its pool is no longer published", () => {
-    const unpooledConfig = {
-      ...config,
-      providers: config.providers.filter((provider) => provider.instanceId !== poolId),
-    };
-    expect(
-      buildModelOptions(unpooledConfig, selection, memberId, null, "composer").map(
-        (option) => option.selection,
-      ),
-    ).toEqual(memberIds.map((instanceId) => ({ instanceId, model: selection.model })));
   });
 });

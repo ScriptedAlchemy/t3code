@@ -155,6 +155,12 @@ describe("ProviderAccountTransfer", () => {
           providerInstances: {
             [workCodex]: {
               ...sourceCodex,
+              config: {
+                ...sourceCodex.config,
+                inferenceEnabled: true,
+                inferenceHostId: "consumer-scoped-host",
+                inferenceKey: "consumer-only-grant",
+              },
               environment: [...sourceCodex.environment, secretBacked("op://work/org")],
             },
           },
@@ -174,6 +180,10 @@ describe("ProviderAccountTransfer", () => {
       expect(exported.omitted).toEqual([
         { setting: { _tag: "ConfigField", field: "binaryPath" }, reason: "machine-local" },
         { setting: { _tag: "ConfigField", field: "homePath" }, reason: "machine-local" },
+        ...["inferenceEnabled", "inferenceHostId", "inferenceKey"].map((field) => ({
+          setting: { _tag: "ConfigField", field },
+          reason: "machine-local",
+        })),
         { setting: { _tag: "EnvironmentVariable", name: "CODEX_HOME" }, reason: "machine-local" },
         {
           setting: { _tag: "EnvironmentVariable", name: "GOOGLE_APPLICATION_CREDENTIALS" },

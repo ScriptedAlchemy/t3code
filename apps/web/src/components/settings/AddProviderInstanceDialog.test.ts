@@ -1,7 +1,14 @@
+import {
+  EnvironmentId,
+  ProviderInstanceId,
+  ProviderDriverKind,
+  type ServerSettings,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   getProviderIdentityDraft,
+  inferenceAccountHostId,
   resolveAcpRegistryWizardNavigation,
   resolveWizardNavigation,
   updateProviderIdentityDraft,
@@ -80,11 +87,38 @@ describe("validateInstanceId", () => {
       "An instance named 'claudeAgent_work' already exists.",
     );
   });
+});
 
-  it("refuses ids that account pools reserve", () => {
-    expect(validateInstanceId("pool_claudeAgent", new Set())).toBe(
-      "Instance IDs starting with 'pool_' are reserved for account pools.",
-    );
-    expect(validateInstanceId("pool_anything", new Set())).not.toBeNull();
+describe("proxy account management", () => {
+  it("uses the configured inference host for normal accounts and leaves Traex separate", () => {
+    const current = EnvironmentId.make("consumer");
+    const instances: ServerSettings["providerInstances"] = {
+      [ProviderInstanceId.make("codex")]: {
+        driver: ProviderDriverKind.make("codex"),
+        config: { inferenceEnabled: true, inferenceHostId: "host" },
+      },
+      [ProviderInstanceId.make("claudeAgent")]: {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        config: { inferenceEnabled: true },
+      },
+    };
+    expect(inferenceAccountHostId(instances, "codex", current)).toBe("host");
+    expect(inferenceAccountHostId(instances, "claudeAgent", current)).toBe(current);
+    expect(inferenceAccountHostId(instances, "traexBridge", current)).toBeNull();
+    expect(inferenceAccountHostId(instances, "cursor", current)).toBeNull();
+    expect(inferenceAccountHostId({}, "codex", current)).toBeNull();
+    expect(
+      inferenceAccountHostId(
+        {
+          ...instances,
+          [ProviderInstanceId.make("codex")]: {
+            driver: ProviderDriverKind.make("codex"),
+            config: { inferenceEnabled: false, inferenceHostId: "host" },
+          },
+        },
+        "codex",
+        current,
+      ),
+    ).toBeNull();
   });
 });

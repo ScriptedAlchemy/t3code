@@ -74,6 +74,7 @@ export const layer: Layer.Layer<
                       Effect.map((capabilities) => ({
                         driver: adapter.driver,
                         continuationKey: `${adapter.driver}:instance:${instanceId}`,
+                        requiresBoundContinuationIdentity: false,
                         enabled: true,
                         capabilities,
                       })),
@@ -98,6 +99,13 @@ export const layer: Layer.Layer<
               thread.providerInstanceId === current.instanceId &&
               thread.nativeThreadRef !== null,
           );
+          const storedContinuationKey = currentProviderThread?.nativeMetadata?.continuationKey;
+          const continuationChanged =
+            currentProviderThread !== undefined &&
+            Option.isSome(targetInstance) &&
+            (storedContinuationKey === undefined
+              ? targetInstance.value.requiresBoundContinuationIdentity === true
+              : storedContinuationKey !== targetInstance.value.continuationKey);
           const selectionTransition =
             current.instanceId === targetModelSelection.instanceId &&
             !modelSelectionsEqual(current, targetModelSelection) &&
@@ -118,6 +126,7 @@ export const layer: Layer.Layer<
                 } as const)
               : decideProviderSessionTransition({
                   current:
+                    continuationChanged ||
                     Option.isNone(currentInstance) ||
                     (currentSession === undefined && currentProviderThread === undefined)
                       ? null
@@ -125,7 +134,8 @@ export const layer: Layer.Layer<
                           driver: currentInstance.value.driver,
                           continuationIdentity: {
                             driverKind: currentInstance.value.driver,
-                            continuationKey: currentInstance.value.continuationKey,
+                            continuationKey:
+                              storedContinuationKey ?? currentInstance.value.continuationKey,
                           },
                           modelSelection: current,
                           runtimeMode: projection.thread.runtimeMode,
@@ -167,7 +177,10 @@ export const layer: Layer.Layer<
                 return session.id === currentSession?.id;
               }
               if (transition.type === "create_with_handoff") {
-                return session.providerInstanceId !== targetModelSelection.instanceId;
+                return (
+                  session.providerInstanceId !== targetModelSelection.instanceId ||
+                  (continuationChanged && session.id === currentProviderThread?.providerSessionId)
+                );
               }
               return false;
             })

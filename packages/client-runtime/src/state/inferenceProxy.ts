@@ -1,5 +1,9 @@
 import { type InferenceConsumer, type InferenceDriver, WS_METHODS } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import { EnvironmentSupervisor } from "../connection/supervisor.ts";
+import { connectionRoutes } from "../connection/routes.ts";
 import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import type { Atom } from "effect/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
@@ -30,7 +34,6 @@ export function createInferenceProxyAtoms<R, E>(
     tag: WS_METHODS.inferenceManage,
     onSuccess: ({ environmentId, input }, registry) =>
       Effect.sync(() => {
-        if (input.operation === "listModels") return;
         registry.refresh(inferenceStatus({ environmentId, input: {} }));
         if (input.operation === "configure" || input.operation === "update")
           registry.refresh(updates({ environmentId, input: { operation: "checkUpdate" } }));
@@ -47,13 +50,36 @@ export function createInferenceProxyAtoms<R, E>(
       ) {
         yield* consumerPermission.authorize(registry, input.consumer.environmentId);
         const connections = yield* EnvironmentRegistry;
-        const grant = yield* connections.run(
+        const { grant, prepared } = yield* connections.run(
           input.host.environmentId,
-          requestGuarded(WS_METHODS.inferenceGrant, {
-            environmentId: input.consumer.environmentId,
-            label: input.consumer.label,
+          Effect.gen(function* () {
+            const grant = yield* requestGuarded(WS_METHODS.inferenceGrant, {
+              environmentId: input.consumer.environmentId,
+              label: input.consumer.label,
+            });
+            const supervisor = yield* EnvironmentSupervisor;
+            return { grant, prepared: yield* SubscriptionRef.get(supervisor.prepared) };
           }),
         );
+        const entries = yield* SubscriptionRef.get(connections.entries);
+        const entry = entries.get(input.host.environmentId);
+        const active = Option.getOrUndefined(prepared);
+        const target = active?.target;
+        const profile =
+          entry && target?._tag === "SshConnectionTarget"
+            ? connectionRoutes(entry).find(
+                (route) =>
+                  route.target._tag === "SshConnectionTarget" &&
+                  route.target.connectionId === target.connectionId,
+              )?.profile
+            : undefined;
+        const ssh =
+          profile && Option.isSome(profile) && profile.value._tag === "SshConnectionProfile"
+            ? profile.value.target
+            : undefined;
+        const connection = active
+          ? { url: active.httpBaseUrl, ...(ssh ? { ssh } : {}) }
+          : undefined;
         registry.refresh(inferenceStatus({ environmentId: input.host.environmentId, input: {} }));
         yield* connections.run(
           input.consumer.environmentId,
@@ -61,6 +87,7 @@ export function createInferenceProxyAtoms<R, E>(
             grant,
             driver: input.driver,
             hostLabel: input.host.label,
+            ...(connection ? { connection } : {}),
           }),
         );
         registry.refresh(

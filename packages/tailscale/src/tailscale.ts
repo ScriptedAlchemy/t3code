@@ -243,6 +243,7 @@ const readTailscaleOutput = Effect.fn("tailscale.readTailscaleOutput")(function*
   };
   const command = ChildProcess.make(executable, [...args], {
     forceKillAfter: TAILSCALE_KILL_GRACE,
+    ...(hostPlatform === "darwin" ? { env: { TAILSCALE_BE_CLI: "1" } } : {}),
   });
   return yield* Effect.gen(function* () {
     const child = yield* spawner.spawn(command).pipe(
@@ -398,7 +399,12 @@ const runTailscaleCommand = Effect.fn("tailscale.runTailscaleCommand")(function*
   const timeout = Duration.fromInputUnsafe(timeoutInput);
   return yield* Effect.gen(function* () {
     const child = yield* spawner
-      .spawn(ChildProcess.make(executable, args, { forceKillAfter: TAILSCALE_KILL_GRACE }))
+      .spawn(
+        ChildProcess.make(executable, args, {
+          forceKillAfter: TAILSCALE_KILL_GRACE,
+          ...(hostPlatform === "darwin" ? { env: { TAILSCALE_BE_CLI: "1" } } : {}),
+        }),
+      )
       .pipe(
         Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
         Effect.catchDefect((cause) =>

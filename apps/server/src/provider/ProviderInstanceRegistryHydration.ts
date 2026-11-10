@@ -1,6 +1,8 @@
 import {
-  isReservedProviderInstanceId,
   defaultInstanceIdForDriver,
+  isInferenceProviderConfig,
+  isInferenceRoutingEnabled,
+  isCustomInferenceBackend,
   ProviderDriverKind,
   ProviderInstanceId,
   providerInstanceConfigEnabledFlag,
@@ -10,6 +12,7 @@ import {
   ServerSettings,
 } from "@t3tools/contracts";
 import * as NodeUtil from "node:util";
+import { routeProvider } from "../inference/routes.ts";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type * as SecureRandom from "effect/crypto/SecureRandom";
@@ -53,18 +56,46 @@ type ProviderInstanceRegistryHydrationEnv =
 export const deriveProviderInstanceConfigMap = (
   settings: ServerSettings,
 ): ProviderInstanceConfigMap => {
-  // Reserve legacy pool IDs for threads resuming through their replacement route.
-  const merged: Record<string, ProviderInstanceConfig> = Object.fromEntries(
-    Object.entries(settings.providerInstances).filter(
-      ([instanceId]) => !isReservedProviderInstanceId(instanceId),
-    ),
-  );
+  const merged: Record<string, ProviderInstanceConfig> = { ...settings.providerInstances };
 
   for (const driver of BUILT_IN_DRIVERS) {
     if (driver.metadata.hasDefaultInstance === false) continue;
     const instanceId = defaultInstanceIdForDriver(driver.driverKind);
     if (instanceId in merged) continue;
     merged[instanceId] = { driver: driver.driverKind };
+  }
+
+  for (const driver of ["codex", "claudeAgent"] as const) {
+    const id = defaultInstanceIdForDriver(ProviderDriverKind.make(driver));
+    const native = merged[id];
+    if (!native || !isInferenceRoutingEnabled(native.config)) continue;
+    for (const [key, entry] of Object.entries(merged)) {
+      if (key !== id && entry.driver === driver && !isCustomInferenceBackend(entry))
+        delete merged[key];
+    }
+    if (!isInferenceProviderConfig(native.config)) {
+      merged[id] = { ...native, enabled: false };
+      continue;
+    }
+    const route = native.config;
+    const proxy = routeProvider(
+      driver,
+      route.inferenceBaseUrl,
+      route.inferenceKey,
+      route.inferenceHostLabel || null,
+      route.inferenceModels,
+      route.inferenceHomePath,
+    );
+    const names = new Set(proxy.environment.map((entry) => entry.name));
+    merged[id] = {
+      ...native,
+      displayName: proxy.displayName,
+      config: { ...native.config, ...proxy.config },
+      environment: [
+        ...(native.environment ?? []).filter((entry) => !names.has(entry.name)),
+        ...proxy.environment,
+      ],
+    };
   }
 
   // Probe project-enabled instances even if disabled machine-wide; project threads can still route to them.

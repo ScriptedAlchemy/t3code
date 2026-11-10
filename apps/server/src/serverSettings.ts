@@ -1,5 +1,8 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  isInferenceProviderConfig,
+  isInferenceConfig,
+  isCustomInferenceBackend,
   ModelSelection,
   ProjectId,
   ProjectScript,
@@ -8,9 +11,7 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceMutation,
   defaultInstanceIdForDriver,
-  isInferenceConfig,
   isProviderDriverKind,
-  isReservedProviderInstanceId,
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
@@ -191,33 +192,21 @@ export function applyProviderInstanceMutation(
 ): ServerSettings {
   const providerInstances = { ...settings.providerInstances };
   if (mutation.operation === "upsert" || mutation.operation === "create") {
-    providerInstances[mutation.instanceId] = mutation.instance;
-    const { driver, config } = mutation.instance;
-    if (isInferenceConfig(config) && !settings.retiredPoolRoutes?.[driver]) {
-      const providerPools = { ...settings.providerPools };
-      delete providerPools[driver];
-      return {
-        ...settings,
-        providerInstances,
-        providerPools,
-        retiredPoolRoutes: { ...settings.retiredPoolRoutes, [driver]: mutation.instanceId },
-      };
+    if (isInferenceProviderConfig(mutation.instance.config)) {
+      for (const [id, entry] of Object.entries(providerInstances)) {
+        if (
+          /^inference_(codex|claudeAgent)_[0-9a-f]{16}$/.test(id) &&
+          entry.driver === mutation.instance.driver &&
+          isInferenceConfig(entry.config)
+        )
+          delete providerInstances[ProviderInstanceId.make(id)];
+      }
     }
+    providerInstances[mutation.instanceId] = mutation.instance;
     return { ...settings, providerInstances };
   }
   delete providerInstances[mutation.instanceId];
-  const providerPools = Object.fromEntries(
-    Object.entries(settings.providerPools).map(([driver, pool]) => [
-      driver,
-      {
-        ...pool,
-        memberInstanceIds: pool.memberInstanceIds.filter(
-          (memberId) => memberId !== mutation.instanceId,
-        ),
-      },
-    ]),
-  );
-  return { ...settings, providerInstances, providerPools };
+  return { ...settings, providerInstances };
 }
 
 const secretProviderConfigGuards = new Map(
@@ -259,11 +248,28 @@ function ensureProviderInstanceMutationAllowed(
   mutation: ProviderInstanceMutation,
   settingsPath: string,
 ): Effect.Effect<void, ServerSettingsError> {
+  if (mutation.operation !== "remove") {
+    const canonicalId = defaultInstanceIdForDriver(mutation.instance.driver);
+    const canonical = settings.providerInstances[canonicalId];
+    if (
+      mutation.instanceId !== canonicalId &&
+      canonical &&
+      isInferenceProviderConfig(canonical.config) &&
+      canonical.config.inferenceEnabled &&
+      !isCustomInferenceBackend(mutation.instance)
+    )
+      return Effect.fail(
+        new ServerSettingsError({
+          settingsPath,
+          operation: "create-provider-instance",
+          providerInstanceId: mutation.instanceId,
+          cause: new Error("Add accounts through the inference provider's account settings."),
+        }),
+      );
+  }
   if (
-    mutation.operation !== "remove" &&
-    (isReservedProviderInstanceId(mutation.instanceId) ||
-      (mutation.operation === "create" &&
-        settings.providerInstances[mutation.instanceId] !== undefined))
+    mutation.operation === "create" &&
+    settings.providerInstances[mutation.instanceId] !== undefined
   ) {
     return Effect.fail(
       new ServerSettingsError({
@@ -274,18 +280,6 @@ function ensureProviderInstanceMutationAllowed(
     );
   }
   return Effect.void;
-}
-
-function rejectLegacyPoolWrites(patch: ServerSettingsPatch, settingsPath: string) {
-  return Object.values(patch.providerPools ?? {}).some((pool) => pool !== null)
-    ? Effect.fail(
-        new ServerSettingsError({
-          settingsPath,
-          operation: "validate-provider-pool",
-          cause: new Error("Configure inference hosting to pool provider accounts."),
-        }),
-      )
-    : Effect.void;
 }
 
 export class ServerSettingsService extends Context.Service<
@@ -398,15 +392,12 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
     getSettings,
     updateSettings: (patch) =>
       updateTestSettings((currentSettings) =>
-        rejectLegacyPoolWrites(patch, "test settings").pipe(
-          Effect.as(applyServerSettingsPatch(currentSettings, patch)),
-        ),
+        Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
       ),
     updateProviderInstance: (mutation, patch = {}) =>
       updateTestSettings((currentSettings) =>
         Effect.gen(function* () {
           yield* ensureProviderInstanceMutationAllowed(currentSettings, mutation, "test settings");
-          yield* rejectLegacyPoolWrites(patch, "test settings");
           const patched = applyServerSettingsPatch(currentSettings, patch);
           return applyProviderInstanceMutation(patched, mutation);
         }),
@@ -1474,7 +1465,6 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
           const next = applyServerSettingsPatch(current, patch);
-          yield* rejectLegacyPoolWrites(patch, settingsPath);
           return next;
         }),
       ),
@@ -1487,7 +1477,6 @@ const make = Effect.gen(function* () {
             applyServerSettingsPatch(current, patch),
             mutation,
           );
-          yield* rejectLegacyPoolWrites(patch, settingsPath);
           return next;
         }),
       ),

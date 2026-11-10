@@ -9,7 +9,7 @@ import {
 import {
   AuthProvidersManageScope,
   isManagedDriverAllowed,
-  isInferenceConfig,
+  isInferenceProviderConfig,
   type ProviderAuthResponse,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -86,10 +86,10 @@ function EnvironmentProviders({
   readonly environment: SettingsTarget;
   readonly providers: ReadonlyArray<ServerProvider>;
 }) {
-  const directProviders = providers.filter(
-    (p) =>
-      !isInferenceConfig(environment.serverConfig.settings.providerInstances[p.instanceId]?.config),
-  );
+  const directProviders = providers.filter((provider) => {
+    const config = environment.serverConfig.settings.providerInstances[provider.instanceId]?.config;
+    return !isInferenceProviderConfig(config) || !config.inferenceEnabled;
+  });
   const accounts = directProviders.filter(canManageProvider);
   const claudeAccounts = directProviders.filter(
     (provider) => provider.driver === CLAUDE_DRIVER && !canManageProvider(provider),

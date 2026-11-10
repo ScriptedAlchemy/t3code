@@ -47,7 +47,7 @@ export function ZackSettings() {
         </SettingsSection>
         <SettingsSection title="Agent tools and accounts">
           <AgentGitHubReadGateRow />
-          <AccountPoolsRow />
+          <InferenceAccountsRow />
         </SettingsSection>
         <ModelEvaluationSettings />
       </div>
@@ -372,8 +372,7 @@ function ThreadSplitRows() {
   );
 }
 
-/** Pools stay on their own page because they edit one environment at a time. */
-function AccountPoolsRow() {
+function InferenceAccountsRow() {
   const { environments } = useEnvironments();
   if (!hasInferenceProxyEnvironment(environments)) return null;
   return (
@@ -381,7 +380,7 @@ function AccountPoolsRow() {
       title="Inference accounts"
       description="Host provider accounts and route inference through an environment over Tailscale or your trusted LAN."
       control={
-        <Button size="sm" variant="outline" render={<Link to="/settings/account-pools" />}>
+        <Button size="sm" variant="outline" render={<Link to="/settings/inference" />}>
           Open
         </Button>
       }

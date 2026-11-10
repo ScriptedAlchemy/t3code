@@ -110,6 +110,7 @@ function makeTestAdapter(input: {
   readonly failInjectionOnce?: Ref.Ref<boolean>;
   readonly nativeThreadGeneration?: Ref.Ref<number>;
   readonly failResume?: boolean;
+  readonly dropContinuationMetadata?: boolean;
   readonly failResumeOnce?: Ref.Ref<boolean>;
   readonly initialContextUsage?: OrchestrationV2ProviderThread["contextUsage"];
   readonly getModelContextWindow?: (selection: ModelSelection) => number | undefined;
@@ -307,6 +308,15 @@ function makeTestAdapter(input: {
                 input.responseByRunOrdinal[turnInput.runOrdinal] ??
                 `${input.driver} response for run ${turnInput.runOrdinal}`;
               const providerEvents: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event> = [
+                ...(input.dropContinuationMetadata
+                  ? [
+                      {
+                        type: "provider_thread.updated" as const,
+                        driver: input.driver,
+                        providerThread: { ...turnInput.providerThread, nativeMetadata: null },
+                      },
+                    ]
+                  : []),
                 {
                   type: "provider_turn.updated",
                   driver: input.driver,
@@ -2551,6 +2561,202 @@ describe("orchestration v2 provider switching", () => {
         assert.include(turns[3]?.text ?? "", "Codex second queued turn complete");
       }),
     ),
+  );
+
+  it.live.each([
+    { driver: CODEX_DRIVER, queued: false, legacy: false, background: false },
+    { driver: CODEX_DRIVER, queued: true, legacy: false, background: false },
+    { driver: CLAUDE_DRIVER, queued: false, legacy: false, background: false },
+    { driver: CLAUDE_DRIVER, queued: true, legacy: false, background: false },
+    { driver: CLAUDE_DRIVER, queued: false, legacy: true, background: false },
+    { driver: CLAUDE_DRIVER, queued: false, legacy: false, background: true },
+    { driver: CLAUDE_DRIVER, queued: true, legacy: false, background: true },
+  ])(
+    "hands off canonical $driver home changes (queued=$queued, legacy=$legacy, background=$background)",
+    ({ driver, queued, legacy, background }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const cwd = yield* checkpointWorkspace("canonical-home-change");
+          const selection =
+            driver === CODEX_DRIVER ? CODEX_MODEL_SELECTION : CLAUDE_MODEL_SELECTION;
+          const capabilities =
+            driver === CODEX_DRIVER ? CodexProviderCapabilitiesV2 : ClaudeProviderCapabilitiesV2;
+          const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+          const generation = yield* Ref.make(0);
+          const activeHome = yield* Ref.make(0);
+          const backgroundWork = yield* Ref.make(false);
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const closedSessions = yield* Ref.make<ReadonlyArray<string>>([]);
+          const adapters = [0, 1].map((home) => ({
+            ...makeTestAdapter({
+              instanceId: selection.instanceId,
+              driver,
+              capabilities,
+              modelSelection: selection,
+              responseByRunOrdinal: { 1: "Native work complete", 2: "Proxy work complete" },
+              capturedTurns,
+              nativeThreadGeneration: generation,
+              closedSessions,
+              ...(home === 0 ? { backgroundWork } : {}),
+              dropContinuationMetadata: true,
+              ...(queued && home === 0
+                ? { holdFirstTurn: started, releaseFirstTurn: release }
+                : {}),
+            }),
+            continuationKey: `${driver}:home:${home}`,
+            requiresBoundContinuationIdentity: home === 1,
+          }));
+          const layerRegistry = Layer.succeed(
+            ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+            ProviderAdapterRegistry.ProviderAdapterRegistryV2.of({
+              get: () => Ref.get(activeHome).pipe(Effect.map((home) => adapters[home]!)),
+              list: () => Effect.succeed([selection.instanceId]),
+              getMetadata: () =>
+                Ref.get(activeHome).pipe(
+                  Effect.map((home) => ({
+                    driver,
+                    continuationKey: adapters[home]!.continuationKey,
+                    requiresBoundContinuationIdentity: home === 1,
+                    enabled: true,
+                    capabilities,
+                  })),
+                ),
+            }),
+          );
+          yield* Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            const sink = yield* EventSink.EventSinkV2;
+            const id = ThreadId.make("thread:canonical-home-change");
+            const send = (ordinal: number, suffix = "") =>
+              orchestrator.dispatch({
+                type: "message.dispatch",
+                createdBy: "user",
+                creationSource: "web",
+                commandId: CommandId.make(`command:canonical-home-change:${ordinal}${suffix}`),
+                threadId: id,
+                messageId: MessageId.make(`message:canonical-home-change:${ordinal}${suffix}`),
+                text: `Prompt ${ordinal}`,
+                attachments: [],
+                modelSelection: selection,
+                dispatchMode: { type: queued ? "queue_after_active" : "start_immediately" },
+              });
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: CommandId.make("command:canonical-home-change:create"),
+              threadId: id,
+              projectId: ProjectId.make("project:canonical-home-change"),
+              title: "Canonical home change",
+              modelSelection: selection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: cwd,
+            });
+            yield* send(1);
+            if (queued) yield* Deferred.await(started);
+            else {
+              yield* worker.drain();
+              yield* waitForIdle(id);
+            }
+            const first = yield* orchestrator.getThreadProjection(id);
+            if (legacy) {
+              const binding = first.providerThreads.find(
+                (thread) => thread.nativeThreadRef !== null,
+              )!;
+              yield* sink.write({
+                events: [
+                  {
+                    id: EventId.make("event:canonical-home-change:legacy"),
+                    type: "provider-thread.updated",
+                    threadId: id,
+                    providerInstanceId: selection.instanceId,
+                    occurredAt: first.updatedAt,
+                    payload: { ...binding, nativeMetadata: null },
+                  },
+                ],
+              });
+            }
+            yield* Ref.set(activeHome, 1);
+            yield* Ref.set(backgroundWork, background);
+            if (background && !queued) {
+              const refused = yield* send(2, ":blocked").pipe(Effect.flip);
+              assert.include(String(refused.cause), "still running background agents or commands");
+              assert.lengthOf(yield* Ref.get(capturedTurns), 1);
+              assert.deepEqual(yield* Ref.get(closedSessions), []);
+              yield* Ref.set(backgroundWork, false);
+            }
+            yield* send(2);
+            if (queued) yield* Deferred.succeed(release, undefined);
+            if (background && queued) {
+              yield* orchestrator.streamStoredEvents.pipe(
+                Stream.filter(
+                  ({ event }) =>
+                    event.type === "run.updated" &&
+                    event.threadId === id &&
+                    event.payload.queueHeld === true,
+                ),
+                Stream.runHead,
+              );
+              yield* worker.drain();
+              assert.lengthOf(yield* Ref.get(capturedTurns), 1);
+              assert.deepEqual(yield* Ref.get(closedSessions), []);
+              yield* Ref.set(backgroundWork, false);
+              yield* orchestrator.dispatch({
+                type: "queue.resume",
+                threadId: id,
+                commandId: CommandId.make("command:canonical-home-change:resume"),
+              });
+            }
+            yield* worker.drain();
+            const second = yield* waitForIdle(id);
+            assert.lengthOf(second.contextHandoffs, 1);
+            assert.notEqual(second.runs[0]!.providerThreadId, second.runs[1]!.providerThreadId);
+            assert.include((yield* Ref.get(capturedTurns))[1]!.text, "Native work complete");
+            assert.isNotTrue(second.runs[1]!.freshContext);
+            const firstSession = first.providerThreads.find(
+              (thread) => thread.nativeThreadRef !== null,
+            )!.providerSessionId;
+            const proxyBinding = second.providerThreads.find(
+              (thread) => thread.id === second.runs[1]!.providerThreadId,
+            )!;
+            assert.notEqual(proxyBinding.providerSessionId, firstSession);
+            assert.notInclude(
+              second.providerSessions.map((session) => session.id),
+              firstSession,
+            );
+            if (driver === CLAUDE_DRIVER)
+              assert.include(yield* Ref.get(closedSessions), firstSession!);
+            assert.equal(proxyBinding.nativeMetadata?.continuationKey, `${driver}:home:1`);
+            yield* Ref.set(activeHome, 0);
+            yield* send(3);
+            yield* worker.drain();
+            const third = yield* waitForIdle(id);
+            assert.lengthOf(third.contextHandoffs, 2);
+            const turns = yield* Ref.get(capturedTurns);
+            assert.equal(new Set(turns.map((turn) => turn.nativeThreadId)).size, 3);
+            assert.include(turns[2]!.text, "Native work complete");
+            assert.include(turns[2]!.text, "Proxy work complete");
+          }).pipe(
+            Effect.provide(
+              ProviderReplayHarness.layerWithRegistry(
+                {
+                  name: "canonical-home-change",
+                  runtimePolicyOverride: {
+                    cwd,
+                    approvalPolicy: "never",
+                    sandboxPolicy: { type: "readOnly" },
+                  },
+                },
+                layerRegistry,
+              ),
+            ),
+          );
+        }),
+      ),
   );
 
   // regression: #20343 sending to an instance with separate history must release the old session

@@ -190,36 +190,6 @@ describe("pending context handoff", () => {
       resolvePendingHandoff(projection, { instanceId: to, model: "target" }, providers),
     ).toBeNull();
   });
-  it("predicts no handoff when the target pool contains the account that last ran", () => {
-    const poolId = ProviderInstanceId.make("pool_codex");
-    const providers = [
-      { instanceId: from, driver: "codex" },
-      {
-        instanceId: poolId,
-        driver: "codex",
-        continuation: undefined,
-        pool: { role: "pool", memberInstanceIds: [from, to], droppedModels: [] },
-      },
-    ] as unknown as ServerProvider[];
-    expect(
-      resolvePendingHandoff(projection, { instanceId: poolId, model: "other" }, providers),
-    ).toBeNull();
-  });
-  it("predicts a handoff to a pool that does not contain the account that last ran", () => {
-    const poolId = ProviderInstanceId.make("pool_claudeAgent");
-    const providers = [
-      { instanceId: from, driver: "codex", continuation: { groupKey: "codex:home:a" } },
-      {
-        instanceId: poolId,
-        driver: "claudeAgent",
-        pool: { role: "pool", memberInstanceIds: [to], droppedModels: [] },
-      },
-    ] as unknown as ServerProvider[];
-    expect(
-      resolvePendingHandoff(projection, { instanceId: poolId, model: "first" }, providers)?.to
-        .instanceId,
-    ).toBe(poolId);
-  });
 });
 
 describe("model switch change", () => {

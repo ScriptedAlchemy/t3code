@@ -584,6 +584,9 @@ it.effect("never sends a link's token to an address that stops answering as that
       const failed = yield* probe(a).pipe(Effect.flip);
       expect(failed.message).toContain("Box did not answer");
       expect(yield* Ref.get(b.bearers)).toEqual([]);
+      expect(
+        (yield* a.links.resolveAddress({ url: b.url }, box.environmentId).pipe(Effect.flip)).reason,
+      ).toBe("not_a_t3_environment");
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["unreachable"]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),

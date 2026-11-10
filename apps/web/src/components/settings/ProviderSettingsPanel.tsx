@@ -1,8 +1,11 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { SettingsGroup } from "./SettingsGroup";
+import { InferenceProviderAccounts } from "./InferenceProviderAccounts";
+import { inferenceAccountHostId } from "./AddProviderInstanceDialog.logic";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import {
-  isInferenceConfig,
+  isInferenceProviderConfig,
+  isCustomInferenceBackend,
   AuthSettingsWriteScope,
   AuthProvidersManageScope,
   AuthOrchestrationReadScope,
@@ -80,6 +83,7 @@ import {
 } from "../ProviderUpdateLaunchNotification.logic";
 import { ProviderUpdatesAction } from "../ProviderUpdatesAction";
 import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
 import {
   Empty,
   EmptyContent,
@@ -107,7 +111,6 @@ import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSectio
 import { readProviderConfigString } from "./ProviderSettingsForm";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import { providerClients } from "./providerDriverMeta";
-import { resolveProviderPoolName } from "./providerAccountStatus";
 import { searchableSetting } from "./settingsSearch";
 import { CompactIdleThreadsRow } from "./SettingsPanels";
 import {
@@ -724,6 +727,12 @@ export function EnvironmentProviderSettings({
   >();
   for (const [rawId, instance] of Object.entries(settings.providerInstances ?? {})) {
     const driver = instance.driver;
+    if (
+      rawId !== defaultInstanceIdForDriver(driver) &&
+      inferenceAccountHostId(settings.providerInstances, driver, environmentId) &&
+      !isCustomInferenceBackend(instance)
+    )
+      continue;
     const list = instancesByDriver.get(driver) ?? [];
     list.push([rawId as ProviderInstanceId, instance]);
     instancesByDriver.set(driver, list);
@@ -957,8 +966,8 @@ export function EnvironmentProviderSettings({
         selected={mode === "list" && selectedRow?.instanceId === row.instanceId}
         readOnly={readOnly}
         canWriteSettings={canWriteSettings}
+        supportsInference={supportsInference}
         liveProvider={liveProvider}
-        poolName={resolveProviderPoolName(serverProviders, liveProvider)}
         isUpdateDispatching={updatingProviderInstanceIds.has(row.instanceId)}
         showProjectOverride={showProjectOverride}
         projectOverrideValue={
@@ -1127,7 +1136,7 @@ export function EnvironmentProviderSettings({
               <Button
                 size="sm"
                 variant="outline"
-                render={<Link to="/settings/account-pools" search={{ machine: environmentId }} />}
+                render={<Link to="/settings/inference" search={{ machine: environmentId }} />}
               >
                 Manage accounts
               </Button>
@@ -1260,8 +1269,8 @@ function ProviderInstanceRow({
   selected,
   readOnly,
   canWriteSettings,
+  supportsInference,
   liveProvider,
-  poolName,
   isUpdateDispatching,
   showProjectOverride,
   projectOverrideValue,
@@ -1281,8 +1290,8 @@ function ProviderInstanceRow({
   readonly selected: boolean;
   readonly readOnly: boolean;
   readonly canWriteSettings: boolean;
+  readonly supportsInference: boolean;
   readonly liveProvider: ServerProvider | undefined;
-  readonly poolName: string | undefined;
   readonly isUpdateDispatching: boolean;
   readonly showProjectOverride: boolean;
   readonly projectOverrideValue: boolean | undefined;
@@ -1322,6 +1331,15 @@ function ProviderInstanceRow({
       }
     : undefined;
   const codexSetupMode = driver === "codex" ? readCodexSetupMode(instance.config) : null;
+  const accountHostId = isDefault
+    ? inferenceAccountHostId({ [instanceId]: instance }, driver, environmentId)
+    : null;
+  const canUseProxy =
+    supportsInference &&
+    isDefault &&
+    (driver === "codex" || driver === "claudeAgent") &&
+    (isInferenceProviderConfig(instance.config) || !isCustomInferenceBackend(instance));
+  const navigate = useNavigate();
   const recommendedVersion = liveProvider?.compatibilityAdvisory?.recommendedVersion;
   const canInstallRecommended =
     !readOnly &&
@@ -1330,6 +1348,75 @@ function ProviderInstanceRow({
     Boolean(recommendedVersion) &&
     liveProvider.versionAdvisory?.canInstallVersion === true;
 
+  const setup =
+    mode === "editor" && accountHostId && (driver === "codex" || driver === "claudeAgent") ? (
+      <InferenceProviderAccounts
+        key={`${accountHostId}:${driver}`}
+        environmentId={accountHostId}
+        driver={driver === "codex" ? "codex" : "claudeAgent"}
+        readOnly={readOnly}
+      />
+    ) : mode === "editor" && driver === "antigravity" ? (
+      <ProviderSetupSection
+        environmentId={environmentId}
+        environmentLabel={environmentLabel}
+        instanceId={instanceId}
+        provider={liveProvider}
+        binaryPath={configuredBinaryPath(instance.config)}
+        authMethod={readAntigravityAuthMethod(instance.config)}
+        enabled={resolveProviderInstanceEnabled(instance)}
+        readOnly={readOnly}
+        onEnable={() => actions.enableInstance(instanceId, { ...instance, enabled: true })}
+      />
+    ) : mode === "editor" && codexSetupMode === "managed" ? (
+      <CodexSetupSection
+        environmentId={environmentId}
+        instanceId={instanceId}
+        provider={liveProvider}
+        mode="managed"
+        enabled={resolveProviderInstanceEnabled(instance)}
+        readOnly={readOnly}
+        onModeChange={(setupMode) =>
+          actions.enableInstance(instanceId, {
+            ...instance,
+            enabled: true,
+            config: {
+              ...(instance.config !== null && typeof instance.config === "object"
+                ? instance.config
+                : {}),
+              enabled: true,
+              setupMode,
+            },
+          })
+        }
+      />
+    ) : mode === "editor" &&
+      !readOnly &&
+      liveProvider &&
+      (liveProvider.setup?.canAuthenticate ||
+        liveProvider.setup?.canInstall ||
+        (liveProvider.driver === "acpRegistry" && liveProvider.installed)) ? (
+      <ProviderAuthenticationSection
+        key={`${environmentId}:${instanceId}`}
+        environmentId={environmentId}
+        environmentLabel={environmentLabel}
+        instanceId={instanceId}
+        provider={liveProvider}
+        readOnly={readOnly}
+        autoOpenBrowser={
+          (driver === "codex" || driver === "claudeAgent") &&
+          readProviderConfigString(instance.config, "setupMode") === "cli"
+        }
+      />
+    ) : mode === "editor" &&
+      !readOnly &&
+      driver === "cursor" &&
+      liveProvider?.setup?.canAuthenticate === false ? (
+      <SettingsRow
+        title="Cursor account"
+        description="Using CURSOR_API_KEY. Remove it from this provider's environment to use browser sign-in."
+      />
+    ) : null;
   return (
     <ProviderInstanceCard
       environmentId={environmentId}
@@ -1343,7 +1430,6 @@ function ProviderInstanceRow({
       instance={instance}
       driverOption={driverOption}
       liveProvider={liveProvider}
-      poolName={poolName}
       mode={mode}
       selected={selected}
       onSelect={mode === "list" ? () => actions.selectInstance(instanceId) : undefined}
@@ -1360,68 +1446,44 @@ function ProviderInstanceRow({
       }
       canWriteSettings={canWriteSettings}
       setup={
-        mode === "editor" && driver === "antigravity" ? (
-          <ProviderSetupSection
-            environmentId={environmentId}
-            environmentLabel={environmentLabel}
-            instanceId={instanceId}
-            provider={liveProvider}
-            binaryPath={configuredBinaryPath(instance.config)}
-            authMethod={readAntigravityAuthMethod(instance.config)}
-            enabled={resolveProviderInstanceEnabled(instance)}
-            readOnly={readOnly}
-            onEnable={() => actions.enableInstance(instanceId, { ...instance, enabled: true })}
-          />
-        ) : mode === "editor" && codexSetupMode === "managed" ? (
-          <CodexSetupSection
-            environmentId={environmentId}
-            instanceId={instanceId}
-            provider={liveProvider}
-            mode="managed"
-            enabled={resolveProviderInstanceEnabled(instance)}
-            readOnly={readOnly}
-            onModeChange={(setupMode) =>
-              actions.enableInstance(instanceId, {
-                ...instance,
-                enabled: true,
-                config: {
-                  ...(instance.config !== null && typeof instance.config === "object"
-                    ? instance.config
-                    : {}),
-                  enabled: true,
-                  setupMode,
-                },
-              })
-            }
-          />
-        ) : mode === "editor" &&
-          !readOnly &&
-          liveProvider &&
-          (liveProvider.setup?.canAuthenticate ||
-            liveProvider.setup?.canInstall ||
-            (liveProvider.driver === "acpRegistry" && liveProvider.installed)) ? (
-          <ProviderAuthenticationSection
-            key={`${environmentId}:${instanceId}`}
-            environmentId={environmentId}
-            environmentLabel={environmentLabel}
-            instanceId={instanceId}
-            provider={liveProvider}
-            readOnly={readOnly}
-            autoOpenBrowser={
-              (driver === "codex" || driver === "claudeAgent") &&
-              readProviderConfigString(instance.config, "setupMode") === "cli"
-            }
-          />
-        ) : mode === "editor" &&
-          !readOnly &&
-          driver === "cursor" &&
-          liveProvider?.setup?.canAuthenticate === false ? (
-          <SettingsRow
-            title="Cursor account"
-            description="Using CURSOR_API_KEY. Remove it from this provider's environment to use browser sign-in."
-          />
-        ) : null
+        mode === "editor" && canUseProxy ? (
+          <>
+            <SettingsRow
+              title="Use CLI proxy"
+              description="Route this provider through an inference host. Your standalone CLI keeps its own settings."
+              control={
+                <Switch
+                  aria-label="Use CLI proxy"
+                  checked={accountHostId !== null}
+                  disabled={readOnly || !canWriteSettings}
+                  onCheckedChange={(inferenceEnabled) => {
+                    if (inferenceEnabled && !isInferenceProviderConfig(instance.config)) {
+                      void navigate({
+                        to: "/settings/inference",
+                        search: { machine: environmentId },
+                      });
+                      return;
+                    }
+                    void actions.updateInstance(instanceId, instance, {
+                      ...instance,
+                      config: {
+                        ...(instance.config !== null && typeof instance.config === "object"
+                          ? instance.config
+                          : {}),
+                        inferenceEnabled,
+                      },
+                    });
+                  }}
+                />
+              }
+            />
+            {setup}
+          </>
+        ) : (
+          setup
+        )
       }
+
       onUpdate={(next) => actions.updateInstance(instanceId, instance, next)}
       onDelete={
         mode === "editor" && !isDefault
@@ -1429,7 +1491,7 @@ function ProviderInstanceRow({
           : undefined
       }
       syncAction={
-        mode === "editor" && !isInferenceConfig(instance.config) ? (
+        mode === "editor" && !accountHostId ? (
           <SyncProviderAccountsAction
             sourceEnvironmentId={environmentId}
             readOnly={readOnly}

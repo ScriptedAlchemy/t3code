@@ -164,6 +164,7 @@ export interface ProviderSessionManagerV2Shape {
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
     readonly resumeFromSession?: OrchestrationV2ProviderSession;
     readonly initialNativeThreadId?: string;
+    readonly expectedContinuationKey?: string;
     readonly initialProviderItemIdentityVersion?: 2;
   }) => Effect.Effect<
     ProviderAdapter.ProviderAdapterV2SessionRuntime,
@@ -224,6 +225,7 @@ export class ProviderSessionManagerV2 extends Context.Service<
 >()("t3/orchestration-v2/ProviderSessionManager/ProviderSessionManagerV2") {}
 
 interface LiveSessionEntry {
+  readonly continuationKey: string | undefined;
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /** null marks an unknown catalog; undefined means MCP refresh is not configured. */
@@ -244,6 +246,18 @@ interface LiveSessionEntry {
   readonly idleFiber: Fiber.Fiber<void, never> | null;
   readonly pinnedSinceMs: number | null;
   readonly idleThreadUnloads: ReadonlyMap<ThreadId, IdleThreadUnload>;
+}
+
+function bindContinuationIdentity(
+  providerThread: OrchestrationV2ProviderThread,
+  continuationKey: string | undefined,
+): OrchestrationV2ProviderThread {
+  return continuationKey === undefined || providerThread.nativeThreadRef === null
+    ? providerThread
+    : {
+        ...providerThread,
+        nativeMetadata: { ...providerThread.nativeMetadata, continuationKey },
+      };
 }
 
 interface IdleThreadUnload {
@@ -1919,9 +1933,24 @@ export const layerWithOptions = (
         eventSubscribers: Ref.Ref<
           ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
         >,
+        continuationKey: string | undefined,
+        requiresBoundContinuationIdentity: boolean,
       ): ProviderAdapter.ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
         const subscribeEvents = makeEventSubscription(eventSubscribers);
+        const verifyBinding = (thread: OrchestrationV2ProviderThread | undefined) =>
+          thread?.nativeThreadRef != null &&
+          continuationKey !== undefined &&
+          (thread.nativeMetadata?.continuationKey === undefined
+            ? requiresBoundContinuationIdentity
+            : thread.nativeMetadata.continuationKey !== continuationKey)
+            ? Effect.fail(
+                new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: runtime.driver,
+                  detail: "This native conversation belongs to a different provider home.",
+                }),
+              )
+            : Effect.void;
         const turnMetrics = (operation: string, model?: string) =>
           withMetrics({
             counter: providerTurnsTotal,
@@ -1942,15 +1971,36 @@ export const layerWithOptions = (
           events: Stream.unwrap(
             subscribeEvents.pipe(Effect.map((subscription) => subscription.events)),
           ),
+          readThreadSnapshot: (input) =>
+            verifyBinding(input.providerThread).pipe(
+              Effect.andThen(runtime.readThreadSnapshot(input)),
+              Effect.map((snapshot) => ({
+                ...snapshot,
+                providerThread: bindContinuationIdentity(snapshot.providerThread, continuationKey),
+              })),
+            ),
+          rollbackThread: (input) =>
+            verifyBinding(input.providerThread).pipe(
+              Effect.andThen(runtime.rollbackThread(input)),
+              Effect.map((snapshot) => ({
+                ...snapshot,
+                providerThread: bindContinuationIdentity(snapshot.providerThread, continuationKey),
+              })),
+            ),
           ensureThread: (input) =>
-            observeActivity(
-              providerSessionId,
-              ensureThreadAttached({
-                providerSessionId,
-                threadId: input.threadId,
-                providerInstanceId: runtime.instanceId,
-              }),
+            verifyBinding(
+              input.forceNewNativeThread ? undefined : input.existingProviderThread,
             ).pipe(
+              Effect.andThen(
+                observeActivity(
+                  providerSessionId,
+                  ensureThreadAttached({
+                    providerSessionId,
+                    threadId: input.threadId,
+                    providerInstanceId: runtime.instanceId,
+                  }),
+                ),
+              ),
               Effect.andThen(loadNatively(runtime.ensureThread(input))),
               Effect.tap(({ loaded: providerThread, linkedEnvironments }) =>
                 markProviderThreadLoaded({
@@ -1964,12 +2014,16 @@ export const layerWithOptions = (
                   linkedEnvironments,
                 }),
               ),
-              Effect.map(({ loaded }) => loaded),
+              Effect.map(({ loaded }) => bindContinuationIdentity(loaded, continuationKey)),
             ),
           resumeThread: (input) => {
+            const verified = verifyBinding(input.providerThread);
             const threadId = input.threadId ?? input.providerThread.appThreadId;
             if (threadId === null || threadId === undefined) {
-              return runtime.resumeThread(input);
+              return verified.pipe(
+                Effect.andThen(runtime.resumeThread(input)),
+                Effect.map((thread) => bindContinuationIdentity(thread, continuationKey)),
+              );
             }
             const providerThreadKey = providerThreadLoadKey({
               providerThread: input.providerThread,
@@ -1978,14 +2032,17 @@ export const layerWithOptions = (
                 : { modelSelection: input.modelSelection }),
               ...(input.runtimePolicy === undefined ? {} : { runtimePolicy: input.runtimePolicy }),
             });
-            return observeActivity(
-              providerSessionId,
-              ensureThreadAttached({
-                providerSessionId,
-                threadId,
-                providerInstanceId: runtime.instanceId,
-              }),
-            ).pipe(
+            return verified.pipe(
+              Effect.andThen(
+                observeActivity(
+                  providerSessionId,
+                  ensureThreadAttached({
+                    providerSessionId,
+                    threadId,
+                    providerInstanceId: runtime.instanceId,
+                  }),
+                ),
+              ),
               Effect.andThen(
                 holdThreadLoaded({
                   providerSessionId,
@@ -2027,18 +2084,21 @@ export const layerWithOptions = (
                   linkedEnvironments,
                 }),
               ),
-              Effect.map(({ loaded }) => loaded),
+              Effect.map(({ loaded }) => bindContinuationIdentity(loaded, continuationKey)),
             );
           },
           forkThread: (input) =>
-            observeActivity(
-              providerSessionId,
-              ensureThreadAttached({
-                providerSessionId,
-                threadId: input.targetThreadId,
-                providerInstanceId: runtime.instanceId,
-              }),
-            ).pipe(
+            verifyBinding(input.sourceProviderThread).pipe(
+              Effect.andThen(
+                observeActivity(
+                  providerSessionId,
+                  ensureThreadAttached({
+                    providerSessionId,
+                    threadId: input.targetThreadId,
+                    providerInstanceId: runtime.instanceId,
+                  }),
+                ),
+              ),
               Effect.andThen(loadNatively(runtime.forkThread(input))),
               Effect.tap(({ loaded: providerThread, linkedEnvironments }) =>
                 markProviderThreadLoaded({
@@ -2056,7 +2116,7 @@ export const layerWithOptions = (
                   linkedEnvironments,
                 }),
               ),
-              Effect.map(({ loaded }) => loaded),
+              Effect.map(({ loaded }) => bindContinuationIdentity(loaded, continuationKey)),
             ),
           startTurn: (input) =>
             observeActivity(
@@ -2190,7 +2250,17 @@ export const layerWithOptions = (
         let stoppedByProvider = false;
         let lastSessionStatus = entry.runtime.providerSession.status;
         return entry.runtime.events.pipe(
-          Stream.runForEach((event) => {
+          Stream.runForEach((rawEvent) => {
+            const event =
+              rawEvent.type === "provider_thread.updated"
+                ? {
+                    ...rawEvent,
+                    providerThread: bindContinuationIdentity(
+                      rawEvent.providerThread,
+                      entry.continuationKey,
+                    ),
+                  }
+                : rawEvent;
             if (shutdownSignal.received) return Effect.void;
             // Live output bypasses persistence and subscribers so floods cannot delay domain events.
             if (event.type === "command_output.delta") {
@@ -2397,11 +2467,46 @@ export const layerWithOptions = (
                   });
                 }
               }
+              const adapter = yield* registry.get(input.modelSelection.instanceId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionOpenError({
+                      instanceId: input.modelSelection.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
+              if (
+                input.initialNativeThreadId !== undefined &&
+                (input.expectedContinuationKey === undefined
+                  ? adapter.requiresBoundContinuationIdentity === true
+                  : adapter.continuationKey !== undefined &&
+                    adapter.continuationKey !== input.expectedContinuationKey)
+              ) {
+                return yield* new ProviderSessionOpenError({
+                  instanceId: input.modelSelection.instanceId,
+                  providerSessionId: input.providerSessionId,
+                  cause:
+                    "The provider home changed before session startup. Send the message again to continue with a history handoff.",
+                });
+              }
               const key = sessionKey(input.providerSessionId);
               const live = (yield* Ref.get(sessions)).get(key);
               if (live !== undefined) yield* releaseForLinkedEnvironments(live);
               const existing = (yield* Ref.get(sessions)).get(key);
               if (existing !== undefined) {
+                if (
+                  adapter.continuationKey !== undefined &&
+                  existing.continuationKey !== adapter.continuationKey
+                ) {
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause:
+                      "The provider home changed before session startup. Send the message again to continue with a history handoff.",
+                  });
+                }
                 const attached = existing.attachedThreadIds.has(input.threadId);
                 if (!attached && !existing.supportsMultipleProviderThreads) {
                   return yield* new ProviderSessionOpenError({
@@ -2420,16 +2525,6 @@ export const layerWithOptions = (
                 return existing.exposedRuntime;
               }
 
-              const adapter = yield* registry.get(input.modelSelection.instanceId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderSessionOpenError({
-                      instanceId: input.modelSelection.instanceId,
-                      providerSessionId: input.providerSessionId,
-                      cause,
-                    }),
-                ),
-              );
               const openedWithLinkedEnvironments = yield* readLinkedEnvironments;
               const prepared = yield* prepareMcpSession(
                 input.threadId,
@@ -2499,8 +2594,14 @@ export const layerWithOptions = (
               const eventSubscribers = yield* Ref.make<
                 ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
               >(new Map());
-              const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
+              const exposedRuntime = decorateRuntime(
+                runtime,
+                eventSubscribers,
+                adapter.continuationKey,
+                adapter.requiresBoundContinuationIdentity === true,
+              );
               const entry: LiveSessionEntry = {
+                continuationKey: adapter.continuationKey,
                 attachedThreadIds: new Set([input.threadId]),
                 loadedProviderThreadKeyByThread: new Map(),
                 openedWithLinkedEnvironments,

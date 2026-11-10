@@ -858,6 +858,21 @@ const layerCommandReadiness = HttpRouter.middleware(
 );
 
 const layerMakeRoutes = Layer.mergeAll(
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const server = yield* HttpServer.HttpServer;
+      const inference = yield* InferenceProxy.InferenceProxy;
+      const address = server.address;
+      if (typeof address !== "string" && "port" in address)
+        yield* inference
+          .bindRoutes(address.port)
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Could not refresh inference routes", { cause }),
+            ),
+          );
+    }),
+  ),
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
       Layer.provide(AuthHttp.layer),
@@ -914,6 +929,7 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(
     PeerForwarding.layer.pipe(
       Layer.provideMerge(PeerMcpClient.layer),
+      Layer.provideMerge(InferenceProxy.layer),
       Layer.provideMerge(PeerLinks.layer.pipe(Layer.provide(PeerLinks.layerSsh))),
     ),
   ),
@@ -923,7 +939,6 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(SpeechModelStore.layer),
     ),
   ),
-  Layer.provide(InferenceProxy.layer),
   Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
   Layer.provide(layerServerSettings),
   Layer.provide(PreviewAutomationBroker.layer),

@@ -4,6 +4,7 @@ import {
   AuthMcpTokenError,
   EnvironmentHttpApi,
   EnvironmentId,
+  type InferenceHostConnection,
   type ExecutionEnvironmentCapabilities,
   type ExecutionEnvironmentDescriptor,
   MCP_PEER_LINK_SOFTWARE_ID,
@@ -32,7 +33,11 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
-import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassification";
+import {
+  isLocalLoopbackHost,
+  isPrivateNetworkHost,
+  isTailnetHost,
+} from "@t3tools/shared/hostClassification";
 import * as NetService from "@t3tools/shared/Net";
 import * as SshAuth from "@t3tools/ssh/auth";
 import * as SshTunnel from "@t3tools/ssh/tunnel";
@@ -115,6 +120,10 @@ export class PeerLinks extends Context.Service<
     readonly resolve: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<ResolvedPeerLink, PeerLinkError>;
+    readonly resolveAddress: (
+      connection: InferenceHostConnection,
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<string, PeerLinkError>;
     /** Records the outcome of a call, so listing shows whether the peer answered last time. */
     readonly recordOutcome: (
       environmentId: EnvironmentId,
@@ -510,6 +519,47 @@ const make = Effect.gen(function* () {
     return { primary, peer: descriptor.value, origins };
   });
 
+  const resolveAddress = Effect.fn("PeerLinks.resolveAddress")(function* (
+    connection: InferenceHostConnection,
+    environmentId: EnvironmentId,
+  ) {
+    let endpoint: string;
+    if (connection.ssh) {
+      const remote = yield* ssh
+        .ensureEnvironment(connection.ssh, { issuePairingToken: false })
+        .pipe(
+          Effect.provide(sshContext),
+          Effect.mapError(
+            (cause) =>
+              new PeerLinkError({
+                reason: "unreachable",
+                message: `Could not open the SSH connection: ${cause.message}`,
+                cause,
+              }),
+          ),
+        );
+      endpoint = remote.httpBaseUrl;
+    } else {
+      const parsed = URL.parse(connection.url);
+      if (parsed?.username || parsed?.password || parsed?.search || parsed?.hash)
+        return yield* new PeerLinkError({
+          reason: "unreachable",
+          message: "Invalid inference host address.",
+        });
+      endpoint =
+        parsed?.protocol === "http:" && isPrivateNetworkHost(parsed.hostname)
+          ? parsed.origin
+          : yield* peerOrigin(connection.url).pipe(Effect.flatMap(httpOrigin));
+    }
+    const descriptor = yield* describe(endpoint);
+    if (Option.isNone(descriptor) || descriptor.value.environmentId !== environmentId)
+      return yield* new PeerLinkError({
+        reason: "not_a_t3_environment",
+        message: "The connection does not answer as the selected inference host.",
+      });
+    return endpoint;
+  });
+
   const link: PeerLinks["Service"]["link"] = Effect.fn("PeerLinks.link")(function* (input) {
     if (!(yield* enabled)) {
       return yield* new PeerLinkError({ reason: "disabled", message: LINKED_ENVIRONMENTS_OFF });
@@ -768,6 +818,7 @@ const make = Effect.gen(function* () {
     get,
     unlink,
     resolve,
+    resolveAddress,
     recordOutcome,
   });
 });

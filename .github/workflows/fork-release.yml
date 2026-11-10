@@ -16,7 +16,7 @@ on:
         default: false
 
 concurrency:
-  group: fork-nightly-release
+  group: ${{ github.event_name == 'workflow_dispatch' && !inputs.publish && format('fork-nightly-validation-{0}', github.ref) || 'fork-nightly-release' }}
   cancel-in-progress: true
 
 permissions:

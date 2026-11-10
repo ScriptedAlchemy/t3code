@@ -1,7 +1,10 @@
 import * as Schema from "effect/Schema";
 import { EnvironmentId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { DesktopSshEnvironmentTargetSchema } from "./ssh.ts";
+import { ProviderInstanceId, type ProviderInstanceConfig } from "./providerInstance.ts";
+import { SettingsSecretValue } from "./settingsSecretValue.ts";
+import { SecretReference } from "./secretReference.ts";
 
 export const isInferenceConfig = Schema.is(
   Schema.Struct({ setupMode: Schema.Literal("inference") }),
@@ -15,40 +18,15 @@ export type InferenceDriver = typeof InferenceDriver.Type;
 export const InferenceConsumer = Schema.Struct({ environmentId: EnvironmentId, label: Label });
 export type InferenceConsumer = typeof InferenceConsumer.Type;
 
-const ModelId = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(192),
-  Schema.isPattern(/^[^\r\n\t]+$/),
-);
-const PoolName = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(80),
-  Schema.isPattern(/^[a-z0-9][a-z0-9.-]*$/),
-);
-const ModelSource = Schema.Literals(["codex", "claudeAgent", "traex"]);
-export const InferenceModelMapping = Schema.Struct({
-  source: ModelSource,
-  upstream: ModelId,
-  pool: PoolName,
-});
-export const isInferenceModelMapping = Schema.is(InferenceModelMapping);
-export const inferenceSourceLabels = {
-  codex: "Codex accounts",
-  claudeAgent: "Claude accounts",
-  traex: "Traex bridge (Codex)",
-} as const;
-export type InferenceModelMapping = typeof InferenceModelMapping.Type;
-export const inferencePoolModel = (mapping: Pick<InferenceModelMapping, "source" | "pool">) =>
-  (mapping.source === "claudeAgent" ? "claude-pool-" : "codex-pool-") + mapping.pool;
 const Strategy = Schema.Literals(["round-robin", "fill-first"]);
 export const InferenceRouting = Schema.Struct({
   strategy: Strategy,
   sessionAffinity: Schema.Boolean,
-  mappings: Schema.Array(InferenceModelMapping).check(Schema.isMaxLength(128)),
 });
 export type InferenceRouting = typeof InferenceRouting.Type;
 export const defaultInferenceRouting: InferenceRouting = {
-  strategy: "round-robin",
+  strategy: "fill-first",
   sessionAffinity: true,
-  mappings: [],
 };
 
 export const InferenceProxyStatus = Schema.Struct({
@@ -71,24 +49,17 @@ export function inferenceRouteIssue(host: InferenceProxyStatus | null, local: bo
   if (!host.enabled) return "Enable inference hosting on this environment first.";
   if (!host.running) return host.problem ?? "The inference host is stopped.";
   if (!local && !host.sharing) return "Enable sharing on the host first.";
-  if (
-    !host.accounts.length &&
-    !host.routing?.mappings.some((mapping) => mapping.source === "traex")
-  )
-    return "Add a provider account on the host first.";
+  if (!host.accounts.length) return "Add a provider account on the host first.";
   return null;
 }
 
 export const InferenceProxyAction = Schema.Union([
-  Schema.Struct({ operation: Schema.Literal("listModels"), source: ModelSource }),
   Schema.Struct({ operation: Schema.Literals(["checkUpdate", "update"]) }),
   Schema.Struct({
     operation: Schema.Literal("setRouting"),
     strategy: Schema.optionalKey(Strategy),
     sessionAffinity: Schema.optionalKey(Schema.Boolean),
   }),
-  Schema.Struct({ operation: Schema.Literal("mapModel"), mapping: InferenceModelMapping }),
-  Schema.Struct({ operation: Schema.Literal("unmapModel"), source: ModelSource, pool: PoolName }),
   Schema.Struct({
     operation: Schema.Literal("configure"),
     enabled: Schema.Boolean,
@@ -125,10 +96,67 @@ export const InferenceRouteGrant = Schema.Struct({
   key: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
 });
 export type InferenceRouteGrant = typeof InferenceRouteGrant.Type;
+export const InferenceHostConnection = Schema.Struct({
+  url: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+  ssh: Schema.optionalKey(DesktopSshEnvironmentTargetSchema),
+});
+export type InferenceHostConnection = typeof InferenceHostConnection.Type;
+export const InferenceProviderConfig = Schema.Struct({
+  inferenceEnabled: Schema.Boolean,
+  inferenceHostId: EnvironmentId,
+  inferenceHostLabel: Schema.String,
+  inferenceBaseUrl: Schema.String,
+  inferenceKey: Schema.Union([TrimmedNonEmptyString, SecretReference]),
+  inferenceModels: Schema.Array(Schema.String),
+  inferenceHomePath: Schema.String,
+  inferenceConnection: Schema.optionalKey(InferenceHostConnection),
+});
+export type InferenceProviderConfig = typeof InferenceProviderConfig.Type;
+export const isInferenceProviderConfig = Schema.is(InferenceProviderConfig);
+export const isInferenceRoutingEnabled = Schema.is(
+  Schema.Struct({ inferenceEnabled: Schema.Literal(true) }),
+);
+export const InferenceProviderFields = {
+  inferenceEnabled: Schema.optionalKey(Schema.Boolean).pipe(
+    Schema.annotateKey({ providerSettingsForm: { hidden: true }, settingsMachineLocal: true }),
+  ),
+  inferenceHostId: Schema.optionalKey(EnvironmentId).pipe(
+    Schema.annotateKey({ providerSettingsForm: { hidden: true }, settingsMachineLocal: true }),
+  ),
+  inferenceHostLabel: Schema.optionalKey(Schema.String).pipe(
+    Schema.annotateKey({ providerSettingsForm: { hidden: true }, settingsMachineLocal: true }),
+  ),
+  inferenceBaseUrl: Schema.optionalKey(Schema.String).pipe(
+    Schema.annotateKey({ providerSettingsForm: { hidden: true }, settingsMachineLocal: true }),
+  ),
+  inferenceKey: Schema.optionalKey(SettingsSecretValue).pipe(
+    Schema.annotateKey({ providerSettingsForm: { hidden: true }, settingsMachineLocal: true }),
+  ),
+  inferenceModels: Schema.optionalKey(Schema.Array(Schema.String)).pipe(
+    Schema.annotateKey({ providerSettingsForm: { hidden: true }, settingsMachineLocal: true }),
+  ),
+  inferenceHomePath: Schema.optionalKey(Schema.String).pipe(
+    Schema.annotateKey({ providerSettingsForm: { hidden: true }, settingsMachineLocal: true }),
+  ),
+  inferenceConnection: Schema.optionalKey(InferenceHostConnection).pipe(
+    Schema.annotateKey({ providerSettingsForm: { hidden: true }, settingsMachineLocal: true }),
+  ),
+};
+const hasLaunchArgs = Schema.is(Schema.Struct({ launchArgs: Schema.optionalKey(Schema.String) }));
+export const isCustomInferenceBackend = (instance: ProviderInstanceConfig) =>
+  !isInferenceConfig(instance.config) &&
+  ((instance.driver === "codex" &&
+    hasLaunchArgs(instance.config) &&
+    /model_provider\s*=/.test(instance.config.launchArgs ?? "")) ||
+    (instance.driver === "claudeAgent" &&
+      instance.environment?.some(
+        (entry) => entry.name === "ANTHROPIC_BASE_URL" && entry.value !== "",
+      )));
 export const InferenceRouteInput = Schema.Struct({
   grant: InferenceRouteGrant,
   driver: InferenceDriver,
   hostLabel: Label,
+  connection: Schema.optionalKey(InferenceHostConnection),
 });
 export type InferenceRouteInput = typeof InferenceRouteInput.Type;
 export class InferenceProxyError extends Schema.TaggedError<InferenceProxyError>()(

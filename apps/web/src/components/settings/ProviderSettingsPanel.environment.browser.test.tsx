@@ -19,6 +19,7 @@ import { act, render } from "../../../test/render";
 
 const state = vi.hoisted(() => ({
   providers: null as unknown as Atom.Writable<ReadonlyArray<ServerProvider>>,
+  config: null as unknown as Atom.Writable<unknown>,
   providerAuthQuery: null as unknown,
   providerAuth: null as ProviderAuthState | null,
   settings: null as unknown as UnifiedSettings,
@@ -44,7 +45,8 @@ vi.mock(import("../../state/server"), async (original) => {
   const { Atom } = await import("effect/reactivity");
   const providers = Atom.make<ReadonlyArray<ServerProvider>>([]).pipe(Atom.keepAlive);
   state.providers = providers;
-  const config = Atom.make(null);
+  const config = Atom.make<unknown>(null).pipe(Atom.keepAlive);
+  state.config = config;
   const providerAuth = Atom.make(null);
   state.providerAuthQuery = providerAuth;
   const commandLabels = {
@@ -229,6 +231,7 @@ function panel(options?: {
 async function setup() {
   await page.viewport(1280, 900);
   state.settings = DEFAULT_UNIFIED_SETTINGS;
+  await act(async () => appAtomRegistry.set(state.config, null));
   state.canManageProviders = true;
   state.canWriteSettings = true;
   state.searchTargetId = null;
@@ -280,6 +283,71 @@ describe("EnvironmentProviderSettings routing", () => {
         instanceId: customId,
         instance: { driver: ProviderDriverKind.make("codex"), enabled: false, displayName: "Work" },
       },
+      {},
+    );
+  });
+
+  it("turns proxy routing on and off without replacing the native profile or custom backends", async () => {
+    await setup();
+    const native = {
+      driver: ProviderDriverKind.make("codex"),
+      enabled: true,
+      environment: [{ name: "NATIVE_PROFILE", value: "personal", sensitive: false }],
+      config: {
+        setupMode: "existing",
+        homePath: "/native/codex",
+        launchArgs: "--config allow_telemetry=false",
+        inferenceEnabled: false,
+        inferenceHostId: environmentId,
+        inferenceHostLabel: "Remote device",
+        inferenceBaseUrl: "http://127.0.0.1:8318",
+        inferenceKey: "fixture-grant",
+        inferenceModels: ["gpt-fixture"],
+        inferenceHomePath: "/state/inference/codex",
+      },
+    };
+    state.settings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {
+        [codexId]: native,
+        [customId]: { driver: ProviderDriverKind.make("codex"), displayName: "Personal" },
+        [ProviderInstanceId.make("codex_traex")]: {
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Traex",
+          config: { launchArgs: '-c model_provider="traex"' },
+        },
+      },
+    };
+    await act(async () =>
+      appAtomRegistry.set(state.config, {
+        environment: { capabilities: { inferenceProxy: true } },
+      }),
+    );
+    await setProviders([provider()]);
+    await using screen = await render(panel({ targetInstanceId: codexId }));
+    await expect.element(screen.getByText("Personal", { exact: true })).toBeVisible();
+    await userEvent.click(screen.getByRole("switch", { name: "Use CLI proxy" }));
+    expect(state.mutateProviderInstance).toHaveBeenLastCalledWith(
+      {
+        operation: "upsert",
+        instanceId: codexId,
+        instance: { ...native, config: { ...native.config, inferenceEnabled: true } },
+      },
+      {},
+    );
+    state.settings = {
+      ...state.settings,
+      providerInstances: {
+        ...state.settings.providerInstances,
+        [codexId]: { ...native, config: { ...native.config, inferenceEnabled: true } },
+      },
+    };
+    await screen.rerender(panel({ targetInstanceId: codexId }));
+    await expect.element(screen.getByText("Personal", { exact: true })).not.toBeInTheDocument();
+    await expect.element(screen.getByText("Traex", { exact: true })).toBeVisible();
+    await userEvent.click(screen.getByRole("switch", { name: "Use CLI proxy" }));
+    expect(state.mutateProviderInstance).toHaveBeenLastCalledWith(
+      { operation: "upsert", instanceId: codexId, instance: native },
       {},
     );
   });

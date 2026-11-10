@@ -33,6 +33,85 @@ function settingsWith(overrides: Partial<ServerSettings>): ServerSettings {
 }
 
 describe("deriveProviderInstanceConfigMap", () => {
+  it("overlays only T3's proxy runtime and restores native profiles when routing is off", () => {
+    const driver = ProviderDriverKind.make("codex");
+    const id = ProviderInstanceId.make("codex");
+    const native = {
+      driver,
+      config: {
+        setupMode: "managed",
+        homePath: "/native/home",
+        shadowHomePath: "/native/account",
+        launchArgs: "--native",
+        customModels: ["gpt-native"],
+      },
+      environment: [{ name: "OPENAI_API_KEY", value: "native-key", sensitive: true }],
+    };
+    const route = {
+      inferenceEnabled: true,
+      inferenceHostId: "host",
+      inferenceHostLabel: "",
+      inferenceBaseUrl: "http://127.0.0.1:9876",
+      inferenceKey: "proxy-key",
+      inferenceModels: ["gpt-fixture"],
+      inferenceHomePath: "/proxy/home",
+    };
+    const settings = settingsWith({
+      providerInstances: {
+        [id]: { ...native, config: { ...native.config, ...route } },
+        [instanceId]: { driver, config: { setupMode: "cli" } },
+        [ProviderInstanceId.make("codex_traex")]: {
+          driver,
+          config: { launchArgs: "-c 'model_provider=\"traex\"'" },
+        },
+      },
+    });
+    const before = structuredClone(settings);
+    const enabled = deriveProviderInstanceConfigMap(settings);
+    expect(enabled[instanceId]).toBeUndefined();
+    expect(enabled[ProviderInstanceId.make("codex_traex")]).toBeDefined();
+    expect(enabled[id]).toMatchObject({
+      displayName: "Codex",
+      config: {
+        setupMode: "inference",
+        homePath: "/proxy/home",
+        shadowHomePath: "",
+        customModels: ["gpt-fixture"],
+      },
+    });
+    expect(enabled[id]?.environment).toContainEqual({
+      name: "OPENAI_API_KEY",
+      value: "",
+      sensitive: false,
+    });
+    expect(enabled[id]?.environment).toContainEqual({
+      name: "T3_INFERENCE_KEY",
+      value: "proxy-key",
+      sensitive: true,
+    });
+    expect(settings).toEqual(before);
+    const disabled = deriveProviderInstanceConfigMap({
+      ...settings,
+      providerInstances: {
+        ...settings.providerInstances,
+        [id]: { ...native, config: { ...native.config, ...route, inferenceEnabled: false } },
+      },
+    });
+    expect(disabled[id]).toMatchObject(native);
+    expect(disabled[instanceId]).toEqual(settings.providerInstances[instanceId]);
+    for (const inferenceKey of ["", undefined]) {
+      const invalid = deriveProviderInstanceConfigMap({
+        ...settings,
+        providerInstances: {
+          ...settings.providerInstances,
+          [id]: { ...native, config: { ...native.config, ...route, inferenceKey } },
+        },
+      });
+      expect(invalid[id]?.enabled).toBe(false);
+      expect(invalid[instanceId]).toBeUndefined();
+    }
+  });
+
   it("turns a machine-disabled instance on when a project enables it", () => {
     const settings = settingsWith({
       providerInstances: {
@@ -96,23 +175,6 @@ describe("deriveProviderInstanceConfigMap", () => {
     const merged = deriveProviderInstanceConfigMap(settings);
 
     expect(merged[instanceId]).toBe(settings.providerInstances[instanceId]);
-  });
-});
-
-describe("deriveProviderInstanceConfigMap with reserved ids", () => {
-  it("drops a hand-edited pool_* instance so it never registers a real adapter", () => {
-    const reservedId = ProviderInstanceId.make("pool_codex");
-    const settings = settingsWith({
-      providerInstances: {
-        [reservedId]: { driver: ProviderDriverKind.make("codex") },
-        [instanceId]: { driver: ProviderDriverKind.make("codex") },
-      },
-    });
-
-    const merged = deriveProviderInstanceConfigMap(settings);
-
-    expect(merged[reservedId]).toBeUndefined();
-    expect(merged[instanceId]).toEqual({ driver: ProviderDriverKind.make("codex") });
   });
 });
 

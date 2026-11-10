@@ -867,6 +867,11 @@ export const layer: Layer.Layer<
           ...(existingSessionProjection === undefined
             ? {}
             : { resumeFromSession: existingSessionProjection }),
+          ...(providerThread.nativeMetadata?.continuationKey === undefined
+            ? {}
+            : {
+                expectedContinuationKey: providerThread.nativeMetadata.continuationKey,
+              }),
           ...(providerThread.nativeThreadRef?.nativeId == null
             ? {}
             : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),

@@ -479,6 +479,7 @@ export const ClaudeDriver: ProviderDriver<
         ...fallbackContinuationIdentity,
         continuationKey: continuationGroupKey,
       },
+      requiresBoundContinuationIdentity: config.setupMode === "inference",
       displayName,
       accentColor,
       enabled,
