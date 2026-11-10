@@ -233,6 +233,8 @@ const make = Effect.gen(function* () {
   const direct = yield* DirectEndpoints;
   const env = yield* HostProcess.Environment;
   const homeDirectory = yield* HostProcess.HomeDirectory;
+  const platform = yield* HostProcess.Platform;
+  const username = yield* HostProcess.Username;
   const sharingDenial = managedCapabilityDenial(settings.managedPolicy, "remoteClients");
   const installContext = yield* Effect.context<Effect.Services<ReturnType<typeof install>>>();
   const latest = yield* Effect.cachedWithTTL(
@@ -460,8 +462,7 @@ const make = Effect.gen(function* () {
       const fileCredentials = yield* fs.exists(localClaudeAuthPath);
       let keychainEntry: import("@napi-rs/keyring").AsyncEntry | undefined;
       let nativeRaw: string | undefined;
-      if ((yield* HostProcess.Platform) === "darwin" && !env.CLAUDE_CONFIG_DIR?.trim()) {
-        const username = yield* HostProcess.Username;
+      if (platform === "darwin" && !env.CLAUDE_CONFIG_DIR?.trim()) {
         if (!username) return false;
         const entry = yield* Effect.try({
           try: () => claudeKeychainEntry(username),
