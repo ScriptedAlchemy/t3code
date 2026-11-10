@@ -247,7 +247,7 @@ describe("tailscale", () => {
       return Effect.succeed(
         mockHandle({
           stdout:
-            command.options.env?.TAILSCALE_BE_CLI === "1"
+            command.options.env?.TAILSCALE_BE_CLI === "1" && command.options.extendEnv === true
               ? status
               : "The Tailscale GUI failed to start: Tailscale.CLIError error 3.",
         }),
