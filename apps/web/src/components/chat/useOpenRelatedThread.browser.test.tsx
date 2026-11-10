@@ -15,6 +15,8 @@ const state = vi.hoisted(() => ({
   wait: vi.fn(async () => undefined),
 }));
 
+// The banner under test shows no background work, and the real details pull in theme state.
+vi.mock("./BackgroundWorkDetails", () => ({ BackgroundWorkDetails: () => null }));
 vi.mock("../../rpc/atomRegistry", () => ({
   appAtomRegistry: {
     get: (atom: { kind: string; environmentId: string }) =>
