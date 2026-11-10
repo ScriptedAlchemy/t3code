@@ -14,9 +14,13 @@ on:
         description: Publish a signed nightly release (leave off to validate packaging only)
         type: boolean
         default: false
+      macos_arm64_only:
+        description: Build only the signed macOS arm64 installer for PR validation
+        type: boolean
+        default: false
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && !inputs.publish && format('fork-nightly-validation-{0}', github.ref) || 'fork-nightly-release' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && !inputs.publish && format('fork-nightly-validation-{0}-{1}', github.ref, inputs.macos_arm64_only) || 'fork-nightly-release' }}
   cancel-in-progress: true
 
 permissions:
@@ -110,6 +114,7 @@ jobs:
   desktop:
     name: Desktop
     needs: bundle
+    if: ${{ !inputs.macos_arm64_only || inputs.publish }}
     strategy:
       fail-fast: false
       matrix:
@@ -177,6 +182,31 @@ jobs:
       rust_target: ${{ matrix.rust_target }}
       resource_key: ${{ matrix.resource_key }}
       cli_archive: ${{ matrix.platform != 'mac' || matrix.arch != 'x64' }}
+
+  desktop_mac_arm64:
+    name: Desktop macOS arm64 PR validation
+    needs: bundle
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.macos_arm64_only && !inputs.publish }}
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.bundle.outputs.version }}
+      ref: ${{ github.sha }}
+      release_channel: nightly
+      require_macos_signing: true
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ needs.bundle.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ needs.bundle.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ needs.bundle.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ needs.bundle.outputs.relay_url }}
+      label: macOS arm64
+      runner: macos-26
+      platform: mac
+      target: dmg
+      arch: arm64
+      rust_target: aarch64-apple-darwin
+      resource_key: darwin-arm64
+      cli_archive: true
 
   publish:
     name: Prepare and publish GitHub Release
