@@ -71,6 +71,7 @@ import * as HolographicMemory from "../knowledge/HolographicMemory.ts";
 import * as ProjectKnowledge from "../knowledge/ProjectKnowledge.ts";
 import { deliveredKnowledgeForHistory } from "../knowledge/composer.ts";
 import * as ConversationSummaries from "./ConversationSummaries.ts";
+import { runMigrations } from "../../persistence/Migrations.ts";
 import { leafPosition } from "./conversationSummaryTree.ts";
 import {
   ConversationSummaryPassError,
@@ -1576,6 +1577,68 @@ it.effect("does not admit later ancestor history through a portable fork handoff
       offered,
       [],
       "ancestor run 3 happened after the source forked at ancestor run 1",
+    );
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
+
+it.effect("rolls up summaries written before migration 094 in conversation order", () => {
+  const model = citing();
+  return Effect.gen(function* () {
+    yield* seedThread(14);
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const longText = "x".repeat(120_000);
+    yield* projections.apply(messageEvent(0, longText));
+    const sql = yield* SqlClient.SqlClient;
+    const crypto = yield* Digest.Digest;
+    const sha256 = (text: string) =>
+      crypto.digest(Digest.sha256, new TextEncoder().encode(text)).pipe(Effect.map(Hex.encode));
+    const digest = yield* sha256(longText);
+    // Before 094 the column held only the first source's time, which four leaves of one long
+    // message share.
+    yield* sql`ALTER TABLE conversation_summaries RENAME COLUMN position TO first_source_at`;
+    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 94`;
+    for (let index = 0; index < 4; index++) {
+      const sources = Array.from({ length: 5 }, (_, part) => ({
+        kind: "message" as const,
+        threadId,
+        messageId: messageId(0),
+        digest,
+        range: {
+          start: (index * 5 + part) * 6_000,
+          end: (index * 5 + part + 1) * 6_000,
+          total: 120_000,
+        },
+      }));
+      const summary: ConversationSummary = {
+        ...scope,
+        id: `summary:${yield* sha256(
+          [
+            "v2",
+            threadId,
+            ...sources.map((source) => `${conversationSummarySourceKey(source)}:${source.digest}`),
+          ].join("\n"),
+        )}`,
+        sources,
+        statements: [
+          { text: `Range ${index}`, citations: [conversationSummarySourceKey(sources[0]!)] },
+        ],
+        modelSelection: { instanceId, model: "gpt-5" },
+        createdAt: DateTime.formatIso(at),
+      };
+      yield* sql`
+        INSERT INTO conversation_summaries (
+          summary_id, project_id, thread_id, first_source_at, created_at, payload_json
+        ) VALUES (
+          ${summary.id}, ${projectId}, ${threadId}, ${DateTime.formatIso(at)},
+          ${summary.createdAt}, ${yield* encodeSummary(summary)}
+        )
+      `;
+    }
+    yield* runMigrations();
+    yield* summarize;
+    assert.deepEqual(
+      model.calls.find(isRollup)?.messages.map((message) => message.text),
+      ["- Range 0", "- Range 1", "- Range 2", "- Range 3"],
     );
   }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
 });
