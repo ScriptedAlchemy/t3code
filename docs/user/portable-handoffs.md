@@ -24,18 +24,20 @@ summaries turned on, a handoff is a budgeted selection, not a summary.
 ## Conversation summaries
 
 With conversation summaries on, older history that would not fit in a handoff can arrive as short
-summaries instead of being left out. T3 Code uses the summaries nearest the newest messages first,
-and uses one only when more history arrives with it than without it. The newest messages still arrive
-word for word, but a tool result near the end can give way to a summary. Each summary is
-labelled as model-written and names the messages and tool evidence it was written from, so the
-agent can open the exact originals. Long messages and command output are covered in sections,
-including the text at the end.
+summaries instead of being left out. T3 Code also summarizes its summaries, four at a time, so a few
+summaries can carry the gist of a whole long thread. A handoff uses the broadest summaries for old
+history and finer ones near the newest messages, and uses one only when more history arrives with it
+than without it. The newest messages still arrive word for word, but a tool result near the end can
+give way to a summary. Each summary is labelled as model-written and names what it was written from:
+messages and tool evidence, or the summaries it combines. The agent can open those, and from a
+combined summary follow its sources down to the exact originals. Long messages and command output are
+covered in sections, including the text at the end.
 
 Turn on **Summarize older messages** in **Settings → Labs → Zack**, for one project or every project,
 or from **Conversation summaries** in a thread's details on web and desktop. It is off by default
-because each summary costs one call to your text generation model. After a turn completes, T3 Code
-summarizes settled older history in small batches and continues in the background until it catches
-up. You do not need to send more messages to finish an existing backlog.
+because each summary costs one call to your text generation model, and combining four summaries
+costs one more. After a turn completes, T3 Code summarizes settled older history in small batches,
+combines summaries, and continues in the background until it catches up. You do not need to send more messages to finish an existing backlog.
 The most recent messages are never summarized.
 Turning summaries off stops both generation and their use in new handoffs. Existing summaries stay
 available to inspect and can be used again if you turn the setting back on.
