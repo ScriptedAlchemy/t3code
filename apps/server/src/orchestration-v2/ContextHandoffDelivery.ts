@@ -161,6 +161,9 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
           omittedItems:
             priorOmittedCount - [...proposed].filter((id) => priorOmitted.has(id)).length,
           budget,
+          // Otherwise a newer tool result takes the room an older pinned message needs, and
+          // the summary is refused for a loss it did not have to cause.
+          first: pinned,
         });
         // A summary earns its space only when more history arrives with it than without it.
         const kept = new Set<string>(reduced.messages.map((message) => message.itemId));
