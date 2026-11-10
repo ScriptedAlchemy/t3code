@@ -49,6 +49,24 @@ export interface ConversationSummarySourceCursor {
   readonly textOffset: number;
 }
 
+/** Who a source came from; a child summary is named by its id so it can be opened. */
+export function conversationSummarySourceLabel(
+  ref: ConversationSummarySourceRef,
+  result: ConversationSummarySourceResult,
+): string {
+  if (result.state !== "available") return "Unavailable";
+  switch (result.role) {
+    case "user":
+      return "User";
+    case "assistant":
+      return "Assistant";
+    case "tool":
+      return "Tool";
+    case "summary":
+      return ref.kind === "summary" ? `Summary ${ref.summaryId}` : "Summary";
+  }
+}
+
 export function conversationSummarySourceRangeLabel(
   ref: ConversationSummarySourceRef,
   result: ConversationSummarySourceResult,

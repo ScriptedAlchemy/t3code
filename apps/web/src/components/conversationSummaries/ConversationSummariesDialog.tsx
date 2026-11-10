@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import {
   conversationSummaryPassLabel,
+  conversationSummarySourceLabel,
   conversationSummarySourceRangeLabel,
   type ConversationSummarySourceCursor,
 } from "@t3tools/client-runtime/conversationSummaries";
@@ -118,15 +119,8 @@ function SummarySourcePage(props: {
       <ol className="flex flex-col gap-2">
         {sources.map(({ ref, result }, index) => (
           <li key={conversationSummarySourceKey(ref)} className="rounded-md border p-2 text-sm">
-            <p className="text-muted-foreground text-xs">
-              #{props.cursor.offset + index + 1} ·{" "}
-              {result.state === "available"
-                ? result.role === "user"
-                  ? "User"
-                  : result.role === "tool"
-                    ? "Tool"
-                    : "Assistant"
-                : "Unavailable"}
+            <p className="text-muted-foreground text-xs break-all">
+              #{props.cursor.offset + index + 1} · {conversationSummarySourceLabel(ref, result)}
             </p>
             {conversationSummarySourceRangeLabel(ref, result) ? (
               <p className="text-muted-foreground text-xs">
