@@ -215,6 +215,7 @@ it.effect.each([
       runsToRollback: [],
       targetAttempt: undefined,
       rolledBackAttemptIds: [],
+      attemptNativeThreadIds: new Map(),
       staleCheckpoints: [],
       rootNodes: [],
       providerTurns: [],

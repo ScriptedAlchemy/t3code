@@ -86,6 +86,7 @@ it.effect.each([
       rootNodes: [],
       targetAttempt: undefined,
       rolledBackAttemptIds: [],
+      attemptNativeThreadIds: new Map(),
       staleCheckpoints: [],
       checkpoint: { id: checkpointId, scopeId, status: "ready", appRunOrdinal: null },
       scope: { id: scopeId, cwd },

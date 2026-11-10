@@ -5,6 +5,7 @@ import {
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   ProviderThreadId,
+  type RunAttemptId,
   ThreadId,
   VcsProcessExitError,
 } from "@t3tools/contracts";
@@ -252,6 +253,37 @@ export const layer: Layer.Layer<
         });
       }
 
+      // Rolled-back turns remain in audit history but no longer exist in the provider conversation.
+      const rolledBackAttemptIds = new Set(context.rolledBackAttemptIds);
+      const liveTurns = context.providerTurns.filter(
+        (turn) =>
+          turn.providerThreadId === providerThread.id &&
+          (turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId)),
+      );
+      // A fresh native conversation (a restart or resume recovery) leaves the older one intact.
+      // A target before it is rolled back in the conversation that holds it.
+      const nativeIdOf = (turn: { readonly runAttemptId: RunAttemptId | null }) =>
+        turn.runAttemptId === null
+          ? undefined
+          : context.attemptNativeThreadIds.get(turn.runAttemptId);
+      const targetNativeId =
+        new Set(context.attemptNativeThreadIds.values()).size < 2
+          ? undefined
+          : rollbackTarget.type === "provider_turn"
+            ? nativeIdOf(rollbackTarget.providerTurn)
+            : liveTurns.map(nativeIdOf).find((nativeId) => nativeId !== undefined);
+      const rollbackProviderThread =
+        targetNativeId === undefined || providerThread.nativeThreadRef === null
+          ? providerThread
+          : {
+              ...providerThread,
+              nativeThreadRef: { ...providerThread.nativeThreadRef, nativeId: targetNativeId },
+            };
+      const providerThreadTurns =
+        targetNativeId === undefined
+          ? liveTurns
+          : liveTurns.filter((turn) => nativeIdOf(turn) === targetNativeId);
+
       const modelSelection = context.thread.modelSelection;
       const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
         thread: context.thread,
@@ -264,9 +296,9 @@ export const layer: Layer.Layer<
         modelSelection,
         runtimePolicy: resolvedRuntimePolicy,
         ...(existingSession === undefined ? {} : { resumeFromSession: existingSession }),
-        ...(providerThread.nativeThreadRef?.nativeId == null
+        ...(rollbackProviderThread.nativeThreadRef?.nativeId == null
           ? {}
-          : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
+          : { initialNativeThreadId: rollbackProviderThread.nativeThreadRef.nativeId }),
         ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
           ? {}
           : {
@@ -274,19 +306,11 @@ export const layer: Layer.Layer<
             }),
       });
 
-      // Rolled-back turns remain in audit history but no longer exist in the provider conversation.
-      const rolledBackAttemptIds = new Set(context.rolledBackAttemptIds);
-      const providerThreadTurns = context.providerTurns.filter(
-        (turn) =>
-          turn.providerThreadId === providerThread.id &&
-          (turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId)),
-      );
-
       // Publication runs never reached the provider, so they leave it nothing to undo.
       const snapshot = runsToRollback.every(isOrchestrationV2PublicationRun)
         ? { providerThread }
         : yield* session.rollbackThread({
-            providerThread,
+            providerThread: rollbackProviderThread,
             target: rollbackTarget,
             providerThreadTurns,
           });
