@@ -46,6 +46,7 @@ const refuseOutsideConstruction = (token: symbol) => {
 let declare: <P, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
   remote: RemoteCheck<P> | undefined,
+  remoteHandle?: (params: P) => Effect.Effect<A, E, R>,
 ) => Declaration<(params: P) => Effect.Effect<A, E, R>>;
 
 /**
@@ -57,6 +58,7 @@ type RemoteCheck<P> = (
   params: P,
 ) => Effect.Effect<unknown, OrchestratorMcpFailure, Effect.Services<typeof writingCaller>>;
 let remoteCheckOf: <Handler>(declaration: Declaration<Handler>) => RemoteCheck<never> | undefined;
+let remoteHandlerOf: <Handler>(declaration: Declaration<Handler>) => Handler | undefined;
 
 type CheckedHandlerOf<D> = D extends Declaration<infer Handler> ? Handler : never;
 
@@ -74,19 +76,24 @@ let handlersLayer: <Tools extends Record<string, Tool.Any>, EX, RX>(
 export class Declaration<out Handler> {
   readonly #handle: Handler;
   readonly #remote: RemoteCheck<never> | undefined;
+  readonly #remoteHandle: Handler | undefined;
   private constructor(
     token: typeof builtHere,
     handle: Handler,
     remote: RemoteCheck<never> | undefined,
+    remoteHandle?: Handler,
   ) {
     refuseOutsideConstruction(token);
     this.#handle = handle;
     this.#remote = remote;
+    this.#remoteHandle = remoteHandle;
   }
   static {
-    declare = (handle, remote) => new Declaration(builtHere, handle, remote);
+    declare = (handle, remote, remoteHandle) =>
+      new Declaration(builtHere, handle, remote, remoteHandle);
     checkedHandler = Struct.lambda<CheckedHandler>((declaration) => declaration.#handle);
     remoteCheckOf = (declaration) => declaration.#remote;
+    remoteHandlerOf = (declaration) => declaration.#remoteHandle;
   }
 }
 
@@ -192,6 +199,8 @@ export const writesWithCapability = <P, A, E, R>(handle: (params: P) => Effect.E
 export const writesThreads = <P, A, E, R>(
   threads: (params: P) => ReadonlyArray<ThreadId | undefined>,
   handle: (params: P) => Effect.Effect<A, E, R>,
+  /** Runs after caller checks when forwarding also needs bookkeeping here. */
+  remoteHandle?: (params: P) => Effect.Effect<A, E, R>,
 ) =>
   declare(
     (params: P) =>
@@ -221,6 +230,7 @@ export const writesThreads = <P, A, E, R>(
         );
       }),
     () => writingCaller,
+    remoteHandle,
   );
 
 const escalationDenied = (refusal: DispatchModeRefusal) =>
@@ -386,10 +396,8 @@ const linksUnavailable = new OrchestratorMcpFailure({
 });
 
 /**
- * Every tool that takes a linked environment runs there the same way: its
- * declaration checks the caller here, and the same call goes to the other
- * environment, which checks the rest. The handler here never sees
- * `environmentId`, so it cannot leak into what it writes.
+ * Linked calls check the caller here and the target there. Most forward
+ * directly; a remote handler can also record work owned by the caller here.
  */
 const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record<string, Tool.Any>>(
   toolkit: Toolkit.Toolkit<Tools>,
@@ -417,6 +425,9 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
         if (target === undefined) return yield* here(params);
         if (scope.linkedEnvironments === false) return yield* PeerForwarding.linkedEnvironmentsOff;
         yield* (remote as RemoteCheck<typeof params>)(params);
+        const remoteHandle = remoteHandlerOf(declaration) as typeof here | undefined;
+        if (remoteHandle !== undefined)
+          return yield* remoteHandle({ ...params, environmentId: target });
         if (Option.isNone(forwarding)) return yield* linksUnavailable;
         return yield* forwarding.value.call(scope, tool, target, { ...params, environmentId });
       });

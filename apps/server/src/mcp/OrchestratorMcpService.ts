@@ -3231,6 +3231,12 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadReadResult;
     }),
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
+      if (input.environmentId !== undefined && input.environmentId !== scope.environmentId) {
+        return yield* remoteDelegation.sendToThread(scope, {
+          ...input,
+          environmentId: input.environmentId,
+        });
+      }
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);

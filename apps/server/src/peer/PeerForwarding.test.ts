@@ -35,6 +35,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
+import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
@@ -290,6 +291,31 @@ const makeLaptop = Effect.gen(function* () {
       ),
     ),
     Layer.provide(NodeServices.layer),
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        ServerSettings.layerTest(),
+        Layer.unwrap(
+          Effect.map(PeerForwarding.PeerForwarding, (forwarding) =>
+            Layer.mock(RemoteDelegation.RemoteDelegation)({
+              sendToThread: (scope, input) =>
+                forwarding.call(
+                  scope,
+                  OrchestratorToolkit.tools.t3_thread_send,
+                  input.environmentId,
+                  input,
+                ),
+            }),
+          ),
+        ),
+        Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+      ),
+    ),
     Layer.provide(PeerForwarding.layer),
     Layer.provide(Layer.succeedContext(linking)),
     Layer.provide(NodeCrypto.layer),
@@ -315,19 +341,6 @@ const makeLaptop = Effect.gen(function* () {
             thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
           } as never),
       }),
-    ),
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
-        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
-        Layer.mock(SecretRequests.SecretRequests)({}),
-        ServerSettings.layerTest(),
-        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-        Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
-      ),
     ),
     Layer.fresh,
   );
