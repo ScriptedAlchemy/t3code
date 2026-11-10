@@ -827,6 +827,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["zack conversation summaries history context handoff fork provider switch model"],
   },
   {
+    id: "context-restart",
+    title: "Restart large threads from summaries",
+    to: "/settings/labs",
+    scope: "project-defaults",
+    searchTerms: ["zack codex context restart tokens cost cache fresh conversation summaries"],
+  },
+  {
     id: "external-history",
     title: "External history",
     to: "/settings/labs",

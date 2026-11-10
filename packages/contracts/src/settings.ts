@@ -103,8 +103,8 @@ export const SidebarAutoSettleAfterDays = Schema.Number.check(
 export type SidebarAutoSettleAfterDays = typeof SidebarAutoSettleAfterDays.Type;
 const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 7;
 
-const MIN_CONTEXT_RESTART_ABOVE_TOKENS = 100_000;
-const MAX_CONTEXT_RESTART_ABOVE_TOKENS = 2_000_000;
+export const MIN_CONTEXT_RESTART_ABOVE_TOKENS = 100_000;
+export const MAX_CONTEXT_RESTART_ABOVE_TOKENS = 2_000_000;
 /** The measured context at which a thread restarts from summaries. */
 export const ContextRestartAboveTokens = Schema.Int.check(
   Schema.isBetween({
