@@ -381,8 +381,7 @@ function InferenceControls({ environment }: { environment: SettingsTarget }) {
         </AppText>
       ) : null}
       <AppText className="px-4 text-foreground-muted">
-        Choose a host for inference. Tools run on {environment.label}. Adding a route retires the
-        existing CLI profile pool for that provider.
+        Choose a host for inference. Tools run on {environment.label}.
       </AppText>
       {host?.routes.map((route) => (
         <ListActionRow

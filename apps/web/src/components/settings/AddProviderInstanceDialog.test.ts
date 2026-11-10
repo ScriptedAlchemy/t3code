@@ -80,11 +80,4 @@ describe("validateInstanceId", () => {
       "An instance named 'claudeAgent_work' already exists.",
     );
   });
-
-  it("refuses ids that account pools reserve", () => {
-    expect(validateInstanceId("pool_claudeAgent", new Set())).toBe(
-      "Instance IDs starting with 'pool_' are reserved for account pools.",
-    );
-    expect(validateInstanceId("pool_anything", new Set())).not.toBeNull();
-  });
 });

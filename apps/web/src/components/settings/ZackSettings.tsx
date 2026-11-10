@@ -324,7 +324,7 @@ function AccountPoolsRow() {
       title="Inference accounts"
       description="Host provider accounts and route inference through an environment over Tailscale or your trusted LAN."
       control={
-        <Button size="sm" variant="outline" render={<Link to="/settings/account-pools" />}>
+        <Button size="sm" variant="outline" render={<Link to="/settings/inference" />}>
           Open
         </Button>
       }

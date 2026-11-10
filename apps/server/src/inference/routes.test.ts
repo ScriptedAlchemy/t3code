@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { inferencePath, routeProvider, validateRouteUrl } from "./routes.ts";
+import { inferenceModelSlugs, inferencePath, routeProvider, validateRouteUrl } from "./routes.ts";
 
 describe("inference routes", () => {
   it("forwards only the protocol endpoints at the mounted path", () => {
@@ -44,7 +44,13 @@ describe("inference routes", () => {
       url,
       "private",
       "Office",
-      ["claude-fixture"],
+      [
+        "claude-fixture",
+        "claude-opus-4-5-20251101",
+        "claude-fable-5-2",
+        "claude-3-7-sonnet-20250219",
+        "claude-pool-review",
+      ],
       "/state/claude",
     );
     expect(codex.config.launchArgs).toContain(url + "/v1");
@@ -59,5 +65,21 @@ describe("inference routes", () => {
       value: "private",
       sensitive: true,
     });
+    expect(claude.config.customModels).toEqual([
+      "claude-fixture",
+      { slug: "claude-opus-4-5-20251101", name: "Claude Opus 4.5" },
+      { slug: "claude-fable-5-2", name: "Claude Fable 5.2" },
+      { slug: "claude-3-7-sonnet-20250219", name: "Claude Sonnet 3.7" },
+      { slug: "claude-pool-review", name: "Pool: review" },
+    ]);
+    expect(inferenceModelSlugs(claude.config)).toEqual(
+      new Set([
+        "claude-fixture",
+        "claude-opus-4-5-20251101",
+        "claude-fable-5-2",
+        "claude-3-7-sonnet-20250219",
+        "claude-pool-review",
+      ]),
+    );
   });
 });

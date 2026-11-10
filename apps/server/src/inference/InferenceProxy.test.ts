@@ -1,12 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  retiredPoolRoute,
-  EnvironmentId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-} from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Deferred from "effect/Deferred";
@@ -291,7 +286,6 @@ it.effect(
               "_tag",
               "InferenceProxyError",
             );
-            expect((yield* settings.getSettings).providerPools).toHaveProperty("codex");
             catalog = [
               { id: "codex-auto-review", owned_by: "openai" },
               { id: "office-model", owned_by: "openai" },
@@ -309,11 +303,7 @@ it.effect(
                 (i) => i.displayName === "Codex via Host",
               )?.config,
             ).toMatchObject({ customModels: ["codex-auto-review", "office-model", "gpt-fixture"] });
-            expect((yield* settings.getSettings).providerPools).not.toHaveProperty("codex");
-            const firstRoute = retiredPoolRoute(
-              yield* settings.getSettings,
-              ProviderInstanceId.make("pool_codex"),
-            );
+            const firstRoute = (yield* proxy.status).routes[0]?.instanceId;
             expect(firstRoute).toMatch(/^inference_codex_/);
             expect(Object.values((yield* settings.getSettings).providerInstances)).toEqual(
               expect.arrayContaining([expect.objectContaining({ displayName: "Codex via Host" })]),
@@ -418,17 +408,7 @@ it.effect(
         expect(stops).toBe(5);
       }).pipe(
         Effect.provide(
-          Layer.merge(
-            ServerSettings.layerTest({
-              providerPools: {
-                [ProviderDriverKind.make("codex")]: {
-                  enabled: true,
-                  memberInstanceIds: [ProviderInstanceId.make("codex")],
-                },
-              },
-            }),
-            ServerSecretStore.layer,
-          ).pipe(
+          Layer.merge(ServerSettings.layerTest(), ServerSecretStore.layer).pipe(
             Layer.provideMerge(
               ServerConfig.layerTest(process.cwd(), { prefix: "t3-inference-test-" }),
             ),

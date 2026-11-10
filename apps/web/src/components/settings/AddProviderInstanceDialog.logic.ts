@@ -1,5 +1,3 @@
-import { isReservedProviderInstanceId } from "@t3tools/contracts";
-
 export type WizardNavigation =
   | { readonly kind: "navigate"; readonly step: number }
   | { readonly kind: "blocked"; readonly step: number; readonly error: string };
@@ -52,9 +50,6 @@ export function validateInstanceId(id: string, existing: ReadonlySet<string>): s
   if (id.length > 64) return "Instance ID must be 64 characters or fewer.";
   if (!INSTANCE_ID_PATTERN.test(id)) {
     return "Instance ID must start with a letter and use only letters, digits, '-', or '_'.";
-  }
-  if (isReservedProviderInstanceId(id)) {
-    return "Instance IDs starting with 'pool_' are reserved for account pools.";
   }
   if (existing.has(id)) return `An instance named '${id}' already exists.`;
   return null;

@@ -56,8 +56,6 @@ pools have separate `claude-pool-…` IDs. The routing switches apply across
 the host. Round-robin distributes new sessions, and session affinity keeps a
 conversation on its credential while that credential is available.
 
-The first inference route for a provider replaces its old CLI account pool. Threads saved with that pool use the replacement route. Threads pinned to an individual CLI account keep that selection. You can switch either kind of thread in the provider picker.
-
 Remove a provider login on its host, revoke one consuming environment, or turn
 off sharing to revoke all remote grants. Remove the route in **Inference accounts** on the executing machine. Stopping hosting keeps the host's accounts
 for the next start.

@@ -107,7 +107,6 @@ import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSectio
 import { readProviderConfigString } from "./ProviderSettingsForm";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import { providerClients } from "./providerDriverMeta";
-import { resolveProviderPoolName } from "./providerAccountStatus";
 import { searchableSetting } from "./settingsSearch";
 import { CompactIdleThreadsRow } from "./SettingsPanels";
 import {
@@ -958,7 +957,6 @@ export function EnvironmentProviderSettings({
         readOnly={readOnly}
         canWriteSettings={canWriteSettings}
         liveProvider={liveProvider}
-        poolName={resolveProviderPoolName(serverProviders, liveProvider)}
         isUpdateDispatching={updatingProviderInstanceIds.has(row.instanceId)}
         showProjectOverride={showProjectOverride}
         projectOverrideValue={
@@ -1127,7 +1125,7 @@ export function EnvironmentProviderSettings({
               <Button
                 size="sm"
                 variant="outline"
-                render={<Link to="/settings/account-pools" search={{ machine: environmentId }} />}
+                render={<Link to="/settings/inference" search={{ machine: environmentId }} />}
               >
                 Manage accounts
               </Button>
@@ -1261,7 +1259,6 @@ function ProviderInstanceRow({
   readOnly,
   canWriteSettings,
   liveProvider,
-  poolName,
   isUpdateDispatching,
   showProjectOverride,
   projectOverrideValue,
@@ -1282,7 +1279,6 @@ function ProviderInstanceRow({
   readonly readOnly: boolean;
   readonly canWriteSettings: boolean;
   readonly liveProvider: ServerProvider | undefined;
-  readonly poolName: string | undefined;
   readonly isUpdateDispatching: boolean;
   readonly showProjectOverride: boolean;
   readonly projectOverrideValue: boolean | undefined;
@@ -1343,7 +1339,6 @@ function ProviderInstanceRow({
       instance={instance}
       driverOption={driverOption}
       liveProvider={liveProvider}
-      poolName={poolName}
       mode={mode}
       selected={selected}
       onSelect={mode === "list" ? () => actions.selectInstance(instanceId) : undefined}

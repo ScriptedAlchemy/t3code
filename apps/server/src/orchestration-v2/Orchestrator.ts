@@ -69,8 +69,6 @@ import {
   isRuntimeModeAbove,
   resolveProviderInstanceEnabled,
   resolveProjectProviderInstanceEnabled,
-  retiredPoolRoute,
-  providerPoolDriver,
   type ProviderSessionId,
   RunId,
   RuntimeMode,
@@ -1265,29 +1263,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
-  const routeSelection = Effect.fn("Orchestrator.routeSelection")(function* (input: {
-    readonly selection: ModelSelection;
-    readonly projectId: OrchestrationV2AppThread["projectId"];
-    readonly commandId: CommandId;
-    readonly commandType: string;
-  }) {
-    if (providerPoolDriver(input.selection.instanceId) === null) return input.selection;
-    const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
-    const target = retiredPoolRoute(settings, input.selection.instanceId);
-    if (
-      !target ||
-      !resolveProjectProviderInstanceEnabled(settings, input.projectId, target) ||
-      !(yield* providerAdapters.list()).includes(target)
-    ) {
-      return yield* new OrchestratorDispatchError({
-        commandId: input.commandId,
-        commandType: input.commandType,
-        cause:
-          "This thread's CLI account pool has retired. Select an inference route or an individual provider.",
-      });
-    }
-    return { ...input.selection, instanceId: target };
-  });
   // Read once: the policy is fixed for the server's life, and dispatch takes it as an input.
   const { managedPolicy } = serverSettings;
   const runtimeModeCeiling: RuntimeModeCeiling | undefined =
@@ -1958,12 +1933,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (candidate) => candidate.id === storedQueuedRun.userMessageId,
       );
       const commandId = CommandId.make(`command:system:start-queued:${storedQueuedRun.id}`);
-      const modelSelection = yield* routeSelection({
-        commandId,
-        commandType: "message.dispatch",
-        projectId: projection.thread.projectId,
-        selection: queuedRunModelSelection(projection, storedQueuedRun),
-      });
+      const modelSelection = queuedRunModelSelection(projection, storedQueuedRun);
       const queuedRun = {
         ...storedQueuedRun,
         modelSelection,
@@ -3233,12 +3203,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
 
-    const modelSelection = yield* routeSelection({
-      commandId: command.commandId,
-      commandType: command.type,
-      selection: command.modelSelection,
-      projectId: command.projectId,
-    });
+    const modelSelection = command.modelSelection;
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
@@ -3576,12 +3541,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const modelSelection =
       command.type === "thread.model-selection.set" || command.type === "provider.switch"
-        ? yield* routeSelection({
-            commandId: command.commandId,
-            commandType: command.type,
-            selection: command.modelSelection,
-            projectId: thread.projectId,
-          })
+        ? command.modelSelection
         : thread.modelSelection;
     if (
       command.type === "thread.pull-request.watch" &&
@@ -6856,12 +6816,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection.messages.find((message) => message.id === command.messageId)?.groupThrough ??
       projection.runs.find((run) => run.id === continuedRunId)?.groupThrough;
     const groupThroughField = groupThrough === undefined ? {} : { groupThrough };
-    const modelSelection = yield* routeSelection({
-      commandId: command.commandId,
-      commandType: command.type,
-      selection: command.modelSelection ?? projection.thread.modelSelection,
-      projectId: projection.thread.projectId,
-    });
+    const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
     let dispatchMode = resolveMessageDispatchIntent(
       projection,
       command.dispatchMode,
@@ -9069,12 +9024,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
 
-      const modelSelection = yield* routeSelection({
-        commandId: command.commandId,
-        commandType: command.type,
-        selection: command.modelSelection,
-        projectId: parentProjection.thread.projectId,
-      });
+      const modelSelection = command.modelSelection;
       const targetAdapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
         Effect.mapError(
           (cause) =>

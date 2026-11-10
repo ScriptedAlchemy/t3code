@@ -4,11 +4,6 @@ import {
   shouldShowInstanceBadge,
 } from "@t3tools/client-runtime/state/provider-instance-display";
 import type { MenuAction } from "@react-native-menu/menu";
-import {
-  composerInstanceIdFor,
-  composerModelSelectionFor,
-  foldProviderPoolsForComposer,
-} from "@t3tools/client-runtime/provider-pools";
 import type {
   ModelCapabilities,
   ModelSelection,
@@ -168,14 +163,9 @@ function modelOptionProviderContext(
   config: T3ServerConfig | null | undefined,
   requestedInstanceId: ModelSelection["instanceId"] | undefined,
   projectId: ProjectId | null,
-  surface: "composer" | "settings",
 ) {
   const providers = config?.providers ?? [];
-  const composer = surface === "composer";
-  const providerInstanceId =
-    composer && requestedInstanceId !== undefined
-      ? composerInstanceIdFor(providers, requestedInstanceId)
-      : requestedInstanceId;
+  const providerInstanceId = requestedInstanceId;
   const lockedProvider = config?.providers.find(
     (provider) => provider.instanceId === providerInstanceId,
   );
@@ -190,7 +180,7 @@ function modelOptionProviderContext(
   return {
     providers,
     providerInstanceId,
-    selectableProviders: (composer ? foldProviderPoolsForComposer(providers) : providers).filter(
+    selectableProviders: providers.filter(
       (provider) =>
         matchesLockedProvider(provider) &&
         isProviderEnabledForProject(config, provider, projectId) &&
@@ -330,22 +320,12 @@ export function buildModelOptions(
   requestedFallbackSelection: ModelSelection | null,
   requestedInstanceId: ModelSelection["instanceId"] | undefined,
   projectId: ProjectId | null,
-  surface: "composer" | "settings",
   includeHidden = false,
 ): ReadonlyArray<ModelOption> {
   const options = new Map<string, ModelOption>();
-  const composer = surface === "composer";
-  const providerContext = modelOptionProviderContext(
-    config,
-    requestedInstanceId,
-    projectId,
-    surface,
-  );
-  const { providers, providerInstanceId } = providerContext;
-  const fallbackModelSelection =
-    composer && requestedFallbackSelection
-      ? composerModelSelectionFor(providers, requestedFallbackSelection)
-      : requestedFallbackSelection;
+  const providerContext = modelOptionProviderContext(config, requestedInstanceId, projectId);
+  const { providerInstanceId } = providerContext;
+  const fallbackModelSelection = requestedFallbackSelection;
   const registryAgentId = (instanceId: ModelSelection["instanceId"]) => {
     const configValue = config?.settings?.providerInstances[instanceId]?.config;
     if (configValue === null || typeof configValue !== "object") return undefined;
@@ -508,13 +488,11 @@ export function buildProviderUpdateRequiredGroups(
   config: T3ServerConfig | null | undefined,
   requestedInstanceId: ModelSelection["instanceId"] | undefined,
   projectId: ProjectId | null,
-  surface: "composer" | "settings",
 ): ReadonlyArray<ProviderGroup> {
   return modelOptionProviderContext(
     config,
     requestedInstanceId,
     projectId,
-    surface,
   ).selectableProviders.flatMap((provider) => {
     const updateRequiredModels = provider.updateRequiredModels;
     if (!updateRequiredModels?.length) return [];

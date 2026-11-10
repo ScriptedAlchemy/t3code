@@ -1,5 +1,4 @@
 import {
-  retiredPoolRoute,
   type ModelSelection,
   type ProviderInstanceId,
   type ProviderOptionDescriptor,
@@ -206,7 +205,7 @@ export function resolveRoles(input: {
   readonly parentModelSelection?: ModelSelection;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly nowMs: number;
-  readonly settings: Pick<ServerSettings, "providerInstances" | "retiredPoolRoutes"> &
+  readonly settings: Pick<ServerSettings, "providerInstances"> &
     Partial<Pick<ServerSettings, "providerModelPreferences">>;
 }) {
   const constraintsFor = (provider: ServerProvider) =>
@@ -270,8 +269,7 @@ export function resolveRoles(input: {
         return inherited.kind === "unavailable" && !panel ? undefined : inherited;
       if (seat.kind === "unresolved") return fallback(index, seat.model, seat.reason);
       const entry = seat.entry;
-      const instanceId =
-        retiredPoolRoute(input.settings, entry.providerInstanceId) ?? entry.providerInstanceId;
+      const instanceId = entry.providerInstanceId;
       const provider = input.providers.find((provider) => provider.instanceId === instanceId);
       const model = provider?.models.find((model) => model.slug === entry.model);
       const descriptors = model?.capabilities?.optionDescriptors ?? [];

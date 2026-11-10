@@ -1,5 +1,4 @@
 import {
-  isReservedProviderInstanceId,
   defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -53,12 +52,7 @@ type ProviderInstanceRegistryHydrationEnv =
 export const deriveProviderInstanceConfigMap = (
   settings: ServerSettings,
 ): ProviderInstanceConfigMap => {
-  // Reserve legacy pool IDs for threads resuming through their replacement route.
-  const merged: Record<string, ProviderInstanceConfig> = Object.fromEntries(
-    Object.entries(settings.providerInstances).filter(
-      ([instanceId]) => !isReservedProviderInstanceId(instanceId),
-    ),
-  );
+  const merged: Record<string, ProviderInstanceConfig> = { ...settings.providerInstances };
 
   for (const driver of BUILT_IN_DRIVERS) {
     if (driver.metadata.hasDefaultInstance === false) continue;

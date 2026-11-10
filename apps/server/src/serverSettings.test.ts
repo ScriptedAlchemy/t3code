@@ -136,40 +136,6 @@ function strictSecretReferencePaths(
 }
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings", (it) => {
-  it.effect("rejects creation of legacy CLI account pools", () =>
-    Effect.gen(function* () {
-      const service = yield* ServerSettingsModule.ServerSettingsService;
-      const result = yield* service
-        .updateSettings({
-          providerPools: {
-            [ProviderDriverKind.make("codex")]: {
-              enabled: true,
-              memberInstanceIds: [ProviderInstanceId.make("codex")],
-            },
-          },
-        })
-        .pipe(Effect.result);
-      assert.equal(result._tag, "Failure");
-      assert.deepEqual((yield* service.getSettings).providerPools, {});
-    }).pipe(Effect.provide(layerServerSettings())),
-  );
-
-  it.effect("reserves the pool id prefix for pools", () =>
-    Effect.gen(function* () {
-      const service = yield* ServerSettingsModule.ServerSettingsService;
-      for (const operation of ["create", "upsert"] as const) {
-        const result = yield* service
-          .updateProviderInstance({
-            operation,
-            instanceId: ProviderInstanceId.make("pool_claudeAgent"),
-            instance: { driver: ProviderDriverKind.make("claudeAgent"), config: {} },
-          })
-          .pipe(Effect.result);
-        assert.equal(result._tag, "Failure", operation);
-      }
-    }).pipe(Effect.provide(layerServerSettings())),
-  );
-
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;

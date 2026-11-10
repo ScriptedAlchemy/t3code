@@ -414,7 +414,7 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
     }),
   );
   it.effect.each(["cooling", "disabled", "available"] as const)(
-    "a saved CLI pool seat uses its inference route when %s",
+    "an explicit inference seat honors availability when %s",
     (scenario) =>
       Effect.gen(function* () {
         const projectId = ProjectId.make("pack-test");
@@ -430,7 +430,6 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
           ],
           ServerSettings.layerTest({
             pstackEnabled: true,
-            retiredPoolRoutes: { [claudeProvider.driver]: route },
             providerInstances: {
               [route]: {
                 driver: claudeProvider.driver,
@@ -447,7 +446,7 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
         yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
         yield* fs.writeFileString(
           `${fixture.stateDir}/pstack/models.md`,
-          "architect runners: pool_claudeAgent/claude-opus-5-5",
+          "architect runners: inference_claude_host/claude-opus-5-5",
         );
         const expansion = yield* Effect.gen(function* () {
           return yield* (yield* PstackPack.PstackPack).expandComposer(

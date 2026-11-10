@@ -324,7 +324,7 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
   }
   return (
     <SettingsPageContainer className="gap-8">
-      <SettingsSection id="account-pools" title="Inference hosting">
+      <SettingsSection id="inference" title="Inference hosting">
         {!canManage ? (
           <SettingsRow title="Provider management access is required." />
         ) : host ? (
@@ -509,7 +509,7 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
         <SettingsSection title="Route requests through an environment">
           <SettingsRow
             title={`Run agents on ${current.label}`}
-            description="Choose a host and provider below. Tools and files stay on this environment. Adding a route retires its existing CLI profile pool."
+            description="Choose a host and provider below. Tools and files stay on this environment."
           />
           {host?.routes.map((route) => (
             <SettingsRow

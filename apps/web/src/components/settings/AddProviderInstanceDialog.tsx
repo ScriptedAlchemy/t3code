@@ -868,7 +868,7 @@ export function AddProviderInstanceDialog({
               connectionChoice === "inference" ? (
                 <Button
                   size="sm"
-                  render={<Link to="/settings/account-pools" search={{ machine: environmentId }} />}
+                  render={<Link to="/settings/inference" search={{ machine: environmentId }} />}
                   onClick={() => onOpenChange(false)}
                 >
                   Open inference accounts

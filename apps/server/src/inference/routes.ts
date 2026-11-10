@@ -3,6 +3,7 @@ import {
   type CustomModelSetting,
   type InferenceDriver,
 } from "@t3tools/contracts";
+import { formatModelSlugName } from "@t3tools/shared/model";
 
 const PREFIX = "/api/inference";
 
@@ -43,6 +44,17 @@ export function routeProvider(
   homePath: string,
 ) {
   const codex = driver === "codex";
+  const customModels = models.map((slug) => {
+    const pool = /^(?:codex|claude)-pool-(.+)$/.exec(slug);
+    const name = pool
+      ? `Pool: ${pool[1]}`
+      : formatModelSlugName(
+          slug
+            .replace(/-\d{8}$/, "")
+            .replace(/^claude-(\d+(?:-\d+)?)-([a-z]+)(?=-|$)/, "claude-$2-$1"),
+        );
+    return name === slug ? slug : { slug, name };
+  });
   const provider = `model_providers.t3proxy={name="T3 inference",base_url="${baseUrl}/v1",env_key="T3_INFERENCE_KEY",wire_api="responses",supports_websockets=false,requires_openai_auth=false}`;
   return {
     driver: ProviderDriverKind.make(driver),
@@ -50,7 +62,7 @@ export function routeProvider(
     enabled: true,
     config: {
       setupMode: "inference",
-      customModels: models,
+      customModels,
       homePath,
       ...(codex ? { launchArgs: `-c 'model_provider="t3proxy"' -c '${provider}'` } : {}),
     },
