@@ -6,6 +6,8 @@ import {
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpTaskCancelResult,
   type OrchestratorMcpThreadRun,
+  type OrchestratorMcpThreadSendInput,
+  type OrchestratorMcpThreadSendResult,
   type OrchestratorMcpThreadTimelineItem,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
@@ -33,8 +35,9 @@ import { withExecutedModelNote } from "@t3tools/provider-core/server/subagentPro
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import { requestIdentity } from "../mcp/requestIdentity.ts";
-import { readCaller } from "../mcp/threadAccess.ts";
+import { readCaller, unavailable } from "../mcp/threadAccess.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
+import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import {
   resolveInteractionMode,
   resolveRuntimeMode,
@@ -85,6 +88,10 @@ export class RemoteDelegation extends Context.Service<
         };
       },
     ) => Effect.Effect<{ readonly taskId: NodeId }, OrchestratorMcpFailure>;
+    readonly sendToThread: (
+      scope: McpInvocationContext.McpInvocationScope,
+      input: OrchestratorMcpThreadSendInput & { readonly environmentId: EnvironmentId },
+    ) => Effect.Effect<OrchestratorMcpThreadSendResult, OrchestratorMcpFailure>;
     /**
      * Stops the task's thread there, then completes it here as cancelled. A
      * task that already has its result keeps it; its thread there is still
@@ -612,7 +619,7 @@ const make = Effect.gen(function* () {
         ((task.status === "cancelled" || task.status === "interrupted") &&
           remote.stoppedThere !== true)
       ) {
-        const key = remote.stopCount === undefined ? "stop" : `stop-${remote.stopCount}`;
+        const key = `${task.id}:${remote.stopCount === undefined ? "stop" : `stop-${remote.stopCount}`}`;
         yield* stopThere(scope, remote, key).pipe(
           // Its thread there now runs above what this side may touch, say
           // because the parent here was lowered since; no retry changes that.
@@ -831,7 +838,137 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.ignoreCause({ log: true })),
     );
 
-  return RemoteDelegation.of({ delegate, cancel, start });
+  const sendToThread: RemoteDelegation["Service"]["sendToThread"] = Effect.fn(
+    "RemoteDelegation.sendToThread",
+  )(function* (scope, input) {
+    const caller = scope.thread;
+    const filter = {
+      subagentRemoteThread: { environmentId: input.environmentId, threadId: input.threadId },
+      runStatuses: ["preparing", "queued", "starting", "running", "waiting"] as const,
+    };
+    const parent =
+      caller === undefined
+        ? undefined
+        : yield* threads.getThreadRecords(caller.threadId, ["runs", "subagents"], filter).pipe(
+            Effect.mapError(
+              () =>
+                new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: "Unable to read the calling thread's delegated tasks.",
+                }),
+            ),
+          );
+    const original = parent?.subagents.find((task) => task.origin === "app_owned");
+    const remote = original?.remoteChild;
+    if (remote === undefined || caller === undefined || parent === undefined) {
+      return yield* forwarding.call(
+        scope,
+        OrchestratorToolkit.tools.t3_thread_send,
+        input.environmentId,
+        input,
+      );
+    }
+    const key = input.clientRequestId ?? (yield* random.uuidV4());
+    const commandId = CommandId.make(
+      `command:mcp:remote-followup:${yield* requestIdentity(scope, "remote-followup", key).pipe(
+        Effect.provideService(Digest.Digest, crypto),
+      )}`,
+    );
+    return yield* launchLocks.withLock(
+      commandId,
+      Effect.gen(function* () {
+        const owner = parent.runs
+          .filter(ThreadManagement.isActiveRun)
+          .toSorted((left, right) => right.ordinal - left.ordinal)[0];
+        if (owner?.rootNodeId == null || owner.providerInstanceId !== caller.providerInstanceId) {
+          return yield* new OrchestratorMcpFailure({
+            code: "parent_not_active",
+            message:
+              "Delegated follow-ups require an active run owned by this MCP provider session.",
+          });
+        }
+        const taskId = IdAllocator.derive.delegatedTaskNode({ commandId });
+        const recorded = yield* readTask(parent.thread.id, taskId).pipe(
+          Effect.mapError(unavailable),
+        );
+        if (
+          recorded.task !== undefined &&
+          (recorded.task.remoteChild?.environmentId !== input.environmentId ||
+            recorded.task.remoteChild.threadId !== input.threadId)
+        ) {
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "This clientRequestId already belongs to another delegated follow-up.",
+          });
+        }
+        const sent = yield* forwarding.call(
+          scope,
+          OrchestratorToolkit.tools.t3_thread_send,
+          input.environmentId,
+          {
+            ...input,
+            clientRequestId: key,
+          },
+        );
+        const existing = parent.subagents.find(
+          (task) =>
+            task.result === null &&
+            task.remoteChild?.environmentId === input.environmentId &&
+            task.remoteChild.threadId === input.threadId &&
+            task.remoteChild.runId === sent.runId,
+        );
+        const tracked = recorded.task ?? existing;
+        if (tracked !== undefined) {
+          yield* followOne(parent.thread.id, tracked.id).pipe(Effect.forkIn(followers));
+          return { ...sent, taskId: tracked.id };
+        }
+        if (sent.delivery === "steered") return sent;
+        const target = yield* forwarding.readThread(scope, input.environmentId, {
+          threadId: input.threadId,
+          limit: 1,
+          maxCharsPerItem: 1,
+          runLimit: 1,
+        });
+        yield* threads
+          .dispatch({
+            type: "delegated_task.remote.request",
+            commandId,
+            parentThreadId: parent.thread.id,
+            parentRunId: owner.id,
+            parentNodeId: owner.rootNodeId,
+            task: input.message,
+            title: target.thread.title,
+            driver: ProviderDriverKind.make("remote"),
+            modelSelection: {
+              instanceId: target.thread.providerInstanceId,
+              model: target.thread.model,
+            },
+            remoteChild: {
+              environmentId: input.environmentId,
+              threadId: input.threadId,
+              label: remote.label,
+              title: target.thread.title,
+              runId: sent.runId,
+            },
+            completionWake: "always",
+          })
+          .pipe(
+            Effect.mapError(
+              () =>
+                new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message:
+                    "The message was sent, but its delegated follow-up could not be recorded. Retry with the same clientRequestId.",
+                }),
+            ),
+          );
+        yield* followOne(parent.thread.id, taskId).pipe(Effect.forkIn(followers));
+        return { ...sent, taskId };
+      }),
+    );
+  });
+
+  return RemoteDelegation.of({ delegate, sendToThread, cancel, start });
 });
 
 const isTerminal = (status: string) =>

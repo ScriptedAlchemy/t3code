@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/ScriptedAlchemy/pstack-t3code",
-  "commit": "edad65c05f9be17d2b9c247edfb48a584fdf7e32",
-  "subtreeHash": "f4a44a39c4d484d480550afc5cca0c105528e4d2",
+  "commit": "e13d322266d5ef4d42c5c66293f11ca011a0525d",
+  "subtreeHash": "c9445a53d36f15761a2ec6cb4bbefae132b01bdb",
   "version": "0.15.36-t3code.1",
   "files": {
     ".gitignore": {
@@ -13,11 +13,11 @@
       "executable": false
     },
     "README.md": {
-      "sha256": "ab2e291e13f7a230275847fd396ffce8d8d2a443a6ec2b81bd21174e326ec62f",
+      "sha256": "50b6d8b4701c208bb2b7a1ba8a701b773b598df691465fe2075f8a82976c4805",
       "executable": false
     },
     "UPSTREAM.json": {
-      "sha256": "a649da22552d5e73bc198d3477e766f1f15849090964068b11f7b25b404fa1c7",
+      "sha256": "6dc27a1a84d76bc68501aadb92e265a1a1e3e22a7c5861fab9097cccc6c163f7",
       "executable": false
     },
     "agents/comment-sicko.md": {
@@ -401,7 +401,7 @@
       "executable": false
     },
     "skills/poteto-mode/scripts/bun.lock": {
-      "sha256": "2a3673d3946886c74c530f023d969a50e554be04c3732ff077cb05f0ed5bcaaa",
+      "sha256": "05f45630ca3b3ae829b979649b2e93969401d7e5b762f130cae76e6775cdcf46",
       "executable": false
     },
     "skills/poteto-mode/scripts/check-plan.mjs": {
@@ -417,7 +417,7 @@
       "executable": false
     },
     "skills/poteto-mode/scripts/package.json": {
-      "sha256": "5ca458c2e30023b8893f114ebdf2d6a0b967149e1205ad859450fae170518a33",
+      "sha256": "b0fb6379a32461310dabc87019933dbdb7f311babc4379376b8beba7b94b0b13",
       "executable": false
     },
     "skills/poteto-mode/scripts/watch-pr/cli.test.ts": {
