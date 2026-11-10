@@ -23,6 +23,7 @@ import {
   handoffBudget,
   historyCost,
   historyResponseItems,
+  latestNativeContextUsage,
   nativeContextHistory,
   selectHistory,
   historicalMessage,
@@ -96,6 +97,53 @@ const handoff: OrchestrationV2ContextHandoff = {
 };
 
 describe("handoff budget", () => {
+  it("measures a native conversation by the turns still in it", () => {
+    const report = (ordinal: number, usedTokens: number, nativeThreadId: string) => ({
+      run: {
+        id: `run:${ordinal}`,
+        status: ordinal === 3 ? "rolled_back" : "completed",
+        modelSelection: { instanceId: "codex", model: "gpt" },
+      },
+      attempt: {
+        id: `attempt:${ordinal}`,
+        runId: `run:${ordinal}`,
+        providerThreadId: providerThread.id,
+        nativeThreadId,
+        rootNodeId: `node:${ordinal}`,
+      },
+      turn: {
+        providerThreadId: providerThread.id,
+        runAttemptId: `attempt:${ordinal}`,
+        nodeId: `node:${ordinal}`,
+        tokenUsage: { usedTokens, updatedAt: `2026-09-17T00:0${ordinal}:00Z` },
+      },
+    });
+    const reports = [
+      report(1, 20_000, "native:target"),
+      report(2, 80_000, "native:target"),
+      // Rolled back: the conversation no longer holds this turn.
+      report(3, 190_000, "native:target"),
+      report(4, 300_000, "native:replaced"),
+    ];
+    const projection = {
+      runs: reports.map(({ run }) => run),
+      attempts: reports.map(({ attempt }) => attempt),
+      providerTurns: reports.map(({ turn }) => turn),
+    } as unknown as Parameters<typeof latestNativeContextUsage>[0];
+    const measured = latestNativeContextUsage(projection, providerThread);
+    assert.deepEqual(
+      { used: measured?.usage.usedTokens, first: measured?.firstUsedTokens },
+      { used: 80_000, first: 20_000 },
+    );
+    // A fresh conversation with no report yet is unmeasured, so it cannot restart again.
+    assert.isUndefined(
+      latestNativeContextUsage(projection, {
+        ...providerThread,
+        nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId: "native:fresh" },
+      }),
+    );
+  });
+
   it("keeps old preview handoffs readable and delivery history off the wire", () => {
     const projected = projectContextHandoffForWire({
       ...handoff,
