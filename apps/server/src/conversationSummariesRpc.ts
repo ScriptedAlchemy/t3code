@@ -15,7 +15,11 @@ import * as Effect from "effect/Effect";
 
 import type * as ConversationSummaries from "./project/conversationSummaries/ConversationSummaries.ts";
 
-type SourceFormatInput<Input> = Input & { readonly sourceFormat?: 2 };
+type SourceFormatInput<Input> = Input & { readonly sourceFormat?: 2 | 3 };
+
+// Format 2 decodes ranges and tool evidence, but not a summary whose sources are summaries.
+const condensedRead = (read: ConversationSummaryRead): boolean =>
+  read.state === "available" && read.summary.sources.some((source) => source.kind === "summary");
 
 const legacySource = (source: ConversationSummarySourceRef): boolean =>
   source.kind === "message" && source.range === undefined;
@@ -74,7 +78,7 @@ const upgradeRequired = (projectId: ProjectId) =>
     reason: "storage",
     projectId,
     cause: new Error(
-      "Update this T3 Code client to read ranged summaries, tool evidence and bounded source pages.",
+      "Update this T3 Code client to read ranged summaries, tool evidence, bounded source pages and summaries of summaries.",
     ),
   });
 
@@ -91,14 +95,22 @@ export function conversationSummariesRpcHandlers(
       ...input
     }: SourceFormatInput<ConversationSummaryListInput>) {
       const result = yield* summaries.list(input);
-      if (sourceFormat !== 2 && !result.summaries.every(legacyRead))
+      if (
+        sourceFormat === undefined
+          ? !result.summaries.every(legacyRead)
+          : sourceFormat === 2 && result.summaries.some(condensedRead)
+      )
         return yield* upgradeRequired(input.projectId);
       return result;
     }),
     [WS_METHODS.conversationSummariesDescribe]: Effect.fn("ConversationSummariesRpc.describe")(
       function* ({ sourceFormat, ...input }: SourceFormatInput<ConversationSummaryDescribeInput>) {
         const result = yield* summaries.describe(input);
-        if (sourceFormat !== 2 && !legacyRead(result))
+        if (
+          sourceFormat === undefined
+            ? !legacyRead(result)
+            : sourceFormat === 2 && condensedRead(result)
+        )
           return yield* upgradeRequired(input.projectId);
         return result;
       },
@@ -106,14 +118,20 @@ export function conversationSummariesRpcHandlers(
     [WS_METHODS.conversationSummariesExpand]: Effect.fn("ConversationSummariesRpc.expand")(
       function* ({ sourceFormat, ...input }: SourceFormatInput<ConversationSummaryExpandInput>) {
         const result = yield* summaries.expand(
-          sourceFormat === 2
+          sourceFormat !== undefined
             ? input
             : {
                 ...input,
                 maxChars: input.maxChars ?? CONVERSATION_SUMMARY_MAX_EXPANSION_CHARS,
               },
         );
-        if (sourceFormat !== 2 && !legacyExpansion(input, result))
+        if (
+          sourceFormat === undefined
+            ? !legacyExpansion(input, result)
+            : sourceFormat === 2 &&
+              (condensedRead(result.summary) ||
+                result.sources.some(({ ref }) => ref.kind === "summary"))
+        )
           return yield* upgradeRequired(input.projectId);
         return result;
       },

@@ -2310,10 +2310,11 @@ export const WsProjectKnowledgeRpcGroup = RpcGroup.make(
   WsProjectKnowledgeStatusRpc,
 ).middleware(RpcScopeAuthorization);
 
-// Transport opt-in: old protocol-2 clients cannot decode tool/range sources or follow
-// intra-source text cursors. MCP and the domain service always use the current format.
+// Transport opt-in: older clients cannot decode tool/range sources or follow intra-source text
+// cursors (before 2), or summary sources (before 3). MCP and the domain service always use the
+// current format.
 const ConversationSummaryRpcSourceFormat = {
-  sourceFormat: Schema.optionalKey(Schema.Literal(2)),
+  sourceFormat: Schema.optionalKey(Schema.Literals([2, 3])),
 };
 
 export const WsExternalHistoryRpcGroup = RpcGroup.make(

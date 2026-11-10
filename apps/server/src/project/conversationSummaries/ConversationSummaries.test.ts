@@ -71,6 +71,7 @@ import * as HolographicMemory from "../knowledge/HolographicMemory.ts";
 import * as ProjectKnowledge from "../knowledge/ProjectKnowledge.ts";
 import { deliveredKnowledgeForHistory } from "../knowledge/composer.ts";
 import * as ConversationSummaries from "./ConversationSummaries.ts";
+import { leafPosition } from "./conversationSummaryTree.ts";
 import {
   ConversationSummaryPassError,
   conversationSummaryEffects,
@@ -175,6 +176,19 @@ const citing = () =>
       ],
     }),
   );
+
+// Replies as long as the statement contract allows, so byte budgets meet their worst case.
+const verbose = () =>
+  scripted((input) =>
+    Effect.succeed({
+      statements: Array.from({ length: 8 }, (_, index) => ({
+        text: `Statement ${index} about ${input.messages.length} sources. ${"Said and done. ".repeat(38)}`,
+        citations: [input.messages[index % input.messages.length]!.ref],
+      })),
+    }),
+  );
+const isRollup = (call: Parameters<Generate>[0]) =>
+  call.messages.some((message) => message.role === "summary");
 
 const makeLayer = (generate: Generate, settings: Parameters<typeof ServerSettings.layerTest>[0]) =>
   Layer.merge(ConversationSummaries.layer, ContextHandoffService.layer).pipe(
@@ -367,10 +381,10 @@ const persistSummary = Effect.fn("test.persistSummary")(function* (
   const payloadJson = yield* encodeSummary(summary);
   yield* sql`
     INSERT INTO conversation_summaries (
-      summary_id, project_id, thread_id, first_source_at, created_at, payload_json
+      summary_id, project_id, thread_id, position, created_at, payload_json
     ) VALUES (
       ${summary.id}, ${projectId}, ${threadId},
-      ${DateTime.formatIso(DateTime.add(at, { minutes: sourceIndexes[0]! }))},
+      ${leafPosition(DateTime.formatIso(DateTime.add(at, { minutes: sourceIndexes[0]! })), sources[0]!)},
       ${summary.createdAt}, ${payloadJson}
     )
   `;
@@ -525,7 +539,9 @@ it.effect("negotiates ranged summary responses while preserving legacy whole-mes
     assert.equal(modern.summary.state, "available");
     assert.equal(modern.nextOffset, 0);
     assert.equal(modern.nextTextOffset, 257);
-    assert.isTrue(modern.sources.some((source) => source.ref.range !== undefined));
+    assert.isTrue(
+      modern.sources.some(({ ref }) => ref.kind !== "summary" && ref.range !== undefined),
+    );
     assert.equal(
       (yield* rpc[WS_METHODS.conversationSummariesList]({ ...scope, sourceFormat: 2 })).summaries
         .length,
@@ -650,6 +666,7 @@ it.effect(
       assert.isFalse(hasMore);
       const ordinary = new Set(Array.from({ length: MESSAGE_COUNT }, (_, index) => rawText(index)));
       const supplied = model.calls
+        .filter((call) => !isRollup(call))
         .flatMap((call) => call.messages)
         .filter((message) => !ordinary.has(message.text));
       assert.equal(supplied.map((message) => message.text).join(""), longText);
@@ -664,8 +681,14 @@ it.effect(
       const summaries = (yield* list).summaries.flatMap((read) =>
         read.state === "available" ? [read.summary] : [],
       );
-      assert.isAbove(summaries.length, 3);
-      const starts = summaries.map((summary) => summary.sources[0]!.range?.start ?? 0);
+      const leaves = summaries.filter((summary) =>
+        summary.sources.every((source) => source.kind !== "summary"),
+      );
+      assert.isAbove(leaves.length, 3);
+      const starts = leaves.map((summary) => {
+        const first = summary.sources[0]!;
+        return first.kind === "summary" ? 0 : (first.range?.start ?? 0);
+      });
       assert.deepEqual(
         starts,
         starts.toSorted((a, b) => a - b),
@@ -700,10 +723,6 @@ it.effect(
       );
       const offers = yield* service.forHandoff(input);
       assert.equal(offers.length, 1);
-      assert.deepEqual(
-        offers[0]!.summaryIds ?? [],
-        summaries.map((summary) => summary.id),
-      );
       assert.sameMembers([...offers[0]!.coveredItemIds], [...input.itemIds]);
     }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
   },
@@ -768,7 +787,9 @@ it.effect("regenerates legacy prefix summaries while keeping their full source r
     yield* summarize;
     const replacement = yield* onlySummary;
     assert.notEqual(replacement.id, legacy.id);
-    assert.isTrue(replacement.sources.some((source) => source.range !== undefined));
+    assert.isTrue(
+      replacement.sources.some((source) => source.kind !== "summary" && source.range !== undefined),
+    );
     assert.include(
       model.calls
         .at(-1)
@@ -1093,9 +1114,10 @@ it.effect("continues coverage and handoff lookup beyond the first 500 summaries"
 
     yield* summarize;
     yield* summarize;
-    assert.equal(model.calls.length, 1);
-    assert.equal(model.calls[0]!.messages[0]!.text, rawText(coveredMessages));
-    assert.deepInclude((yield* list).lastPass, { generated: 0, waitingMessages: 0 });
+    const leafCalls = model.calls.filter((call) => !isRollup(call));
+    assert.equal(leafCalls.length, 1);
+    assert.equal(leafCalls[0]!.messages[0]!.text, rawText(coveredMessages));
+    assert.deepInclude((yield* list).lastPass, { waitingMessages: 0 });
 
     const service = yield* ConversationSummaries.ConversationSummaries;
     const sql = yield* SqlClient.SqlClient;
@@ -1152,19 +1174,6 @@ it.effect("offers the summaries nearest the present first, within the candidate 
     assert.deepEqual(offered.at(-1)!.coveredItemIds, [itemId(10), itemId(11)]);
   }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
 });
-
-// Replies as long as the statement contract allows, so byte budgets meet their worst case.
-const verbose = () =>
-  scripted((input) =>
-    Effect.succeed({
-      statements: Array.from({ length: 8 }, (_, index) => ({
-        text: `Statement ${index} about ${input.messages.length} sources. ${"Said and done. ".repeat(38)}`,
-        citations: [input.messages[index % input.messages.length]!.ref],
-      })),
-    }),
-  );
-const isRollup = (call: Parameters<Generate>[0]) =>
-  call.messages.some((message) => message.role === "summary");
 
 it.effect("hands off almost all omitted history of a 600-item thread as summaries", () => {
   const model = verbose();
@@ -1230,6 +1239,100 @@ it.effect("hands off almost all omitted history of a 600-item thread as summarie
         rawText(index),
         "the six newest messages arrive word for word",
       );
+  }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
+});
+
+it.effect("rebuilds only the broken path of a roll-up and expands it to the exact text", () => {
+  const model = citing();
+  return Effect.gen(function* () {
+    // Sixteen two-message leaves roll up into four parents and one grandparent.
+    yield* seedThread(38);
+    for (let index = 0; index < 16; index++)
+      yield* persistSummary(index, [index * 2, index * 2 + 1]);
+    const settle = Effect.gen(function* () {
+      for (let pass = 0, hasMore = true; hasMore; pass++) {
+        assert.isBelow(pass, 10);
+        hasMore = (yield* summarize).hasMore;
+      }
+    });
+    yield* settle;
+    assert.equal(model.calls.length, 5);
+    const service = yield* ConversationSummaries.ConversationSummaries;
+    const available = (yield* list).summaries.flatMap((read) =>
+      read.state === "available" ? [read.summary] : [],
+    );
+    const condensed = available.filter((summary) => summary.sources[0]!.kind === "summary");
+    const [root, ...parents] = condensed;
+    assert.equal(parents.length, 4);
+    assert.deepEqual(
+      root!.sources.map((source) => (source.kind === "summary" ? source.summaryId : null)),
+      parents.map((summary) => summary.id),
+    );
+
+    // Each hop follows the first citation down to a message.
+    let hop: ConversationSummary = root!;
+    for (let depth = 0; depth < 2; depth++) {
+      const page = yield* service.expand({ ...scope, summaryId: hop.id });
+      const cited = page.sources.findIndex(
+        ({ ref }) => conversationSummarySourceKey(ref) === hop.statements[0]!.citations[0],
+      );
+      const { ref, result } = page.sources[cited]!;
+      assert.equal(result.state === "available" ? result.role : null, "summary");
+      if (ref.kind !== "summary") throw new Error("Expected a summary source");
+      const child = yield* service.describe({ ...scope, summaryId: ref.summaryId });
+      if (child.state !== "available") throw new Error("Expected a current child");
+      assert.include(
+        result.state === "available" ? result.text : "",
+        child.summary.statements[0]!.text,
+      );
+      hop = child.summary;
+    }
+    const exact = yield* service.expand({ ...scope, summaryId: hop.id, limit: 1 });
+    assert.equal(
+      exact.sources[0]!.result.state === "available" ? exact.sources[0]!.result.text : null,
+      rawText(0),
+    );
+
+    const rpc = conversationSummariesRpcHandlers(service);
+    const describeRoot = { ...scope, summaryId: root!.id };
+    assertLegacyUpgradeError(
+      yield* rpc[WS_METHODS.conversationSummariesDescribe]({
+        ...describeRoot,
+        sourceFormat: 2,
+      }).pipe(Effect.flip),
+    );
+    assert.equal(
+      (yield* rpc[WS_METHODS.conversationSummariesDescribe]({ ...describeRoot, sourceFormat: 3 }))
+        .state,
+      "available",
+    );
+
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* projections.apply(messageEvent(0, "Edited request"));
+    const state = (summaryId: string) =>
+      service.describe({ ...scope, summaryId }).pipe(Effect.map((read) => read.state));
+    assert.equal(yield* state(root!.id), "stale");
+    assert.equal(yield* state(parents[0]!.id), "stale");
+    assert.equal(yield* state(parents[1]!.id), "available");
+    const handoff = yield* prepareHandoff(38);
+    const offered = yield* service.forHandoff({
+      projectId,
+      handoffs: [handoff],
+      itemIds: new Set(Array.from({ length: 32 }, (_, index) => itemId(index))),
+    });
+    const offeredText = offered.map((offer) => offer.text).join("\n");
+    assert.notInclude(offeredText, root!.id);
+    assert.notInclude(offeredText, parents[0]!.id);
+    assert.include(offeredText, parents[1]!.id);
+
+    yield* settle;
+    assert.equal(model.calls.length, 8, "one leaf and one roll-up per broken level");
+    const after = (yield* list).summaries;
+    for (const kept of parents.slice(1))
+      assert.isTrue(
+        after.some((read) => read.state === "available" && read.summary.id === kept.id),
+      );
+    assert.isFalse(after.some((read) => read.state !== "available"));
   }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
 });
 
@@ -1636,7 +1739,7 @@ it.effect(
         yield* sql`
         INSERT INTO conversation_summaries
         SELECT ${"summary:" + index.toString(16).padStart(64, "0")}, project_id, thread_id,
-          first_source_at, created_at, payload_json
+          position, created_at, payload_json
         FROM conversation_summaries WHERE summary_id = ${original.id}
       `;
       }

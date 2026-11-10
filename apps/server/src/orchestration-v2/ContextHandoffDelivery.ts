@@ -54,8 +54,9 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       messages: ReadonlyArray<OrchestrationV2HistoricalMessage>,
     ) => Effect.Effect<ReadonlyMap<string, string>, EvidenceError>;
     /**
-     * Current conversation summaries that cover some of `itemIds`, nearest the present first. One
-     * may take the place of the history items it covers when the budget omits history.
+     * Current conversation summaries that cover some of `itemIds`, nearest the present first,
+     * none overlapping another. One may take the place of the history items it covers when the
+     * budget omits history.
      */
     readonly summaries?: (
       itemIds: ReadonlySet<string>,
@@ -142,7 +143,14 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
           (id) => !pinned.has(id) && !input.alreadyDeliveredItemIds.has(id),
         ),
       );
-      for (const candidate of yield* input.summaries(eligible)) {
+      // Most covered items per byte first, so coarse summaries of old history come before the
+      // finer ones next to the tail. Ties keep the offered order, nearest the present first.
+      const offers = (yield* input.summaries(eligible)).toSorted(
+        (a, b) =>
+          b.coveredItemIds.length / Buffer.byteLength(b.text) -
+          a.coveredItemIds.length / Buffer.byteLength(a.text),
+      );
+      for (const candidate of offers) {
         if (candidate.coveredItemIds.some((id) => summarized.has(id) || !eligible.has(id)))
           continue;
         const proposed = new Set([...summarized, ...candidate.coveredItemIds]);

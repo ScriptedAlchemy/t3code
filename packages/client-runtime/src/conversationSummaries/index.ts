@@ -23,9 +23,9 @@ export function createConversationSummariesAtoms<R, E>(
   });
   return {
     list: (target: Parameters<typeof list>[0]) =>
-      list({ ...target, input: { ...target.input, sourceFormat: 2 } }),
+      list({ ...target, input: { ...target.input, sourceFormat: 3 } }),
     expand: (target: Parameters<typeof expand>[0]) =>
-      expand({ ...target, input: { ...target.input, sourceFormat: 2 } }),
+      expand({ ...target, input: { ...target.input, sourceFormat: 3 } }),
   };
 }
 
@@ -56,9 +56,10 @@ export function conversationSummarySourceRangeLabel(
   if (result.state !== "available" || result.text.length === 0) return null;
   const textOffset = result.textOffset ?? 0;
   const totalChars = result.totalChars ?? result.text.length;
-  if (ref.range === undefined && textOffset === 0 && totalChars === result.text.length) return null;
-  const start = (ref.range?.start ?? 0) + textOffset;
+  const range = ref.kind === "summary" ? undefined : ref.range;
+  if (range === undefined && textOffset === 0 && totalChars === result.text.length) return null;
+  const start = (range?.start ?? 0) + textOffset;
   const end = start + result.text.length;
-  const total = ref.range?.total ?? totalChars;
+  const total = range?.total ?? totalChars;
   return `Characters ${(start + 1).toLocaleString()}–${end.toLocaleString()} of ${total.toLocaleString()}`;
 }
