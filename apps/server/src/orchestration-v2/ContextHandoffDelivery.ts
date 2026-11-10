@@ -70,7 +70,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         handoff.delivery.status === "pending",
     );
     if (pending.length === 0 || (input.deferInline && input.inject === undefined))
-      return { context: "", delivered: Effect.void, unsent: Effect.void };
+      return { context: "", delivered: Effect.void, unsent: Effect.void, omittedItemIds: [] };
     const budget = typeof input.budget === "number" ? input.budget : yield* input.budget;
     let coverage = pending
       .map(
@@ -180,10 +180,19 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     }
     const estimatedTokens = historyCost(selected.messages, selected.context);
     if (estimatedTokens > budget) {
-      if (input.deferInline) return { context: "", delivered: Effect.void, unsent: Effect.void };
+      if (input.deferInline)
+        return { context: "", delivered: Effect.void, unsent: Effect.void, omittedItemIds: [] };
       return yield* new ContextHandoffBudgetError();
     }
     const omittedItemIds = new Set(selected.omittedItemIds);
+    // Items that arrive neither verbatim nor beneath a delivered summary. Deferred history leaves
+    // nothing out: it waits for a later turn.
+    const leftOut = [
+      ...pending
+        .flatMap((handoff) => handoff.history?.omittedItemIds ?? [])
+        .filter((id) => !summarized.has(id)),
+      ...omittedItemIds,
+    ];
     const summaryDelivery = (handoff: OrchestrationV2ContextHandoff) => {
       const own = new Set<string>([
         ...(handoff.history?.omittedItemIds ?? []),
@@ -249,7 +258,12 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       });
       if (injected) {
         yield* persist("injected");
-        return { context: "", delivered: Effect.void, unsent: Effect.void };
+        return {
+          context: "",
+          delivered: Effect.void,
+          unsent: Effect.void,
+          omittedItemIds: leftOut,
+        };
       }
     } else {
       yield* persist("pending");
@@ -257,9 +271,10 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     if (input.deferInline) {
       // Compaction cannot carry inline transcripts; retain for the next turn if native injection is unsupported.
       yield* Effect.forEach(pending, input.persist, { discard: true });
-      return { context: "", delivered: Effect.void, unsent: Effect.void };
+      return { context: "", delivered: Effect.void, unsent: Effect.void, omittedItemIds: [] };
     }
     return {
+      omittedItemIds: leftOut,
       context: renderHistory(selected.messages, selected.context),
       delivered: persist("inline"),
       unsent: Effect.forEach(pending, input.persist, { discard: true }),

@@ -10,6 +10,7 @@ import {
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
+  type OrchestrationV2ContextRestart,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
@@ -56,7 +57,10 @@ import {
   historicalMessage,
   latestNativeContextUsage,
   nativeContextHistory,
+  REPLACEMENT_HANDOFF_TOKEN_CAP,
 } from "@t3tools/provider-core/server/handoffBudget";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { contextRestartDue, contextRestartRefusal } from "./ContextRestart.ts";
 import { deliverContextHandoffs, withInlineContext } from "./ContextHandoffDelivery.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -209,6 +213,7 @@ export const layer: Layer.Layer<
     const projects = yield* ProjectService.ProjectService;
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
     const conversationSummaries = yield* ConversationSummaryRuntime;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -956,7 +961,10 @@ export const layer: Layer.Layer<
       const tokenCap = yield* handoffTokenCapConfig.pipe(
         Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
       );
-      const handoffContextForThread = (loadedProviderThread: OrchestrationV2ProviderThread) => {
+      const handoffContextForThread = (
+        loadedProviderThread: OrchestrationV2ProviderThread,
+        cap = tokenCap,
+      ) => {
         const measuredContext = latestNativeContextUsage(projection, providerThread);
         const previousSelection =
           measuredContext?.modelSelection ??
@@ -1053,7 +1061,7 @@ export const layer: Layer.Layer<
           missedRunIds,
           budget: Effect.gen(function* () {
             return handoffBudget({
-              tokenCap,
+              tokenCap: cap,
               modelContextWindow,
               userText: turnNotes === "" ? userText : `${turnNotes}\n\n${userText}`,
               attachments: message.attachments,
@@ -1066,6 +1074,40 @@ export const layer: Layer.Layer<
           }),
         };
       };
+      const summariesFor =
+        (handoffs: ReadonlyArray<OrchestrationV2ContextHandoff>, replaysEarlierRuns: boolean) =>
+        (itemIds: ReadonlySet<string>) =>
+          conversationSummaries.forHandoff({
+            projectId: projection.thread.projectId,
+            handoffs,
+            itemIds,
+            // A recovery replays every earlier run of this thread onto a fresh native
+            // conversation, but reads its history without MCP tool results.
+            ...(replaysEarlierRuns && run.ordinal > 1
+              ? { replayed: { threadId: projection.thread.id, from: 1, to: run.ordinal - 1 } }
+              : {}),
+          });
+      /** The context restart this turn is large enough for, or undefined. */
+      const dueContextRestart = Effect.gen(function* () {
+        const settings = yield* serverSettings.getSettings.pipe(
+          Effect.map(
+            (current) => resolveProjectSettings(current, projection.thread.projectId).settings,
+          ),
+          Effect.orElseSucceed(() => undefined),
+        );
+        if (settings === undefined) return undefined;
+        const measured = latestNativeContextUsage(projection, providerThread);
+        const due = contextRestartDue({
+          aboveTokens: settings.contextRestartAboveTokens,
+          summariesEnabled: settings.enableConversationSummaries,
+          driver: session.driver,
+          usage: measured && {
+            usedTokens: measured.usage.usedTokens,
+            firstUsedTokens: measured.firstUsedTokens,
+          },
+        });
+        return typeof due === "string" ? undefined : due;
+      });
       const prepareRetryHandoff = Effect.fn("ProviderTurnStartService.prepareRetryHandoff")(
         function* (context: ReturnType<typeof handoffContextForThread>) {
           const { missedRunIds, coveredItemIds, missedRuns } = context;
@@ -1124,6 +1166,7 @@ export const layer: Layer.Layer<
             toProviderInstanceId: run.providerInstanceId,
             coveredRunOrdinals: { from: 1, to: Math.max(1, run.ordinal - 1) },
             strategy: "full_thread_summary",
+            tokenCap: REPLACEMENT_HANDOFF_TOKEN_CAP,
             runs: projection.runs,
             items: (yield* projectionStore.getTurnStartHistory(input.threadId)).filter(
               (item) =>
@@ -1151,6 +1194,7 @@ export const layer: Layer.Layer<
       let resumedRetryHandoff: ReadonlyArray<OrchestrationV2ContextHandoff> | undefined;
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
+      let contextRestart: OrchestrationV2ContextRestart | undefined;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadRecords(
@@ -1358,21 +1402,23 @@ export const layer: Layer.Layer<
             Effect.as(true),
             Effect.catchTags({ ContextHandoffBudgetError: () => Effect.succeed(false) }),
           );
-          if (fits) return resumed.success;
+          const restartDue = fits ? yield* dueContextRestart : undefined;
+          if (fits && restartDue === undefined) return resumed.success;
           const freshThread = { ...resumed.success, nativeThreadRef: null };
-          const freshContext = handoffContextForThread(freshThread);
+          const freshContext = handoffContextForThread(freshThread, REPLACEMENT_HANDOFF_TOKEN_CAP);
           const { handoff } = yield* recoveryHandoff;
-          const fitsFresh = yield* deliverContextHandoffs({
+          const freshDelivery = yield* deliverContextHandoffs({
             handoffs: withRecoveryHandoff(handoff),
             providerThread: freshThread,
             budget: freshContext.budget,
             alreadyDeliveredItemIds: freshContext.deliveredItemIds,
+            summaries: summariesFor(withRecoveryHandoff(handoff), true),
             persist: () => Effect.void,
           }).pipe(
-            Effect.as(true),
-            Effect.catchTags({ ContextHandoffBudgetError: () => Effect.succeed(false) }),
+            Effect.asSome,
+            Effect.catchTags({ ContextHandoffBudgetError: () => Effect.succeedNone }),
           );
-          if (!fitsFresh) return resumed.success;
+          if (Option.isNone(freshDelivery)) return resumed.success;
           const hasPendingWork = yield* (
             session.hasPendingBackgroundWorkForThread?.(resumed.success, {
               includeSubagents: true,
@@ -1380,7 +1426,29 @@ export const layer: Layer.Layer<
               session.hasPendingBackgroundWork ??
               Effect.succeed(false)
           );
-          if (hasPendingWork) {
+          if (restartDue !== undefined) {
+            const refusal = contextRestartRefusal({
+              controlMessage:
+                isNativeMaintenanceCommand(message) || parseGoalCommand(message) !== null,
+              restartContinuation:
+                run.restartContinuationOfRunId !== undefined || restartNote !== "",
+              groupDiscussion: projection.thread.group?.discussion != null,
+              summaryPassPending: yield* conversationSummaries.hasPendingPass({
+                threadId: projection.thread.id,
+              }),
+              pendingBackgroundWork: hasPendingWork,
+              uncoveredItems: freshDelivery.value.omittedItemIds.length,
+            });
+            if (refusal !== null) {
+              yield* Effect.logDebug("Continuing a large provider conversation", {
+                providerThreadId: providerThread.id,
+                runId,
+                refusal,
+              });
+              return resumed.success;
+            }
+            contextRestart = restartDue;
+          } else if (hasPendingWork) {
             return yield* loadFromProvider(
               Effect.fail(
                 new ProviderAdapter.ProviderAdapterTurnStartError({
@@ -1412,9 +1480,11 @@ export const layer: Layer.Layer<
           runId,
           reason: uncertainDelivery
             ? "uncertain_history_delivery"
-            : resumed._tag === "Success"
-              ? "handoff_budget_exhausted"
-              : "resume_failed",
+            : contextRestart !== undefined
+              ? "context_restart"
+              : resumed._tag === "Success"
+                ? "handoff_budget_exhausted"
+                : "resume_failed",
           errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
         });
         const replacement = yield* loadFromProvider(
@@ -1470,6 +1540,48 @@ export const layer: Layer.Layer<
                 consumedAt: null,
               },
             },
+            ...(contextRestart === undefined
+              ? []
+              : [
+                  {
+                    id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                    type: "turn-item.updated" as const,
+                    threadId: projection.thread.id,
+                    runId: run.id,
+                    nodeId: rootNode.id,
+                    providerInstanceId: run.providerInstanceId,
+                    occurredAt: createdAt,
+                    payload: {
+                      id: idAllocator.derive.runSignalTurnItem({
+                        runId: run.id,
+                        signal: `context-handoff:${handoff.id}`,
+                      }),
+                      threadId: projection.thread.id,
+                      runId: run.id,
+                      nodeId: rootNode.id,
+                      providerThreadId: providerThread.id,
+                      providerTurnId: null,
+                      nativeItemRef: null,
+                      parentItemId: null,
+                      ordinal: run.ordinal * 100 - 1,
+                      status: "completed" as const,
+                      title: "Restarted from summaries",
+                      startedAt: createdAt,
+                      completedAt: createdAt,
+                      updatedAt: createdAt,
+                      type: "handoff" as const,
+                      contextHandoffId: handoff.id,
+                      fromProviderThreadIds: [providerThread.id],
+                      toProviderThreadId: providerThread.id,
+                      fromProviderInstanceIds: [providerThread.providerInstanceId],
+                      toProviderInstanceId: run.providerInstanceId,
+                      toModel: run.modelSelection.model,
+                      strategy: handoff.strategy,
+                      summary: handoff.summaryText,
+                      contextRestart,
+                    },
+                  },
+                ]),
           ],
         });
         return replacement;
@@ -1735,7 +1847,7 @@ export const layer: Layer.Layer<
             providerThread: runningProviderThread,
             budget: Effect.gen(function* () {
               return handoffBudget({
-                tokenCap,
+                tokenCap: resumeFellBack ? REPLACEMENT_HANDOFF_TOKEN_CAP : tokenCap,
                 modelContextWindow,
                 userText: turnNotes === "" ? userText : `${turnNotes}\n\n${userText}`,
                 attachments: message.attachments,
@@ -1747,17 +1859,7 @@ export const layer: Layer.Layer<
               });
             }),
             alreadyDeliveredItemIds: new Set([...deliveredItemIds, ...summarizedItemIds]),
-            summaries: (itemIds) =>
-              conversationSummaries.forHandoff({
-                projectId: projection.thread.projectId,
-                handoffs: [...effectiveHandoffs, ...retryHandoff],
-                itemIds,
-                // A recovery replays every earlier run of this thread onto a fresh native
-                // conversation, but reads its history without MCP tool results.
-                ...(resumeFellBack && run.ordinal > 1
-                  ? { replayed: { threadId: projection.thread.id, from: 1, to: run.ordinal - 1 } }
-                  : {}),
-              }),
+            summaries: summariesFor([...effectiveHandoffs, ...retryHandoff], resumeFellBack),
             evidence: (messages) =>
               deliveredKnowledgeForHistory({
                 projectId: projection.thread.projectId,

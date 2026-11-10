@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { contextRestartNotDue, contextRestartRefusal } from "./ContextRestart.ts";
+import { contextRestartDue, contextRestartRefusal } from "./ContextRestart.ts";
 
 const due = {
   aboveTokens: 200_000,
@@ -20,7 +20,7 @@ const unrefused = {
 
 describe("context restart rule", () => {
   it.each([
-    ["due at the mark", due, null],
+    ["due at the mark", due, { usedTokens: 200_000, aboveTokens: 200_000 }],
     ["setting empty", { ...due, aboveTokens: null }, "off"],
     ["summaries off", { ...due, summariesEnabled: false }, "summaries_off"],
     ["Claude", { ...due, driver: "claudeAgent" }, "not_codex"],
@@ -41,7 +41,7 @@ describe("context restart rule", () => {
       "would_not_halve",
     ],
   ] as const)("%s", (_name, input, expected) => {
-    assert.equal(contextRestartNotDue(input), expected);
+    assert.deepEqual(contextRestartDue(input), expected);
   });
 
   it.each([

@@ -1,3 +1,5 @@
+import type { OrchestrationV2ContextRestart } from "@t3tools/contracts";
+
 /**
  * When a turn starts a fresh native conversation seeded from summaries instead of re-reading a
  * large one. Turn start owns the effects; this owns the rule.
@@ -10,7 +12,7 @@ export interface ContextRestartUsage {
   readonly firstUsedTokens: number;
 }
 
-export type ContextRestartNotDue =
+type ContextRestartNotDue =
   | "off"
   | "summaries_off"
   | "not_codex"
@@ -18,13 +20,13 @@ export type ContextRestartNotDue =
   | "below_mark"
   | "would_not_halve";
 
-/** Why the thread is not large enough to restart, or null when it is. */
-export function contextRestartNotDue(input: {
+/** The restart a thread is large enough for, or why it is not. */
+export function contextRestartDue(input: {
   readonly aboveTokens: number | null;
   readonly summariesEnabled: boolean;
   readonly driver: string;
   readonly usage: ContextRestartUsage | undefined;
-}): ContextRestartNotDue | null {
+}): OrchestrationV2ContextRestart | ContextRestartNotDue {
   if (input.aboveTokens === null) return "off";
   if (!input.summariesEnabled) return "summaries_off";
   if (input.driver !== "codex") return "not_codex";
@@ -33,7 +35,7 @@ export function contextRestartNotDue(input: {
   // A restart must at least halve the context, so the next one waits for as much growth as
   // this one removed and the prompt cache is rebuilt rarely.
   if (input.usage.firstUsedTokens * 2 > input.usage.usedTokens) return "would_not_halve";
-  return null;
+  return { usedTokens: input.usage.usedTokens, aboveTokens: input.aboveTokens };
 }
 
 export type ContextRestartRefusal =

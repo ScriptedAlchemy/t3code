@@ -573,7 +573,7 @@ const seedRollbackHistory = Effect.fn(function* (
   }
 
   const rollbackCounts: number[] = [];
-  const rolledBackNativeIds: Array<string | undefined> = [];
+  const rolledBackNativeIds: Array<string | null | undefined> = [];
   const restored: CheckpointId[] = [];
   const deletedRefs: CheckpointId[] = [];
   const committed: OrchestrationV2DomainEvent[] = [];

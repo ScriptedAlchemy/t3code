@@ -15,6 +15,8 @@ import { summaryToolText } from "./conversationEvidence.ts";
 
 export const DEFAULT_HANDOFF_TOKEN_CAP = 16_000;
 const HANDOFF_BYTE_CAP = 64_000;
+/** A replacement conversation has no native history to protect, so it gets the ceiling. */
+export const REPLACEMENT_HANDOFF_TOKEN_CAP = HANDOFF_BYTE_CAP;
 export const handoffTokenCapConfig = Config.Int("T3CODE_CONTEXT_HANDOFF_TOKEN_CAP").pipe(
   Config.withDefault(DEFAULT_HANDOFF_TOKEN_CAP),
   Config.map((value) => Math.max(1_024, Math.min(HANDOFF_BYTE_CAP, value))),
@@ -36,6 +38,8 @@ export function latestNativeContextUsage(
         reportedAt: string;
       }
     | undefined;
+  // The earliest report on this native conversation estimates what a fresh one costs.
+  let first: { readonly usedTokens: number; readonly reportedAt: string } | undefined;
   for (const turn of projection.providerTurns) {
     if (
       turn.providerThreadId !== providerThread.id ||
@@ -51,7 +55,10 @@ export function latestNativeContextUsage(
     )
       continue;
     const run = runs.get(attempt.runId);
-    if (!run || (latest && latest.reportedAt >= turn.tokenUsage.updatedAt)) continue;
+    if (!run) continue;
+    if (first === undefined || first.reportedAt > turn.tokenUsage.updatedAt)
+      first = { usedTokens: turn.tokenUsage.usedTokens, reportedAt: turn.tokenUsage.updatedAt };
+    if (latest && latest.reportedAt >= turn.tokenUsage.updatedAt) continue;
     latest = {
       usage: {
         usedTokens: turn.tokenUsage.usedTokens,
@@ -63,7 +70,7 @@ export function latestNativeContextUsage(
       reportedAt: turn.tokenUsage.updatedAt,
     };
   }
-  return latest;
+  return latest === undefined ? undefined : { ...latest, firstUsedTokens: first!.usedTokens };
 }
 
 /** Native occupancy survives selection changes; the previous model window and compaction threshold do not. */
