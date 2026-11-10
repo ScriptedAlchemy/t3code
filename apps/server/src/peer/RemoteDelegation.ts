@@ -37,7 +37,6 @@ import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import { requestIdentity } from "../mcp/requestIdentity.ts";
 import { readCaller, unavailable } from "../mcp/threadAccess.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
-import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import {
   resolveInteractionMode,
   resolveRuntimeMode,
@@ -861,12 +860,7 @@ const make = Effect.gen(function* () {
     const original = parent?.subagents.find((task) => task.origin === "app_owned");
     const remote = original?.remoteChild;
     if (remote === undefined || caller === undefined || parent === undefined) {
-      return yield* forwarding.call(
-        scope,
-        OrchestratorToolkit.tools.t3_thread_send,
-        input.environmentId,
-        input,
-      );
+      return yield* forwarding.sendToThread(scope, input.environmentId, input);
     }
     const key = input.clientRequestId ?? (yield* random.uuidV4());
     const commandId = CommandId.make(
@@ -901,15 +895,10 @@ const make = Effect.gen(function* () {
             message: "This clientRequestId already belongs to another delegated follow-up.",
           });
         }
-        const sent = yield* forwarding.call(
-          scope,
-          OrchestratorToolkit.tools.t3_thread_send,
-          input.environmentId,
-          {
-            ...input,
-            clientRequestId: key,
-          },
-        );
+        const sent = yield* forwarding.sendToThread(scope, input.environmentId, {
+          ...input,
+          clientRequestId: key,
+        });
         const existing = parent.subagents.find(
           (task) =>
             task.result === null &&
