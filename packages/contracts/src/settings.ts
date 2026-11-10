@@ -103,6 +103,16 @@ export const SidebarAutoSettleAfterDays = Schema.Number.check(
 export type SidebarAutoSettleAfterDays = typeof SidebarAutoSettleAfterDays.Type;
 const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 7;
 
+const MIN_CONTEXT_RESTART_ABOVE_TOKENS = 100_000;
+const MAX_CONTEXT_RESTART_ABOVE_TOKENS = 2_000_000;
+/** The measured context at which a thread restarts from summaries. */
+export const ContextRestartAboveTokens = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_CONTEXT_RESTART_ABOVE_TOKENS,
+    maximum: MAX_CONTEXT_RESTART_ABOVE_TOKENS,
+  }),
+);
+
 export const MAX_SNOOZE_PRESET_MINUTES = 30 * 24 * 60;
 export const MAX_SNOOZE_PRESETS = 8;
 export const SnoozePresetDay = Schema.Literals([
@@ -1212,6 +1222,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "enableAgentDeviceAccess",
   "enableAssistedLearning",
   "enableConversationSummaries",
+  "contextRestartAboveTokens",
   "textGenerationModelSelection",
   "threadTitleInstructions",
   "sourceControlWriterModelSelection",
@@ -1252,6 +1263,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableAssistedLearning: Schema.optionalKey(Schema.Boolean),
   enableConversationSummaries: Schema.optionalKey(Schema.Boolean),
+  contextRestartAboveTokens: Schema.optionalKey(Schema.NullOr(ContextRestartAboveTokens)),
   textGenerationModelSelection: Schema.optionalKey(ModelSelection),
   threadTitleInstructions: Schema.optionalKey(TrimmedString),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
@@ -1476,6 +1488,10 @@ export const ServerSettings = Schema.Struct({
   /** Off by default: summarizing older history costs text generation calls. */
   enableConversationSummaries: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  /** Off by default: a Codex thread above this many tokens restarts from its summaries. */
+  contextRestartAboveTokens: Schema.NullOr(ContextRestartAboveTokens).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   enableModelEvaluations: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   modelEvaluationModelSelection: Schema.NullOr(ModelSelection).pipe(
@@ -1978,6 +1994,7 @@ export const ServerSettingsPatch = Schema.Struct({
   skillsLibraryEnabled: Schema.optionalKey(Schema.Boolean),
   enableAssistedLearning: Schema.optionalKey(Schema.Boolean),
   enableConversationSummaries: Schema.optionalKey(Schema.Boolean),
+  contextRestartAboveTokens: Schema.optionalKey(Schema.NullOr(ContextRestartAboveTokens)),
   enableModelEvaluations: Schema.optionalKey(Schema.Boolean),
   modelEvaluationModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
