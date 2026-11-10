@@ -487,7 +487,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   />
                 </SettingsSection>
                 <SettingsSection
-                  title="Restart large threads from summaries"
+                  title="LCM: restart large threads"
                   footer="When a Codex thread's context reaches the limit, continue in a fresh conversation built from summaries and the newest messages. Needs summaries."
                   trailing={
                     pendingWrites === 0 && isMixed("contextRestartAboveTokens") ? (

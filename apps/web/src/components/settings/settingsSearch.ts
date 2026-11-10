@@ -835,7 +835,9 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Restart large threads from summaries",
     to: "/settings/labs",
     scope: "project-defaults",
-    searchTerms: ["zack codex context restart tokens cost cache fresh conversation summaries"],
+    searchTerms: [
+      "zack lcm lossless context codex restart tokens cost cache fresh conversation summaries",
+    ],
   },
   {
     id: "external-history",
