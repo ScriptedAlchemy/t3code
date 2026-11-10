@@ -28,7 +28,7 @@ export const ConversationSummariesToolkit = Toolkit.make(
   Tool.make("t3_conversation_summary_list", {
     ...shared,
     description:
-      "List stored thread summaries (messages/tool evidence), oldest first, for long-thread recall or handoffs. Includes enabled status and last pass. query matches statement text as a literal case-insensitive substring. Follow cursor=nextCursor with the same query. Stale summaries expose no text; this never generates summaries.",
+      "List stored thread summaries (messages/tool evidence), oldest first, for long-thread recall or handoffs. A roll-up summarizes adjacent summaries and is listed before them. Includes enabled status and last pass. query matches statement text as a literal case-insensitive substring. Follow cursor=nextCursor with the same query. Stale summaries expose no text; this never generates summaries.",
     parameters: Schema.Struct({
       ...ConversationSummaryListInput.fields,
       environmentId: OrchestratorMcpEnvironmentTarget,
@@ -40,7 +40,7 @@ export const ConversationSummariesToolkit = Toolkit.make(
   Tool.make("t3_conversation_summary_describe", {
     ...shared,
     description:
-      "Read a generated summary's statements, citation keys and canonical message/tool source refs with digests and optional UTF-16 ranges (end exclusive). Verify claims with t3_conversation_summary_expand. Stale summaries expose no text.",
+      "Read a generated summary's statements, citation keys and source refs: canonical message/tool refs with digests and optional UTF-16 ranges (end exclusive), or for a roll-up, child summary ids. Verify claims with t3_conversation_summary_expand. Stale summaries expose no text.",
     parameters: Schema.Struct({
       ...ConversationSummaryDescribeInput.fields,
       environmentId: OrchestratorMcpEnvironmentTarget,
@@ -52,7 +52,7 @@ export const ConversationSummariesToolkit = Toolkit.make(
   Tool.make("t3_conversation_summary_expand", {
     ...shared,
     description:
-      "Read canonical source ranges; changed, removed, archived or unfinished sources are unavailable. maxChars bounds page text (default 12000, max 48000 UTF-16 units); limit bounds source count. Continue with offset=nextOffset AND textOffset=nextTextOffset even when offset repeats. null nextOffset ends paging.",
+      "Read a summary's sources: canonical message/tool ranges, or for a roll-up its child summaries (role summary, ref.summaryId). Expand the child a statement cites the same way to reach the original text; a child is not evidence. Changed, removed, archived or unfinished sources are unavailable. maxChars bounds page text (default 12000, max 48000 UTF-16 units); limit bounds source count. Continue with offset=nextOffset AND textOffset=nextTextOffset even when offset repeats. null nextOffset ends paging.",
     parameters: Schema.Struct({
       ...ConversationSummaryExpandInput.fields,
       environmentId: OrchestratorMcpEnvironmentTarget,
