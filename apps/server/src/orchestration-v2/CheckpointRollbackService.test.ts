@@ -346,7 +346,10 @@ it.effect.each([
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-const seedRollbackHistory = Effect.gen(function* () {
+/** `restartedAtRun` starts a fresh native conversation at that run, as a context restart does. */
+const seedRollbackHistory = Effect.fn(function* (
+  options: { readonly restartedAtRun?: number } = {},
+) {
   const store = yield* ProjectionStore.ProjectionStoreV2;
   const now = yield* DateTime.now;
   const threadId = ThreadId.make("rollback-history");
@@ -407,7 +410,10 @@ const seedRollbackHistory = Effect.gen(function* () {
     providerSessionId,
     appThreadId: threadId,
     ownerNodeId: null,
-    nativeThreadRef: null,
+    nativeThreadRef:
+      options.restartedAtRun === undefined
+        ? null
+        : { driver, nativeId: "native-after-restart", strength: "strong" as const },
     nativeConversationHeadRef: null,
     status: "idle" as const,
     firstRunOrdinal: 1,
@@ -500,6 +506,14 @@ const seedRollbackHistory = Effect.gen(function* () {
           providerInstanceId,
           providerThreadId,
           providerTurnId: turnId(attemptOrdinal),
+          ...(options.restartedAtRun === undefined
+            ? {}
+            : {
+                nativeThreadId:
+                  ordinal < options.restartedAtRun
+                    ? "native-before-restart"
+                    : "native-after-restart",
+              }),
           reason: "initial",
           status: "completed",
           startedAt: now,
@@ -558,6 +572,7 @@ const seedRollbackHistory = Effect.gen(function* () {
   }
 
   const rollbackCounts: number[] = [];
+  const rolledBackNativeIds: Array<string | undefined> = [];
   const restored: CheckpointId[] = [];
   const deletedRefs: CheckpointId[] = [];
   const committed: OrchestrationV2DomainEvent[] = [];
@@ -598,6 +613,7 @@ const seedRollbackHistory = Effect.gen(function* () {
               rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
                 Effect.gen(function* () {
                   rollbackCounts.push(yield* resolveCodexRollbackTurnCount(input));
+                  rolledBackNativeIds.push(input.providerThread.nativeThreadRef?.nativeId);
                   return { providerThread: input.providerThread };
                 }),
             } as never),
@@ -626,6 +642,7 @@ const seedRollbackHistory = Effect.gen(function* () {
     checkpointId,
     rollback,
     rollbackCounts,
+    rolledBackNativeIds,
     restored,
     deletedRefs,
     committed,
@@ -637,7 +654,7 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
   (it) => {
     it.effect("rolls back later terminal runs despite obsolete unrelated SQLite payloads", () =>
       Effect.gen(function* () {
-        const history = yield* seedRollbackHistory;
+        const history = yield* seedRollbackHistory();
         const sql = yield* SqlClient.SqlClient;
         const { threadId, runId, nodeId, checkpointId } = history;
         yield* sql`
@@ -700,7 +717,7 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
       "rewinds stopped runs repeatedly without counting discarded provider turns again",
       () =>
         Effect.gen(function* () {
-          const history = yield* seedRollbackHistory;
+          const history = yield* seedRollbackHistory();
           yield* history.rollback(5);
           yield* history.rollback(2);
           yield* history.rollback(0);
@@ -728,6 +745,28 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
             [history.checkpointId(0), history.checkpointId(8)],
           );
         }),
+    );
+
+    it.effect("rolls back the native conversation that holds a target from before a restart", () =>
+      Effect.gen(function* () {
+        const history = yield* seedRollbackHistory({ restartedAtRun: 4 });
+        yield* history.rollback(5);
+        yield* history.rollback(2);
+
+        assert.deepEqual(history.rolledBackNativeIds, [
+          "native-after-restart",
+          "native-before-restart",
+        ]);
+        // Only run 3 follows the target inside the conversation that holds it.
+        assert.deepEqual(history.rollbackCounts, [1, 1]);
+        const records = yield* history.store.getThreadRecords(history.threadId, [
+          "providerThreads",
+        ]);
+        assert.equal(
+          records.providerThreads[0]?.nativeThreadRef?.nativeId,
+          "native-before-restart",
+        );
+      }),
     );
   },
 );
