@@ -261,6 +261,16 @@ describe("MessagesTimeline work rows", () => {
   });
 
   it("keeps following a streaming turn after a heading is expanded at the bottom", async () => {
+    const session = cdp();
+    // Exercise end-follow independently of smooth-scroll animation timing.
+    await session.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+    });
+    await using _media = {
+      [Symbol.asyncDispose]: async () => {
+        await session.send("Emulation.setEmulatedMedia", { features: [] });
+      },
+    };
     const props = { ...baseProps(), isWorking: true };
     const runId = RunId.make("live-run");
     const container = document.createElement("div");
