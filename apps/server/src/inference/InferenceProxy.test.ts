@@ -175,6 +175,13 @@ it.effect(
                 Effect.as(HttpClientResponse.fromWeb(request, Response.json({ status: "ok" }))),
               );
           }
+          if (request.url.endsWith("-auth-url"))
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(
+                request,
+                Response.json({ state: "sign-in", url: "https://auth.example.com/start" }),
+              ),
+            );
           if (registryOffline && request.url.endsWith("/releases/latest"))
             return Effect.succeed(
               HttpClientResponse.fromWeb(request, new Response(null, { status: 503 })),
@@ -532,6 +539,37 @@ it.effect(
             yield* proxy.status;
             expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("proxy-refresh");
             expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("customSetting");
+            // A removed account stays out of the pool until the user signs in again.
+            const pooledAccount = yield* fs.readFileString(accountFile);
+            const signedInLocally = (refreshToken: string, lastRefresh: string) =>
+              fs.writeFileString(
+                cliHome + "/auth.json",
+                JSON.stringify({
+                  auth_mode: "chatgpt",
+                  last_refresh: lastRefresh,
+                  tokens: {
+                    account_id: "same-account",
+                    access_token: accessToken,
+                    refresh_token: refreshToken,
+                    id_token:
+                      "header." +
+                      Buffer.from(JSON.stringify({ email: "person@example.com" })).toString(
+                        "base64url",
+                      ) +
+                      ".sig",
+                  },
+                }),
+              );
+            yield* proxy.manage({ operation: "removeAccount", name: "one.json" });
+            yield* fs.remove(accountFile);
+            yield* signedInLocally("after-removal", "2026-11-13T00:00:00Z");
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(2);
+            yield* proxy.manage({ operation: "signIn", driver: "codex" });
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(3);
+            yield* fs.writeFileString(accountFile, pooledAccount);
+            yield* signedInLocally("proxy-refresh", "2026-11-12T00:00:00Z");
             expect((yield* proxy.grant(peer)).baseUrl).toBe("t3-environment:host");
             lan = true;
             yield* startSharing;

@@ -113,107 +113,116 @@ describe("command permissions", () => {
       }),
     ),
   );
-  it.effect(
-    "routes through the connected SSH host without forwarding the client's bearer credential",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const registry = yield* setup;
-          registry.mount(sessions(other));
-          for (const id of [env, other])
-            registry.set(
-              sessions(id),
-              AsyncResult.success({
-                ...grant(true),
-                scopes: [AuthProvidersManageScope],
-                permissions: [AuthProvidersManageScope],
-              }),
-            );
-          const target = new SshConnectionTarget({
-            environmentId: env,
-            label: "Host",
-            connectionId: "ssh",
-          });
-          const profile = new SshConnectionProfile({
-            environmentId: env,
-            label: "Host",
-            connectionId: "ssh",
-            target: { alias: "host", hostname: "host.local", username: "user", port: 22 },
-          });
-          const issued = {
-            hostId: env,
-            consumerId: other,
-            baseUrl: "t3-environment:target",
-            key: "scoped-inference-key",
-          };
-          let selected: InferenceRouteInput | undefined;
-          const host = {
-            target,
-            prepared: yield* SubscriptionRef.make(
-              Option.some({
-                environmentId: env,
-                label: "Host",
-                target,
-                httpBaseUrl: "http://127.0.0.1:43210",
-                socketUrl: "ws://127.0.0.1:43210",
-                httpAuthorization: { _tag: "Bearer", token: "must-stay-on-the-client" },
-              }),
-            ),
-            session: yield* SubscriptionRef.make(
-              Option.some({
-                client: {
-                  [WS_METHODS.inferenceGrant]: () => Effect.succeed(issued),
-                },
-              } as unknown as RpcSession),
-            ),
-          } as EnvironmentSupervisor["Service"];
-          const consumer = {
-            target: new BearerConnectionTarget({
-              environmentId: other,
-              label: "Consumer",
-              connectionId: "consumer",
-            }),
-            session: yield* SubscriptionRef.make(
-              Option.some({
-                client: {
-                  [WS_METHODS.inferenceConnect]: (input: InferenceRouteInput) =>
-                    Effect.sync(() => {
-                      selected = input;
-                    }),
-                },
-              } as unknown as RpcSession),
-            ),
-          } as EnvironmentSupervisor["Service"];
-          const routeRuntime = Atom.runtime(
-            Layer.mock(EnvironmentRegistry)({
-              entries: yield* SubscriptionRef.make<
-                ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
-              >(new Map([[env, { target, profile: Option.some(profile), enabled: true }]])),
-              networkStatus: yield* SubscriptionRef.make<NetworkStatus>("online"),
-              run: (id, effect) =>
-                Effect.provideService(effect, EnvironmentSupervisor, id === env ? host : consumer),
+  it.effect.each([
+    { via: "the connected SSH host", ssh: true },
+    { via: "the grant when this client reaches the host over loopback", ssh: false },
+  ])("routes through $via without forwarding the client's bearer credential", ({ ssh }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        registry.mount(sessions(other));
+        for (const id of [env, other])
+          registry.set(
+            sessions(id),
+            AsyncResult.success({
+              ...grant(true),
+              scopes: [AuthProvidersManageScope],
+              permissions: [AuthProvidersManageScope],
             }),
           );
-          const { routeInference } = createInferenceProxyAtoms(routeRuntime);
-          const result = yield* Effect.promise(() =>
-            routeInference.run(registry, {
-              host: { environmentId: env, label: "Host" },
-              consumer: { environmentId: other, label: "Consumer" },
-              driver: "codex",
+        const target = new SshConnectionTarget({
+          environmentId: env,
+          label: "Host",
+          connectionId: "ssh",
+        });
+        const profile = new SshConnectionProfile({
+          environmentId: env,
+          label: "Host",
+          connectionId: "ssh",
+          target: { alias: "host", hostname: "host.local", username: "user", port: 22 },
+        });
+        const issued = {
+          hostId: env,
+          consumerId: other,
+          baseUrl: "t3-environment:target",
+          key: "scoped-inference-key",
+        };
+        let selected: InferenceRouteInput | undefined;
+        const host = {
+          target,
+          prepared: yield* SubscriptionRef.make(
+            Option.some({
+              environmentId: env,
+              label: "Host",
+              target,
+              httpBaseUrl: "http://127.0.0.1:43210",
+              socketUrl: "ws://127.0.0.1:43210",
+              httpAuthorization: { _tag: "Bearer", token: "must-stay-on-the-client" },
             }),
-          );
-          expect(result._tag).toBe("Success");
-          expect(selected).toEqual({
-            grant: issued,
+          ),
+          session: yield* SubscriptionRef.make(
+            Option.some({
+              client: {
+                [WS_METHODS.inferenceGrant]: () => Effect.succeed(issued),
+              },
+            } as unknown as RpcSession),
+          ),
+        } as EnvironmentSupervisor["Service"];
+        const consumer = {
+          target: new BearerConnectionTarget({
+            environmentId: other,
+            label: "Consumer",
+            connectionId: "consumer",
+          }),
+          session: yield* SubscriptionRef.make(
+            Option.some({
+              client: {
+                [WS_METHODS.inferenceConnect]: (input: InferenceRouteInput) =>
+                  Effect.sync(() => {
+                    selected = input;
+                  }),
+              },
+            } as unknown as RpcSession),
+          ),
+        } as EnvironmentSupervisor["Service"];
+        const routeRuntime = Atom.runtime(
+          Layer.mock(EnvironmentRegistry)({
+            entries: yield* SubscriptionRef.make<
+              ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
+            >(
+              new Map([
+                [
+                  env,
+                  {
+                    target,
+                    profile: ssh ? Option.some(profile) : Option.none(),
+                    enabled: true,
+                  },
+                ],
+              ]),
+            ),
+            networkStatus: yield* SubscriptionRef.make<NetworkStatus>("online"),
+            run: (id, effect) =>
+              Effect.provideService(effect, EnvironmentSupervisor, id === env ? host : consumer),
+          }),
+        );
+        const { routeInference } = createInferenceProxyAtoms(routeRuntime);
+        const result = yield* Effect.promise(() =>
+          routeInference.run(registry, {
+            host: { environmentId: env, label: "Host" },
+            consumer: { environmentId: other, label: "Consumer" },
             driver: "codex",
-            hostLabel: "Host",
-            connection: {
-              url: "http://127.0.0.1:43210",
-              ssh: profile.target,
-            },
-          });
-        }),
-      ),
+          }),
+        );
+        expect(result._tag).toBe("Success");
+        expect(selected).toEqual({
+          grant: issued,
+          driver: "codex",
+          hostLabel: "Host",
+          ...(ssh ? { connection: { url: "http://127.0.0.1:43210", ssh: profile.target } } : {}),
+        });
+      }),
+    ),
   );
   it.effect("requires the destination orchestration grant to mutate project knowledge", () =>
     Effect.scoped(

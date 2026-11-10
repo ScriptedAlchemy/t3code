@@ -77,9 +77,14 @@ export function createInferenceProxyAtoms<R, E>(
           profile && Option.isSome(profile) && profile.value._tag === "SshConnectionProfile"
             ? profile.value.target
             : undefined;
-        const connection = active
-          ? { url: active.httpBaseUrl, ...(ssh ? { ssh } : {}) }
-          : undefined;
+        // Without SSH, this client's loopback address for the host means nothing to the consumer.
+        const reachable =
+          ssh !== undefined ||
+          !["127.0.0.1", "localhost", "[::1]"].includes(
+            URL.parse(active?.httpBaseUrl ?? "")?.hostname ?? "",
+          );
+        const connection =
+          active && reachable ? { url: active.httpBaseUrl, ...(ssh ? { ssh } : {}) } : undefined;
         registry.refresh(inferenceStatus({ environmentId: input.host.environmentId, input: {} }));
         yield* connections.run(
           input.consumer.environmentId,

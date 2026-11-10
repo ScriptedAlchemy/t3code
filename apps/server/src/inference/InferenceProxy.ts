@@ -66,8 +66,11 @@ const Saved = Schema.Struct({
   routing: Schema.optionalKey(InferenceRouting),
   release: Schema.optionalKey(Release),
   grants: Schema.Array(Schema.Struct({ ...InferenceConsumer.fields, key: Schema.String })),
+  // Local CLI sign-ins the user removed from the pool; the sync must not bring them back.
+  removedLocalAccounts: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 type Saved = typeof Saved.Type;
+const REQUEST_SYNC_INTERVAL_MS = 60_000;
 const empty: Saved = { enabled: false, sharing: false, port: 0, grants: [] };
 const Files = Schema.Struct({
   files: Schema.Array(
@@ -259,6 +262,7 @@ const make = Effect.gen(function* () {
   );
   let cached: Saved | undefined;
   let proxyAccountWatch: Fiber.Fiber<void> | undefined;
+  let lastRequestSync = Number.NEGATIVE_INFINITY;
   let running:
     | {
         child: ChildProcessSpawner.ChildProcessHandle;
@@ -314,7 +318,10 @@ const make = Effect.gen(function* () {
   const ensure = Effect.fn("InferenceProxy.start")(function* (state: Saved) {
     if (!state.enabled)
       return yield* failure("Enable inference hosting on this environment first.");
-    if (running && (yield* running.child.isRunning)) return running;
+    if (running && (yield* running.child.isRunning)) {
+      yield* startProxyAccountWatch;
+      return running;
+    }
     yield* stop;
     yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
     const executable = yield* install(directory, state.release).pipe(
@@ -362,6 +369,7 @@ const make = Effect.gen(function* () {
       );
       running = { child, scope, key, management, baseUrl };
       yield* Queue.offer(children, child);
+      yield* startProxyAccountWatch;
       return running;
     }).pipe(
       Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, Exit.void) : Effect.void)),
@@ -374,6 +382,9 @@ const make = Effect.gen(function* () {
       const localRaw = yield* fs.readFileString(localCodexAuthPath);
       const source = parseLocalCodexAuth(localRaw);
       if (!source) return false;
+      const removed = (yield* read).removedLocalAccounts ?? [];
+      if (removed.includes(`codex:${source.tokens.account_id}`)) return false;
+      const email = jwtClaims(source.tokens.id_token)?.email;
       const authDir = path.join(directory, "accounts");
       const names = yield* fs.readDirectory(authDir);
       let existing:
@@ -393,12 +404,21 @@ const make = Effect.gen(function* () {
         const data = decoded.value;
         if (!isRecord(data) || !isProxyCodexAuth(data)) continue;
         if (data.account_id !== source.tokens.account_id) continue;
+        // Seats of one workspace share an account ID.
+        if (
+          typeof data.email === "string" &&
+          typeof email === "string" &&
+          data.email.toLowerCase() !== email.toLowerCase()
+        )
+          continue;
         const refreshedAt = Date.parse(data.last_refresh);
         if (!Number.isFinite(refreshedAt)) continue;
         if (!existing || refreshedAt > existing.refreshedAt) existing = { name, data, refreshedAt };
       }
       if (existing?.data.disabled === true) return false;
       if (existing && existing.refreshedAt > source.refreshedAt) {
+        if (!existing.data.access_token || !existing.data.refresh_token || !existing.data.id_token)
+          return false;
         if ((yield* fs.readFileString(localCodexAuthPath)) !== localRaw) return false;
         yield* writeFileStringAtomically({
           filePath: localCodexAuthPath,
@@ -427,7 +447,6 @@ const make = Effect.gen(function* () {
         return false;
       const accountId = source.tokens.account_id;
       if (accountId.length > 128) return yield* failure("Local Codex account ID is too long.");
-      const email = jwtClaims(source.tokens.id_token)?.email;
       if (!existing && (typeof email !== "string" || !email.includes("@")))
         return yield* failure(
           "Local Codex sign-in has no account email. Add it through T3 settings.",
@@ -510,6 +529,9 @@ const make = Effect.gen(function* () {
         !identity.organizationUuid ||
         !identity.emailAddress.includes("@")
       )
+        return false;
+      const removed = (yield* read).removedLocalAccounts ?? [];
+      if (removed.includes(`claude:${identity.accountUuid}:${identity.organizationUuid}`))
         return false;
       const authDir = path.join(directory, "accounts");
       const names = yield* fs.readDirectory(authDir);
@@ -910,7 +932,6 @@ const make = Effect.gen(function* () {
             Effect.onError(() => (state.enabled ? Effect.void : stop)),
           ),
         );
-        yield* startProxyAccountWatch;
       }
       return {};
     }
@@ -966,6 +987,14 @@ const make = Effect.gen(function* () {
       case "signIn": {
         if (!isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(input.driver)))
           return yield* failure("This driver is disabled by environment policy.");
+        const prefix = input.driver === "codex" ? "codex:" : "claude:";
+        if (state.removedLocalAccounts?.some((account) => account.startsWith(prefix)))
+          yield* save({
+            ...state,
+            removedLocalAccounts: state.removedLocalAccounts.filter(
+              (account) => !account.startsWith(prefix),
+            ),
+          });
         const login = yield* jsonRequest(
           base + (input.driver === "codex" ? "codex" : "anthropic") + "-auth-url",
           admin,
@@ -1001,6 +1030,25 @@ const make = Effect.gen(function* () {
       case "removeAccount": {
         if (input.name !== path.basename(input.name) || !input.name.endsWith(".json"))
           return yield* failure("Invalid account file name.");
+        const account = Option.getOrUndefined(
+          decodeUnknownJson(
+            yield* fs
+              .readFileString(path.join(directory, "accounts", input.name))
+              .pipe(Effect.orElseSucceed(() => "")),
+          ),
+        );
+        const identity = !isRecord(account)
+          ? undefined
+          : isProxyCodexAuth(account)
+            ? `codex:${account.account_id}`
+            : isProxyClaudeAuth(account)
+              ? `claude:${account.account_uuid}:${account.organization_uuid}`
+              : undefined;
+        if (identity !== undefined && !state.removedLocalAccounts?.includes(identity))
+          yield* save({
+            ...state,
+            removedLocalAccounts: [...(state.removedLocalAccounts ?? []), identity],
+          });
         yield* jsonRequest(
           base + "auth-files?name=" + encodeURIComponent(input.name),
           admin,
@@ -1131,7 +1179,12 @@ const make = Effect.gen(function* () {
           )
             return null;
           const runtime = yield* ensure(state);
-          yield* syncLocalAuth(runtime);
+          // The watchers carry token rotation; this only covers one that stopped.
+          const now = yield* Clock.currentTimeMillis;
+          if (now - lastRequestSync >= REQUEST_SYNC_INTERVAL_MS) {
+            lastRequestSync = now;
+            yield* syncLocalAuth(runtime);
+          }
           return { baseUrl: runtime.baseUrl, key: runtime.key };
         }),
       );
@@ -1261,10 +1314,7 @@ const make = Effect.gen(function* () {
   yield* read.pipe(
     Effect.flatMap((state) =>
       state.enabled
-        ? ensure(state).pipe(
-            Effect.tap((runtime) => syncLocalAuth(runtime)),
-            Effect.andThen(startProxyAccountWatch),
-          )
+        ? ensure(state).pipe(Effect.flatMap((runtime) => syncLocalAuth(runtime)))
         : Effect.void,
     ),
     mutex.withPermit,
