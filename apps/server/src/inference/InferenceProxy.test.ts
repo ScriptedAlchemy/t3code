@@ -125,8 +125,21 @@ it.effect(
         let identity = hostId;
         let peerId = hostId;
         let connectionDown = false;
+        const importedCodexAuth: Record<string, unknown>[] = [];
         const remoteCatalogKeys: (string | undefined)[] = [];
         const http = HttpClient.make((request) => {
+          if (request.method === "POST" && request.url.includes("/v0/management/auth-files?")) {
+            const body = request.body;
+            if (body._tag !== "Uint8Array" || !body.text) throw new Error("Missing auth JSON");
+            const credential = JSON.parse(body.text) as Record<string, unknown>;
+            importedCodexAuth.push(credential);
+            return fs
+              .writeFileString(config.stateDir + "/inference-proxy/accounts/one.json", body.text)
+              .pipe(
+                Effect.orDie,
+                Effect.as(HttpClientResponse.fromWeb(request, Response.json({ status: "ok" }))),
+              );
+          }
           if (registryOffline && request.url.endsWith("/releases/latest"))
             return Effect.succeed(
               HttpClientResponse.fromWeb(request, new Response(null, { status: 503 })),
@@ -242,6 +255,42 @@ it.effect(
           Layer.fresh,
         );
         const settings = yield* ServerSettings.ServerSettingsService;
+        const cliHome = home + "/.codex";
+        const accountFile = config.stateDir + "/inference-proxy/accounts/one.json";
+        const accessToken =
+          "header." +
+          Buffer.from(JSON.stringify({ exp: 4102444800 })).toString("base64url") +
+          ".sig";
+        yield* fs.makeDirectory(cliHome, { recursive: true });
+        yield* fs.makeDirectory(config.stateDir + "/inference-proxy/accounts", {
+          recursive: true,
+        });
+        yield* fs.writeFileString(
+          accountFile,
+          JSON.stringify({
+            type: "codex",
+            account_id: "same-account",
+            email: "person@example.com",
+            access_token: "old-access",
+            refresh_token: "old-refresh",
+            id_token: "old-id",
+            last_refresh: "2026-11-09T00:00:00Z",
+            note: "keep this metadata",
+          }),
+        );
+        yield* fs.writeFileString(
+          cliHome + "/auth.json",
+          JSON.stringify({
+            auth_mode: "chatgpt",
+            last_refresh: "2026-11-10T00:00:00Z",
+            tokens: {
+              account_id: "same-account",
+              access_token: accessToken,
+              refresh_token: "new-refresh",
+              id_token: "new-id",
+            },
+          }),
+        );
         const grant = yield* Effect.scoped(
           Effect.gen(function* () {
             const proxy = yield* InferenceProxy.InferenceProxy;
@@ -253,6 +302,51 @@ it.effect(
             });
             yield* startSharing;
             expect((yield* proxy.status).enabled).toBe(true);
+            expect(importedCodexAuth).toMatchObject([
+              {
+                type: "codex",
+                account_id: "same-account",
+                refresh_token: "new-refresh",
+                note: "keep this metadata",
+              },
+            ]);
+            expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("new-refresh");
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(1);
+            yield* fs.writeFileString(
+              cliHome + "/auth.json",
+              JSON.stringify({
+                auth_mode: "chatgpt",
+                last_refresh: "2026-11-11T00:00:00Z",
+                tokens: {
+                  account_id: "same-account",
+                  access_token: accessToken,
+                  refresh_token: "next-refresh",
+                  id_token: "new-id",
+                },
+              }),
+            );
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(2);
+            expect(importedCodexAuth[1]).toMatchObject({
+              refresh_token: "next-refresh",
+              note: "keep this metadata",
+            });
+            yield* fs.writeFileString(
+              cliHome + "/auth.json",
+              JSON.stringify({
+                auth_mode: "chatgpt",
+                last_refresh: "2026-11-09T00:00:00Z",
+                tokens: {
+                  account_id: "same-account",
+                  access_token: accessToken,
+                  refresh_token: "stale-refresh",
+                  id_token: "new-id",
+                },
+              }),
+            );
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(2);
             expect((yield* proxy.grant(peer)).baseUrl).toBe("t3-environment:host");
             lan = true;
             yield* startSharing;

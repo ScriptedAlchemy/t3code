@@ -24,6 +24,9 @@ import { NetService } from "@t3tools/shared/Net";
 import { readTailscaleServeRoutesTo } from "@t3tools/tailscale";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Schedule from "effect/Schedule";
+import * as Duration from "effect/Duration";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import type * as HttpMethod from "effect/http/HttpMethod";
 import * as Context from "effect/Context";
@@ -38,7 +41,9 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import { DirectEndpoints } from "../environment/DirectEndpoints.ts";
@@ -91,6 +96,59 @@ function modelsForDriver(
 }
 const Login = Schema.Struct({ state: Schema.String, url: Schema.String });
 const AuthStatus = Schema.Struct({ status: Schema.Literals(["ok", "error", "wait"]) });
+const UploadStatus = Schema.Struct({ status: Schema.Literal("ok") });
+const LocalCodexAuth = Schema.Struct({
+  auth_mode: Schema.Literal("chatgpt"),
+  last_refresh: Schema.String,
+  tokens: Schema.Struct({
+    access_token: Schema.String,
+    refresh_token: Schema.String,
+    id_token: Schema.String,
+    account_id: Schema.String,
+  }),
+});
+const ProxyCodexAuth = Schema.Struct({
+  type: Schema.Literal("codex"),
+  account_id: Schema.String,
+  last_refresh: Schema.String,
+  disabled: Schema.optionalKey(Schema.Boolean),
+});
+const isLocalCodexAuth = Schema.is(LocalCodexAuth);
+const isProxyCodexAuth = Schema.is(ProxyCodexAuth);
+const isRecord = Schema.is(Schema.Record(Schema.String, Schema.Unknown));
+const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
+function jwtClaims(token: string): Record<string, unknown> | null {
+  const payload = token.split(".")[1];
+  if (!payload) return null;
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return isRecord(claims) ? claims : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseLocalCodexAuth(raw: string, now: number) {
+  const decoded = decodeUnknownJson(raw);
+  if (Option.isNone(decoded)) return null;
+  const parsed = decoded.value;
+  if (!isLocalCodexAuth(parsed)) return null;
+  const { tokens, last_refresh: lastRefresh } = parsed;
+  const expiresAt = jwtClaims(tokens.access_token)?.exp;
+  const refreshedAt = Date.parse(lastRefresh);
+  if (
+    !tokens.account_id ||
+    !tokens.access_token ||
+    !tokens.refresh_token ||
+    !tokens.id_token ||
+    typeof expiresAt !== "number" ||
+    !Number.isFinite(refreshedAt) ||
+    expiresAt * 1000 <= now
+  )
+    return null;
+  return { tokens, lastRefresh, refreshedAt, expiresAt };
+}
 const failure = (message: string) => new InferenceProxyError({ message });
 const isInferenceFailure = Schema.is(InferenceProxyError);
 const decodeSaved = Schema.decodeEffect(Schema.fromJsonString(Saved));
@@ -139,6 +197,7 @@ const make = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const direct = yield* DirectEndpoints;
   const env = yield* HostProcess.Environment;
+  const homeDirectory = yield* HostProcess.HomeDirectory;
   const sharingDenial = managedCapabilityDenial(settings.managedPolicy, "remoteClients");
   const installContext = yield* Effect.context<Effect.Services<ReturnType<typeof install>>>();
   const latest = yield* Effect.cachedWithTTL(
@@ -149,6 +208,10 @@ const make = Effect.gen(function* () {
   const updateMutex = yield* Semaphore.make(1);
   const children = yield* Queue.sliding<ChildProcessSpawner.ChildProcessHandle>(1);
   const directory = path.join(config.stateDir, "inference-proxy");
+  const localCodexHome = path.resolve(
+    expandHomePath(env.CODEX_HOME?.trim() || "~/.codex", homeDirectory),
+  );
+  const localCodexAuthPath = path.join(localCodexHome, "auth.json");
   let cached: Saved | undefined;
   let running:
     | {
@@ -259,6 +322,96 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const syncLocalCodexAuth = Effect.fn("InferenceProxy.syncLocalCodexAuth")(
+    function* (runtime: NonNullable<typeof running>) {
+      if (!(yield* fs.exists(localCodexAuthPath))) return false;
+      const source = parseLocalCodexAuth(
+        yield* fs.readFileString(localCodexAuthPath),
+        yield* Clock.currentTimeMillis,
+      );
+      if (!source) return false;
+      const authDir = path.join(directory, "accounts");
+      const names = yield* fs.readDirectory(authDir);
+      let existing:
+        | { name: string; data: Record<string, unknown>; refreshedAt: number }
+        | undefined;
+      for (const name of names) {
+        if (!name.endsWith(".json") || name !== path.basename(name)) continue;
+        const raw = yield* fs
+          .readFileString(path.join(authDir, name))
+          .pipe(Effect.orElseSucceed(() => ""));
+        const decoded = decodeUnknownJson(raw);
+        if (Option.isNone(decoded)) continue;
+        const data = decoded.value;
+        if (!isRecord(data) || !isProxyCodexAuth(data)) continue;
+        if (data.account_id !== source.tokens.account_id) continue;
+        const refreshedAt = Date.parse(data.last_refresh);
+        if (!existing || refreshedAt > existing.refreshedAt) existing = { name, data, refreshedAt };
+      }
+      if (
+        existing?.data.disabled === true ||
+        (existing && existing.refreshedAt >= source.refreshedAt)
+      )
+        return false;
+      const accountId = source.tokens.account_id;
+      if (accountId.length > 128) return yield* failure("Local Codex account ID is too long.");
+      const email = jwtClaims(source.tokens.id_token)?.email;
+      if (!existing && (typeof email !== "string" || !email.includes("@")))
+        return yield* failure(
+          "Local Codex sign-in has no account email. Add it through T3 settings.",
+        );
+      const name =
+        existing?.name ?? `codex-local-${Buffer.from(accountId).toString("base64url")}.json`;
+      yield* jsonRequest(
+        runtime.baseUrl + "/v0/management/auth-files?name=" + encodeURIComponent(name),
+        runtime.management,
+        UploadStatus,
+        "POST",
+        {
+          ...existing?.data,
+          type: "codex",
+          account_id: source.tokens.account_id,
+          ...(existing ? {} : { email }),
+          access_token: source.tokens.access_token,
+          refresh_token: source.tokens.refresh_token,
+          id_token: source.tokens.id_token,
+          last_refresh: source.lastRefresh,
+          expired: DateTime.formatIso(DateTime.makeUnsafe(source.expiresAt * 1000)),
+        },
+      );
+      return true;
+    },
+    Effect.mapError(safeFailure("Could not sync the local Codex sign-in to CLIProxyAPI.")),
+  );
+
+  const watchLocalCodexAuth = Effect.gen(function* () {
+    if (!(yield* fs.exists(localCodexHome))) {
+      yield* fs.watch(path.dirname(localCodexHome)).pipe(
+        Stream.filter((event) => path.basename(event.path) === path.basename(localCodexHome)),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+    }
+    if (!(yield* fs.exists(localCodexHome))) return;
+    const changes = fs.watch(localCodexHome).pipe(
+      Stream.filter((event) => path.basename(event.path) === "auth.json"),
+      Stream.debounce(Duration.millis(100)),
+    );
+    yield* Stream.runForEach(changes, () =>
+      mutex
+        .withPermit(
+          Effect.gen(function* () {
+            const state = yield* read;
+            return state.enabled ? yield* syncLocalCodexAuth(yield* ensure(state)) : false;
+          }),
+        )
+        .pipe(
+          Effect.flatMap((changed) => (changed ? refreshLocalProviders() : Effect.void)),
+          Effect.ignoreCause({ log: true }),
+        ),
+    );
+  });
+
   const watchChild = Effect.fn("InferenceProxy.watchChild")(function* () {
     const child = yield* Queue.take(children);
     yield* child.exitCode;
@@ -303,6 +456,7 @@ const make = Effect.gen(function* () {
         if (!state.enabled) return { ...summary, running: false, accounts: [], problem: null };
         return yield* Effect.gen(function* () {
           const runtime = yield* ensure(state);
+          const sync = yield* syncLocalCodexAuth(runtime).pipe(Effect.result);
           const { files } = yield* jsonRequest(
             runtime.baseUrl + "/v0/management/auth-files",
             runtime.management,
@@ -314,7 +468,7 @@ const make = Effect.gen(function* () {
             accounts: files
               .filter((file) => !file.runtime_only)
               .map(({ name, provider, status }) => ({ name, provider, status })),
-            problem: null,
+            problem: Result.isFailure(sync) ? sync.failure.message : null,
           };
         }).pipe(
           Effect.orElseSucceed((e) => ({
@@ -559,6 +713,7 @@ const make = Effect.gen(function* () {
     function* (consumer: InferenceConsumer) {
       const state = yield* read;
       const runtime = yield* ensure(state);
+      yield* syncLocalCodexAuth(runtime).pipe(Effect.ignore);
       const hostId = yield* environment.getEnvironmentId;
       const identity = { hostId, consumerId: consumer.environmentId };
       if (hostId === consumer.environmentId)
@@ -657,6 +812,7 @@ const make = Effect.gen(function* () {
           )
             return null;
           const runtime = yield* ensure(state);
+          yield* syncLocalCodexAuth(runtime).pipe(Effect.ignore);
           return { baseUrl: runtime.baseUrl, key: runtime.key };
         }),
       );
@@ -780,6 +936,7 @@ const make = Effect.gen(function* () {
       yield* connect({ grant: local, driver, hostLabel: "Local" });
     }
   });
+  yield* watchLocalCodexAuth.pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
   yield* read.pipe(
     Effect.flatMap((state) => (state.enabled ? Effect.asVoid(ensure(state)) : Effect.void)),
     mutex.withPermit,
