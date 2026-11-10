@@ -1083,8 +1083,8 @@ const make = Effect.gen(function* () {
       ),
     );
     const candidates = [
-      ...(Option.isSome(saved) ? [links.resolve(hostId).pipe(Effect.map((peer) => peer.url))] : []),
       ...(connection ? [links.resolveAddress(connection, hostId)] : []),
+      ...(Option.isSome(saved) ? [links.resolve(hostId).pipe(Effect.map((peer) => peer.url))] : []),
     ];
     if (!candidates.length)
       return yield* failure("Connect to the inference host, then choose its route again.");

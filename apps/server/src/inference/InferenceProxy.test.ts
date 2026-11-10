@@ -78,6 +78,8 @@ it.effect(
         let tailnetCatalogDown = false;
         let linked = false;
         let linkedUrl = "http://127.0.0.1:23456";
+        let connectionOverride: string | undefined;
+        let staleLinkedCatalog = false;
         const link = {
           environmentId: hostId,
           label: "Host",
@@ -212,6 +214,10 @@ it.effect(
               );
             }
             remoteCatalogKeys.push(request.headers.authorization);
+            if (staleLinkedCatalog && request.url.startsWith("http://127.0.0.1:34567/"))
+              return Effect.succeed(
+                HttpClientResponse.fromWeb(request, new Response(null, { status: 502 })),
+              );
             if (tailnetCatalogDown && request.url.startsWith("https:"))
               return Effect.succeed(
                 HttpClientResponse.fromWeb(request, new Response(null, { status: 502 })),
@@ -255,7 +261,7 @@ it.effect(
                         message: "SSH connection unavailable",
                       }),
                     )
-                  : Effect.succeed(linkedUrl),
+                  : Effect.succeed(connectionOverride ?? linkedUrl),
               resolve: () =>
                 linked
                   ? Effect.succeed({ link, url: linkedUrl, token: "must-not-forward-peer-token" })
@@ -641,6 +647,16 @@ it.effect(
             expect((yield* proxy.authorize(issued.key, hostId))?.baseUrl).toBe(
               "http://127.0.0.1:34567/api/inference",
             );
+            connectionOverride = "http://127.0.0.1:23456";
+            staleLinkedCatalog = true;
+            yield* proxy.connect({
+              ...connect,
+              grant: linkedGrant,
+              connection: { url: "http://127.0.0.1:23456" },
+            });
+            staleLinkedCatalog = false;
+            connectionOverride = undefined;
+            yield* proxy.connect({ ...connect, grant: linkedGrant });
             linked = false;
             expect(yield* proxy.authorize(issued.key, hostId).pipe(Effect.flip)).toHaveProperty(
               "_tag",
