@@ -1761,12 +1761,13 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
+      const supportsT3Tools =
+        session.supportsT3Tools ?? session.providerSession.capabilities.tools.supportsMcpTools;
       const pstackComposer = yield* pstack.expandComposer(
         {
           projectId: projection.thread.projectId,
           parentModelSelection: projection.thread.modelSelection,
-          supportsOrchestrationTools:
-            session.supportsT3Tools ?? session.providerSession.capabilities.tools.supportsMcpTools,
+          supportsOrchestrationTools: supportsT3Tools,
           text: message.text,
           records: message.context?.records ?? [],
         },
@@ -1806,8 +1807,9 @@ export const layer: Layer.Layer<
       let recalledComposer: Pick<typeof pstackComposer, "text" | "records"> | null = null;
       {
         // Recall adds related saved facts to the message, so no one has to pick them by hand.
+        // Its text tells the agent to call T3 tools, so a session without them gets none.
         const recalled =
-          noteContinuation || initialDeliveryState.sent
+          !supportsT3Tools || noteContinuation || initialDeliveryState.sent
             ? null
             : yield* knowledge.recall({
                 projectId: projection.thread.projectId,
@@ -1816,6 +1818,10 @@ export const layer: Layer.Layer<
                 query: message.text,
                 composer: pstackComposer,
                 knowledgeAllowance: budget.knowledgeAllowance,
+                turn: {
+                  messageId: message.id,
+                  nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? null,
+                },
               });
         const withRecall =
           recalled === null ? Option.none() : yield* prepareDelivery(recalled).pipe(Effect.option);

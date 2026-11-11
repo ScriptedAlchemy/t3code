@@ -207,44 +207,69 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 
-  it.effect.each(["target", "secret"] as const)(
+  it.effect.each(["target", "record", "secret"] as const)(
     "loads settings when a saved pool %s is missing",
     (missing) =>
       Effect.gen(function* () {
         const config = yield* ServerConfig.ServerConfig;
         const fs = yield* FileSystem.FileSystem;
+        const secrets = yield* ServerSecretStore.ServerSecretStore;
         const service = yield* ServerSettingsModule.ServerSettingsService;
         const route = ProviderInstanceId.make("inference_codex_0000000000000000");
+        const nativeId = ProviderInstanceId.make("codex");
         const pool = ProviderInstanceId.make("pool_codex");
+        const secretEntry = (name: string) => ({
+          name,
+          value: "",
+          sensitive: true,
+          valueRedacted: true,
+        });
+        const native = {
+          driver: "codex",
+          config: { setupMode: "managed", homePath: "/native/home" },
+          environment: [secretEntry("NATIVE_KEY")],
+        };
+        yield* secrets.set(
+          `provider-env-${Buffer.from(nativeId).toString("base64url")}-${Buffer.from("NATIVE_KEY").toString("base64url")}`,
+          new TextEncoder().encode("native-key"),
+        );
         yield* fs.writeFileString(
           config.settingsPath,
           JSON.stringify({
-            retiredPoolRoutes: { codex: route },
-            providerInstances:
-              missing === "target"
-                ? {}
-                : {
-                    [route]: {
-                      driver: "codex",
-                      config: { setupMode: "inference" },
-                      environment: [
-                        {
-                          name: "T3_INFERENCE_KEY",
-                          value: "",
-                          sensitive: true,
-                          valueRedacted: true,
-                        },
-                      ],
-                    },
-                  },
+            ...(missing === "record"
+              ? { providerPools: { codex: { memberInstanceIds: [nativeId, "codex_work"] } } }
+              : { retiredPoolRoutes: { codex: route } }),
+            providerInstances: {
+              target: { [nativeId]: native },
+              record: {},
+              secret: {
+                [route]: {
+                  driver: "codex",
+                  config: { setupMode: "inference" },
+                  environment: [secretEntry("T3_INFERENCE_KEY")],
+                },
+              },
+            }[missing],
             defaultModelSelection: { instanceId: pool, model: "gpt-fixture" },
           }),
         );
         const loaded = yield* service.getSettings;
-        assert.equal(loaded.providerInstances[pool] !== undefined, missing === "secret");
+        const upgraded = loaded.providerInstances[pool];
+        if (missing === "target") {
+          assert.deepEqual(upgraded?.config, native.config);
+          assert.equal(upgraded?.environment?.[0]?.value, "native-key");
+        } else if (missing === "record") {
+          assert.deepEqual(upgraded, { driver: ProviderDriverKind.make("codex") });
+        } else {
+          assert.deepEqual(upgraded?.config, { setupMode: "inference" });
+        }
+        assert.isUndefined(loaded.providerInstances[ProviderInstanceId.make("pool_claudeAgent")]);
         assert.equal(loaded.defaultModelSelection?.instanceId, pool);
         yield* service.start;
-        assert.notInclude(yield* fs.readFileString(config.settingsPath), "retiredPoolRoutes");
+        const persisted = yield* fs.readFileString(config.settingsPath);
+        assert.notInclude(persisted, "retiredPoolRoutes");
+        assert.notInclude(persisted, "providerPools");
+        assert.notInclude(persisted, "native-key");
       }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 

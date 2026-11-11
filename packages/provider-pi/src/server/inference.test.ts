@@ -4,9 +4,16 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { PiSettings } from "../settings.ts";
-import { preparePiInferenceEnvironment } from "./inference.ts";
+import {
+  MINIMUM_PI_INFERENCE_VERSION,
+  preparePiInferenceEnvironment,
+  recordPiVersion,
+} from "./inference.ts";
 import { PI_INFERENCE_EXTENSION_SOURCE } from "./inferenceExtensionSource.ts";
 
 const routedSettings = Schema.decodeSync(PiSettings)({ inferenceEnabled: true });
@@ -26,9 +33,9 @@ it.effect("keeps native Pi files and credentials unchanged through routing on an
     const agentDir = path.join(directory, "native-agent");
     yield* fs.makeDirectory(agentDir);
     const originals = {
-      "models.json": JSON.stringify({
-        providers: { native: { baseUrl: "https://native.example/v1" } },
-      }),
+      // Pi accepts line comments and trailing commas in models.json.
+      "models.json":
+        '{\n  // "t3proxy": {} stays a comment\n  "providers": { "native": { "baseUrl": "https://native.example/v1" }, },\n}',
       "auth.json": JSON.stringify({ t3proxy: { type: "api_key", key: "native-saved-key" } }),
       "settings.json": JSON.stringify({ extensions: ["./native-extension.ts"] }),
     };
@@ -47,7 +54,7 @@ it.effect("keeps native Pi files and credentials unchanged through routing on an
       environment,
       cacheDir: path.join(directory, "t3-cache"),
       cwd: directory,
-      version: "1.5.2",
+      version: MINIMUM_PI_INFERENCE_VERSION,
     });
     assert.equal(prepared.PI_CODING_AGENT_DIR, "./native-agent");
     assert.equal(prepared.ANTHROPIC_API_KEY, "native-account-key");
@@ -80,6 +87,10 @@ it.effect.each([
     contents: JSON.stringify({ providers: { t3proxy: { baseUrl: "https://native.example/v1" } } }),
     message: "already defines t3proxy",
   },
+  {
+    contents: '{ "providers": { "t3proxy": {}, }, } // native',
+    message: "already defines t3proxy",
+  },
 ])("refuses incompatible native config without rewriting it: $message", ({ contents, message }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -92,11 +103,57 @@ it.effect.each([
       config: routedSettings,
       environment: { ...routeEnvironment, PI_CODING_AGENT_DIR: directory },
       cacheDir,
-      version: "1.5.2",
+      version: MINIMUM_PI_INFERENCE_VERSION,
     }).pipe(Effect.flip);
     assert.include(error.detail ?? "", message);
     assert.equal(yield* fs.readFileString(modelsFile), contents);
     assert.isFalse(yield* fs.exists(cacheDir));
     assert.notInclude(error.message, routeEnvironment.T3_INFERENCE_KEY);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("measures the Pi version once per binary and again after an unsupported result", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-inference-version-" });
+    const reported = ["1.3.0", MINIMUM_PI_INFERENCE_VERSION];
+    let spawns = 0;
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.sync(() => {
+        const version = reported[Math.min(spawns, reported.length - 1)];
+        spawns += 1;
+        return ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(900_000_002),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.succeed(new TextEncoder().encode(`pi ${version}\n`)),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        });
+      }),
+    );
+    const config = { ...routedSettings, binaryPath: "pi-version-probe-test" };
+    const environment = { ...routeEnvironment, PI_CODING_AGENT_DIR: directory };
+    const openSession = preparePiInferenceEnvironment({
+      config,
+      environment,
+      cacheDir: path.join(directory, "cache"),
+    }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
+    const outdated = yield* openSession.pipe(Effect.flip);
+    assert.include(outdated.detail ?? "", MINIMUM_PI_INFERENCE_VERSION);
+    yield* openSession;
+    yield* openSession;
+    assert.equal(spawns, 2);
+
+    recordPiVersion(config, environment, "1.3.0");
+    yield* openSession;
+    assert.equal(spawns, 3);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

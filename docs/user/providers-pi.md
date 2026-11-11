@@ -35,7 +35,7 @@ update it through that manager instead. For example, a Nix profile installation 
 
 ## Shared Inference Accounts
 
-Pi 1.5.2 or newer can use accounts on an [inference host](./providers-claude.md#host-and-share-inference-accounts)
+Pi 1.4.0 or newer can use accounts on an [inference host](./providers-claude.md#host-and-share-inference-accounts)
 alongside its own logins. In **Settings > Inference accounts**, choose **Pi** beside the host,
 or turn on **Use CLI proxy** in Pi's provider settings. Pi can use every model the host serves,
 including models from accounts other than Claude and Codex.

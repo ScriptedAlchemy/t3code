@@ -61,7 +61,10 @@ async function loadProvider() {
     URL,
     join: NodePath.join,
     getAgentDir: () => "/native/pi-agent",
-    readFile: () => Promise.resolve('{"providers":{"native":{}}}'),
+    readFile: () =>
+      Promise.resolve(
+        '\uFEFF{\n  // "t3proxy": {} stays a comment\n  "providers": { "native": {}, },\n}',
+      ),
     createProvider: (provider: Provider) => provider,
     openAICompletionsApi: () => ({ stream, streamSimple: stream }),
     pi: { registerProvider: (provider: Provider) => providers.push(provider) },

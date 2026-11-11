@@ -455,11 +455,15 @@ const LegacyProviderSettingsJson = fromLenientJson(
   Schema.Struct({
     providers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
     retiredPoolRoutes: Schema.optionalKey(Schema.Record(Schema.String, ProviderInstanceId)),
+    providerPools: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
     bitbucket: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
     github: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   }),
 );
 const decodeLegacyProviderSettingsJsonExit = Schema.decodeUnknownExit(LegacyProviderSettingsJson);
+const hasLegacyPoolMembers = Schema.is(
+  Schema.Struct({ memberInstanceIds: Schema.NonEmptyArray(Schema.Unknown) }),
+);
 
 const LEGACY_BITBUCKET_SECRET_NAMES: Readonly<Record<string, string>> = {
   accessToken: "bitbucket-access-token",
@@ -859,17 +863,23 @@ const make = Effect.gen(function* () {
     function* (
       settings: ServerSettings,
       routes: Readonly<Record<string, ProviderInstanceId>> | undefined,
+      pools: Readonly<Record<string, unknown>> | undefined,
     ) {
-      if (routes === undefined) return settings;
+      if (routes === undefined && pools === undefined) return settings;
       const providerInstances = { ...settings.providerInstances };
-      for (const driver of ["codex", "claudeAgent"] as const) {
-        const sourceId = routes[driver];
-        if (sourceId === undefined) continue;
+      for (const kind of ["codex", "claudeAgent"] as const) {
+        const driver = ProviderDriverKind.make(kind);
+        const routeId = routes?.[driver];
+        if (routeId === undefined && !hasLegacyPoolMembers(pools?.[driver])) continue;
         const instanceId = ProviderInstanceId.make(`pool_${driver}`);
         if (providerInstances[instanceId] !== undefined) continue;
-        const source = providerInstances[sourceId];
-        // Removing a route left its pool record behind, so a record can name no route.
-        if (!source || source.driver !== driver || !isInferenceConfig(source.config)) continue;
+        const route = routeId === undefined ? undefined : providerInstances[routeId];
+        // Saved selections keep the pool ID, so a pool with no route copies the default provider.
+        const sourceId =
+          routeId !== undefined && route?.driver === driver && isInferenceConfig(route.config)
+            ? routeId
+            : defaultInstanceIdForDriver(driver);
+        const source = providerInstances[sourceId] ?? { driver };
         const pending: SettingsSecret[] = [];
         mapSettingsSecrets(
           { ...DEFAULT_SERVER_SETTINGS, providerInstances: { [sourceId]: source } },
@@ -921,6 +931,7 @@ const make = Effect.gen(function* () {
     let settings = managed.defaults;
     let legacyProviders: Readonly<Record<string, unknown>> | undefined;
     let legacyPoolRoutes: Readonly<Record<string, ProviderInstanceId>> | undefined;
+    let legacyPools: Readonly<Record<string, unknown>> | undefined;
     let legacySourceControl: Parameters<typeof migrateLegacySourceControlSettings>[1] = {};
     let parseFailure = Option.none<unknown>();
 
@@ -934,6 +945,7 @@ const make = Effect.gen(function* () {
       if (legacySettings._tag === "Success") {
         legacyProviders = legacySettings.value.providers;
         legacyPoolRoutes = legacySettings.value.retiredPoolRoutes;
+        legacyPools = legacySettings.value.providerPools;
         legacySourceControl = {
           bitbucket: legacySettings.value.bitbucket,
           github: legacySettings.value.github,
@@ -1022,6 +1034,7 @@ const make = Effect.gen(function* () {
       ? yield* migrateRetiredProviderPools(
           foldLegacyProjectSettings(loaded, legacyProjectRows),
           legacyPoolRoutes,
+          legacyPools,
         )
       : loaded;
     // Remove retired keys only after copying secrets and writing the new file; failures retry on next load.

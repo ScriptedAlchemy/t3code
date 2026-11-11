@@ -1888,6 +1888,7 @@ it.effect(
         messageId: MessageId.make("recall-message"),
         projectId,
         providerInstanceId,
+        nativeThreadId: "native-a",
         items: composer.items,
         omissions: [],
         createdAt: DateTime.formatIso(at(1)),
@@ -1899,6 +1900,14 @@ it.effect(
       // Recall does not resend a fact the thread received, but another thread still gets it.
       assert.isNull(yield* recall({}, "already-sent"));
       assert.isNotNull(yield* recall({ threadId: ThreadId.make("other-thread") }, "other-thread"));
+      // A retry of that message on a replacement conversation never received the fact.
+      const retry = { messageId: sent.messageId, nativeThreadId: "native-b" };
+      assert.isNotNull(yield* recall({ turn: retry }, "retry-elsewhere"));
+      assert.isNull(
+        yield* recall({ turn: { ...retry, nativeThreadId: "native-a" } }, "retry-same"),
+      );
+      const later = { ...retry, messageId: MessageId.make("later-message") };
+      assert.isNull(yield* recall({ turn: later }, "later-message"));
 
       // Recall cuts a long fact short and names the tool that reads the rest.
       yield* knowledge.mutate(

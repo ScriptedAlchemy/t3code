@@ -153,6 +153,8 @@ export class ProjectKnowledge extends Context.Service<
       readonly composer: RecallComposer;
       /** The turn's remaining knowledge budget, in bytes. */
       readonly knowledgeAllowance: number;
+      /** The message being sent and the native conversation it targets. */
+      readonly turn?: Pick<ProjectKnowledgeDelivery, "messageId" | "nativeThreadId">;
     }) => Effect.Effect<RecallComposer | null>;
     readonly prepareContext: (
       input: ProjectKnowledgeContext,
@@ -1282,7 +1284,7 @@ const make = Effect.gen(function* () {
       if (factBytes < RECALL_MIN_BYTES) return null;
       const lookup = Effect.gen(function* () {
         const seen = yield* store
-          .seenFactIds(input.projectId, input.threadId)
+          .seenFactIds(input.projectId, input.threadId, input.turn)
           .pipe(Effect.mapError(storageError(input.projectId)));
         const result = yield* searchFacts(
           {

@@ -698,9 +698,11 @@ export const makeStore = Effect.gen(function* () {
   // Returns every fact a thread's agent has been shown, either read through its tools or
   // delivered with a message. An uncertain delivery may have arrived, so it counts.
   // A rolled-back run's deliveries left the conversation with it, so they do not.
+  // A turn's own message sent to another native conversation never reached the one it targets.
   const seenFactIds = Effect.fn("ProjectKnowledgeStore.seenFactIds")(function* (
     projectId: ProjectId,
     threadId: ThreadId,
+    turn?: Pick<ProjectKnowledgeDelivery, "messageId" | "nativeThreadId">,
   ) {
     const rows = yield* sql<{ readonly factId: ProjectFactId }>`
       SELECT fact_id AS "factId" FROM project_knowledge_views
@@ -712,6 +714,12 @@ export const makeStore = Effect.gen(function* () {
       WHERE d.project_id = ${projectId} AND d.thread_id = ${threadId}
         AND d.status IN ('sent', 'uncertain')
         AND json_extract(selection.value, '$.kind') = 'fact'
+        AND ${
+          turn === undefined
+            ? sql`TRUE`
+            : sql`NOT (d.message_id = ${turn.messageId}
+                AND d.native_thread_id IS NOT ${turn.nativeThreadId ?? null})`
+        }
         AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs AS run
           WHERE run.run_id = d.run_id AND run.status = 'rolled_back')`;
     return new Set(rows.map((row) => row.factId));

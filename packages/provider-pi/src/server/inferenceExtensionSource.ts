@@ -4,6 +4,16 @@ export const T3_INFERENCE_KEY_ENV = "T3_INFERENCE_KEY";
 export const PI_INFERENCE_PROVIDER = "t3proxy";
 export const PI_INFERENCE_EXTENSION_FILENAME = "pi-t3-inference-extension.ts";
 
+// Pi's models.json reader accepts a BOM, line comments, and trailing commas. Keep this self-contained.
+export const stripPiJsonSyntax = (input: string) =>
+  input
+    .replace(/^\uFEFF/, "")
+    .replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/g, (match) => (match[0] === '"' ? match : ""))
+    .replace(
+      /"(?:\\.|[^"\\])*"|,(\s*[}\]])/g,
+      (match, tail?: string) => tail ?? (match[0] === '"' ? match : ""),
+    );
+
 // Pi supplies these current Provider constructors in its npm and bundled extension runtimes.
 export const PI_INFERENCE_EXTENSION_SOURCE = `\
 import { createProvider } from "@earendil-works/pi-ai/models";
@@ -15,6 +25,7 @@ import { join } from "node:path";
 const CONFIG_ENV = ${JSON.stringify(T3_PI_INFERENCE_CONFIG_ENV)};
 const KEY_ENV = ${JSON.stringify(T3_INFERENCE_KEY_ENV)};
 const PROVIDER = ${JSON.stringify(PI_INFERENCE_PROVIDER)};
+const stripPiJsonSyntax = ${stripPiJsonSyntax.toString()};
 
 export default async function t3InferenceExtension(pi: ExtensionAPI) {
   let config: { baseUrl: string; models: string[] };
@@ -47,7 +58,7 @@ export default async function t3InferenceExtension(pi: ExtensionAPI) {
   if (nativeModels !== undefined) {
     let nativeConfig: { providers?: Record<string, unknown> };
     try {
-      nativeConfig = JSON.parse(nativeModels);
+      nativeConfig = JSON.parse(stripPiJsonSyntax(nativeModels));
       if (typeof nativeConfig !== "object" || nativeConfig === null) throw new Error();
     } catch {
       throw new Error("T3 inference requires a valid Pi models.json. Your file has not been changed.");

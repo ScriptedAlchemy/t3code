@@ -11,6 +11,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 
+import { MINIMUM_PI_INFERENCE_VERSION } from "./inference.ts";
 import { checkPiProviderStatus, MINIMUM_PI_VERSION } from "./status.ts";
 
 const encoder = new TextEncoder();
@@ -139,10 +140,10 @@ describe("PiProvider", () => {
           T3_INFERENCE_KEY: "test-route-key",
         },
       ).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, piProbeSpawner("1.5.1")),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, piProbeSpawner("1.3.0")),
       );
       assert.equal(snapshot.status, "error");
-      assert.include(snapshot.message ?? "", "1.5.2");
+      assert.include(snapshot.message ?? "", MINIMUM_PI_INFERENCE_VERSION);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

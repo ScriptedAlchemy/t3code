@@ -60,6 +60,7 @@ Routing is optional. Turn off **Use CLI proxy** to return to this provider's nor
 T3 Code configuration. Standalone CLI configuration is unchanged.
 An upgrade preserves the provider and host selected by existing threads, scheduled tasks,
 and saved role choices, including selections made through older account pools.
+An older account pool that had no proxy route continues as a copy of the normal Claude or Codex provider.
 
 Remove a provider login on its host, revoke one consuming environment, or turn
 off sharing to revoke all remote grants. Remove the route in **Inference accounts** on the executing machine. Stopping hosting keeps the host's accounts

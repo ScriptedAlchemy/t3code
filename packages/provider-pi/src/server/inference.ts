@@ -19,14 +19,36 @@ import {
   PI_INFERENCE_EXTENSION_FILENAME,
   PI_INFERENCE_EXTENSION_SOURCE,
   PI_INFERENCE_PROVIDER,
+  stripPiJsonSyntax,
   T3_INFERENCE_KEY_ENV,
   T3_PI_INFERENCE_CONFIG_ENV,
   T3_PI_INFERENCE_EXTENSION_ENV,
 } from "./inferenceExtensionSource.ts";
 import { PiRpcError } from "./rpc.ts";
 
-export const MINIMUM_PI_INFERENCE_VERSION = "1.5.2";
+// Pi 1.4.0 is the first release whose extension loader resolves "@earendil-works/pi-ai/models".
+export const MINIMUM_PI_INFERENCE_VERSION = "1.4.0";
 export const PI_VERSION_PROBE_TIMEOUT_MS = 10_000;
+
+// Only supported versions are kept, so an upgrade from an unsupported Pi is measured again.
+const supportedPiVersions = new Map<string, string>();
+const piVersionKey = (config: PiSettings, environment: NodeJS.ProcessEnv) =>
+  [config.binaryPath || "pi", environment.PATH ?? environment.Path ?? ""].join("\0");
+
+/** The status check calls this on every refresh, which replaces the version sessions reuse. */
+export const recordPiVersion = (
+  config: PiSettings,
+  environment: NodeJS.ProcessEnv,
+  version: string | null,
+) => {
+  const key = piVersionKey(config, environment);
+  if (version !== null && compareSemverVersions(version, MINIMUM_PI_INFERENCE_VERSION) >= 0) {
+    supportedPiVersions.set(key, version);
+  } else {
+    supportedPiVersions.delete(key);
+  }
+  return version;
+};
 
 const decodeConfig = Schema.decodeUnknownOption(
   Schema.fromJsonString(
@@ -113,12 +135,17 @@ export const preparePiInferenceEnvironment = Effect.fn("preparePiInferenceEnviro
     }
     const version =
       input.version ??
+      supportedPiVersions.get(piVersionKey(input.config, input.environment)) ??
       (yield* runPiVersionCommand(input.config, input.environment).pipe(
         Effect.timeoutOption(PI_VERSION_PROBE_TIMEOUT_MS),
         Effect.map((result) =>
-          Option.isSome(result) && result.value.code === 0
-            ? parseCliVersionResult(result.value)
-            : null,
+          recordPiVersion(
+            input.config,
+            input.environment,
+            Option.isSome(result) && result.value.code === 0
+              ? parseCliVersionResult(result.value)
+              : null,
+          ),
         ),
         Effect.mapError(() =>
           inferenceError("Could not check the Pi version for inference routing."),
@@ -153,7 +180,7 @@ export const preparePiInferenceEnvironment = Effect.fn("preparePiInferenceEnviro
         ),
       );
     if (nativeModels !== undefined) {
-      const nativeConfig = decodeNativeModels(nativeModels);
+      const nativeConfig = decodeNativeModels(stripPiJsonSyntax(nativeModels));
       if (Option.isNone(nativeConfig)) {
         return yield* inferenceError(
           "T3 inference requires a valid Pi models.json. Your file has not been changed.",

@@ -294,6 +294,7 @@ function makeLocalCommandHarness(input: {
   readonly recoveryNativeId?: string;
   readonly modelContextWindow?: number;
   readonly recallKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["recall"];
+  readonly supportsT3Tools?: boolean;
   readonly resolveKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["resolveForTurn"];
   readonly readSentDeliveries?: ProjectKnowledge.ProjectKnowledge["Service"]["readSentDeliveries"];
   readonly recordKnowledgeViews?: ProjectKnowledge.ProjectKnowledge["Service"]["recordViews"];
@@ -869,6 +870,9 @@ function makeLocalCommandHarness(input: {
                 ? Effect.succeed({
                     driver: providerThread.driver,
                     providerSession,
+                    ...(input.supportsT3Tools === undefined
+                      ? {}
+                      : { supportsT3Tools: input.supportsT3Tools }),
                     startTurn: nativeStart,
                     getModelContextWindow: () => input.modelContextWindow,
                     ensureThread: () =>
@@ -1540,6 +1544,18 @@ effectIt.effect.each(["current", "stale", "stale-before-dispatch"] as const)(
           });
         }
       }
+      // The recalled block names T3 tools, so a session without them gets no recall.
+      recall.mockClear();
+      const toolless = makeLocalCommandHarness({
+        text,
+        previousTurn: { runStatus: "completed", turnStatus: "completed" },
+        recallKnowledge: recall,
+        supportsT3Tools: false,
+      });
+      yield* toolless.start;
+      yield* dispatchKnowledge(toolless.startRootRun.mock.calls[0]![0]);
+      expect(recall).not.toHaveBeenCalled();
+      expect(toolless.nativeStart.mock.calls[0]?.[0].message.text).toBe(text);
     }),
 );
 

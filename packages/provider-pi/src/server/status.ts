@@ -25,6 +25,7 @@ import {
   MINIMUM_PI_INFERENCE_VERSION,
   PI_VERSION_PROBE_TIMEOUT_MS,
   preparePiInferenceEnvironment,
+  recordPiVersion,
   runPiVersionCommand,
 } from "./inference.ts";
 import { T3_PI_INFERENCE_EXTENSION_ENV } from "./inferenceExtensionSource.ts";
@@ -400,6 +401,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
 
   const versionOutput = versionResult.success.value;
   const version = parseCliVersionResult(versionOutput);
+  recordPiVersion(piSettings, probeEnvironment, versionOutput.code === 0 ? version : null);
   if (versionOutput.code !== 0) {
     return buildServerProvider({
       presentation: PI_PRESENTATION,
