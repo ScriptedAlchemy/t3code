@@ -957,13 +957,15 @@ it.live(
             pairingCode: pairing.credential,
           },
         });
+        const linkedCard = yield* cardOf(a);
+        expect(linkedCard?.failure).toBeUndefined();
+        expect(linkedCard).toMatchObject({
+          linkStatus: "linked",
+          linkedEnvironmentId: box.environmentId,
+        });
         expect(Option.getOrUndefined(yield* a.links.get(box.environmentId))).toMatchObject({
           urls: [b.url],
           access: "auto",
-        });
-        expect(yield* cardOf(a)).toMatchObject({
-          linkStatus: "linked",
-          linkedEnvironmentId: box.environmentId,
         });
         expect((yield* outcomeMessages(a)).messages[0]!.text).toContain("linked Box");
       }),
