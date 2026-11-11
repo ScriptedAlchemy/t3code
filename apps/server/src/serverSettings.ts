@@ -1,5 +1,6 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  isInferenceConfig,
   isInferenceProviderConfig,
   isCustomInferenceBackend,
   ModelSelection,
@@ -183,57 +184,6 @@ function withoutUnknownSecretProviderConfigs(
       return [id, envelope];
     }),
   ) as ServerSettings["secretProviders"];
-}
-
-const RETIRED_INSTANCE_ID =
-  /^(?:pool_(codex|claudeAgent)|inference_(codex|claudeAgent)_[0-9a-f]{16})$/;
-export const retiredInstanceSuccessor = (instanceId: string) => {
-  const match = RETIRED_INSTANCE_ID.exec(instanceId);
-  return match === null ? undefined : (match[1] ?? match[2]);
-};
-
-function retireInstanceReferences(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    const next = value.map(retireInstanceReferences);
-    return next.some((entry, index) => entry !== value[index]) ? next : value;
-  }
-  if (typeof value !== "object" || value === null) return value;
-  let changed = false;
-  const next: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    const successor = retiredInstanceSuccessor(key);
-    if (successor !== undefined) {
-      changed = true;
-      // The successor's own entry wins; a retired entry only fills a gap.
-      if (successor in value) continue;
-    }
-    const reference =
-      (key === "instanceId" || key === "provider") && typeof entry === "string"
-        ? retiredInstanceSuccessor(entry)
-        : undefined;
-    const nextEntry = reference ?? retireInstanceReferences(entry);
-    changed ||= nextEntry !== entry;
-    next[successor ?? key] = nextEntry;
-  }
-  return changed ? next : value;
-}
-
-/**
- * Account pools and per-host route instances became a mode of the driver's default instance.
- * Drops the old instances and points saved model choices at the default one.
- */
-export function retireInferenceRouteInstances(settings: ServerSettings): ServerSettings {
-  const providerInstances = Object.fromEntries(
-    Object.entries(settings.providerInstances).filter(
-      ([id]) => retiredInstanceSuccessor(id) === undefined,
-    ),
-  );
-  const { providerInstances: current, ...rest } = settings;
-  const retired = retireInstanceReferences(rest);
-  const instancesChanged = Object.keys(providerInstances).length !== Object.keys(current).length;
-  return retired === rest && !instancesChanged
-    ? settings
-    : ({ ...(retired as typeof rest), providerInstances } as ServerSettings);
 }
 
 export function applyProviderInstanceMutation(
@@ -502,6 +452,7 @@ const decodePersistedServerSettingsExit = Schema.decodeUnknownExit(PersistedServ
 const LegacyProviderSettingsJson = fromLenientJson(
   Schema.Struct({
     providers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+    retiredPoolRoutes: Schema.optionalKey(Schema.Record(Schema.String, ProviderInstanceId)),
     bitbucket: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
     github: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   }),
@@ -902,9 +853,83 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const migrateRetiredProviderPools = Effect.fn("serverSettings.migrateRetiredProviderPools")(
+    function* (
+      settings: ServerSettings,
+      routes: Readonly<Record<string, ProviderInstanceId>> | undefined,
+    ) {
+      if (routes === undefined) return settings;
+      const providerInstances = { ...settings.providerInstances };
+      for (const driver of ["codex", "claudeAgent"] as const) {
+        const sourceId = routes[driver];
+        if (sourceId === undefined) continue;
+        const instanceId = ProviderInstanceId.make(`pool_${driver}`);
+        if (providerInstances[instanceId] !== undefined) continue;
+        const source = providerInstances[sourceId];
+        if (!source || source.driver !== driver || !isInferenceConfig(source.config))
+          return yield* new ServerSettingsError({
+            settingsPath,
+            operation: "validate-provider-pool",
+            providerInstanceId: instanceId,
+            cause: new Error("The saved pool target is not a configured inference route."),
+          });
+        const pending: SettingsSecret[] = [];
+        mapSettingsSecrets(
+          { ...DEFAULT_SERVER_SETTINGS, providerInstances: { [sourceId]: source } },
+          (secret) => {
+            if (secret.sensitive && (secret.redacted || secret.value.length > 0))
+              pending.push(secret);
+            return secret;
+          },
+        );
+        yield* Effect.forEach(pending, (secret) =>
+          Effect.gen(function* () {
+            const value = secret.redacted
+              ? yield* secretStore.get(secret.secretName)
+              : Option.some(textEncoder.encode(secret.value));
+            if (Option.isNone(value))
+              return yield* new ServerSettingsError({
+                settingsPath,
+                operation: "read-secret",
+                providerInstanceId: instanceId,
+                cause: new Error("A saved route credential is missing from the secret store."),
+              });
+            const prefix = secret.kind === "environment" ? "provider-env-" : "provider-config-";
+            const sourceName = Buffer.from(sourceId, "utf8").toString("base64url");
+            const targetName = Buffer.from(instanceId, "utf8").toString("base64url");
+            const name =
+              prefix + targetName + secret.secretName.slice(prefix.length + sourceName.length);
+            yield* secretStore.set(name, value.value);
+          }).pipe(
+            Effect.mapError((cause) =>
+              cause._tag === "ServerSettingsError"
+                ? cause
+                : new ServerSettingsError({
+                    settingsPath,
+                    operation: "write-secret",
+                    providerInstanceId: instanceId,
+                    cause,
+                  }),
+            ),
+          ),
+        );
+        // Preserve each saved destination and secret slot; legacy routes never stored the host ID.
+        providerInstances[instanceId] = mapSettingsSecrets(
+          { ...DEFAULT_SERVER_SETTINGS, providerInstances: { [instanceId]: source } },
+          (secret) =>
+            secret.sensitive && (secret.redacted || secret.value.length > 0)
+              ? { value: "", redacted: true }
+              : secret,
+        ).providerInstances[instanceId]!;
+      }
+      return { ...settings, providerInstances };
+    },
+  );
+
   const loadSettingsFromDisk = Effect.gen(function* () {
     let settings = managed.defaults;
     let legacyProviders: Readonly<Record<string, unknown>> | undefined;
+    let legacyPoolRoutes: Readonly<Record<string, ProviderInstanceId>> | undefined;
     let legacySourceControl: Parameters<typeof migrateLegacySourceControlSettings>[1] = {};
     let parseFailure = Option.none<unknown>();
 
@@ -917,6 +942,7 @@ const make = Effect.gen(function* () {
       const legacySettings = decodeLegacyProviderSettingsJsonExit(raw);
       if (legacySettings._tag === "Success") {
         legacyProviders = legacySettings.value.providers;
+        legacyPoolRoutes = legacySettings.value.retiredPoolRoutes;
         legacySourceControl = {
           bitbucket: legacySettings.value.bitbucket,
           github: legacySettings.value.github,
@@ -1002,7 +1028,10 @@ const make = Effect.gen(function* () {
         : migrateLegacyProviderSettings(settings, legacyProviders, providerHistory),
     );
     const folded = settingsFileTrusted
-      ? retireInferenceRouteInstances(foldLegacyProjectSettings(loaded, legacyProjectRows))
+      ? yield* migrateRetiredProviderPools(
+          foldLegacyProjectSettings(loaded, legacyProjectRows),
+          legacyPoolRoutes,
+        )
       : loaded;
     // Remove retired keys only after copying secrets and writing the new file; failures retry on next load.
     const legacySecretsCopied = yield* Effect.forEach(

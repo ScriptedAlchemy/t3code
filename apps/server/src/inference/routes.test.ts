@@ -68,7 +68,11 @@ describe("inference routes", () => {
       "opencode",
       "Office",
       route(["grok-fixture"], {
-        OPENCODE_CONFIG_CONTENT: JSON.stringify({ theme: "mine", provider: { own: {} } }),
+        OPENCODE_CONFIG_CONTENT: `{
+          // OpenCode accepts comments and trailing commas in this variable.
+          "theme": "mine",
+          "provider": { "own": {}, },
+        }`,
       }),
     );
     expect(codex.config.launchArgs).toContain(baseUrl + "/v1");
@@ -103,6 +107,19 @@ describe("inference routes", () => {
       },
     });
     expect(claude.displayName).toBe("Claude via Office");
+    for (const raw of ['{"theme":', "[]", '{"provider":[]}']) {
+      const invalid = routeProvider(
+        "opencode",
+        "Office",
+        route(["grok-fixture"], { OPENCODE_CONFIG_CONTENT: raw }),
+      );
+      expect(invalid.environment).toContainEqual({
+        name: "OPENCODE_CONFIG_CONTENT",
+        value: raw,
+        sensitive: false,
+      });
+      expect(invalid.environment.some((entry) => entry.name === "T3_INFERENCE_KEY")).toBe(false);
+    }
   });
 
   it("gives each harness the pooled models it can run", () => {

@@ -10,16 +10,16 @@ const at = "2026-11-10T00:00:00.000Z";
 const route = "inference_codex_1ce3f6740fb26811";
 
 layer("095_RetireInferenceRouteInstances", (it) => {
-  it.effect("moves saved selections off retired pool and route instances", () =>
+  it.effect("preserves selections while settings migrate their recorded destinations", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 94 });
       const saved = [
-        [route, "codex"],
-        ["inference_claudeAgent_1ce3f6740fb26811", "claudeAgent"],
-        ["pool_codex", "codex"],
-        ["pool_claudeAgent", "claudeAgent"],
-        // Not retired shapes: a named instance and a pool for a driver that never had one.
+        [route, route],
+        ["inference_claudeAgent_1ce3f6740fb26811", "inference_claudeAgent_1ce3f6740fb26811"],
+        ["pool_codex", "pool_codex"],
+        ["pool_claudeAgent", "pool_claudeAgent"],
+        // User-defined names remain unchanged too.
         ["inference_codex_host", "inference_codex_host"],
         ["codex_work", "codex_work"],
         ["pool_cursor", "pool_cursor"],
@@ -113,7 +113,7 @@ layer("095_RetireInferenceRouteInstances", (it) => {
         runs.map((row) => [row.status, row.current]),
         [
           ["completed", [route, route, route].join("|")],
-          ["queued", "codex|codex|codex"],
+          ["queued", [route, route, route].join("|")],
         ],
       );
     }),

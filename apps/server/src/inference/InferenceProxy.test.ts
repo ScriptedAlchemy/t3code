@@ -155,6 +155,8 @@ it.effect(
         let connectionDown = false;
         const importedCodexAuth: Record<string, unknown>[] = [];
         const importedClaudeAuth: Record<string, unknown>[] = [];
+        const importedCodexFiles: string[] = [];
+        const importedClaudeFiles: string[] = [];
         let activeCodexConfig: unknown;
         const remoteCatalogKeys: (string | undefined)[] = [];
         const http = HttpClient.make((request) => {
@@ -163,13 +165,12 @@ it.effect(
             if (body._tag !== "Uint8Array" || !body.text) throw new Error("Missing auth JSON");
             const credential = JSON.parse(body.text) as Record<string, unknown>;
             const claude = credential.type === "claude";
+            const name = new URL(request.url).searchParams.get("name");
+            if (name === null) throw new Error("Missing account file name");
             (claude ? importedClaudeAuth : importedCodexAuth).push(credential);
+            (claude ? importedClaudeFiles : importedCodexFiles).push(name);
             return fs
-              .writeFileString(
-                config.stateDir +
-                  `/inference-proxy/accounts/${claude ? "claude.json" : "one.json"}`,
-                body.text,
-              )
+              .writeFileString(config.stateDir + `/inference-proxy/accounts/${name}`, body.text)
               .pipe(
                 Effect.orDie,
                 Effect.as(HttpClientResponse.fromWeb(request, Response.json({ status: "ok" }))),
@@ -307,7 +308,9 @@ it.effect(
           Layer.provide(Layer.succeed(HostProcess.Platform, "darwin")),
           Layer.provide(Layer.succeed(HostProcess.Architecture, "arm64")),
           Layer.provide(Layer.succeed(HostProcess.Username, "test-user")),
-          Layer.provide(Layer.succeed(HostProcess.Environment, {})),
+          Layer.provide(
+            Layer.succeed(HostProcess.Environment, { OPENCODE_CONFIG_CONTENT: '{"provider":' }),
+          ),
           Layer.provide(NetService.layer),
           Layer.fresh,
         );
@@ -315,7 +318,6 @@ it.effect(
         const cliHome = home + "/.codex";
         const claudeHome = home + "/.claude";
         const claudeAuthFile = claudeHome + "/.credentials.json";
-        const claudeProxyFile = config.stateDir + "/inference-proxy/accounts/claude.json";
         const accountFile = config.stateDir + "/inference-proxy/accounts/one.json";
         const accessToken =
           "header." +
@@ -402,6 +404,8 @@ it.effect(
                 refresh_token: "native-refresh",
               },
             ]);
+            const claudeProxyFile =
+              config.stateDir + `/inference-proxy/accounts/${importedClaudeFiles[0]}`;
             yield* fs.writeFileString(
               claudeProxyFile,
               JSON.stringify({
@@ -541,7 +545,11 @@ it.effect(
             expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("customSetting");
             // A removed account stays out of the pool until the user signs in again.
             const pooledAccount = yield* fs.readFileString(accountFile);
-            const signedInLocally = (refreshToken: string, lastRefresh: string) =>
+            const signedInLocally = (
+              refreshToken: string,
+              lastRefresh: string,
+              email = "person@example.com",
+            ) =>
               fs.writeFileString(
                 cliHome + "/auth.json",
                 JSON.stringify({
@@ -553,9 +561,7 @@ it.effect(
                     refresh_token: refreshToken,
                     id_token:
                       "header." +
-                      Buffer.from(JSON.stringify({ email: "person@example.com" })).toString(
-                        "base64url",
-                      ) +
+                      Buffer.from(JSON.stringify({ email })).toString("base64url") +
                       ".sig",
                   },
                 }),
@@ -565,9 +571,35 @@ it.effect(
             yield* signedInLocally("after-removal", "2026-11-13T00:00:00Z");
             yield* proxy.status;
             expect(importedCodexAuth).toHaveLength(2);
-            yield* proxy.manage({ operation: "signIn", upstream: "codex" });
+            yield* signedInLocally("other-seat", "2026-11-13T00:00:00Z", "other@example.com");
             yield* proxy.status;
             expect(importedCodexAuth).toHaveLength(3);
+            const otherAccountFile =
+              config.stateDir + `/inference-proxy/accounts/${importedCodexFiles[2]}`;
+            yield* signedInLocally("after-removal", "2026-11-13T00:00:00Z", "PERSON@example.com");
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(3);
+            yield* proxy.manage({ operation: "signIn", upstream: "codex" });
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(4);
+            expect(importedCodexFiles[3]).not.toBe(importedCodexFiles[2]);
+            expect(JSON.parse(yield* fs.readFileString(otherAccountFile))).toMatchObject({
+              email: "other@example.com",
+              refresh_token: "other-seat",
+            });
+            yield* proxy.manage({ operation: "removeAccount", name: importedCodexFiles[3]! });
+            yield* fs.remove(
+              config.stateDir + `/inference-proxy/accounts/${importedCodexFiles[3]}`,
+            );
+            yield* signedInLocally("other-refreshed", "2026-11-14T00:00:00Z", "OTHER@example.com");
+            yield* proxy.status;
+            expect(importedCodexFiles.at(-1)).toBe(importedCodexFiles[2]);
+            expect(JSON.parse(yield* fs.readFileString(otherAccountFile))).toMatchObject({
+              email: "other@example.com",
+              refresh_token: "other-refreshed",
+            });
+            yield* fs.remove(otherAccountFile);
+            yield* proxy.manage({ operation: "signIn", upstream: "codex" });
             yield* fs.writeFileString(accountFile, pooledAccount);
             yield* signedInLocally("proxy-refresh", "2026-11-12T00:00:00Z");
             expect((yield* proxy.grant(peer)).baseUrl).toBe("t3-environment:host");
@@ -612,6 +644,60 @@ it.effect(
                 .connect({ ...connect, grant: { ...local, key: "expired-local-key" } })
                 .pipe(Effect.flip)).message,
             ).toContain("local inference");
+            const openCodeId = ProviderInstanceId.make("opencode");
+            const openCodeNative = {
+              driver: ProviderDriverKind.make("opencode"),
+              environment: [
+                { name: "OPENCODE_CONFIG_CONTENT", value: '{"provider":', sensitive: false },
+              ],
+            };
+            const openCodeConnect = { ...connect, driver: "opencode" as const };
+            for (const instance of [{ driver: openCodeNative.driver }, openCodeNative]) {
+              yield* settings.updateProviderInstance({
+                operation: "upsert",
+                instanceId: openCodeId,
+                instance,
+              });
+              expect(yield* proxy.connect(openCodeConnect).pipe(Effect.result)).toMatchObject({
+                _tag: "Failure",
+                failure: {
+                  _tag: "InferenceProxyError",
+                  message: expect.stringContaining("OPENCODE_CONFIG_CONTENT"),
+                },
+              });
+              expect((yield* settings.getSettings).providerInstances[openCodeId]).toEqual(instance);
+            }
+            yield* settings.updateProviderInstance({
+              operation: "upsert",
+              instanceId: openCodeId,
+              instance: {
+                ...openCodeNative,
+                environment: [
+                  {
+                    name: "OPENCODE_CONFIG_CONTENT",
+                    value: '{ /* native */ "provider": { "own": {}, }, }',
+                    sensitive: false,
+                  },
+                ],
+              },
+            });
+            yield* proxy.connect(openCodeConnect);
+            expect((yield* proxy.status).routes).toContainEqual({
+              instanceId: openCodeId,
+              label: "OpenCode",
+            });
+            yield* settings.updateProviderInstance({
+              operation: "upsert",
+              instanceId: openCodeId,
+              instance: {
+                ...(yield* settings.getSettings).providerInstances[openCodeId]!,
+                environment: openCodeNative.environment,
+              },
+            });
+            const invalidRouteStatus = yield* proxy.status;
+            expect(invalidRouteStatus.routes).toEqual([]);
+            expect(invalidRouteStatus.problem).toContain("OPENCODE_CONFIG_CONTENT");
+            yield* proxy.manage({ operation: "removeRoute", instanceId: openCodeId });
             const native = {
               driver: ProviderDriverKind.make("codex"),
               displayName: "Codex",

@@ -185,7 +185,7 @@ export const InferenceProviderFields = {
 const hasLaunchArgs = Schema.is(Schema.Struct({ launchArgs: Schema.optionalKey(Schema.String) }));
 const hasServerUrl = Schema.is(Schema.Struct({ serverUrl: Schema.NonEmptyString }));
 export const isCustomInferenceBackend = (instance: ProviderInstanceConfig) =>
-  !isInferenceConfig(instance.config) &&
+  !isInferenceRoutingEnabled(instance.config) &&
   ((instance.driver === "codex" &&
     hasLaunchArgs(instance.config) &&
     /model_provider\s*=/.test(instance.config.launchArgs ?? "")) ||

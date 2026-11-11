@@ -70,6 +70,7 @@ import {
 } from "../provider/Drivers/CodexRuntime.ts";
 import { claudeAccountSettings, resolveClaudeRuntime } from "../provider/Drivers/ClaudeHome.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
+import * as ManagedProviders from "../policy/managedProviders.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { increment, terminalSessionsTotal } from "../observability/Metrics.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -1459,7 +1460,11 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
   const settings = yield* input.serverSettings.getSettings.pipe(
     Effect.mapError((cause) => new TerminalProviderEnvironmentError({ providerInstanceId, cause })),
   );
-  const instance = deriveProviderInstanceConfigMap(settings)[providerInstanceId];
+  const hostEnvironment = ManagedProviders.providerHostEnvironment(
+    input.serverSettings.managedPolicy,
+    { ...(yield* HostProcess.Environment), ...input.env },
+  );
+  const instance = deriveProviderInstanceConfigMap(settings, hostEnvironment)[providerInstanceId];
   if (instance === undefined) {
     return yield* new TerminalProviderInstanceNotFoundError({ providerInstanceId });
   }

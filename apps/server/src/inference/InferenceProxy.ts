@@ -23,6 +23,7 @@ import {
   type InferenceRouteInput,
   type InferenceUpstream,
 } from "@t3tools/contracts";
+import * as NodeCrypto from "node:crypto";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { NetService } from "@t3tools/shared/Net";
@@ -55,13 +56,14 @@ import * as ServerConfig from "../config.ts";
 import { DirectEndpoints } from "../environment/DirectEndpoints.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ManagedProviders from "../policy/managedProviders.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as ProviderInstanceRegistryMutator from "../provider/ProviderInstanceRegistryMutator.ts";
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { claudeKeychainEntry } from "./claudeKeychain.ts";
 import { install, proxyVersion, resolveRelease, Release } from "./install.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
-import { modelsForDriver, validateRouteUrl } from "./routes.ts";
+import { modelsForDriver, openCodeRouteProblem, validateRouteUrl } from "./routes.ts";
 
 const Saved = Schema.Struct({
   enabled: Schema.Boolean,
@@ -162,6 +164,12 @@ function jwtClaims(token: string): Record<string, unknown> | null {
   }
 }
 
+function codexAccountIdentity(accountId: string, email: unknown) {
+  return typeof email === "string" && email.includes("@")
+    ? `codex:${accountId}:${email.toLowerCase()}`
+    : `codex:${accountId}`;
+}
+
 function parseLocalCodexAuth(raw: string) {
   const decoded = decodeUnknownJson(raw);
   if (Option.isNone(decoded)) return null;
@@ -230,6 +238,7 @@ const make = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const direct = yield* DirectEndpoints;
   const env = yield* HostProcess.Environment;
+  const providerEnvironment = ManagedProviders.providerHostEnvironment(settings.managedPolicy, env);
   const homeDirectory = yield* HostProcess.HomeDirectory;
   const platform = yield* HostProcess.Platform;
   const username = yield* HostProcess.Username;
@@ -373,9 +382,11 @@ const make = Effect.gen(function* () {
       const localRaw = yield* fs.readFileString(localCodexAuthPath);
       const source = parseLocalCodexAuth(localRaw);
       if (!source) return false;
-      const removed = (yield* read).removedLocalAccounts ?? [];
-      if (removed.includes(`codex:${source.tokens.account_id}`)) return false;
       const email = jwtClaims(source.tokens.id_token)?.email;
+      const identity = codexAccountIdentity(source.tokens.account_id, email);
+      const removed = (yield* read).removedLocalAccounts ?? [];
+      if (removed.includes(identity) || removed.includes(`codex:${source.tokens.account_id}`))
+        return false;
       const authDir = path.join(directory, "accounts");
       const names = yield* fs.readDirectory(authDir);
       let existing:
@@ -443,7 +454,8 @@ const make = Effect.gen(function* () {
           "Local Codex sign-in has no account email. Add it through T3 settings.",
         );
       const name =
-        existing?.name ?? `codex-local-${Buffer.from(accountId).toString("base64url")}.json`;
+        existing?.name ??
+        `codex-local-${NodeCrypto.createHash("sha256").update(identity).digest("hex")}.json`;
       yield* jsonRequest(
         runtime.baseUrl + "/v0/management/auth-files?name=" + encodeURIComponent(name),
         runtime.management,
@@ -772,26 +784,41 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const state = yield* read;
         const { providerInstances } = yield* settings.getSettings;
+        let routeProblem: string | null = null;
         const summary = {
-          routes: Object.entries(providerInstances).flatMap(([id, instance]) =>
-            isInferenceProviderConfig(instance.config) &&
-            instance.config.inferenceEnabled &&
-            instance.enabled !== false
-              ? [
-                  {
-                    instanceId: ProviderInstanceId.make(id),
-                    label: `${inferenceHarness(instance.driver)?.label ?? instance.driver}${instance.config.inferenceHostLabel ? ` via ${instance.config.inferenceHostLabel}` : ""}`,
-                  },
-                ]
-              : [],
-          ),
+          routes: Object.entries(providerInstances).flatMap(([id, instance]) => {
+            if (
+              !isInferenceProviderConfig(instance.config) ||
+              !instance.config.inferenceEnabled ||
+              instance.enabled === false
+            )
+              return [];
+            const problem =
+              instance.driver === "opencode"
+                ? openCodeRouteProblem(
+                    instance.environment,
+                    providerEnvironment.OPENCODE_CONFIG_CONTENT,
+                  )
+                : null;
+            if (problem) {
+              routeProblem = problem;
+              return [];
+            }
+            return [
+              {
+                instanceId: ProviderInstanceId.make(id),
+                label: `${inferenceHarness(instance.driver)?.label ?? instance.driver}${instance.config.inferenceHostLabel ? ` via ${instance.config.inferenceHostLabel}` : ""}`,
+              },
+            ];
+          }),
           routing: state.routing ?? defaultInferenceRouting,
           version: state.release?.version ?? proxyVersion,
           enabled: state.enabled,
           sharing: state.sharing,
           consumers: state.grants.map(({ environmentId, label }) => ({ environmentId, label })),
         };
-        if (!state.enabled) return { ...summary, running: false, accounts: [], problem: null };
+        if (!state.enabled)
+          return { ...summary, running: false, accounts: [], problem: routeProblem };
         return yield* Effect.gen(function* () {
           const runtime = yield* ensureWatched(state);
           const sync = yield* syncLocalAuth(runtime);
@@ -806,7 +833,7 @@ const make = Effect.gen(function* () {
             accounts: files
               .filter((file) => !file.runtime_only)
               .map(({ name, provider, status }) => ({ name, provider, status })),
-            problem: sync.problem,
+            problem: routeProblem ?? sync.problem,
           };
         }).pipe(
           Effect.orElseSucceed((e) => ({
@@ -970,7 +997,9 @@ const make = Effect.gen(function* () {
           result: undefined,
         });
       });
-      yield* registry.reconcile(deriveProviderInstanceConfigMap(revised.settings));
+      yield* registry.reconcile(
+        deriveProviderInstanceConfigMap(revised.settings, providerEnvironment),
+      );
       return {};
     }
     if (input.operation === "revoke") {
@@ -1041,7 +1070,7 @@ const make = Effect.gen(function* () {
         const identity = !isRecord(account)
           ? undefined
           : isProxyCodexAuth(account)
-            ? `codex:${account.account_id}`
+            ? codexAccountIdentity(account.account_id, account.email)
             : isProxyClaudeAuth(account)
               ? `claude:${account.account_uuid}:${account.organization_uuid}`
               : undefined;
@@ -1122,7 +1151,9 @@ const make = Effect.gen(function* () {
           });
         });
       }
-      yield* registry.reconcile(deriveProviderInstanceConfigMap(yield* settings.getSettings));
+      yield* registry.reconcile(
+        deriveProviderInstanceConfigMap(yield* settings.getSettings, providerEnvironment),
+      );
     },
     Effect.mapError(safeFailure("Could not refresh inference providers.")),
   );
@@ -1249,6 +1280,14 @@ const make = Effect.gen(function* () {
       const home = path.join(config.stateDir, "providers", "inference", instanceId);
       yield* fs.makeDirectory(home, { recursive: true, mode: 0o700 });
       const revised = yield* settings.reviseProviderInstance(instanceId, (current) => {
+        const problem =
+          driver === "opencode"
+            ? openCodeRouteProblem(
+                current?.environment,
+                providerEnvironment.OPENCODE_CONFIG_CONTENT,
+              )
+            : null;
+        if (problem) return failure(problem);
         const native =
           current && !isInferenceConfig(current.config)
             ? current
@@ -1283,7 +1322,9 @@ const make = Effect.gen(function* () {
           result: undefined,
         });
       });
-      yield* registry.reconcile(deriveProviderInstanceConfigMap(revised.settings));
+      yield* registry.reconcile(
+        deriveProviderInstanceConfigMap(revised.settings, providerEnvironment),
+      );
     },
     Effect.mapError(safeFailure("Could not configure the routed provider.")),
   );

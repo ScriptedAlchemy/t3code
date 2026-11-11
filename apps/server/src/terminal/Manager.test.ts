@@ -2020,6 +2020,53 @@ it.layer(
     ),
   );
 
+  it.effect("preserves inherited OpenCode config when routing provider terminals", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const path = yield* Path.Path;
+      for (const theme of [undefined, "terminal"]) {
+        const environment = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+          stateDir: "/state",
+          serverSettings,
+          path,
+          rawProviderInstanceId: "opencode",
+          env:
+            theme === undefined
+              ? undefined
+              : { OPENCODE_CONFIG_CONTENT: JSON.stringify({ theme }) },
+        });
+        expect(JSON.parse(environment.OPENCODE_CONFIG_CONTENT!)).toMatchObject({
+          theme: theme ?? "host",
+          provider: {
+            t3proxy: { models: { "gpt-fixture": { name: "gpt-fixture" } } },
+          },
+        });
+      }
+    }).pipe(
+      Effect.provideService(HostProcess.Environment, {
+        OPENCODE_CONFIG_CONTENT: '{"theme":"host"}',
+      }),
+      Effect.provide(
+        ServerSettings.layerTest({
+          providerInstances: {
+            [ProviderInstanceId.make("opencode")]: {
+              driver: ProviderDriverKind.make("opencode"),
+              config: {
+                inferenceEnabled: true,
+                inferenceHostId: "host",
+                inferenceHostLabel: "",
+                inferenceBaseUrl: "http://127.0.0.1:9876",
+                inferenceKey: "proxy-key",
+                inferenceModels: ["gpt-fixture"],
+                inferenceHomePath: "/proxy/home",
+              },
+            },
+          },
+        }),
+      ),
+    ),
+  );
+
   it.effect("restarts a running terminal when the resolved provider environment changes", () =>
     Effect.gen(function* () {
       const providerInstanceId = ProviderInstanceId.make("codex_work");

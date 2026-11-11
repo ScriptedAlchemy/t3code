@@ -24,6 +24,7 @@ import {
   seedDevReplayInstance,
 } from "./ProviderInstanceRegistryHydration.ts";
 import { ProviderInstanceRegistryMutator } from "./ProviderInstanceRegistryMutator.ts";
+import { routeProvider } from "../inference/routes.ts";
 
 const projectId = ProjectId.make("project-a");
 const instanceId = ProviderInstanceId.make("codex_work");
@@ -64,12 +65,26 @@ describe("deriveProviderInstanceConfigMap", () => {
           driver,
           config: { launchArgs: "-c 'model_provider=\"traex\"'" },
         },
+        [ProviderInstanceId.make("inference_codex_0000000000000000")]: routeProvider(
+          "codex",
+          "Existing host",
+          {
+            baseUrl: "http://192.168.1.10:3773/api/inference",
+            key: "saved-route-key",
+            models: ["gpt-saved"],
+            homePath: "/saved/proxy/home",
+            current: () => undefined,
+          },
+        ),
       },
     });
     const before = structuredClone(settings);
     const enabled = deriveProviderInstanceConfigMap(settings);
     expect(enabled[instanceId]).toBeUndefined();
     expect(enabled[ProviderInstanceId.make("codex_traex")]).toBeDefined();
+    expect(enabled[ProviderInstanceId.make("inference_codex_0000000000000000")]).toEqual(
+      settings.providerInstances[ProviderInstanceId.make("inference_codex_0000000000000000")],
+    );
     expect(enabled[id]).toMatchObject({
       displayName: "Codex",
       config: {
@@ -116,29 +131,31 @@ describe("deriveProviderInstanceConfigMap", () => {
     const driver = ProviderDriverKind.make("opencode");
     const id = ProviderInstanceId.make("opencode");
     const other = ProviderInstanceId.make("opencode_work");
-    const merged = deriveProviderInstanceConfigMap(
-      settingsWith({
-        providerInstances: {
-          [id]: {
-            driver,
-            displayName: "My OpenCode",
-            config: {
-              inferenceEnabled: true,
-              inferenceHostId: "host",
-              inferenceHostLabel: "Office",
-              inferenceBaseUrl: "http://127.0.0.1:9876",
-              inferenceKey: "proxy-key",
-              inferenceModels: ["grok-fixture"],
-              inferenceHomePath: "/proxy/home",
-            },
-            environment: [
-              { name: "OPENCODE_CONFIG_CONTENT", value: '{"theme":"mine"}', sensitive: false },
-            ],
+    const settings = settingsWith({
+      providerInstances: {
+        [id]: {
+          driver,
+          displayName: "My OpenCode",
+          config: {
+            inferenceEnabled: true,
+            inferenceHostId: "host",
+            inferenceHostLabel: "Office",
+            inferenceBaseUrl: "http://127.0.0.1:9876",
+            inferenceKey: "proxy-key",
+            inferenceModels: ["grok-fixture"],
+            inferenceHomePath: "/proxy/home",
           },
-          [other]: { driver },
+          environment: [
+            { name: "OPENCODE_CONFIG_CONTENT", value: '{"theme":"mine"}', sensitive: false },
+          ],
         },
-      }),
-    );
+        [other]: { driver },
+      },
+    });
+    const hostEnvironment = {
+      OPENCODE_CONFIG_CONTENT: '{"theme":"inherited","provider":{"host":{}}}',
+    };
+    const merged = deriveProviderInstanceConfigMap(settings, hostEnvironment);
     expect(merged[other]).toBeDefined();
     expect(merged[id]?.displayName).toBe("My OpenCode");
     const environment = merged[id]?.environment ?? [];
@@ -153,6 +170,42 @@ describe("deriveProviderInstanceConfigMap", () => {
       theme: "mine",
       provider: { t3proxy: { models: { "grok-fixture": { name: "grok-fixture" } } } },
     });
+    expect(JSON.parse(String(contents[0]?.value)).provider).not.toHaveProperty("host");
+    const inherited = deriveProviderInstanceConfigMap(
+      {
+        ...settings,
+        providerInstances: {
+          ...settings.providerInstances,
+          [id]: { ...settings.providerInstances[id]!, environment: [] },
+        },
+      },
+      hostEnvironment,
+    );
+    expect(
+      JSON.parse(
+        String(
+          inherited[id]?.environment?.find((entry) => entry.name === "OPENCODE_CONFIG_CONTENT")
+            ?.value,
+        ),
+      ),
+    ).toMatchObject({
+      theme: "inherited",
+      provider: { host: {}, t3proxy: { models: { "grok-fixture": { name: "grok-fixture" } } } },
+    });
+    for (const variable of [
+      { name: "OPENCODE_CONFIG_CONTENT", value: '{"theme":', sensitive: false },
+      { name: "OPENCODE_CONFIG_CONTENT", value: "", sensitive: true, valueRedacted: true },
+    ]) {
+      const native = { ...settings.providerInstances[id]!, environment: [variable] };
+      const invalid = deriveProviderInstanceConfigMap(
+        {
+          ...settings,
+          providerInstances: { ...settings.providerInstances, [id]: native },
+        },
+        hostEnvironment,
+      );
+      expect(invalid[id]).toEqual(native);
+    }
   });
 
   it("turns a machine-disabled instance on when a project enables it", () => {

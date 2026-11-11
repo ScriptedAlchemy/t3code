@@ -5,7 +5,11 @@ import {
   type CustomModelSetting,
   type SettingsSecretValue,
   type InferenceDriver,
+  type ProviderInstanceConfig,
 } from "@t3tools/contracts";
+import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 const PREFIX = "/api/inference";
 
@@ -74,22 +78,41 @@ const ownedBy = (vendor: string, pattern: RegExp) => (model: ProxyModel) => {
 const CODEX_PROVIDER = (baseUrl: string) =>
   `model_providers.t3proxy={name="T3 inference",base_url="${baseUrl}/v1",env_key="T3_INFERENCE_KEY",wire_api="responses",supports_websockets=false,requires_openai_auth=false}`;
 
-function openCodeConfig(route: Route) {
-  let current: unknown;
-  try {
-    current = JSON.parse(route.current("OPENCODE_CONFIG_CONTENT") || "{}");
-  } catch {
-    current = {};
-  }
-  const config = current !== null && typeof current === "object" ? current : {};
-  const provider =
-    "provider" in config && config.provider !== null && typeof config.provider === "object"
-      ? config.provider
-      : {};
-  return JSON.stringify({
+const configRecord = Schema.Record(Schema.String, Schema.Unknown);
+const isConfigRecord = Schema.is(configRecord);
+const decodeOpenCodeConfig = Schema.decodeUnknownOption(fromLenientJson(configRecord));
+
+function parseOpenCodeConfig(content: string | undefined) {
+  return decodeOpenCodeConfig(content || "{}").pipe(
+    Option.filter((config) => config.provider === undefined || isConfigRecord(config.provider)),
+  );
+}
+
+export function openCodeRouteProblem(
+  environment: ProviderInstanceConfig["environment"],
+  inheritedContent?: string,
+) {
+  const variable = environment?.find((entry) => entry.name === "OPENCODE_CONFIG_CONTENT");
+  const unreadable =
+    variable !== undefined && (variable.valueRedacted || typeof variable.value !== "string");
+  const content = variable === undefined ? inheritedContent : variable.value;
+  return unreadable ||
+    Option.isNone(parseOpenCodeConfig(typeof content === "string" ? content : undefined))
+    ? "Correct OPENCODE_CONFIG_CONTENT before using OpenCode inference routing. It must be a readable JSONC object, and its provider field must be an object."
+    : null;
+}
+
+function openCodeEnvironment(route: Route) {
+  const content = route.current("OPENCODE_CONFIG_CONTENT");
+  const parsed = parseOpenCodeConfig(content);
+  // Leave invalid native text for OpenCode to diagnose; never replace it with an empty config.
+  if (Option.isNone(parsed))
+    return [{ name: "OPENCODE_CONFIG_CONTENT", value: content ?? "", sensitive: false }];
+  const config = parsed.value;
+  const value = JSON.stringify({
     ...config,
     provider: {
-      ...provider,
+      ...(isConfigRecord(config.provider) ? config.provider : {}),
       t3proxy: {
         npm: "@ai-sdk/openai-compatible",
         name: "T3 inference",
@@ -99,6 +122,10 @@ function openCodeConfig(route: Route) {
       },
     },
   });
+  return [
+    { name: "T3_INFERENCE_KEY", value: route.key, sensitive: true },
+    { name: "OPENCODE_CONFIG_CONTENT", value, sensitive: false },
+  ];
 }
 
 /** How each routed harness reaches the proxy. */
@@ -150,10 +177,7 @@ const harnesses: Record<
   opencode: {
     serves: () => true,
     config: () => ({}),
-    environment: (route) => [
-      { name: "T3_INFERENCE_KEY", value: route.key, sensitive: true },
-      { name: "OPENCODE_CONFIG_CONTENT", value: openCodeConfig(route), sensitive: false },
-    ],
+    environment: openCodeEnvironment,
   },
 };
 

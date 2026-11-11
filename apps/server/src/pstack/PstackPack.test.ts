@@ -413,16 +413,22 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
       assert.include(expansion.text, "Provider is rate limited. Retry after its cooldown expires.");
     }),
   );
-  it.effect("rewrites role seats saved against a retired route instance", () =>
+  it.effect("preserves role seats whose pool target became a concrete provider", () =>
     Effect.gen(function* () {
-      const fixture = yield* makeFixture([claudeProvider]);
+      const pool = ProviderInstanceId.make("pool_claudeAgent");
+      const fixture = yield* makeFixture(
+        [{ ...claudeProvider, instanceId: pool }],
+        ServerSettings.layerTest({
+          pstackEnabled: true,
+          providerInstances: {
+            [pool]: { driver: claudeProvider.driver, config: { setupMode: "inference" } },
+          },
+        }),
+      );
       const fs = yield* FileSystem.FileSystem;
       const modelsPath = `${fixture.stateDir}/pstack/models.md`;
       yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
-      yield* fs.writeFileString(
-        modelsPath,
-        "architect runners: inference_claudeAgent_1ce3f6740fb26811/claude-opus-5-5",
-      );
+      yield* fs.writeFileString(modelsPath, "architect runners: pool_claudeAgent/claude-opus-5-5");
       const expansion = yield* Effect.gen(function* () {
         return yield* (yield* PstackPack.PstackPack).expandComposer(
           { text: "$pstack:architect", records: [], projectId: ProjectId.make("pack-test") },
@@ -431,11 +437,11 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
       }).pipe(Effect.provide(fixture.layer));
       assert.include(
         expansion.text,
-        '- architect runners: [1] {"providerInstanceId":"claudeAgent"',
+        '- architect runners: [1] {"providerInstanceId":"pool_claudeAgent"',
       );
       assert.equal(
         yield* fs.readFileString(modelsPath),
-        "architect runners: claudeAgent/claude-opus-5-5",
+        "architect runners: pool_claudeAgent/claude-opus-5-5",
       );
     }),
   );
@@ -444,7 +450,7 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
     (scenario) =>
       Effect.gen(function* () {
         const projectId = ProjectId.make("pack-test");
-        const route = ProviderInstanceId.make("inference_claude_host");
+        const route = ProviderInstanceId.make("inference_claudeAgent_1ce3f6740fb26811");
         const fixture = yield* makeFixture(
           [
             claudeProvider,
@@ -472,7 +478,7 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
         yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
         yield* fs.writeFileString(
           `${fixture.stateDir}/pstack/models.md`,
-          "architect runners: inference_claude_host/claude-opus-5-5",
+          `architect runners: ${route}/claude-opus-5-5`,
         );
         const expansion = yield* Effect.gen(function* () {
           return yield* (yield* PstackPack.PstackPack).expandComposer(
@@ -483,7 +489,7 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
         if (scenario === "available") {
           assert.include(
             expansion.text,
-            '- architect runners: [1] {"providerInstanceId":"inference_claude_host"',
+            `- architect runners: [1] {"providerInstanceId":"${route}"`,
           );
           assert.notInclude(expansion.text, "Fallback:");
         } else {
