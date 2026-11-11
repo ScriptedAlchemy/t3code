@@ -41,7 +41,6 @@ import { useStableCallback } from "../hooks/useStableCallback";
 import { useProjectScriptEditing } from "./chat/useProjectScriptEditing";
 import { RightPanelSurfaceContent } from "./chat/RightPanelSurfaceContent";
 import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
-import { composerInstanceIdFor } from "@t3tools/client-runtime/provider-pools";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
@@ -1697,10 +1696,7 @@ export default function ChatView(props: ChatViewProps) {
     providers: providerInstanceEntries,
     driverKind: selectedProvider,
     instanceId: activeProviderInstanceId,
-    lockedInstanceId:
-      lockedAccountInstanceId === null
-        ? null
-        : composerInstanceIdFor(providerStatuses, lockedAccountInstanceId),
+    lockedInstanceId: lockedAccountInstanceId,
   });
   const [resumeCompactionPermanentlyDismissed, setResumeCompactionPermanentlyDismissed] =
     useLocalStorage(

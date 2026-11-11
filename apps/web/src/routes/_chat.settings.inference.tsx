@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { InferenceSettings } from "../components/settings/InferenceSettings";
 import { useSettingsScope } from "../components/settings/SettingsScopeContext";
 
-function SettingsAccountPoolsRoute() {
+function SettingsInferenceRoute() {
   const { environment, scope } = useSettingsScope();
   if (!environment) {
     return (
@@ -28,6 +28,6 @@ function SettingsAccountPoolsRoute() {
   );
 }
 
-export const Route = createFileRoute("/_chat/settings/account-pools")({
-  component: SettingsAccountPoolsRoute,
+export const Route = createFileRoute("/_chat/settings/inference")({
+  component: SettingsInferenceRoute,
 });

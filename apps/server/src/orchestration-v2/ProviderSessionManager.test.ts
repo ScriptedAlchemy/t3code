@@ -574,6 +574,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 
 function layerTest(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
+  readonly continuation?: { readonly key: Ref.Ref<string>; readonly required: boolean };
   readonly idleTimeoutMs: number;
   readonly maxIdlePinMs?: number;
   readonly failEventStream?: boolean;
@@ -644,7 +645,23 @@ function layerTest(input: {
       ...(input.scopeCloseReached === undefined
         ? {}
         : { scopeCloseReached: input.scopeCloseReached }),
-    }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
+    }).pipe(
+      Effect.map((adapter) =>
+        input.continuation === undefined
+          ? ProviderAdapterRegistry.layerSingle(adapter)
+          : Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
+              get: () =>
+                Ref.get(input.continuation!.key).pipe(
+                  Effect.map((continuationKey) => ({
+                    ...adapter,
+                    continuationKey,
+                    requiresBoundContinuationIdentity: input.continuation!.required,
+                  })),
+                ),
+              list: () => Effect.succeed([adapter.instanceId]),
+            }),
+      ),
+    ),
   );
   const layerConfiguredMcpRegistry =
     input.pauseResolve === undefined
@@ -955,6 +972,71 @@ function makePendingRuntimeRequestEvents(input: {
     return { events, providerEvents, requestId, nodeId };
   });
 }
+
+it.effect.each(["unknown", "changed", "cached", "fork"] as const)(
+  "ProviderSessionManagerV2 refuses a %s home identity before opening or reusing a runtime",
+  (boundary) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const key = yield* Ref.make("codex:home:native");
+      yield* Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const threadId = ThreadId.make("thread:home-identity-race");
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({
+              idAllocator: ids,
+              threadId,
+              now: yield* DateTime.now,
+            }),
+          ],
+        });
+        const open = { threadId, providerSessionId, modelSelection, runtimePolicy };
+        if (boundary === "cached") yield* manager.open(open);
+        yield* Ref.set(key, "codex:home:proxy");
+        if (boundary === "fork") {
+          const runtime = yield* manager.open(open);
+          const source = makeProviderThread({
+            idAllocator: ids,
+            threadId,
+            providerSessionId,
+            now: yield* DateTime.now,
+          });
+          const failure = yield* runtime
+            .forkThread({
+              sourceProviderThread: {
+                ...source,
+                nativeMetadata: { continuationKey: "codex:home:native" },
+              },
+              targetThreadId: ThreadId.make("thread:fork-home-identity"),
+            })
+            .pipe(Effect.flip);
+          assert.equal(failure._tag, "ProviderAdapterProtocolError");
+          return;
+        }
+        const failure = yield* manager
+          .open({
+            ...open,
+            ...(boundary === "cached" ? {} : { initialNativeThreadId: "native-thread" }),
+            ...(boundary === "changed" ? { expectedContinuationKey: "codex:home:native" } : {}),
+          })
+          .pipe(Effect.flip);
+        assert.equal(failure._tag, "ProviderSessionOpenError");
+        assert.equal((yield* Ref.get(state)).openCount, boundary === "cached" ? 1 : 0);
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+      }).pipe(
+        Effect.provide(
+          layerTest({ state, idleTimeoutMs: 1000, continuation: { key, required: true } }),
+        ),
+      );
+    }),
+);
 
 it.effect("ProviderSessionManagerV2 opens independent sessions concurrently", () =>
   Effect.gen(function* () {

@@ -1,6 +1,7 @@
 // Shared with the client settings form; keep schema code browser-safe.
 import {
   CustomModelSetting,
+  InferenceProviderFields,
   makeBinaryPathSetting,
   makeProviderSettingsSchema,
   secretSetting,
@@ -12,6 +13,7 @@ import * as Schema from "effect/Schema";
 
 export const OpenCodeSettings = makeProviderSettingsSchema(
   {
+    ...InferenceProviderFields,
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(false)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),

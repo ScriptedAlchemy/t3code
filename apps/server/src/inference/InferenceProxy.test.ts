@@ -1,15 +1,18 @@
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  retiredPoolRoute,
+  PeerLinkError,
   EnvironmentId,
-  ProviderDriverKind,
   ProviderInstanceId,
+  ProviderDriverKind,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
+import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -24,11 +27,33 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ProviderInstanceRegistryMutator from "../provider/ProviderInstanceRegistryMutator.ts";
 import { DirectEndpoints } from "../environment/DirectEndpoints.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as InferenceProxy from "./InferenceProxy.ts";
 import { proxyVersion } from "./install.ts";
+
+const keychainState = vi.hoisted(() => ({
+  password: "",
+  hang: false,
+  onRead: undefined as (() => void) | undefined,
+}));
+vi.mock("./claudeKeychain.ts", () => ({
+  claudeKeychainEntry: () =>
+    new (class {
+      async getPassword() {
+        if (keychainState.hang) {
+          keychainState.onRead?.();
+          return await new Promise<string | undefined>(() => {});
+        }
+        return keychainState.password || undefined;
+      }
+      async setPassword(password: string) {
+        keychainState.password = password;
+      }
+    })(),
+}));
 
 it.effect(
   "restores hosted accounts, scopes grants to consumers and cuts over a working route atomically",
@@ -36,6 +61,9 @@ it.effect(
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
+        keychainState.password = "";
+        keychainState.hang = false;
+        keychainState.onRead = undefined;
         const config = yield* ServerConfig.ServerConfig;
         const state = yield* ServerSecretStore.ServerSecretStore;
         const home = yield* fs.makeTempDirectoryScoped();
@@ -49,6 +77,20 @@ it.effect(
         const finishDownload = yield* Deferred.make<void>();
         let registryOffline = true;
         let tailnetCatalogDown = false;
+        let linked = false;
+        let linkedUrl = "http://127.0.0.1:23456";
+        let connectionOverride: string | undefined;
+        let staleLinkedCatalog = false;
+        const link = {
+          environmentId: hostId,
+          label: "Host",
+          urls: ["ssh://host"],
+          access: "full-access" as const,
+          linkedAt: DateTime.makeUnsafe(0),
+          expiresAt: DateTime.makeUnsafe(86400000),
+          lastReachedAt: null,
+          lastError: null,
+        };
         let serving = false;
         let lan = false;
         let rejectNextLaunch = false;
@@ -110,8 +152,37 @@ it.effect(
         let catalog: readonly { id: string; owned_by?: string }[] = [];
         let identity = hostId;
         let peerId = hostId;
+        let connectionDown = false;
+        const importedCodexAuth: Record<string, unknown>[] = [];
+        const importedClaudeAuth: Record<string, unknown>[] = [];
+        const importedCodexFiles: string[] = [];
+        const importedClaudeFiles: string[] = [];
+        let activeCodexConfig: unknown;
         const remoteCatalogKeys: (string | undefined)[] = [];
         const http = HttpClient.make((request) => {
+          if (request.method === "POST" && request.url.includes("/v0/management/auth-files?")) {
+            const body = request.body;
+            if (body._tag !== "Uint8Array" || !body.text) throw new Error("Missing auth JSON");
+            const credential = JSON.parse(body.text) as Record<string, unknown>;
+            const claude = credential.type === "claude";
+            const name = new URL(request.url).searchParams.get("name");
+            if (name === null) throw new Error("Missing account file name");
+            (claude ? importedClaudeAuth : importedCodexAuth).push(credential);
+            (claude ? importedClaudeFiles : importedCodexFiles).push(name);
+            return fs
+              .writeFileString(config.stateDir + `/inference-proxy/accounts/${name}`, body.text)
+              .pipe(
+                Effect.orDie,
+                Effect.as(HttpClientResponse.fromWeb(request, Response.json({ status: "ok" }))),
+              );
+          }
+          if (request.url.endsWith("-auth-url"))
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(
+                request,
+                Response.json({ state: "sign-in", url: "https://auth.example.com/start" }),
+              ),
+            );
           if (registryOffline && request.url.endsWith("/releases/latest"))
             return Effect.succeed(
               HttpClientResponse.fromWeb(request, new Response(null, { status: 503 })),
@@ -153,6 +224,10 @@ it.effect(
               );
             }
             remoteCatalogKeys.push(request.headers.authorization);
+            if (staleLinkedCatalog && request.url.startsWith("http://127.0.0.1:34567/"))
+              return Effect.succeed(
+                HttpClientResponse.fromWeb(request, new Response(null, { status: 502 })),
+              );
             if (tailnetCatalogDown && request.url.startsWith("https:"))
               return Effect.succeed(
                 HttpClientResponse.fromWeb(request, new Response(null, { status: 502 })),
@@ -185,6 +260,24 @@ it.effect(
           );
         });
         const service = InferenceProxy.layer.pipe(
+          Layer.provide(
+            Layer.mock(PeerLinks.PeerLinks)({
+              get: () => Effect.succeed(linked ? Option.some(link) : Option.none()),
+              resolveAddress: () =>
+                connectionDown
+                  ? Effect.fail(
+                      new PeerLinkError({
+                        reason: "unreachable",
+                        message: "SSH connection unavailable",
+                      }),
+                    )
+                  : Effect.succeed(connectionOverride ?? linkedUrl),
+              resolve: () =>
+                linked
+                  ? Effect.succeed({ link, url: linkedUrl, token: "must-not-forward-peer-token" })
+                  : Effect.fail(new PeerLinkError({ reason: "unknown_link", message: "unlinked" })),
+            }),
+          ),
           Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
           Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
           Layer.provide(
@@ -201,14 +294,89 @@ it.effect(
             }),
           ),
           Layer.provide(Layer.succeed(ServerConfig.ServerConfig, { ...config, port: 12345 })),
+          Layer.provide(
+            Layer.succeed(ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator, {
+              reconcile: (instances) =>
+                Effect.sync(() => {
+                  activeCodexConfig = instances[ProviderInstanceId.make("codex")]?.config;
+                }),
+              reloadSecrets: () => Effect.void,
+            }),
+          ),
           Layer.provide(Layer.mock(ProcessRunner.ProcessRunner)({})),
           Layer.provide(Layer.succeed(HostProcess.HomeDirectory, home)),
           Layer.provide(Layer.succeed(HostProcess.Platform, "darwin")),
           Layer.provide(Layer.succeed(HostProcess.Architecture, "arm64")),
+          Layer.provide(Layer.succeed(HostProcess.Username, "test-user")),
+          Layer.provide(
+            Layer.succeed(HostProcess.Environment, { OPENCODE_CONFIG_CONTENT: '{"provider":' }),
+          ),
           Layer.provide(NetService.layer),
           Layer.fresh,
         );
         const settings = yield* ServerSettings.ServerSettingsService;
+        const cliHome = home + "/.codex";
+        const claudeHome = home + "/.claude";
+        const claudeAuthFile = claudeHome + "/.credentials.json";
+        const accountFile = config.stateDir + "/inference-proxy/accounts/one.json";
+        const accessToken =
+          "header." +
+          Buffer.from(JSON.stringify({ exp: 4102444800 })).toString("base64url") +
+          ".sig";
+        yield* fs.makeDirectory(cliHome, { recursive: true });
+        yield* fs.makeDirectory(claudeHome, { recursive: true });
+        yield* fs.makeDirectory(config.stateDir + "/inference-proxy/accounts", {
+          recursive: true,
+        });
+        yield* fs.writeFileString(
+          accountFile,
+          JSON.stringify({
+            type: "codex",
+            account_id: "same-account",
+            email: "person@example.com",
+            access_token: "old-access",
+            refresh_token: "old-refresh",
+            id_token: "old-id",
+            last_refresh: "2026-11-09T00:00:00Z",
+            note: "keep this metadata",
+          }),
+        );
+        yield* fs.writeFileString(
+          cliHome + "/auth.json",
+          JSON.stringify({
+            auth_mode: "chatgpt",
+            last_refresh: "2026-11-10T00:00:00Z",
+            tokens: {
+              account_id: "same-account",
+              access_token: accessToken,
+              refresh_token: "new-refresh",
+              id_token: "new-id",
+            },
+          }),
+        );
+        yield* fs.writeFileString(
+          home + "/.claude.json",
+          JSON.stringify({
+            oauthAccount: {
+              accountUuid: "claude-account",
+              organizationUuid: "org",
+              emailAddress: "person@example.com",
+              organizationName: "Team",
+            },
+          }),
+        );
+        yield* fs.writeFileString(
+          claudeAuthFile,
+          JSON.stringify({
+            customSetting: "keep",
+            claudeAiOauth: {
+              accessToken: "native-access",
+              refreshToken: "native-refresh",
+              expiresAt: 4102444800000,
+              scopes: ["user:inference"],
+            },
+          }),
+        );
         const grant = yield* Effect.scoped(
           Effect.gen(function* () {
             const proxy = yield* InferenceProxy.InferenceProxy;
@@ -218,8 +386,223 @@ it.effect(
               enabled: true,
               sharing: true,
             });
-            expect((yield* startSharing.pipe(Effect.flip)).message).toContain("Tailscale HTTPS");
-            expect((yield* proxy.status).enabled).toBe(false);
+            yield* startSharing;
+            expect((yield* proxy.status).enabled).toBe(true);
+            expect(importedCodexAuth).toMatchObject([
+              {
+                type: "codex",
+                account_id: "same-account",
+                refresh_token: "new-refresh",
+                note: "keep this metadata",
+              },
+            ]);
+            expect(importedClaudeAuth).toMatchObject([
+              {
+                type: "claude",
+                account_uuid: "claude-account",
+                organization_uuid: "org",
+                refresh_token: "native-refresh",
+              },
+            ]);
+            const claudeProxyFile =
+              config.stateDir + `/inference-proxy/accounts/${importedClaudeFiles[0]}`;
+            yield* fs.writeFileString(
+              claudeProxyFile,
+              JSON.stringify({
+                type: "claude",
+                account_uuid: "claude-account",
+                organization_uuid: "org",
+                email: "person@example.com",
+                access_token: "proxy-access",
+                refresh_token: "proxy-refresh",
+                expired: "2101-01-01T00:00:00.000Z",
+              }),
+            );
+            yield* proxy.status;
+            expect(JSON.parse(yield* fs.readFileString(claudeAuthFile))).toMatchObject({
+              customSetting: "keep",
+              claudeAiOauth: {
+                accessToken: "proxy-access",
+                refreshToken: "proxy-refresh",
+                scopes: ["user:inference"],
+              },
+            });
+            yield* fs.writeFileString(
+              claudeAuthFile,
+              JSON.stringify({
+                customSetting: "keep",
+                claudeAiOauth: {
+                  accessToken: "new-native-access",
+                  refreshToken: "new-native-refresh",
+                  expiresAt: 4167849600000,
+                  scopes: ["user:inference"],
+                },
+              }),
+            );
+            yield* proxy.status;
+            expect(importedClaudeAuth.at(-1)).toMatchObject({
+              access_token: "new-native-access",
+              refresh_token: "new-native-refresh",
+            });
+            keychainState.password = JSON.stringify({
+              customSetting: "keychain",
+              claudeAiOauth: {
+                accessToken: "keychain-access",
+                refreshToken: "keychain-refresh",
+                expiresAt: 4199385600000,
+              },
+            });
+            yield* proxy.status;
+            expect(importedClaudeAuth.at(-1)).toMatchObject({
+              access_token: "keychain-access",
+              refresh_token: "keychain-refresh",
+            });
+            yield* fs.remove(claudeAuthFile);
+            yield* fs.writeFileString(
+              claudeProxyFile,
+              JSON.stringify({
+                type: "claude",
+                account_uuid: "claude-account",
+                organization_uuid: "org",
+                email: "person@example.com",
+                access_token: "new-proxy-access",
+                refresh_token: "new-proxy-refresh",
+                expired: "2104-01-01T00:00:00.000Z",
+              }),
+            );
+            yield* proxy.status;
+            expect(JSON.parse(keychainState.password)).toMatchObject({
+              customSetting: "keychain",
+              claudeAiOauth: {
+                accessToken: "new-proxy-access",
+                refreshToken: "new-proxy-refresh",
+              },
+            });
+            keychainState.hang = true;
+            const readStarted = new Promise<void>((resolve) => {
+              keychainState.onRead = resolve;
+            });
+            const stalledStatus = yield* proxy.status.pipe(Effect.forkChild);
+            yield* Effect.promise(() => readStarted);
+            yield* TestClock.adjust("6 seconds");
+            expect(stalledStatus.pollUnsafe()).toBeDefined();
+            expect((yield* Fiber.join(stalledStatus)).problem).toContain("Keychain");
+            keychainState.hang = false;
+            keychainState.onRead = undefined;
+            expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("new-refresh");
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(1);
+            yield* fs.writeFileString(
+              cliHome + "/auth.json",
+              JSON.stringify({
+                auth_mode: "chatgpt",
+                last_refresh: "2026-11-11T00:00:00Z",
+                tokens: {
+                  account_id: "same-account",
+                  access_token: accessToken,
+                  refresh_token: "next-refresh",
+                  id_token: "new-id",
+                },
+              }),
+            );
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(2);
+            expect(importedCodexAuth[1]).toMatchObject({
+              refresh_token: "next-refresh",
+              note: "keep this metadata",
+            });
+            yield* fs.writeFileString(
+              cliHome + "/auth.json",
+              JSON.stringify({
+                auth_mode: "chatgpt",
+                customSetting: "keep",
+                last_refresh: "2026-11-09T00:00:00Z",
+                tokens: {
+                  account_id: "same-account",
+                  access_token: accessToken,
+                  refresh_token: "stale-refresh",
+                  id_token: "new-id",
+                },
+              }),
+            );
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(2);
+            yield* fs.writeFileString(
+              accountFile,
+              JSON.stringify({
+                type: "codex",
+                account_id: "same-account",
+                email: "person@example.com",
+                access_token: accessToken,
+                refresh_token: "proxy-refresh",
+                id_token: "proxy-id",
+                last_refresh: "2026-11-12T00:00:00Z",
+                note: "keep this metadata",
+              }),
+            );
+            yield* proxy.status;
+            expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("proxy-refresh");
+            expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("customSetting");
+            // A removed account stays out of the pool until the user signs in again.
+            const pooledAccount = yield* fs.readFileString(accountFile);
+            const signedInLocally = (
+              refreshToken: string,
+              lastRefresh: string,
+              email = "person@example.com",
+            ) =>
+              fs.writeFileString(
+                cliHome + "/auth.json",
+                JSON.stringify({
+                  auth_mode: "chatgpt",
+                  last_refresh: lastRefresh,
+                  tokens: {
+                    account_id: "same-account",
+                    access_token: accessToken,
+                    refresh_token: refreshToken,
+                    id_token:
+                      "header." +
+                      Buffer.from(JSON.stringify({ email })).toString("base64url") +
+                      ".sig",
+                  },
+                }),
+              );
+            yield* proxy.manage({ operation: "removeAccount", name: "one.json" });
+            yield* fs.remove(accountFile);
+            yield* signedInLocally("after-removal", "2026-11-13T00:00:00Z");
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(2);
+            yield* signedInLocally("other-seat", "2026-11-13T00:00:00Z", "other@example.com");
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(3);
+            const otherAccountFile =
+              config.stateDir + `/inference-proxy/accounts/${importedCodexFiles[2]}`;
+            yield* signedInLocally("after-removal", "2026-11-13T00:00:00Z", "PERSON@example.com");
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(3);
+            yield* proxy.manage({ operation: "signIn", upstream: "codex" });
+            yield* proxy.status;
+            expect(importedCodexAuth).toHaveLength(4);
+            expect(importedCodexFiles[3]).not.toBe(importedCodexFiles[2]);
+            expect(JSON.parse(yield* fs.readFileString(otherAccountFile))).toMatchObject({
+              email: "other@example.com",
+              refresh_token: "other-seat",
+            });
+            yield* proxy.manage({ operation: "removeAccount", name: importedCodexFiles[3]! });
+            yield* fs.remove(
+              config.stateDir + `/inference-proxy/accounts/${importedCodexFiles[3]}`,
+            );
+            yield* signedInLocally("other-refreshed", "2026-11-14T00:00:00Z", "OTHER@example.com");
+            yield* proxy.status;
+            expect(importedCodexFiles.at(-1)).toBe(importedCodexFiles[2]);
+            expect(JSON.parse(yield* fs.readFileString(otherAccountFile))).toMatchObject({
+              email: "other@example.com",
+              refresh_token: "other-refreshed",
+            });
+            yield* fs.remove(otherAccountFile);
+            yield* proxy.manage({ operation: "signIn", upstream: "codex" });
+            yield* fs.writeFileString(accountFile, pooledAccount);
+            yield* signedInLocally("proxy-refresh", "2026-11-12T00:00:00Z");
+            expect((yield* proxy.grant(peer)).baseUrl).toBe("t3-environment:host");
             lan = true;
             yield* startSharing;
             expect((yield* proxy.grant(peer)).baseUrl).toBe(
@@ -229,58 +612,15 @@ it.effect(
             yield* startSharing;
             const { accounts } = yield* proxy.status;
             expect(accounts).toEqual([{ name: "one.json", provider: "codex", status: "active" }]);
-            catalog = [{ id: "bridge/coding" }];
-            const mapping = { source: "traex", pool: "work", upstream: "bridge/coding" } as const;
-            expect(
-              (yield* proxy.manage({ operation: "mapModel", mapping }).pipe(Effect.flip)).message,
-            ).toContain("Traex bridge");
-            yield* fs.makeDirectory(home + "/.traex-bridge");
-            yield* fs.writeFileString(home + "/.traex-bridge/api-key", "bridge-fixture");
-            expect(
-              (yield* proxy.manage({ operation: "listModels", source: "traex" })).models,
-            ).toEqual(["bridge/coding"]);
-            catalog = [];
-            yield* proxy.manage({ operation: "mapModel", mapping });
-            yield* proxy.manage({
-              operation: "mapModel",
-              mapping: { ...mapping, upstream: "renamed" },
-            });
-            yield* proxy.manage({
-              operation: "mapModel",
-              mapping: { ...mapping, source: "codex", upstream: "gpt-native" },
-            });
-            yield* proxy.manage({
-              operation: "mapModel",
-              mapping: { ...mapping, source: "claudeAgent", upstream: "claude-native" },
-            });
             yield* proxy.manage({ operation: "setRouting", strategy: "fill-first" });
             yield* proxy.manage({ operation: "setRouting", sessionAffinity: false });
-            const safeStatus = yield* proxy.status;
-            expect(JSON.stringify(safeStatus)).not.toContain("bridge-fixture");
-            expect(safeStatus.routing?.mappings).toHaveLength(3);
             const readConfig = fs
               .readFileString(config.stateDir + "/inference-proxy/config.yaml")
               .pipe(Effect.map((s) => JSON.parse(s) as Record<string, unknown>));
             expect(yield* readConfig).toMatchObject({
               routing: { strategy: "fill-first", "session-affinity": false },
-              oauth: {
-                "model-alias": {
-                  codex: [{ name: "gpt-native", alias: "codex-pool-work", fork: true }],
-                  claude: [{ name: "claude-native", alias: "claude-pool-work", fork: true }],
-                },
-              },
-              "api-keys": {
-                codex: [
-                  {
-                    "base-url": "http://127.0.0.1:8317/v1",
-                    keys: [{ "api-key": "bridge-fixture" }],
-                    models: [{ name: "renamed", alias: "codex-pool-work" }],
-                  },
-                ],
-              },
             });
-            yield* proxy.manage({ operation: "unmapModel", source: "traex", pool: "work" });
-            expect(yield* readConfig).not.toHaveProperty("api-keys");
+            expect((yield* readConfig)["oauth"]).not.toHaveProperty("model-alias");
             const issued = yield* proxy.grant(peer);
             expect(issued.baseUrl).toBe("https://pool.example.ts.net/api/inference");
             expect((yield* proxy.grant(peer)).key).toBe(issued.key);
@@ -291,33 +631,113 @@ it.effect(
               "_tag",
               "InferenceProxyError",
             );
-            expect((yield* settings.getSettings).providerPools).toHaveProperty("codex");
             catalog = [
               { id: "codex-auto-review", owned_by: "openai" },
               { id: "office-model", owned_by: "openai" },
               { id: "gpt-other", owned_by: "anthropic" },
               { id: "gpt-fixture" },
+              { id: "codex-pool-work", owned_by: "openai" },
+              { id: "claude-pool-sonnet", owned_by: "anthropic" },
             ];
             expect(
               (yield* proxy
                 .connect({ ...connect, grant: { ...local, key: "expired-local-key" } })
                 .pipe(Effect.flip)).message,
             ).toContain("local inference");
+            const openCodeId = ProviderInstanceId.make("opencode");
+            const openCodeNative = {
+              driver: ProviderDriverKind.make("opencode"),
+              environment: [
+                { name: "OPENCODE_CONFIG_CONTENT", value: '{"provider":', sensitive: false },
+              ],
+            };
+            const openCodeConnect = { ...connect, driver: "opencode" as const };
+            for (const instance of [{ driver: openCodeNative.driver }, openCodeNative]) {
+              yield* settings.updateProviderInstance({
+                operation: "upsert",
+                instanceId: openCodeId,
+                instance,
+              });
+              expect(yield* proxy.connect(openCodeConnect).pipe(Effect.result)).toMatchObject({
+                _tag: "Failure",
+                failure: {
+                  _tag: "InferenceProxyError",
+                  message: expect.stringContaining("OPENCODE_CONFIG_CONTENT"),
+                },
+              });
+              expect((yield* settings.getSettings).providerInstances[openCodeId]).toEqual(instance);
+            }
+            yield* settings.updateProviderInstance({
+              operation: "upsert",
+              instanceId: openCodeId,
+              instance: {
+                ...openCodeNative,
+                environment: [
+                  {
+                    name: "OPENCODE_CONFIG_CONTENT",
+                    value: '{ /* native */ "provider": { "own": {}, }, }',
+                    sensitive: false,
+                  },
+                ],
+              },
+            });
+            yield* proxy.connect(openCodeConnect);
+            expect((yield* proxy.status).routes).toContainEqual({
+              instanceId: openCodeId,
+              label: "OpenCode",
+            });
+            yield* settings.updateProviderInstance({
+              operation: "upsert",
+              instanceId: openCodeId,
+              instance: {
+                ...(yield* settings.getSettings).providerInstances[openCodeId]!,
+                environment: openCodeNative.environment,
+              },
+            });
+            const invalidRouteStatus = yield* proxy.status;
+            expect(invalidRouteStatus.routes).toEqual([]);
+            expect(invalidRouteStatus.problem).toContain("OPENCODE_CONFIG_CONTENT");
+            yield* proxy.manage({ operation: "removeRoute", instanceId: openCodeId });
+            const native = {
+              driver: ProviderDriverKind.make("codex"),
+              displayName: "Codex",
+              config: {
+                setupMode: "existing",
+                homePath: "/native/home",
+                launchArgs: "--native-argument",
+                customModels: ["gpt-native"],
+              },
+              environment: [
+                { name: "OPENAI_API_KEY", value: "native-credential", sensitive: true },
+              ],
+            };
+            yield* settings.updateProviderInstance({
+              operation: "upsert",
+              instanceId: ProviderInstanceId.make("codex"),
+              instance: native,
+            });
             yield* proxy.connect(connect);
+            const configured = (yield* settings.getSettings).providerInstances[
+              ProviderInstanceId.make("codex")
+            ];
+            expect(configured).toMatchObject({
+              ...native,
+              config: {
+                ...native.config,
+                inferenceModels: ["codex-auto-review", "office-model", "gpt-fixture"],
+                inferenceHostLabel: "",
+                inferenceEnabled: true,
+              },
+            });
+            expect((yield* proxy.status).routes).toEqual([{ instanceId: "codex", label: "Codex" }]);
+            expect(activeCodexConfig).toMatchObject({
+              setupMode: "inference",
+              homePath: expect.stringContaining("/providers/inference/codex"),
+            });
+            yield* proxy.bindRoutes(45678);
             expect(
-              Object.values((yield* settings.getSettings).providerInstances).find(
-                (i) => i.displayName === "Codex via Host",
-              )?.config,
-            ).toMatchObject({ customModels: ["codex-auto-review", "office-model", "gpt-fixture"] });
-            expect((yield* settings.getSettings).providerPools).not.toHaveProperty("codex");
-            const firstRoute = retiredPoolRoute(
-              yield* settings.getSettings,
-              ProviderInstanceId.make("pool_codex"),
-            );
-            expect(firstRoute).toMatch(/^inference_codex_/);
-            expect(Object.values((yield* settings.getSettings).providerInstances)).toEqual(
-              expect.arrayContaining([expect.objectContaining({ displayName: "Codex via Host" })]),
-            );
+              (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")],
+            ).toEqual(configured);
             expect(
               yield* proxy.connect({ ...connect, grant: issued }).pipe(Effect.flip),
             ).toHaveProperty("_tag", "InferenceProxyError");
@@ -333,11 +753,85 @@ it.effect(
             tailnetCatalogDown = true;
             yield* proxy.connect({ ...connect, grant: issued });
             expect(
-              Object.values((yield* settings.getSettings).providerInstances).find(
-                (i) => i.displayName === "Codex via Host",
-              )?.config,
-            ).toMatchObject({ launchArgs: expect.stringContaining("192.168.1.12") });
+              (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")]
+                ?.config,
+            ).toMatchObject({ inferenceBaseUrl: expect.stringContaining("192.168.1.12") });
             tailnetCatalogDown = false;
+            const linkedGrant = { ...issued, baseUrl: "t3-environment:host", alternates: [] };
+            expect(
+              (yield* proxy.connect({ ...connect, grant: linkedGrant }).pipe(Effect.flip)).message,
+            ).toContain("Connect to the inference host");
+            linked = true;
+            yield* proxy.connect({ ...connect, grant: linkedGrant });
+            expect(
+              (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")]
+                ?.config,
+            ).toMatchObject({
+              inferenceBaseUrl: expect.stringContaining("/api/inference/linked/host"),
+            });
+            expect(activeCodexConfig).toMatchObject({
+              inferenceBaseUrl: expect.stringContaining("/api/inference/linked/host"),
+            });
+            yield* proxy.bindRoutes(45678);
+            expect(
+              (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")]
+                ?.config,
+            ).toMatchObject({
+              inferenceBaseUrl: expect.stringContaining(
+                "127.0.0.1:45678/api/inference/linked/host",
+              ),
+            });
+            expect(yield* proxy.authorize("wrong-key", hostId)).toBeNull();
+            expect(yield* proxy.authorize(issued.key, hostId)).toEqual({
+              baseUrl: "http://127.0.0.1:23456/api/inference",
+              key: issued.key,
+            });
+            linkedUrl = "http://127.0.0.1:34567";
+            expect((yield* proxy.authorize(issued.key, hostId))?.baseUrl).toBe(
+              "http://127.0.0.1:34567/api/inference",
+            );
+            connectionOverride = "http://127.0.0.1:23456";
+            staleLinkedCatalog = true;
+            yield* proxy.connect({
+              ...connect,
+              grant: linkedGrant,
+              connection: { url: "http://127.0.0.1:23456" },
+            });
+            staleLinkedCatalog = false;
+            connectionOverride = undefined;
+            yield* proxy.connect({ ...connect, grant: linkedGrant });
+            linked = false;
+            expect(yield* proxy.authorize(issued.key, hostId).pipe(Effect.flip)).toHaveProperty(
+              "_tag",
+              "InferenceProxyError",
+            );
+            yield* proxy.connect({
+              ...connect,
+              grant: linkedGrant,
+              connection: {
+                url: "http://127.0.0.1:23456",
+                ssh: {
+                  alias: "host",
+                  hostname: "host.local",
+                  username: "user",
+                  port: 22,
+                },
+              },
+            });
+            expect((yield* proxy.authorize(issued.key, hostId))?.baseUrl).toBe(
+              "http://127.0.0.1:34567/api/inference",
+            );
+            connectionDown = true;
+            expect(
+              (yield* proxy
+                .connect({
+                  ...connect,
+                  grant: issued,
+                  connection: { url: "http://127.0.0.1:23456" },
+                })
+                .pipe(Effect.flip)).message,
+            ).toBe("SSH connection unavailable");
+            connectionDown = false;
             const routes = (yield* proxy.status).routes;
             expect(routes).toHaveLength(1);
             peerId = EnvironmentId.make("other-host");
@@ -346,9 +840,19 @@ it.effect(
               hostLabel: "Second",
               grant: { ...issued, hostId: peerId },
             });
-            expect((yield* proxy.status).routes).toHaveLength(2);
-            yield* proxy.manage({ operation: "removeRoute", instanceId: routes[0]!.instanceId });
             expect((yield* proxy.status).routes.map((r) => r.label)).toEqual(["Codex via Second"]);
+            expect(yield* proxy.authorize(issued.key, hostId)).toBeNull();
+            yield* proxy.manage({ operation: "removeRoute", instanceId: routes[0]!.instanceId });
+            expect((yield* proxy.status).routes).toEqual([]);
+            expect(activeCodexConfig).toMatchObject({
+              setupMode: "existing",
+              homePath: "/native/home",
+              inferenceEnabled: false,
+            });
+            expect(
+              (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")]
+                ?.enabled,
+            ).toBe(true);
             expect(
               yield* proxy
                 .manage({ operation: "removeRoute", instanceId: ProviderInstanceId.make("codex") })
@@ -396,10 +900,6 @@ it.effect(
             expect((yield* proxy.status).routing).toMatchObject({
               strategy: "fill-first",
               sessionAffinity: false,
-              mappings: [
-                { source: "codex", pool: "work" },
-                { source: "claudeAgent", pool: "work" },
-              ],
             });
             expect((yield* proxy.authorize(grant.key))?.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
             yield* proxy.manage({ operation: "revoke", environmentId: peer.environmentId });
@@ -418,17 +918,7 @@ it.effect(
         expect(stops).toBe(5);
       }).pipe(
         Effect.provide(
-          Layer.merge(
-            ServerSettings.layerTest({
-              providerPools: {
-                [ProviderDriverKind.make("codex")]: {
-                  enabled: true,
-                  memberInstanceIds: [ProviderInstanceId.make("codex")],
-                },
-              },
-            }),
-            ServerSecretStore.layer,
-          ).pipe(
+          Layer.merge(ServerSettings.layerTest(), ServerSecretStore.layer).pipe(
             Layer.provideMerge(
               ServerConfig.layerTest(process.cwd(), { prefix: "t3-inference-test-" }),
             ),

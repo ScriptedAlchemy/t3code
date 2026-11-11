@@ -51,6 +51,7 @@ import { ProviderSettingsForm, deriveProviderSettingsFields } from "./ProviderSe
 import { WizardPanel, WizardPopup, WizardHeader, WizardFooter } from "../ui/wizard";
 import {
   ADD_PROVIDER_WIZARD_STEPS,
+  inferenceAccountHostId,
   ACP_REGISTRY_WIZARD_STEPS,
   TRAEX_BRIDGE_CODEX_LAUNCH_ARGS,
   LOCAL_ACP_WIZARD_STEPS,
@@ -68,6 +69,7 @@ import { resolveOfficialAcpRegistryIconUrl } from "./AcpRegistryIcon";
 import { AddManagedCodexAccountDialog } from "./CodexSetupSection";
 import { ProviderEnvironmentSection } from "./ProviderInstanceCard";
 import { useSecretSources } from "./SecretSourceInput";
+import { InferenceProviderAccounts } from "./InferenceProviderAccounts";
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 const TRAEX_BRIDGE_PRESET = "traexBridge";
@@ -201,7 +203,9 @@ export function AddProviderInstanceDialog({
     isManagedDriverAllowed(managedPolicy, option.driverKind),
   );
   const acpRegistryAllowed = isManagedDriverAllowed(managedPolicy, ACP_REGISTRY_DRIVER_KIND);
-  const [providerView, setProviderView] = useState<"catalog" | "connection" | "managed">("catalog");
+  const [providerView, setProviderView] = useState<
+    "catalog" | "connection" | "managed" | "accounts"
+  >("catalog");
   const [connectionChoices, setConnectionChoices] = useState<
     Partial<Record<string, ConnectionChoice>>
   >({});
@@ -239,8 +243,12 @@ export function AddProviderInstanceDialog({
   const hasConnectionChoice = selection === "codex" || selection === "claudeAgent";
   const supportsInference =
     useServerConfigs().get(environmentId)?.environment.capabilities.inferenceProxy === true;
-  const connectionChoice =
-    connectionChoices[selection] ?? (supportsInference ? "inference" : "existing");
+  const accountHostId = inferenceAccountHostId(
+    settings.providerInstances,
+    selection,
+    environmentId,
+  );
+  const connectionChoice = connectionChoices[selection] ?? "existing";
   const connectionOptions =
     selection === "claudeAgent" ? CONNECTION_OPTIONS.claudeAgent : CONNECTION_OPTIONS.codex;
   const showRegistrySearch =
@@ -347,6 +355,10 @@ export function AddProviderInstanceDialog({
   };
 
   const navigateToStep = (requestedStep: number) => {
+    if (accountHostId) {
+      setProviderView("accounts");
+      return;
+    }
     applyWizardNavigation(
       isAcpRegistry
         ? isLocalAcp
@@ -435,6 +447,10 @@ export function AddProviderInstanceDialog({
   const handleSave = async () => {
     if (!readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
     if (isSaving || createdInstanceId) return;
+    if (accountHostId) {
+      setProviderView("accounts");
+      return;
+    }
     setHasAttemptedSubmit(true);
     if (instanceIdError !== null || (isAcpRegistry && acpSelectionError !== null)) return;
 
@@ -485,7 +501,38 @@ export function AddProviderInstanceDialog({
     onOpenChange(false);
   };
 
-  if (providerView === "managed") {
+  if (
+    providerView === "accounts" &&
+    accountHostId &&
+    (driver === "codex" || driver === "claudeAgent")
+  ) {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <WizardPopup>
+          <WizardHeader
+            title={`Add ${driverOption.label} account`}
+            description="CLIProxyAPI manages accounts on the inference host."
+          />
+          <WizardPanel>
+            <InferenceProviderAccounts
+              environmentId={accountHostId}
+              driver={driver === "codex" ? "codex" : "claudeAgent"}
+            />
+          </WizardPanel>
+          <WizardFooter>
+            <Button size="sm" variant="outline" onClick={() => setProviderView("catalog")}>
+              Back
+            </Button>
+            <Button size="sm" onClick={() => onOpenChange(false)}>
+              Done
+            </Button>
+          </WizardFooter>
+        </WizardPopup>
+      </Dialog>
+    );
+  }
+
+  if (providerView === "managed" && !accountHostId) {
     return (
       <AddManagedCodexAccountDialog
         environmentId={environmentId}
@@ -868,7 +915,7 @@ export function AddProviderInstanceDialog({
               connectionChoice === "inference" ? (
                 <Button
                   size="sm"
-                  render={<Link to="/settings/account-pools" search={{ machine: environmentId }} />}
+                  render={<Link to="/settings/inference" search={{ machine: environmentId }} />}
                   onClick={() => onOpenChange(false)}
                 >
                   Open inference accounts
@@ -881,6 +928,10 @@ export function AddProviderInstanceDialog({
                     if (providerView === "connection") {
                       if (connectionChoice === "managed") setProviderView("managed");
                       else setWizardStep(1);
+                      return;
+                    }
+                    if (accountHostId) {
+                      setProviderView("accounts");
                       return;
                     }
                     if (hasConnectionChoice) {

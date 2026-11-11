@@ -26,7 +26,7 @@ export type SettingsPath =
   | "/settings/keybindings"
   | "/settings/snap-shot"
   | "/settings/providers"
-  | "/settings/account-pools"
+  | "/settings/inference"
   | "/settings/threads"
   | "/settings/browser"
   | "/settings/devices"
@@ -104,7 +104,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/keybindings": "Keybindings",
   "/settings/snap-shot": "SnapShots",
   "/settings/providers": "Providers",
-  "/settings/account-pools": "Inference accounts",
+  "/settings/inference": "Inference accounts",
   "/settings/threads": "Threads",
   "/settings/browser": "Browser",
   "/settings/devices": "Devices",
@@ -1042,9 +1042,9 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
-    id: "account-pools",
+    id: "inference",
     title: "Inference accounts",
-    to: "/settings/account-pools",
+    to: "/settings/inference",
     searchTerms: [
       "cliproxyapi tailscale inference route provider host account pools zack labs load balance load balancing failover multiple accounts pool usage limit quota rotate switch claude codex",
     ],
@@ -1468,7 +1468,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/snap-shot": null,
   "/settings/keybindings": null,
   "/settings/providers": null,
-  "/settings/account-pools": null,
+  "/settings/inference": null,
   "/settings/threads": null,
   "/settings/browser": null,
   "/settings/devices": null,

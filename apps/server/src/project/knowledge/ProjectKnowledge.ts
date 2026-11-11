@@ -74,7 +74,7 @@ type RecallComposer = {
 };
 const RECALL_CONTEXT_ID = ComposerContextId.make("recall");
 /** Recall sends memory in a shorter form than knowledge someone attached by hand. */
-export const isRecalledMemory = (record: Pick<ComposerContextRecord, "contextId">) =>
+export const isRecalledMemory = (record: { readonly contextId: string }) =>
   record.contextId === RECALL_CONTEXT_ID;
 // Recall runs before every eligible turn, so it gives up on a slow store instead of waiting.
 const RECALL_TIMEOUT = "150 millis";
@@ -201,19 +201,17 @@ export class ProjectKnowledge extends Context.Service<
       projectId: ProjectId,
       run: AssistedLearningRun,
     ) => Effect.Effect<void, ProjectKnowledgeError>;
-    /**
-     * Sent records only, for replaying earlier messages into a fresh provider conversation.
-     * Pass the thread that receives the replay as viewer. The service records the replayed facts
-     * as seen by it, so recall does not send a fork what its parent already received.
-     */
-    readonly readSentDeliveries: (
-      input: {
-        readonly projectId: ProjectId;
-        readonly threadIds: ReadonlyArray<ProjectKnowledgeDelivery["threadId"]>;
-        readonly runIds: ReadonlyArray<ProjectKnowledgeDelivery["runId"]>;
-      },
-      viewer?: ThreadId,
-    ) => Effect.Effect<ReadonlyArray<ProjectKnowledgeDelivery>, ProjectKnowledgeError>;
+    readonly recordViews: (
+      projectId: ProjectId,
+      viewer: ThreadId,
+      factIds: ReadonlyArray<ProjectFactId>,
+    ) => Effect.Effect<void, ProjectKnowledgeError>;
+    /** Sent records only; preparing a replay does not mean its evidence reached the agent. */
+    readonly readSentDeliveries: (input: {
+      readonly projectId: ProjectId;
+      readonly threadIds: ReadonlyArray<ProjectKnowledgeDelivery["threadId"]>;
+      readonly runIds: ReadonlyArray<ProjectKnowledgeDelivery["runId"]>;
+    }) => Effect.Effect<ReadonlyArray<ProjectKnowledgeDelivery>, ProjectKnowledgeError>;
   }
 >()("t3/project/knowledge/ProjectKnowledge") {}
 
@@ -461,16 +459,14 @@ const make = Effect.gen(function* () {
     }
     return [...reasons].map(([factId, reason]) => ({ factId, reason }));
   });
-  const recordViews = (
-    projectId: ProjectId,
-    viewer: ThreadId | undefined,
-    factIds: ReadonlyArray<ProjectFactId>,
-  ) =>
-    viewer === undefined
-      ? Effect.void
-      : store
-          .recordViews(projectId, viewer, factIds)
-          .pipe(Effect.mapError(storageError(projectId)));
+  const recordViews = Effect.fn("ProjectKnowledge.recordViews")(
+    (projectId: ProjectId, viewer: ThreadId | undefined, factIds: ReadonlyArray<ProjectFactId>) =>
+      viewer === undefined
+        ? Effect.void
+        : store
+            .recordViews(projectId, viewer, factIds)
+            .pipe(Effect.mapError(storageError(projectId))),
+  );
   const list: ProjectKnowledge["Service"]["list"] = Effect.fn("ProjectKnowledge.list")(
     function* (input, viewer) {
       yield* requireProject(input.projectId);
@@ -1014,6 +1010,7 @@ const make = Effect.gen(function* () {
           (fact): fact is typeof ActiveProjectFact.Type =>
             fact.status !== "forgotten" &&
             fact.content !== null &&
+            skip?.(fact) !== true &&
             (entities.length === 0 ||
               (input.entityMatch === "all"
                 ? entities.every((entity) =>
@@ -1132,7 +1129,9 @@ const make = Effect.gen(function* () {
           const candidates = batch.flatMap((position) => {
             const match = ranked.matches[position]!;
             const fact = current.get(match.factId);
-            return recallable(fact, match.revision) ? [{ fact, score: match.score, position }] : [];
+            return recallable(fact, match.revision) && skip?.(fact) !== true
+              ? [{ fact, score: match.score, position }]
+              : [];
           });
           const lost = new Set(
             (yield* unavailableSources(
@@ -1161,9 +1160,7 @@ const make = Effect.gen(function* () {
                 messages: { matches: [] },
                 facts: {
                   state: "available",
-                  matches: early.resolved
-                    .filter(({ fact }) => skip?.(fact) !== true)
-                    .map(({ fact, score }) => ({ fact, score })),
+                  matches: early.resolved.map(({ fact, score }) => ({ fact, score })),
                   coverage: early.ranked.coverage,
                   nextCursor: null,
                 },
@@ -1435,24 +1432,10 @@ const make = Effect.gen(function* () {
   });
   const readSentDeliveries: ProjectKnowledge["Service"]["readSentDeliveries"] = Effect.fn(
     "ProjectKnowledge.readSentDeliveries",
-  )(function* (input, viewer) {
+  )(function* (input) {
     const rows = yield* store
       .sentDeliveries(input.projectId, input.threadIds, input.runIds)
       .pipe(Effect.mapError(storageError(input.projectId)));
-    // The viewer's own deliveries already count as seen; these come from other threads.
-    yield* recordViews(
-      input.projectId,
-      viewer,
-      rows.flatMap((row) =>
-        row.threadId === viewer
-          ? []
-          : row.items.flatMap((item) =>
-              item.context.selections.flatMap((selection) =>
-                selection.kind === "fact" ? [selection.factId] : [],
-              ),
-            ),
-      ),
-    );
     return yield* Effect.forEach(rows, revalidateDelivery).pipe(
       Effect.mapError(storageError(input.projectId)),
     );
@@ -1770,6 +1753,7 @@ const make = Effect.gen(function* () {
     nativeDeliveryEstimate,
     markDeliveryUncertain,
     readSentDeliveries,
+    recordViews,
     scrubDeliveryPage,
     saveAutomatic,
     hasAssistedRun,

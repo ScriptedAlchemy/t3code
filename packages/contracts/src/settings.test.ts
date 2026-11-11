@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { AuthProvidersManageScope, AuthSettingsWriteScope } from "./auth.ts";
 import { type CommandId, ProjectId } from "./baseSchemas.ts";
 import {
   ProviderDriverKind,
@@ -20,7 +19,6 @@ import {
   machineLocalSettingsFields,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   requiredScopesForProjectMutation,
-  requiredScopesForServerSettingsPatch,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
@@ -501,118 +499,6 @@ describe("resolveProjectProviderInstanceEnabled", () => {
   });
 });
 
-describe("providerPools settings", () => {
-  const claude = ProviderDriverKind.make("claudeAgent");
-
-  it("defaults to no pools and turns a configured pool on unless it says otherwise", () => {
-    expect(decodeServerSettings({}).providerPools).toEqual({});
-    expect(
-      decodeServerSettings({
-        providerPools: { claudeAgent: { memberInstanceIds: ["claudeAgent"] } },
-      }).providerPools[claude]?.enabled,
-    ).toBe(true);
-  });
-
-  it("patches one pool at a time, with null removing it", () => {
-    const patch = {
-      providerPools: {
-        claudeAgent: { enabled: false, memberInstanceIds: ["claudeAgent", "claudeAgent_icloud"] },
-        codex: null,
-      },
-    };
-    expect(decodeServerSettingsPatch(patch)).toEqual(patch);
-  });
-
-  it("needs the provider-manage scope, like the instances it pools", () => {
-    expect(requiredScopesForServerSettingsPatch({ providerPools: { [claude]: null } })).toEqual([
-      AuthProvidersManageScope,
-    ]);
-    expect(
-      requiredScopesForServerSettingsPatch({
-        providerPools: { [claude]: null },
-        snoozeLimitedThreads: true,
-      }),
-    ).toEqual([AuthSettingsWriteScope, AuthProvidersManageScope]);
-  });
-});
-
-describe("resolveProjectProviderInstanceEnabled for a pool id", () => {
-  const projectId = "project-a" as ProjectId;
-  const claude = ProviderDriverKind.make("claudeAgent");
-  const poolId = ProviderInstanceId.make("pool_claudeAgent");
-  const personal = ProviderInstanceId.make("claudeAgent");
-  const work = ProviderInstanceId.make("claudeAgent_work");
-  const settings: ServerSettings = {
-    ...DEFAULT_SERVER_SETTINGS,
-    providerInstances: {
-      [personal]: { driver: claude, enabled: false },
-      [work]: { driver: claude, enabled: true },
-    },
-    providerPools: { [claude]: { enabled: true, memberInstanceIds: [personal, work] } },
-  };
-
-  it("is enabled while any member is enabled for the project", () => {
-    expect(resolveProjectProviderInstanceEnabled(settings, projectId, poolId)).toBe(true);
-  });
-
-  it("is disabled once the project disables every enabled member", () => {
-    const overridden: ServerSettings = {
-      ...settings,
-      projectSettingsOverrides: {
-        [projectId]: { providerInstances: { [work]: { enabled: false } } },
-      },
-    };
-    expect(resolveProjectProviderInstanceEnabled(overridden, projectId, poolId)).toBe(false);
-    expect(resolveProjectProviderInstanceEnabled(overridden, null, poolId)).toBe(true);
-  });
-
-  it("uses the bound inference route and honors its project override", () => {
-    const route = ProviderInstanceId.make("inference_claude_host");
-    const migrated: ServerSettings = {
-      ...settings,
-      providerPools: {},
-      retiredPoolRoutes: { [claude]: route },
-      providerInstances: {
-        ...settings.providerInstances,
-        [route]: { driver: claude, config: { setupMode: "inference" } },
-      },
-      projectSettingsOverrides: {
-        [projectId]: { providerInstances: { [route]: { enabled: false } } },
-      },
-    };
-    expect(resolveProjectProviderInstanceEnabled(migrated, null, poolId)).toBe(true);
-    expect(resolveProjectProviderInstanceEnabled(migrated, projectId, poolId)).toBe(false);
-    expect(
-      resolveProjectProviderInstanceEnabled(
-        { ...migrated, providerInstances: settings.providerInstances },
-        null,
-        poolId,
-      ),
-    ).toBe(false);
-    expect(
-      resolveProjectProviderInstanceEnabled(
-        { ...migrated, retiredPoolRoutes: { [claude]: work } },
-        null,
-        poolId,
-      ),
-    ).toBe(false);
-  });
-
-  it("is disabled when no pool is configured for the driver", () => {
-    expect(
-      resolveProjectProviderInstanceEnabled({ ...settings, providerPools: {} }, projectId, poolId),
-    ).toBe(false);
-  });
-
-  it("does not recurse through a pool that lists its own id", () => {
-    const selfListed: ServerSettings = {
-      ...settings,
-      providerPools: { [claude]: { enabled: true, memberInstanceIds: [poolId] } },
-    };
-    expect(resolveProjectProviderInstanceEnabled(selfListed, projectId, poolId)).toBe(false);
-  });
-});
-
 describe("requiredScopesForProjectMutation", () => {
   it("adds the settings scope only when a mutation carries scripts", () => {
     const projectId = "project-1" as ProjectId;
@@ -677,8 +563,19 @@ describe("server model preferences", () => {
 });
 
 describe("machine-local provider settings", () => {
-  it("marks every path field on Codex, and only those", () => {
+  const routingFields = [
+    "inferenceEnabled",
+    "inferenceHostId",
+    "inferenceHostLabel",
+    "inferenceBaseUrl",
+    "inferenceKey",
+    "inferenceModels",
+    "inferenceHomePath",
+    "inferenceConnection",
+  ];
+  it("keeps native paths and inference routes local on Codex", () => {
     expect(machineLocalSettingsFields(CodexSettings)).toEqual([
+      ...routingFields,
       "binaryPath",
       "homePath",
       "shadowHomePath",
@@ -687,6 +584,7 @@ describe("machine-local provider settings", () => {
 
   it("marks home and binary paths on Claude", () => {
     expect(machineLocalSettingsFields(ClaudeSettings)).toEqual([
+      ...routingFields,
       "binaryPath",
       "homePath",
       "shareProfile",
@@ -695,9 +593,10 @@ describe("machine-local provider settings", () => {
     expect(decodeClaudeSettings({ shareProfile: false }).shareProfile).toBe(false);
   });
 
-  it("keeps secret and machine-local classifications apart", () => {
+  it("keeps proxy grant keys secret as well as local to their consumer", () => {
     expect(secretSettingsFields(AntigravitySettings)).toEqual(["apiKey"]);
     expect(machineLocalSettingsFields(AntigravitySettings)).toEqual(["binaryPath"]);
-    expect(secretSettingsFields(CodexSettings)).toEqual([]);
+    expect(secretSettingsFields(CodexSettings)).toEqual(["inferenceKey"]);
+    expect(secretSettingsFields(ClaudeSettings)).toEqual(["inferenceKey"]);
   });
 });

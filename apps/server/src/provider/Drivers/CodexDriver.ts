@@ -606,6 +606,7 @@ export const CodexDriver: ProviderDriver<
       driverKind: DRIVER_KIND,
       sharedSkillsDirectory: pathService.join(homeLayout.sharedHomePath, "skills"),
       continuationIdentity,
+      requiresBoundContinuationIdentity: config.setupMode === "inference",
       displayName,
       accentColor,
       enabled,

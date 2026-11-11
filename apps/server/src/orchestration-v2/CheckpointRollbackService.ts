@@ -296,6 +296,9 @@ export const layer: Layer.Layer<
         modelSelection,
         runtimePolicy: resolvedRuntimePolicy,
         ...(existingSession === undefined ? {} : { resumeFromSession: existingSession }),
+        ...(providerThread.nativeMetadata?.continuationKey === undefined
+          ? {}
+          : { expectedContinuationKey: providerThread.nativeMetadata.continuationKey }),
         ...(rollbackProviderThread.nativeThreadRef?.nativeId == null
           ? {}
           : { initialNativeThreadId: rollbackProviderThread.nativeThreadRef.nativeId }),

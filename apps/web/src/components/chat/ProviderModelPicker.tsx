@@ -108,7 +108,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   triggerClassName?: string;
   triggerLabel?: string;
   triggerAriaLabel?: string;
-  activeAccount?: { readonly poolName: string; readonly memberName: string } | null;
   onOpenChange?: (open: boolean) => void;
   onOpenProviderSetup?: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
@@ -173,10 +172,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const triggerLabel = selectedModel
     ? `${getDisplayModelName(selectedModel)}${selectedModel.isUnavailable ? " (Unavailable)" : ""}`
     : triggerTitle;
-  const accountSuffix = props.activeAccount ? ` · ${props.activeAccount.memberName}` : "";
-  const accountLabel = props.activeAccount
-    ? `${props.activeAccount.poolName} · ${props.activeAccount.memberName}`
-    : undefined;
   const showInstanceBadge =
     activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
 
@@ -264,13 +259,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const triggerTooltipContent = [
     props.triggerLabel ?? allModelNames ?? triggerLabel,
     props.triggerDetail,
-    accountLabel,
     shortcutLabel,
   ]
     .filter(Boolean)
     .join(" · ");
 
-  const triggerText = props.triggerLabel ?? multipleLabel ?? `${triggerTitle}${accountSuffix}`;
+  const triggerText = props.triggerLabel ?? multipleLabel ?? triggerTitle;
   const triggerTextProps = {
     className: cn(
       "min-w-0 flex-1 overflow-hidden truncate",
@@ -346,7 +340,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             ]
               .filter(Boolean)
               .join(", ")}
-            aria-description={accountLabel}
             size={size}
             data-chat-provider-model-picker="true"
             data-composer-shortcut={props.triggerShortcuts}
@@ -422,7 +415,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               />
             </span>
           ) : null}
-          {props.isComposerOwned && !props.activeAccount ? (
+          {props.isComposerOwned ? (
             <span {...triggerTextProps}>{triggerText}</span>
           ) : (
             <Tooltip disabled={isMenuOpen}>

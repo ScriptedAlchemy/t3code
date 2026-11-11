@@ -74,7 +74,8 @@ describe("V2 preview upgrade", () => {
         [92, "ProjectKnowledgeSavedLifecycle"],
         [93, "ProjectKnowledgeLearningQueue"],
         [94, "ConversationSummaryPosition"],
-        [95, "ProjectKnowledgeViews"],
+        [95, "RetireInferenceRouteInstances"],
+        [96, "ProjectKnowledgeViews"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -192,7 +193,8 @@ describe("V2 preview upgrade", () => {
         [92, "ProjectKnowledgeSavedLifecycle"],
         [93, "ProjectKnowledgeLearningQueue"],
         [94, "ConversationSummaryPosition"],
-        [95, "ProjectKnowledgeViews"],
+        [95, "RetireInferenceRouteInstances"],
+        [96, "ProjectKnowledgeViews"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

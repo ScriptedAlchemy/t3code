@@ -399,7 +399,6 @@ export function applyServerSettingsPatch(
     worktreeCleanup: worktreeCleanupPatch,
     // Merged per entry below; its `null` removals must not reach deepMerge.
     usageLimitSources: usageLimitSourcesPatch,
-    providerPools: providerPoolsPatch,
     textGenerators: textGeneratorsPatch,
     secretProviders: secretProvidersPatch,
     sourceControlHosts: sourceControlHostsPatch,
@@ -617,9 +616,6 @@ export function applyServerSettingsPatch(
             usageLimitSourcesPatch,
           ),
         }
-      : {}),
-    ...(providerPoolsPatch !== undefined
-      ? { providerPools: mergeSettingsEntries(current.providerPools, providerPoolsPatch) }
       : {}),
     ...(textGeneratorsPatch !== undefined
       ? { textGenerators: mergeSettingsEntries(current.textGenerators, textGeneratorsPatch) }

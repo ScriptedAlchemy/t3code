@@ -48,7 +48,6 @@ import {
   type RunId,
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
-import { composerInstanceIdFor } from "@t3tools/client-runtime/provider-pools";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import * as DateTime from "effect/DateTime";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
@@ -485,11 +484,6 @@ export function buildLocalDraftThread(
   });
 }
 
-/**
- * `entries` is the composer catalog, in which an active pool replaces its member accounts, while
- * `providers` is the unfolded list. Threads and drafts name the account that ran, so every
- * instance id is mapped to the pool that hides it before it is matched against `entries`.
- */
 export function resolveComposerProviderSelection(input: {
   entries: ReadonlyArray<ProviderInstanceEntry>;
   providers: ReadonlyArray<ServerProvider>;
@@ -497,10 +491,7 @@ export function resolveComposerProviderSelection(input: {
   lockedProvider: ProviderDriverKind | null;
   lockedInstanceId: ProviderInstanceId | null | undefined;
 }) {
-  const toComposerId = <Id extends ProviderInstanceId | null | undefined>(instanceId: Id) =>
-    instanceId == null ? instanceId : composerInstanceIdFor(input.providers, instanceId);
-  const candidateInstanceIds = input.candidateInstanceIds.map(toComposerId);
-  const lockedInstanceId = toComposerId(input.lockedInstanceId);
+  const { candidateInstanceIds, lockedInstanceId } = input;
   const requestedInstanceId = candidateInstanceIds.find(
     (candidate) => candidate != null && candidate !== NO_PROVIDER_MODEL_SELECTION.instanceId,
   );

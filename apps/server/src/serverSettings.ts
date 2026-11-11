@@ -1,5 +1,8 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  isInferenceConfig,
+  isInferenceProviderConfig,
+  isCustomInferenceBackend,
   ModelSelection,
   ProjectId,
   ProjectScript,
@@ -8,9 +11,7 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceMutation,
   defaultInstanceIdForDriver,
-  isInferenceConfig,
   isProviderDriverKind,
-  isReservedProviderInstanceId,
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
@@ -192,32 +193,10 @@ export function applyProviderInstanceMutation(
   const providerInstances = { ...settings.providerInstances };
   if (mutation.operation === "upsert" || mutation.operation === "create") {
     providerInstances[mutation.instanceId] = mutation.instance;
-    const { driver, config } = mutation.instance;
-    if (isInferenceConfig(config) && !settings.retiredPoolRoutes?.[driver]) {
-      const providerPools = { ...settings.providerPools };
-      delete providerPools[driver];
-      return {
-        ...settings,
-        providerInstances,
-        providerPools,
-        retiredPoolRoutes: { ...settings.retiredPoolRoutes, [driver]: mutation.instanceId },
-      };
-    }
     return { ...settings, providerInstances };
   }
   delete providerInstances[mutation.instanceId];
-  const providerPools = Object.fromEntries(
-    Object.entries(settings.providerPools).map(([driver, pool]) => [
-      driver,
-      {
-        ...pool,
-        memberInstanceIds: pool.memberInstanceIds.filter(
-          (memberId) => memberId !== mutation.instanceId,
-        ),
-      },
-    ]),
-  );
-  return { ...settings, providerInstances, providerPools };
+  return { ...settings, providerInstances };
 }
 
 const secretProviderConfigGuards = new Map(
@@ -259,11 +238,28 @@ function ensureProviderInstanceMutationAllowed(
   mutation: ProviderInstanceMutation,
   settingsPath: string,
 ): Effect.Effect<void, ServerSettingsError> {
+  if (mutation.operation !== "remove") {
+    const canonicalId = defaultInstanceIdForDriver(mutation.instance.driver);
+    const canonical = settings.providerInstances[canonicalId];
+    if (
+      mutation.instanceId !== canonicalId &&
+      canonical &&
+      isInferenceProviderConfig(canonical.config) &&
+      canonical.config.inferenceEnabled &&
+      !isCustomInferenceBackend(mutation.instance)
+    )
+      return Effect.fail(
+        new ServerSettingsError({
+          settingsPath,
+          operation: "create-provider-instance",
+          providerInstanceId: mutation.instanceId,
+          cause: new Error("Add accounts through the inference provider's account settings."),
+        }),
+      );
+  }
   if (
-    mutation.operation !== "remove" &&
-    (isReservedProviderInstanceId(mutation.instanceId) ||
-      (mutation.operation === "create" &&
-        settings.providerInstances[mutation.instanceId] !== undefined))
+    mutation.operation === "create" &&
+    settings.providerInstances[mutation.instanceId] !== undefined
   ) {
     return Effect.fail(
       new ServerSettingsError({
@@ -274,18 +270,6 @@ function ensureProviderInstanceMutationAllowed(
     );
   }
   return Effect.void;
-}
-
-function rejectLegacyPoolWrites(patch: ServerSettingsPatch, settingsPath: string) {
-  return Object.values(patch.providerPools ?? {}).some((pool) => pool !== null)
-    ? Effect.fail(
-        new ServerSettingsError({
-          settingsPath,
-          operation: "validate-provider-pool",
-          cause: new Error("Configure inference hosting to pool provider accounts."),
-        }),
-      )
-    : Effect.void;
 }
 
 export class ServerSettingsService extends Context.Service<
@@ -398,15 +382,12 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
     getSettings,
     updateSettings: (patch) =>
       updateTestSettings((currentSettings) =>
-        rejectLegacyPoolWrites(patch, "test settings").pipe(
-          Effect.as(applyServerSettingsPatch(currentSettings, patch)),
-        ),
+        Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
       ),
     updateProviderInstance: (mutation, patch = {}) =>
       updateTestSettings((currentSettings) =>
         Effect.gen(function* () {
           yield* ensureProviderInstanceMutationAllowed(currentSettings, mutation, "test settings");
-          yield* rejectLegacyPoolWrites(patch, "test settings");
           const patched = applyServerSettingsPatch(currentSettings, patch);
           return applyProviderInstanceMutation(patched, mutation);
         }),
@@ -471,6 +452,7 @@ const decodePersistedServerSettingsExit = Schema.decodeUnknownExit(PersistedServ
 const LegacyProviderSettingsJson = fromLenientJson(
   Schema.Struct({
     providers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+    retiredPoolRoutes: Schema.optionalKey(Schema.Record(Schema.String, ProviderInstanceId)),
     bitbucket: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
     github: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   }),
@@ -871,9 +853,83 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const migrateRetiredProviderPools = Effect.fn("serverSettings.migrateRetiredProviderPools")(
+    function* (
+      settings: ServerSettings,
+      routes: Readonly<Record<string, ProviderInstanceId>> | undefined,
+    ) {
+      if (routes === undefined) return settings;
+      const providerInstances = { ...settings.providerInstances };
+      for (const driver of ["codex", "claudeAgent"] as const) {
+        const sourceId = routes[driver];
+        if (sourceId === undefined) continue;
+        const instanceId = ProviderInstanceId.make(`pool_${driver}`);
+        if (providerInstances[instanceId] !== undefined) continue;
+        const source = providerInstances[sourceId];
+        if (!source || source.driver !== driver || !isInferenceConfig(source.config))
+          return yield* new ServerSettingsError({
+            settingsPath,
+            operation: "validate-provider-pool",
+            providerInstanceId: instanceId,
+            cause: new Error("The saved pool target is not a configured inference route."),
+          });
+        const pending: SettingsSecret[] = [];
+        mapSettingsSecrets(
+          { ...DEFAULT_SERVER_SETTINGS, providerInstances: { [sourceId]: source } },
+          (secret) => {
+            if (secret.sensitive && (secret.redacted || secret.value.length > 0))
+              pending.push(secret);
+            return secret;
+          },
+        );
+        yield* Effect.forEach(pending, (secret) =>
+          Effect.gen(function* () {
+            const value = secret.redacted
+              ? yield* secretStore.get(secret.secretName)
+              : Option.some(textEncoder.encode(secret.value));
+            if (Option.isNone(value))
+              return yield* new ServerSettingsError({
+                settingsPath,
+                operation: "read-secret",
+                providerInstanceId: instanceId,
+                cause: new Error("A saved route credential is missing from the secret store."),
+              });
+            const prefix = secret.kind === "environment" ? "provider-env-" : "provider-config-";
+            const sourceName = Buffer.from(sourceId, "utf8").toString("base64url");
+            const targetName = Buffer.from(instanceId, "utf8").toString("base64url");
+            const name =
+              prefix + targetName + secret.secretName.slice(prefix.length + sourceName.length);
+            yield* secretStore.set(name, value.value);
+          }).pipe(
+            Effect.mapError((cause) =>
+              cause._tag === "ServerSettingsError"
+                ? cause
+                : new ServerSettingsError({
+                    settingsPath,
+                    operation: "write-secret",
+                    providerInstanceId: instanceId,
+                    cause,
+                  }),
+            ),
+          ),
+        );
+        // Preserve each saved destination and secret slot; legacy routes never stored the host ID.
+        providerInstances[instanceId] = mapSettingsSecrets(
+          { ...DEFAULT_SERVER_SETTINGS, providerInstances: { [instanceId]: source } },
+          (secret) =>
+            secret.sensitive && (secret.redacted || secret.value.length > 0)
+              ? { value: "", redacted: true }
+              : secret,
+        ).providerInstances[instanceId]!;
+      }
+      return { ...settings, providerInstances };
+    },
+  );
+
   const loadSettingsFromDisk = Effect.gen(function* () {
     let settings = managed.defaults;
     let legacyProviders: Readonly<Record<string, unknown>> | undefined;
+    let legacyPoolRoutes: Readonly<Record<string, ProviderInstanceId>> | undefined;
     let legacySourceControl: Parameters<typeof migrateLegacySourceControlSettings>[1] = {};
     let parseFailure = Option.none<unknown>();
 
@@ -886,6 +942,7 @@ const make = Effect.gen(function* () {
       const legacySettings = decodeLegacyProviderSettingsJsonExit(raw);
       if (legacySettings._tag === "Success") {
         legacyProviders = legacySettings.value.providers;
+        legacyPoolRoutes = legacySettings.value.retiredPoolRoutes;
         legacySourceControl = {
           bitbucket: legacySettings.value.bitbucket,
           github: legacySettings.value.github,
@@ -971,7 +1028,10 @@ const make = Effect.gen(function* () {
         : migrateLegacyProviderSettings(settings, legacyProviders, providerHistory),
     );
     const folded = settingsFileTrusted
-      ? foldLegacyProjectSettings(loaded, legacyProjectRows)
+      ? yield* migrateRetiredProviderPools(
+          foldLegacyProjectSettings(loaded, legacyProjectRows),
+          legacyPoolRoutes,
+        )
       : loaded;
     // Remove retired keys only after copying secrets and writing the new file; failures retry on next load.
     const legacySecretsCopied = yield* Effect.forEach(
@@ -1474,7 +1534,6 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
           const next = applyServerSettingsPatch(current, patch);
-          yield* rejectLegacyPoolWrites(patch, settingsPath);
           return next;
         }),
       ),
@@ -1487,7 +1546,6 @@ const make = Effect.gen(function* () {
             applyServerSettingsPatch(current, patch),
             mutation,
           );
-          yield* rejectLegacyPoolWrites(patch, settingsPath);
           return next;
         }),
       ),

@@ -119,7 +119,6 @@ import {
   visibleModelsForCatalog,
 } from "./thread-settings-sheet-state";
 import { formatProviderUpdateRequiredNotice } from "@t3tools/client-runtime/providerUpdateRequiredModels";
-import { composerModelSelectionFor } from "@t3tools/client-runtime/provider-pools";
 
 const PRIMARY_PROVIDER_DRIVERS: ReadonlySet<string> = new Set([
   "claudeAgent",
@@ -345,18 +344,12 @@ function ThreadSettingsSessionProvider(
           props.selectedModel,
           props.lockedProviderInstanceId,
           props.projectId,
-          "composer",
           true,
         )
       : props.providerGroups.flatMap((group) => group.models);
   const providerGroups = groupModelOptionsWithProviderNotices(
     modelOptions,
-    buildProviderUpdateRequiredGroups(
-      config,
-      props.lockedProviderInstanceId,
-      props.projectId,
-      "composer",
-    ),
+    buildProviderUpdateRequiredGroups(config, props.lockedProviderInstanceId, props.projectId),
   );
   const legacyFavorites = AsyncResult.isSuccess(preferences)
     ? (preferences.value.modelFavorites ?? EMPTY_MODEL_FAVORITES)
@@ -1342,10 +1335,7 @@ export function ExistingThreadSettingsRouteScreen({
   }
 
   const serverConfig = selectedEnvironmentRuntime?.serverConfig ?? null;
-  const modelSelection = composerModelSelectionFor(
-    serverConfig?.providers ?? [],
-    draftSettings.modelSelection ?? selectedThread.modelSelection,
-  );
+  const modelSelection = draftSettings.modelSelection ?? selectedThread.modelSelection;
   const lockedProviderInstanceId = threadAllowsProviderSwitch({
     thread: selectedThread,
     projection: structure?.projection,
@@ -1357,7 +1347,6 @@ export function ExistingThreadSettingsRouteScreen({
     modelSelection,
     lockedProviderInstanceId,
     selectedThread.projectId,
-    "composer",
   );
   const currentModelOption =
     modelOptions.find(
@@ -1380,7 +1369,6 @@ export function ExistingThreadSettingsRouteScreen({
           serverConfig,
           lockedProviderInstanceId,
           selectedThread.projectId,
-          "composer",
         ),
       )}
       selectedModel={modelSelection}

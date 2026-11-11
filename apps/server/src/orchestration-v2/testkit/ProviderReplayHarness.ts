@@ -503,6 +503,7 @@ export function layerWithRegistry<Error>(
         Layer.mock(ProjectKnowledge.ProjectKnowledge)({
           nativeDeliveryEstimate: () => Effect.succeed(0),
           readSentDeliveries: () => Effect.succeed([]),
+          recordViews: () => Effect.void,
           recall: () => Effect.succeed(null),
         }),
         layerContextHandoffServiceProvided,

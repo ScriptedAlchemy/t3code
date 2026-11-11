@@ -18,7 +18,7 @@ export * from "./ipc.ts";
 export * from "./terminal.ts";
 export * from "./provider.ts";
 export * from "./providerInstance.ts";
-export * from "./providerPool.ts";
+export * from "./providerLimits.ts";
 export * from "./inferenceProxy.ts";
 export * from "./providerAccountTransfer.ts";
 export * from "./providerSetup.ts";
@@ -87,3 +87,5 @@ export * from "./projectKnowledge.ts";
 export * from "./conversationSummaries.ts";
 
 export * from "./threadSplit.ts";
+
+export * from "./ssh.ts";

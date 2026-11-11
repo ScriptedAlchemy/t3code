@@ -8,7 +8,6 @@ import * as Dialog from "../../components/ui/Dialog";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { useDeviceType } from "../../native/native-layout-metrics";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
-import { composerModelSelectionFor } from "@t3tools/client-runtime/provider-pools";
 import {
   useAppearancePreferences,
   useAndroidFloatingTabs,
@@ -498,10 +497,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       props.connectionState !== "connected" || props.queueCount > 0 || attachmentsUploading,
   });
   const sendLabel = sendPresentation.label;
-  const currentModelSelection = composerModelSelectionFor(
-    props.serverConfig?.providers ?? [],
-    props.selectedThread.modelSelection,
-  );
+  const currentModelSelection = props.selectedThread.modelSelection;
   const modelUnavailable =
     props.connectionState === "connected" &&
     isModelSelectionUnavailable(
@@ -561,7 +557,6 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     currentModelSelection,
     lockedProviderInstanceId,
     props.selectedThread.projectId,
-    "composer",
   );
   // Mentions name any model for the agent, so they aren't limited to models this thread can switch to.
   const mentionModelOptions =
@@ -572,7 +567,6 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
           currentModelSelection,
           undefined,
           props.selectedThread.projectId,
-          "composer",
         );
   const canInviteToGroup = useAtomValue(
     orchestrationEnvironment.inviteToGroup.permissionAtom(props.environmentId),

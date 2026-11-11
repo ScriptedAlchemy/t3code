@@ -415,6 +415,9 @@ const seedRollbackHistory = Effect.fn(function* (
       options.restartedAtRun === undefined
         ? null
         : { driver, nativeId: "native-after-restart", strength: "strong" as const },
+    ...(options.restartedAtRun === undefined
+      ? {}
+      : { nativeMetadata: { continuationKey: "rollback-history-home" } }),
     nativeConversationHeadRef: null,
     status: "idle" as const,
     firstRunOrdinal: 1,
@@ -574,6 +577,7 @@ const seedRollbackHistory = Effect.fn(function* (
 
   const rollbackCounts: number[] = [];
   const rolledBackNativeIds: Array<string | null | undefined> = [];
+  const openedContinuationKeys: Array<string | undefined> = [];
   const restored: CheckpointId[] = [];
   const deletedRefs: CheckpointId[] = [];
   const committed: OrchestrationV2DomainEvent[] = [];
@@ -609,15 +613,18 @@ const seedRollbackHistory = Effect.fn(function* (
             ),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-          open: () =>
-            Effect.succeed({
-              rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
-                Effect.gen(function* () {
-                  rollbackCounts.push(yield* resolveCodexRollbackTurnCount(input));
-                  rolledBackNativeIds.push(input.providerThread.nativeThreadRef?.nativeId);
-                  return { providerThread: input.providerThread };
-                }),
-            } as never),
+          open: (input) =>
+            Effect.sync(() => {
+              openedContinuationKeys.push(input.expectedContinuationKey);
+              return {
+                rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
+                  Effect.gen(function* () {
+                    rollbackCounts.push(yield* resolveCodexRollbackTurnCount(input));
+                    rolledBackNativeIds.push(input.providerThread.nativeThreadRef?.nativeId);
+                    return { providerThread: input.providerThread };
+                  }),
+              } as never;
+            }),
         }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
       ),
@@ -644,6 +651,7 @@ const seedRollbackHistory = Effect.fn(function* (
     rollback,
     rollbackCounts,
     rolledBackNativeIds,
+    openedContinuationKeys,
     restored,
     deletedRefs,
     committed,
@@ -759,6 +767,12 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
           "native-after-restart",
           "native-before-restart",
           "native-before-restart",
+        ]);
+        // A proxy-mode session refuses a native thread it cannot tie to its home.
+        assert.deepEqual(history.openedContinuationKeys, [
+          "rollback-history-home",
+          "rollback-history-home",
+          "rollback-history-home",
         ]);
         // Only run 3 follows run 2 inside the conversation that holds it. The start of the
         // thread then drops what is left there, as it does without a restart.

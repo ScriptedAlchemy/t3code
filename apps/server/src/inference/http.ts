@@ -9,17 +9,17 @@ import {
   HttpServerResponse,
 } from "effect/http";
 import { InferenceProxy } from "./InferenceProxy.ts";
-import { inferencePath } from "./routes.ts";
+import { inferenceTarget } from "./routes.ts";
 
 const handler = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
-  const path = inferencePath(request.method, request.url);
-  if (!path) return HttpServerResponse.empty({ status: 404 });
+  const targetPath = inferenceTarget(request.method, request.url);
+  if (!targetPath) return HttpServerResponse.empty({ status: 404 });
   const key =
     request.headers.authorization?.match(/^Bearer ([^ ]+)$/i)?.[1] ?? request.headers["x-api-key"];
   if (!key) return HttpServerResponse.empty({ status: 401 });
   const host = yield* InferenceProxy;
-  const target = yield* host.authorize(key);
+  const target = yield* host.authorize(key, targetPath.environmentId);
   if (!target) return HttpServerResponse.empty({ status: 403 });
   const client = HttpClient.withScope(yield* HttpClient.HttpClient);
   const headers: Record<string, string> = { authorization: "Bearer " + target.key };
@@ -43,7 +43,7 @@ const handler = Effect.gen(function* () {
     if (value) headers[name] = value;
   }
   const outgoing = HttpClientRequest.make(request.method === "GET" ? "GET" : "POST")(
-    target.baseUrl + path,
+    target.baseUrl + targetPath.path,
   ).pipe(
     HttpClientRequest.setHeaders(headers),
     request.method === "POST"

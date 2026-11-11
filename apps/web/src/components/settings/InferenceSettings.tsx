@@ -1,15 +1,13 @@
 import {
   inferenceRouteIssue,
-  inferencePoolModel,
-  inferenceSourceLabels,
-  isInferenceModelMapping,
-  type InferenceModelMapping,
   type InferenceRouting,
   type InferenceProxyActionResult,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  INFERENCE_DRIVERS,
+  INFERENCE_HARNESSES,
   type EnvironmentId,
   type InferenceDriver,
   type InferenceProxyAction,
@@ -20,13 +18,11 @@ import { serverEnvironment } from "../../state/server";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
-import { Select, SelectTrigger, SelectPopup, SelectItem } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { SettingsPageContainer, SettingsSection, SettingsRow } from "./settingsLayout";
+import { InferenceProviderAccounts } from "./InferenceProviderAccounts";
 
 const { inferenceProxy } = serverEnvironment;
-const labels = { codex: "Codex", claudeAgent: "Claude" } as const;
 
 function InferenceRoute({
   host,
@@ -52,7 +48,7 @@ function InferenceRoute({
     setNotice(
       result._tag === "Failure"
         ? String(squashAtomCommandFailure(result))
-        : `Select ${labels[driver]} via ${host.label} in the model picker.`,
+        : `Select ${INFERENCE_HARNESSES[driver].label}${host.environmentId === consumer.environmentId ? "" : ` via ${host.label}`} in the model picker.`,
     );
   }
   return (
@@ -67,7 +63,7 @@ function InferenceRoute({
       status={notice || undefined}
       control={
         <div className="flex gap-2">
-          {(["codex", "claudeAgent"] as const).map((driver) => (
+          {INFERENCE_DRIVERS.map((driver) => (
             <Button
               key={driver}
               size="sm"
@@ -75,7 +71,7 @@ function InferenceRoute({
               disabled={!canGrant || !canConnect || busy || !!issue}
               onClick={() => void add(driver)}
             >
-              {labels[driver]}
+              {INFERENCE_HARNESSES[driver].label}
             </Button>
           ))}
         </div>
@@ -84,7 +80,7 @@ function InferenceRoute({
   );
 }
 
-function ModelPools({
+function InferenceRoutingControls({
   routing,
   disabled,
   run,
@@ -93,34 +89,8 @@ function ModelPools({
   disabled: boolean;
   run: (action: InferenceProxyAction) => Promise<InferenceProxyActionResult | undefined>;
 }) {
-  const [source, setSource] = useState<InferenceModelMapping["source"]>("codex");
-  const [pool, setPool] = useState("");
-  const [upstream, setUpstream] = useState("");
-  const [catalog, setCatalog] = useState<{
-    source: InferenceModelMapping["source"];
-    ids: readonly string[];
-  } | null>(null);
-  const ids = catalog?.source === source ? catalog.ids : undefined;
-  async function loadModels() {
-    const result = await run({ operation: "listModels", source });
-    if (result?.models) setCatalog({ source, ids: result.models });
-  }
-  const mapping = { source, pool: pool.trim(), upstream: upstream.trim() };
-  const sources = ["codex", "traex", "claudeAgent"] as const;
-  const existing = routing.mappings.find((m) => m.source === source && m.pool === mapping.pool);
-  const hint =
-    source === "traex"
-      ? "Uses the bridge and API key in ~/.traex-bridge on this host."
-      : "Use the same pool name for sources that serve equivalent models.";
-  const poolHint = mapping.pool
-    ? "Model picker ID: " + inferencePoolModel(mapping)
-    : "Use lowercase letters, numbers, dots or hyphens.";
-  const cannotSave =
-    disabled ||
-    !isInferenceModelMapping(mapping) ||
-    (source !== "traex" && existing?.upstream === mapping.upstream);
   return (
-    <SettingsSection title="Model pools">
+    <SettingsSection title="Account routing">
       <SettingsRow
         title="Round-robin routing"
         description="Distribute requests across eligible credentials. Turn off to use the first available credential."
@@ -152,123 +122,6 @@ function ModelPools({
           />
         }
       />
-      {routing.mappings.map((m) => (
-        <SettingsRow
-          key={m.source + ":" + m.pool}
-          title={inferencePoolModel(m)}
-          description={inferenceSourceLabels[m.source] + " · " + m.upstream}
-          control={
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={disabled}
-              onClick={() => void run({ operation: "unmapModel", source: m.source, pool: m.pool })}
-            >
-              Remove mapping
-            </Button>
-          }
-        />
-      ))}
-      <SettingsRow
-        title="Model source"
-        description={hint}
-        control={
-          <Select
-            value={source}
-            disabled={disabled}
-            onValueChange={(v) => {
-              if (v) setSource(v);
-            }}
-          >
-            <SelectTrigger aria-label="Model source">{inferenceSourceLabels[source]}</SelectTrigger>
-            <SelectPopup>
-              {sources.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {inferenceSourceLabels[s]}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        }
-      />
-      <SettingsRow
-        title="Available models"
-        description={
-          ids?.length === 0 ? "No models reported. Enter the upstream ID below." : undefined
-        }
-        control={
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={disabled}
-              onClick={() => void loadModels()}
-            >
-              Load source models
-            </Button>
-            {ids && ids.length > 0 && (
-              <Select
-                value={upstream}
-                disabled={disabled}
-                onValueChange={(v) => {
-                  if (v) setUpstream(v);
-                }}
-              >
-                <SelectTrigger aria-label="Choose upstream model">Choose model</SelectTrigger>
-                <SelectPopup>
-                  {ids.map((id) => (
-                    <SelectItem key={id} value={id}>
-                      {id}
-                    </SelectItem>
-                  ))}
-                </SelectPopup>
-              </Select>
-            )}
-          </div>
-        }
-      />
-      <SettingsRow
-        title="Upstream model ID"
-        control={
-          <Input
-            aria-label="Upstream model ID"
-            value={upstream}
-            disabled={disabled}
-            onChange={(e) => setUpstream(e.target.value)}
-            placeholder="Upstream ID"
-          />
-        }
-      />
-      <SettingsRow
-        title="Pool name"
-        description={poolHint}
-        control={
-          <Input
-            aria-label="Pool name"
-            value={pool}
-            disabled={disabled}
-            onChange={(e) => setPool(e.target.value)}
-            placeholder="work"
-          />
-        }
-      />
-      <SettingsRow
-        title="Publish mapping"
-        description="Apply a route again to refresh its model picker after changing pools."
-        control={
-          <Button
-            size="sm"
-            disabled={cannotSave}
-            onClick={() => void run({ operation: "mapModel", mapping })}
-          >
-            {existing?.upstream === mapping.upstream && source === "traex"
-              ? "Refresh bridge key"
-              : existing
-                ? "Update mapping"
-                : "Add mapping"}
-          </Button>
-        }
-      />
     </SettingsSection>
   );
 }
@@ -283,8 +136,6 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
   const command = useAtomCommand(inferenceProxy.manageInference, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
-  const [login, setLogin] = useState<{ url: string; state: string } | null>(null);
-  const [callback, setCallback] = useState("");
   const host = query.data;
   const updateQuery = useEnvironmentQuery(
     host?.enabled
@@ -301,30 +152,11 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
       setNotice(String(squashAtomCommandFailure(result)));
       return;
     }
-    if (result.value.login) {
-      setLogin(result.value.login);
-      setCallback("");
-    }
-    if (
-      input.operation === "cancel" ||
-      (input.operation === "configure" && !input.enabled) ||
-      result.value.status === "ok"
-    ) {
-      setLogin(null);
-      setCallback("");
-    }
-    if (result.value.status === "wait")
-      setNotice("Waiting for the host to finish sign-in. Check status after a moment.");
-    if (result.value.status === "error") {
-      setLogin(null);
-      setCallback("");
-      setNotice("Sign-in failed or expired. Start a new sign-in.");
-    }
     return result.value;
   }
   return (
     <SettingsPageContainer className="gap-8">
-      <SettingsSection id="account-pools" title="Inference hosting">
+      <SettingsSection id="inference" title="Inference hosting">
         {!canManage ? (
           <SettingsRow title="Provider management access is required." />
         ) : host ? (
@@ -409,96 +241,11 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
       </SettingsSection>
       {host?.enabled && (
         <SettingsSection title="Hosted accounts">
-          {host.accounts.map((account) => (
-            <SettingsRow
-              key={account.name}
-              title={account.name}
-              description={`${account.provider} · ${account.status}`}
-              control={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => void run({ operation: "removeAccount", name: account.name })}
-                >
-                  Remove
-                </Button>
-              }
-            />
-          ))}
-          {login ? (
-            <>
-              <SettingsRow
-                title="Finish signing in"
-                description="Open the provider sign-in page and paste the final localhost URL here, even if the browser cannot load it."
-                control={
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    render={<a href={login.url} target="_blank" rel="noreferrer" />}
-                  >
-                    Open sign-in
-                  </Button>
-                }
-              />
-              <Input
-                aria-label="Sign-in callback URL"
-                placeholder="Paste callback URL"
-                type="password"
-                value={callback}
-                onChange={(event) => setCallback(event.target.value)}
-              />
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  disabled={busy || !callback}
-                  onClick={() => void run({ operation: "callback", state: login.state, callback })}
-                >
-                  Submit
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => void run({ operation: "check", state: login.state })}
-                >
-                  Check status
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => void run({ operation: "cancel", state: login.state })}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </>
-          ) : (
-            <SettingsRow
-              title="Add an account"
-              description="Sign in once for each account this host should use."
-              control={
-                <div className="flex gap-2">
-                  {(["codex", "claudeAgent"] as const).map((driver) => (
-                    <Button
-                      key={driver}
-                      size="sm"
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => void run({ operation: "signIn", driver })}
-                    >
-                      {labels[driver]}
-                    </Button>
-                  ))}
-                </div>
-              }
-            />
-          )}
+          <InferenceProviderAccounts environmentId={environmentId} />
         </SettingsSection>
       )}
       {host?.enabled && host.routing && (
-        <ModelPools routing={host.routing} disabled={busy || !canManage} run={run} />
+        <InferenceRoutingControls routing={host.routing} disabled={busy || !canManage} run={run} />
       )}
       {notice && (
         <p role="status" className="text-sm">
@@ -509,13 +256,13 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
         <SettingsSection title="Route requests through an environment">
           <SettingsRow
             title={`Run agents on ${current.label}`}
-            description="Choose a host and provider below. Tools and files stay on this environment. Adding a route retires its existing CLI profile pool."
+            description="Choose a host and provider below. Tools and files stay on this environment. Choosing a host changes where this provider sends inference. That host manages the accounts."
           />
           {host?.routes.map((route) => (
             <SettingsRow
               key={route.instanceId}
               title={route.label}
-              description="Configured on this environment"
+              description="Using an inference host on this environment"
               control={
                 <Button
                   size="sm"
@@ -525,7 +272,7 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
                     void run({ operation: "removeRoute", instanceId: route.instanceId })
                   }
                 >
-                  Remove route
+                  Use native provider
                 </Button>
               }
             />

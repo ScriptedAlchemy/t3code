@@ -56,10 +56,11 @@ it.layer(NodeServices.layer)("writeFileStringAtomically", (it) => {
       yield* fs.writeFileString(destination, "before");
       yield* fs.symlink(destination, link);
 
-      yield* writeFileStringAtomically({ filePath: link, contents: "after" });
+      yield* writeFileStringAtomically({ filePath: link, contents: "after", mode: 0o600 });
 
       assert.strictEqual(yield* fs.readLink(link), destination);
       assert.strictEqual(yield* fs.readFileString(destination), "after");
+      assert.strictEqual((yield* fs.stat(destination)).mode & 0o777, 0o600);
     }),
   );
 

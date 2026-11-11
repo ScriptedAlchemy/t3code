@@ -22,6 +22,7 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -828,6 +829,11 @@ export const layer: Layer.Layer<
           ...(existingSessionProjection === undefined
             ? {}
             : { resumeFromSession: existingSessionProjection }),
+          ...(providerThread.nativeMetadata?.continuationKey === undefined
+            ? {}
+            : {
+                expectedContinuationKey: providerThread.nativeMetadata.continuationKey,
+              }),
           ...(providerThread.nativeThreadRef?.nativeId == null
             ? {}
             : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
@@ -1160,6 +1166,7 @@ export const layer: Layer.Layer<
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
       let contextRestart: OrchestrationV2ContextRestart | undefined;
+      let recordForkMemory: Effect.Effect<void> = Effect.void;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadRecords(
@@ -1203,7 +1210,7 @@ export const layer: Layer.Layer<
                 )
                 .map((attempt) => attempt.id),
             );
-            return yield* loadFromProvider(
+            const forked = yield* loadFromProvider(
               session.forkThread({
                 sourceProviderThread,
                 sourceProviderTurns: sourceProjection.providerTurns.filter(
@@ -1218,6 +1225,49 @@ export const layer: Layer.Layer<
                   : { providerTurnId: sourceProviderTurn.id }),
               }),
             );
+            if (forked === undefined) return undefined;
+            // A native fork already contains the accepted source attachments through its fork
+            // point. Exclude later runs and receipts from replaced native conversations.
+            recordForkMemory = Effect.gen(function* () {
+              const nativeThreadId = sourceProviderThread.nativeThreadRef?.nativeId;
+              if (nativeThreadId === undefined) return;
+              const receipts = yield* knowledge.readSentDeliveries({
+                projectId: projection.thread.projectId,
+                threadIds: [sourceProjection.thread.id],
+                runIds: sourceProjection.runs
+                  .filter(
+                    (candidate) =>
+                      candidate.ordinal <= sourceRun.ordinal && candidate.status !== "rolled_back",
+                  )
+                  .map((candidate) => candidate.id),
+              });
+              yield* knowledge.recordViews(
+                projection.thread.projectId,
+                projection.thread.id,
+                receipts
+                  .filter(
+                    (receipt) =>
+                      receipt.providerThreadId === sourceProviderThread.id &&
+                      receipt.nativeThreadId === nativeThreadId,
+                  )
+                  .flatMap((receipt) =>
+                    receipt.items.flatMap((item) =>
+                      item.context.selections.flatMap((selection) =>
+                        selection.kind === "fact" ? [selection.factId] : [],
+                      ),
+                    ),
+                  ),
+              );
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterrupts(cause)
+                  ? Effect.interrupt
+                  : Effect.logWarning("Failed to record inherited native-fork project memory", {
+                      runId: run.id,
+                    }),
+              ),
+            );
+            return forked;
           }
           const sourceItems = yield* ContextHandoffService.readForkHistoryItems(
             projectionStore,
@@ -1699,6 +1749,8 @@ export const layer: Layer.Layer<
       if (!runningWrite.committed) {
         return;
       }
+      // The fork must belong to this thread before its inherited facts count as seen.
+      yield* recordForkMemory;
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
@@ -1727,23 +1779,25 @@ export const layer: Layer.Layer<
           },
           ...input,
         }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge));
-      let knowledgeDelivery = yield* prepareDelivery(pstackComposer);
+      const attachedKnowledgeDelivery = yield* prepareDelivery(pstackComposer);
+      let knowledgeDelivery = attachedKnowledgeDelivery;
       let { composer } = knowledgeDelivery;
       if (composer.byteLength > 0 && !(yield* isCurrentAttemptInStatus("running"))) return;
       let initialDeliveryState = yield* knowledgeDelivery.readState;
       userText = initialDeliveryState.sent ? composer.baseText : composer.text;
+      const budget = handoffBudgetAssumptions({
+        tokenCap,
+        modelContextWindow,
+        userText: turnNotes === "" ? composer.baseText : `${turnNotes}\n\n${composer.baseText}`,
+        attachments: message.attachments,
+        providerThread: budgetProviderThread,
+        nativeContextEstimate:
+          budgetProviderThread.contextUsage?.usedTokens === undefined
+            ? yield* nativeContextEstimate
+            : 0,
+      });
+      let recalledComposer: Pick<typeof pstackComposer, "text" | "records"> | null = null;
       {
-        const budget = handoffBudgetAssumptions({
-          tokenCap,
-          modelContextWindow,
-          userText: turnNotes === "" ? composer.baseText : `${turnNotes}\n\n${composer.baseText}`,
-          attachments: message.attachments,
-          providerThread: budgetProviderThread,
-          nativeContextEstimate:
-            budgetProviderThread.contextUsage?.usedTokens === undefined
-              ? yield* nativeContextEstimate
-              : 0,
-        });
         // Recall adds related saved facts to the message, so no one has to pick them by hand.
         const recalled =
           noteContinuation || initialDeliveryState.sent
@@ -1759,14 +1813,32 @@ export const layer: Layer.Layer<
         const withRecall =
           recalled === null ? Option.none() : yield* prepareDelivery(recalled).pipe(Effect.option);
         if (Option.isSome(withRecall)) {
+          recalledComposer = recalled;
           knowledgeDelivery = withRecall.value;
           composer = knowledgeDelivery.composer;
           initialDeliveryState = yield* knowledgeDelivery.readState;
-          userText = composer.text;
+          userText = initialDeliveryState.sent ? composer.baseText : composer.text;
         }
         yield* knowledgeDelivery.checkBudget(budget, initialDeliveryState.sent);
         if (!(yield* isCurrentAttemptInStatus("running"))) return;
       }
+      const dropRecall = Effect.fn("ProviderTurnStartService.dropRecall")(function* (
+        reason: "recall_failed" | "not_referenced",
+      ) {
+        const omissions = [
+          ...composer.omissions,
+          ...composer.items
+            .filter(ProjectKnowledge.isRecalledMemory)
+            .map(({ contextId, label }) => ({ contextId, label, reason })),
+        ];
+        knowledgeDelivery = attachedKnowledgeDelivery;
+        composer = knowledgeDelivery.composer;
+        composer.omissions.push(...omissions);
+        recalledComposer = null;
+        userText = initialDeliveryState.sent ? composer.baseText : composer.text;
+        yield* knowledgeDelivery.revalidate;
+        yield* knowledgeDelivery.checkBudget(budget, initialDeliveryState.sent);
+      });
       const persistHandoff = Effect.fn("ProviderTurnStartService.persist")(function* (
         handoff: OrchestrationV2ContextHandoff,
       ) {
@@ -1802,6 +1874,9 @@ export const layer: Layer.Layer<
               cause: "Uncertain native history injection",
             });
           }
+          let historicalKnowledge:
+            | Effect.Success<ReturnType<typeof deliveredKnowledgeForHistory>>
+            | undefined;
           const delivery = yield* deliverContextHandoffs({
             handoffs: [...effectiveHandoffs, ...retryHandoff],
             deferInline: compact || goalCommand,
@@ -1828,9 +1903,14 @@ export const layer: Layer.Layer<
                 messages,
                 userItemId: (messageId) => idAllocator.derive.userTurnItem({ messageId }),
               }).pipe(
+                Effect.map((evidence) => {
+                  historicalKnowledge = evidence;
+                  return evidence.textByItem;
+                }),
                 Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge),
                 // Missing evidence degrades the replay; it must not block the turn.
                 Effect.catchCause((cause) => {
+                  if (Cause.hasInterrupts(cause)) return Effect.interrupt;
                   for (const historical of messages) {
                     if (historical.kind !== "user_message") continue;
                     composer.omissions.push({
@@ -1843,11 +1923,30 @@ export const layer: Layer.Layer<
                     "Failed to read delivered project knowledge for handoff",
                     {
                       runId: run.id,
-                      cause,
                     },
                   ).pipe(Effect.as(new Map<string, string>()));
                 }),
               ),
+            onDelivered: (messages, summaryFactIds) =>
+              knowledge
+                .recordViews(projection.thread.projectId, projection.thread.id, [
+                  ...new Set([
+                    ...summaryFactIds,
+                    ...messages.flatMap(
+                      (historical) =>
+                        historicalKnowledge?.factIdsByItem.get(historical.itemId) ?? [],
+                    ),
+                  ]),
+                ])
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterrupts(cause)
+                      ? Effect.interrupt
+                      : Effect.logWarning("Failed to record delivered project memory", {
+                          runId: run.id,
+                        }),
+                  ),
+                ),
             ...(session.injectHistory === undefined
               ? {}
               : {
@@ -1859,7 +1958,53 @@ export const layer: Layer.Layer<
                 }),
             persist: persistHandoff,
           });
-          yield* knowledgeDelivery.revalidate.pipe(Effect.tapError(() => delivery.unsent));
+          const inheritedFactIds = new Set([
+            ...delivery.summaryFactIds,
+            ...delivery.messages.flatMap(
+              (historical) => historicalKnowledge?.factIdsByItem.get(historical.itemId) ?? [],
+            ),
+          ]);
+          if (recalledComposer !== null && inheritedFactIds.size > 0) {
+            let removed = false;
+            const records = recalledComposer.records.flatMap((record) => {
+              if (
+                record.kind !== "project-knowledge" ||
+                !("knowledge" in record) ||
+                !ProjectKnowledge.isRecalledMemory(record)
+              )
+                return [record];
+              const selections = record.knowledge.selections.filter(
+                (selection) => selection.kind !== "fact" || !inheritedFactIds.has(selection.factId),
+              );
+              removed ||= selections.length !== record.knowledge.selections.length;
+              return selections.length === 0
+                ? []
+                : [{ ...record, knowledge: { ...record.knowledge, selections } }];
+            });
+            if (removed) {
+              if (!records.some(ProjectKnowledge.isRecalledMemory)) {
+                yield* dropRecall("not_referenced");
+              } else {
+                recalledComposer = { ...recalledComposer, records };
+                const updated = yield* prepareDelivery(recalledComposer).pipe(Effect.option);
+                if (Option.isNone(updated)) {
+                  yield* dropRecall("recall_failed");
+                } else {
+                  knowledgeDelivery = updated.value;
+                  composer = knowledgeDelivery.composer;
+                  userText = initialDeliveryState.sent ? composer.baseText : composer.text;
+                  yield* knowledgeDelivery.checkBudget(budget, initialDeliveryState.sent);
+                }
+              }
+            }
+          }
+          yield* knowledgeDelivery.revalidate.pipe(
+            Effect.catchTags({
+              ProjectKnowledgeError: (error) =>
+                recalledComposer === null ? Effect.fail(error) : dropRecall("recall_failed"),
+            }),
+            Effect.tapError(() => delivery.unsent),
+          );
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
           if ((yield* knowledgeDelivery.readState).sentThisAttempt) return;
           yield* knowledgeDelivery.record("prepared").pipe(Effect.tapError(() => delivery.unsent));

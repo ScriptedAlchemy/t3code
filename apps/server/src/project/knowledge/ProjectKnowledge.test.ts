@@ -897,9 +897,9 @@ it.effect(
         userItemId: (id) => (id === messageId ? "item:sent" : "item:unsent"),
       });
       const evidence = yield* handoff;
-      assert.deepEqual([...evidence.keys()], ["item:sent"]);
-      assert.include(evidence.get("item:sent"), "Cache keys include tenant IDs.");
-      assert.notInclude(evidence.get("item:sent"), "region IDs");
+      assert.deepEqual([...evidence.textByItem.keys()], ["item:sent"]);
+      assert.include(evidence.textByItem.get("item:sent"), "Cache keys include tenant IDs.");
+      assert.notInclude(evidence.textByItem.get("item:sent"), "region IDs");
 
       yield* knowledge.mutate(
         {
@@ -933,7 +933,7 @@ it.effect(
         [],
       );
       // A handoff after the forget carries nothing for it.
-      assert.deepEqual([...(yield* handoff).keys()], []);
+      assert.deepEqual([...(yield* handoff).textByItem.keys()], []);
       const otherProjectId = ProjectId.make("other-delivery-project");
       yield* createProject(otherProjectId);
       assert.deepEqual(
@@ -1033,6 +1033,7 @@ it.effect("keeps each steering message's receipt and forgets only its own eviden
 
     const evidence = yield* deliveredKnowledgeForHistory({
       projectId,
+      viewer: ThreadId.make("steering-replay"),
       messages: [original, followup].map((receipt) => ({
         itemId: TurnItemId.make(`item:${receipt.messageId}`),
         role: "user" as const,
@@ -1045,7 +1046,21 @@ it.effect("keeps each steering message's receipt and forgets only its own eviden
       })),
       userItemId: (id) => `item:${id}`,
     });
-    assert.equal(evidence.size, 2);
+    assert.equal(evidence.textByItem.size, 2);
+    yield* evidence.recordDelivered(new Set([`item:${original.messageId}`]));
+    const sql = yield* SqlClient.SqlClient;
+    const viewed = yield* sql<{ readonly fact_id: string }>`
+      SELECT fact_id FROM project_knowledge_views
+      WHERE project_id = ${projectId} AND thread_id = 'steering-replay'
+    `;
+    assert.sameMembers(
+      viewed.map((row) => row.fact_id),
+      original.items.flatMap((item) =>
+        item.context.selections.flatMap((selection) =>
+          selection.kind === "fact" ? [selection.factId] : [],
+        ),
+      ),
+    );
     yield* first.forget;
     assert.equal((yield* first.excerpts)[0]?.[2], "");
     assert.equal((yield* readSecond).deliveries[0]?.items[0]?.text, followup.items[0]?.text);
@@ -1162,7 +1177,7 @@ it.effect("keeps native attachment occupancy across retries, scrubbing and legac
         messageId === receipt.messageId ? "original-delivered-item" : undefined,
     });
     assert.include(
-      (yield* historyEvidence).get("original-delivered-item")!,
+      (yield* historyEvidence).textByItem.get("original-delivered-item")!,
       receipt.items[0]!.text,
     );
     yield* knowledge.recordDelivery({
@@ -1222,7 +1237,7 @@ it.effect("keeps native attachment occupancy across retries, scrubbing and legac
     const expected = fixture.byteLength * 2 + legacyBudget.knowledgeAllowance + 48_000;
     assert.equal(yield* estimate, expected);
     yield* fixture.forget;
-    assert.equal((yield* historyEvidence).size, 0);
+    assert.equal((yield* historyEvidence).textByItem.size, 0);
     assert.equal(
       (yield* fixture.excerpts).find((entry) => entry[0] === receipt.attemptId)?.[2],
       "",
@@ -1633,8 +1648,11 @@ it.effect.each(["rolled", "edited", "deleted", "project-deleted", "archive"] as 
           ],
           userItemId: () => "removed-source-replay",
         });
-        assert.notInclude(replay.get("removed-source-replay"), "Cache keys include tenant IDs.");
-        assert.include(replay.get("removed-source-replay"), "Source unavailable");
+        assert.notInclude(
+          replay.textByItem.get("removed-source-replay"),
+          "Cache keys include tenant IDs.",
+        );
+        assert.include(replay.textByItem.get("removed-source-replay"), "Source unavailable");
       }
       const uncited = yield* deliveredFact("project-deleted");
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -2026,7 +2044,7 @@ it.effect("does not recall a fact the thread's agent has already been shown", ()
       createdAt: DateTime.formatIso(at(2)),
       updatedAt: DateTime.formatIso(at(2)),
     });
-    yield* deliveredKnowledgeForHistory({
+    const inherited = yield* deliveredKnowledgeForHistory({
       projectId,
       viewer: ThreadId.make("fork"),
       messages: [
@@ -2039,6 +2057,10 @@ it.effect("does not recall a fact the thread's agent has already been shown", ()
       ],
       userItemId: () => "item:parent",
     });
+    assert.isNotEmpty(yield* recalledIn("fork", "before-replay"));
+    yield* inherited.recordDelivered(new Set(["item:omitted"]));
+    assert.isNotEmpty(yield* recalledIn("fork", "omitted-replay"));
+    yield* inherited.recordDelivered(new Set(["item:parent"]));
     yield* readAllBut(
       "fork",
       parentDelivery.items.flatMap((item) =>
@@ -2079,6 +2101,37 @@ it.effect("does not recall a fact the thread's agent has already been shown", ()
     });
     assert.include(delivered.text, "[fact cited rev 1, from user] Cache keys include tenant IDs");
     assert.notInclude(delivered.text, "sha256");
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("recalls unseen facts beyond a full page of facts the thread has read", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("recall-seen-page");
+    const threadId = ThreadId.make("recall-seen-page-thread");
+    yield* createProject(projectId);
+    const ids = Array.from({ length: 10 }, (_, index) => `fact-${index}`);
+    for (const id of ids) yield* knowledge.mutate(createFact(projectId, id), { kind: "user" });
+    const read = yield* knowledge.list({ projectId, limit: 9 }, threadId);
+    assert.deepEqual(
+      read.facts.map((fact) => fact.id),
+      ids.slice(0, 9),
+    );
+    const query = "Change cache keys to include tenant IDs.";
+    const recalled = yield* knowledge.recall({
+      projectId,
+      threadId,
+      requestId: CommandId.make("recall-after-first-page"),
+      query,
+      composer: { text: query, records: [] },
+      knowledgeAllowance: 48000,
+    });
+    const record = recalled?.records[0];
+    assert.equal(record?.kind, "project-knowledge");
+    if (record?.kind !== "project-knowledge" || !("knowledge" in record)) return;
+    assert.deepEqual(record.knowledge.selections, [
+      { kind: "fact", factId: ProjectFactId.make("fact-9"), revision: 1 },
+    ]);
   }).pipe(Effect.provide(layerTest)),
 );
 

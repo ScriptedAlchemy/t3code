@@ -25,7 +25,7 @@ export function ThreadGroupInviteScreen({
   );
   const invite = useAtomCommand(orchestrationEnvironment.inviteToGroup);
   const [prompt, setPrompt] = useState("");
-  const options = buildModelOptions(config, null, undefined, thread?.projectId ?? null, "settings");
+  const options = buildModelOptions(config, null, undefined, thread?.projectId ?? null);
 
   if (
     !thread ||
