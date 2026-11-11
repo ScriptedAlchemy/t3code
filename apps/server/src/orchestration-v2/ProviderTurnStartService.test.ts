@@ -2372,6 +2372,57 @@ effectIt.effect.each(["superseded", "stopped", "account failover"] as const)(
     }),
 );
 
+effectIt.effect("settles stale selected knowledge before native startup", () =>
+  Effect.gen(function* () {
+    const record = {
+      version: 1 as const,
+      kind: "project-knowledge" as const,
+      contextId: ComposerContextId.make("project-knowledge"),
+      label: "Project knowledge",
+      knowledge: {
+        environmentId: EnvironmentId.make("test"),
+        projectId: ProjectId.make("project-native-account-command"),
+        selections: [{ kind: "fact" as const, factId: ProjectFactId.make("fact"), revision: 1 }],
+        maxBytes: 48000,
+      },
+    };
+    const harness = makeLocalCommandHarness({
+      text: `Preserve my question. ${formatComposerContextReference(record)}`,
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+      resolveKnowledge: (context) =>
+        Effect.fail(
+          new ProjectKnowledgeError({
+            reason: "stale_context",
+            projectId: context.projectId,
+          }),
+        ),
+    });
+    const projection = harness.projection();
+    harness.setProjection({
+      ...projection,
+      messages: projection.messages.map((message) => ({
+        ...message,
+        context: { version: 1, records: [record] },
+      })),
+    });
+    yield* harness.start;
+    yield* harness.start;
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.nativeStart).not.toHaveBeenCalled();
+    const failed = harness.projection();
+    expect(failed.runs.find((run) => run.id === projection.runs.at(-1)?.id)?.status).toBe("failed");
+    expect(failed.turnItems).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        failure: expect.objectContaining({
+          message: expect.stringContaining("Selected knowledge changed"),
+        }),
+      }),
+    );
+    expect(harness.settledRuns).toHaveLength(1);
+  }),
+);
+
 effectIt.effect.each([false, true, "with-recall"] as const)(
   "rehydrates selected knowledge at native delivery, stale=%s",
   (stale) =>
@@ -3232,6 +3283,10 @@ effectIt.effect("records an over-budget mandatory attachment without starting th
     yield* harness.start.pipe(Effect.result);
     expect(harness.nativeStart).not.toHaveBeenCalled();
     expect(harness.knowledgeDeliveries.at(-1)?.omissions[0]?.reason).toBe("over_budget");
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(harness.projection().turnItems).toContainEqual(
+      expect.objectContaining({ type: "error" }),
+    );
   }),
 );
 
