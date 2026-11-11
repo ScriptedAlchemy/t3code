@@ -50,7 +50,7 @@ export function SettingsLabsRouteScreen() {
       >
         <SettingsSection title="Zack">
           <SettingsRow
-            icon="sparkles"
+            icon="slider.horizontal.3"
             label="Zack settings"
             value="Memory, summaries, skills, thread suggestions, evaluations"
             onPress={() => navigation.navigate("SettingsZack")}

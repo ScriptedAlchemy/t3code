@@ -296,6 +296,7 @@ function makeLocalCommandHarness(input: {
   readonly recallKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["recall"];
   readonly resolveKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["resolveForTurn"];
   readonly readSentDeliveries?: ProjectKnowledge.ProjectKnowledge["Service"]["readSentDeliveries"];
+  readonly nativeGoals?: boolean;
   readonly worktreePath?: string;
   readonly branch?: string;
   readonly worktreesDir?: string;
@@ -365,7 +366,7 @@ function makeLocalCommandHarness(input: {
   };
   const providerThread: OrchestrationV2ThreadProjection["providerThreads"][number] = {
     id: providerThreadId,
-    driver: ProviderDriverKind.make("codex"),
+    driver: ProviderDriverKind.make(input.nativeGoals === undefined ? "codex" : "opencode"),
     providerInstanceId: newInstanceId,
     providerSessionId,
     appThreadId: threadId,
@@ -809,7 +810,13 @@ function makeLocalCommandHarness(input: {
     status: "ready",
     cwd: "/tmp/native-account-command",
     model: null,
-    capabilities: CodexProviderCapabilitiesV2,
+    capabilities: {
+      ...CodexProviderCapabilitiesV2,
+      turns: {
+        ...CodexProviderCapabilitiesV2.turns,
+        ...(input.nativeGoals === undefined ? {} : { supportsNativeGoals: input.nativeGoals }),
+      },
+    },
     createdAt: now,
     updatedAt: now,
     lastError: null,
@@ -1595,6 +1602,23 @@ effectIt.effect.each([
         !forks,
       );
       expect(harness.projection().providerThreads[0]?.handoffIds).toEqual(handoffIds);
+    }),
+);
+
+effectIt.effect.each([false, true])(
+  "OpenCode goal prompts defer switched-provider history only with native support: %s",
+  (nativeGoals) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "/goal all tests pass",
+        nativeGoals,
+        sideChat: { contextRun: "failed", switchedProvider: true },
+      });
+      harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+      yield* harness.start;
+      expect(harness.startTurn.mock.calls[0]?.[0].message.text.includes("SIDE_CHAT_CONTEXT")).toBe(
+        !nativeGoals,
+      );
     }),
 );
 

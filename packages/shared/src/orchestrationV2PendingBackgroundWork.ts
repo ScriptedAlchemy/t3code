@@ -2,6 +2,7 @@ import type {
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderThread,
   OrchestrationV2Run,
+  OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
   ThreadId,
   ThreadPullRequestLink,
@@ -105,6 +106,16 @@ function backgroundWorkKindHoldsCompletion(kind: PendingBackgroundWorkTask["kind
     case "background_task":
       return true;
   }
+}
+
+/** A monitor wakes the agent once per line, so a progress wake run's completion waits for the monitor to end. */
+export function monitorHoldsWakeCompletion(
+  thread: Pick<OrchestrationV2ThreadShell, "latestRunBackgroundWake" | "pendingBackgroundTasks">,
+): boolean {
+  return (
+    thread.latestRunBackgroundWake === true &&
+    (thread.pendingBackgroundTasks ?? []).some((task) => task.kind === "monitor")
+  );
 }
 
 type PendingBackgroundWorkRun = Pick<OrchestrationV2Run, "id" | "ordinal" | "status">;
@@ -301,10 +312,7 @@ function pullRequestWatchTasks(
       : [
           {
             taskId: `pull-request-watch:${link.host.toLowerCase()}/${link.repository.toLowerCase()}#${link.number}`,
-            description:
-              link.watch.mode === "checks"
-                ? `Waiting for CI on pull request #${link.number}`
-                : `Watching checks and reviews on pull request #${link.number}`,
+            description: `Watching pull request #${link.number}`,
             kind: "monitor" as const,
             awaited: true as const,
           },
