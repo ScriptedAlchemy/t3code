@@ -38,7 +38,7 @@ T3 reuses the selected host's existing connection, including SSH, LAN, Tailscale
 You do not need an agent link or a separate proxy installation on the consuming machine.
 Connect your client to both T3 environments with provider management access.
 Select the environment where you want to run agents in Settings. Under **Route
-requests through an environment**, choose Codex or Claude beside the host name.
+requests through an environment**, choose Codex, Claude, or [OpenCode](./providers-opencode.md#shared-inference-accounts) beside the host name.
 That environment must be able to reach the host over Tailscale or its private LAN address and run the
 corresponding agent CLI. You can also choose the current host for local use.
 

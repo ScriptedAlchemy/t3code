@@ -4,6 +4,9 @@ import { InferenceProviderAccounts } from "./InferenceProviderAccounts";
 import { inferenceAccountHostId } from "./AddProviderInstanceDialog.logic";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import {
+  INFERENCE_DRIVERS,
+  INFERENCE_HARNESSES,
+  inferenceHarness,
   isInferenceProviderConfig,
   isCustomInferenceBackend,
   AuthSettingsWriteScope,
@@ -733,6 +736,7 @@ export function EnvironmentProviderSettings({
     const driver = instance.driver;
     if (
       rawId !== defaultInstanceIdForDriver(driver) &&
+      inferenceHarness(driver)?.replacesAccounts &&
       inferenceAccountHostId(settings.providerInstances, driver, environmentId) &&
       !isCustomInferenceBackend(instance)
     ) {
@@ -1348,10 +1352,11 @@ function ProviderInstanceRow({
   const accountHostId = isDefault
     ? inferenceAccountHostId({ [instanceId]: instance }, driver, environmentId)
     : null;
+  const inferenceDriver = INFERENCE_DRIVERS.find((candidate) => candidate === driver);
   const canUseProxy =
     supportsInference &&
     isDefault &&
-    (driver === "codex" || driver === "claudeAgent") &&
+    inferenceDriver !== undefined &&
     (isInferenceProviderConfig(instance.config) || !isCustomInferenceBackend(instance));
   const navigate = useNavigate();
   const recommendedVersion = liveProvider?.compatibilityAdvisory?.recommendedVersion;
@@ -1363,11 +1368,11 @@ function ProviderInstanceRow({
     liveProvider.versionAdvisory?.canInstallVersion === true;
 
   const setup =
-    mode === "editor" && accountHostId && (driver === "codex" || driver === "claudeAgent") ? (
+    mode === "editor" && accountHostId && inferenceDriver ? (
       <InferenceProviderAccounts
-        key={`${accountHostId}:${driver}`}
+        key={`${accountHostId}:${inferenceDriver}`}
         environmentId={accountHostId}
-        driver={driver === "codex" ? "codex" : "claudeAgent"}
+        driver={inferenceDriver}
         readOnly={readOnly}
         hostLabel={providerConfigString(instance.config, "inferenceHostLabel") ?? undefined}
       />
@@ -1466,13 +1471,15 @@ function ProviderInstanceRow({
             <SettingsRow
               title="Use CLI proxy"
               description={
-                proxyHiddenNames.length === 0
-                  ? "Route this provider through an inference host. Your standalone CLI keeps its own settings."
-                  : `Routed through an inference host. ${formatList(proxyHiddenNames)} ${
-                      proxyHiddenNames.length === 1 ? "is" : "are"
-                    } hidden while the proxy is on and return${
-                      proxyHiddenNames.length === 1 ? "s" : ""
-                    } when you turn it off.`
+                inferenceDriver && !INFERENCE_HARNESSES[inferenceDriver].replacesAccounts
+                  ? "Add an inference host's models to this provider as T3 inference. Its own logins keep working."
+                  : proxyHiddenNames.length === 0
+                    ? "Route this provider through an inference host. Your standalone CLI keeps its own settings."
+                    : `Routed through an inference host. ${formatList(proxyHiddenNames)} ${
+                        proxyHiddenNames.length === 1 ? "is" : "are"
+                      } hidden while the proxy is on and return${
+                        proxyHiddenNames.length === 1 ? "s" : ""
+                      } when you turn it off.`
               }
               control={
                 <Switch

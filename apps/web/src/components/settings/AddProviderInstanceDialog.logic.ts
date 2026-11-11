@@ -1,4 +1,9 @@
-import { EnvironmentId, ProviderInstanceId, type ServerSettings } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  inferenceHarness,
+  ProviderInstanceId,
+  type ServerSettings,
+} from "@t3tools/contracts";
 
 export type WizardNavigation =
   | { readonly kind: "navigate"; readonly step: number }
@@ -138,7 +143,7 @@ export function inferenceAccountHostId(
   selection: string,
   environmentId: EnvironmentId,
 ): EnvironmentId | null {
-  if (selection !== "codex" && selection !== "claudeAgent") return null;
+  if (!inferenceHarness(selection)) return null;
   const config = instances[ProviderInstanceId.make(selection)]?.config;
   if (
     config === null ||

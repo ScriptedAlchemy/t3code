@@ -4,6 +4,9 @@ import {
   managedCapabilityDenial,
   managedUpdatesDenial,
   ProviderDriverKind,
+  INFERENCE_DRIVERS,
+  INFERENCE_HARNESSES,
+  inferenceHarness,
   InferenceConsumer,
   InferenceHostConnection,
   isInferenceProviderConfig,
@@ -18,6 +21,7 @@ import {
   type InferenceProxyStatus,
   type InferenceRouteGrant,
   type InferenceRouteInput,
+  type InferenceUpstream,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
@@ -57,7 +61,7 @@ import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { claudeKeychainEntry } from "./claudeKeychain.ts";
 import { install, proxyVersion, resolveRelease, Release } from "./install.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
-import { validateRouteUrl } from "./routes.ts";
+import { modelsForDriver, validateRouteUrl } from "./routes.ts";
 
 const Saved = Schema.Struct({
   enabled: Schema.Boolean,
@@ -88,20 +92,11 @@ const Models = Schema.Struct({
     Schema.Struct({ id: Schema.String, owned_by: Schema.optional(Schema.String) }),
   ),
 });
-function modelsForDriver(
-  data: (typeof Models.Type)["data"],
-  driver: InferenceRouteInput["driver"],
-) {
-  return data
-    .filter((model) => {
-      if (/^(codex|claude)-pool-/.test(model.id)) return false;
-      const owner = model.owned_by?.toLowerCase();
-      if (owner === "openai") return driver === "codex";
-      if (owner === "anthropic") return driver === "claudeAgent";
-      return driver === "codex" ? /^(codex-|gpt-|o\d)/i.test(model.id) : /^claude-/i.test(model.id);
-    })
-    .map((m) => m.id);
-}
+// Local CLI sign-ins T3 mirrors into the pool, keyed the way `removedLocalAccounts` records them.
+const LOCAL_ACCOUNT_PREFIX: Partial<Record<InferenceUpstream, string>> = {
+  codex: "codex:",
+  anthropic: "claude:",
+};
 const Login = Schema.Struct({ state: Schema.String, url: Schema.String });
 const AuthStatus = Schema.Struct({ status: Schema.Literals(["ok", "error", "wait"]) });
 const UploadStatus = Schema.Struct({ status: Schema.Literal("ok") });
@@ -785,7 +780,7 @@ const make = Effect.gen(function* () {
               ? [
                   {
                     instanceId: ProviderInstanceId.make(id),
-                    label: `${instance.driver === "codex" ? "Codex" : "Claude"}${instance.config.inferenceHostLabel ? ` via ${instance.config.inferenceHostLabel}` : ""}`,
+                    label: `${inferenceHarness(instance.driver)?.label ?? instance.driver}${instance.config.inferenceHostLabel ? ` via ${instance.config.inferenceHostLabel}` : ""}`,
                   },
                 ]
               : [],
@@ -990,21 +985,22 @@ const make = Effect.gen(function* () {
     const admin = runtime.management;
     switch (input.operation) {
       case "signIn": {
-        if (!isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(input.driver)))
-          return yield* failure("This driver is disabled by environment policy.");
-        const prefix = input.driver === "codex" ? "codex:" : "claude:";
-        if (state.removedLocalAccounts?.some((account) => account.startsWith(prefix)))
+        // A sign-in is allowed while any permitted harness can use the account it adds.
+        const usable = INFERENCE_DRIVERS.some(
+          (driver) =>
+            INFERENCE_HARNESSES[driver].upstreams.includes(input.upstream) &&
+            isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(driver)),
+        );
+        if (!usable) return yield* failure("This provider is disabled by environment policy.");
+        const prefix = LOCAL_ACCOUNT_PREFIX[input.upstream];
+        if (prefix && state.removedLocalAccounts?.some((account) => account.startsWith(prefix)))
           yield* save({
             ...state,
             removedLocalAccounts: state.removedLocalAccounts.filter(
               (account) => !account.startsWith(prefix),
             ),
           });
-        const login = yield* jsonRequest(
-          base + (input.driver === "codex" ? "codex" : "anthropic") + "-auth-url",
-          admin,
-          Login,
-        );
+        const login = yield* jsonRequest(base + input.upstream + "-auth-url", admin, Login);
         if (URL.parse(login.url)?.protocol !== "https:")
           return yield* failure("Invalid sign-in URL.");
         return { login };
@@ -1156,19 +1152,17 @@ const make = Effect.gen(function* () {
     function* (key: string, hostId?: EnvironmentId) {
       if (hostId !== undefined) {
         const { providerInstances } = yield* settings.getSettings;
-        const allowed = (["codex", "claudeAgent"] as const)
-          .map((driver) => {
-            const instance =
-              providerInstances[defaultInstanceIdForDriver(ProviderDriverKind.make(driver))];
-            return instance?.enabled &&
-              isInferenceProviderConfig(instance.config) &&
-              instance.config.inferenceEnabled &&
-              instance.config.inferenceHostId === hostId &&
-              instance.config.inferenceKey === key
-              ? instance.config
-              : undefined;
-          })
-          .find((config) => config !== undefined);
+        const allowed = INFERENCE_DRIVERS.map((driver) => {
+          const instance =
+            providerInstances[defaultInstanceIdForDriver(ProviderDriverKind.make(driver))];
+          return instance?.enabled &&
+            isInferenceProviderConfig(instance.config) &&
+            instance.config.inferenceEnabled &&
+            instance.config.inferenceHostId === hostId &&
+            instance.config.inferenceKey === key
+            ? instance.config
+            : undefined;
+        }).find((config) => config !== undefined);
         if (!allowed) return null;
         const address = yield* peerAddress(hostId, allowed.inferenceConnection);
         return { baseUrl: new URL("/api/inference", address).href, key };
@@ -1300,7 +1294,7 @@ const make = Effect.gen(function* () {
     const local = yield* grant({ environmentId: hostId, label: "Local" });
     const { data } = yield* jsonRequest(local.baseUrl + "/v1/models", local.key, Models);
     const { providerInstances } = yield* settings.getSettings;
-    for (const driver of ["codex", "claudeAgent"] as const) {
+    for (const driver of INFERENCE_DRIVERS) {
       const existing =
         providerInstances[defaultInstanceIdForDriver(ProviderDriverKind.make(driver))];
       if (

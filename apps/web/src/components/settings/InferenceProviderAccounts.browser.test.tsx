@@ -48,7 +48,7 @@ describe("inference provider accounts", () => {
     await userEvent.click(screen.getByRole("button", { name: "Codex", exact: true }));
     expect(state.run).toHaveBeenLastCalledWith({
       environmentId: host,
-      input: { operation: "signIn", driver: "codex" },
+      input: { operation: "signIn", upstream: "codex" },
     });
     await expect
       .element(screen.getByRole("link", { name: "Open sign-in" }))

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { inferencePath, inferenceTarget, routeProvider, validateRouteUrl } from "./routes.ts";
+import {
+  inferencePath,
+  inferenceTarget,
+  modelsForDriver,
+  routeProvider,
+  validateRouteUrl,
+} from "./routes.ts";
 
 describe("inference routes", () => {
   it("forwards only the protocol endpoints at the mounted path", () => {
@@ -7,6 +13,9 @@ describe("inference routes", () => {
       "/v1/messages?beta=true",
     );
     expect(inferencePath("GET", "/api/inference/v1/models")).toBe("/v1/models");
+    expect(inferencePath("POST", "/api/inference/v1/chat/completions")).toBe(
+      "/v1/chat/completions",
+    );
     for (const path of [
       "/v0/management/auth-files",
       "/v1/messages/../models",
@@ -44,18 +53,25 @@ describe("inference routes", () => {
     }
   });
 
-  it("keeps proxy credentials out of Codex launch arguments and marks both drivers' keys sensitive", () => {
-    const url = "https://office.example.ts.net/api/inference";
-    const codex = routeProvider("codex", url, "private", "Office", ["gpt-fixture"], "/state/codex");
-    const claude = routeProvider(
-      "claudeAgent",
-      url,
-      "private",
+  it("keeps the proxy key out of launch arguments and config text for every harness", () => {
+    const baseUrl = "https://office.example.ts.net/api/inference";
+    const route = (models: string[], current: Record<string, string> = {}) => ({
+      baseUrl,
+      key: "private",
+      models,
+      homePath: "/state/home",
+      current: (name: string) => current[name],
+    });
+    const codex = routeProvider("codex", "Office", route(["gpt-fixture"]));
+    const claude = routeProvider("claudeAgent", "Office", route(["claude-fixture"]));
+    const openCode = routeProvider(
+      "opencode",
       "Office",
-      ["claude-fixture"],
-      "/state/claude",
+      route(["grok-fixture"], {
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({ theme: "mine", provider: { own: {} } }),
+      }),
     );
-    expect(codex.config.launchArgs).toContain(url + "/v1");
+    expect(codex.config.launchArgs).toContain(baseUrl + "/v1");
     expect(codex.config.launchArgs).not.toContain("private");
     expect(codex.environment).toContainEqual({
       name: "T3_INFERENCE_KEY",
@@ -67,5 +83,41 @@ describe("inference routes", () => {
       value: "private",
       sensitive: true,
     });
+    expect(openCode.environment).toContainEqual({
+      name: "T3_INFERENCE_KEY",
+      value: "private",
+      sensitive: true,
+    });
+    const content = openCode.environment.find((entry) => entry.name === "OPENCODE_CONFIG_CONTENT");
+    expect(content?.value).not.toContain("private");
+    expect(JSON.parse(String(content?.value))).toEqual({
+      theme: "mine",
+      provider: {
+        own: {},
+        t3proxy: {
+          npm: "@ai-sdk/openai-compatible",
+          name: "T3 inference",
+          options: { baseURL: baseUrl + "/v1", apiKey: "{env:T3_INFERENCE_KEY}" },
+          models: { "grok-fixture": { name: "grok-fixture" } },
+        },
+      },
+    });
+    expect(claude.displayName).toBe("Claude via Office");
+  });
+
+  it("gives each harness the pooled models it can run", () => {
+    const models = [
+      { id: "gpt-fixture", owned_by: "openai" },
+      { id: "claude-fixture", owned_by: "anthropic" },
+      { id: "grok-fixture", owned_by: "xai" },
+      { id: "codex-pool-1", owned_by: "openai" },
+    ];
+    expect(modelsForDriver(models, "codex")).toEqual(["gpt-fixture"]);
+    expect(modelsForDriver(models, "claudeAgent")).toEqual(["claude-fixture"]);
+    expect(modelsForDriver(models, "opencode")).toEqual([
+      "gpt-fixture",
+      "claude-fixture",
+      "grok-fixture",
+    ]);
   });
 });

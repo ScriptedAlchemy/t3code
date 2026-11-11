@@ -5,7 +5,15 @@ import {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { InferenceDriver, InferenceProxyAction } from "@t3tools/contracts";
+import {
+  INFERENCE_DRIVERS,
+  INFERENCE_HARNESSES,
+  INFERENCE_UPSTREAMS,
+  inferenceHarness,
+  type InferenceDriver,
+  type InferenceProxyAction,
+  type InferenceUpstream,
+} from "@t3tools/contracts";
 import { useState } from "react";
 import { Linking, TextInput, View } from "react-native";
 
@@ -18,9 +26,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import type { SettingsTarget } from "./settings-environment-filter";
 
-const drivers = ["codex", "claudeAgent"] as const;
+const upstreams = Object.keys(INFERENCE_UPSTREAMS) as ReadonlyArray<InferenceUpstream>;
 const { inferenceProxy } = serverEnvironment;
-const labels = { codex: "Codex", claudeAgent: "Claude" };
 
 function Route({ host, consumer }: { host: EnvironmentPresentation; consumer: SettingsTarget }) {
   const grant = useAtomValue(inferenceProxy.canGrant(host.environmentId));
@@ -38,16 +45,16 @@ function Route({ host, consumer }: { host: EnvironmentPresentation; consumer: Se
     setBusy(false);
     setNotice(
       result._tag === "Success"
-        ? `Select ${labels[driver]}${host.environmentId === consumer.environmentId ? "" : ` via ${host.label}`} in the model picker.`
+        ? `Select ${INFERENCE_HARNESSES[driver].label}${host.environmentId === consumer.environmentId ? "" : ` via ${host.label}`} in the model picker.`
         : String(squashAtomCommandFailure(result)),
     );
   }
   return (
     <View>
-      {drivers.map((driver) => (
+      {INFERENCE_DRIVERS.map((driver) => (
         <ListActionRow
           key={driver}
-          label={`Route ${labels[driver]} through ${host.label}`}
+          label={`Route ${INFERENCE_HARNESSES[driver].label} through ${host.label}`}
           description={issue ?? undefined}
           disabled={busy || !grant || !connect || !!issue}
           onPress={() => void add(driver)}
@@ -244,12 +251,12 @@ function InferenceControls({ environment }: { environment: SettingsTarget }) {
                   />
                 </>
               ) : (
-                drivers.map((driver) => (
+                upstreams.map((upstream) => (
                   <ListActionRow
-                    key={driver}
-                    label={`Add ${labels[driver]} account`}
+                    key={upstream}
+                    label={`Add ${INFERENCE_UPSTREAMS[upstream]} account`}
                     disabled={disabled}
-                    onPress={() => void run({ operation: "signIn", driver })}
+                    onPress={() => void run({ operation: "signIn", upstream })}
                   />
                 ))
               )}
@@ -273,7 +280,7 @@ function InferenceControls({ environment }: { environment: SettingsTarget }) {
       {host?.routes.map((route) => (
         <ListActionRow
           key={route.instanceId}
-          label={`Use native ${route.instanceId === "claudeAgent" ? "Claude" : "Codex"}`}
+          label={`Use native ${inferenceHarness(route.instanceId)?.label ?? route.instanceId}`}
           description={`Now: ${route.label}`}
           disabled={disabled}
           onPress={() => void run({ operation: "removeRoute", instanceId: route.instanceId })}

@@ -112,6 +112,49 @@ describe("deriveProviderInstanceConfigMap", () => {
     }
   });
 
+  it("adds the pool to OpenCode beside its own logins and other instances", () => {
+    const driver = ProviderDriverKind.make("opencode");
+    const id = ProviderInstanceId.make("opencode");
+    const other = ProviderInstanceId.make("opencode_work");
+    const merged = deriveProviderInstanceConfigMap(
+      settingsWith({
+        providerInstances: {
+          [id]: {
+            driver,
+            displayName: "My OpenCode",
+            config: {
+              inferenceEnabled: true,
+              inferenceHostId: "host",
+              inferenceHostLabel: "Office",
+              inferenceBaseUrl: "http://127.0.0.1:9876",
+              inferenceKey: "proxy-key",
+              inferenceModels: ["grok-fixture"],
+              inferenceHomePath: "/proxy/home",
+            },
+            environment: [
+              { name: "OPENCODE_CONFIG_CONTENT", value: '{"theme":"mine"}', sensitive: false },
+            ],
+          },
+          [other]: { driver },
+        },
+      }),
+    );
+    expect(merged[other]).toBeDefined();
+    expect(merged[id]?.displayName).toBe("My OpenCode");
+    const environment = merged[id]?.environment ?? [];
+    expect(environment).toContainEqual({
+      name: "T3_INFERENCE_KEY",
+      value: "proxy-key",
+      sensitive: true,
+    });
+    const contents = environment.filter((entry) => entry.name === "OPENCODE_CONFIG_CONTENT");
+    expect(contents).toHaveLength(1);
+    expect(JSON.parse(String(contents[0]?.value))).toMatchObject({
+      theme: "mine",
+      provider: { t3proxy: { models: { "grok-fixture": { name: "grok-fixture" } } } },
+    });
+  });
+
   it("turns a machine-disabled instance on when a project enables it", () => {
     const settings = settingsWith({
       providerInstances: {

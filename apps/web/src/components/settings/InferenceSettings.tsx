@@ -6,6 +6,8 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  INFERENCE_DRIVERS,
+  INFERENCE_HARNESSES,
   type EnvironmentId,
   type InferenceDriver,
   type InferenceProxyAction,
@@ -21,7 +23,6 @@ import { SettingsPageContainer, SettingsSection, SettingsRow } from "./settingsL
 import { InferenceProviderAccounts } from "./InferenceProviderAccounts";
 
 const { inferenceProxy } = serverEnvironment;
-const labels = { codex: "Codex", claudeAgent: "Claude" } as const;
 
 function InferenceRoute({
   host,
@@ -47,7 +48,7 @@ function InferenceRoute({
     setNotice(
       result._tag === "Failure"
         ? String(squashAtomCommandFailure(result))
-        : `Select ${labels[driver]}${host.environmentId === consumer.environmentId ? "" : ` via ${host.label}`} in the model picker.`,
+        : `Select ${INFERENCE_HARNESSES[driver].label}${host.environmentId === consumer.environmentId ? "" : ` via ${host.label}`} in the model picker.`,
     );
   }
   return (
@@ -62,7 +63,7 @@ function InferenceRoute({
       status={notice || undefined}
       control={
         <div className="flex gap-2">
-          {(["codex", "claudeAgent"] as const).map((driver) => (
+          {INFERENCE_DRIVERS.map((driver) => (
             <Button
               key={driver}
               size="sm"
@@ -70,7 +71,7 @@ function InferenceRoute({
               disabled={!canGrant || !canConnect || busy || !!issue}
               onClick={() => void add(driver)}
             >
-              {labels[driver]}
+              {INFERENCE_HARNESSES[driver].label}
             </Button>
           ))}
         </div>

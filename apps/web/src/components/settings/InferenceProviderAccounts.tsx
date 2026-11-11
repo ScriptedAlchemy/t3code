@@ -2,8 +2,11 @@ import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   type EnvironmentId,
+  INFERENCE_HARNESSES,
+  INFERENCE_UPSTREAMS,
   type InferenceDriver,
   type InferenceProxyAction,
+  type InferenceUpstream,
 } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
@@ -15,7 +18,7 @@ import { Input } from "../ui/input";
 import { SettingsRow } from "./settingsLayout";
 
 const { inferenceProxy } = serverEnvironment;
-const labels = { codex: "Codex", claudeAgent: "Claude" } as const;
+const everyUpstream = Object.keys(INFERENCE_UPSTREAMS) as ReadonlyArray<InferenceUpstream>;
 
 export function InferenceProviderAccounts({
   environmentId,
@@ -65,6 +68,7 @@ export function InferenceProviderAccounts({
     }
   }
   const hostName = hostLabel || "the inference host";
+  const harness = driver ? INFERENCE_HARNESSES[driver] : undefined;
   if (!permitted)
     return (
       <SettingsRow
@@ -98,9 +102,7 @@ export function InferenceProviderAccounts({
   return (
     <>
       {host.accounts
-        .filter(
-          (account) => !driver || account.provider === (driver === "codex" ? "codex" : "claude"),
-        )
+        .filter((account) => harness?.accounts?.includes(account.provider) ?? true)
         .map((account) => (
           <SettingsRow
             key={account.name}
@@ -171,20 +173,18 @@ export function InferenceProviderAccounts({
           title="Add an account"
           description="Sign in once for each account this host should use."
           control={
-            <div className="flex gap-2">
-              {(["codex", "claudeAgent"] as const)
-                .filter((candidate) => !driver || driver === candidate)
-                .map((driver) => (
-                  <Button
-                    key={driver}
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => void run({ operation: "signIn", driver })}
-                  >
-                    {labels[driver]}
-                  </Button>
-                ))}
+            <div className="flex flex-wrap justify-end gap-2">
+              {(harness?.upstreams ?? everyUpstream).map((upstream) => (
+                <Button
+                  key={upstream}
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void run({ operation: "signIn", upstream })}
+                >
+                  {INFERENCE_UPSTREAMS[upstream]}
+                </Button>
+              ))}
             </div>
           }
         />

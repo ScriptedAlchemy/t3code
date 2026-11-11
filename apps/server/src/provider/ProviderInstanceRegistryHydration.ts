@@ -1,5 +1,7 @@
 import {
   defaultInstanceIdForDriver,
+  INFERENCE_DRIVERS,
+  INFERENCE_HARNESSES,
   isInferenceProviderConfig,
   isInferenceRoutingEnabled,
   isCustomInferenceBackend,
@@ -65,31 +67,36 @@ export const deriveProviderInstanceConfigMap = (
     merged[instanceId] = { driver: driver.driverKind };
   }
 
-  for (const driver of ["codex", "claudeAgent"] as const) {
+  for (const driver of INFERENCE_DRIVERS) {
     const id = defaultInstanceIdForDriver(ProviderDriverKind.make(driver));
     const native = merged[id];
     if (!native || !isInferenceRoutingEnabled(native.config)) continue;
-    for (const [key, entry] of Object.entries(merged)) {
-      if (key !== id && entry.driver === driver && !isCustomInferenceBackend(entry))
-        delete merged[key];
+    const { replacesAccounts } = INFERENCE_HARNESSES[driver];
+    if (replacesAccounts) {
+      for (const [key, entry] of Object.entries(merged)) {
+        if (key !== id && entry.driver === driver && !isCustomInferenceBackend(entry))
+          delete merged[key];
+      }
     }
     if (!isInferenceProviderConfig(native.config)) {
-      merged[id] = { ...native, enabled: false };
+      if (replacesAccounts) merged[id] = { ...native, enabled: false };
       continue;
     }
     const route = native.config;
-    const proxy = routeProvider(
-      driver,
-      route.inferenceBaseUrl,
-      route.inferenceKey,
-      route.inferenceHostLabel || null,
-      route.inferenceModels,
-      route.inferenceHomePath,
-    );
+    const proxy = routeProvider(driver, route.inferenceHostLabel || null, {
+      baseUrl: route.inferenceBaseUrl,
+      key: route.inferenceKey,
+      models: route.inferenceModels,
+      homePath: route.inferenceHomePath,
+      current: (name) => {
+        const value = native.environment?.find((entry) => entry.name === name)?.value;
+        return typeof value === "string" ? value : undefined;
+      },
+    });
     const names = new Set(proxy.environment.map((entry) => entry.name));
     merged[id] = {
       ...native,
-      displayName: proxy.displayName,
+      ...(replacesAccounts ? { displayName: proxy.displayName } : {}),
       config: { ...native.config, ...proxy.config },
       environment: [
         ...(native.environment ?? []).filter((entry) => !names.has(entry.name)),

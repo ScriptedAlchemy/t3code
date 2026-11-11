@@ -565,7 +565,7 @@ it.effect(
             yield* signedInLocally("after-removal", "2026-11-13T00:00:00Z");
             yield* proxy.status;
             expect(importedCodexAuth).toHaveLength(2);
-            yield* proxy.manage({ operation: "signIn", driver: "codex" });
+            yield* proxy.manage({ operation: "signIn", upstream: "codex" });
             yield* proxy.status;
             expect(importedCodexAuth).toHaveLength(3);
             yield* fs.writeFileString(accountFile, pooledAccount);

@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  INFERENCE_HARNESSES,
   ProviderDriverKind,
   type CustomModelSetting,
   type SettingsSecretValue,
@@ -16,6 +17,7 @@ export function inferencePath(method: string, rawUrl: string): string | null {
   return [
     "/v1/responses",
     "/v1/responses/compact",
+    "/v1/chat/completions",
     "/v1/messages",
     "/v1/messages/count_tokens",
     "/v1/messages?beta=true",
@@ -48,48 +50,128 @@ export function validateRouteUrl(value: string, local: boolean): boolean {
           /^\d+\.\d+\.\d+\.\d+$/.test(url.hostname));
 }
 
-export function routeProvider(
-  driver: InferenceDriver,
-  baseUrl: string,
-  key: SettingsSecretValue,
-  label: string | null,
-  models: readonly string[],
-  homePath: string,
-) {
-  const codex = driver === "codex";
-  const provider = `model_providers.t3proxy={name="T3 inference",base_url="${baseUrl}/v1",env_key="T3_INFERENCE_KEY",wire_api="responses",supports_websockets=false,requires_openai_auth=false}`;
+export interface ProxyModel {
+  readonly id: string;
+  readonly owned_by?: string | undefined;
+}
+
+interface Route {
+  readonly baseUrl: string;
+  readonly key: SettingsSecretValue;
+  readonly models: readonly string[];
+  readonly homePath: string;
+  /** The instance's own value for a variable the route rewrites. */
+  readonly current: (name: string) => string | undefined;
+}
+
+const blank = (names: readonly string[], value = "") =>
+  names.map((name) => ({ name, value, sensitive: false }));
+const VENDORS = ["openai", "anthropic"];
+const ownedBy = (vendor: string, pattern: RegExp) => (model: ProxyModel) => {
+  const owner = model.owned_by?.toLowerCase();
+  return owner !== undefined && VENDORS.includes(owner) ? owner === vendor : pattern.test(model.id);
+};
+const CODEX_PROVIDER = (baseUrl: string) =>
+  `model_providers.t3proxy={name="T3 inference",base_url="${baseUrl}/v1",env_key="T3_INFERENCE_KEY",wire_api="responses",supports_websockets=false,requires_openai_auth=false}`;
+
+function openCodeConfig(route: Route) {
+  let current: unknown;
+  try {
+    current = JSON.parse(route.current("OPENCODE_CONFIG_CONTENT") || "{}");
+  } catch {
+    current = {};
+  }
+  const config = current !== null && typeof current === "object" ? current : {};
+  const provider =
+    "provider" in config && config.provider !== null && typeof config.provider === "object"
+      ? config.provider
+      : {};
+  return JSON.stringify({
+    ...config,
+    provider: {
+      ...provider,
+      t3proxy: {
+        npm: "@ai-sdk/openai-compatible",
+        name: "T3 inference",
+        // OpenCode substitutes the variable, so the key stays out of the config text.
+        options: { baseURL: `${route.baseUrl}/v1`, apiKey: "{env:T3_INFERENCE_KEY}" },
+        models: Object.fromEntries(route.models.map((model) => [model, { name: model }])),
+      },
+    },
+  });
+}
+
+/** How each routed harness reaches the proxy. */
+const harnesses: Record<
+  InferenceDriver,
+  {
+    readonly serves: (model: ProxyModel) => boolean;
+    readonly config: (route: Route) => Record<string, unknown>;
+    readonly environment: (
+      route: Route,
+    ) => ReadonlyArray<{ name: string; value: SettingsSecretValue; sensitive: boolean }>;
+  }
+> = {
+  codex: {
+    serves: ownedBy("openai", /^(codex-|gpt-|o\d)/i),
+    config: (route) => ({
+      setupMode: "inference",
+      customModels: route.models,
+      homePath: route.homePath,
+      shadowHomePath: "",
+      launchArgs: `-c 'model_provider="t3proxy"' -c '${CODEX_PROVIDER(route.baseUrl)}'`,
+    }),
+    environment: (route) => [
+      { name: "T3_INFERENCE_KEY", value: route.key, sensitive: true },
+      ...blank(["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "ACCESS_TOKEN"]),
+      ...blank(["T3CODE_CODEX_LAUNCH_ARGS"]),
+    ],
+  },
+  claudeAgent: {
+    serves: ownedBy("anthropic", /^claude-/i),
+    config: (route) => ({
+      setupMode: "inference",
+      customModels: route.models,
+      homePath: route.homePath,
+      shadowHomePath: "",
+      launchArgs: "",
+    }),
+    environment: (route) => [
+      { name: "ANTHROPIC_BASE_URL", value: route.baseUrl, sensitive: false },
+      ...blank(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]),
+      { name: "ANTHROPIC_AUTH_TOKEN", value: route.key, sensitive: true },
+      ...blank(["ANTHROPIC_CUSTOM_HEADERS"]),
+      ...blank(
+        ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"],
+        "0",
+      ),
+    ],
+  },
+  opencode: {
+    serves: () => true,
+    config: () => ({}),
+    environment: (route) => [
+      { name: "T3_INFERENCE_KEY", value: route.key, sensitive: true },
+      { name: "OPENCODE_CONFIG_CONTENT", value: openCodeConfig(route), sensitive: false },
+    ],
+  },
+};
+
+export function modelsForDriver(data: readonly ProxyModel[], driver: InferenceDriver) {
+  return data
+    .filter((model) => !/^(codex|claude)-pool-/.test(model.id) && harnesses[driver].serves(model))
+    .map((model) => model.id);
+}
+
+export function routeProvider(driver: InferenceDriver, label: string | null, route: Route) {
+  const harness = harnesses[driver];
+  const name = INFERENCE_HARNESSES[driver].label;
   return {
     driver: ProviderDriverKind.make(driver),
-    displayName:
-      label === null ? (codex ? "Codex" : "Claude") : `${codex ? "Codex" : "Claude"} via ${label}`,
+    displayName: label === null ? name : `${name} via ${label}`,
     enabled: true,
-    config: {
-      setupMode: "inference",
-      customModels: models,
-      homePath,
-      shadowHomePath: "",
-      launchArgs: codex ? `-c 'model_provider="t3proxy"' -c '${provider}'` : "",
-    },
-    environment: codex
-      ? [
-          { name: "T3_INFERENCE_KEY", value: key, sensitive: true },
-          ...["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "ACCESS_TOKEN"].map((name) => ({
-            name,
-            value: "",
-            sensitive: false,
-          })),
-          { name: "T3CODE_CODEX_LAUNCH_ARGS", value: "", sensitive: false },
-        ]
-      : [
-          { name: "ANTHROPIC_BASE_URL", value: baseUrl, sensitive: false },
-          { name: "ANTHROPIC_API_KEY", value: "", sensitive: false },
-          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "", sensitive: false },
-          { name: "ANTHROPIC_AUTH_TOKEN", value: key, sensitive: true },
-          { name: "ANTHROPIC_CUSTOM_HEADERS", value: "", sensitive: false },
-          ...["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].map(
-            (name) => ({ name, value: "0", sensitive: false }),
-          ),
-        ],
+    config: harness.config(route),
+    environment: harness.environment(route),
   };
 }
 

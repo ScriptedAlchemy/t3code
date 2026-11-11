@@ -12,8 +12,48 @@ export const isInferenceConfig = Schema.is(
 
 const Label = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
 const State = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
-export const InferenceDriver = Schema.Literals(["codex", "claudeAgent"]);
-export type InferenceDriver = typeof InferenceDriver.Type;
+/** Sign-in flows CLIProxyAPI serves at `/v0/management/<id>-auth-url`. */
+export const INFERENCE_UPSTREAMS = {
+  anthropic: "Claude",
+  codex: "Codex",
+  antigravity: "Antigravity",
+  xai: "xAI",
+  kimi: "Kimi (kimi.com)",
+  "kimi-ai": "Kimi (kimi.ai)",
+  meta: "Meta AI",
+  devin: "Devin",
+} as const;
+export type InferenceUpstream = keyof typeof INFERENCE_UPSTREAMS;
+const upstreams = Object.keys(INFERENCE_UPSTREAMS) as ReadonlyArray<InferenceUpstream>;
+export const InferenceUpstream = Schema.Literals(upstreams);
+
+interface InferenceHarness {
+  readonly label: string;
+  /** Sign-in flows that add an account this harness can use. */
+  readonly upstreams: ReadonlyArray<InferenceUpstream>;
+  /** Proxy account kinds this harness can use; null means every kind. */
+  readonly accounts: ReadonlyArray<string> | null;
+  /** True when the pool stands in for the harness's own logins, hiding its other instances. */
+  readonly replacesAccounts: boolean;
+}
+const harnesses = {
+  codex: { label: "Codex", upstreams: ["codex"], accounts: ["codex"], replacesAccounts: true },
+  claudeAgent: {
+    label: "Claude",
+    upstreams: ["anthropic"],
+    accounts: ["claude"],
+    replacesAccounts: true,
+  },
+  opencode: { label: "OpenCode", upstreams, accounts: null, replacesAccounts: false },
+} satisfies Record<string, InferenceHarness>;
+/** Harnesses that can run on pooled accounts. */
+export type InferenceDriver = keyof typeof harnesses;
+export const INFERENCE_HARNESSES: Readonly<Record<InferenceDriver, InferenceHarness>> = harnesses;
+export const INFERENCE_DRIVERS = Object.keys(harnesses) as ReadonlyArray<InferenceDriver>;
+export const InferenceDriver = Schema.Literals(INFERENCE_DRIVERS);
+const isInferenceDriver = Schema.is(InferenceDriver);
+export const inferenceHarness = (driver: string): InferenceHarness | undefined =>
+  isInferenceDriver(driver) ? INFERENCE_HARNESSES[driver] : undefined;
 
 export const InferenceConsumer = Schema.Struct({ environmentId: EnvironmentId, label: Label });
 export type InferenceConsumer = typeof InferenceConsumer.Type;
@@ -65,7 +105,7 @@ export const InferenceProxyAction = Schema.Union([
     enabled: Schema.Boolean,
     sharing: Schema.Boolean,
   }),
-  Schema.Struct({ operation: Schema.Literal("signIn"), driver: InferenceDriver }),
+  Schema.Struct({ operation: Schema.Literal("signIn"), upstream: InferenceUpstream }),
   Schema.Struct({
     operation: Schema.Literal("callback"),
     state: State,
@@ -143,11 +183,14 @@ export const InferenceProviderFields = {
   ),
 };
 const hasLaunchArgs = Schema.is(Schema.Struct({ launchArgs: Schema.optionalKey(Schema.String) }));
+const hasServerUrl = Schema.is(Schema.Struct({ serverUrl: Schema.NonEmptyString }));
 export const isCustomInferenceBackend = (instance: ProviderInstanceConfig) =>
   !isInferenceConfig(instance.config) &&
   ((instance.driver === "codex" &&
     hasLaunchArgs(instance.config) &&
     /model_provider\s*=/.test(instance.config.launchArgs ?? "")) ||
+    // T3 does not start an external OpenCode server, so it cannot hand it the pooled provider.
+    (instance.driver === "opencode" && hasServerUrl(instance.config)) ||
     (instance.driver === "claudeAgent" &&
       instance.environment?.some(
         (entry) => entry.name === "ANTHROPIC_BASE_URL" && entry.value !== "",
