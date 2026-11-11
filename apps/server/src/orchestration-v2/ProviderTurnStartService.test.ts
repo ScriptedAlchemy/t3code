@@ -1625,6 +1625,15 @@ effectIt.effect.each([
     commitFork: false,
   },
   {
+    nativeForkFrom: "idle",
+    forks: true,
+    transferStatus: "resolved_portable",
+    handoffIds: ["side-chat-fork-context"],
+    memoryFails: false,
+    forkFails: "protocol",
+    commitFork: true,
+  },
+  {
     nativeForkFrom: "busy",
     forks: false,
     transferStatus: "resolved_portable",
@@ -1721,10 +1730,15 @@ effectIt.effect.each([
       if (forkFails)
         harness.forkThread.mockReturnValue(
           Effect.fail(
-            new ProviderAdapter.ProviderAdapterForkThreadError({
-              driver: ProviderDriverKind.make("codex"),
-              providerThreadId: ProviderThreadId.make("side-chat-parent-provider-thread"),
-            }),
+            forkFails === "protocol"
+              ? new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: ProviderDriverKind.make("codex"),
+                  detail: "This native conversation belongs to a different provider home.",
+                })
+              : new ProviderAdapter.ProviderAdapterForkThreadError({
+                  driver: ProviderDriverKind.make("codex"),
+                  providerThreadId: ProviderThreadId.make("side-chat-parent-provider-thread"),
+                }),
           ),
         );
       if (!commitFork)
@@ -1735,7 +1749,7 @@ effectIt.effect.each([
       yield* harness.start;
 
       expect(harness.forkThread).toHaveBeenCalledTimes(forks ? 1 : 0);
-      if (forkFails || !commitFork) {
+      if (forkFails === true || !commitFork) {
         expect(harness.startTurn).not.toHaveBeenCalled();
         expect([...viewed]).toEqual([]);
         return;
@@ -1747,13 +1761,14 @@ effectIt.effect.each([
       expect(harness.projection().contextTransfers).toMatchObject([
         { id: "side-chat-fork", status: transferStatus },
       ]);
+      const adoptedNativeFork = forks && forkFails !== "protocol";
       expect(harness.startTurn.mock.calls[0]?.[0].message.text.includes("PARENT_HISTORY")).toBe(
-        !forks,
+        !adoptedNativeFork,
       );
       expect(
         harness.startTurn.mock.calls[0]?.[0].message.text.includes("RECALLED source fact"),
-      ).toBe(!forks || memoryFails);
-      expect([...viewed]).toEqual(forks && !memoryFails ? [factId] : []);
+      ).toBe(!adoptedNativeFork || memoryFails);
+      expect([...viewed]).toEqual(adoptedNativeFork && !memoryFails ? [factId] : []);
       expect(harness.projection().providerThreads[0]?.handoffIds).toEqual(handoffIds);
     }),
 );

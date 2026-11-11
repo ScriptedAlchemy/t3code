@@ -40,8 +40,8 @@ Connect your client to both T3 environments with provider management access.
 Select the environment where you want to run agents in Settings. Under **Route
 requests through an environment**, choose Codex, Claude, [OpenCode](./providers-opencode.md#shared-inference-accounts),
 or [Pi](./providers-pi.md#shared-inference-accounts) beside the host name.
-That environment must be able to reach the host over Tailscale or its private LAN address and run the
-corresponding agent CLI. You can also choose the current host for local use.
+The environment running agents needs the corresponding CLI and must be able to reach the host
+through the selected connection. You can also choose the current host for local use.
 
 Use LAN HTTP only on a trusted network. Prompts, responses, and revocable route keys travel unencrypted on that connection.
 
@@ -58,8 +58,8 @@ picker always shows normal Claude and Codex models. Traex remains a separate bac
 
 Routing is optional. Turn off **Use CLI proxy** to return to this provider's normal
 T3 Code configuration. Standalone CLI configuration is unchanged.
-Threads, scheduled tasks, and saved role choices that named a retired account pool
-or route continue on the normal Claude or Codex provider.
+An upgrade preserves the provider and host selected by existing threads, scheduled tasks,
+and saved role choices, including selections made through older account pools.
 
 Remove a provider login on its host, revoke one consuming environment, or turn
 off sharing to revoke all remote grants. Remove the route in **Inference accounts** on the executing machine. Stopping hosting keeps the host's accounts

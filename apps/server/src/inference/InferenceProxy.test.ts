@@ -319,6 +319,17 @@ it.effect(
         const claudeHome = home + "/.claude";
         const claudeAuthFile = claudeHome + "/.credentials.json";
         const accountFile = config.stateDir + "/inference-proxy/accounts/one.json";
+        const unknownAccountFile = config.stateDir + "/inference-proxy/accounts/unknown.json";
+        const idToken = (email: string) =>
+          "header." + Buffer.from(JSON.stringify({ email })).toString("base64url") + ".sig";
+        const unknownAccount = JSON.stringify({
+          type: "codex",
+          account_id: "same-account",
+          access_token: "unknown-access",
+          refresh_token: "unknown-refresh",
+          id_token: "unknown-id",
+          last_refresh: "2026-11-30T00:00:00Z",
+        });
         const accessToken =
           "header." +
           Buffer.from(JSON.stringify({ exp: 4102444800 })).toString("base64url") +
@@ -328,6 +339,7 @@ it.effect(
         yield* fs.makeDirectory(config.stateDir + "/inference-proxy/accounts", {
           recursive: true,
         });
+        yield* fs.writeFileString(unknownAccountFile, unknownAccount);
         yield* fs.writeFileString(
           accountFile,
           JSON.stringify({
@@ -336,7 +348,7 @@ it.effect(
             email: "person@example.com",
             access_token: "old-access",
             refresh_token: "old-refresh",
-            id_token: "old-id",
+            id_token: idToken("person@example.com"),
             last_refresh: "2026-11-09T00:00:00Z",
             note: "keep this metadata",
           }),
@@ -350,7 +362,7 @@ it.effect(
               account_id: "same-account",
               access_token: accessToken,
               refresh_token: "new-refresh",
-              id_token: "new-id",
+              id_token: idToken("person@example.com"),
             },
           }),
         );
@@ -396,6 +408,9 @@ it.effect(
                 note: "keep this metadata",
               },
             ]);
+            expect(yield* fs.readFileString(unknownAccountFile)).toBe(unknownAccount);
+            yield* proxy.manage({ operation: "removeAccount", name: "unknown.json" });
+            yield* fs.remove(unknownAccountFile);
             expect(importedClaudeAuth).toMatchObject([
               {
                 type: "claude",
@@ -501,7 +516,7 @@ it.effect(
                   account_id: "same-account",
                   access_token: accessToken,
                   refresh_token: "next-refresh",
-                  id_token: "new-id",
+                  id_token: idToken("person@example.com"),
                 },
               }),
             );
@@ -521,7 +536,7 @@ it.effect(
                   account_id: "same-account",
                   access_token: accessToken,
                   refresh_token: "stale-refresh",
-                  id_token: "new-id",
+                  id_token: idToken("person@example.com"),
                 },
               }),
             );
@@ -535,7 +550,7 @@ it.effect(
                 email: "person@example.com",
                 access_token: accessToken,
                 refresh_token: "proxy-refresh",
-                id_token: "proxy-id",
+                id_token: idToken("person@example.com"),
                 last_refresh: "2026-11-12T00:00:00Z",
                 note: "keep this metadata",
               }),
@@ -559,10 +574,7 @@ it.effect(
                     account_id: "same-account",
                     access_token: accessToken,
                     refresh_token: refreshToken,
-                    id_token:
-                      "header." +
-                      Buffer.from(JSON.stringify({ email })).toString("base64url") +
-                      ".sig",
+                    id_token: idToken(email),
                   },
                 }),
               );
@@ -576,6 +588,9 @@ it.effect(
             expect(importedCodexAuth).toHaveLength(3);
             const otherAccountFile =
               config.stateDir + `/inference-proxy/accounts/${importedCodexFiles[2]}`;
+            const withoutEmail = { ...importedCodexAuth[2] };
+            delete withoutEmail.email;
+            yield* fs.writeFileString(otherAccountFile, JSON.stringify(withoutEmail));
             yield* signedInLocally("after-removal", "2026-11-13T00:00:00Z", "PERSON@example.com");
             yield* proxy.status;
             expect(importedCodexAuth).toHaveLength(3);
@@ -584,21 +599,39 @@ it.effect(
             expect(importedCodexAuth).toHaveLength(4);
             expect(importedCodexFiles[3]).not.toBe(importedCodexFiles[2]);
             expect(JSON.parse(yield* fs.readFileString(otherAccountFile))).toMatchObject({
-              email: "other@example.com",
+              id_token: withoutEmail.id_token,
               refresh_token: "other-seat",
             });
             yield* proxy.manage({ operation: "removeAccount", name: importedCodexFiles[3]! });
             yield* fs.remove(
               config.stateDir + `/inference-proxy/accounts/${importedCodexFiles[3]}`,
             );
-            yield* signedInLocally("other-refreshed", "2026-11-14T00:00:00Z", "OTHER@example.com");
+            yield* signedInLocally(
+              "other-refreshed",
+              "2026-11-14T00:00:00Z",
+              " OTHER@example.com ",
+            );
             yield* proxy.status;
             expect(importedCodexFiles.at(-1)).toBe(importedCodexFiles[2]);
             expect(JSON.parse(yield* fs.readFileString(otherAccountFile))).toMatchObject({
-              email: "other@example.com",
               refresh_token: "other-refreshed",
             });
+            yield* proxy.manage({ operation: "signIn", upstream: "codex" });
+            yield* proxy.manage({ operation: "removeAccount", name: importedCodexFiles[2]! });
             yield* fs.remove(otherAccountFile);
+            yield* fs.writeFileString(accountFile, pooledAccount);
+            yield* signedInLocally("person-returned", "2026-11-15T00:00:00Z");
+            yield* proxy.status;
+            expect(JSON.parse(yield* fs.readFileString(accountFile))).toMatchObject({
+              refresh_token: "person-returned",
+            });
+            const knownAccount = yield* fs.readFileString(accountFile);
+            yield* signedInLocally("unknown-local", "2026-11-16T00:00:00Z", "");
+            expect((yield* proxy.status).problem).toContain(
+              "Local Codex sign-in has no account email",
+            );
+            expect(yield* fs.readFileString(accountFile)).toBe(knownAccount);
+            expect(yield* fs.readFileString(cliHome + "/auth.json")).toContain("unknown-local");
             yield* proxy.manage({ operation: "signIn", upstream: "codex" });
             yield* fs.writeFileString(accountFile, pooledAccount);
             yield* signedInLocally("proxy-refresh", "2026-11-12T00:00:00Z");

@@ -296,6 +296,49 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       );
     }).pipe(Effect.provide(layerServerSettings())),
   );
+  it.effect.each(["opencode", "pi"] as const)(
+    "keeps %s native instance management available with proxy routing",
+    (kind) =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const driver = ProviderDriverKind.make(kind);
+        yield* service.updateProviderInstance({
+          operation: "upsert",
+          instanceId: ProviderInstanceId.make(kind),
+          instance: {
+            driver,
+            config: {
+              inferenceEnabled: true,
+              inferenceHostId: "host",
+              inferenceHostLabel: "",
+              inferenceBaseUrl: "http://127.0.0.1:9876",
+              inferenceKey: "scoped",
+              inferenceModels: ["gpt-fixture"],
+              inferenceHomePath: "/proxy/home",
+            },
+          },
+        });
+        const instanceId = ProviderInstanceId.make(`${kind}_work`);
+        yield* service.updateProviderInstance({
+          operation: "create",
+          instanceId,
+          instance: { driver, config: { homePath: "/native/work" } },
+        });
+        const saved = yield* service.updateProviderInstance({
+          operation: "upsert",
+          instanceId,
+          instance: {
+            driver,
+            displayName: "Native work account",
+            config: { homePath: "/native/work" },
+          },
+        });
+        assert.equal(saved.providerInstances[instanceId]?.displayName, "Native work account");
+        assert.deepEqual(saved.providerInstances[instanceId]?.config, {
+          homePath: "/native/work",
+        });
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;

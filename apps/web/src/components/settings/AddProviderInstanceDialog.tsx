@@ -25,6 +25,7 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   isManagedDriverAllowed,
+  inferenceHarness,
 } from "@t3tools/contracts";
 
 import {
@@ -243,11 +244,9 @@ export function AddProviderInstanceDialog({
   const hasConnectionChoice = selection === "codex" || selection === "claudeAgent";
   const supportsInference =
     useServerConfigs().get(environmentId)?.environment.capabilities.inferenceProxy === true;
-  const accountHostId = inferenceAccountHostId(
-    settings.providerInstances,
-    selection,
-    environmentId,
-  );
+  const accountHostId = inferenceHarness(selection)?.replacesAccounts
+    ? inferenceAccountHostId(settings.providerInstances, selection, environmentId)
+    : null;
   const connectionChoice = connectionChoices[selection] ?? "existing";
   const connectionOptions =
     selection === "claudeAgent" ? CONNECTION_OPTIONS.claudeAgent : CONNECTION_OPTIONS.codex;

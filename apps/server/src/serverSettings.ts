@@ -3,6 +3,7 @@ import {
   isInferenceConfig,
   isInferenceProviderConfig,
   isCustomInferenceBackend,
+  inferenceHarness,
   ModelSelection,
   ProjectId,
   ProjectScript,
@@ -243,6 +244,7 @@ function ensureProviderInstanceMutationAllowed(
     const canonical = settings.providerInstances[canonicalId];
     if (
       mutation.instanceId !== canonicalId &&
+      inferenceHarness(mutation.instance.driver)?.replacesAccounts === true &&
       canonical &&
       isInferenceProviderConfig(canonical.config) &&
       canonical.config.inferenceEnabled &&

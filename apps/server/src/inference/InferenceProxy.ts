@@ -165,9 +165,14 @@ function jwtClaims(token: string): Record<string, unknown> | null {
 }
 
 function codexAccountIdentity(accountId: string, email: unknown) {
-  return typeof email === "string" && email.includes("@")
-    ? `codex:${accountId}:${email.toLowerCase()}`
-    : `codex:${accountId}`;
+  const normalized = typeof email === "string" ? email.trim().toLowerCase() : undefined;
+  return normalized?.includes("@") ? `codex:${accountId}:${normalized}` : undefined;
+}
+
+function proxyCodexEmail(account: typeof ProxyCodexAuth.Type & { readonly email?: unknown }) {
+  return typeof account.email === "string" && account.email.includes("@")
+    ? account.email
+    : jwtClaims(account.id_token)?.email;
 }
 
 function parseLocalCodexAuth(raw: string) {
@@ -385,6 +390,10 @@ const make = Effect.gen(function* () {
       if (!source) return false;
       const email = jwtClaims(source.tokens.id_token)?.email;
       const identity = codexAccountIdentity(source.tokens.account_id, email);
+      if (identity === undefined)
+        return yield* failure(
+          "Local Codex sign-in has no account email. Add it through T3 settings.",
+        );
       const removed = (yield* read).removedLocalAccounts ?? [];
       if (removed.includes(identity) || removed.includes(`codex:${source.tokens.account_id}`))
         return false;
@@ -408,12 +417,7 @@ const make = Effect.gen(function* () {
         if (!isRecord(data) || !isProxyCodexAuth(data)) continue;
         if (data.account_id !== source.tokens.account_id) continue;
         // Seats of one workspace share an account ID.
-        if (
-          typeof data.email === "string" &&
-          typeof email === "string" &&
-          data.email.toLowerCase() !== email.toLowerCase()
-        )
-          continue;
+        if (codexAccountIdentity(data.account_id, proxyCodexEmail(data)) !== identity) continue;
         const refreshedAt = Date.parse(data.last_refresh);
         if (!Number.isFinite(refreshedAt)) continue;
         if (!existing || refreshedAt > existing.refreshedAt) existing = { name, data, refreshedAt };
@@ -450,10 +454,6 @@ const make = Effect.gen(function* () {
         return false;
       const accountId = source.tokens.account_id;
       if (accountId.length > 128) return yield* failure("Local Codex account ID is too long.");
-      if (!existing && (typeof email !== "string" || !email.includes("@")))
-        return yield* failure(
-          "Local Codex sign-in has no account email. Add it through T3 settings.",
-        );
       const name =
         existing?.name ??
         `codex-local-${yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(identity))}.json`;
@@ -1071,7 +1071,7 @@ const make = Effect.gen(function* () {
         const identity = !isRecord(account)
           ? undefined
           : isProxyCodexAuth(account)
-            ? codexAccountIdentity(account.account_id, account.email)
+            ? codexAccountIdentity(account.account_id, proxyCodexEmail(account))
             : isProxyClaudeAuth(account)
               ? `claude:${account.account_uuid}:${account.organization_uuid}`
               : undefined;

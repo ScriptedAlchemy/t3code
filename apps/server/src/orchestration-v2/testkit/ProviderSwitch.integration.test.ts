@@ -2746,6 +2746,39 @@ describe("orchestration v2 provider switching", () => {
             assert.equal(new Set(turns.map((turn) => turn.nativeThreadId)).size, 3);
             assert.include(turns[2]!.text, "Native work complete");
             assert.include(turns[2]!.text, "Proxy work complete");
+            if (!queued && !background) {
+              yield* Ref.set(activeHome, 1);
+              const forkId = ThreadId.make("thread:canonical-home-change:fork");
+              yield* orchestrator.dispatch({
+                type: "thread.fork",
+                createdBy: "user",
+                creationSource: "web",
+                commandId: CommandId.make("command:canonical-home-change:fork"),
+                sourceThreadId: id,
+                targetThreadId: forkId,
+                sourcePoint: { type: "run", runId: first.runs[0]!.id },
+              });
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                createdBy: "user",
+                creationSource: "web",
+                commandId: CommandId.make("command:canonical-home-change:fork-message"),
+                threadId: forkId,
+                messageId: MessageId.make("message:canonical-home-change:fork"),
+                text: "Continue from the native conversation",
+                attachments: [],
+                modelSelection: selection,
+                dispatchMode: { type: "start_immediately" },
+              });
+              yield* worker.drain();
+              const fork = yield* waitForIdle(forkId);
+              assert.equal(fork.runs[0]?.status, "completed");
+              assert.equal(fork.contextTransfers[0]?.resolution?.strategy, "portable_context");
+              const forkTurn = (yield* Ref.get(capturedTurns)).at(-1)!;
+              assert.equal(forkTurn.threadId, forkId);
+              assert.include(forkTurn.text, "Native work complete");
+              assert.notInclude(forkTurn.text, "Proxy work complete");
+            }
           }).pipe(
             Effect.provide(
               ProviderReplayHarness.layerWithRegistry(

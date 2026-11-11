@@ -170,26 +170,46 @@ function setup() {
 }
 
 describe("AddProviderInstanceDialog environment routing", () => {
-  it("chooses an unused identity for another account without replacing configured instances", async () => {
-    setup();
-    settingsHooks.read.mockReturnValue({
-      providerInstances: { codex_2: { driver: "codex", enabled: false } },
-    });
-    await using _screen = await render(dialog());
-    await useExistingCodexCli();
-    await click("Next");
-    await click("Add instance");
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "codex_3",
-      instance: {
-        driver: "codex",
-        enabled: true,
-        displayName: "Codex",
-        config: { setupMode: "existing" },
-      },
-    });
-  });
+  it.each([
+    { driver: "codex", label: "Codex" },
+    { driver: "opencode", label: "OpenCode" },
+    { driver: "pi", label: "Pi" },
+  ])(
+    "adds a native $label account without replacing configured instances",
+    async ({ driver, label }) => {
+      setup();
+      settingsHooks.read.mockReturnValue({
+        providerInstances: {
+          [`${driver}_2`]: { driver, enabled: false },
+          ...(driver === "codex"
+            ? {}
+            : {
+                [driver]: { driver, config: { inferenceEnabled: true, inferenceHostId: "host" } },
+              }),
+        },
+      });
+      await using _screen = await render(dialog());
+      if (driver === "codex") {
+        await useExistingCodexCli();
+      } else {
+        if (!queryRadio(label)) await click("Show more");
+        await choose(label);
+        await click("Next");
+      }
+      await click("Next");
+      await click("Add instance");
+      expect(settingsHooks.mutate).toHaveBeenCalledWith({
+        operation: "create",
+        instanceId: `${driver}_3`,
+        instance: {
+          driver,
+          enabled: true,
+          displayName: label,
+          ...(driver === "codex" ? { config: { setupMode: "existing" } } : {}),
+        },
+      });
+    },
+  );
 
   it("includes the explicitly added default accent color when creating a provider", async () => {
     setup();

@@ -8253,7 +8253,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 providerInstanceId: modelSelection.instanceId,
                 capabilities,
                 sameProvider:
-                  pendingForkTransfer.sourceProviderInstanceId === modelSelection.instanceId,
+                  pendingForkTransfer.sourceProviderInstanceId === modelSelection.instanceId &&
+                  !(yield* providerContinuationChanged(
+                    sourceProviderThread,
+                    modelSelection.instanceId,
+                  ).pipe(mapDispatchError(command))),
                 // The provider's copy of the conversation lacks words published after its last turn.
                 hasStrongNativeSource:
                   !isOrchestrationV2PublicationRun(sourceRun) &&

@@ -1210,64 +1210,74 @@ export const layer: Layer.Layer<
                 )
                 .map((attempt) => attempt.id),
             );
-            const forked = yield* loadFromProvider(
-              session.forkThread({
-                sourceProviderThread,
-                sourceProviderTurns: sourceProjection.providerTurns.filter(
-                  (turn) =>
-                    turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId),
+            const forked = yield* Effect.result(
+              session
+                .forkThread({
+                  sourceProviderThread,
+                  sourceProviderTurns: sourceProjection.providerTurns.filter(
+                    (turn) =>
+                      turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId),
+                  ),
+                  targetThreadId: projection.thread.id,
+                  modelSelection: run.modelSelection,
+                  runtimePolicy: resolvedRuntimePolicy,
+                  ...(sourceProviderTurn === undefined
+                    ? {}
+                    : { providerTurnId: sourceProviderTurn.id }),
+                })
+                .pipe(
+                  Effect.asSome,
+                  // A home change can invalidate a native fork after dispatch planned it.
+                  Effect.catchTags({ ProviderAdapterProtocolError: () => Effect.succeedNone }),
                 ),
-                targetThreadId: projection.thread.id,
-                modelSelection: run.modelSelection,
-                runtimePolicy: resolvedRuntimePolicy,
-                ...(sourceProviderTurn === undefined
-                  ? {}
-                  : { providerTurnId: sourceProviderTurn.id }),
-              }),
             );
-            if (forked === undefined) return undefined;
-            // A native fork already contains the accepted source attachments through its fork
-            // point. Exclude later runs and receipts from replaced native conversations.
-            recordForkMemory = Effect.gen(function* () {
-              const nativeThreadId = sourceProviderThread.nativeThreadRef?.nativeId;
-              if (nativeThreadId === undefined) return;
-              const receipts = yield* knowledge.readSentDeliveries({
-                projectId: projection.thread.projectId,
-                threadIds: [sourceProjection.thread.id],
-                runIds: sourceProjection.runs
-                  .filter(
-                    (candidate) =>
-                      candidate.ordinal <= sourceRun.ordinal && candidate.status !== "rolled_back",
-                  )
-                  .map((candidate) => candidate.id),
-              });
-              yield* knowledge.recordViews(
-                projection.thread.projectId,
-                projection.thread.id,
-                receipts
-                  .filter(
-                    (receipt) =>
-                      receipt.providerThreadId === sourceProviderThread.id &&
-                      receipt.nativeThreadId === nativeThreadId,
-                  )
-                  .flatMap((receipt) =>
-                    receipt.items.flatMap((item) =>
-                      item.context.selections.flatMap((selection) =>
-                        selection.kind === "fact" ? [selection.factId] : [],
+            if (forked._tag === "Failure")
+              return yield* loadFromProvider(Effect.fail(forked.failure));
+            if (Option.isSome(forked.success)) {
+              // A native fork already contains the accepted source attachments through its fork
+              // point. Exclude later runs and receipts from replaced native conversations.
+              recordForkMemory = Effect.gen(function* () {
+                const nativeThreadId = sourceProviderThread.nativeThreadRef?.nativeId;
+                if (nativeThreadId === undefined) return;
+                const receipts = yield* knowledge.readSentDeliveries({
+                  projectId: projection.thread.projectId,
+                  threadIds: [sourceProjection.thread.id],
+                  runIds: sourceProjection.runs
+                    .filter(
+                      (candidate) =>
+                        candidate.ordinal <= sourceRun.ordinal &&
+                        candidate.status !== "rolled_back",
+                    )
+                    .map((candidate) => candidate.id),
+                });
+                yield* knowledge.recordViews(
+                  projection.thread.projectId,
+                  projection.thread.id,
+                  receipts
+                    .filter(
+                      (receipt) =>
+                        receipt.providerThreadId === sourceProviderThread.id &&
+                        receipt.nativeThreadId === nativeThreadId,
+                    )
+                    .flatMap((receipt) =>
+                      receipt.items.flatMap((item) =>
+                        item.context.selections.flatMap((selection) =>
+                          selection.kind === "fact" ? [selection.factId] : [],
+                        ),
                       ),
                     ),
-                  ),
+                );
+              }).pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterrupts(cause)
+                    ? Effect.interrupt
+                    : Effect.logWarning("Failed to record inherited native-fork project memory", {
+                        runId: run.id,
+                      }),
+                ),
               );
-            }).pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterrupts(cause)
-                  ? Effect.interrupt
-                  : Effect.logWarning("Failed to record inherited native-fork project memory", {
-                      runId: run.id,
-                    }),
-              ),
-            );
-            return forked;
+              return forked.success.value;
+            }
           }
           const sourceItems = yield* ContextHandoffService.readForkHistoryItems(
             projectionStore,

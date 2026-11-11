@@ -1367,16 +1367,10 @@ function ProviderInstanceRow({
     Boolean(recommendedVersion) &&
     liveProvider.versionAdvisory?.canInstallVersion === true;
 
-  const setup =
-    mode === "editor" && accountHostId && inferenceDriver ? (
-      <InferenceProviderAccounts
-        key={`${accountHostId}:${inferenceDriver}`}
-        environmentId={accountHostId}
-        driver={inferenceDriver}
-        readOnly={readOnly}
-        hostLabel={providerConfigString(instance.config, "inferenceHostLabel") ?? undefined}
-      />
-    ) : mode === "editor" && driver === "antigravity" ? (
+  const proxyReplacesAccounts =
+    accountHostId !== null && inferenceHarness(driver)?.replacesAccounts === true;
+  const nativeSetup =
+    mode === "editor" && driver === "antigravity" ? (
       <ProviderSetupSection
         environmentId={environmentId}
         environmentLabel={environmentLabel}
@@ -1437,6 +1431,21 @@ function ProviderInstanceRow({
         description="Using CURSOR_API_KEY. Remove it from this provider's environment to use browser sign-in."
       />
     ) : null;
+  const setup =
+    mode === "editor" && accountHostId && inferenceDriver ? (
+      <>
+        <InferenceProviderAccounts
+          key={`${accountHostId}:${inferenceDriver}`}
+          environmentId={accountHostId}
+          driver={inferenceDriver}
+          readOnly={readOnly}
+          hostLabel={providerConfigString(instance.config, "inferenceHostLabel") ?? undefined}
+        />
+        {!proxyReplacesAccounts && nativeSetup}
+      </>
+    ) : (
+      nativeSetup
+    );
   return (
     <ProviderInstanceCard
       environmentId={environmentId}
@@ -1521,7 +1530,7 @@ function ProviderInstanceRow({
           : undefined
       }
       syncAction={
-        mode === "editor" && !accountHostId ? (
+        mode === "editor" && !proxyReplacesAccounts ? (
           <SyncProviderAccountsAction
             sourceEnvironmentId={environmentId}
             readOnly={readOnly}

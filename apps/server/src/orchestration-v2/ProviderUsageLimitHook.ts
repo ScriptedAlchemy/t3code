@@ -1,4 +1,5 @@
 import {
+  isInferenceConfig,
   isInferenceRoutingEnabled,
   type OrchestrationV2ProviderFailure,
   type ProviderInstanceId,
@@ -49,9 +50,10 @@ export const layer = Layer.effect(
     ) {
       const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
       const pooled = yield* settings.getSettings.pipe(
-        Effect.map(({ providerInstances }) =>
-          isInferenceRoutingEnabled(providerInstances[instanceId]?.config),
-        ),
+        Effect.map(({ providerInstances }) => {
+          const config = providerInstances[instanceId]?.config;
+          return isInferenceRoutingEnabled(config) || isInferenceConfig(config);
+        }),
         Effect.orElseSucceed(() => false),
       );
       yield* registry.markLimited({
