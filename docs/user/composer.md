@@ -198,16 +198,14 @@ Recall skips messages where you attached project knowledge yourself, and message
 sent when the context window is nearly full. Agents can also search project
 memory at any point in a turn.
 
-Recall is built to stay out of the way. A thread receives each fact once, and
-never a fact its agent has already found by searching or reading memory, or one
-that was saved from that thread. Recalled facts are sent in a short form without
-their citations. A long fact is cut short, and the agent reads the rest when it
-needs it.
+A thread receives each fact once. T3 also never recalls a fact the thread's agent
+has already found by searching or reading memory, or a fact that was saved from
+that thread. T3 sends recalled facts in a short form without their citations. It
+cuts a long fact short, and the agent reads the rest when it needs it.
 
-Each recalled fact asks the agent to rate it once it has relied on it. Helpful
-ratings raise the fact's trust and unhelpful ratings lower it, and only facts
-with enough trust are recalled. To remove a fact for good, forget it in Project
-memory.
+T3 asks the agent to rate each recalled fact it relies on. Helpful ratings raise
+the fact's trust and unhelpful ratings lower it, and T3 recalls only facts with
+enough trust. To remove a fact permanently, forget it in Project memory.
 
 A fact's details show its history: when it was created, edited, superseded, and
 rated helpful or unhelpful, with the trust change from each rating. **Memory health** counts facts by status. When facts lose their cited

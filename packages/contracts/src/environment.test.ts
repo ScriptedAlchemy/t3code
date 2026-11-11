@@ -22,7 +22,7 @@ describe("ExecutionEnvironmentDescriptor", () => {
     expect(decodeDescriptor(oldServer).capabilities).not.toHaveProperty(
       "projectKnowledgeDeliveries",
     );
-    // Older servers still send capabilities this build has retired; they are ignored.
+    // Older servers still send capabilities this build has retired. Decoding ignores them.
     expect(
       decodeDescriptor({
         ...oldServer,

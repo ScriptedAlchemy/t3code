@@ -67,7 +67,7 @@ const declaredFailure = (result: McpSchema.CallToolResult) => {
   return result.isError === true && text?.type === "text" ? JSON.parse(text.text) : undefined;
 };
 
-it.effect("registers knowledge tools and credits writes and reads to the calling thread", () =>
+it.effect("registers knowledge tools and attributes writes and reads to the calling thread", () =>
   Effect.gen(function* () {
     const received = yield* Ref.make<
       { readonly input: ProjectKnowledgeMutation; readonly actor: KnowledgeOrigin } | undefined
@@ -138,7 +138,7 @@ it.effect("registers knowledge tools and credits writes and reads to the calling
       ["t3_knowledge_read_fact", { projectId, factId }],
     ] as const)
       yield* callTool(scope, name, args);
-    // Recall skips what a thread's agent has read, so each read names its thread.
+    // Recall skips facts a thread's agent has read, so each read tool passes its thread.
     expect(yield* Ref.get(viewers)).toEqual([threadId, threadId, threadId]);
     expect(declaredFailure(result)).toMatchObject({ code: "invalid_request" });
     expect(declaredFailure(denied)).toMatchObject({ code: "capability_denied" });

@@ -73,20 +73,21 @@ type RecallComposer = {
   readonly records: ReadonlyArray<ComposerContextRecord>;
 };
 const RECALL_CONTEXT_ID = ComposerContextId.make("recall");
-/** Recalled memory is sent in a shorter form than knowledge someone attached by hand. */
+/** Recall sends memory in a shorter form than knowledge someone attached by hand. */
 export const isRecalledMemory = (record: Pick<ComposerContextRecord, "contextId">) =>
   record.contextId === RECALL_CONTEXT_ID;
-// Recall runs before every eligible turn starts, so a slow store skips it rather than stalling.
+// Recall runs before every eligible turn, so it gives up on a slow store instead of waiting.
 const RECALL_TIMEOUT = "150 millis";
-// Recalled facts stay a small slice of the turn, and leave room for the context envelope
-// around them so the delivery's own budget check cannot refuse what recall accepted.
+// The most bytes recall adds to a turn. The envelope reserve covers the wrapper around the
+// facts, so the delivery's own budget check cannot refuse what recall accepted.
 const RECALL_MAX_BYTES = 4096;
 const RECALL_ENVELOPE_BYTES = 1024;
 const RECALL_MIN_BYTES = 512;
-// A longer fact is cut here; its header carries the id that reads the rest.
+// Recall cuts a longer fact at this length. The agent reads the rest by the id in its header.
 const RECALL_FACT_MAX_CHARS = 800;
 type KnowledgeFormat = "attached" | "recalled";
-// How to rate a fact travels with the facts, so a turn with no recall pays nothing for it.
+// The rating instruction is in the recalled block, so a turn with no recall spends no tokens
+// on it.
 const recalledPreamble = (projectId: ProjectId) =>
   `Saved facts from project ${projectId}, for reference. Rate any you rely on with t3_knowledge_mutate feedback: helpful, or unhelpful if it misled you.`;
 
@@ -100,8 +101,8 @@ export class ProjectKnowledge extends Context.Service<
   ProjectKnowledge,
   {
     /**
-     * list, readFact and search take the thread whose agent is reading. Facts shown to it are
-     * recorded, so recall does not send that thread a fact its agent has already seen.
+     * list, readFact and search take the thread whose agent is reading. The service records the
+     * facts it returns, so recall does not send that thread a fact its agent has already seen.
      */
     readonly list: (
       input: ProjectKnowledgeListInput,
@@ -140,9 +141,9 @@ export class ProjectKnowledge extends Context.Service<
       viewer?: ThreadId,
     ) => Effect.Effect<ProjectKnowledgeSearchResult, ProjectKnowledgeError>;
     /**
-     * Attaches saved facts related to a user message that its thread's agent has not seen yet,
-     * as a knowledge record the turn's delivery sends. Best effort: null when nothing fits, and
-     * a failed or slow lookup never fails the turn. Facts the user attached take precedence.
+     * Finds saved facts related to a user message that the thread's agent has not seen yet, and
+     * attaches them as a knowledge record for the turn's delivery to send. Returns null when
+     * nothing fits, when the lookup fails or is slow, or when the user attached knowledge by hand.
      */
     readonly recall: (input: {
       readonly projectId: ProjectId;
@@ -202,7 +203,8 @@ export class ProjectKnowledge extends Context.Service<
     ) => Effect.Effect<void, ProjectKnowledgeError>;
     /**
      * Sent records only, for replaying earlier messages into a fresh provider conversation.
-     * A replay into a thread shows those facts to its agent, so a fork counts what it inherits.
+     * Pass the thread that receives the replay as viewer. The service records the replayed facts
+     * as seen by it, so recall does not send a fork what its parent already received.
      */
     readonly readSentDeliveries: (
       input: {
@@ -820,7 +822,8 @@ const make = Effect.gen(function* () {
             });
           }
           if (format === "recalled") {
-            // Enough to use, rate, or read the fact in full; its citations stay a read away.
+            // The header has what the agent needs to use, rate or read the fact. It omits
+            // citations, which t3_knowledge_read_fact returns.
             const cut = [...fact.content].length > RECALL_FACT_MAX_CHARS;
             const content = cut
               ? `${[...fact.content].slice(0, RECALL_FACT_MAX_CHARS).join("").trimEnd()}… (shortened; t3_knowledge_read_fact has the rest)`
@@ -900,7 +903,7 @@ const make = Effect.gen(function* () {
     };
   });
   const searchFacts = Effect.fn("ProjectKnowledge.search")(
-    // A preview keeps its best two matches; skip removes facts before that cut.
+    // A preview keeps its best two matches. skip removes facts before that choice.
     function* (
       request: ProjectKnowledgeSearchInput,
       skip?: (fact: ProjectFact) => boolean,

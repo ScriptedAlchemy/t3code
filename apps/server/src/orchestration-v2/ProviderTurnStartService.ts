@@ -1744,7 +1744,7 @@ export const layer: Layer.Layer<
               ? yield* nativeContextEstimate
               : 0,
         });
-        // Related saved facts travel with the message, so no one has to pick them by hand.
+        // Recall adds related saved facts to the message, so no one has to pick them by hand.
         const recalled =
           noteContinuation || initialDeliveryState.sent
             ? null

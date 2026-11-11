@@ -3,8 +3,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  // Facts a thread's agent read through its tools. Recall skips them, as it skips facts already
-  // delivered with a message, so a thread is never sent a fact its agent has seen.
+  // One row per fact a thread's agent read through its tools. Recall skips these facts, as it
+  // skips facts already delivered with a message.
   yield* sql`
     CREATE TABLE project_knowledge_views (
       project_id TEXT NOT NULL,

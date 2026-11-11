@@ -695,8 +695,8 @@ export const makeStore = Effect.gen(function* () {
     yield* sql`INSERT OR IGNORE INTO project_knowledge_views (project_id, thread_id, fact_id)
       SELECT ${projectId}, ${threadId}, value FROM json_each(${encodeFactIds(factIds)})`;
   });
-  // Every fact a thread's agent has been shown: read through its tools, or delivered with a
-  // message. An uncertain delivery may have arrived, so it counts.
+  // Returns every fact a thread's agent has been shown, either read through its tools or
+  // delivered with a message. An uncertain delivery may have arrived, so it counts.
   const seenFactIds = Effect.fn("ProjectKnowledgeStore.seenFactIds")(function* (
     projectId: ProjectId,
     threadId: ThreadId,

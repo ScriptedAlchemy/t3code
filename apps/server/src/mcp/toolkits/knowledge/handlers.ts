@@ -12,7 +12,7 @@ const failure = (error: ProjectKnowledgeError) =>
     message: error.message,
   });
 const access = readCaller().pipe(Effect.andThen(ProjectKnowledge.ProjectKnowledge));
-// Reads from a thread's agent are recorded against that thread, so recall does not repeat them.
+// The service records a thread agent's reads, so recall does not send it those facts again.
 const threadAccess = Effect.all({
   service: access,
   viewer: Effect.map(McpInvocationContext.McpInvocationContext, (scope) => scope.thread?.threadId),
