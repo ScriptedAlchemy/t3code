@@ -58,9 +58,9 @@ picker always shows normal Claude and Codex models. Traex remains a separate bac
 
 Routing is optional. Turn off **Use CLI proxy** to return to this provider's normal
 T3 Code configuration. Standalone CLI configuration is unchanged.
-An upgrade preserves the provider and host selected by existing threads, scheduled tasks,
-and saved role choices, including selections made through older account pools.
-An older account pool that had no proxy route continues as a copy of the normal Claude or Codex provider.
+After an upgrade, threads, scheduled tasks, and saved model choices that named an older
+route or account pool use the normal Claude or Codex provider. They run through the proxy
+only when **Use CLI proxy** is on for that provider.
 
 Remove a provider login on its host, revoke one consuming environment, or turn
 off sharing to revoke all remote grants. Remove the route in **Inference accounts** on the executing machine. Stopping hosting keeps the host's accounts

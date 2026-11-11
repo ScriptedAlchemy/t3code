@@ -39,7 +39,6 @@ import * as ServerSettingsModule from "./serverSettings.ts";
 import { SECRET_REDACTED } from "./settingsSecrets.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.ts";
-import { routeProvider } from "./inference/routes.ts";
 
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 const decodeServerSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
@@ -137,140 +136,80 @@ function strictSecretReferencePaths(
 }
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings", (it) => {
-  it.effect.each(["codex", "claudeAgent"] as const)(
-    "converts saved %s pool targets without losing routes or their credentials",
-    (kind) =>
-      Effect.gen(function* () {
-        const config = yield* ServerConfig.ServerConfig;
-        const fs = yield* FileSystem.FileSystem;
-        const secrets = yield* ServerSecretStore.ServerSecretStore;
-        const service = yield* ServerSettingsModule.ServerSettingsService;
-        const route = ProviderInstanceId.make(`inference_${kind}_0000000000000000`);
-        const nativeId = ProviderInstanceId.make(kind);
-        const pool = ProviderInstanceId.make(`pool_${kind}`);
-        const work = ProviderInstanceId.make(`${kind}_work`);
-        const key = kind === "codex" ? "T3_INFERENCE_KEY" : "ANTHROPIC_AUTH_TOKEN";
-        const driver = ProviderDriverKind.make(kind);
-        const preference = { hiddenModels: [], modelOrder: ["gpt-fixture"] };
-        const savedRoute = routeProvider(kind, "Existing host", {
-          baseUrl: "http://192.168.1.10:3773/api/inference",
-          key: "",
-          models: ["gpt-fixture"],
-          homePath: "/saved/proxy/home",
-          current: () => undefined,
-        });
-        const secretName = `provider-env-${Buffer.from(route).toString("base64url")}-${Buffer.from(key).toString("base64url")}`;
-        yield* secrets.set(secretName, new TextEncoder().encode("saved-route-key"));
-        const native = { driver, config: { setupMode: "managed", homePath: "/native/home" } };
-        const saved = {
-          retiredPoolRoutes: { [kind]: route },
+  it.effect("moves saved choices off retired pool and route instances, once", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const secrets = yield* ServerSecretStore.ServerSecretStore;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const route = ProviderInstanceId.make("inference_codex_0000000000000000");
+      const pool = ProviderInstanceId.make("pool_claudeAgent");
+      const codex = ProviderInstanceId.make("codex");
+      const named = ProviderInstanceId.make("inference_codex_host");
+      const driver = ProviderDriverKind.make("codex");
+      const native = { driver, config: { setupMode: "managed", homePath: "/native/home" } };
+      const preference = { hiddenModels: [], modelOrder: ["gpt-fixture"] };
+      const secretName = `provider-env-${Buffer.from(route).toString("base64url")}-${Buffer.from("T3_INFERENCE_KEY").toString("base64url")}`;
+      yield* secrets.set(secretName, new TextEncoder().encode("saved-route-key"));
+      yield* fs.writeFileString(
+        config.settingsPath,
+        JSON.stringify({
+          retiredPoolRoutes: { codex: route },
+          providerPools: { claudeAgent: { memberInstanceIds: ["claudeAgent"] } },
           providerInstances: {
             [route]: {
-              ...savedRoute,
-              environment: savedRoute.environment.map((entry) =>
-                entry.name === key ? { ...entry, valueRedacted: true } : entry,
-              ),
+              driver,
+              config: { setupMode: "inference" },
+              environment: [
+                { name: "T3_INFERENCE_KEY", value: "", sensitive: true, valueRedacted: true },
+              ],
             },
-            [nativeId]: native,
-            [work]: { driver },
+            [pool]: { driver: "claudeAgent", config: { setupMode: "inference" } },
+            [codex]: native,
+            // A name the user chose is not a retired shape.
+            [named]: { driver },
           },
           favorites: [{ provider: route, model: "gpt-fixture" }],
           providerModelPreferences: { [route]: preference },
           textGenerationModelSelection: { instanceId: route, model: "gpt-fixture" },
-          defaultModelSelection: {
-            instanceId: pool,
-            model: "gpt-fixture",
+          defaultModelSelection: { instanceId: pool, model: "claude-fixture" },
+          projectSettingsOverrides: {
+            project: { defaultModelSelection: { instanceId: route, model: "gpt-fixture" } },
           },
-        };
-        yield* fs.writeFileString(config.settingsPath, JSON.stringify(saved));
-        const retired = yield* service.getSettings;
-        assert.deepEqual(Object.keys(retired.providerInstances), [route, nativeId, work, pool]);
-        assert.deepEqual(retired.providerInstances[nativeId], native);
-        assert.deepEqual(retired.providerInstances[route]?.config, savedRoute.config);
-        assert.deepEqual(retired.providerInstances[pool]?.config, savedRoute.config);
-        for (const id of [route, pool]) {
-          assert.equal(
-            retired.providerInstances[id]?.environment?.find((entry) => entry.name === key)?.value,
-            "saved-route-key",
-          );
-        }
-        assert.deepEqual(retired.favorites, [{ provider: route, model: "gpt-fixture" }]);
-        assert.deepEqual(retired.providerModelPreferences, { [route]: preference });
-        assert.equal(retired.textGenerationModelSelection.instanceId, route);
-        assert.equal(retired.defaultModelSelection?.instanceId, pool);
-        yield* service.start;
-        assert.deepEqual((yield* service.getSettings).providerInstances, retired.providerInstances);
-        const persisted = yield* fs.readFileString(config.settingsPath);
-        assert.include(persisted, route);
-        assert.notInclude(persisted, "saved-route-key");
-        assert.notInclude(persisted, "retiredPoolRoutes");
-      }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
-  );
+        }),
+      );
 
-  it.effect.each(["target", "record", "secret"] as const)(
-    "loads settings when a saved pool %s is missing",
-    (missing) =>
-      Effect.gen(function* () {
-        const config = yield* ServerConfig.ServerConfig;
-        const fs = yield* FileSystem.FileSystem;
-        const secrets = yield* ServerSecretStore.ServerSecretStore;
-        const service = yield* ServerSettingsModule.ServerSettingsService;
-        const route = ProviderInstanceId.make("inference_codex_0000000000000000");
-        const nativeId = ProviderInstanceId.make("codex");
-        const pool = ProviderInstanceId.make("pool_codex");
-        const secretEntry = (name: string) => ({
-          name,
-          value: "",
-          sensitive: true,
-          valueRedacted: true,
-        });
-        const native = {
-          driver: "codex",
-          config: { setupMode: "managed", homePath: "/native/home" },
-          environment: [secretEntry("NATIVE_KEY")],
-        };
-        yield* secrets.set(
-          `provider-env-${Buffer.from(nativeId).toString("base64url")}-${Buffer.from("NATIVE_KEY").toString("base64url")}`,
-          new TextEncoder().encode("native-key"),
-        );
-        yield* fs.writeFileString(
-          config.settingsPath,
-          JSON.stringify({
-            ...(missing === "record"
-              ? { providerPools: { codex: { memberInstanceIds: [nativeId, "codex_work"] } } }
-              : { retiredPoolRoutes: { codex: route } }),
-            providerInstances: {
-              target: { [nativeId]: native },
-              record: {},
-              secret: {
-                [route]: {
-                  driver: "codex",
-                  config: { setupMode: "inference" },
-                  environment: [secretEntry("T3_INFERENCE_KEY")],
-                },
-              },
-            }[missing],
-            defaultModelSelection: { instanceId: pool, model: "gpt-fixture" },
-          }),
-        );
-        const loaded = yield* service.getSettings;
-        const upgraded = loaded.providerInstances[pool];
-        if (missing === "target") {
-          assert.deepEqual(upgraded?.config, native.config);
-          assert.equal(upgraded?.environment?.[0]?.value, "native-key");
-        } else if (missing === "record") {
-          assert.deepEqual(upgraded, { driver: ProviderDriverKind.make("codex") });
-        } else {
-          assert.deepEqual(upgraded?.config, { setupMode: "inference" });
-        }
-        assert.isUndefined(loaded.providerInstances[ProviderInstanceId.make("pool_claudeAgent")]);
-        assert.equal(loaded.defaultModelSelection?.instanceId, pool);
-        yield* service.start;
-        const persisted = yield* fs.readFileString(config.settingsPath);
-        assert.notInclude(persisted, "retiredPoolRoutes");
-        assert.notInclude(persisted, "providerPools");
-        assert.notInclude(persisted, "native-key");
-      }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+      const upgraded = yield* service.getSettings;
+      assert.deepEqual(Object.keys(upgraded.providerInstances), [codex, named]);
+      assert.deepEqual(upgraded.providerInstances[codex], native);
+      assert.deepEqual(upgraded.favorites, [{ provider: codex, model: "gpt-fixture" }]);
+      assert.deepEqual(upgraded.providerModelPreferences, { [codex]: preference });
+      assert.equal(upgraded.textGenerationModelSelection.instanceId, codex);
+      assert.equal(upgraded.defaultModelSelection?.instanceId, "claudeAgent");
+      assert.equal(
+        upgraded.projectSettingsOverrides[ProjectId.make("project")]?.defaultModelSelection
+          ?.instanceId,
+        codex,
+      );
+      assert.isTrue(Option.isNone(yield* secrets.get(secretName)));
+      const written = yield* fs.readFileString(config.settingsPath);
+      for (const gone of [route, pool, "retiredPoolRoutes", "providerPools"]) {
+        assert.notInclude(written, gone);
+      }
+
+      // A load that rewrote the file would drop this formatting.
+      const reformatted = JSON.stringify(JSON.parse(written), null, 4);
+      yield* fs.writeFileString(config.settingsPath, reformatted);
+      const reloaded = yield* Effect.gen(function* () {
+        return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+      }).pipe(
+        Effect.provide(
+          Layer.fresh(ServerSettingsModule.layer).pipe(Layer.provide(ManagedPolicy.layerTest())),
+        ),
+      );
+      assert.deepEqual(reloaded, upgraded);
+      assert.equal(yield* fs.readFileString(config.settingsPath), reformatted);
+    }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 
   it.effect("keeps native profiles when proxy routing is enabled", () =>

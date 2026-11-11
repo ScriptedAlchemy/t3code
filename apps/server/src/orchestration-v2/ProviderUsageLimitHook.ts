@@ -1,6 +1,5 @@
 import {
   inferenceHarness,
-  isInferenceConfig,
   isInferenceRoutingEnabled,
   type OrchestrationV2ProviderFailure,
   type ProviderInstanceId,
@@ -56,7 +55,6 @@ export const layer = Layer.effect(
         Effect.map(({ providerInstances }) => {
           const instance = providerInstances[instanceId];
           if (instance === undefined) return false;
-          if (isInferenceConfig(instance.config)) return true;
           const harness = inferenceHarness(instance.driver);
           return (
             isInferenceRoutingEnabled(instance.config) &&

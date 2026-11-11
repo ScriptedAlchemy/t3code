@@ -413,22 +413,20 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
       assert.include(expansion.text, "Provider is rate limited. Retry after its cooldown expires.");
     }),
   );
-  it.effect("preserves role seats whose pool target became a concrete provider", () =>
+  it.effect("rewrites role seats saved against a retired pool or route instance, once", () =>
     Effect.gen(function* () {
-      const pool = ProviderInstanceId.make("pool_claudeAgent");
-      const fixture = yield* makeFixture(
-        [{ ...claudeProvider, instanceId: pool }],
-        ServerSettings.layerTest({
-          pstackEnabled: true,
-          providerInstances: {
-            [pool]: { driver: claudeProvider.driver, config: { setupMode: "inference" } },
-          },
-        }),
-      );
+      const fixture = yield* makeFixture([claudeProvider]);
       const fs = yield* FileSystem.FileSystem;
       const modelsPath = `${fixture.stateDir}/pstack/models.md`;
       yield* fs.makeDirectory(`${fixture.stateDir}/pstack`, { recursive: true });
-      yield* fs.writeFileString(modelsPath, "architect runners: pool_claudeAgent/claude-opus-5-5");
+      yield* fs.writeFileString(
+        modelsPath,
+        [
+          "architect runners: inference_claudeAgent_1ce3f6740fb26811/claude-opus-5-5 effort=high",
+          "bug-fix: pool_codex/gpt-6",
+          "review: inference_codex_host/gpt-6",
+        ].join("\n"),
+      );
       const expansion = yield* Effect.gen(function* () {
         return yield* (yield* PstackPack.PstackPack).expandComposer(
           { text: "$pstack:architect", records: [], projectId: ProjectId.make("pack-test") },
@@ -437,11 +435,15 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
       }).pipe(Effect.provide(fixture.layer));
       assert.include(
         expansion.text,
-        '- architect runners: [1] {"providerInstanceId":"pool_claudeAgent"',
+        '- architect runners: [1] {"providerInstanceId":"claudeAgent"',
       );
       assert.equal(
         yield* fs.readFileString(modelsPath),
-        "architect runners: pool_claudeAgent/claude-opus-5-5",
+        [
+          "architect runners: claudeAgent/claude-opus-5-5 effort=high",
+          "bug-fix: codex/gpt-6",
+          "review: inference_codex_host/gpt-6",
+        ].join("\n"),
       );
     }),
   );
@@ -450,7 +452,7 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
     (scenario) =>
       Effect.gen(function* () {
         const projectId = ProjectId.make("pack-test");
-        const route = ProviderInstanceId.make("inference_claudeAgent_1ce3f6740fb26811");
+        const route = ProviderInstanceId.make("inference_claude_host");
         const fixture = yield* makeFixture(
           [
             claudeProvider,

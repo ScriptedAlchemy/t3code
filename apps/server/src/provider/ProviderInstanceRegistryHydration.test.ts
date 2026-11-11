@@ -24,7 +24,6 @@ import {
   seedDevReplayInstance,
 } from "./ProviderInstanceRegistryHydration.ts";
 import { ProviderInstanceRegistryMutator } from "./ProviderInstanceRegistryMutator.ts";
-import { routeProvider } from "../inference/routes.ts";
 
 const projectId = ProjectId.make("project-a");
 const instanceId = ProviderInstanceId.make("codex_work");
@@ -61,32 +60,16 @@ describe("deriveProviderInstanceConfigMap", () => {
       providerInstances: {
         [id]: { ...native, config: { ...native.config, ...route } },
         [instanceId]: { driver, config: { setupMode: "cli" } },
-        [ProviderInstanceId.make("pool_codex")]: native,
         [ProviderInstanceId.make("codex_traex")]: {
           driver,
           config: { launchArgs: "-c 'model_provider=\"traex\"'" },
         },
-        [ProviderInstanceId.make("inference_codex_0000000000000000")]: routeProvider(
-          "codex",
-          "Existing host",
-          {
-            baseUrl: "http://192.168.1.10:3773/api/inference",
-            key: "saved-route-key",
-            models: ["gpt-saved"],
-            homePath: "/saved/proxy/home",
-            current: () => undefined,
-          },
-        ),
       },
     });
     const before = structuredClone(settings);
     const enabled = deriveProviderInstanceConfigMap(settings);
     expect(enabled[instanceId]).toEqual(settings.providerInstances[instanceId]);
-    expect(enabled[ProviderInstanceId.make("pool_codex")]).toEqual(native);
     expect(enabled[ProviderInstanceId.make("codex_traex")]).toBeDefined();
-    expect(enabled[ProviderInstanceId.make("inference_codex_0000000000000000")]).toEqual(
-      settings.providerInstances[ProviderInstanceId.make("inference_codex_0000000000000000")],
-    );
     expect(enabled[id]).toMatchObject({
       displayName: "Codex",
       config: {
@@ -126,7 +109,6 @@ describe("deriveProviderInstanceConfigMap", () => {
       });
       expect(invalid[id]?.enabled).toBe(false);
       expect(invalid[instanceId]).toEqual(settings.providerInstances[instanceId]);
-      expect(invalid[ProviderInstanceId.make("pool_codex")]).toEqual(native);
     }
   });
 

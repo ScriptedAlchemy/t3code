@@ -15,7 +15,6 @@ import {
   InferenceProxyError,
   ProviderInstanceId,
   isManagedDriverAllowed,
-  isInferenceConfig,
   type InferenceProxyAction,
   type InferenceProxyActionResult,
   type InferenceProxyStatus,
@@ -1290,16 +1289,7 @@ const make = Effect.gen(function* () {
               )
             : null;
         if (problem) return failure(problem);
-        const native =
-          current && !isInferenceConfig(current.config)
-            ? current
-            : {
-                driver: ProviderDriverKind.make(driver),
-                config:
-                  providerConfig(current?.config) && typeof current.config.binaryPath === "string"
-                    ? { binaryPath: current.config.binaryPath }
-                    : {},
-              };
+        const native = current ?? { driver: ProviderDriverKind.make(driver), config: {} };
         const { inferenceConnection: _previousConnection, ...nativeConfig } = providerConfig(
           native.config,
         )

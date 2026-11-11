@@ -66,7 +66,6 @@ describe("providerInstanceEntriesFor", () => {
       const driver = ProviderDriverKind.make(kind);
       const nativeId = ProviderInstanceId.make(`${kind}_work`);
       const customId = ProviderInstanceId.make(`${kind}_custom`);
-      const routeId = ProviderInstanceId.make(`${kind}_route`);
       const settings = {
         providerInstances: {
           [ProviderInstanceId.make(kind)]: {
@@ -75,7 +74,6 @@ describe("providerInstanceEntriesFor", () => {
             config: { inferenceEnabled: true },
           },
           [nativeId]: { driver, enabled: true, config: { homePath: "/native/work" } },
-          [routeId]: { driver, enabled: true, config: { setupMode: "inference" } },
           [customId]: {
             driver,
             enabled: true,
@@ -87,23 +85,16 @@ describe("providerInstanceEntriesFor", () => {
         },
         projectSettingsOverrides: {},
       };
-      const providers = [kind, nativeId, customId, routeId].map((instanceId) =>
+      const providers = [kind, nativeId, customId].map((instanceId) =>
         provider({ provider: driver, instanceId, models: [model("model", false, true)] }),
       );
       const newChoices = providerInstanceEntriesFor(providers, settings, null);
 
       expect(newChoices.map((entry) => entry.instanceId)).toEqual(
-        kind === "codex" || kind === "claudeAgent"
-          ? [kind, customId, routeId]
-          : [kind, nativeId, customId, routeId],
+        kind === "codex" || kind === "claudeAgent" ? [kind, customId] : [kind, nativeId, customId],
       );
       const retainedChoices = providerInstanceEntriesFor(providers, settings, null, [nativeId]);
-      expect(retainedChoices.map((entry) => entry.instanceId)).toEqual([
-        kind,
-        nativeId,
-        customId,
-        routeId,
-      ]);
+      expect(retainedChoices.map((entry) => entry.instanceId)).toEqual([kind, nativeId, customId]);
       expect(retainedChoices.find((entry) => entry.instanceId === nativeId)?.enabled).toBe(true);
 
       const nativeSettings = {
@@ -121,7 +112,7 @@ describe("providerInstanceEntriesFor", () => {
         providerInstanceEntriesFor(providers, nativeSettings, null).map(
           (entry) => entry.instanceId,
         ),
-      ).toEqual([kind, nativeId, customId, routeId]);
+      ).toEqual([kind, nativeId, customId]);
     },
   );
 });

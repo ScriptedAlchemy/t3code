@@ -10,10 +10,6 @@ import {
 import { SettingsSecretValue } from "./settingsSecretValue.ts";
 import { SecretReference } from "./secretReference.ts";
 
-export const isInferenceConfig = Schema.is(
-  Schema.Struct({ setupMode: Schema.Literal("inference") }),
-);
-
 const Label = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
 const State = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
 /** Sign-in flows CLIProxyAPI serves at `/v0/management/<id>-auth-url`. */
@@ -211,7 +207,6 @@ export function isInferenceAccountReplaced(
   return (
     instanceId !== defaultId &&
     isInferenceRoutingEnabled(instances[defaultId]?.config) &&
-    !isInferenceConfig(instance.config) &&
     !isCustomInferenceBackend(instance)
   );
 }

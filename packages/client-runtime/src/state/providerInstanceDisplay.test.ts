@@ -49,10 +49,6 @@ describe("nativeAccountProviders", () => {
         driver: codex,
         config: { inferenceEnabled: true },
       },
-      [ProviderInstanceId.make("inference_codex_0000000000000000")]: {
-        driver: codex,
-        config: { setupMode: "inference" },
-      },
     } satisfies ServerSettings["providerInstances"];
     const providers = [
       ...Object.entries(instances).map(([id, instance]) => ({

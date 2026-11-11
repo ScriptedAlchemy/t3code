@@ -72,7 +72,6 @@ describe("limitCooldownUntilMs", () => {
 it.effect.each([
   ["Codex proxy", "codex", { inferenceEnabled: true }, "gpt-5", 60_000],
   ["Claude proxy", "claudeAgent", { inferenceEnabled: true }, "claude-sonnet-4-6", 60_000],
-  ["saved concrete route", "codex", { setupMode: "inference" }, "gpt-5", 60_000],
   ["native", "codex", { setupMode: "cli", inferenceEnabled: false }, "gpt-5", 10 * 60_000],
   ["native Pi model", "pi", { inferenceEnabled: true }, "openai/gpt-5", 10 * 60_000],
   ["default Pi model", "pi", { inferenceEnabled: true }, "default", 10 * 60_000],
