@@ -1,5 +1,5 @@
 import { resolveTimelineMinimapPreview, type TimelineMinimapItem } from "./timelineMinimapItems";
-import { useRef, useState, type MouseEvent } from "react";
+import { useImperativeHandle, useRef, useState, type MouseEvent, type Ref } from "react";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import {
@@ -34,11 +34,19 @@ function onMouseButtonsReleased(onRelease: () => void): () => void {
   return stop;
 }
 
+interface MinimapPosition {
+  readonly currentIndex: number | null;
+  readonly atEnd: boolean;
+}
+
+export interface TimelineMinimapHandle {
+  readonly updatePosition: (position: MinimapPosition) => void;
+}
+
 export function TimelineMinimap({
   hasPersistentGutter,
   hitStripWidth,
-  currentIndex,
-  atEnd,
+  ref,
   items,
   stripMap,
   onWheel,
@@ -46,13 +54,28 @@ export function TimelineMinimap({
 }: {
   hasPersistentGutter: boolean;
   hitStripWidth: number;
-  currentIndex: number | null;
-  atEnd: boolean;
+  ref: Ref<TimelineMinimapHandle>;
   items: ReadonlyArray<TimelineMinimapItem>;
   stripMap: Map<string, HTMLSpanElement>;
   onWheel: (event: WheelEvent) => void;
   onSelect: (item: TimelineMinimapItem) => void;
 }) {
+  const [{ currentIndex, atEnd }, setPosition] = useState<MinimapPosition>({
+    currentIndex: null,
+    atEnd: false,
+  });
+  useImperativeHandle(
+    ref,
+    () => ({
+      updatePosition: (position) =>
+        setPosition((current) =>
+          current.currentIndex === position.currentIndex && current.atEnd === position.atEnd
+            ? current
+            : position,
+        ),
+    }),
+    [],
+  );
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const wheelTargetRef = (node: HTMLDivElement | null) => {
     if (!node) return;
