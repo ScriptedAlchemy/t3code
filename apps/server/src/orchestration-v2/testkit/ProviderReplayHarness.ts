@@ -502,6 +502,8 @@ export function layerWithRegistry<Error>(
       Layer.mergeAll(
         Layer.mock(ProjectKnowledge.ProjectKnowledge)({
           nativeDeliveryEstimate: () => Effect.succeed(0),
+          readDeliveryState: () =>
+            Effect.succeed({ sent: false, sentThisAttempt: false, uncertain: false }),
           readSentDeliveries: () => Effect.succeed([]),
           recordViews: () => Effect.void,
           recall: () => Effect.succeed(null),
