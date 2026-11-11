@@ -29,6 +29,7 @@ const savedLifecycleMigration = [92, "ProjectKnowledgeSavedLifecycle"] as const;
 const learningQueueMigration = [93, "ProjectKnowledgeLearningQueue"] as const;
 const summaryPositionMigration = [94, "ConversationSummaryPosition"] as const;
 const retireRouteInstancesMigration = [95, "RetireInferenceRouteInstances"] as const;
+const knowledgeViewsMigration = [96, "ProjectKnowledgeViews"] as const;
 
 it.effect("upgrades attempt receipts atomically and preserves distinct steering messages", () =>
   Effect.gen(function* () {
@@ -59,6 +60,7 @@ it.effect("upgrades attempt receipts atomically and preserves distinct steering 
       learningQueueMigration,
       summaryPositionMigration,
       retireRouteInstancesMigration,
+      knowledgeViewsMigration,
     ]);
     assert.deepStrictEqual(yield* sql`SELECT * FROM project_knowledge_deliveries`, before);
     yield* sql`INSERT INTO project_knowledge_deliveries (
@@ -75,6 +77,48 @@ it.effect("upgrades attempt receipts atomically and preserves distinct steering 
     );
     assert.deepStrictEqual(yield* runMigrations(), []);
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
+
+it.effect.each(["original", "unexpected"] as const)(
+  "reconciles only the first recall preview with its known schema (%s)",
+  (schema) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 94 });
+      yield* sql`
+        CREATE TABLE project_knowledge_views (
+          project_id TEXT NOT NULL,
+          thread_id TEXT NOT NULL,
+          fact_id TEXT NOT NULL,
+          PRIMARY KEY (project_id, thread_id, fact_id)
+        ) WITHOUT ROWID
+      `;
+      yield* sql`INSERT INTO project_knowledge_views VALUES ('project', 'thread', 'seen-fact')`;
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (95, 'ProjectKnowledgeViews')
+      `;
+      const before = yield* sql`SELECT * FROM project_knowledge_views`;
+      if (schema === "unexpected") {
+        yield* sql`ALTER TABLE project_knowledge_views ADD COLUMN future_value TEXT`;
+        const history = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+          history,
+        );
+        return;
+      }
+      assert.deepStrictEqual(yield* runMigrations(), [[95, "RetireInferenceRouteInstances"]]);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM project_knowledge_views`, before);
+      assert.deepStrictEqual(
+        (yield* sql<{ migration_id: number; name: string }>`
+          SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
+        `).map(({ migration_id, name }) => [migration_id, name]),
+        migrationManifest,
+      );
+      assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 
 it.effect("rebuilds knowledge facts as saved or forgotten, atomically and in place", () =>
@@ -206,6 +250,7 @@ it.effect("rebuilds knowledge facts as saved or forgotten, atomically and in pla
       learningQueueMigration,
       summaryPositionMigration,
       retireRouteInstancesMigration,
+      knowledgeViewsMigration,
     ]);
 
     const cleared = new Set([
@@ -298,6 +343,8 @@ it.effect("rebuilds knowledge facts as saved or forgotten, atomically and in pla
     const savedRuns = yield* sql`SELECT * FROM project_knowledge_assisted_runs`;
     const savedSchema = yield* schema;
     yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 95`;
+    yield* sql`DROP TABLE project_knowledge_views`;
+    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 96`;
     yield* sql`ALTER TABLE conversation_summaries RENAME COLUMN position TO first_source_at`;
     yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 94`;
     yield* sql`DROP TABLE project_knowledge_learning_queue`;
@@ -346,6 +393,7 @@ it.effect("rebuilds knowledge facts as saved or forgotten, atomically and in pla
       learningQueueMigration,
       summaryPositionMigration,
       retireRouteInstancesMigration,
+      knowledgeViewsMigration,
     ]);
     assert.deepStrictEqual(yield* facts, savedFacts);
     assert.deepStrictEqual(yield* history, savedHistory);
@@ -700,6 +748,7 @@ describe("runMigrations", () => {
             learningQueueMigration,
             summaryPositionMigration,
             retireRouteInstancesMigration,
+            knowledgeViewsMigration,
           ],
         );
         yield* assertConsolidatedSchema;
@@ -746,6 +795,7 @@ describe("runMigrations", () => {
           learningQueueMigration,
           summaryPositionMigration,
           retireRouteInstancesMigration,
+          knowledgeViewsMigration,
         ],
       );
       assert.deepStrictEqual(yield* runMigrations(), [
@@ -765,6 +815,7 @@ describe("runMigrations", () => {
         learningQueueMigration,
         summaryPositionMigration,
         retireRouteInstancesMigration,
+        knowledgeViewsMigration,
       ]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(
@@ -806,6 +857,7 @@ describe("runMigrations", () => {
           learningQueueMigration,
           summaryPositionMigration,
           retireRouteInstancesMigration,
+          knowledgeViewsMigration,
         ]);
 
         yield* assertConsolidatedSchema;
@@ -917,6 +969,7 @@ describe("runMigrations", () => {
         learningQueueMigration,
         summaryPositionMigration,
         retireRouteInstancesMigration,
+        knowledgeViewsMigration,
       ]);
       yield* assertConsolidatedSchema;
       assert.deepStrictEqual(yield* sql`SELECT secret_name, fenced FROM peer_environment_links`, [
@@ -977,6 +1030,7 @@ describe("runMigrations", () => {
           learningQueueMigration,
           summaryPositionMigration,
           retireRouteInstancesMigration,
+          knowledgeViewsMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(
@@ -1042,6 +1096,7 @@ describe("runMigrations", () => {
           learningQueueMigration,
           summaryPositionMigration,
           retireRouteInstancesMigration,
+          knowledgeViewsMigration,
         ]);
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(yield* sql`SELECT * FROM cross_environment_launches`, routes);

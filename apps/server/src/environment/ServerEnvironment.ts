@@ -230,7 +230,6 @@ export const make = Effect.gen(function* () {
       vcsBranchStatus: true,
       inlineMessageContext: true,
       projectKnowledge: true,
-      projectKnowledgePreview: true,
       projectKnowledgeHistory: true,
       projectKnowledgeDeliveries: true,
       projectKnowledgeAssistedLearning: true,

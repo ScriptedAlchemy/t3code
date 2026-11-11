@@ -4,6 +4,7 @@ import {
   ContextHandoffId,
   NodeId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  ProjectFactId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
@@ -648,78 +649,96 @@ describe("handoff delivery", () => {
       }),
   );
 
-  it.effect("uses a summary only when more history arrives with it than without it", () =>
-    Effect.gen(function* () {
-      const history = Array.from({ length: 30 }, (_, index) =>
-        message(`item:h${index}`, index % 2 === 0 ? "user" : "assistant", "x".repeat(700)),
-      );
-      const source: OrchestrationV2ContextHandoff = {
-        ...handoff,
-        history: { messages: history, coverage: "Coverage.", omittedItems: 0 },
-      };
-      const ids = (from: number, to: number) =>
-        history.slice(from, to + 1).map((entry) => entry.itemId);
-      const deliver = Effect.fn("test.deliverWithSummaries")(function* (
-        summaries: ReadonlyArray<{
-          readonly id: `summary:${string}`;
-          readonly coveredItemIds: ReadonlyArray<TurnItemId>;
-          readonly text: string;
-        }>,
-      ) {
-        let verbatim: ReadonlyArray<TurnItemId> = [];
-        let context = "";
-        let summarized: ReadonlyArray<TurnItemId> = [];
-        yield* deliverContextHandoffs({
-          handoffs: [source],
-          providerThread,
-          budget: 16_000,
-          alreadyDeliveredItemIds: new Set(),
-          summaries: () => Effect.succeed(summaries),
-          inject: (input) => {
-            verbatim = input.messages.map((entry) => entry.itemId);
-            context = input.context;
-            return Effect.succeed(true);
-          },
-          persist: (value) =>
-            Effect.sync(() => {
-              summarized = value.delivery?.summarizedItemIds ?? [];
-            }),
-        });
-        return {
-          represented: new Set([...verbatim, ...summarized]),
-          verbatim,
-          summarized,
-          context,
+  it.effect.each([true, false])(
+    "uses a summary only when more history arrives with it than without it (native=%s)",
+    (native) =>
+      Effect.gen(function* () {
+        const history = Array.from({ length: 30 }, (_, index) =>
+          message(`item:h${index}`, index % 2 === 0 ? "user" : "assistant", "x".repeat(700)),
+        );
+        const source: OrchestrationV2ContextHandoff = {
+          ...handoff,
+          history: { messages: history, coverage: "Coverage.", omittedItems: 0 },
         };
-      });
-      const baseline = yield* deliver([]);
-      const old = {
-        id: `summary:${"a".repeat(64)}` as const,
-        coveredItemIds: ids(1, 8),
-        text: `OLD ${"o".repeat(8_000)}`,
-      };
-      const withOld = yield* deliver([old]);
-      assert.deepEqual(
-        [...baseline.represented].filter((id) => !withOld.represented.has(id)),
-        [],
-        "history that fit without summaries must still arrive",
-      );
-      const recent = {
-        id: `summary:${"b".repeat(64)}` as const,
-        coveredItemIds: ids(16, 23),
-        text: `RECENT ${"r".repeat(1_200)}`,
-      };
-      const chained = yield* deliver([recent, old]);
-      assert.deepEqual(chained.summarized, ids(16, 23));
-      assert.include(chained.context, "RECENT");
-      assert.deepEqual(
-        [...baseline.represented].filter((id) => !chained.represented.has(id)),
-        [],
-      );
-      assert.isAbove(chained.represented.size, baseline.represented.size);
-      for (const delivery of [baseline, withOld, chained])
-        assert.includeMembers([...delivery.verbatim], ids(24, 29), "the six newest messages");
-    }),
+        const ids = (from: number, to: number) =>
+          history.slice(from, to + 1).map((entry) => entry.itemId);
+        const deliver = Effect.fn("test.deliverWithSummaries")(function* (
+          summaries: ReadonlyArray<{
+            readonly id: `summary:${string}`;
+            readonly coveredItemIds: ReadonlyArray<TurnItemId>;
+            readonly text: string;
+            readonly knowledgeFactIds?: ReadonlyArray<ProjectFactId>;
+          }>,
+        ) {
+          let verbatim: ReadonlyArray<TurnItemId> = [];
+          let context = "";
+          let summarized: ReadonlyArray<TurnItemId> = [];
+          let deliveredFactIds: ReadonlyArray<ProjectFactId> = [];
+          const delivery = yield* deliverContextHandoffs({
+            handoffs: [source],
+            providerThread,
+            budget: 16_000,
+            alreadyDeliveredItemIds: new Set(),
+            summaries: () => Effect.succeed(summaries),
+            inject: (input) => {
+              verbatim = input.messages.map((entry) => entry.itemId);
+              context = input.context;
+              return Effect.succeed(native);
+            },
+            onDelivered: (_messages, factIds) =>
+              Effect.sync(() => {
+                deliveredFactIds = factIds;
+              }),
+            persist: (value) =>
+              Effect.sync(() => {
+                summarized = value.delivery?.summarizedItemIds ?? [];
+              }),
+          });
+          if (!native) assert.deepEqual(deliveredFactIds, []);
+          yield* delivery.delivered;
+          return {
+            represented: new Set([...verbatim, ...summarized]),
+            verbatim,
+            summarized,
+            context,
+            summaryFactIds: delivery.summaryFactIds,
+            deliveredFactIds,
+          };
+        });
+        const baseline = yield* deliver([]);
+        const old = {
+          id: `summary:${"a".repeat(64)}` as const,
+          coveredItemIds: ids(1, 8),
+          text: `OLD ${"o".repeat(8_000)}`,
+          knowledgeFactIds: [ProjectFactId.make("fact:old")],
+        };
+        const withOld = yield* deliver([old]);
+        assert.deepEqual(
+          [...baseline.represented].filter((id) => !withOld.represented.has(id)),
+          [],
+          "history that fit without summaries must still arrive",
+        );
+        const recent = {
+          id: `summary:${"b".repeat(64)}` as const,
+          coveredItemIds: ids(16, 23),
+          text: `RECENT ${"r".repeat(1_200)}`,
+          knowledgeFactIds: [ProjectFactId.make("fact:recent")],
+        };
+        const chained = yield* deliver([recent, old]);
+        assert.deepEqual(chained.summarized, ids(16, 23));
+        assert.include(chained.context, "RECENT");
+        assert.deepEqual(
+          [...baseline.represented].filter((id) => !chained.represented.has(id)),
+          [],
+        );
+        assert.isAbove(chained.represented.size, baseline.represented.size);
+        assert.deepEqual(baseline.summaryFactIds, []);
+        assert.deepEqual(withOld.summaryFactIds, []);
+        assert.deepEqual(chained.summaryFactIds, recent.knowledgeFactIds);
+        assert.deepEqual(chained.deliveredFactIds, recent.knowledgeFactIds);
+        for (const delivery of [baseline, withOld, chained])
+          assert.includeMembers([...delivery.verbatim], ids(24, 29), "the six newest messages");
+      }),
   );
 
   it.effect("keeps the newest messages ahead of tool results when a summary needs room", () =>
@@ -1009,6 +1028,7 @@ describe("handoff delivery", () => {
     Effect.gen(function* () {
       let durable = handoff;
       const evidenceRequests: Array<ReadonlyArray<string>> = [];
+      const viewed: Array<ReadonlyArray<string>> = [];
       const injected: Array<ProviderAdapter.ProviderAdapterV2HistoricalContext> = [];
       const input = {
         providerThread,
@@ -1018,6 +1038,10 @@ describe("handoff delivery", () => {
           Effect.sync(() => {
             evidenceRequests.push(candidates.map((candidate) => candidate.itemId));
             return new Map([["item:one", "AS-SENT EXCERPT"]]);
+          }),
+        onDelivered: (selected: ReadonlyArray<OrchestrationV2HistoricalMessage>) =>
+          Effect.sync(() => {
+            viewed.push(selected.map((candidate) => candidate.itemId));
           }),
         inject: (value: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
           Effect.sync(() => {
@@ -1043,6 +1067,7 @@ describe("handoff delivery", () => {
       yield* deliverContextHandoffs({ ...input, handoffs: [durable] });
       assert.lengthOf(injected, 1);
       assert.deepEqual(evidenceRequests, [["item:one", "item:two"]]);
+      assert.deepEqual(viewed, [["item:one", "item:two"]]);
 
       // A native conversation that already holds the message never asks for its evidence.
       const { inject: _inject, ...inline } = input;
@@ -1053,6 +1078,9 @@ describe("handoff delivery", () => {
       });
       assert.notInclude(fresh.context, "AS-SENT EXCERPT");
       assert.deepEqual(evidenceRequests.at(-1), ["item:two"]);
+      assert.lengthOf(viewed, 1);
+      yield* fresh.delivered;
+      assert.deepEqual(viewed.at(-1), ["item:two"]);
 
       const oversized = yield* deliverContextHandoffs({
         ...inline,
@@ -1061,6 +1089,18 @@ describe("handoff delivery", () => {
       });
       assert.notInclude(oversized.context, messages[0]!.text);
       assert.include(oversized.context, "Partial work");
+      assert.lengthOf(viewed, 2);
+      yield* oversized.delivered;
+      assert.deepEqual(viewed.at(-1), ["item:two"]);
+
+      const deferred = yield* deliverContextHandoffs({
+        ...input,
+        handoffs: [handoff],
+        deferInline: true,
+        inject: () => Effect.succeed(false),
+      });
+      yield* deferred.delivered;
+      assert.lengthOf(viewed, 3);
     }),
   );
 

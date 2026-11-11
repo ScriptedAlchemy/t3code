@@ -3,8 +3,10 @@ import {
   type ComposerContextId,
   type ComposerContextRecord,
   type MessageId,
+  type ThreadId,
   type OrchestrationV2HistoricalMessage,
   type ProjectId,
+  type ProjectFactId,
   type ProjectKnowledgeDeliveryItem,
   type ProjectKnowledgeDelivery,
 } from "@t3tools/contracts";
@@ -54,7 +56,10 @@ export const resolveKnowledgeComposer = Effect.fn("ProjectKnowledge.resolveCompo
             projectId: input.projectId,
           });
         }
-        const prepared = yield* knowledge.resolveForTurn(record.knowledge);
+        const prepared = yield* knowledge.resolveForTurn(
+          record.knowledge,
+          ProjectKnowledge.isRecalledMemory(record) ? "recalled" : "attached",
+        );
         resolvedKnowledge.set(record.contextId, prepared.text);
         items.push({
           contextId: record.contextId,
@@ -142,6 +147,8 @@ export const deliveredKnowledgeForHistory = Effect.fn("ProjectKnowledge.delivere
     >,
   >(input: {
     readonly projectId: ProjectId;
+    /** The thread whose agent receives the replay, when it goes to one. */
+    readonly viewer?: ThreadId;
     readonly messages: ReadonlyArray<Message>;
     readonly userItemId: (messageId: MessageId) => string | undefined;
   }) {
@@ -152,9 +159,21 @@ export const deliveredKnowledgeForHistory = Effect.fn("ProjectKnowledge.delivere
           : [],
       ),
     );
-    const evidence = new Map<string, string>();
-    if (candidates.size === 0) return evidence;
+    const textByItem = new Map<string, string>();
+    const factIdsByItem = new Map<string, ReadonlyArray<ProjectFactId>>();
     const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const recordDelivered = Effect.fn("ProjectKnowledge.recordHistoryViews")(
+      (itemIds: ReadonlySet<string>) =>
+        input.viewer === undefined
+          ? Effect.void
+          : knowledge.recordViews(
+              input.projectId,
+              input.viewer,
+              [...itemIds].flatMap((itemId) => factIdsByItem.get(itemId) ?? []),
+            ),
+    );
+    const result = { textByItem, factIdsByItem, recordDelivered };
+    if (candidates.size === 0) return result;
     const rows = yield* knowledge.readSentDeliveries({
       projectId: input.projectId,
       threadIds: [...new Set([...candidates.values()].map((message) => message.threadId))],
@@ -167,11 +186,30 @@ export const deliveredKnowledgeForHistory = Effect.fn("ProjectKnowledge.delivere
       const message = candidates.get(itemId);
       // Forgotten knowledge carries nothing forward, not even an empty wrapper.
       const items = row.items.filter((item) => !item.contentRemoved);
-      if (message === undefined || message.threadId !== row.threadId || row.items.length === 0)
+      if (
+        message === undefined ||
+        message.threadId !== row.threadId ||
+        message.runId !== row.runId ||
+        row.items.length === 0
+      )
         continue;
-      if (items.length === 0) evidence.delete(itemId);
-      else evidence.set(itemId, renderDeliveredKnowledge(items));
+      if (items.length === 0) {
+        textByItem.delete(itemId);
+        factIdsByItem.delete(itemId);
+      } else {
+        textByItem.set(itemId, renderDeliveredKnowledge(items));
+        factIdsByItem.set(
+          itemId,
+          items.flatMap((item) =>
+            item.text === "[Source unavailable: removed or changed.]"
+              ? []
+              : item.context.selections.flatMap((selection) =>
+                  selection.kind === "fact" ? [selection.factId] : [],
+                ),
+          ),
+        );
+      }
     }
-    return evidence;
+    return result;
   },
 );

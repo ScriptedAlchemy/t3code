@@ -293,9 +293,10 @@ function makeLocalCommandHarness(input: {
   readonly initialDeliveries?: ReadonlyArray<ProjectKnowledgeDelivery>;
   readonly recoveryNativeId?: string;
   readonly modelContextWindow?: number;
-  readonly suggestKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["suggest"];
+  readonly recallKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["recall"];
   readonly resolveKnowledge?: ProjectKnowledge.ProjectKnowledge["Service"]["resolveForTurn"];
   readonly readSentDeliveries?: ProjectKnowledge.ProjectKnowledge["Service"]["readSentDeliveries"];
+  readonly recordKnowledgeViews?: ProjectKnowledge.ProjectKnowledge["Service"]["recordViews"];
   readonly nativeGoals?: boolean;
   readonly worktreePath?: string;
   readonly branch?: string;
@@ -830,7 +831,7 @@ function makeLocalCommandHarness(input: {
       strength: "strong" as const,
     },
   };
-  const forkThread = vi.fn((_fork: ProviderAdapter.ProviderAdapterV2ForkThreadInput) =>
+  const forkThread = vi.fn<ProviderAdapter.ProviderAdapterV2SessionRuntime["forkThread"]>(() =>
     Effect.succeed(sideChatThread),
   );
   const sideChatSession = {
@@ -994,9 +995,10 @@ function makeLocalCommandHarness(input: {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectKnowledge.ProjectKnowledge)({
-          ...(input.suggestKnowledge ? { suggest: input.suggestKnowledge } : {}),
+          recall: input.recallKnowledge ?? (() => Effect.succeed(null)),
+          recordViews: input.recordKnowledgeViews ?? (() => Effect.void),
           ...(input.resolveKnowledge ? { resolveForTurn: input.resolveKnowledge } : {}),
-          ...(input.readSentDeliveries ? { readSentDeliveries: input.readSentDeliveries } : {}),
+          readSentDeliveries: input.readSentDeliveries ?? (() => Effect.succeed([])),
           nativeDeliveryEstimate: (target) =>
             input.knowledgeStore
               ? input.knowledgeStore.nativeDeliveryEstimate(target).pipe(Effect.orDie)
@@ -1459,77 +1461,55 @@ effectIt.effect("recovers an abandoned failed turn before continuing its native 
   }),
 );
 
-effectIt.effect.each([
-  "success",
-  "error",
-  "defect",
-  "interrupted",
-  "interrupted-error",
-  "interrupted-defect",
-] as const)(
-  "offers bounded fact references to unattended first turns with lookup outcome %s",
-  (outcome) =>
+effectIt.effect.each(["current", "stale", "stale-before-dispatch"] as const)(
+  "sends recalled project memory with every user turn, and drops it when it cannot resolve: %s",
+  (resolution) =>
     Effect.gen(function* () {
-      const text = "Review SQLite migrations for project memory. ".repeat(100);
+      const text = "Review SQLite migrations for project memory.";
       const projectId = ProjectId.make("project-native-account-command");
-      const suggest = vi.fn<ProjectKnowledge.ProjectKnowledge["Service"]["suggest"]>(() => {
-        if (outcome === "error")
-          return Effect.fail(new ProjectKnowledgeError({ reason: "storage", projectId }));
-        if (outcome === "defect") return Effect.die(new Error("Memory search encoding failed"));
-        if (outcome === "interrupted") return Effect.interrupt;
-        if (outcome === "interrupted-error" || outcome === "interrupted-defect")
-          return Effect.failCause(
-            Cause.combine(
-              Cause.interrupt(),
-              outcome === "interrupted-error"
-                ? Cause.fail(new ProjectKnowledgeError({ reason: "storage", projectId }))
-                : Cause.die(new Error("Memory cleanup failed")),
-            ),
-          );
-        return Effect.succeed([
-          {
-            fact: {
-              id: ProjectFactId.make("fact-migrations"),
-              projectId,
-              status: "saved",
-              kind: "decision",
-              origin: { kind: "user" },
-              content: "Private assertion body",
-              entities: [],
-              tags: [],
-              sources: [{ kind: "user" }],
-              revision: 1,
-              trust: 0.8,
-              retrievalCount: 0,
-              createdAt: "2026-09-04T12:00:00.000Z",
-              updatedAt: "2026-09-04T12:00:00.000Z",
-              forgottenAt: null,
-            },
-            score: {
-              holographic: 1,
-              lexical: 1,
-              tokenOverlap: 1,
-              temporalDecay: 1,
-              reinforcement: 0,
-              trust: 0.8,
-              combined: 1,
-            },
-            reason: "Private match explanation",
-          },
-        ]);
-      });
+      const record = {
+        version: 1 as const,
+        kind: "project-knowledge" as const,
+        contextId: ComposerContextId.make("recall"),
+        label: "Recalled project memory",
+        knowledge: {
+          environmentId: EnvironmentId.make("test"),
+          projectId,
+          selections: [
+            { kind: "fact" as const, factId: ProjectFactId.make("fact-migrations"), revision: 1 },
+          ],
+          maxBytes: 9216,
+        },
+      };
+      const recall = vi.fn<ProjectKnowledge.ProjectKnowledge["Service"]["recall"]>((input) =>
+        Effect.succeed({
+          text: `${input.composer.text}\n\n${formatComposerContextReference(record)}`,
+          records: [...input.composer.records, record],
+        }),
+      );
       for (const [source, ordinal] of [
         ["web", 1],
-        ["mobile", 1],
-        ["mcp", 2],
+        ["mobile", 2],
         ["mcp", 1],
-        ["server", 1],
       ] as const) {
-        suggest.mockClear();
+        recall.mockClear();
+        let resolutions = 0;
         const harness = makeLocalCommandHarness({
           text,
           previousTurn: { runStatus: "completed", turnStatus: "completed" },
-          suggestKnowledge: suggest,
+          recallKnowledge: recall,
+          resolveKnowledge: (context) =>
+            Effect.suspend(() => {
+              resolutions += 1;
+              return resolution === "stale" ||
+                (resolution === "stale-before-dispatch" && resolutions > 1)
+                ? Effect.fail(new ProjectKnowledgeError({ reason: "stale_context", projectId }))
+                : Effect.succeed({
+                    context,
+                    text: "Migrations run in one transaction.",
+                    byteLength: 34,
+                  });
+            }),
         });
         const projection = harness.projection();
         harness.setProjection({
@@ -1539,32 +1519,25 @@ effectIt.effect.each([
           ),
           messages: projection.messages.map((message) => ({ ...message, creationSource: source })),
         });
-        const exit = yield* Effect.exit(harness.start);
-        const unattended = (source === "mcp" || source === "server") && ordinal === 1;
-        if (unattended && outcome.startsWith("interrupted")) {
-          expect(suggest).toHaveBeenCalledOnce();
-          expect(exit._tag).toBe("Failure");
-          if (exit._tag === "Failure") expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true);
-          expect(harness.startRootRun).not.toHaveBeenCalled();
-          expect(harness.nativeStart).not.toHaveBeenCalled();
-          continue;
-        }
-        expect(exit._tag).toBe("Success");
+        yield* harness.start;
         yield* dispatchKnowledge(harness.startRootRun.mock.calls[0]![0]);
+        expect(recall).toHaveBeenCalledOnce();
+        expect(recall.mock.calls[0]?.[0]).toMatchObject({ projectId, query: text });
         const prompt = harness.nativeStart.mock.calls[0]?.[0].message.text;
-        if (unattended) {
-          expect(suggest).toHaveBeenCalledOnce();
-          expect(suggest.mock.calls[0]?.[0]).toMatchObject({ projectId, query: text });
-          if (outcome === "success") {
-            expect(prompt).toContain("fact-migrations");
-            expect(prompt).toContain(text);
-            expect(prompt).not.toContain("Private");
-          } else {
-            expect(prompt).toBe(text);
-          }
+        if (resolution === "current") {
+          expect(prompt).toContain(text);
+          expect(prompt).toContain("Migrations run in one transaction.");
         } else {
-          expect(suggest).not.toHaveBeenCalled();
           expect(prompt).toBe(text);
+        }
+        if (resolution === "stale-before-dispatch") {
+          yield* dispatchKnowledge(harness.startRootRun.mock.calls[0]![0]);
+          expect(harness.nativeStart).toHaveBeenCalledOnce();
+          expect(harness.knowledgeDeliveries.at(-1)).toMatchObject({
+            status: "sent",
+            items: [],
+            omissions: [{ contextId: record.contextId, reason: "recall_failed" }],
+          });
         }
       }
     }),
@@ -1615,25 +1588,158 @@ effectIt.effect.each([
 );
 
 effectIt.effect.each([
-  { nativeForkFrom: "idle", forks: true, transferStatus: "consumed", handoffIds: [] },
+  {
+    nativeForkFrom: "idle",
+    forks: true,
+    transferStatus: "consumed",
+    handoffIds: [],
+    memoryFails: false,
+    forkFails: false,
+    commitFork: true,
+  },
+  {
+    nativeForkFrom: "idle",
+    forks: true,
+    transferStatus: "consumed",
+    handoffIds: [],
+    memoryFails: true,
+    forkFails: false,
+    commitFork: true,
+  },
+  {
+    nativeForkFrom: "idle",
+    forks: true,
+    transferStatus: "pending",
+    handoffIds: [],
+    memoryFails: false,
+    forkFails: true,
+    commitFork: true,
+  },
+  {
+    nativeForkFrom: "idle",
+    forks: true,
+    transferStatus: "pending",
+    handoffIds: [],
+    memoryFails: false,
+    forkFails: false,
+    commitFork: false,
+  },
   {
     nativeForkFrom: "busy",
     forks: false,
     transferStatus: "resolved_portable",
     handoffIds: ["side-chat-fork-context"],
+    memoryFails: false,
+    forkFails: false,
+    commitFork: true,
   },
 ] as const)(
-  "runs a planned native side chat fork when the parent is $nativeForkFrom",
-  ({ nativeForkFrom, forks, transferStatus, handoffIds }) =>
+  "runs a planned native side chat fork when the parent is $nativeForkFrom, memoryFails=$memoryFails, forkFails=$forkFails, commitFork=$commitFork",
+  ({ nativeForkFrom, forks, transferStatus, handoffIds, memoryFails, forkFails, commitFork }) =>
     Effect.gen(function* () {
+      const projectId = ProjectId.make("project-native-account-command");
+      const sourceThreadId = ThreadId.make("side-chat-parent");
+      const factId = ProjectFactId.make("inherited-memory");
+      const viewed = new Set<ProjectFactId>();
+      const context = {
+        environmentId: EnvironmentId.make("test"),
+        projectId,
+        selections: [{ kind: "fact" as const, factId, revision: 1 }],
+        maxBytes: 48000,
+      };
+      const receipt = (
+        id: string,
+        identity: Partial<ProjectKnowledgeDelivery> = {},
+      ): ProjectKnowledgeDelivery => ({
+        projectId,
+        threadId: sourceThreadId,
+        runId: RunId.make("side-chat-parent-run"),
+        attemptId: RunAttemptId.make(`attempt-${id}`),
+        messageId: MessageId.make(`message-${id}`),
+        providerInstanceId: ProviderInstanceId.make("codex-personal"),
+        providerThreadId: ProviderThreadId.make("side-chat-parent-provider-thread"),
+        nativeThreadId: "side-chat-parent-native",
+        status: "sent",
+        items: [
+          {
+            contextId: id,
+            label: "Source memory",
+            context: {
+              ...context,
+              selections: [{ kind: "fact", factId: ProjectFactId.make(id), revision: 1 }],
+            },
+            text: "ORIGINAL source fact",
+          },
+        ],
+        omissions: [],
+        createdAt: "2026-09-04T11:00:00.000Z",
+        updatedAt: "2026-09-04T11:00:00.000Z",
+        ...identity,
+      });
+      const receipts = [
+        receipt(factId),
+        receipt("replaced-conversation", { nativeThreadId: "old-source-native" }),
+        receipt("different-provider-thread", {
+          providerThreadId: ProviderThreadId.make("other-source"),
+        }),
+        receipt("future-memory", { runId: RunId.make("side-chat-parent-rolled-back-run") }),
+      ];
       const harness = makeLocalCommandHarness({
         text: "What is the main thread doing?",
         sideChat: { contextRun: "current", nativeForkFrom },
+        readSentDeliveries: (input) =>
+          memoryFails
+            ? Effect.fail(new ProjectKnowledgeError({ projectId, reason: "storage" }))
+            : Effect.succeed(
+                receipts.filter(
+                  (row) =>
+                    input.threadIds.includes(row.threadId) && input.runIds.includes(row.runId),
+                ),
+              ),
+        recordKnowledgeViews: (_projectId, threadId, factIds) =>
+          Effect.sync(() => {
+            if (threadId !== "thread-native-account-command") return;
+            for (const id of factIds) viewed.add(id);
+          }),
+        recallKnowledge: (input) => {
+          if (viewed.has(factId)) return Effect.succeed(null);
+          const record = {
+            version: 1 as const,
+            kind: "project-knowledge" as const,
+            contextId: ComposerContextId.make("recall"),
+            label: "Recalled project memory",
+            knowledge: context,
+          };
+          return Effect.succeed({
+            text: `${input.composer.text}\n\n${formatComposerContextReference(record)}`,
+            records: [...input.composer.records, record],
+          });
+        },
+        resolveKnowledge: (context) =>
+          Effect.succeed({ context, text: "RECALLED source fact", byteLength: 20 }),
       });
+      if (forkFails)
+        harness.forkThread.mockReturnValue(
+          Effect.fail(
+            new ProviderAdapter.ProviderAdapterForkThreadError({
+              driver: ProviderDriverKind.make("codex"),
+              providerThreadId: ProviderThreadId.make("side-chat-parent-provider-thread"),
+            }),
+          ),
+        );
+      if (!commitFork)
+        harness.writeIfRunCurrent.mockReturnValue(
+          Effect.succeed({ committed: false, storedEvents: [] }),
+        );
 
       yield* harness.start;
 
       expect(harness.forkThread).toHaveBeenCalledTimes(forks ? 1 : 0);
+      if (forkFails || !commitFork) {
+        expect(harness.startTurn).not.toHaveBeenCalled();
+        expect([...viewed]).toEqual([]);
+        return;
+      }
       // The parent's rolled-back turn is gone from its native conversation.
       expect(
         harness.forkThread.mock.calls[0]?.[0].sourceProviderTurns?.map((turn) => turn.id),
@@ -1644,6 +1750,10 @@ effectIt.effect.each([
       expect(harness.startTurn.mock.calls[0]?.[0].message.text.includes("PARENT_HISTORY")).toBe(
         !forks,
       );
+      expect(
+        harness.startTurn.mock.calls[0]?.[0].message.text.includes("RECALLED source fact"),
+      ).toBe(!forks || memoryFails);
+      expect([...viewed]).toEqual(forks && !memoryFails ? [factId] : []);
       expect(harness.projection().providerThreads[0]?.handoffIds).toEqual(handoffIds);
     }),
 );
@@ -2231,11 +2341,11 @@ effectIt.effect.each(["superseded", "stopped", "account failover"] as const)(
     }),
 );
 
-effectIt.effect.each([false, true])(
+effectIt.effect.each([false, true, "with-recall"] as const)(
   "rehydrates selected knowledge at native delivery, stale=%s",
   (stale) =>
     Effect.gen(function* () {
-      let resolved = 0;
+      let dispatching = false;
       const record = {
         version: 1 as const,
         kind: "project-knowledge" as const,
@@ -2251,10 +2361,26 @@ effectIt.effect.each([false, true])(
       const harness = makeLocalCommandHarness({
         text: `Preserve my question. ${formatComposerContextReference(record)}`,
         previousTurn: { runStatus: "completed", turnStatus: "completed" },
+        ...(stale === "with-recall"
+          ? {
+              recallKnowledge: (
+                input: Parameters<ProjectKnowledge.ProjectKnowledge["Service"]["recall"]>[0],
+              ) => {
+                const recalled = {
+                  ...record,
+                  contextId: ComposerContextId.make("recall"),
+                  label: "Recalled project memory",
+                };
+                return Effect.succeed({
+                  text: `${input.composer.text}\n\n${formatComposerContextReference(recalled)}`,
+                  records: [...input.composer.records, recalled],
+                });
+              },
+            }
+          : {}),
         resolveKnowledge: (context) =>
           Effect.suspend(() => {
-            resolved += 1;
-            return stale && resolved > 1
+            return stale && dispatching
               ? Effect.fail(
                   new ProjectKnowledgeError({
                     reason: "stale_context",
@@ -2273,6 +2399,7 @@ effectIt.effect.each([false, true])(
         })),
       });
       yield* harness.start;
+      dispatching = true;
       const start = harness.startRootRun.mock.calls[0]![0];
       const result = yield* start.session
         .startTurn({
@@ -2289,7 +2416,6 @@ effectIt.effect.each([false, true])(
           runtimePolicy: start.runtimePolicy,
         })
         .pipe(Effect.result);
-      expect(resolved).toBe(2);
       if (stale) {
         expect(result._tag).toBe("Failure");
         expect(harness.nativeStart).not.toHaveBeenCalled();
@@ -2767,20 +2893,55 @@ effectIt.effect("records a delivery receipt when every attached knowledge record
   }),
 );
 
-effectIt.effect(
-  "replays the knowledge an earlier message was sent with into a provider handoff once",
-  () =>
+effectIt.effect.each(["none", "overlap", "mixed"] as const)(
+  "replays earlier knowledge once without recalling it again in the same turn: %s",
+  (recallMode) =>
     Effect.gen(function* () {
       const projectId = ProjectId.make("project-native-account-command");
       const sourceRunId = RunId.make("run-knowledge-source");
       const sourceMessageId = MessageId.make("message-knowledge-source");
       const requestedRuns: Array<ReadonlyArray<RunId>> = [];
+      let recalled = false;
       const harness = makeLocalCommandHarness({
         text: "Continue on the new provider",
         previousTurn: { runStatus: "completed", turnStatus: "completed" },
+        recallKnowledge: (input) => {
+          if (recallMode === "none" || recalled) return Effect.succeed(null);
+          recalled = true;
+          const record = {
+            version: 1 as const,
+            kind: "project-knowledge" as const,
+            contextId: ComposerContextId.make("recall"),
+            label: "Recalled project memory",
+            knowledge: {
+              environmentId: EnvironmentId.make("test"),
+              projectId,
+              selections: (recallMode === "mixed" ? ["fact", "unseen"] : ["fact"]).map(
+                (factId) => ({
+                  kind: "fact" as const,
+                  factId: ProjectFactId.make(factId),
+                  revision: 1,
+                }),
+              ),
+              maxBytes: 48000,
+            },
+          };
+          return Effect.succeed({
+            text: `${input.composer.text}\n\n${formatComposerContextReference(record)}`,
+            records: [...input.composer.records, record],
+          });
+        },
         // The fact was edited after the earlier message was sent; the handoff must not re-hydrate.
-        resolveKnowledge: (context) =>
-          Effect.succeed({ context, text: "EDITED fact text", byteLength: 16 }),
+        resolveKnowledge: (context) => {
+          const text = context.selections
+            .map((selection) =>
+              selection.kind === "fact" && selection.factId === "unseen"
+                ? "UNSEEN fact text"
+                : "EDITED fact text",
+            )
+            .join("\n");
+          return Effect.succeed({ context, text, byteLength: Buffer.byteLength(text) });
+        },
         readSentDeliveries: (input) =>
           Effect.sync(() => {
             requestedRuns.push(input.runIds);
@@ -2887,6 +3048,7 @@ effectIt.effect(
       expect(sent).toContain('<t3_delivered_knowledge label="Deploy rule">');
       expect(sent).toContain("reproduced as sent");
       expect(sent).not.toContain("EDITED fact text");
+      expect(sent.includes("UNSEEN fact text")).toBe(recallMode === "mixed");
       expect(sent.indexOf("Follow the deploy rule")).toBeLessThan(sent.indexOf("ORIGINAL"));
       expect(harness.projection().contextHandoffs[0]?.delivery?.status).toBe("inline");
       // The persisted handoff keeps the message as authored; the excerpt lives in its delivery record.

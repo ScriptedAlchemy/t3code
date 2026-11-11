@@ -3,8 +3,12 @@ import {
   boundProjectMemorySuggestionQuery,
   isSubstantiveProjectMemoryQuery,
   selectProjectMemorySuggestions,
-  type ProjectMemorySuggestion,
   type AssistedLearningRun,
+  type CommandId,
+  ComposerContextId,
+  type ComposerContextRecord,
+  type ProjectKnowledgeContextRecord,
+  type ThreadId,
   type KnowledgeConflictHint,
   type KnowledgeFactSource,
   KnowledgeOrigin,
@@ -44,6 +48,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
@@ -63,11 +68,45 @@ import { projectMemorySearchTokens } from "./holographicScoring.ts";
 import { conflictHints } from "./knowledgeConflicts.ts";
 import { DeliveryScrubRunner } from "./deliveryScrubSchedule.ts";
 
+type RecallComposer = {
+  readonly text: string;
+  readonly records: ReadonlyArray<ComposerContextRecord>;
+};
+const RECALL_CONTEXT_ID = ComposerContextId.make("recall");
+/** Recall sends memory in a shorter form than knowledge someone attached by hand. */
+export const isRecalledMemory = (record: { readonly contextId: string }) =>
+  record.contextId === RECALL_CONTEXT_ID;
+// Recall runs before every eligible turn, so it gives up on a slow store instead of waiting.
+const RECALL_TIMEOUT = "150 millis";
+// The most bytes recall adds to a turn. The envelope reserve covers the wrapper around the
+// facts, so the delivery's own budget check cannot refuse what recall accepted.
+const RECALL_MAX_BYTES = 4096;
+const RECALL_ENVELOPE_BYTES = 1024;
+const RECALL_MIN_BYTES = 512;
+// Recall cuts a longer fact at this length. The agent reads the rest by the id in its header.
+const RECALL_FACT_MAX_CHARS = 800;
+type KnowledgeFormat = "attached" | "recalled";
+// The rating instruction is in the recalled block, so a turn with no recall spends no tokens
+// on it.
+const recalledPreamble = (projectId: ProjectId) =>
+  `Saved facts from project ${projectId}, for reference. Rate any you rely on with t3_knowledge_mutate feedback: helpful, or unhelpful if it misled you.`;
+
+/** Whether a thread's own messages or agent produced this fact, so its agent already has it. */
+const cameFromThread = (fact: Pick<ProjectFact, "origin" | "sources">, threadId: ThreadId) =>
+  ((fact.origin.kind === "agent-thread" || fact.origin.kind === "assisted") &&
+    fact.origin.threadId === threadId) ||
+  fact.sources.some((source) => source.kind === "message" && source.threadId === threadId);
+
 export class ProjectKnowledge extends Context.Service<
   ProjectKnowledge,
   {
+    /**
+     * list, readFact and search take the thread whose agent is reading. The service records the
+     * facts it returns, so recall does not send that thread a fact its agent has already seen.
+     */
     readonly list: (
       input: ProjectKnowledgeListInput,
+      viewer?: ThreadId,
     ) => Effect.Effect<ProjectKnowledgeListResult, ProjectKnowledgeError>;
     readonly mutate: (
       input: ProjectKnowledgeMutation,
@@ -80,6 +119,7 @@ export class ProjectKnowledge extends Context.Service<
     ) => Effect.Effect<ProjectKnowledgeMutationResult, ProjectKnowledgeError>;
     readonly readFact: (
       input: ProjectKnowledgeReadFactInput,
+      viewer?: ThreadId,
     ) => Effect.Effect<ProjectKnowledgeFactDetail, ProjectKnowledgeError>;
     readonly status: (
       input: ProjectKnowledgeStatusInput,
@@ -98,15 +138,28 @@ export class ProjectKnowledge extends Context.Service<
     }) => Effect.Effect<ReadonlyArray<ProjectKnowledgeSource>, ProjectKnowledgeError>;
     readonly search: (
       input: ProjectKnowledgeSearchInput,
+      viewer?: ThreadId,
     ) => Effect.Effect<ProjectKnowledgeSearchResult, ProjectKnowledgeError>;
-    readonly suggest: (
-      input: Pick<ProjectKnowledgeSearchInput, "projectId" | "query" | "requestId">,
-    ) => Effect.Effect<ReadonlyArray<ProjectMemorySuggestion>, ProjectKnowledgeError>;
+    /**
+     * Finds saved facts related to a user message that the thread's agent has not seen yet, and
+     * attaches them as a knowledge record for the turn's delivery to send. Returns null when
+     * nothing fits, when the lookup fails or is slow, or when the user attached knowledge by hand.
+     */
+    readonly recall: (input: {
+      readonly projectId: ProjectId;
+      readonly threadId: ThreadId;
+      readonly requestId: CommandId;
+      readonly query: string;
+      readonly composer: RecallComposer;
+      /** The turn's remaining knowledge budget, in bytes. */
+      readonly knowledgeAllowance: number;
+    }) => Effect.Effect<RecallComposer | null>;
     readonly prepareContext: (
       input: ProjectKnowledgeContext,
     ) => Effect.Effect<ProjectKnowledgePreparedContext, ProjectKnowledgeError>;
     readonly resolveForTurn: (
       input: ProjectKnowledgeContext,
+      format?: KnowledgeFormat,
     ) => Effect.Effect<ProjectKnowledgePreparedContext, ProjectKnowledgeError>;
     readonly recordDelivery: (
       delivery: ProjectKnowledgeDelivery,
@@ -148,7 +201,12 @@ export class ProjectKnowledge extends Context.Service<
       projectId: ProjectId,
       run: AssistedLearningRun,
     ) => Effect.Effect<void, ProjectKnowledgeError>;
-    /** Sent records only, for replaying earlier messages into a fresh provider conversation. */
+    readonly recordViews: (
+      projectId: ProjectId,
+      viewer: ThreadId,
+      factIds: ReadonlyArray<ProjectFactId>,
+    ) => Effect.Effect<void, ProjectKnowledgeError>;
+    /** Sent records only; preparing a replay does not mean its evidence reached the agent. */
     readonly readSentDeliveries: (input: {
       readonly projectId: ProjectId;
       readonly threadIds: ReadonlyArray<ProjectKnowledgeDelivery["threadId"]>;
@@ -401,8 +459,16 @@ const make = Effect.gen(function* () {
     }
     return [...reasons].map(([factId, reason]) => ({ factId, reason }));
   });
+  const recordViews = Effect.fn("ProjectKnowledge.recordViews")(
+    (projectId: ProjectId, viewer: ThreadId | undefined, factIds: ReadonlyArray<ProjectFactId>) =>
+      viewer === undefined
+        ? Effect.void
+        : store
+            .recordViews(projectId, viewer, factIds)
+            .pipe(Effect.mapError(storageError(projectId))),
+  );
   const list: ProjectKnowledge["Service"]["list"] = Effect.fn("ProjectKnowledge.list")(
-    function* (input) {
+    function* (input, viewer) {
       yield* requireProject(input.projectId);
       const limit = input.limit ?? 50;
       const status = input.status ?? "saved";
@@ -429,6 +495,11 @@ const make = Effect.gen(function* () {
         )
         .pipe(Effect.mapError(storageError(input.projectId)));
       const facts = rows.slice(0, limit);
+      yield* recordViews(
+        input.projectId,
+        viewer,
+        facts.map((fact) => fact.id),
+      );
       return {
         facts,
         nextCursor: rows.length > limit ? (facts.at(-1)?.id ?? null) : null,
@@ -704,7 +775,7 @@ const make = Effect.gen(function* () {
   const resolveForTurn: ProjectKnowledge["Service"]["resolveForTurn"] = Effect.fn(
     "ProjectKnowledge.resolveForTurn",
   )(
-    function* (input) {
+    function* (input, format: KnowledgeFormat = "attached") {
       if (input.environmentId !== (yield* environment.getEnvironmentId))
         return yield* new ProjectKnowledgeError({
           reason: "wrong_environment",
@@ -746,6 +817,25 @@ const make = Effect.gen(function* () {
               factId: selection.factId,
             });
           }
+          if (format === "recalled") {
+            // The header has what the agent needs to use, rate or read the fact. It omits
+            // citations, which t3_knowledge_read_fact returns.
+            const cut = [...fact.content].length > RECALL_FACT_MAX_CHARS;
+            const content = cut
+              ? `${[...fact.content].slice(0, RECALL_FACT_MAX_CHARS).join("").trimEnd()}… (shortened; t3_knowledge_read_fact has the rest)`
+              : fact.content;
+            const origin =
+              fact.origin.kind === "user"
+                ? "user"
+                : fact.origin.kind === "assisted"
+                  ? "extracted"
+                  : fact.origin.kind === "unknown"
+                    ? fact.origin.originKind
+                    : "agent";
+            items.push({ label: `Fact ${fact.id.slice(0, 8)}`, text: content });
+            parts.push(`[fact ${fact.id} rev ${fact.revision}, from ${origin}] ${content}`);
+            continue;
+          }
           const citations = fact.sources
             .flatMap((source) => (source.kind === "message" ? [source] : []))
             .map(
@@ -768,7 +858,10 @@ const make = Effect.gen(function* () {
           );
         }
       }
-      const text = `Selected project knowledge (quoted source material):\n\n${parts.join("\n\n")}`;
+      const text =
+        format === "recalled"
+          ? `${recalledPreamble(input.projectId)}\n${parts.join("\n")}`
+          : `Selected project knowledge (quoted source material):\n\n${parts.join("\n\n")}`;
       const byteLength = Buffer.byteLength(text, "utf8");
       if (byteLength > input.maxBytes)
         return yield* new ProjectKnowledgeError({
@@ -805,8 +898,12 @@ const make = Effect.gen(function* () {
       ...(resolved.items ? { items: resolved.items } : {}),
     };
   });
-  const search: ProjectKnowledge["Service"]["search"] = Effect.fn("ProjectKnowledge.search")(
-    function* (request) {
+  const searchFacts = Effect.fn("ProjectKnowledge.search")(
+    // A preview keeps its best two matches. skip removes facts before that choice.
+    function* (
+      request: ProjectKnowledgeSearchInput,
+      skip?: (fact: ProjectFact) => boolean,
+    ): Effect.fn.Return<ProjectKnowledgeSearchResult, ProjectKnowledgeError> {
       const {
         factCursor: _previewFactCursor,
         cursor: _previewMessageCursor,
@@ -913,6 +1010,7 @@ const make = Effect.gen(function* () {
           (fact): fact is typeof ActiveProjectFact.Type =>
             fact.status !== "forgotten" &&
             fact.content !== null &&
+            skip?.(fact) !== true &&
             (entities.length === 0 ||
               (input.entityMatch === "all"
                 ? entities.every((entity) =>
@@ -1031,7 +1129,9 @@ const make = Effect.gen(function* () {
           const candidates = batch.flatMap((position) => {
             const match = ranked.matches[position]!;
             const fact = current.get(match.factId);
-            return recallable(fact, match.revision) ? [{ fact, score: match.score, position }] : [];
+            return recallable(fact, match.revision) && skip?.(fact) !== true
+              ? [{ fact, score: match.score, position }]
+              : [];
           });
           const lost = new Set(
             (yield* unavailableSources(
@@ -1151,6 +1251,16 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(storageError(input.projectId)));
     },
   );
+  const search: ProjectKnowledge["Service"]["search"] = (input, viewer) =>
+    searchFacts(input).pipe(
+      Effect.tap((result) =>
+        recordViews(
+          input.projectId,
+          viewer,
+          result.facts.state === "available" ? result.facts.matches.map(({ fact }) => fact.id) : [],
+        ),
+      ),
+    );
   const recordDelivery: ProjectKnowledge["Service"]["recordDelivery"] = Effect.fn(
     "ProjectKnowledge.recordDelivery",
   )(function* (delivery) {
@@ -1159,19 +1269,79 @@ const make = Effect.gen(function* () {
     );
     yield* store.recordDelivery(checked).pipe(Effect.mapError(storageError(delivery.projectId)));
   });
-  const suggest: ProjectKnowledge["Service"]["suggest"] = Effect.fn("ProjectKnowledge.suggest")(
+  const recall: ProjectKnowledge["Service"]["recall"] = Effect.fn("ProjectKnowledge.recall")(
     function* (input) {
-      if (!isSubstantiveProjectMemoryQuery(input.query)) return [];
-      const result = yield* search({
-        ...input,
-        query: boundProjectMemorySuggestionQuery(input.query),
-        recordRetrieval: false,
-        preview: true,
-        minTrust: 0.5,
-        limit: 8,
-        messageLimit: 1,
+      if (
+        input.composer.records.some((record) => record.kind === "project-knowledge") ||
+        input.query.trimStart().startsWith("/") ||
+        !isSubstantiveProjectMemoryQuery(input.query)
+      )
+        return null;
+      const factBytes = Math.min(
+        RECALL_MAX_BYTES,
+        Math.floor(input.knowledgeAllowance) - RECALL_ENVELOPE_BYTES,
+      );
+      if (factBytes < RECALL_MIN_BYTES) return null;
+      const lookup = Effect.gen(function* () {
+        const seen = yield* store
+          .seenFactIds(input.projectId, input.threadId)
+          .pipe(Effect.mapError(storageError(input.projectId)));
+        const result = yield* searchFacts(
+          {
+            projectId: input.projectId,
+            requestId: input.requestId,
+            query: input.query,
+            recordRetrieval: false,
+            preview: true,
+            minTrust: 0.5,
+          },
+          (fact) => seen.has(fact.id) || cameFromThread(fact, input.threadId),
+        );
+        if (result.facts.state !== "available") return null;
+        const selections = result.facts.matches.map(({ fact }) => ({
+          kind: "fact" as const,
+          factId: fact.id,
+          revision: fact.revision,
+        }));
+        const environmentId = yield* environment.getEnvironmentId;
+        // Drop the weakest match until the rest resolve within the turn's knowledge budget.
+        for (let count = selections.length; count > 0; count--) {
+          const record: ProjectKnowledgeContextRecord = {
+            version: 1,
+            kind: "project-knowledge",
+            contextId: RECALL_CONTEXT_ID,
+            label: "Recalled project memory",
+            knowledge: {
+              environmentId,
+              projectId: input.projectId,
+              selections: selections.slice(0, count),
+              maxBytes: factBytes + RECALL_ENVELOPE_BYTES,
+            },
+          };
+          const resolved = yield* resolveForTurn(
+            { ...record.knowledge, maxBytes: factBytes },
+            "recalled",
+          ).pipe(Effect.option);
+          if (Option.isSome(resolved))
+            return {
+              text: `${input.composer.text}\n\n${formatComposerContextReference(record)}`,
+              records: [...input.composer.records, record],
+            };
+        }
+        return null;
       });
-      return selectProjectMemorySuggestions(result, input.query);
+      return yield* lookup.pipe(
+        Effect.timeoutOption(RECALL_TIMEOUT),
+        Effect.map(Option.getOrNull),
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.logWarning("Project memory recall failed", {
+                projectId: input.projectId,
+                threadId: input.threadId,
+              }).pipe(Effect.as(null)),
+        ),
+      );
     },
   );
 
@@ -1464,12 +1634,17 @@ const make = Effect.gen(function* () {
     const hints: ReadonlyArray<KnowledgeConflictHint> = yield* hintsFor(fact).pipe(
       Effect.mapError(storageError(input.projectId)),
     );
+    yield* recordViews(
+      input.projectId,
+      actor.kind === "agent-thread" ? actor.threadId : undefined,
+      hints.map((hint) => hint.factId),
+    );
     return { ...fact, hints };
   });
   const readFact: ProjectKnowledge["Service"]["readFact"] = Effect.fn("ProjectKnowledge.readFact")(
-    function* (input) {
+    function* (input, viewer) {
       yield* requireProject(input.projectId);
-      return yield* Effect.gen(function* () {
+      const detail = yield* Effect.gen(function* () {
         const fact = yield* store.find(input.projectId, input.factId);
         if (fact === null)
           return yield* new ProjectKnowledgeError({
@@ -1512,6 +1687,12 @@ const make = Effect.gen(function* () {
           hints: yield* hintsFor(fact),
         };
       }).pipe(Effect.mapError(storageError(input.projectId)));
+      // The detail quotes the facts it resembles, so the reader has seen those too.
+      yield* recordViews(input.projectId, viewer, [
+        input.factId,
+        ...detail.hints.map((hint) => hint.factId),
+      ]);
+      return detail;
     },
   );
   const status: ProjectKnowledge["Service"]["status"] = Effect.fn("ProjectKnowledge.status")(
@@ -1563,7 +1744,7 @@ const make = Effect.gen(function* () {
     readSource,
     readSources,
     search,
-    suggest,
+    recall,
     prepareContext,
     resolveForTurn,
     recordDelivery,
@@ -1572,6 +1753,7 @@ const make = Effect.gen(function* () {
     nativeDeliveryEstimate,
     markDeliveryUncertain,
     readSentDeliveries,
+    recordViews,
     scrubDeliveryPage,
     saveAutomatic,
     hasAssistedRun,

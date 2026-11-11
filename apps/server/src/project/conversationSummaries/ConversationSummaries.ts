@@ -1298,7 +1298,7 @@ const make = Effect.gen(function* () {
                 ),
                 userItemId: (messageId) => itemByMessage.get(messageId)?.itemId,
               }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge))
-            : new Map<string, string>();
+            : undefined;
           const nodes = group.nodes.flatMap((node) => summaries.get(node.row.id) ?? []);
           if (nodes.length !== group.nodes.length) continue;
           offered.push({
@@ -1307,13 +1307,22 @@ const make = Effect.gen(function* () {
             text: [
               ...nodes.map(renderForHandoff),
               ...sourceItems.flatMap((item) => {
-                const attached = evidence.get(item.itemId);
+                const attached = evidence?.textByItem.get(item.itemId);
                 return attached === undefined
                   ? []
                   : [`[Summary source item=${item.itemId}]\n${attached}`];
               }),
             ].join("\n\n"),
             coveredItemIds: sourceItems.map((item) => item.itemId),
+            ...(evidence === undefined
+              ? {}
+              : {
+                  knowledgeFactIds: [
+                    ...new Set(
+                      sourceItems.flatMap((item) => evidence.factIdsByItem.get(item.itemId) ?? []),
+                    ),
+                  ],
+                }),
           });
           if (offered.length >= HANDOFF_CANDIDATE_LIMIT) break;
         }

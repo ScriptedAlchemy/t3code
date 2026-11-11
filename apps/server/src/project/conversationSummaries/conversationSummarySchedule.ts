@@ -3,6 +3,7 @@ import {
   type ConversationSummaryId,
   type OrchestrationV2ContextHandoff,
   type ProjectId,
+  type ProjectFactId,
   type RunId,
   type ServerSettings,
   type ThreadId,
@@ -62,6 +63,8 @@ export interface HandoffSummary {
   /** Labelled as a generated summary, with the ids needed to expand its sources. */
   readonly text: string;
   readonly coveredItemIds: ReadonlyArray<TurnItemId>;
+  /** Facts whose as-sent excerpts accompany this summary, not facts inferred from its prose. */
+  readonly knowledgeFactIds?: ReadonlyArray<ProjectFactId>;
 }
 
 export interface ConversationSummaryRuntimeShape {

@@ -1620,6 +1620,7 @@ it.effect("rolls up summaries written before migration 094 in conversation order
     const digest = yield* sha256(longText);
     // Before 094 the column held only the first source's time, which four leaves of one long
     // message share.
+    yield* sql`DROP TABLE project_knowledge_views`;
     yield* sql`ALTER TABLE conversation_summaries RENAME COLUMN position TO first_source_at`;
     yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= 94`;
     for (let index = 0; index < 4; index++) {
@@ -2031,7 +2032,10 @@ it.effect.each([0, 2])(
               projectId,
               messages,
               userItemId: (id) => itemIds.get(id),
-            }).pipe(Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge)),
+            }).pipe(
+              Effect.map((history) => history.textByItem),
+              Effect.provideService(ProjectKnowledge.ProjectKnowledge, knowledge),
+            ),
           persist: (next) =>
             Effect.sync(() => {
               durable = next;
@@ -2040,6 +2044,7 @@ it.effect.each([0, 2])(
 
       const delivery = yield* deliver(durable);
       yield* delivery.delivered;
+      assert.deepEqual(delivery.summaryFactIds, [fact.id]);
       assert.include(delivery.context, `[Conversation summary ${summary.id}`);
       assert.include(delivery.context, "It is a summary, not the original evidence.");
       assert.include(delivery.context, "t3_conversation_summary_expand");
@@ -2064,6 +2069,7 @@ it.effect.each([0, 2])(
       // The settled delivery is not delivered again, and no summary is read for it.
       const retry = yield* deliver(durable);
       assert.equal(retry.context, "");
+      assert.deepEqual(retry.summaryFactIds, []);
       assert.equal(summaryReads, 1);
 
       yield* knowledge.mutate(
@@ -2080,6 +2086,7 @@ it.effect.each([0, 2])(
       assert.include(afterForget.context, `[Conversation summary ${summary.id}`);
       assert.notInclude(afterForget.context, fact.content!);
       assert.notInclude(afterForget.context, "t3_delivered_knowledge");
+      assert.deepEqual(afterForget.summaryFactIds, []);
     }).pipe(Effect.provide(makeLayer(model.generate, optedIn)));
   },
 );
