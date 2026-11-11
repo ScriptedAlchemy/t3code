@@ -10,6 +10,9 @@ import assetLinks from "../web/public/.well-known/assetlinks.json";
 vi.mock("../../scripts/lib/public-config.ts", () => ({
   loadRepoEnv: () => ({
     APP_VARIANT: process.env.APP_VARIANT,
+    T3CODE_IOS_TEAM_ID: process.env.T3CODE_IOS_TEAM_ID,
+    T3CODE_IOS_PERSONAL_TEAM: process.env.T3CODE_IOS_PERSONAL_TEAM,
+    T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID: process.env.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID,
     T3CODE_MOBILE_UPDATES_ENABLED: process.env.T3CODE_MOBILE_UPDATES_ENABLED,
     T3CODE_MOBILE_EAS_PROJECT_ID: process.env.T3CODE_MOBILE_EAS_PROJECT_ID,
     T3CODE_MOBILE_EAS_OWNER: process.env.T3CODE_MOBILE_EAS_OWNER,
@@ -27,6 +30,9 @@ async function loadConfig(
   vi.resetModules();
   vi.stubEnv("APP_VARIANT", variant);
   for (const name of [
+    "T3CODE_IOS_TEAM_ID",
+    "T3CODE_IOS_PERSONAL_TEAM",
+    "T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID",
     "T3CODE_MOBILE_UPDATES_ENABLED",
     "T3CODE_MOBILE_EAS_PROJECT_ID",
     "T3CODE_MOBILE_EAS_OWNER",
@@ -131,3 +137,21 @@ async function nativeUpdatesConfig(config: Awaited<ReturnType<typeof loadConfig>
   );
   return { ios, android };
 }
+
+it("preserves the installed fork identity for direct iPhone updates", async () => {
+  const config = await loadConfig("preview", {
+    T3CODE_IOS_TEAM_ID: "EXAMPLE123",
+    T3CODE_IOS_PERSONAL_TEAM: "1",
+    T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID: "com.example.t3code",
+  });
+  expect(config.ios?.appleTeamId).toBe("EXAMPLE123");
+  expect(config.ios?.bundleIdentifier).toBe("com.example.t3code");
+  expect(config.ios?.entitlements?.["keychain-access-groups"]).toEqual([
+    "$(AppIdentifierPrefix)com.t3tools.t3code.preview",
+  ]);
+  expect(config.extra?.iosPersonalTeamBuild).toBe(true);
+  expect(config.plugins).toContainEqual([
+    "expo-notifications",
+    expect.objectContaining({ mode: "development" }),
+  ]);
+});
