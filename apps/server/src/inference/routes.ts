@@ -182,9 +182,7 @@ const harnesses: Record<
 };
 
 export function modelsForDriver(data: readonly ProxyModel[], driver: InferenceDriver) {
-  return data
-    .filter((model) => !/^(codex|claude)-pool-/.test(model.id) && harnesses[driver].serves(model))
-    .map((model) => model.id);
+  return data.filter((model) => harnesses[driver].serves(model)).map((model) => model.id);
 }
 
 export function routeProvider(driver: InferenceDriver, label: string | null, route: Route) {

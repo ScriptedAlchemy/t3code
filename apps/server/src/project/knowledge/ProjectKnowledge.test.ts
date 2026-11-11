@@ -73,7 +73,7 @@ const knowledgeTestLayer = (
         ProjectionStore.layer,
         noTranscriptSearch
           ? Layer.mock(ThreadSearch.ThreadSearch)({
-              search: () => Effect.die("Passive previews must not search transcripts"),
+              search: () => Effect.die("Automatic recall must not search transcripts"),
             })
           : ThreadSearch.layer,
         ProjectionReplay.layer.pipe(
@@ -900,6 +900,7 @@ it.effect(
       assert.deepEqual([...evidence.textByItem.keys()], ["item:sent"]);
       assert.include(evidence.textByItem.get("item:sent"), "Cache keys include tenant IDs.");
       assert.notInclude(evidence.textByItem.get("item:sent"), "region IDs");
+      assert.deepEqual([...evidence.factIdsByItem], [["item:sent", [fact.id]]]);
 
       yield* knowledge.mutate(
         {
@@ -933,7 +934,9 @@ it.effect(
         [],
       );
       // A handoff after the forget carries nothing for it.
-      assert.deepEqual([...(yield* handoff).textByItem.keys()], []);
+      const afterForget = yield* handoff;
+      assert.deepEqual([...afterForget.textByItem.keys()], []);
+      assert.deepEqual([...afterForget.factIdsByItem], []);
       const otherProjectId = ProjectId.make("other-delivery-project");
       yield* createProject(otherProjectId);
       assert.deepEqual(
@@ -1033,7 +1036,6 @@ it.effect("keeps each steering message's receipt and forgets only its own eviden
 
     const evidence = yield* deliveredKnowledgeForHistory({
       projectId,
-      viewer: ThreadId.make("steering-replay"),
       messages: [original, followup].map((receipt) => ({
         itemId: TurnItemId.make(`item:${receipt.messageId}`),
         role: "user" as const,
@@ -1047,7 +1049,11 @@ it.effect("keeps each steering message's receipt and forgets only its own eviden
       userItemId: (id) => `item:${id}`,
     });
     assert.equal(evidence.textByItem.size, 2);
-    yield* evidence.recordDelivered(new Set([`item:${original.messageId}`]));
+    yield* knowledge.recordViews(
+      projectId,
+      ThreadId.make("steering-replay"),
+      evidence.factIdsByItem.get(`item:${original.messageId}`) ?? [],
+    );
     const sql = yield* SqlClient.SqlClient;
     const viewed = yield* sql<{ readonly fact_id: string }>`
       SELECT fact_id FROM project_knowledge_views
@@ -1653,6 +1659,7 @@ it.effect.each(["rolled", "edited", "deleted", "project-deleted", "archive"] as 
           "Cache keys include tenant IDs.",
         );
         assert.include(replay.textByItem.get("removed-source-replay"), "Source unavailable");
+        assert.deepEqual(replay.factIdsByItem.get("removed-source-replay"), []);
       }
       const uncited = yield* deliveredFact("project-deleted");
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -2046,7 +2053,6 @@ it.effect("does not recall a fact the thread's agent has already been shown", ()
     });
     const inherited = yield* deliveredKnowledgeForHistory({
       projectId,
-      viewer: ThreadId.make("fork"),
       messages: [
         {
           itemId: TurnItemId.make("item:parent"),
@@ -2058,17 +2064,23 @@ it.effect("does not recall a fact the thread's agent has already been shown", ()
       userItemId: () => "item:parent",
     });
     assert.isNotEmpty(yield* recalledIn("fork", "before-replay"));
-    yield* inherited.recordDelivered(new Set(["item:omitted"]));
+    yield* knowledge.recordViews(
+      projectId,
+      ThreadId.make("fork"),
+      inherited.factIdsByItem.get("item:omitted") ?? [],
+    );
     assert.isNotEmpty(yield* recalledIn("fork", "omitted-replay"));
-    yield* inherited.recordDelivered(new Set(["item:parent"]));
-    yield* readAllBut(
-      "fork",
+    const inheritedFactIds = inherited.factIdsByItem.get("item:parent") ?? [];
+    assert.sameMembers(
+      inheritedFactIds,
       parentDelivery.items.flatMap((item) =>
         item.context.selections.flatMap((selection) =>
           selection.kind === "fact" ? [selection.factId] : [],
         ),
       ),
     );
+    yield* knowledge.recordViews(projectId, ThreadId.make("fork"), inheritedFactIds);
+    yield* readAllBut("fork", inheritedFactIds);
     assert.deepEqual(yield* recalledIn("fork"), []);
 
     // A fact that cites a thread's own message is recalled only in other threads, and without
@@ -3096,48 +3108,54 @@ it.effect("automatic corroboration appends validated sources without rewriting c
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("passive previews return only two relevant facts and never search transcripts", () =>
-  Effect.gen(function* () {
-    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
-    const projectId = ProjectId.make("compact-preview");
-    yield* createProject(projectId);
-    const empty = yield* knowledge.search({
-      projectId,
-      requestId: CommandId.make("preview-empty"),
-      query: "cache keys tenant",
-      preview: true,
-    });
-    assert.deepEqual(empty.messages.matches, []);
-    assert.equal(empty.facts.state === "available" ? empty.facts.matches.length : -1, 0);
-    for (const id of ["first", "second", "third"])
-      yield* knowledge.mutate(createFact(projectId, id), { kind: "user" });
-    yield* knowledge.mutate(
-      {
-        ...createFact(projectId, "unrelated"),
-        content: "Use readable garden labels.",
-        entities: [],
-        tags: [],
-      },
-      { kind: "user" },
-    );
-    const result = yield* knowledge.search({
-      projectId,
-      requestId: CommandId.make("preview-compact"),
-      query: "cache keys tenant",
-      preview: true,
-      limit: 50,
-    });
-    assert.deepEqual(result.messages.matches, []);
-    assert.equal(result.facts.state, "available");
-    if (result.facts.state !== "available") return;
-    assert.equal(result.facts.matches.length, 2);
-    assert.equal(result.facts.nextCursor, null);
-    assert.isFalse(result.facts.matches.some((item) => item.fact.id === "unrelated"));
-    const sql = yield* SqlClient.SqlClient;
-    assert.equal(
-      (yield* sql`SELECT command_id FROM project_knowledge_commands WHERE search_json IS NOT NULL`)
-        .length,
-      0,
-    );
-  }).pipe(Effect.provide(knowledgeTestLayer(HolographicMemory.layer, true))),
+it.effect(
+  "recall selects two related facts without searching transcripts or recording retrieval",
+  () =>
+    Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projectId = ProjectId.make("bounded-recall");
+      const query = "cache keys tenant";
+      yield* createProject(projectId);
+      const recall = (requestId: string) =>
+        knowledge.recall({
+          projectId,
+          threadId: ThreadId.make("recall-thread"),
+          requestId: CommandId.make(requestId),
+          query,
+          composer: { text: query, records: [] },
+          knowledgeAllowance: 48000,
+        });
+      assert.isNull(yield* recall("recall-empty"));
+      for (const id of ["first", "second", "third"])
+        yield* knowledge.mutate(createFact(projectId, id), { kind: "user" });
+      yield* knowledge.mutate(
+        {
+          ...createFact(projectId, "unrelated"),
+          content: "Use readable garden labels.",
+          entities: [],
+          tags: [],
+        },
+        { kind: "user" },
+      );
+      const result = yield* recall("recall-related");
+      const record = result?.records[0];
+      assert.equal(record?.kind, "project-knowledge");
+      if (record?.kind !== "project-knowledge" || !("knowledge" in record)) return;
+      assert.equal(record.knowledge.selections.length, 2);
+      assert.isFalse(
+        record.knowledge.selections.some(
+          (selection) => selection.kind === "fact" && selection.factId === "unrelated",
+        ),
+      );
+      const sql = yield* SqlClient.SqlClient;
+      assert.equal(
+        (yield* sql`SELECT command_id FROM project_knowledge_commands WHERE search_json IS NOT NULL`)
+          .length,
+        0,
+      );
+      assert.deepEqual(
+        yield* sql`SELECT id FROM project_knowledge_facts WHERE project_id = ${projectId} AND retrieval_count > 0`,
+        [],
+      );
+    }).pipe(Effect.provide(knowledgeTestLayer(HolographicMemory.layer, true))),
 );

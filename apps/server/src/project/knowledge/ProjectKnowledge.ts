@@ -1,8 +1,8 @@
 import {
   ActiveProjectFact,
-  boundProjectMemorySuggestionQuery,
+  boundProjectMemoryRecallQuery,
   isSubstantiveProjectMemoryQuery,
-  selectProjectMemorySuggestions,
+  selectProjectMemoryRecallMatches,
   type AssistedLearningRun,
   type CommandId,
   ComposerContextId,
@@ -899,26 +899,27 @@ const make = Effect.gen(function* () {
     };
   });
   const searchFacts = Effect.fn("ProjectKnowledge.search")(
-    // A preview keeps its best two matches. skip removes facts before that choice.
+    // Recall keeps its best two matches after removing facts the thread has already seen.
     function* (
       request: ProjectKnowledgeSearchInput,
-      skip?: (fact: ProjectFact) => boolean,
+      recallOptions?: { readonly skip: (fact: ProjectFact) => boolean },
     ): Effect.fn.Return<ProjectKnowledgeSearchResult, ProjectKnowledgeError> {
+      const skip = recallOptions?.skip;
       const {
-        factCursor: _previewFactCursor,
-        cursor: _previewMessageCursor,
-        ...previewRequest
+        factCursor: _recallFactCursor,
+        cursor: _recallMessageCursor,
+        ...recallRequest
       } = request;
       const input =
-        request.preview === true
+        recallOptions !== undefined
           ? {
-              ...previewRequest,
-              query: boundProjectMemorySuggestionQuery(request.query),
+              ...recallRequest,
+              query: boundProjectMemoryRecallQuery(request.query),
               limit: 8,
             }
           : request;
       yield* requireProject(input.projectId);
-      if (input.preview === true && !isSubstantiveProjectMemoryQuery(input.query))
+      if (recallOptions !== undefined && !isSubstantiveProjectMemoryQuery(input.query))
         return {
           messages: { matches: [] },
           facts: {
@@ -929,7 +930,7 @@ const make = Effect.gen(function* () {
           },
         };
       const messages =
-        input.preview === true
+        recallOptions !== undefined
           ? { matches: [] }
           : yield* threads
               .search({
@@ -1150,23 +1151,20 @@ const make = Effect.gen(function* () {
       const early = yield* resolveMatches(prior?.search ?? null).pipe(
         Effect.mapError(storageError(input.projectId)),
       );
-      if (input.preview === true)
+      if (recallOptions !== undefined)
         return {
           messages,
           facts: {
             state: "available" as const,
-            matches: selectProjectMemorySuggestions(
-              {
-                messages: { matches: [] },
-                facts: {
-                  state: "available",
-                  matches: early.resolved.map(({ fact, score }) => ({ fact, score })),
-                  coverage: early.ranked.coverage,
-                  nextCursor: null,
-                },
+            matches: selectProjectMemoryRecallMatches({
+              messages: { matches: [] },
+              facts: {
+                state: "available",
+                matches: early.resolved.map(({ fact, score }) => ({ fact, score })),
+                coverage: early.ranked.coverage,
+                nextCursor: null,
               },
-              input.query,
-            ).map(({ fact, score }) => ({ fact, score })),
+            }),
             coverage: early.ranked.coverage,
             nextCursor: null,
           },
@@ -1292,10 +1290,9 @@ const make = Effect.gen(function* () {
             requestId: input.requestId,
             query: input.query,
             recordRetrieval: false,
-            preview: true,
             minTrust: 0.5,
           },
-          (fact) => seen.has(fact.id) || cameFromThread(fact, input.threadId),
+          { skip: (fact) => seen.has(fact.id) || cameFromThread(fact, input.threadId) },
         );
         if (result.facts.state !== "available") return null;
         const selections = result.facts.matches.map(({ fact }) => ({

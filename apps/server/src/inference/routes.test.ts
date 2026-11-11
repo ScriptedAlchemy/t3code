@@ -122,19 +122,22 @@ describe("inference routes", () => {
     }
   });
 
-  it("gives each harness the pooled models it can run", () => {
+  it("gives each harness its supported advertised models regardless of prefix", () => {
     const models = [
       { id: "gpt-fixture", owned_by: "openai" },
       { id: "claude-fixture", owned_by: "anthropic" },
       { id: "grok-fixture", owned_by: "xai" },
       { id: "codex-pool-1", owned_by: "openai" },
+      { id: "claude-pool-1", owned_by: "anthropic" },
     ];
-    expect(modelsForDriver(models, "codex")).toEqual(["gpt-fixture"]);
-    expect(modelsForDriver(models, "claudeAgent")).toEqual(["claude-fixture"]);
+    expect(modelsForDriver(models, "codex")).toEqual(["gpt-fixture", "codex-pool-1"]);
+    expect(modelsForDriver(models, "claudeAgent")).toEqual(["claude-fixture", "claude-pool-1"]);
     expect(modelsForDriver(models, "opencode")).toEqual([
       "gpt-fixture",
       "claude-fixture",
       "grok-fixture",
+      "codex-pool-1",
+      "claude-pool-1",
     ]);
   });
 });

@@ -463,11 +463,9 @@ export const ProjectKnowledgeSearchInput = Schema.Struct({
   entities: Schema.optionalKey(Labels),
   entityMatch: Schema.optionalKey(Schema.Literals(["any", "all"])),
   includeSuperseded: Schema.optionalKey(Schema.Boolean),
-  // Retrieval reinforces ranking. Browsing surfaces (as-you-type, previews) pass false so only
+  // Retrieval reinforces ranking. Browsing surfaces pass false so only
   // deliberate lookups count; omitted means true.
   recordRetrieval: Schema.optionalKey(Schema.Boolean),
-  /** Passive suggestions do not record receipts, reinforce retrieval, or return continuations. */
-  preview: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectKnowledgeSearchInput = typeof ProjectKnowledgeSearchInput.Type;
 export const KnowledgeScore = Schema.Struct({
@@ -495,13 +493,12 @@ const ProjectKnowledgeSearchResultSchema = Schema.Struct({
   ]),
 });
 export type ProjectKnowledgeSearchResult = typeof ProjectKnowledgeSearchResultSchema.Type;
-export interface ProjectMemorySuggestion {
+export interface ProjectMemoryRecallMatch {
   readonly fact: ProjectFact;
   readonly score: typeof KnowledgeScore.Type;
-  readonly reason: string;
 }
 
-export function boundProjectMemorySuggestionQuery(query: string): string {
+export function boundProjectMemoryRecallQuery(query: string): string {
   return query.trim().slice(0, THREAD_SEARCH_QUERY_MAX_LENGTH);
 }
 
@@ -527,7 +524,7 @@ const memoryQueryFiller = new Set([
 const memoryQueryTerms = (query: string) => [
   ...new Set(
     (
-      boundProjectMemorySuggestionQuery(query)
+      boundProjectMemoryRecallQuery(query)
         .toLowerCase()
         .match(/[\p{L}\p{N}_/:.]+/gu) ?? []
     ).filter((term) => term.length >= 3 && !memoryQueryFiller.has(term)),
@@ -545,12 +542,10 @@ export function isSubstantiveProjectMemoryQuery(query: string): boolean {
   );
 }
 
-export function selectProjectMemorySuggestions(
+export function selectProjectMemoryRecallMatches(
   result: ProjectKnowledgeSearchResult,
-  query = "",
-): ReadonlyArray<ProjectMemorySuggestion> {
+): ReadonlyArray<ProjectMemoryRecallMatch> {
   if (result.facts.state !== "available") return [];
-  const terms = memoryQueryTerms(query);
   return result.facts.matches
     .filter(
       ({ fact, score }) =>
@@ -561,19 +556,7 @@ export function selectProjectMemorySuggestions(
         score.combined > 0 &&
         (score.tokenOverlap >= 0.15 || (score.lexical >= 0.65 && score.tokenOverlap >= 0.05)),
     )
-    .slice(0, 2)
-    .map(({ fact, score }) => {
-      const content = [fact.content ?? "", ...fact.entities, ...fact.tags].join(" ").toLowerCase();
-      const matched = terms.filter((term) => content.includes(term)).slice(0, 3);
-      return {
-        fact,
-        score,
-        reason:
-          matched.length > 0
-            ? `Matches ${matched.map((term) => `“${term}”`).join(", ")} in saved project knowledge.`
-            : "Strong lexical match in saved project knowledge.",
-      };
-    });
+    .slice(0, 2);
 }
 
 export const ProjectKnowledgeSearchResult: Schema.Codec<

@@ -3,7 +3,6 @@ import {
   type ComposerContextId,
   type ComposerContextRecord,
   type MessageId,
-  type ThreadId,
   type OrchestrationV2HistoricalMessage,
   type ProjectId,
   type ProjectFactId,
@@ -147,8 +146,6 @@ export const deliveredKnowledgeForHistory = Effect.fn("ProjectKnowledge.delivere
     >,
   >(input: {
     readonly projectId: ProjectId;
-    /** The thread whose agent receives the replay, when it goes to one. */
-    readonly viewer?: ThreadId;
     readonly messages: ReadonlyArray<Message>;
     readonly userItemId: (messageId: MessageId) => string | undefined;
   }) {
@@ -161,19 +158,9 @@ export const deliveredKnowledgeForHistory = Effect.fn("ProjectKnowledge.delivere
     );
     const textByItem = new Map<string, string>();
     const factIdsByItem = new Map<string, ReadonlyArray<ProjectFactId>>();
-    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
-    const recordDelivered = Effect.fn("ProjectKnowledge.recordHistoryViews")(
-      (itemIds: ReadonlySet<string>) =>
-        input.viewer === undefined
-          ? Effect.void
-          : knowledge.recordViews(
-              input.projectId,
-              input.viewer,
-              [...itemIds].flatMap((itemId) => factIdsByItem.get(itemId) ?? []),
-            ),
-    );
-    const result = { textByItem, factIdsByItem, recordDelivered };
+    const result = { textByItem, factIdsByItem };
     if (candidates.size === 0) return result;
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
     const rows = yield* knowledge.readSentDeliveries({
       projectId: input.projectId,
       threadIds: [...new Set([...candidates.values()].map((message) => message.threadId))],
