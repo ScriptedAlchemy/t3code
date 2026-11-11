@@ -306,7 +306,7 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
           (cause) => new PstackPackError({ path: modelsPath, operation: "expand", cause }),
         ),
       );
-      // Seats saved before proxy routing became a provider mode name instances that are gone.
+      // Seats saved before proxy mode can name instances that no longer exist.
       const file = saved?.replace(
         /\w+(?=\/)/g,
         (instanceId) => ServerSettings.retiredInstanceSuccessor(instanceId) ?? instanceId,

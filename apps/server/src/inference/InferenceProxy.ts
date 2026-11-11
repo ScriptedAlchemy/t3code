@@ -726,7 +726,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  // Annotated: the watcher refreshes routes, which start the proxy, which starts this watcher.
+  // Annotated because the watcher refreshes routes, which start the proxy, which starts this watcher.
   const startProxyAccountWatch: Effect.Effect<void> = Effect.gen(function* () {
     if (proxyAccountWatch) return;
     proxyAccountWatch = yield* watchProxyCodexAuth.pipe(
@@ -1178,7 +1178,7 @@ const make = Effect.gen(function* () {
           )
             return null;
           const runtime = yield* ensureWatched(state);
-          // The watchers carry token rotation; this only covers one that stopped.
+          // The watchers sync rotated tokens. This sync only covers a watcher that stopped.
           const now = yield* Clock.currentTimeMillis;
           if (now - lastRequestSync >= REQUEST_SYNC_INTERVAL_MS) {
             lastRequestSync = now;

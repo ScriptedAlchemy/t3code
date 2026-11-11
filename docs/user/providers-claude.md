@@ -47,15 +47,15 @@ Use LAN HTTP only on a trusted network. Prompts, responses, and revocable route 
 Select **Codex via …** or **Claude via …** in a thread on web, desktop, or mobile.
 The host receives the model request, including its prompt and tool results.
 The agent runs tools and stores files and thread history on its executing environment.
-Choosing another host in Settings changes the same provider. Local inference is labeled simply **Claude** or **Codex**.
+Choosing another host in Settings changes the same provider. Local inference is labeled **Claude** or **Codex**.
 Choose the route again in Settings to refresh its model list after changing accounts.
 
-Account pooling is configured on the host. Turn on round-robin routing to distribute
+Configure account pooling on the host. Turn on round-robin routing to distribute
 requests across eligible accounts, or leave it off to use the first available account.
 Session affinity keeps a conversation on its credential while available. The model
 picker always shows normal Claude and Codex models. Traex remains a separate backend.
 
-Routing is optional: turn off **Use CLI proxy** to return to this provider's normal
+Routing is optional. Turn off **Use CLI proxy** to return to this provider's normal
 T3 Code configuration. Standalone CLI configuration is unchanged.
 Threads, scheduled tasks, and saved role choices that named a retired account pool
 or route continue on the normal Claude or Codex provider.

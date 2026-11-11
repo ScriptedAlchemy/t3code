@@ -77,7 +77,7 @@ export function createInferenceProxyAtoms<R, E>(
           profile && Option.isSome(profile) && profile.value._tag === "SshConnectionProfile"
             ? profile.value.target
             : undefined;
-        // Without SSH, this client's loopback address for the host means nothing to the consumer.
+        // Without SSH, the consumer cannot reach this client's loopback address for the host.
         const reachable =
           ssh !== undefined ||
           !["127.0.0.1", "localhost", "[::1]"].includes(

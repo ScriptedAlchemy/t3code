@@ -33,7 +33,7 @@ interface InferenceHarness {
   readonly upstreams: ReadonlyArray<InferenceUpstream>;
   /** Proxy account kinds this harness can use; null means every kind. */
   readonly accounts: ReadonlyArray<string> | null;
-  /** True when the pool stands in for the harness's own logins, hiding its other instances. */
+  /** True when the pool replaces the harness's own logins. T3 then hides its other instances. */
   readonly replacesAccounts: boolean;
 }
 const harnesses = {

@@ -61,12 +61,12 @@ its own logins. In **Settings > Inference accounts**, choose **OpenCode** beside
 host, or turn on **Use CLI proxy** in OpenCode's provider settings. The host's models
 then appear in the model picker under **T3 inference**.
 
-OpenCode can run every model the host has an account for, so this is where accounts
-other than Claude and Codex are used. On the host, **Add an account** offers
-Antigravity, xAI, Kimi, Meta AI, and Devin sign-ins as well. Claude and Codex each
-use only their own accounts.
+OpenCode can run every model the host has an account for, so it is the provider that
+uses accounts other than Claude and Codex. On the host, **Add an account** also offers
+Antigravity, xAI, Kimi, Meta AI, and Devin sign-ins. Claude and Codex each use only
+their own accounts.
 
-This needs a server T3 Code starts itself; it is unavailable with a **Server URL**.
+T3 Code must start the OpenCode server itself, so this is unavailable with a **Server URL**.
 Choose the route again in Settings to refresh the model list after changing accounts.
 
 ## Approvals
