@@ -6,7 +6,7 @@ shared provider settings.
 
 ## Connect Claude Code
 
-For multiple accounts, open **Inference accounts** on the environment where you want to sign in. [Host and share inference accounts](#host-and-share-inference-accounts)
+For multiple accounts, enable inference hosting in **Settings > Providers** and use **Add account**. CLIProxyAPI keeps the accounts and chooses a credential for each request; Claude remains one provider. See [Host and share inference accounts](#host-and-share-inference-accounts).
 
 To reuse an installed CLI account, choose **Use existing Claude Code**. Leave
 **CLAUDE_CONFIG_DIR path** empty to use the CLI's default configuration. For a
@@ -15,8 +15,7 @@ and enter that directory in the provider settings. Keep `HOME` unchanged so Clau
 can find the system keychain.
 
 For API keys, custom endpoints, and routers, choose **Use existing Claude Code**
-and configure its **Environment variables**. Independent subscription accounts
-use their own Claude login and ignore credential and endpoint overrides.
+and configure its **Environment variables**.
 
 Claude Code's verbose mode can stay enabled when you use Claude for text generation, including
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
@@ -32,31 +31,36 @@ into Settings, and check its status. The host keeps the provider login and handl
 account selection and refresh. Desktop includes compatible CLIProxyAPI releases in **Update everything**.
 You can also check for updates in **Inference accounts** on any client. Updating restarts the host, so finish active turns first.
 
-For another machine to use those accounts, enable **Tailscale HTTPS** or LAN access on the host and turn on **Share inference with paired environments**.
+Hosting also picks up a matching Codex or Claude login made in that machine's normal CLI and keeps refreshed tokens in sync with the proxy. On macOS, Claude may ask you to allow T3 Code to access its Keychain credential. Signing out of a CLI does not remove an account already added to the inference host; remove it in **Inference accounts**.
+
+To let another machine use those accounts, turn on **Share inference with paired environments**.
+T3 reuses the selected host's existing connection, including SSH, LAN, Tailscale, or T3 Connect.
+You do not need an agent link or a separate proxy installation on the consuming machine.
 Connect your client to both T3 environments with provider management access.
 Select the environment where you want to run agents in Settings. Under **Route
-requests through an environment**, choose Codex or Claude beside the host name.
-That environment must be able to reach the host over Tailscale or its private LAN address and run the
-corresponding agent CLI. You can also choose the current host for local use.
+requests through an environment**, choose Codex, Claude, [OpenCode](./providers-opencode.md#shared-inference-accounts),
+or [Pi](./providers-pi.md#shared-inference-accounts) beside the host name.
+The environment running agents needs the corresponding CLI and must be able to reach the host
+through the selected connection. You can also choose the current host for local use.
 
 Use LAN HTTP only on a trusted network. Prompts, responses, and revocable route keys travel unencrypted on that connection.
 
 Select **Codex via …** or **Claude via …** in a thread on web, desktop, or mobile.
 The host receives the model request, including its prompt and tool results.
 The agent runs tools and stores files and thread history on its executing environment.
-A second host gets its own model picker entry. Choose that entry to switch hosts.
+Choosing another host in Settings changes the same provider. Local inference is labeled **Claude** or **Codex**.
 Choose the route again in Settings to refresh its model list after changing accounts.
 
-Under **Model pools**, choose a source and load its model IDs or enter one manually. Give equivalent
-models the same pool name. For example, map your Codex model and the ID reported
-by Traex bridge to `work`. Apply the Codex route on each consuming environment
-to refresh its model picker, then select `codex-pool-work`. The Traex bridge
-must be running on the host with its key in `~/.traex-bridge/api-key`. Claude
-pools have separate `claude-pool-…` IDs. The routing switches apply across
-the host. Round-robin distributes new sessions, and session affinity keeps a
-conversation on its credential while that credential is available.
+Configure account pooling on the host. Turn on round-robin routing to distribute
+requests across eligible accounts, or leave it off to use the first available account.
+Session affinity keeps a conversation on its credential while available. The model
+picker always shows normal Claude and Codex models. Traex remains a separate backend.
 
-The first inference route for a provider replaces its old CLI account pool. Threads saved with that pool use the replacement route. Threads pinned to an individual CLI account keep that selection. You can switch either kind of thread in the provider picker.
+Routing is optional. Turn off **Use CLI proxy** to return to this provider's normal
+T3 Code configuration. Standalone CLI configuration is unchanged.
+After an upgrade, threads, scheduled tasks, and saved model choices that named an older
+route or account pool use the normal Claude or Codex provider. They run through the proxy
+only when **Use CLI proxy** is on for that provider.
 
 Remove a provider login on its host, revoke one consuming environment, or turn
 off sharing to revoke all remote grants. Remove the route in **Inference accounts** on the executing machine. Stopping hosting keeps the host's accounts

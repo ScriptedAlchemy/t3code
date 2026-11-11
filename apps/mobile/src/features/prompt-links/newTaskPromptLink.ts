@@ -155,9 +155,11 @@ function writeDraft(
 ): boolean {
   if (request.prompt) setComposerDraftText(draftKey, request.prompt.text);
   if (request.provider === null) return false;
+  const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId);
   const resolved = resolvePromptLinkModelSelection(
-    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.providers ?? [],
+    config?.providers ?? [],
     { provider: request.provider, model: request.model },
+    config?.settings.providerInstances,
   );
   if (resolved) updateComposerDraftSettings(draftKey, { modelSelection: resolved.selection });
   return resolved?.exact !== true;

@@ -73,7 +73,7 @@ const knowledgeTestLayer = (
         ProjectionStore.layer,
         noTranscriptSearch
           ? Layer.mock(ThreadSearch.ThreadSearch)({
-              search: () => Effect.die("Passive previews must not search transcripts"),
+              search: () => Effect.die("Automatic recall must not search transcripts"),
             })
           : ThreadSearch.layer,
         ProjectionReplay.layer.pipe(
@@ -897,9 +897,10 @@ it.effect(
         userItemId: (id) => (id === messageId ? "item:sent" : "item:unsent"),
       });
       const evidence = yield* handoff;
-      assert.deepEqual([...evidence.keys()], ["item:sent"]);
-      assert.include(evidence.get("item:sent"), "Cache keys include tenant IDs.");
-      assert.notInclude(evidence.get("item:sent"), "region IDs");
+      assert.deepEqual([...evidence.textByItem.keys()], ["item:sent"]);
+      assert.include(evidence.textByItem.get("item:sent"), "Cache keys include tenant IDs.");
+      assert.notInclude(evidence.textByItem.get("item:sent"), "region IDs");
+      assert.deepEqual([...evidence.factIdsByItem], [["item:sent", [fact.id]]]);
 
       yield* knowledge.mutate(
         {
@@ -933,7 +934,9 @@ it.effect(
         [],
       );
       // A handoff after the forget carries nothing for it.
-      assert.deepEqual([...(yield* handoff).keys()], []);
+      const afterForget = yield* handoff;
+      assert.deepEqual([...afterForget.textByItem.keys()], []);
+      assert.deepEqual([...afterForget.factIdsByItem], []);
       const otherProjectId = ProjectId.make("other-delivery-project");
       yield* createProject(otherProjectId);
       assert.deepEqual(
@@ -1045,7 +1048,25 @@ it.effect("keeps each steering message's receipt and forgets only its own eviden
       })),
       userItemId: (id) => `item:${id}`,
     });
-    assert.equal(evidence.size, 2);
+    assert.equal(evidence.textByItem.size, 2);
+    yield* knowledge.recordViews(
+      projectId,
+      ThreadId.make("steering-replay"),
+      evidence.factIdsByItem.get(`item:${original.messageId}`) ?? [],
+    );
+    const sql = yield* SqlClient.SqlClient;
+    const viewed = yield* sql<{ readonly fact_id: string }>`
+      SELECT fact_id FROM project_knowledge_views
+      WHERE project_id = ${projectId} AND thread_id = 'steering-replay'
+    `;
+    assert.sameMembers(
+      viewed.map((row) => row.fact_id),
+      original.items.flatMap((item) =>
+        item.context.selections.flatMap((selection) =>
+          selection.kind === "fact" ? [selection.factId] : [],
+        ),
+      ),
+    );
     yield* first.forget;
     assert.equal((yield* first.excerpts)[0]?.[2], "");
     assert.equal((yield* readSecond).deliveries[0]?.items[0]?.text, followup.items[0]?.text);
@@ -1162,7 +1183,7 @@ it.effect("keeps native attachment occupancy across retries, scrubbing and legac
         messageId === receipt.messageId ? "original-delivered-item" : undefined,
     });
     assert.include(
-      (yield* historyEvidence).get("original-delivered-item")!,
+      (yield* historyEvidence).textByItem.get("original-delivered-item")!,
       receipt.items[0]!.text,
     );
     yield* knowledge.recordDelivery({
@@ -1222,7 +1243,7 @@ it.effect("keeps native attachment occupancy across retries, scrubbing and legac
     const expected = fixture.byteLength * 2 + legacyBudget.knowledgeAllowance + 48_000;
     assert.equal(yield* estimate, expected);
     yield* fixture.forget;
-    assert.equal((yield* historyEvidence).size, 0);
+    assert.equal((yield* historyEvidence).textByItem.size, 0);
     assert.equal(
       (yield* fixture.excerpts).find((entry) => entry[0] === receipt.attemptId)?.[2],
       "",
@@ -1633,8 +1654,12 @@ it.effect.each(["rolled", "edited", "deleted", "project-deleted", "archive"] as 
           ],
           userItemId: () => "removed-source-replay",
         });
-        assert.notInclude(replay.get("removed-source-replay"), "Cache keys include tenant IDs.");
-        assert.include(replay.get("removed-source-replay"), "Source unavailable");
+        assert.notInclude(
+          replay.textByItem.get("removed-source-replay"),
+          "Cache keys include tenant IDs.",
+        );
+        assert.include(replay.textByItem.get("removed-source-replay"), "Source unavailable");
+        assert.deepEqual(replay.factIdsByItem.get("removed-source-replay"), []);
       }
       const uncited = yield* deliveredFact("project-deleted");
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -1741,14 +1766,23 @@ it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
       knowledge.list({ projectId }),
       (listed) => listed.facts[0]?.retrievalCount,
     );
-    assert.deepEqual(
-      yield* knowledge.suggest({
+    const recalled = Effect.fn("test.recalled")(function* (requestId: string, query: string) {
+      const composer = yield* knowledge.recall({
         projectId,
-        requestId: CommandId.make("suggest-greeting"),
-        query: "hello there",
-      }),
-      [],
-    );
+        threadId: ThreadId.make("recall-thread"),
+        requestId: CommandId.make(requestId),
+        query,
+        composer: { text: query, records: [] },
+        knowledgeAllowance: 48000,
+      });
+      const record = composer?.records.find((item) => item.kind === "project-knowledge");
+      return record?.kind === "project-knowledge" && "knowledge" in record
+        ? record.knowledge.selections.flatMap((selection) =>
+            selection.kind === "fact" ? [selection.factId] : [],
+          )
+        : [];
+    });
+    assert.deepEqual(yield* recalled("suggest-greeting", "hello there"), []);
     const sql = yield* SqlClient.SqlClient;
     const longQuery = "cache keys tenant ".repeat(100);
     for (const [name, query] of [
@@ -1758,11 +1792,7 @@ it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
       ["long-with-whitespace", ` \n\t${longQuery}\n\t `],
     ] as const) {
       const requestId = CommandId.make(`suggest-relevant-${name}`);
-      const suggestions = yield* knowledge.suggest({ projectId, requestId, query });
-      assert.equal(suggestions.length, 1);
-      assert.equal(suggestions[0]?.fact.id, ProjectFactId.make("fact-one"));
-      assert.equal(suggestions[0]?.fact.sources[0]?.kind, "user");
-      assert.equal(suggestions[0]?.fact.retrievalCount, 0);
+      assert.deepEqual(yield* recalled(requestId, query), [ProjectFactId.make("fact-one")]);
       assert.equal(yield* storedCount, 0);
       assert.equal(
         (yield* sql`SELECT command_id FROM project_knowledge_commands WHERE command_id = ${requestId}`)
@@ -1772,11 +1802,10 @@ it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
     }
 
     assert.deepEqual(
-      yield* knowledge.suggest({
-        projectId,
-        requestId: CommandId.make("suggest-weak"),
-        query: "tenant garden bicycle banana weather holiday mountain sunset",
-      }),
+      yield* recalled(
+        "suggest-weak",
+        "tenant garden bicycle banana weather holiday mountain sunset",
+      ),
       [],
     );
     yield* knowledge.mutate(
@@ -1788,26 +1817,389 @@ it.effect("browsing searches can opt out of reinforcing retrieval counts", () =>
       },
       { kind: "user" },
     );
-    const unicode = yield* knowledge.suggest({
-      projectId,
-      requestId: CommandId.make("suggest-unicode"),
-      query: "缓存键必须包含租户标识",
-    });
-    assert.equal(unicode[0]?.fact.id, ProjectFactId.make("unicode"));
-    assert.include(unicode[0]?.reason ?? "", "缓存键必须包含租户标识");
-    assert.deepEqual(
-      yield* knowledge.suggest({
-        projectId,
-        requestId: CommandId.make("suggest-filler"),
-        query: "please can you help",
-      }),
-      [],
-    );
+    assert.deepEqual(yield* recalled("suggest-unicode", "缓存键必须包含租户标识"), [
+      ProjectFactId.make("unicode"),
+    ]);
+    assert.deepEqual(yield* recalled("suggest-filler", "please can you help"), []);
     assert.equal(yield* storedCount, 0);
     assert.equal(yield* searchCount("browse", false), 0);
     assert.equal(yield* storedCount, 0);
     assert.equal(yield* searchCount("agent"), 1);
     assert.equal(yield* storedCount, 1);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "recalls related facts once per thread, unless knowledge is hand-picked or the budget is spent",
+  () =>
+    Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projectId = ProjectId.make("automatic-recall");
+      yield* createProject(projectId);
+      yield* knowledge.mutate(createFact(projectId), { kind: "user" });
+      const threadId = ThreadId.make("recall-thread");
+      const query = "Change cache keys to include tenant IDs.";
+      const recall = (
+        overrides: Partial<Parameters<typeof knowledge.recall>[0]> = {},
+        requestId = "recall",
+      ) =>
+        knowledge.recall({
+          projectId,
+          threadId,
+          requestId: CommandId.make(requestId),
+          query,
+          composer: { text: query, records: [] },
+          knowledgeAllowance: 48000,
+          ...overrides,
+        });
+
+      const recalled = yield* recall();
+      const record = recalled?.records[0];
+      assert.equal(record?.kind, "project-knowledge");
+      if (record?.kind !== "project-knowledge" || !("knowledge" in record)) return;
+      assert.deepEqual(record.knowledge.selections, [
+        { kind: "fact", factId: ProjectFactId.make("fact-one"), revision: 1 },
+      ]);
+      assert.isAtMost(record.knowledge.maxBytes, 48000);
+      // The delivery path sends what recall attached.
+      const composer = yield* resolveKnowledgeComposer({
+        projectId,
+        text: recalled!.text,
+        records: recalled!.records,
+      });
+      // The text holds only what the agent needs to use, rate or read the fact.
+      assert.deepEqual(
+        composer.items.map((item) => item.text),
+        [
+          "Saved facts from project automatic-recall, for reference. Rate any you rely on with t3_knowledge_mutate feedback: helpful, or unhelpful if it misled you.\n[fact fact-one rev 1, from user] Cache keys include tenant IDs.",
+        ],
+      );
+      assert.include(composer.text, composer.items[0]!.text);
+
+      // Recall adds nothing to a message the user attached knowledge to by hand.
+      assert.isNull(yield* recall({ composer: { text: query, records: [record] } }, "hand-picked"));
+      // A nearly full context has no room for recall.
+      assert.isNull(yield* recall({ knowledgeAllowance: 1200 }, "no-room"));
+
+      const sent = {
+        attemptId: RunAttemptId.make("recall-attempt"),
+        runId: RunId.make("recall-run"),
+        threadId,
+        messageId: MessageId.make("recall-message"),
+        projectId,
+        providerInstanceId,
+        providerThreadId: ProviderThreadId.make("recall-provider-thread"),
+        nativeThreadId: "native-a",
+        items: composer.items,
+        omissions: [],
+        createdAt: DateTime.formatIso(at(1)),
+        updatedAt: DateTime.formatIso(at(1)),
+      };
+      yield* knowledge.recordDelivery({ ...sent, status: "prepared" });
+      assert.isNotNull(yield* recall({}, "prepared-only"));
+      yield* knowledge.recordDelivery({ ...sent, status: "sent" });
+      // Recall does not resend a fact the thread received, but another thread still gets it.
+      assert.isNull(yield* recall({}, "already-sent"));
+      assert.isNotNull(yield* recall({ threadId: ThreadId.make("other-thread") }, "other-thread"));
+      // A retry of that message on a replacement conversation never received the fact.
+      const retry = {
+        messageId: sent.messageId,
+        attemptId: RunAttemptId.make("recall-retry"),
+        providerInstanceId,
+        providerThreadId: sent.providerThreadId,
+        nativeThreadId: "native-b",
+      };
+      assert.isNotNull(yield* recall({ turn: retry }, "retry-elsewhere"));
+      assert.isNull(
+        yield* recall({ turn: { ...retry, nativeThreadId: "native-a" } }, "retry-same"),
+      );
+      const later = { ...retry, messageId: MessageId.make("later-message") };
+      assert.isNull(yield* recall({ turn: later }, "later-message"));
+      assert.isNotNull(
+        yield* recall(
+          {
+            turn: {
+              ...retry,
+              nativeThreadId: "native-a",
+              providerInstanceId: ProviderInstanceId.make("other-provider"),
+            },
+          },
+          "retry-other-provider",
+        ),
+      );
+      assert.isNotNull(
+        yield* recall(
+          {
+            turn: {
+              ...retry,
+              nativeThreadId: "native-a",
+              providerThreadId: ProviderThreadId.make("other-provider-thread"),
+            },
+          },
+          "retry-other-provider-thread",
+        ),
+      );
+      yield* knowledge.recordDelivery({ ...sent, nativeThreadId: null, status: "sent" });
+      assert.isNull(
+        yield* recall(
+          { turn: { ...retry, attemptId: sent.attemptId, nativeThreadId: null } },
+          "same-attempt-without-native-id",
+        ),
+      );
+      assert.isNotNull(
+        yield* recall({ turn: { ...retry, nativeThreadId: null } }, "retry-without-native-id"),
+      );
+
+      // Recall cuts a long fact short and names the tool that reads the rest.
+      yield* knowledge.mutate(
+        {
+          ...createFact(projectId, "long"),
+          content: `Cache keys include tenant IDs. ${"cache keys ".repeat(400)}`.trim(),
+        },
+        { kind: "user" },
+      );
+      const long = yield* recall({}, "long");
+      const sentLong = yield* resolveKnowledgeComposer({
+        projectId,
+        text: long!.text,
+        records: long!.records,
+      });
+      const [longText] = sentLong.items.map((item) => item.text);
+      assert.include(longText, "[fact long rev 1, from user] Cache keys include tenant IDs.");
+      assert.include(longText, "t3_knowledge_read_fact");
+      assert.isAtMost(longText!.length, 1100);
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("does not recall a fact the thread's agent has already been shown", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const projectId = ProjectId.make("recall-seen");
+    yield* createProject(projectId);
+    const query = "Change cache keys to include tenant IDs.";
+    // The facts differ enough that reading one does not quote another as a look-alike.
+    const contents = {
+      one: "Cache keys include tenant IDs, rule one.",
+      two: "Tenant IDs go first in cache keys so shards stay balanced.",
+      three: "Changing cache keys needs a reviewed migration plan and a rollback for tenant IDs.",
+    };
+    const ids = Object.keys(contents).map((id) => ProjectFactId.make(id));
+    for (const [id, content] of Object.entries(contents))
+      yield* knowledge.mutate({ ...createFact(projectId, id), content }, { kind: "user" });
+    const recall = (threadId: ThreadId, requestId: string) =>
+      knowledge.recall({
+        projectId,
+        threadId,
+        requestId: CommandId.make(requestId),
+        query,
+        composer: { text: query, records: [] },
+        knowledgeAllowance: 48000,
+      });
+    const recalledIn = Effect.fn("test.recalledIn")(function* (thread: string, request = thread) {
+      const composer = yield* recall(ThreadId.make(thread), `recall-${request}`);
+      return (composer?.records ?? []).flatMap((record) =>
+        record.kind === "project-knowledge" && "knowledge" in record
+          ? record.knowledge.selections.flatMap((selection) =>
+              selection.kind === "fact" ? [selection.factId] : [],
+            )
+          : [],
+      );
+    });
+    assert.lengthOf(yield* recalledIn("fresh"), 2);
+    // Reads every fact except `rest` in a thread, so recall can return only `rest`.
+    const readAllBut = Effect.fn("test.readAllBut")(function* (
+      thread: string,
+      rest: ReadonlyArray<ProjectFactId>,
+    ) {
+      for (const factId of ids)
+        if (!rest.includes(factId))
+          yield* knowledge.readFact({ projectId, factId }, ThreadId.make(thread));
+    });
+
+    // Recall does not resend what the agent's own search or listing returned.
+    const searched = yield* knowledge.search(
+      { projectId, query: "tenant cache keys", requestId: CommandId.make("agent-search") },
+      ThreadId.make("searched"),
+    );
+    if (searched.facts.state !== "available") return assert.fail("ranking must be available");
+    const found = searched.facts.matches.map(({ fact }) => fact.id);
+    assert.isNotEmpty(found);
+    yield* readAllBut("searched", found);
+    assert.deepEqual(yield* recalledIn("searched"), []);
+    yield* knowledge.list({ projectId }, ThreadId.make("listed"));
+    assert.deepEqual(yield* recalledIn("listed"), []);
+
+    // After the agent reads two facts, recall returns the third, wherever it ranks.
+    for (const unseen of ids) {
+      yield* readAllBut(`read-all-but-${unseen}`, [unseen]);
+      assert.deepEqual(yield* recalledIn(`read-all-but-${unseen}`), [unseen]);
+    }
+
+    // Saving a near duplicate returns excerpts of similar facts, so its agent has seen them.
+    const duplicate = yield* knowledge.mutateWithHints(
+      {
+        ...createFact(projectId, "duplicate"),
+        content: "Cache keys include tenant IDs, rule one!",
+        sources: [],
+      },
+      { kind: "agent-thread", threadId: ThreadId.make("hinted"), providerInstanceId },
+    );
+    const hinted = (duplicate.hints ?? []).map((hint) => hint.factId);
+    assert.isNotEmpty(hinted);
+    yield* readAllBut("hinted", hinted);
+    assert.deepEqual(yield* recalledIn("hinted"), []);
+    // Reading a fact returns excerpts of similar facts too.
+    yield* knowledge.readFact(
+      { projectId, factId: ProjectFactId.make("duplicate") },
+      ThreadId.make("quoted"),
+    );
+    yield* readAllBut("quoted", hinted);
+    assert.deepEqual(yield* recalledIn("quoted"), []);
+
+    // A delivery whose outcome is unknown may have reached the agent.
+    const [maybeSent] = yield* recalledIn("uncertain", "uncertain-first");
+    const unsure = yield* recall(ThreadId.make("uncertain"), "recall-uncertain-items");
+    const { items } = yield* resolveKnowledgeComposer({
+      projectId,
+      text: unsure!.text,
+      records: unsure!.records,
+    });
+    yield* knowledge.recordDelivery({
+      attemptId: RunAttemptId.make("uncertain-attempt"),
+      runId: RunId.make("uncertain-run"),
+      threadId: ThreadId.make("uncertain"),
+      messageId: MessageId.make("uncertain-message"),
+      projectId,
+      providerInstanceId,
+      status: "uncertain",
+      items,
+      omissions: [],
+      createdAt: DateTime.formatIso(at(1)),
+      updatedAt: DateTime.formatIso(at(1)),
+    });
+    assert.notInclude(yield* recalledIn("uncertain", "uncertain-second"), maybeSent);
+    // Rolling a run back removes its facts from the conversation, so recall may send them again.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+      VALUES ('uncertain-run', 'uncertain', 1, 'codex', 'rolled_back', ${DateTime.formatIso(at(1))}, '{}')`;
+    assert.include(yield* recalledIn("uncertain", "uncertain-rolled-back"), maybeSent);
+
+    // A fork replays the facts its parent received, so they are in the fork's context too.
+    const parent = ThreadId.make("parent");
+    const toParent = yield* recall(parent, "recall-parent");
+    const parentDelivery = yield* resolveKnowledgeComposer({
+      projectId,
+      text: toParent!.text,
+      records: toParent!.records,
+    });
+    yield* knowledge.recordDelivery({
+      attemptId: RunAttemptId.make("parent-attempt"),
+      runId: RunId.make("parent-run"),
+      threadId: parent,
+      messageId: MessageId.make("parent-message"),
+      projectId,
+      providerInstanceId,
+      status: "sent",
+      items: parentDelivery.items,
+      omissions: [],
+      createdAt: DateTime.formatIso(at(2)),
+      updatedAt: DateTime.formatIso(at(2)),
+    });
+    const inherited = yield* deliveredKnowledgeForHistory({
+      projectId,
+      messages: [
+        {
+          itemId: TurnItemId.make("item:parent"),
+          kind: "user_message",
+          threadId: parent,
+          runId: RunId.make("parent-run"),
+        },
+      ],
+      userItemId: () => "item:parent",
+    });
+    assert.isNotEmpty(yield* recalledIn("fork", "before-replay"));
+    yield* knowledge.recordViews(
+      projectId,
+      ThreadId.make("fork"),
+      inherited.factIdsByItem.get("item:omitted") ?? [],
+    );
+    assert.isNotEmpty(yield* recalledIn("fork", "omitted-replay"));
+    const inheritedFactIds = inherited.factIdsByItem.get("item:parent") ?? [];
+    assert.sameMembers(
+      [...inheritedFactIds],
+      parentDelivery.items.flatMap((item) =>
+        item.context.selections.flatMap((selection) =>
+          selection.kind === "fact" ? [selection.factId] : [],
+        ),
+      ),
+    );
+    yield* knowledge.recordViews(projectId, ThreadId.make("fork"), inheritedFactIds);
+    yield* readAllBut("fork", inheritedFactIds);
+    assert.deepEqual(yield* recalledIn("fork"), []);
+
+    // A fact that cites a thread's own message is recalled only in other threads, and without
+    // its citation.
+    const origin = ThreadId.make("origin-thread");
+    yield* projections.apply(thread(origin, projectId));
+    yield* projections.apply(message(origin, "origin-message", "user", "tenant IDs in keys"));
+    const source = yield* knowledge.readSource({
+      projectId,
+      threadId: origin,
+      messageId: MessageId.make("origin-message"),
+    });
+    if (source.state !== "available") return yield* Effect.die("source unavailable");
+    yield* readAllBut("origin-thread", []);
+    yield* readAllBut("elsewhere", []);
+    yield* knowledge.mutate(
+      {
+        ...createFact(projectId, "cited"),
+        content: "Cache keys include tenant IDs, rule cited.",
+        sources: [source.source],
+      },
+      { kind: "user" },
+    );
+    assert.deepEqual(yield* recalledIn("origin-thread"), []);
+    const elsewhere = yield* recall(ThreadId.make("elsewhere"), "recall-elsewhere");
+    const delivered = yield* resolveKnowledgeComposer({
+      projectId,
+      text: elsewhere!.text,
+      records: elsewhere!.records,
+    });
+    assert.include(delivered.text, "[fact cited rev 1, from user] Cache keys include tenant IDs");
+    assert.notInclude(delivered.text, "sha256");
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("recalls unseen facts beyond a full page of facts the thread has read", () =>
+  Effect.gen(function* () {
+    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+    const projectId = ProjectId.make("recall-seen-page");
+    const threadId = ThreadId.make("recall-seen-page-thread");
+    yield* createProject(projectId);
+    const ids = Array.from({ length: 10 }, (_, index) => `fact-${index}`);
+    for (const id of ids) yield* knowledge.mutate(createFact(projectId, id), { kind: "user" });
+    const read = yield* knowledge.list({ projectId, limit: 9 }, threadId);
+    assert.deepEqual(
+      read.facts.map((fact) => fact.id),
+      ids.slice(0, 9),
+    );
+    const query = "Change cache keys to include tenant IDs.";
+    const recalled = yield* knowledge.recall({
+      projectId,
+      threadId,
+      requestId: CommandId.make("recall-after-first-page"),
+      query,
+      composer: { text: query, records: [] },
+      knowledgeAllowance: 48000,
+    });
+    const record = recalled?.records[0];
+    assert.equal(record?.kind, "project-knowledge");
+    if (record?.kind !== "project-knowledge" || !("knowledge" in record)) return;
+    assert.deepEqual(record.knowledge.selections, [
+      { kind: "fact", factId: ProjectFactId.make("fact-9"), revision: 1 },
+    ]);
   }).pipe(Effect.provide(layerTest)),
 );
 
@@ -2772,48 +3164,54 @@ it.effect("automatic corroboration appends validated sources without rewriting c
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("passive previews return only two relevant facts and never search transcripts", () =>
-  Effect.gen(function* () {
-    const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
-    const projectId = ProjectId.make("compact-preview");
-    yield* createProject(projectId);
-    const empty = yield* knowledge.search({
-      projectId,
-      requestId: CommandId.make("preview-empty"),
-      query: "cache keys tenant",
-      preview: true,
-    });
-    assert.deepEqual(empty.messages.matches, []);
-    assert.equal(empty.facts.state === "available" ? empty.facts.matches.length : -1, 0);
-    for (const id of ["first", "second", "third"])
-      yield* knowledge.mutate(createFact(projectId, id), { kind: "user" });
-    yield* knowledge.mutate(
-      {
-        ...createFact(projectId, "unrelated"),
-        content: "Use readable garden labels.",
-        entities: [],
-        tags: [],
-      },
-      { kind: "user" },
-    );
-    const result = yield* knowledge.search({
-      projectId,
-      requestId: CommandId.make("preview-compact"),
-      query: "cache keys tenant",
-      preview: true,
-      limit: 50,
-    });
-    assert.deepEqual(result.messages.matches, []);
-    assert.equal(result.facts.state, "available");
-    if (result.facts.state !== "available") return;
-    assert.equal(result.facts.matches.length, 2);
-    assert.equal(result.facts.nextCursor, null);
-    assert.isFalse(result.facts.matches.some((item) => item.fact.id === "unrelated"));
-    const sql = yield* SqlClient.SqlClient;
-    assert.equal(
-      (yield* sql`SELECT command_id FROM project_knowledge_commands WHERE search_json IS NOT NULL`)
-        .length,
-      0,
-    );
-  }).pipe(Effect.provide(knowledgeTestLayer(HolographicMemory.layer, true))),
+it.effect(
+  "recall selects two related facts without searching transcripts or recording retrieval",
+  () =>
+    Effect.gen(function* () {
+      const knowledge = yield* ProjectKnowledge.ProjectKnowledge;
+      const projectId = ProjectId.make("bounded-recall");
+      const query = "cache keys tenant";
+      yield* createProject(projectId);
+      const recall = (requestId: string) =>
+        knowledge.recall({
+          projectId,
+          threadId: ThreadId.make("recall-thread"),
+          requestId: CommandId.make(requestId),
+          query,
+          composer: { text: query, records: [] },
+          knowledgeAllowance: 48000,
+        });
+      assert.isNull(yield* recall("recall-empty"));
+      for (const id of ["first", "second", "third"])
+        yield* knowledge.mutate(createFact(projectId, id), { kind: "user" });
+      yield* knowledge.mutate(
+        {
+          ...createFact(projectId, "unrelated"),
+          content: "Use readable garden labels.",
+          entities: [],
+          tags: [],
+        },
+        { kind: "user" },
+      );
+      const result = yield* recall("recall-related");
+      const record = result?.records[0];
+      assert.equal(record?.kind, "project-knowledge");
+      if (record?.kind !== "project-knowledge" || !("knowledge" in record)) return;
+      assert.equal(record.knowledge.selections.length, 2);
+      assert.isFalse(
+        record.knowledge.selections.some(
+          (selection) => selection.kind === "fact" && selection.factId === "unrelated",
+        ),
+      );
+      const sql = yield* SqlClient.SqlClient;
+      assert.equal(
+        (yield* sql`SELECT command_id FROM project_knowledge_commands WHERE search_json IS NOT NULL`)
+          .length,
+        0,
+      );
+      assert.deepEqual(
+        yield* sql`SELECT id FROM project_knowledge_facts WHERE project_id = ${projectId} AND retrieval_count > 0`,
+        [],
+      );
+    }).pipe(Effect.provide(knowledgeTestLayer(HolographicMemory.layer, true))),
 );

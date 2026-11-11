@@ -264,7 +264,6 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useManagedPolicy } from "../../state/managedPolicy";
 import { proposedPlanTitle } from "@t3tools/shared/proposedPlanText";
 import { hasProviderSetup } from "./ProviderStatusBanner";
-import { resolvePoolMemberLabel } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import { isVideoAttachment, type SessionPhase, type Thread, type ThreadShell } from "../../types";
@@ -2597,11 +2596,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedModelForPickerWithCustomFallback={selectedModelForPickerWithCustomFallback}
       lockedProvider={lockedProvider}
       lockedContinuationGroupKey={lockedContinuationGroupKey}
-      activeAccount={resolvePoolMemberLabel(
-        providerStatuses,
-        selectedInstanceId,
-        activeThread?.runtime?.providerInstanceId,
-      )}
       providerInstanceEntries={providerInstanceEntries}
       keybindings={keybindings}
       modelOptionsByInstance={modelOptionsByInstance}

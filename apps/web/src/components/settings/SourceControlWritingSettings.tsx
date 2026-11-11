@@ -113,6 +113,10 @@ export function SourceControlWritingSettingsSection() {
     textGenerationProviders,
     settings,
     target?.projectId ?? null,
+    [
+      settings.reviewGuideModelSelection?.instanceId,
+      settings.textGenerationModelSelection.instanceId,
+    ],
   );
   // Text generators may write source control text, but never review guides.
   const writerTargets = useTextGenerationTargets({

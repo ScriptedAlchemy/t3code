@@ -54,6 +54,21 @@ integrations. This applies to both OpenCode 1.x and 2.x.
 After a lost connection, send another prompt to reconnect to the same OpenCode
 session.
 
+## Shared inference accounts
+
+OpenCode can use the accounts on an [inference host](./providers-claude.md), next to
+its own logins. In **Settings > Inference accounts**, choose **OpenCode** beside the
+host, or turn on **Use CLI proxy** in OpenCode's provider settings. The host's models
+then appear in the model picker under **T3 inference**.
+
+OpenCode and [Pi](./providers-pi.md#shared-inference-accounts) can run every model the host has
+an account for. On the host, **Add an account** also offers
+Antigravity, xAI, Kimi, Meta AI, and Devin sign-ins. Claude and Codex each use only
+their own accounts.
+
+T3 Code must start the OpenCode server itself, so this is unavailable with a **Server URL**.
+Choose the route again in Settings to refresh the model list after changing accounts.
+
 ## Approvals
 
 OpenCode follows the shared [permission modes](./permission-modes.md). **Auto** has

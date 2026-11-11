@@ -76,6 +76,21 @@ const make = Effect.fn("PstackPack.make")(function* (sourceRoot?: string) {
   const directory = path.join(config.stateDir, "pstack");
   const packDir = path.join(directory, "pack");
   const modelsPath = path.join(directory, "models.md");
+  // Seats saved before proxy mode can name instances that no longer exist.
+  yield* fs.readFileString(modelsPath).pipe(
+    Effect.flatMap((saved) => {
+      const file = saved.replace(
+        /\w+(?=\/)/g,
+        (instanceId) => ServerSettings.retiredInstanceSuccessor(instanceId) ?? instanceId,
+      );
+      return file === saved ? Effect.void : fs.writeFileString(modelsPath, file);
+    }),
+    Effect.catch((cause) =>
+      cause.reason._tag === "NotFound"
+        ? Effect.void
+        : Effect.logWarning("could not move pstack role seats off retired providers", cause),
+    ),
+  );
   const stampPath = path.join(packDir, ".t3-pstack-hash");
   const readStamp = fs.readFileString(stampPath).pipe(
     Effect.catchIf(

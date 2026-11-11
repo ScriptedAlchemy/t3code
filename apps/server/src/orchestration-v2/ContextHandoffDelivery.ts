@@ -2,6 +2,7 @@ import type {
   OrchestrationV2ContextHandoff,
   OrchestrationV2HistoricalMessage,
   OrchestrationV2ProviderThread,
+  ProjectFactId,
   TurnItemId,
 } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -53,6 +54,10 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     readonly evidence?: (
       messages: ReadonlyArray<OrchestrationV2HistoricalMessage>,
     ) => Effect.Effect<ReadonlyMap<string, string>, EvidenceError>;
+    readonly onDelivered?: (
+      messages: ReadonlyArray<OrchestrationV2HistoricalMessage>,
+      summaryFactIds: ReadonlyArray<ProjectFactId>,
+    ) => Effect.Effect<void, EvidenceError>;
     /**
      * Current conversation summaries that cover some of `itemIds`, nearest the present first,
      * none overlapping another. One may take the place of the history items it covers when the
@@ -62,6 +67,14 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       itemIds: ReadonlySet<string>,
     ) => Effect.Effect<ReadonlyArray<HandoffSummary>>;
   }) {
+    const empty = {
+      context: "",
+      messages: [] as ReadonlyArray<OrchestrationV2HistoricalMessage>,
+      summaryFactIds: [] as ReadonlyArray<ProjectFactId>,
+      delivered: Effect.void,
+      unsent: Effect.void,
+      uncoveredItems: 0,
+    };
     const nativeThreadId = input.providerThread.nativeThreadRef?.nativeId ?? undefined;
     const pending = input.handoffs.filter(
       (handoff) =>
@@ -69,8 +82,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         handoff.delivery?.nativeThreadId !== nativeThreadId ||
         handoff.delivery.status === "pending",
     );
-    if (pending.length === 0 || (input.deferInline && input.inject === undefined))
-      return { context: "", delivered: Effect.void, unsent: Effect.void, uncoveredItems: 0 };
+    if (pending.length === 0 || (input.deferInline && input.inject === undefined)) return empty;
     const budget = typeof input.budget === "number" ? input.budget : yield* input.budget;
     let coverage = pending
       .map(
@@ -179,9 +191,11 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       }
     }
     const estimatedTokens = historyCost(selected.messages, selected.context);
+    const summaryFactIds = [
+      ...new Set(chosen.flatMap((summary) => summary.knowledgeFactIds ?? [])),
+    ];
     if (estimatedTokens > budget) {
-      if (input.deferInline)
-        return { context: "", delivered: Effect.void, unsent: Effect.void, uncoveredItems: 0 };
+      if (input.deferInline) return empty;
       return yield* new ContextHandoffBudgetError();
     }
     const omittedItemIds = new Set(selected.omittedItemIds);
@@ -266,7 +280,15 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       });
       if (injected) {
         yield* persist("injected");
-        return { context: "", delivered: Effect.void, unsent: Effect.void, uncoveredItems };
+        yield* input.onDelivered?.(selected.messages, summaryFactIds) ?? Effect.void;
+        return {
+          context: "",
+          messages: selected.messages,
+          summaryFactIds,
+          delivered: Effect.void,
+          unsent: Effect.void,
+          uncoveredItems,
+        };
       }
     } else {
       yield* persist("pending");
@@ -274,12 +296,16 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     if (input.deferInline) {
       // Compaction cannot carry inline transcripts; retain for the next turn if native injection is unsupported.
       yield* Effect.forEach(pending, input.persist, { discard: true });
-      return { context: "", delivered: Effect.void, unsent: Effect.void, uncoveredItems: 0 };
+      return empty;
     }
     return {
       uncoveredItems,
       context: renderHistory(selected.messages, selected.context),
-      delivered: persist("inline"),
+      messages: selected.messages,
+      summaryFactIds,
+      delivered: persist("inline").pipe(
+        Effect.andThen(input.onDelivered?.(selected.messages, summaryFactIds) ?? Effect.void),
+      ),
       unsent: Effect.forEach(pending, input.persist, { discard: true }),
     };
   },

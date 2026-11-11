@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { ChildProcessSpawner } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import {
@@ -13,6 +13,7 @@ import {
   parseTailscaleServeRoutesTo,
   parseTailscaleSshEnabled,
   parseTailscaleStatus,
+  readTailscaleServeRoutesTo,
   readTailscaleSshEnabled,
   readTailscaleStatus,
   TailscaleCommandExitError,
@@ -236,6 +237,30 @@ describe("tailscale", () => {
       assert.equal(disabled.httpsServeEnabled, false);
     }),
   );
+
+  it.effect("reads Serve routes when launched by a macOS GUI service", () => {
+    const status =
+      '{"Web":{"host.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3773"}}}}}';
+    const spawner = ChildProcessSpawner.make((command) => {
+      assert.isTrue(ChildProcess.isStandardCommand(command));
+      if (!ChildProcess.isStandardCommand(command)) return Effect.die("Expected a command");
+      return Effect.succeed(
+        mockHandle({
+          stdout:
+            command.options.env?.TAILSCALE_BE_CLI === "1" && command.options.extendEnv === true
+              ? status
+              : "The Tailscale GUI failed to start: Tailscale.CLIError error 3.",
+        }),
+      );
+    });
+    return Effect.gen(function* () {
+      const routes = yield* readTailscaleServeRoutesTo({ host: "127.0.0.1", port: 3773 });
+      assert.deepEqual(routes, [{ servePort: 443, mount: "/", host: "host.example.ts.net" }]);
+    }).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(HostProcess.Platform, "darwin"),
+    );
+  });
 
   it.effect("reads Tailscale SSH enablement from local prefs", () => {
     const prefsJson =

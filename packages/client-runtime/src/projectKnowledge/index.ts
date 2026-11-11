@@ -1,15 +1,8 @@
-export {
-  boundProjectMemorySuggestionQuery,
-  isSubstantiveProjectMemoryQuery,
-  selectProjectMemorySuggestions,
-  type ProjectMemorySuggestion,
-} from "@t3tools/contracts";
 import {
   WS_METHODS,
   type AssistedLearningRun,
   type KnowledgeConflictHint,
   type KnowledgeOrigin,
-  type KnowledgeSelection,
   type KnowledgeSourceUnavailableReason,
   type ProjectFact,
   type ProjectFactHistoryEntry,
@@ -225,20 +218,4 @@ export function knowledgeConflictHintLabel(hint: KnowledgeConflictHint): string 
     case "possible_conflict":
       return "Possible conflict with";
   }
-}
-
-export function addProjectMemorySuggestion(
-  selections: ReadonlyArray<KnowledgeSelection>,
-  fact: Pick<ProjectFact, "id" | "revision">,
-): ReadonlyArray<KnowledgeSelection> {
-  const selection = { kind: "fact" as const, factId: fact.id, revision: fact.revision };
-  const exists = selections.some((item) => item.kind === "fact" && item.factId === fact.id);
-  if (!exists) return selections.length < 20 ? [...selections, selection] : selections;
-  let replaced = false;
-  return selections.flatMap((item) => {
-    if (item.kind !== "fact" || item.factId !== fact.id) return [item];
-    if (replaced) return [];
-    replaced = true;
-    return [selection];
-  });
 }

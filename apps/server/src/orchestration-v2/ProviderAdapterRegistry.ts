@@ -39,14 +39,19 @@ export const ProviderAdapterRegistryV2Error = Schema.Union([
 export type ProviderAdapterRegistryV2Error = typeof ProviderAdapterRegistryV2Error.Type;
 
 export interface ProviderAdapterRegistryV2Shape {
-  readonly get: (
-    instanceId: ProviderInstanceId,
-  ) => Effect.Effect<ProviderAdapter.ProviderAdapterV2["Service"], ProviderAdapterRegistryV2Error>;
+  readonly get: (instanceId: ProviderInstanceId) => Effect.Effect<
+    ProviderAdapter.ProviderAdapterV2["Service"] & {
+      readonly continuationKey?: string;
+      readonly requiresBoundContinuationIdentity?: boolean;
+    },
+    ProviderAdapterRegistryV2Error
+  >;
   readonly list: () => Effect.Effect<ReadonlyArray<ProviderInstanceId>>;
   readonly getMetadata?: (instanceId: ProviderInstanceId) => Effect.Effect<
     {
       readonly driver: ProviderAdapter.ProviderAdapterV2["Service"]["driver"];
       readonly continuationKey: string;
+      readonly requiresBoundContinuationIdentity?: boolean;
       readonly enabled: boolean;
       readonly capabilities: OrchestrationV2ProviderCapabilities;
     },
@@ -73,7 +78,12 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
           Effect.flatMap((instance) => {
             if (instance === undefined)
               return new ProviderAdapterRegistryLookupError({ instanceId });
-            const adapter = instance.orchestrationAdapter;
+            const adapter = {
+              ...instance.orchestrationAdapter,
+              continuationKey: instance.continuationIdentity.continuationKey,
+              requiresBoundContinuationIdentity:
+                instance.requiresBoundContinuationIdentity === true,
+            };
             const auth = instance.auth;
             if (!auth) return Effect.succeed(adapter);
             return Effect.succeed({
@@ -146,6 +156,7 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
         return {
           driver: instance.driverKind,
           continuationKey: instance.continuationIdentity.continuationKey,
+          requiresBoundContinuationIdentity: instance.requiresBoundContinuationIdentity === true,
           enabled: instance.enabled,
           capabilities,
         };

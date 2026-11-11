@@ -8,7 +8,6 @@ import {
   type ProviderAccountOmission,
   type ProviderAccountSecret,
   ProviderAccountTransferError,
-  isInferenceConfig,
   type ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
@@ -83,8 +82,6 @@ export const makeProviderAccountTransfer = Effect.fn("ProviderAccountTransfer.ma
     yield* Effect.annotateCurrentSpan({ instanceId });
     const current = yield* settings.getSettings;
     const stored = current.providerInstances[instanceId];
-    if (isInferenceConfig(stored?.config))
-      return yield* new ProviderAccountTransferError({ instanceId, reason: "inference-route" });
     const driver = stored?.driver ?? implicitDefaultDriver(instanceId);
     if (driver === undefined)
       return yield* new ProviderAccountTransferError({
@@ -101,8 +98,6 @@ export const makeProviderAccountTransfer = Effect.fn("ProviderAccountTransfer.ma
   )(function* (account) {
     const { instanceId } = account;
     yield* Effect.annotateCurrentSpan({ instanceId });
-    if (isInferenceConfig(account.instance.config))
-      return yield* new ProviderAccountTransferError({ instanceId, reason: "inference-route" });
     const policy = yield* requirePolicy(instanceId, account.instance.driver);
     const driver = driversByKind.get(account.instance.driver);
     if (driver === undefined)
@@ -114,8 +109,6 @@ export const makeProviderAccountTransfer = Effect.fn("ProviderAccountTransfer.ma
 
     const committed = yield* settings.reviseProviderInstance(instanceId, (current, all) =>
       Effect.gen(function* () {
-        if (isInferenceConfig(current?.config))
-          return yield* new ProviderAccountTransferError({ instanceId, reason: "inference-route" });
         const merged = mergePortableAccount({
           current,
           implicitDriver: implicitDefaultDriver(instanceId),

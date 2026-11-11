@@ -1,4 +1,3 @@
-import { composerModelSelectionFor } from "@t3tools/client-runtime/provider-pools";
 import {
   type DraftId,
   deriveEffectiveComposerModelState,
@@ -52,7 +51,10 @@ export function useComposerProviderModel(
   } = input;
   const draftModelState = useComposerDraftModelState(threadRef);
   const providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry> =
-    deriveComposerProviderInstanceEntries(providerStatuses, settings, activeProjectId);
+    deriveComposerProviderInstanceEntries(providerStatuses, settings, activeProjectId, [
+      ...candidateInstanceIds,
+      lockedInstanceId,
+    ]);
   const selection = resolveComposerProviderSelection({
     entries: providerInstanceEntries,
     providers: providerStatuses,
@@ -70,10 +72,8 @@ export function useComposerProviderModel(
     selectedProvider,
     selectedInstanceId,
     requestedInstanceId: selection.requestedInstanceId,
-    threadModelSelection:
-      threadModelSelection && composerModelSelectionFor(providerStatuses, threadModelSelection),
-    projectModelSelection:
-      projectModelSelection && composerModelSelectionFor(providerStatuses, projectModelSelection),
+    threadModelSelection,
+    projectModelSelection,
     settings,
   });
   const selectedProviderModels = selection.selectedProviderEntry?.models ?? NO_PROVIDER_MODELS;

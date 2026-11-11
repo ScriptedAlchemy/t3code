@@ -57,7 +57,11 @@ module.exports = async ({ appOutDir, electronPlatformName, arch, packager }) => 
       runner,
       `require(${JSON.stringify(helper)}).generatePreparedServerCache(${JSON.stringify(resources)}).then(()=>process.exit(0),e=>{console.error(e);process.exit(1)})`,
     );
-    result = spawnSync(executable, [runner], { env, encoding: "utf8", timeout: 120000 });
+    result = spawnSync(executable, [runner], {
+      env,
+      encoding: "utf8",
+      timeout: runsWithRosetta ? 300000 : 120000,
+    });
   } finally {
     fs.rmSync(state, { recursive: true, force: true });
   }

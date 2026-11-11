@@ -11,6 +11,7 @@ it("streams an authorized request with a host key, then denies the revoked consu
   let throttled = false;
   let closed = false;
   let upstreamCalls = 0;
+  let linkedHost: string | undefined;
   let finish: (() => void) | undefined;
   const client = HttpClient.make((request, _url, signal) =>
     Effect.sync(() => {
@@ -53,12 +54,14 @@ it("streams an authorized request with a host key, then denies the revoked consu
     InferenceHttp.layer.pipe(
       Layer.provide(
         Layer.mock(InferenceProxy)({
-          authorize: (key) =>
-            Effect.succeed(
+          authorize: (key, hostId) => {
+            linkedHost = hostId;
+            return Effect.succeed(
               active && key === "consumer"
                 ? { baseUrl: "http://127.0.0.1:43210", key: "private-host-key" }
                 : null,
-            ),
+            );
+          },
         }),
       ),
       Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, client)),
@@ -90,6 +93,12 @@ it("streams an authorized request with a host key, then denies the revoked consu
     finish!();
     expect((await reader.read()).done).toBe(true);
     expect(closed).toBe(true);
+    const linked = await handler(request("linked/host/v1/messages?beta=true", "consumer"));
+    expect(linkedHost).toBe("host");
+    const linkedReader = linked.body!.getReader();
+    expect(new TextDecoder().decode((await linkedReader.read()).value)).toBe("data: first\n\n");
+    finish!();
+    expect((await linkedReader.read()).done).toBe(true);
     closed = false;
     const interrupted = await handler(request("v1/messages?beta=true", "consumer"));
     const activeReader = interrupted.body!.getReader();
@@ -103,7 +112,7 @@ it("streams an authorized request with a host key, then denies the revoked consu
     expect(await limited.text()).toBe("quota");
     active = false;
     expect((await handler(request("v1/messages", "consumer"))).status).toBe(403);
-    expect(upstreamCalls).toBe(3);
+    expect(upstreamCalls).toBe(4);
   } finally {
     await dispose();
   }

@@ -2020,6 +2020,108 @@ it.layer(
     ),
   );
 
+  it.effect("preserves inherited OpenCode config when routing provider terminals", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const path = yield* Path.Path;
+      for (const theme of [undefined, "terminal"]) {
+        const environment = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+          stateDir: "/state",
+          serverSettings,
+          path,
+          rawProviderInstanceId: "opencode",
+          env:
+            theme === undefined
+              ? undefined
+              : { OPENCODE_CONFIG_CONTENT: JSON.stringify({ theme }) },
+        });
+        expect(JSON.parse(environment.OPENCODE_CONFIG_CONTENT!)).toMatchObject({
+          theme: theme ?? "host",
+          provider: {
+            t3proxy: { models: { "gpt-fixture": { name: "gpt-fixture" } } },
+          },
+        });
+      }
+    }).pipe(
+      Effect.provideService(HostProcess.Environment, {
+        OPENCODE_CONFIG_CONTENT: '{"theme":"host"}',
+      }),
+      Effect.provide(
+        ServerSettings.layerTest({
+          providerInstances: {
+            [ProviderInstanceId.make("opencode")]: {
+              driver: ProviderDriverKind.make("opencode"),
+              config: {
+                inferenceEnabled: true,
+                inferenceHostId: "host",
+                inferenceHostLabel: "",
+                inferenceBaseUrl: "http://127.0.0.1:9876",
+                inferenceKey: "proxy-key",
+                inferenceModels: ["gpt-fixture"],
+                inferenceHomePath: "/proxy/home",
+              },
+            },
+          },
+        }),
+      ),
+    ),
+  );
+
+  it.effect("prepares the Pi proxy extension for its shell and clears it when routing stops", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const stateDir = yield* fs.makeTempDirectoryScoped();
+      const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const id = ProviderInstanceId.make("pi");
+      const native = {
+        driver: ProviderDriverKind.make("pi"),
+        config: {
+          binaryPath: "/missing/pi",
+          inferenceEnabled: true,
+          inferenceHostId: "host",
+          inferenceHostLabel: "Office",
+          inferenceBaseUrl: "http://127.0.0.1:9876",
+          inferenceKey: "proxy-key",
+          inferenceModels: ["gpt-fixture"],
+          inferenceHomePath: "/proxy/home",
+        },
+        environment: [
+          { name: "PI_CODING_AGENT_DIR", value: "/native/pi", sensitive: false },
+          { name: "OPENAI_API_KEY", value: "native-key", sensitive: true },
+        ],
+      };
+      yield* serverSettings.updateProviderInstance({
+        operation: "upsert",
+        instanceId: id,
+        instance: native,
+      });
+      const input = { stateDir, serverSettings, path, rawProviderInstanceId: id, env: undefined };
+      const active = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment(input);
+      expect(active.PI_CODING_AGENT_DIR).toBe("/native/pi");
+      expect(active.OPENAI_API_KEY).toBe("native-key");
+      expect(active.T3_INFERENCE_KEY).toBe("proxy-key");
+      expect(active.T3_PI_INFERENCE_EXTENSION).toBeDefined();
+      const source = yield* fs.readFileString(active.T3_PI_INFERENCE_EXTENSION!);
+      expect(source).not.toContain("proxy-key");
+      expect(source).not.toContain("native-key");
+      yield* serverSettings.updateProviderInstance({
+        operation: "upsert",
+        instanceId: id,
+        instance: { ...native, config: { ...native.config, inferenceEnabled: false } },
+      });
+      const stopped = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+        ...input,
+        env: active,
+      });
+      expect(stopped.PI_CODING_AGENT_DIR).toBe("/native/pi");
+      expect(stopped.OPENAI_API_KEY).toBe("native-key");
+      expect(stopped.T3_INFERENCE_KEY).toBe("");
+      expect(stopped.T3_PI_INFERENCE_CONFIG).toBe("");
+      expect(stopped.T3_PI_INFERENCE_EXTENSION).toBe("");
+    }).pipe(Effect.provide(ServerSettings.layerTest())),
+  );
+
   it.effect("restarts a running terminal when the resolved provider environment changes", () =>
     Effect.gen(function* () {
       const providerInstanceId = ProviderInstanceId.make("codex_work");
@@ -2045,6 +2147,7 @@ it.layer(
       Effect.gen(function* () {
         const serverSettings = yield* ServerSettings.ServerSettingsService;
         const path = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
         const providerInstanceId = ProviderInstanceId.make("codex_private");
         const { manager, ptyAdapter } = yield* createManager(5, {
           shellResolver: () => "/bin/sh",
@@ -2064,7 +2167,7 @@ it.layer(
               rawProviderInstanceId,
               env,
               stateDir: "/state",
-            }),
+            }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem)),
         }).pipe(Effect.provide(layerWithHostPlatform(platform)));
         yield* manager.open(openInput({ providerInstanceId }));
         yield* manager.close({ threadId: "thread-1" });
@@ -2102,6 +2205,7 @@ it.layer(
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const path = yield* Path.Path;
+      const fileSystem = yield* FileSystem.FileSystem;
       const providerInstanceId = ProviderInstanceId.make("claude_private");
       const { manager, ptyAdapter } = yield* createManager(5, {
         env: {
@@ -2119,7 +2223,7 @@ it.layer(
             rawProviderInstanceId,
             env,
             stateDir: "/state",
-          }),
+          }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem)),
       });
       yield* manager.open(openInput({ providerInstanceId }));
       expect(ptyAdapter.spawnInputs[0]!.env).toMatchObject({
@@ -2148,6 +2252,7 @@ it.layer(
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const path = yield* Path.Path;
+      const fileSystem = yield* FileSystem.FileSystem;
       const providerInstanceId = ProviderInstanceId.make("codex_restart");
       const { manager, ptyAdapter, logsDir } = yield* createManager(2, {
         historyByteLimit: 8,
@@ -2158,7 +2263,7 @@ it.layer(
             path,
             rawProviderInstanceId,
             env,
-          }),
+          }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem)),
       });
       const homePath = path.join(logsDir, "codex");
       const updateSecret = (value: string) =>

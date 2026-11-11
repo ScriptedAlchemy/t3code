@@ -32,6 +32,7 @@ import * as Option from "effect/Option";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -75,6 +76,8 @@ import {
 } from "./mcpInjection.ts";
 import { PI_FILE_CHANGE_TOOLS, PI_T3_SERVICE_TIER_COMMAND } from "./mcpExtensionSource.ts";
 import { PI_STANDARD_SERVICE_TIER } from "./modelCapabilities.ts";
+import { preparePiInferenceEnvironment } from "./inference.ts";
+import { T3_PI_INFERENCE_EXTENSION_ENV } from "./inferenceExtensionSource.ts";
 
 export const PI_PROVIDER = ProviderDriverKind.make("pi");
 const PI_DRIVER_KIND = PI_PROVIDER;
@@ -433,10 +436,24 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const agentScope = yield* AgentScope;
   const fileSystem = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const host = yield* ProviderHost.ProviderHost;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const { continuationRequests } = options;
+
+  const prepareEnvironment = Effect.fn("PiAdapter.prepareInferenceEnvironment")((cwd: string) =>
+    preparePiInferenceEnvironment({
+      config: options.settings,
+      environment: options.environment,
+      cacheDir: host.paths.providerStatusCacheDir,
+      cwd,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, pathService),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    ),
+  );
 
   const protocolError = (detail: string, payload?: unknown) =>
     new ProviderAdapter.ProviderAdapterProtocolError({
@@ -480,11 +497,22 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       if (!resolvedLaunchArgs.ok) {
         return yield* protocolError(resolvedLaunchArgs.message);
       }
+      const preparedEnvironment = yield* prepareEnvironment(cwd).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver: PI_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause,
+            }),
+        ),
+      );
       const launch = buildPiRpcLaunch({
         launchArgs: resolvedLaunchArgs.args,
-        environment: options.environment,
+        environment: preparedEnvironment,
         mcpSession,
         extensionPath,
+        trustedProviderExtensionPath: preparedEnvironment[T3_PI_INFERENCE_EXTENSION_ENV],
         runtimeMode: input.runtimePolicy.runtimeMode,
       });
       const scopedLaunch = yield* agentScope.wrap({
@@ -3332,11 +3360,13 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                   });
             // CLI --fork uses Pi's own session format and sets the destination cwd. RPC
             // switch_session/clone alone would retain the source cwd.
+            const forkEnvironment = yield* prepareEnvironment(cwd);
             const forkLaunch = buildPiRpcLaunch({
               launchArgs: resolvedLaunchArgs.args,
-              environment: options.environment,
+              environment: forkEnvironment,
               mcpSession: undefined,
               extensionPath: undefined,
+              trustedProviderExtensionPath: forkEnvironment[T3_PI_INFERENCE_EXTENSION_ENV],
               shortLived: true,
               disableExtensions: true,
               disableTools: true,
@@ -3680,6 +3710,7 @@ function piUiResponse(
 export type PiAdapterV2DriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
+  | Path.Path
   | IdAllocator.IdAllocatorV2
   | McpProviderSessions.McpProviderSessions
   | ProviderHost.ProviderHost;

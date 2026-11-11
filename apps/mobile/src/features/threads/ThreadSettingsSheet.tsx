@@ -119,7 +119,6 @@ import {
   visibleModelsForCatalog,
 } from "./thread-settings-sheet-state";
 import { formatProviderUpdateRequiredNotice } from "@t3tools/client-runtime/providerUpdateRequiredModels";
-import { composerModelSelectionFor } from "@t3tools/client-runtime/provider-pools";
 
 const PRIMARY_PROVIDER_DRIVERS: ReadonlySet<string> = new Set([
   "claudeAgent",
@@ -345,7 +344,6 @@ function ThreadSettingsSessionProvider(
           props.selectedModel,
           props.lockedProviderInstanceId,
           props.projectId,
-          "composer",
           true,
         )
       : props.providerGroups.flatMap((group) => group.models);
@@ -355,7 +353,7 @@ function ThreadSettingsSessionProvider(
       config,
       props.lockedProviderInstanceId,
       props.projectId,
-      "composer",
+      props.selectedModel?.instanceId,
     ),
   );
   const legacyFavorites = AsyncResult.isSuccess(preferences)
@@ -1342,10 +1340,7 @@ export function ExistingThreadSettingsRouteScreen({
   }
 
   const serverConfig = selectedEnvironmentRuntime?.serverConfig ?? null;
-  const modelSelection = composerModelSelectionFor(
-    serverConfig?.providers ?? [],
-    draftSettings.modelSelection ?? selectedThread.modelSelection,
-  );
+  const modelSelection = draftSettings.modelSelection ?? selectedThread.modelSelection;
   const lockedProviderInstanceId = threadAllowsProviderSwitch({
     thread: selectedThread,
     projection: structure?.projection,
@@ -1357,7 +1352,6 @@ export function ExistingThreadSettingsRouteScreen({
     modelSelection,
     lockedProviderInstanceId,
     selectedThread.projectId,
-    "composer",
   );
   const currentModelOption =
     modelOptions.find(
@@ -1380,7 +1374,7 @@ export function ExistingThreadSettingsRouteScreen({
           serverConfig,
           lockedProviderInstanceId,
           selectedThread.projectId,
-          "composer",
+          modelSelection.instanceId,
         ),
       )}
       selectedModel={modelSelection}

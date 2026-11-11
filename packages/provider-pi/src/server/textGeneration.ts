@@ -1,4 +1,6 @@
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -10,6 +12,8 @@ import type { PiSettings } from "../settings.ts";
 
 import { makePiRpcConnection, piRecordField, piRecordString, resolvePiModelSlug } from "./rpc.ts";
 import { buildPiRpcLaunch, resolvePiLaunchArgs } from "./mcpInjection.ts";
+import { preparePiInferenceEnvironment } from "./inference.ts";
+import { T3_PI_INFERENCE_EXTENSION_ENV } from "./inferenceExtensionSource.ts";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 
 const PI_TIMEOUT_MS = 180_000;
@@ -28,8 +32,11 @@ const piTurnErrorDetail = (errorMessage: string | undefined) => {
 export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* (
   piSettings: PiSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  cacheDir = "",
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
   const resolvedLaunchArgs = resolvePiLaunchArgs(piSettings.launchArgs);
   const supportsBlindEvaluation =
     resolvedLaunchArgs.ok &&
@@ -61,11 +68,30 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
             "Blind evaluation cannot use Pi launch arguments that add prompts, skills, or extensions. Choose a separate evaluator instance without these arguments.",
         });
       }
+      const preparedEnvironment = yield* preparePiInferenceEnvironment({
+        config: piSettings,
+        environment,
+        cacheDir,
+        cwd,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, pathService),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation,
+              detail: cause.detail ?? "Could not prepare Pi inference routing.",
+              cause,
+            }),
+        ),
+      );
       const launch = buildPiRpcLaunch({
         launchArgs: resolvedLaunchArgs.args,
-        environment,
+        environment: preparedEnvironment,
         mcpSession: undefined,
         extensionPath: undefined,
+        trustedProviderExtensionPath: preparedEnvironment[T3_PI_INFERENCE_EXTENSION_ENV],
         ephemeral: true,
         shortLived: true,
         disableExtensions: true,

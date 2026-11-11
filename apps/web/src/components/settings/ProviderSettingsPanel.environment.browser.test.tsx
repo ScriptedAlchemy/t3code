@@ -19,6 +19,7 @@ import { act, render } from "../../../test/render";
 
 const state = vi.hoisted(() => ({
   providers: null as unknown as Atom.Writable<ReadonlyArray<ServerProvider>>,
+  config: null as unknown as Atom.Writable<unknown>,
   providerAuthQuery: null as unknown,
   providerAuth: null as ProviderAuthState | null,
   settings: null as unknown as UnifiedSettings,
@@ -44,7 +45,8 @@ vi.mock(import("../../state/server"), async (original) => {
   const { Atom } = await import("effect/reactivity");
   const providers = Atom.make<ReadonlyArray<ServerProvider>>([]).pipe(Atom.keepAlive);
   state.providers = providers;
-  const config = Atom.make(null);
+  const config = Atom.make<unknown>(null).pipe(Atom.keepAlive);
+  state.config = config;
   const providerAuth = Atom.make(null);
   state.providerAuthQuery = providerAuth;
   const commandLabels = {
@@ -229,6 +231,7 @@ function panel(options?: {
 async function setup() {
   await page.viewport(1280, 900);
   state.settings = DEFAULT_UNIFIED_SETTINGS;
+  await act(async () => appAtomRegistry.set(state.config, null));
   state.canManageProviders = true;
   state.canWriteSettings = true;
   state.searchTargetId = null;
@@ -283,6 +286,96 @@ describe("EnvironmentProviderSettings routing", () => {
       {},
     );
   });
+
+  it.each(["codex", "opencode", "pi"] as const)(
+    "turns %s proxy routing on and off while preserving its native account behavior",
+    async (driver) => {
+      const providerId = ProviderInstanceId.make(driver);
+      const personalId = ProviderInstanceId.make(`${driver}_work`);
+      await setup();
+      const native = {
+        driver: ProviderDriverKind.make(driver),
+        enabled: true,
+        environment: [{ name: "NATIVE_PROFILE", value: "personal", sensitive: false }],
+        config: {
+          setupMode: "existing",
+          homePath: "/native/codex",
+          launchArgs: "--config allow_telemetry=false",
+          inferenceEnabled: false,
+          inferenceHostId: environmentId,
+          inferenceHostLabel: "Remote device",
+          inferenceBaseUrl: "http://127.0.0.1:8318",
+          inferenceKey: "fixture-grant",
+          inferenceModels: ["gpt-fixture"],
+          inferenceHomePath: "/state/inference/codex",
+        },
+      };
+      state.settings = {
+        ...DEFAULT_UNIFIED_SETTINGS,
+        providerInstances: {
+          [providerId]: native,
+          [personalId]: { driver: ProviderDriverKind.make(driver), displayName: "Personal" },
+          [ProviderInstanceId.make("codex_traex")]: {
+            driver: ProviderDriverKind.make("codex"),
+            displayName: "Traex",
+            config: { launchArgs: '-c model_provider="traex"' },
+          },
+        },
+      };
+      await act(async () =>
+        appAtomRegistry.set(state.config, {
+          environment: { capabilities: { inferenceProxy: true } },
+        }),
+      );
+      await setProviders([
+        {
+          ...provider(),
+          instanceId: providerId,
+          driver: ProviderDriverKind.make(driver),
+          setup: { canAuthenticate: true, canInstall: true },
+        },
+      ]);
+      await using screen = await render(panel({ targetInstanceId: providerId }));
+      await expect.element(screen.getByText("Personal", { exact: true })).toBeVisible();
+      await userEvent.click(screen.getByRole("switch", { name: "Use CLI proxy" }));
+      expect(state.mutateProviderInstance).toHaveBeenLastCalledWith(
+        {
+          operation: "upsert",
+          instanceId: providerId,
+          instance: { ...native, config: { ...native.config, inferenceEnabled: true } },
+        },
+        {},
+      );
+      state.settings = {
+        ...state.settings,
+        providerInstances: {
+          ...state.settings.providerInstances,
+          [providerId]: { ...native, config: { ...native.config, inferenceEnabled: true } },
+        },
+      };
+      await screen.rerender(panel({ targetInstanceId: providerId }));
+      if (driver === "codex") {
+        await expect.element(screen.getByText("Personal", { exact: true })).not.toBeInTheDocument();
+        await expect
+          .element(screen.getByText("Personal is hidden while the proxy is on", { exact: false }))
+          .toBeVisible();
+        await expect
+          .element(screen.getByRole("heading", { name: "Account", exact: true }))
+          .not.toBeInTheDocument();
+      } else {
+        await expect.element(screen.getByText("Personal", { exact: true })).toBeVisible();
+        await expect
+          .element(screen.getByRole("heading", { name: "Account", exact: true }))
+          .toBeVisible();
+      }
+      await expect.element(screen.getByText("Traex", { exact: true })).toBeVisible();
+      await userEvent.click(screen.getByRole("switch", { name: "Use CLI proxy" }));
+      expect(state.mutateProviderInstance).toHaveBeenLastCalledWith(
+        { operation: "upsert", instanceId: providerId, instance: native },
+        {},
+      );
+    },
+  );
 
   it("routes explicit ACP browser authentication consent to the selected environment", async () => {
     await setup();

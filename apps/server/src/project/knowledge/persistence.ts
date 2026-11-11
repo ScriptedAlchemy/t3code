@@ -66,6 +66,7 @@ const FactRow = Schema.Struct({
   sources: Schema.fromJsonString(Schema.Array(KnowledgeFactSource)),
 });
 const encodeOrigin = Schema.encodeSync(Schema.fromJsonString(KnowledgeOrigin));
+const encodeFactIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(ProjectFactId)));
 const encodeLabels = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 const encodeSources = Schema.encodeSync(Schema.fromJsonString(Schema.Array(KnowledgeFactSource)));
 const decodeRows = Schema.decodeUnknownEffect(Schema.Array(FactRow));
@@ -685,6 +686,49 @@ export const makeStore = Effect.gen(function* () {
       ...(providerThreadId == null ? {} : { providerThreadId }),
     }));
   });
+  const recordViews = Effect.fn("ProjectKnowledgeStore.recordViews")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+    factIds: ReadonlyArray<ProjectFactId>,
+  ) {
+    if (factIds.length === 0) return;
+    yield* sql`INSERT OR IGNORE INTO project_knowledge_views (project_id, thread_id, fact_id)
+      SELECT ${projectId}, ${threadId}, value FROM json_each(${encodeFactIds(factIds)})`;
+  });
+  // Returns every fact a thread's agent has been shown, either read through its tools or
+  // delivered with a message. An uncertain delivery may have arrived, so it counts.
+  // A rolled-back run's deliveries left the conversation with it, so they do not.
+  // A turn's own message sent to another native conversation never reached the one it targets.
+  const seenFactIds = Effect.fn("ProjectKnowledgeStore.seenFactIds")(function* (
+    projectId: ProjectId,
+    threadId: ThreadId,
+    turn?: Omit<DeliveryStateInput, "projectId" | "threadId" | "scope">,
+  ) {
+    const rows = yield* sql<{ readonly factId: ProjectFactId }>`
+      SELECT fact_id AS "factId" FROM project_knowledge_views
+      WHERE project_id = ${projectId} AND thread_id = ${threadId}
+      UNION
+      SELECT json_extract(selection.value, '$.factId') AS "factId"
+      FROM project_knowledge_deliveries d, json_each(d.items_json) item,
+        json_each(item.value, '$.context.selections') selection
+      WHERE d.project_id = ${projectId} AND d.thread_id = ${threadId}
+        AND d.status IN ('sent', 'uncertain')
+        AND json_extract(selection.value, '$.kind') = 'fact'
+        AND ${
+          turn === undefined
+            ? sql`TRUE`
+            : sql`(d.message_id != ${turn.messageId} OR ${deliveryTargetPredicate({
+                ...turn,
+                projectId,
+                threadId,
+                nativeThreadId: turn.nativeThreadId ?? null,
+                scope: "native-conversation",
+              })})`
+        }
+        AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs AS run
+          WHERE run.run_id = d.run_id AND run.status = 'rolled_back')`;
+    return new Set(rows.map((row) => row.factId));
+  });
   const assistedRunRecorded = Effect.fn("ProjectKnowledgeStore.assistedRunRecorded")(function* (
     runId: RunId,
   ) {
@@ -743,6 +787,8 @@ export const makeStore = Effect.gen(function* () {
     replaceDeliveryItems,
     deliveries,
     sentDeliveries,
+    recordViews,
+    seenFactIds,
     deliveryPage,
   };
 });

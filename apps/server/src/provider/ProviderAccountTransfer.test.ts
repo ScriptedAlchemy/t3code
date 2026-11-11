@@ -155,6 +155,12 @@ describe("ProviderAccountTransfer", () => {
           providerInstances: {
             [workCodex]: {
               ...sourceCodex,
+              config: {
+                ...sourceCodex.config,
+                inferenceEnabled: true,
+                inferenceHostId: "consumer-scoped-host",
+                inferenceKey: "consumer-only-grant",
+              },
               environment: [...sourceCodex.environment, secretBacked("op://work/org")],
             },
           },
@@ -174,6 +180,10 @@ describe("ProviderAccountTransfer", () => {
       expect(exported.omitted).toEqual([
         { setting: { _tag: "ConfigField", field: "binaryPath" }, reason: "machine-local" },
         { setting: { _tag: "ConfigField", field: "homePath" }, reason: "machine-local" },
+        ...["inferenceEnabled", "inferenceHostId", "inferenceKey"].map((field) => ({
+          setting: { _tag: "ConfigField", field },
+          reason: "machine-local",
+        })),
         { setting: { _tag: "EnvironmentVariable", name: "CODEX_HOME" }, reason: "machine-local" },
         {
           setting: { _tag: "EnvironmentVariable", name: "GOOGLE_APPLICATION_CREDENTIALS" },
@@ -195,28 +205,6 @@ describe("ProviderAccountTransfer", () => {
       expect(yield* failure(a.transfer.exportAccount(ProviderInstanceId.make("nope")))).toBe(
         "instance-not-found",
       );
-    }),
-  );
-
-  it.effect("requires each environment to provision its own inference grant", () =>
-    Effect.gen(function* () {
-      const a = yield* makeEnvironment({
-        settings: {
-          providerInstances: {
-            [workCodex]: {
-              driver: codex,
-              config: { setupMode: "inference" },
-              environment: [
-                { name: "T3_INFERENCE_KEY", sensitive: true, value: "only-for-source" },
-              ],
-            },
-          },
-        },
-      });
-      expect(yield* failure(a.transfer.exportAccount(workCodex))).toBe("inference-route");
-      const source = yield* makeEnvironment({ settings: sourceSettings });
-      const account = yield* source.transfer.exportAccount(workCodex);
-      expect(yield* failure(a.transfer.importAccount(account))).toBe("inference-route");
     }),
   );
 

@@ -77,7 +77,6 @@ export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
   modelEvaluations: Schema.optionalKey(Schema.Boolean),
   projectKnowledge: Schema.optionalKey(Schema.Boolean),
-  projectKnowledgePreview: Schema.optionalKey(Schema.Boolean),
   /** projectKnowledge.readFact, projectKnowledge.status and the supersede mutation. */
   projectKnowledgeHistory: Schema.optionalKey(Schema.Boolean),
   /** projectKnowledge.readDeliveries and the recorded copy delivered with sent messages. */
@@ -146,7 +145,6 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   usagePriceOverrides: Schema.optionalKey(Schema.Boolean),
   usageModelAliases: Schema.optionalKey(Schema.Boolean),
   inferenceProxy: Schema.optionalKey(Schema.Boolean),
-  providerPools: Schema.optionalKey(Schema.Boolean),
   threadPinning: Schema.optionalKey(Schema.Boolean),
   threadPinReorder: Schema.optionalKey(Schema.Boolean),
   threadActiveReorder: Schema.optionalKey(Schema.Boolean),

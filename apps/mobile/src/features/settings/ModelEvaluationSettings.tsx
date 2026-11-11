@@ -90,7 +90,7 @@ function EnvironmentEvaluationSettings(props: {
   const capable = new Set(
     config.providers.filter(isModelEvaluationJudge).map((provider) => provider.instanceId),
   );
-  const models = buildModelOptions(config, selection, undefined, null, "settings").filter(
+  const models = buildModelOptions(config, selection, undefined, null).filter(
     (model) => capable.has(model.selection.instanceId) && !model.isUnavailable,
   );
   const selectedProvider = config.providers.find(

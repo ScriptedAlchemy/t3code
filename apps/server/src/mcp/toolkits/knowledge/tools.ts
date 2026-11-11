@@ -18,7 +18,6 @@ import {
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
 import * as Schema from "effect/Schema";
-import * as Struct from "effect/Struct";
 import * as ProjectKnowledge from "../../../project/knowledge/ProjectKnowledge.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -38,7 +37,7 @@ export const KnowledgeToolkit = Toolkit.make(
     description:
       "Use when a task depends on prior project decisions, conventions, constraints, or agent observations. Resolve projectId from the selected environment's registered projects with t3_project_list and t3_project_read using the same environmentId. Read returned message citations with t3_knowledge_read_source in that same environment before relying on them. Facts use holographic and lexical ranking. Unavailable ranking is explicit. Superseded facts are excluded unless includeSuperseded is set. Reuse requestId for retries so retrieval is counted once.",
     parameters: Schema.Struct({
-      ...Struct.omit(ProjectKnowledgeSearchInput.fields, ["preview"]),
+      ...ProjectKnowledgeSearchInput.fields,
       environmentId: OrchestratorMcpEnvironmentTarget,
     }),
     success: ProjectKnowledgeSearchResult,
@@ -108,7 +107,7 @@ export const KnowledgeToolkit = Toolkit.make(
   Tool.make("t3_knowledge_mutate", {
     ...shared,
     description:
-      "Create or edit project knowledge, supersede a fact with a replacement, forget a fact, or give trust feedback. When a fact comes from a conversation message, attach that exact message citation. Leave sources empty only for an agent observation with no message source; its origin is recorded from this authenticated caller. Facts are saved immediately and can be recalled by search, but are not automatically added to the prompt. Saving records a claim with its origin, not proof that it is true. Agents cannot claim direct user assertions. Reuse commandId when retrying. Updates require the current revision. Supersede creates replacementFactId and keeps the old fact's content but removes it from recall; prefer it over forget when knowledge changed. Created, edited and replacement facts return hints naming possible duplicates or conflicts to review. Forgotten facts cannot be restored.",
+      "Create or edit project knowledge, supersede a fact with a replacement, forget a fact, or give trust feedback. When a fact comes from a conversation message, attach that exact message citation. Leave sources empty only for an agent observation with no message source; its origin is recorded from this authenticated caller. Facts are saved immediately. Search finds them, and related ones are sent with later user messages. Saving records a claim with its origin, not proof that it is true. Agents cannot claim direct user assertions. Reuse commandId when retrying. Updates require the current revision. Supersede creates replacementFactId and keeps the old fact's content but removes it from recall; prefer it over forget when knowledge changed. Created, edited and replacement facts return hints naming possible duplicates or conflicts to review. Forgotten facts cannot be restored.",
     parameters: Schema.Struct({
       mutation: ProjectKnowledgeMutation,
       environmentId: OrchestratorMcpEnvironmentTarget,

@@ -113,7 +113,7 @@ function SettingsContentLayout() {
   const contentScopeKey =
     location.pathname === "/settings/diagnostics" ||
     location.pathname === "/settings/providers" ||
-    location.pathname === "/settings/account-pools"
+    location.pathname === "/settings/inference"
       ? environment?.environmentId
       : JSON.stringify(search);
   const [restoreSignal, setRestoreSignal] = useState(0);
@@ -154,7 +154,7 @@ function SettingsRouteLayout() {
       search={rawSearch}
       singleEnvironment={
         pathname === "/settings/providers" ||
-        pathname === "/settings/account-pools" ||
+        pathname === "/settings/inference" ||
         pathname === "/settings/secrets"
       }
       onChange={(next) => {

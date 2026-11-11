@@ -67,12 +67,24 @@ const declaredFailure = (result: McpSchema.CallToolResult) => {
   return result.isError === true && text?.type === "text" ? JSON.parse(text.text) : undefined;
 };
 
-it.effect("registers knowledge tools and preserves the mutation and caller origin", () =>
+it.effect("registers knowledge tools and attributes writes and reads to the calling thread", () =>
   Effect.gen(function* () {
     const received = yield* Ref.make<
       { readonly input: ProjectKnowledgeMutation; readonly actor: KnowledgeOrigin } | undefined
     >(undefined);
+    const viewers = yield* Ref.make<ReadonlyArray<ThreadId | undefined>>([]);
+    const readBy = (viewer: ThreadId | undefined) =>
+      Ref.update(viewers, (all) => [...all, viewer]).pipe(
+        Effect.andThen(
+          Effect.fail(
+            new ProjectKnowledgeError({ reason: "missing_project", projectId: mutation.projectId }),
+          ),
+        ),
+      );
     const knowledge = Layer.mock(ProjectKnowledge.ProjectKnowledge)({
+      search: (_input, viewer) => readBy(viewer),
+      list: (_input, viewer) => readBy(viewer),
+      readFact: (_input, viewer) => readBy(viewer),
       mutateWithHints: (input, actor) =>
         Ref.set(received, { input, actor }).pipe(
           Effect.andThen(
@@ -96,18 +108,21 @@ it.effect("registers knowledge tools and preserves the mutation and caller origi
       ),
       Layer.provide(knowledge),
     );
-    const call = (
+    const callTool = (
       invocation: McpInvocationContext.McpInvocationScope,
-      input: ProjectKnowledgeMutation = mutation,
+      name: string,
+      args: Record<string, unknown>,
     ) =>
       McpServer.McpServer.pipe(
-        Effect.flatMap((server) =>
-          server.callTool({ name: "t3_knowledge_mutate", arguments: { mutation: input } }),
-        ),
+        Effect.flatMap((server) => server.callTool({ name, arguments: args })),
         Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
         Effect.provideService(McpSchema.McpServerClient, client),
         Effect.provide(serverLayer),
       );
+    const call = (
+      invocation: McpInvocationContext.McpInvocationScope,
+      input: ProjectKnowledgeMutation = mutation,
+    ) => callTool(invocation, "t3_knowledge_mutate", { mutation: input });
     const result = yield* call(scope);
     const denied = yield* call(
       { ...scope, capabilities: new Set() },
@@ -116,6 +131,15 @@ it.effect("registers knowledge tools and preserves the mutation and caller origi
         content: "This input must not reach the service.",
       },
     );
+    const { projectId, factId } = mutation;
+    for (const [name, args] of [
+      ["t3_knowledge_search", { projectId, query: "schema", requestId: "mcp-knowledge-search" }],
+      ["t3_knowledge_list", { projectId }],
+      ["t3_knowledge_read_fact", { projectId, factId }],
+    ] as const)
+      yield* callTool(scope, name, args);
+    // Recall skips facts a thread's agent has read, so each read tool passes its thread.
+    expect(yield* Ref.get(viewers)).toEqual([threadId, threadId, threadId]);
     expect(declaredFailure(result)).toMatchObject({ code: "invalid_request" });
     expect(declaredFailure(denied)).toMatchObject({ code: "capability_denied" });
     expect(yield* Ref.get(received)).toEqual({

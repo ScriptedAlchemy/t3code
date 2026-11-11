@@ -1,6 +1,28 @@
-import type { ProviderDriverKind } from "@t3tools/contracts";
+import {
+  inferenceHarness,
+  isInferenceAccountReplaced,
+  isInferenceProviderConfig,
+  type ProviderDriverKind,
+  type ServerProvider,
+  type ServerSettings,
+} from "@t3tools/contracts";
 
 export { resolveProviderInstanceDisplayName } from "@t3tools/shared/providerInstanceDisplay";
+
+export function nativeAccountProviders<T extends Pick<ServerProvider, "driver" | "instanceId">>(
+  providers: ReadonlyArray<T>,
+  instances: ServerSettings["providerInstances"],
+) {
+  return providers.filter((provider) => {
+    const config = instances[provider.instanceId]?.config;
+    if (isInferenceAccountReplaced(provider.instanceId, instances)) return false;
+    return (
+      !inferenceHarness(provider.driver)?.replacesAccounts ||
+      !isInferenceProviderConfig(config) ||
+      !config.inferenceEnabled
+    );
+  });
+}
 
 export function providerInstanceInitials(label: string): string {
   // Punctuation separates words so "Codex (hub)" reads CH, not C(. An apostrophe

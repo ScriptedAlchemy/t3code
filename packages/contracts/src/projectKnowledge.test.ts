@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 import {
   ProjectKnowledgeDelivery,
   ProjectKnowledgeSearchResult,
-  selectProjectMemorySuggestions,
+  selectProjectMemoryRecallMatches,
   ProjectKnowledgeListInput,
   ProjectKnowledgeListResult,
   ProjectKnowledgeMutation,
@@ -141,7 +141,7 @@ it.each(["over_budget", "source_unavailable", "stale_revision", "not_permitted",
   },
 );
 
-describe("project memory suggestions", () => {
+describe("project memory recall matches", () => {
   it("keeps only strong cited matches and bounds optional context", () => {
     const score = {
       holographic: 1,
@@ -171,12 +171,12 @@ describe("project memory suggestions", () => {
         ],
       },
     });
-    expect(selectProjectMemorySuggestions(result).map((item) => item.fact.id)).toEqual([
+    expect(selectProjectMemoryRecallMatches(result).map((item) => item.fact.id)).toEqual([
       "first",
       "second",
     ]);
     expect(
-      selectProjectMemorySuggestions({
+      selectProjectMemoryRecallMatches({
         ...result,
         facts: { state: "unavailable", reason: "kernel_unavailable" },
       }),

@@ -1,6 +1,7 @@
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
+import { nativeAccountProviders } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -9,7 +10,6 @@ import {
 import {
   AuthProvidersManageScope,
   isManagedDriverAllowed,
-  isInferenceConfig,
   type ProviderAuthResponse,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -86,9 +86,9 @@ function EnvironmentProviders({
   readonly environment: SettingsTarget;
   readonly providers: ReadonlyArray<ServerProvider>;
 }) {
-  const directProviders = providers.filter(
-    (p) =>
-      !isInferenceConfig(environment.serverConfig.settings.providerInstances[p.instanceId]?.config),
+  const directProviders = nativeAccountProviders(
+    providers,
+    environment.serverConfig.settings.providerInstances,
   );
   const accounts = directProviders.filter(canManageProvider);
   const claudeAccounts = directProviders.filter(

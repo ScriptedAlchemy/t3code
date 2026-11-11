@@ -1,5 +1,8 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  isInferenceProviderConfig,
+  isCustomInferenceBackend,
+  inferenceHarness,
   ModelSelection,
   ProjectId,
   ProjectScript,
@@ -8,9 +11,7 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceMutation,
   defaultInstanceIdForDriver,
-  isInferenceConfig,
   isProviderDriverKind,
-  isReservedProviderInstanceId,
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
@@ -185,6 +186,64 @@ function withoutUnknownSecretProviderConfigs(
   ) as ServerSettings["secretProviders"];
 }
 
+const RETIRED_INSTANCE_ID =
+  /^(?:pool_(codex|claudeAgent)|inference_(codex|claudeAgent)_[0-9a-f]{16})$/;
+/** Saved-data upgrades only. Nothing resolves a provider through this at runtime. */
+export const retiredInstanceSuccessor = (instanceId: string) => {
+  const match = RETIRED_INSTANCE_ID.exec(instanceId);
+  return match === null ? undefined : (match[1] ?? match[2]);
+};
+
+function retireInstanceReferences(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const next = value.map(retireInstanceReferences);
+    return next.some((entry, index) => entry !== value[index]) ? next : value;
+  }
+  if (typeof value !== "object" || value === null) return value;
+  let changed = false;
+  const next: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const successor = retiredInstanceSuccessor(key);
+    if (successor !== undefined) {
+      changed = true;
+      // The successor's own entry wins. A retired entry only fills a gap.
+      if (successor in value) continue;
+    }
+    const reference =
+      (key === "instanceId" || key === "provider") && typeof entry === "string"
+        ? retiredInstanceSuccessor(entry)
+        : undefined;
+    const nextEntry = reference ?? retireInstanceReferences(entry);
+    changed ||= nextEntry !== entry;
+    next[successor ?? key] = nextEntry;
+  }
+  return changed ? next : value;
+}
+
+/**
+ * Account pools and per-host route instances became a mode of the driver's default instance.
+ * Drops the old instances and points saved model choices at the default one.
+ */
+function retireInferenceRouteInstances(settings: ServerSettings): {
+  readonly settings: ServerSettings;
+  readonly dropped: ServerSettings["providerInstances"];
+} {
+  const { providerInstances: current, ...rest } = settings;
+  const entries = Object.entries(current);
+  const kept = entries.filter(([id]) => retiredInstanceSuccessor(id) === undefined);
+  const dropped = entries.filter(([id]) => retiredInstanceSuccessor(id) !== undefined);
+  const retired = retireInstanceReferences(rest);
+  return retired === rest && dropped.length === 0
+    ? { settings, dropped: {} }
+    : {
+        settings: {
+          ...(retired as typeof rest),
+          providerInstances: Object.fromEntries(kept),
+        } as ServerSettings,
+        dropped: Object.fromEntries(dropped) as ServerSettings["providerInstances"],
+      };
+}
+
 export function applyProviderInstanceMutation(
   settings: ServerSettings,
   mutation: ProviderInstanceMutation,
@@ -192,32 +251,10 @@ export function applyProviderInstanceMutation(
   const providerInstances = { ...settings.providerInstances };
   if (mutation.operation === "upsert" || mutation.operation === "create") {
     providerInstances[mutation.instanceId] = mutation.instance;
-    const { driver, config } = mutation.instance;
-    if (isInferenceConfig(config) && !settings.retiredPoolRoutes?.[driver]) {
-      const providerPools = { ...settings.providerPools };
-      delete providerPools[driver];
-      return {
-        ...settings,
-        providerInstances,
-        providerPools,
-        retiredPoolRoutes: { ...settings.retiredPoolRoutes, [driver]: mutation.instanceId },
-      };
-    }
     return { ...settings, providerInstances };
   }
   delete providerInstances[mutation.instanceId];
-  const providerPools = Object.fromEntries(
-    Object.entries(settings.providerPools).map(([driver, pool]) => [
-      driver,
-      {
-        ...pool,
-        memberInstanceIds: pool.memberInstanceIds.filter(
-          (memberId) => memberId !== mutation.instanceId,
-        ),
-      },
-    ]),
-  );
-  return { ...settings, providerInstances, providerPools };
+  return { ...settings, providerInstances };
 }
 
 const secretProviderConfigGuards = new Map(
@@ -259,11 +296,31 @@ function ensureProviderInstanceMutationAllowed(
   mutation: ProviderInstanceMutation,
   settingsPath: string,
 ): Effect.Effect<void, ServerSettingsError> {
+  if (mutation.operation !== "remove") {
+    const canonicalId = defaultInstanceIdForDriver(mutation.instance.driver);
+    const canonical = settings.providerInstances[canonicalId];
+    if (
+      mutation.instanceId !== canonicalId &&
+      inferenceHarness(mutation.instance.driver)?.replacesAccounts === true &&
+      canonical &&
+      isInferenceProviderConfig(canonical.config) &&
+      canonical.config.inferenceEnabled &&
+      !isCustomInferenceBackend(mutation.instance) &&
+      (mutation.operation === "create" ||
+        settings.providerInstances[mutation.instanceId]?.driver !== mutation.instance.driver)
+    )
+      return Effect.fail(
+        new ServerSettingsError({
+          settingsPath,
+          operation: "create-provider-instance",
+          providerInstanceId: mutation.instanceId,
+          cause: new Error("Add accounts through the inference provider's account settings."),
+        }),
+      );
+  }
   if (
-    mutation.operation !== "remove" &&
-    (isReservedProviderInstanceId(mutation.instanceId) ||
-      (mutation.operation === "create" &&
-        settings.providerInstances[mutation.instanceId] !== undefined))
+    mutation.operation === "create" &&
+    settings.providerInstances[mutation.instanceId] !== undefined
   ) {
     return Effect.fail(
       new ServerSettingsError({
@@ -274,18 +331,6 @@ function ensureProviderInstanceMutationAllowed(
     );
   }
   return Effect.void;
-}
-
-function rejectLegacyPoolWrites(patch: ServerSettingsPatch, settingsPath: string) {
-  return Object.values(patch.providerPools ?? {}).some((pool) => pool !== null)
-    ? Effect.fail(
-        new ServerSettingsError({
-          settingsPath,
-          operation: "validate-provider-pool",
-          cause: new Error("Configure inference hosting to pool provider accounts."),
-        }),
-      )
-    : Effect.void;
 }
 
 export class ServerSettingsService extends Context.Service<
@@ -398,15 +443,12 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
     getSettings,
     updateSettings: (patch) =>
       updateTestSettings((currentSettings) =>
-        rejectLegacyPoolWrites(patch, "test settings").pipe(
-          Effect.as(applyServerSettingsPatch(currentSettings, patch)),
-        ),
+        Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
       ),
     updateProviderInstance: (mutation, patch = {}) =>
       updateTestSettings((currentSettings) =>
         Effect.gen(function* () {
           yield* ensureProviderInstanceMutationAllowed(currentSettings, mutation, "test settings");
-          yield* rejectLegacyPoolWrites(patch, "test settings");
           const patched = applyServerSettingsPatch(currentSettings, patch);
           return applyProviderInstanceMutation(patched, mutation);
         }),
@@ -471,6 +513,8 @@ const decodePersistedServerSettingsExit = Schema.decodeUnknownExit(PersistedServ
 const LegacyProviderSettingsJson = fromLenientJson(
   Schema.Struct({
     providers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+    retiredPoolRoutes: Schema.optionalKey(Schema.Unknown),
+    providerPools: Schema.optionalKey(Schema.Unknown),
     bitbucket: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
     github: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   }),
@@ -874,6 +918,7 @@ const make = Effect.gen(function* () {
   const loadSettingsFromDisk = Effect.gen(function* () {
     let settings = managed.defaults;
     let legacyProviders: Readonly<Record<string, unknown>> | undefined;
+    let hasRetiredPoolKeys = false;
     let legacySourceControl: Parameters<typeof migrateLegacySourceControlSettings>[1] = {};
     let parseFailure = Option.none<unknown>();
 
@@ -886,6 +931,9 @@ const make = Effect.gen(function* () {
       const legacySettings = decodeLegacyProviderSettingsJsonExit(raw);
       if (legacySettings._tag === "Success") {
         legacyProviders = legacySettings.value.providers;
+        hasRetiredPoolKeys =
+          legacySettings.value.retiredPoolRoutes !== undefined ||
+          legacySettings.value.providerPools !== undefined;
         legacySourceControl = {
           bitbucket: legacySettings.value.bitbucket,
           github: legacySettings.value.github,
@@ -970,9 +1018,9 @@ const make = Effect.gen(function* () {
         ? settings
         : migrateLegacyProviderSettings(settings, legacyProviders, providerHistory),
     );
-    const folded = settingsFileTrusted
-      ? foldLegacyProjectSettings(loaded, legacyProjectRows)
-      : loaded;
+    const { settings: folded, dropped: retiredInstances } = settingsFileTrusted
+      ? retireInferenceRouteInstances(foldLegacyProjectSettings(loaded, legacyProjectRows))
+      : { settings: loaded, dropped: {} };
     // Remove retired keys only after copying secrets and writing the new file; failures retry on next load.
     const legacySecretsCopied = yield* Effect.forEach(
       settingsFileTrusted
@@ -1003,10 +1051,21 @@ const make = Effect.gen(function* () {
       : folded;
     if (
       migrated !== loaded ||
-      (settingsFileTrusted && legacyProviders !== undefined) ||
+      (settingsFileTrusted && (legacyProviders !== undefined || hasRetiredPoolKeys)) ||
       hasLegacySourceControl
     ) {
       yield* writeSettingsAtomically(migrated);
+      const retiredSecretNames: string[] = [];
+      mapSettingsSecrets(
+        { ...DEFAULT_SERVER_SETTINGS, providerInstances: retiredInstances },
+        (secret) => {
+          if (secret.sensitive && secret.redacted) retiredSecretNames.push(secret.secretName);
+          return secret;
+        },
+      );
+      for (const name of retiredSecretNames) {
+        yield* secretStore.remove(name).pipe(Effect.ignore);
+      }
       for (const move of sourceControlMigration.secretMoves) {
         yield* secretStore.remove(move.from).pipe(Effect.ignore);
       }
@@ -1474,7 +1533,6 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
           const next = applyServerSettingsPatch(current, patch);
-          yield* rejectLegacyPoolWrites(patch, settingsPath);
           return next;
         }),
       ),
@@ -1487,7 +1545,6 @@ const make = Effect.gen(function* () {
             applyServerSettingsPatch(current, patch),
             mutation,
           );
-          yield* rejectLegacyPoolWrites(patch, settingsPath);
           return next;
         }),
       ),

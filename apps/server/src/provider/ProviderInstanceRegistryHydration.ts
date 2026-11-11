@@ -1,6 +1,9 @@
 import {
-  isReservedProviderInstanceId,
   defaultInstanceIdForDriver,
+  INFERENCE_DRIVERS,
+  INFERENCE_HARNESSES,
+  isInferenceProviderConfig,
+  isInferenceRoutingEnabled,
   ProviderDriverKind,
   ProviderInstanceId,
   providerInstanceConfigEnabledFlag,
@@ -10,6 +13,7 @@ import {
   ServerSettings,
 } from "@t3tools/contracts";
 import * as NodeUtil from "node:util";
+import { openCodeRouteProblem, routeProvider } from "../inference/routes.ts";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type * as SecureRandom from "effect/crypto/SecureRandom";
@@ -52,13 +56,9 @@ type ProviderInstanceRegistryHydrationEnv =
 
 export const deriveProviderInstanceConfigMap = (
   settings: ServerSettings,
+  hostEnvironment: NodeJS.ProcessEnv = {},
 ): ProviderInstanceConfigMap => {
-  // Reserve legacy pool IDs for threads resuming through their replacement route.
-  const merged: Record<string, ProviderInstanceConfig> = Object.fromEntries(
-    Object.entries(settings.providerInstances).filter(
-      ([instanceId]) => !isReservedProviderInstanceId(instanceId),
-    ),
-  );
+  const merged: Record<string, ProviderInstanceConfig> = { ...settings.providerInstances };
 
   for (const driver of BUILT_IN_DRIVERS) {
     if (driver.metadata.hasDefaultInstance === false) continue;
@@ -67,7 +67,7 @@ export const deriveProviderInstanceConfigMap = (
     merged[instanceId] = { driver: driver.driverKind };
   }
 
-  // Probe project-enabled instances even if disabled machine-wide; project threads can still route to them.
+  // Project enables apply before routing validation, which must still reject incomplete routes.
   for (const overrides of Object.values(settings.projectSettingsOverrides)) {
     for (const [rawInstanceId, projectOverride] of Object.entries(
       overrides?.providerInstances ?? {},
@@ -84,6 +84,43 @@ export const deriveProviderInstanceConfigMap = (
           : {}),
       };
     }
+  }
+
+  for (const driver of INFERENCE_DRIVERS) {
+    const id = defaultInstanceIdForDriver(ProviderDriverKind.make(driver));
+    const native = merged[id];
+    if (!native || !isInferenceRoutingEnabled(native.config)) continue;
+    const { replacesAccounts } = INFERENCE_HARNESSES[driver];
+    if (!isInferenceProviderConfig(native.config)) {
+      if (replacesAccounts) merged[id] = { ...native, enabled: false };
+      continue;
+    }
+    const route = native.config;
+    if (
+      driver === "opencode" &&
+      openCodeRouteProblem(native.environment, hostEnvironment.OPENCODE_CONFIG_CONTENT)
+    )
+      continue;
+    const proxy = routeProvider(driver, route.inferenceHostLabel || null, {
+      baseUrl: route.inferenceBaseUrl,
+      key: route.inferenceKey,
+      models: route.inferenceModels,
+      homePath: route.inferenceHomePath,
+      current: (name) => {
+        const value = native.environment?.find((entry) => entry.name === name)?.value;
+        return typeof value === "string" ? value : hostEnvironment[name];
+      },
+    });
+    const names = new Set(proxy.environment.map((entry) => entry.name));
+    merged[id] = {
+      ...native,
+      ...(replacesAccounts ? { displayName: proxy.displayName } : {}),
+      config: { ...native.config, ...proxy.config },
+      environment: [
+        ...(native.environment ?? []).filter((entry) => !names.has(entry.name)),
+        ...proxy.environment,
+      ],
+    };
   }
 
   return merged as ProviderInstanceConfigMap;
@@ -138,6 +175,7 @@ export const layerSettingsWatcher = (
   settingsChanges: Stream.Stream<ServerSettings>,
   // The settings the registry was built from: a change queued during startup differs from these.
   initialSettings: ServerSettings | undefined,
+  hostEnvironment: NodeJS.ProcessEnv = {},
 ) =>
   Layer.effectDiscard(
     Effect.gen(function* () {
@@ -151,7 +189,7 @@ export const layerSettingsWatcher = (
           serverSettings.getSettings.pipe(
             Effect.flatMap((current) =>
               Effect.gen(function* () {
-                yield* mutator.reconcile(deriveProviderInstanceConfigMap(current));
+                yield* mutator.reconcile(deriveProviderInstanceConfigMap(current, hostEnvironment));
                 // Reconcile leaves instances parked on an unreadable secret alone,
                 // and a corrected secret provider is what can make them readable.
                 const next = vaultConfigs(current);
@@ -187,16 +225,15 @@ export const layer: Layer.Layer<
     const initialSettings: ServerSettings | undefined = yield* serverSettings.getSettings.pipe(
       Effect.orElseSucceed(() => undefined),
     );
-    const initialConfigMap =
-      initialSettings === undefined
-        ? ({} as ProviderInstanceConfigMap)
-        : deriveProviderInstanceConfigMap(initialSettings);
-
     // Drivers launch from the host environment, minus launch overrides a policy ignores.
     const hostEnvironment = ManagedProviders.providerHostEnvironment(
       serverSettings.managedPolicy,
       yield* HostProcess.Environment,
     );
+    const initialConfigMap =
+      initialSettings === undefined
+        ? ({} as ProviderInstanceConfigMap)
+        : deriveProviderInstanceConfigMap(initialSettings, hostEnvironment);
     // Instances of drivers the policy leaves out stay listed, as unavailable, so their threads
     // explain why instead of losing their provider.
     const layerMutable = ProviderInstanceRegistry.layer({
@@ -212,7 +249,7 @@ export const layer: Layer.Layer<
       Layer.provide(SecretResolver.layer),
     );
 
-    return layerSettingsWatcher(settingsChanges, initialSettings).pipe(
+    return layerSettingsWatcher(settingsChanges, initialSettings, hostEnvironment).pipe(
       Layer.provideMerge(layerMutable),
     );
   }),

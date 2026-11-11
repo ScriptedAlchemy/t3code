@@ -65,11 +65,7 @@ describe("groupWelcomeAgents", () => {
 
   it("uses this computer's settings and keeps agents that failed to load with the found ones", () => {
     const acpRegistry = ProviderDriverKind.make("acpRegistry");
-    const settings: Pick<
-      ServerSettings,
-      "providerInstances" | "projectSettingsOverrides" | "providerPools"
-    > = {
-      providerPools: {},
+    const settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides"> = {
       providerInstances: {
         [ProviderInstanceId.make("pi")]: { driver: ProviderDriverKind.make("pi") },
         [ProviderInstanceId.make("registry")]: { driver: acpRegistry },

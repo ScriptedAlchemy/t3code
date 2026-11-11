@@ -72,22 +72,20 @@ const layerTest = ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe
   Layer.provide(layerInstanceRegistry),
 );
 
-it.effect("never resolves a pool id to an adapter", () =>
-  Effect.gen(function* () {
-    const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
-    const poolId = ProviderInstanceId.make("pool_claudeAgent");
-    const error = yield* Effect.flip(registry.get(poolId));
-    assert.instanceOf(error, ProviderAdapterRegistry.ProviderAdapterRegistryLookupError);
-    assert.equal(error.instanceId, poolId);
-  }).pipe(Effect.provide(layerTest)),
-);
-
 it.effect("routes two configured instances of the same driver independently", () =>
   Effect.gen(function* () {
     const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
 
-    assert.strictEqual(yield* registry.get(personalId), personalAdapter);
-    assert.strictEqual(yield* registry.get(workId), workAdapter);
+    assert.deepEqual(yield* registry.get(personalId), {
+      ...personalAdapter,
+      continuationKey: `codex:test:${personalId}`,
+      requiresBoundContinuationIdentity: false,
+    });
+    assert.deepEqual(yield* registry.get(workId), {
+      ...workAdapter,
+      continuationKey: `codex:test:${workId}`,
+      requiresBoundContinuationIdentity: false,
+    });
     assert.deepEqual(yield* registry.list(), [personalId, workId]);
   }).pipe(Effect.provide(layerTest)),
 );

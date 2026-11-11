@@ -667,7 +667,7 @@ function TaskForm({
     .sort((left, right) => Number(right.pinnedAt != null) - Number(left.pinnedAt != null));
   const config = useEnvironmentServerConfig(environmentId);
   const destinationLabel = useScheduledTaskDestinationLabel(environmentId, draft.threadId);
-  const modelOptions = buildModelOptions(config, null, undefined, draft.projectId, "settings");
+  const modelOptions = buildModelOptions(config, draft.modelSelection, undefined, draft.projectId);
   // Existing webhook tasks keep the option so they can still switch to a timer.
   const webhookDenial = managedCapabilityDenial(config?.managedPolicy, "webhookTasks");
   const canOperate = useAtomValue(

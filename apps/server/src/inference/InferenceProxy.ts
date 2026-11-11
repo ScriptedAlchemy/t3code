@@ -1,60 +1,81 @@
 import {
   EnvironmentId,
+  defaultInstanceIdForDriver,
   managedCapabilityDenial,
   managedUpdatesDenial,
   ProviderDriverKind,
+  INFERENCE_DRIVERS,
+  INFERENCE_HARNESSES,
+  inferenceHarness,
   InferenceConsumer,
+  InferenceHostConnection,
+  isInferenceProviderConfig,
   InferenceRouting,
   defaultInferenceRouting,
-  inferencePoolModel,
   InferenceProxyError,
   ProviderInstanceId,
   isManagedDriverAllowed,
-  isInferenceConfig,
   type InferenceProxyAction,
   type InferenceProxyActionResult,
   type InferenceProxyStatus,
   type InferenceRouteGrant,
   type InferenceRouteInput,
+  type InferenceUpstream,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { NetService } from "@t3tools/shared/Net";
 import { readTailscaleServeRoutesTo } from "@t3tools/tailscale";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
 import * as Schedule from "effect/Schedule";
+import * as Duration from "effect/Duration";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import type * as HttpMethod from "effect/http/HttpMethod";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import { DirectEndpoints } from "../environment/DirectEndpoints.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ManagedProviders from "../policy/managedProviders.ts";
+import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
+import * as ProviderInstanceRegistryMutator from "../provider/ProviderInstanceRegistryMutator.ts";
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import { claudeKeychainEntry } from "./claudeKeychain.ts";
 import { install, proxyVersion, resolveRelease, Release } from "./install.ts";
-import { routeProvider, validateRouteUrl } from "./routes.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
+import { modelsForDriver, openCodeRouteProblem, validateRouteUrl } from "./routes.ts";
 
 const Saved = Schema.Struct({
   enabled: Schema.Boolean,
   sharing: Schema.Boolean,
   port: Schema.Int,
   routing: Schema.optionalKey(InferenceRouting),
-  traexKey: Schema.optionalKey(Schema.String),
   release: Schema.optionalKey(Release),
   grants: Schema.Array(Schema.Struct({ ...InferenceConsumer.fields, key: Schema.String })),
+  // Local CLI sign-ins the user removed from the pool; the sync must not bring them back.
+  removedLocalAccounts: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 type Saved = typeof Saved.Type;
+const REQUEST_SYNC_INTERVAL_MS = 60_000;
 const empty: Saved = { enabled: false, sharing: false, port: 0, grants: [] };
 const Files = Schema.Struct({
   files: Schema.Array(
@@ -72,21 +93,105 @@ const Models = Schema.Struct({
     Schema.Struct({ id: Schema.String, owned_by: Schema.optional(Schema.String) }),
   ),
 });
-function modelsForDriver(
-  data: (typeof Models.Type)["data"],
-  driver: InferenceRouteInput["driver"],
-) {
-  return data
-    .filter((model) => {
-      const owner = model.owned_by?.toLowerCase();
-      if (owner === "openai") return driver === "codex";
-      if (owner === "anthropic") return driver === "claudeAgent";
-      return driver === "codex" ? /^(codex-|gpt-|o\d)/i.test(model.id) : /^claude-/i.test(model.id);
-    })
-    .map((m) => m.id);
-}
+// Local CLI sign-ins T3 mirrors into the pool, keyed the way `removedLocalAccounts` records them.
+const LOCAL_ACCOUNT_PREFIX: Partial<Record<InferenceUpstream, string>> = {
+  codex: "codex:",
+  anthropic: "claude:",
+};
 const Login = Schema.Struct({ state: Schema.String, url: Schema.String });
 const AuthStatus = Schema.Struct({ status: Schema.Literals(["ok", "error", "wait"]) });
+const UploadStatus = Schema.Struct({ status: Schema.Literal("ok") });
+const LocalCodexAuth = Schema.Struct({
+  auth_mode: Schema.Literal("chatgpt"),
+  last_refresh: Schema.String,
+  tokens: Schema.Struct({
+    access_token: Schema.String,
+    refresh_token: Schema.String,
+    id_token: Schema.String,
+    account_id: Schema.String,
+  }),
+});
+const ProxyCodexAuth = Schema.Struct({
+  type: Schema.Literal("codex"),
+  account_id: Schema.String,
+  last_refresh: Schema.String,
+  access_token: Schema.String,
+  refresh_token: Schema.String,
+  id_token: Schema.String,
+  disabled: Schema.optionalKey(Schema.Boolean),
+});
+const LocalClaudeAuth = Schema.Struct({
+  claudeAiOauth: Schema.Struct({
+    accessToken: Schema.String,
+    refreshToken: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+});
+const ClaudeAccount = Schema.Struct({
+  oauthAccount: Schema.Struct({
+    accountUuid: Schema.String,
+    organizationUuid: Schema.String,
+    emailAddress: Schema.String,
+    organizationName: Schema.optionalKey(Schema.String),
+  }),
+});
+const ProxyClaudeAuth = Schema.Struct({
+  type: Schema.Literal("claude"),
+  account_uuid: Schema.String,
+  organization_uuid: Schema.String,
+  access_token: Schema.String,
+  refresh_token: Schema.String,
+  expired: Schema.String,
+  disabled: Schema.optionalKey(Schema.Boolean),
+});
+const isLocalCodexAuth = Schema.is(LocalCodexAuth);
+const isProxyCodexAuth = Schema.is(ProxyCodexAuth);
+const isLocalClaudeAuth = Schema.is(LocalClaudeAuth);
+const isClaudeAccount = Schema.is(ClaudeAccount);
+const isProxyClaudeAuth = Schema.is(ProxyClaudeAuth);
+const isRecord = Schema.is(Schema.Record(Schema.String, Schema.Unknown));
+const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
+function jwtClaims(token: string): Record<string, unknown> | null {
+  const payload = token.split(".")[1];
+  if (!payload) return null;
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return isRecord(claims) ? claims : null;
+  } catch {
+    return null;
+  }
+}
+
+function codexAccountIdentity(accountId: string, email: unknown) {
+  const normalized = typeof email === "string" ? email.trim().toLowerCase() : undefined;
+  return normalized?.includes("@") ? `codex:${accountId}:${normalized}` : undefined;
+}
+
+function proxyCodexEmail(account: typeof ProxyCodexAuth.Type & { readonly email?: unknown }) {
+  return typeof account.email === "string" && account.email.includes("@")
+    ? account.email
+    : jwtClaims(account.id_token)?.email;
+}
+
+function parseLocalCodexAuth(raw: string) {
+  const decoded = decodeUnknownJson(raw);
+  if (Option.isNone(decoded)) return null;
+  const parsed = decoded.value;
+  if (!isRecord(parsed) || !isLocalCodexAuth(parsed)) return null;
+  const { tokens, last_refresh: lastRefresh } = parsed;
+  const expiresAt = jwtClaims(tokens.access_token)?.exp;
+  const refreshedAt = Date.parse(lastRefresh);
+  if (
+    !tokens.account_id ||
+    !tokens.access_token ||
+    !tokens.refresh_token ||
+    !tokens.id_token ||
+    !Number.isFinite(refreshedAt)
+  )
+    return null;
+  return { data: parsed, tokens, lastRefresh, refreshedAt, expiresAt };
+}
 const failure = (message: string) => new InferenceProxyError({ message });
 const isInferenceFailure = Schema.is(InferenceProxyError);
 const decodeSaved = Schema.decodeEffect(Schema.fromJsonString(Saved));
@@ -95,9 +200,12 @@ const encodeConfig = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const safeFailure = (message: string) => (cause: unknown) =>
   isInferenceFailure(cause) ? cause : failure(message);
 
+const providerConfig = Schema.is(Schema.Record(Schema.String, Schema.Unknown));
+
 const make = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const random = yield* SecureRandom.SecureRandom;
+  const digest = yield* Digest.Digest;
   const newKey = random
     .randomBytes(32)
     .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("base64url")));
@@ -125,14 +233,20 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const serviceScope = yield* Scope.Scope;
   const net = yield* NetService;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const store = yield* ServerSecretStore.ServerSecretStore;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const registry = yield* ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator;
   const environment = yield* ServerEnvironment.ServerEnvironment;
+  const links = yield* PeerLinks.PeerLinks;
   const direct = yield* DirectEndpoints;
   const env = yield* HostProcess.Environment;
+  const providerEnvironment = ManagedProviders.providerHostEnvironment(settings.managedPolicy, env);
   const homeDirectory = yield* HostProcess.HomeDirectory;
+  const platform = yield* HostProcess.Platform;
+  const username = yield* HostProcess.Username;
   const sharingDenial = managedCapabilityDenial(settings.managedPolicy, "remoteClients");
   const installContext = yield* Effect.context<Effect.Services<ReturnType<typeof install>>>();
   const latest = yield* Effect.cachedWithTTL(
@@ -143,7 +257,21 @@ const make = Effect.gen(function* () {
   const updateMutex = yield* Semaphore.make(1);
   const children = yield* Queue.sliding<ChildProcessSpawner.ChildProcessHandle>(1);
   const directory = path.join(config.stateDir, "inference-proxy");
+  const localCodexHome = path.resolve(
+    expandHomePath(env.CODEX_HOME?.trim() || "~/.codex", homeDirectory),
+  );
+  const localCodexAuthPath = path.join(localCodexHome, "auth.json");
+  const localClaudeHome = path.resolve(
+    expandHomePath(env.CLAUDE_CONFIG_DIR?.trim() || "~/.claude", homeDirectory),
+  );
+  const localClaudeAuthPath = path.join(localClaudeHome, ".credentials.json");
+  const localClaudeAccountPath = path.join(
+    env.CLAUDE_CONFIG_DIR?.trim() ? localClaudeHome : homeDirectory,
+    ".claude.json",
+  );
   let cached: Saved | undefined;
+  let proxyAccountWatch: Fiber.Fiber<void> | undefined;
+  let lastRequestSync = Number.NEGATIVE_INFINITY;
   let running:
     | {
         child: ChildProcessSpawner.ChildProcessHandle;
@@ -168,17 +296,6 @@ const make = Effect.gen(function* () {
     running = undefined;
   });
   yield* Effect.addFinalizer(() => stop);
-  const traexBaseUrl = "http://127.0.0.1:8317/v1";
-  const readTraexKey = Effect.gen(function* () {
-    const key = (yield* fs
-      .readFileString(path.join(homeDirectory, ".traex-bridge", "api-key"))
-      .pipe(
-        Effect.mapError(() => failure("Set up Traex bridge and its API key on this host first.")),
-      )).trim();
-    if (!key || /[\r\n]/.test(key))
-      return yield* failure("The Traex bridge API key on this host is invalid.");
-    return key;
-  });
   const writeConfig = Effect.fn("InferenceProxy.writeConfig")(function* (
     state: Saved,
     key: string,
@@ -187,40 +304,13 @@ const make = Effect.gen(function* () {
     const authDir = path.join(directory, "accounts");
     yield* fs.makeDirectory(authDir, { recursive: true, mode: 0o700 });
     const routing = state.routing ?? defaultInferenceRouting;
-    const modelsFor = (source: "codex" | "claudeAgent" | "traex") =>
-      routing.mappings
-        .filter((m) => m.source === source)
-        .map((m) => ({
-          name: m.upstream,
-          alias: inferencePoolModel(m),
-          "force-mapping": true,
-          ...(source === "traex" ? {} : { fork: true }),
-        }));
-    const bridgeModels = modelsFor("traex");
     const temp = yield* fs.makeTempFileScoped({ directory });
     yield* fs.writeFileString(
       temp,
       yield* encodeConfig({
         "config-version": 8,
         server: { host: "127.0.0.1", port: state.port, "max-request-body-bytes": 64 * 1024 * 1024 },
-        oauth: {
-          "auth-dir": authDir,
-          "model-alias": { codex: modelsFor("codex"), claude: modelsFor("claudeAgent") },
-        },
-        ...(bridgeModels.length && state.traexKey
-          ? {
-              "api-keys": {
-                codex: [
-                  {
-                    name: "Traex bridge",
-                    "base-url": traexBaseUrl,
-                    models: bridgeModels,
-                    keys: [{ "api-key": state.traexKey, "disable-codex-cloaking": true }],
-                  },
-                ],
-              },
-            }
-          : {}),
+        oauth: { "auth-dir": authDir },
         access: { "api-keys": [key] },
         requests: { "passthrough-headers": true },
         management: {
@@ -291,6 +381,387 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const syncLocalCodexAuth = Effect.fn("InferenceProxy.syncLocalCodexAuth")(
+    function* (runtime: NonNullable<typeof running>) {
+      if (!(yield* fs.exists(localCodexAuthPath))) return false;
+      const localRaw = yield* fs.readFileString(localCodexAuthPath);
+      const source = parseLocalCodexAuth(localRaw);
+      if (!source) return false;
+      const email = jwtClaims(source.tokens.id_token)?.email;
+      const identity = codexAccountIdentity(source.tokens.account_id, email);
+      if (identity === undefined)
+        return yield* failure(
+          "Local Codex sign-in has no account email. Add it through T3 settings.",
+        );
+      const removed = (yield* read).removedLocalAccounts ?? [];
+      if (removed.includes(identity) || removed.includes(`codex:${source.tokens.account_id}`))
+        return false;
+      const authDir = path.join(directory, "accounts");
+      const names = yield* fs.readDirectory(authDir);
+      let existing:
+        | {
+            name: string;
+            data: Record<string, unknown> & typeof ProxyCodexAuth.Type;
+            refreshedAt: number;
+          }
+        | undefined;
+      for (const name of names) {
+        if (!name.endsWith(".json") || name !== path.basename(name)) continue;
+        const raw = yield* fs
+          .readFileString(path.join(authDir, name))
+          .pipe(Effect.orElseSucceed(() => ""));
+        const decoded = decodeUnknownJson(raw);
+        if (Option.isNone(decoded)) continue;
+        const data = decoded.value;
+        if (!isRecord(data) || !isProxyCodexAuth(data)) continue;
+        if (data.account_id !== source.tokens.account_id) continue;
+        // Seats of one workspace share an account ID.
+        if (codexAccountIdentity(data.account_id, proxyCodexEmail(data)) !== identity) continue;
+        const refreshedAt = Date.parse(data.last_refresh);
+        if (!Number.isFinite(refreshedAt)) continue;
+        if (!existing || refreshedAt > existing.refreshedAt) existing = { name, data, refreshedAt };
+      }
+      if (existing?.data.disabled === true) return false;
+      if (existing && existing.refreshedAt > source.refreshedAt) {
+        if (!existing.data.access_token || !existing.data.refresh_token || !existing.data.id_token)
+          return false;
+        if ((yield* fs.readFileString(localCodexAuthPath)) !== localRaw) return false;
+        yield* writeFileStringAtomically({
+          filePath: localCodexAuthPath,
+          contents: yield* encodeConfig({
+            ...source.data,
+            last_refresh: existing.data.last_refresh,
+            tokens: {
+              ...source.tokens,
+              access_token: existing.data.access_token,
+              refresh_token: existing.data.refresh_token,
+              id_token: existing.data.id_token,
+            },
+          }),
+          mode: 0o600,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+        );
+        return true;
+      }
+      if (existing && existing.refreshedAt === source.refreshedAt) return false;
+      if (
+        typeof source.expiresAt !== "number" ||
+        source.expiresAt * 1000 <= (yield* Clock.currentTimeMillis)
+      )
+        return false;
+      const accountId = source.tokens.account_id;
+      if (accountId.length > 128) return yield* failure("Local Codex account ID is too long.");
+      const name =
+        existing?.name ??
+        `codex-local-${yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(identity))}.json`;
+      yield* jsonRequest(
+        runtime.baseUrl + "/v0/management/auth-files?name=" + encodeURIComponent(name),
+        runtime.management,
+        UploadStatus,
+        "POST",
+        {
+          ...existing?.data,
+          type: "codex",
+          account_id: source.tokens.account_id,
+          ...(existing ? {} : { email }),
+          access_token: source.tokens.access_token,
+          refresh_token: source.tokens.refresh_token,
+          id_token: source.tokens.id_token,
+          last_refresh: source.lastRefresh,
+          expired: DateTime.formatIso(DateTime.makeUnsafe(source.expiresAt * 1000)),
+        },
+      );
+      return true;
+    },
+    Effect.mapError(safeFailure("Could not sync the local Codex sign-in to CLIProxyAPI.")),
+  );
+
+  const syncLocalClaudeAuth = Effect.fn("InferenceProxy.syncLocalClaudeAuth")(
+    function* (runtime: NonNullable<typeof running>) {
+      if (!(yield* fs.exists(localClaudeAccountPath))) return false;
+      const fileCredentials = yield* fs.exists(localClaudeAuthPath);
+      let keychainEntry: import("@napi-rs/keyring").AsyncEntry | undefined;
+      let nativeRaw: string | undefined;
+      if (platform === "darwin" && !env.CLAUDE_CONFIG_DIR?.trim()) {
+        if (!username) return false;
+        const entry = yield* Effect.try({
+          try: () => claudeKeychainEntry(username),
+          catch: safeFailure("Could not access Claude credentials in macOS Keychain."),
+        });
+        const secret = yield* Effect.tryPromise({
+          try: async (signal) => {
+            try {
+              return await entry.getPassword(signal);
+            } catch (cause) {
+              const message = String((cause as { message?: unknown } | undefined)?.message ?? "");
+              if (/no (matching )?entry|not found/i.test(message)) return undefined;
+              throw cause;
+            }
+          },
+          catch: safeFailure("Allow T3 Code to access Claude credentials in macOS Keychain."),
+        }).pipe(
+          Effect.timeout("5 seconds"),
+          Effect.mapError(
+            safeFailure("Allow T3 Code to access Claude credentials in macOS Keychain."),
+          ),
+        );
+        if (secret !== undefined) {
+          keychainEntry = entry;
+          nativeRaw = secret;
+        }
+      }
+      if (nativeRaw === undefined && fileCredentials)
+        nativeRaw = yield* fs.readFileString(localClaudeAuthPath);
+      if (nativeRaw === undefined) return false;
+      const nativeDecoded = decodeUnknownJson(nativeRaw);
+      const accountDecoded = decodeUnknownJson(yield* fs.readFileString(localClaudeAccountPath));
+      if (Option.isNone(nativeDecoded) || Option.isNone(accountDecoded)) return false;
+      const native = nativeDecoded.value;
+      const account = accountDecoded.value;
+      if (!isRecord(native) || !isLocalClaudeAuth(native) || !isClaudeAccount(account))
+        return false;
+      const oauth = native.claudeAiOauth;
+      const identity = account.oauthAccount;
+      if (
+        !oauth.accessToken ||
+        !oauth.refreshToken ||
+        !Number.isFinite(oauth.expiresAt) ||
+        !identity.accountUuid ||
+        !identity.organizationUuid ||
+        !identity.emailAddress.includes("@")
+      )
+        return false;
+      const removed = (yield* read).removedLocalAccounts ?? [];
+      if (removed.includes(`claude:${identity.accountUuid}:${identity.organizationUuid}`))
+        return false;
+      const authDir = path.join(directory, "accounts");
+      const names = yield* fs.readDirectory(authDir);
+      let existing:
+        | {
+            name: string;
+            data: Record<string, unknown> & typeof ProxyClaudeAuth.Type;
+            expiresAt: number;
+          }
+        | undefined;
+      for (const name of names) {
+        if (!name.endsWith(".json") || name !== path.basename(name)) continue;
+        const raw = yield* fs
+          .readFileString(path.join(authDir, name))
+          .pipe(Effect.orElseSucceed(() => ""));
+        const decoded = decodeUnknownJson(raw);
+        if (Option.isNone(decoded)) continue;
+        const data = decoded.value;
+        if (!isRecord(data) || !isProxyClaudeAuth(data)) continue;
+        if (
+          data.account_uuid !== identity.accountUuid ||
+          data.organization_uuid !== identity.organizationUuid
+        )
+          continue;
+        const expiresAt = Date.parse(data.expired);
+        if (!Number.isFinite(expiresAt)) continue;
+        if (!existing || expiresAt > existing.expiresAt) existing = { name, data, expiresAt };
+      }
+      if (existing?.data.disabled === true) return false;
+      if (existing && existing.expiresAt > oauth.expiresAt) {
+        if (!existing.data.access_token || !existing.data.refresh_token) return false;
+        const contents = yield* encodeConfig({
+          ...native,
+          claudeAiOauth: {
+            ...oauth,
+            accessToken: existing.data.access_token,
+            refreshToken: existing.data.refresh_token,
+            expiresAt: existing.expiresAt,
+          },
+        });
+        if (keychainEntry) {
+          const current = yield* Effect.tryPromise({
+            try: (signal) => keychainEntry!.getPassword(signal),
+            catch: safeFailure("Could not read Claude credentials in macOS Keychain."),
+          }).pipe(
+            Effect.timeout("5 seconds"),
+            Effect.mapError(safeFailure("Could not read Claude credentials in macOS Keychain.")),
+          );
+          if (current !== nativeRaw) return false;
+          yield* Effect.tryPromise({
+            try: (signal) => keychainEntry!.setPassword(contents, signal),
+            catch: safeFailure("Could not update Claude credentials in macOS Keychain."),
+          }).pipe(
+            Effect.timeout("5 seconds"),
+            Effect.mapError(safeFailure("Could not update Claude credentials in macOS Keychain.")),
+          );
+        } else {
+          if ((yield* fs.readFileString(localClaudeAuthPath)) !== nativeRaw) return false;
+          yield* writeFileStringAtomically({
+            filePath: localClaudeAuthPath,
+            contents,
+            mode: 0o600,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+          );
+        }
+        return true;
+      }
+      if (existing && existing.expiresAt === oauth.expiresAt) return false;
+      if (oauth.expiresAt <= (yield* Clock.currentTimeMillis)) return false;
+      if (identity.accountUuid.length > 128 || identity.organizationUuid.length > 128)
+        return yield* failure("Local Claude account ID is too long.");
+      const name =
+        existing?.name ??
+        `claude-local-${Buffer.from(identity.accountUuid).toString("base64url")}-${Buffer.from(identity.organizationUuid).toString("base64url")}.json`;
+      yield* jsonRequest(
+        runtime.baseUrl + "/v0/management/auth-files?name=" + encodeURIComponent(name),
+        runtime.management,
+        UploadStatus,
+        "POST",
+        {
+          ...existing?.data,
+          type: "claude",
+          account_uuid: identity.accountUuid,
+          organization_uuid: identity.organizationUuid,
+          organization_name: identity.organizationName ?? "",
+          email: identity.emailAddress,
+          access_token: oauth.accessToken,
+          refresh_token: oauth.refreshToken,
+          expired: DateTime.formatIso(DateTime.makeUnsafe(oauth.expiresAt)),
+          last_refresh: DateTime.formatIso(yield* DateTime.now),
+        },
+      );
+      return true;
+    },
+    Effect.mapError(safeFailure("Could not sync the local Claude sign-in to CLIProxyAPI.")),
+  );
+
+  const syncLocalAuth = Effect.fn("InferenceProxy.syncLocalAuth")(function* (
+    runtime: NonNullable<typeof running>,
+  ) {
+    const codex = yield* syncLocalCodexAuth(runtime).pipe(Effect.result);
+    const claude = yield* syncLocalClaudeAuth(runtime).pipe(Effect.result);
+    return {
+      changed:
+        (Result.isSuccess(codex) && codex.success) || (Result.isSuccess(claude) && claude.success),
+      problem:
+        [codex, claude]
+          .filter(Result.isFailure)
+          .map((result) => result.failure.message)
+          .join(" ") || null,
+    };
+  });
+
+  const watchLocalCodexAuth = Effect.gen(function* () {
+    if (!(yield* fs.exists(localCodexHome))) {
+      yield* fs.watch(path.dirname(localCodexHome)).pipe(
+        Stream.filter((event) => path.basename(event.path) === path.basename(localCodexHome)),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+    }
+    if (!(yield* fs.exists(localCodexHome))) return;
+    const changes = fs.watch(localCodexHome).pipe(
+      Stream.filter((event) => path.basename(event.path) === "auth.json"),
+      Stream.debounce(Duration.millis(100)),
+    );
+    yield* Stream.runForEach(changes, () =>
+      mutex
+        .withPermit(
+          Effect.gen(function* () {
+            const state = yield* read;
+            return state.enabled
+              ? (yield* syncLocalAuth(yield* ensureWatched(state))).changed
+              : false;
+          }),
+        )
+        .pipe(
+          Effect.flatMap((changed) => (changed ? refreshLocalProviders() : Effect.void)),
+          Effect.ignoreCause({ log: true }),
+        ),
+    );
+  });
+
+  const watchLocalClaudeAuth = Effect.gen(function* () {
+    if (!(yield* fs.exists(localClaudeHome))) {
+      yield* fs.watch(path.dirname(localClaudeHome)).pipe(
+        Stream.filter((event) => path.basename(event.path) === path.basename(localClaudeHome)),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+    }
+    if (!(yield* fs.exists(localClaudeHome))) return;
+    const credentialChanges = fs
+      .watch(localClaudeHome)
+      .pipe(Stream.filter((event) => path.basename(event.path) === ".credentials.json"));
+    const accountChanges = fs
+      .watch(path.dirname(localClaudeAccountPath))
+      .pipe(
+        Stream.filter(
+          (event) => path.basename(event.path) === path.basename(localClaudeAccountPath),
+        ),
+      );
+    yield* Stream.runForEach(
+      Stream.merge(credentialChanges, accountChanges).pipe(Stream.debounce(Duration.millis(100))),
+      () =>
+        mutex
+          .withPermit(
+            Effect.gen(function* () {
+              const state = yield* read;
+              return state.enabled
+                ? (yield* syncLocalAuth(yield* ensureWatched(state))).changed
+                : false;
+            }),
+          )
+          .pipe(
+            Effect.flatMap((changed) => (changed ? refreshLocalProviders() : Effect.void)),
+            Effect.ignoreCause({ log: true }),
+          ),
+    );
+  });
+
+  const watchProxyCodexAuth = Effect.gen(function* () {
+    const changes = fs.watch(path.join(directory, "accounts")).pipe(
+      Stream.filter((event) => path.basename(event.path).endsWith(".json")),
+      Stream.debounce(Duration.millis(100)),
+    );
+    yield* Stream.runForEach(changes, () =>
+      mutex
+        .withPermit(
+          Effect.gen(function* () {
+            const state = yield* read;
+            return state.enabled ? (yield* syncLocalAuth(yield* ensure(state))).changed : false;
+          }),
+        )
+        .pipe(
+          Effect.flatMap((changed) => (changed ? refreshLocalProviders() : Effect.void)),
+          Effect.ignoreCause({ log: true }),
+        ),
+    );
+  });
+
+  // Annotated because the watcher refreshes routes, which start the proxy, which starts this watcher.
+  const startProxyAccountWatch: Effect.Effect<void> = Effect.gen(function* () {
+    if (proxyAccountWatch) return;
+    proxyAccountWatch = yield* watchProxyCodexAuth.pipe(
+      Effect.ignoreCause({ log: true }),
+      Effect.ensuring(
+        Effect.sync(() => {
+          proxyAccountWatch = undefined;
+        }),
+      ),
+      Effect.forkIn(serviceScope),
+    );
+  });
+
+  // The watcher writes rotated tokens back to the CLI, so it runs whenever the proxy does.
+  const ensureWatched = (state: Saved) =>
+    ensure(state).pipe(Effect.tap(() => startProxyAccountWatch));
+
+  const stopProxyAccountWatch = Effect.gen(function* () {
+    if (!proxyAccountWatch) return;
+    yield* Fiber.interrupt(proxyAccountWatch);
+    proxyAccountWatch = undefined;
+  });
+
   const watchChild = Effect.fn("InferenceProxy.watchChild")(function* () {
     const child = yield* Queue.take(children);
     yield* child.exitCode;
@@ -301,7 +772,7 @@ const make = Effect.gen(function* () {
       .withPermit(
         Effect.gen(function* () {
           const state = yield* read;
-          if (state.enabled && (!running || running.child === child)) yield* ensure(state);
+          if (state.enabled && (!running || running.child === child)) yield* ensureWatched(state);
         }),
       )
       .pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("1 second") }));
@@ -313,21 +784,44 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const state = yield* read;
         const { providerInstances } = yield* settings.getSettings;
+        let routeProblem: string | null = null;
         const summary = {
-          routes: Object.entries(providerInstances).flatMap(([id, instance]) =>
-            isInferenceConfig(instance.config)
-              ? [{ instanceId: ProviderInstanceId.make(id), label: instance.displayName ?? id }]
-              : [],
-          ),
+          routes: Object.entries(providerInstances).flatMap(([id, instance]) => {
+            if (
+              !isInferenceProviderConfig(instance.config) ||
+              !instance.config.inferenceEnabled ||
+              instance.enabled === false
+            )
+              return [];
+            const problem =
+              instance.driver === "opencode"
+                ? openCodeRouteProblem(
+                    instance.environment,
+                    providerEnvironment.OPENCODE_CONFIG_CONTENT,
+                  )
+                : null;
+            if (problem) {
+              routeProblem = problem;
+              return [];
+            }
+            return [
+              {
+                instanceId: ProviderInstanceId.make(id),
+                label: `${inferenceHarness(instance.driver)?.label ?? instance.driver}${instance.config.inferenceHostLabel ? ` via ${instance.config.inferenceHostLabel}` : ""}`,
+              },
+            ];
+          }),
           routing: state.routing ?? defaultInferenceRouting,
           version: state.release?.version ?? proxyVersion,
           enabled: state.enabled,
           sharing: state.sharing,
           consumers: state.grants.map(({ environmentId, label }) => ({ environmentId, label })),
         };
-        if (!state.enabled) return { ...summary, running: false, accounts: [], problem: null };
+        if (!state.enabled)
+          return { ...summary, running: false, accounts: [], problem: routeProblem };
         return yield* Effect.gen(function* () {
-          const runtime = yield* ensure(state);
+          const runtime = yield* ensureWatched(state);
+          const sync = yield* syncLocalAuth(runtime);
           const { files } = yield* jsonRequest(
             runtime.baseUrl + "/v0/management/auth-files",
             runtime.management,
@@ -339,7 +833,7 @@ const make = Effect.gen(function* () {
             accounts: files
               .filter((file) => !file.runtime_only)
               .map(({ name, provider, status }) => ({ name, provider, status })),
-            problem: null,
+            problem: routeProblem ?? sync.problem,
           };
         }).pipe(
           Effect.orElseSucceed((e) => ({
@@ -379,10 +873,6 @@ const make = Effect.gen(function* () {
       ...(route ? [new URL(`https://${route.host}:${route.servePort}/api/inference`).href] : []),
       ...lans,
     ];
-    if (!urls.length)
-      return yield* failure(
-        "Enable LAN access or Tailscale HTTPS on the hosting environment, then retry.",
-      );
     return urls;
   });
 
@@ -414,9 +904,9 @@ const make = Effect.gen(function* () {
         const next = { ...before, release: { version: release.version } };
         yield* Effect.uninterruptibleMask((restore) =>
           stop.pipe(
-            Effect.andThen(restore(ensure(next))),
+            Effect.andThen(restore(ensureWatched(next))),
             Effect.andThen(save(next)),
-            Effect.onError(() => stop.pipe(Effect.andThen(ensure(before)), Effect.ignore)),
+            Effect.onError(() => stop.pipe(Effect.andThen(ensureWatched(before)), Effect.ignore)),
           ),
         );
       }),
@@ -444,10 +934,7 @@ const make = Effect.gen(function* () {
     );
     return { update: { current: release.version, available: null } };
   });
-  type HostAction = Exclude<
-    InferenceProxyAction,
-    { operation: "checkUpdate" | "update" | "listModels" }
-  >;
+  type HostAction = Exclude<InferenceProxyAction, { operation: "checkUpdate" | "update" }>;
   const manageHost = Effect.fn("InferenceProxy.manageHost")(function* (input: HostAction) {
     const state = yield* read;
     if (input.operation === "configure") {
@@ -457,8 +944,8 @@ const make = Effect.gen(function* () {
           Effect.andThen(stop),
           Effect.uninterruptible,
         );
+        yield* stopProxyAccountWatch;
       } else {
-        if (input.sharing) yield* sharingUrls;
         const next = {
           ...state,
           enabled: true,
@@ -467,7 +954,7 @@ const make = Effect.gen(function* () {
           grants: input.sharing ? state.grants : [],
         };
         yield* Effect.uninterruptibleMask((restore) =>
-          restore(ensure(next)).pipe(
+          restore(ensureWatched(next)).pipe(
             Effect.andThen(save(next)),
             Effect.onError(() => (state.enabled ? Effect.void : stop)),
           ),
@@ -475,43 +962,16 @@ const make = Effect.gen(function* () {
       }
       return {};
     }
-    if (
-      input.operation === "setRouting" ||
-      input.operation === "mapModel" ||
-      input.operation === "unmapModel"
-    ) {
+    if (input.operation === "setRouting") {
       const routing = state.routing ?? defaultInferenceRouting;
-      let nextRouting: InferenceRouting = routing;
-      let traexKey = state.traexKey;
-      if (input.operation === "setRouting") {
-        nextRouting = {
-          ...routing,
+      const next: Saved = {
+        ...state,
+        routing: {
           strategy: input.strategy ?? routing.strategy,
           sessionAffinity: input.sessionAffinity ?? routing.sessionAffinity,
-        };
-      } else {
-        const { source, pool } = input.operation === "mapModel" ? input.mapping : input;
-        const mappings = routing.mappings.filter((m) => m.source !== source || m.pool !== pool);
-        if (input.operation === "mapModel") {
-          const driver = source === "claudeAgent" ? source : "codex";
-          if (!isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(driver)))
-            return yield* failure("This provider is disabled by environment policy.");
-          if (mappings.length >= 128)
-            return yield* failure("Remove a mapping before adding another.");
-          if (source === "traex") {
-            traexKey = yield* readTraexKey;
-          }
-          mappings.push(input.mapping);
-        }
-        nextRouting = { ...routing, mappings };
-      }
-      const { traexKey: _previousKey, ...other } = state;
-      const next: Saved = {
-        ...other,
-        routing: nextRouting,
-        ...(nextRouting.mappings.some((m) => m.source === "traex") && traexKey ? { traexKey } : {}),
+        },
       };
-      const runtime = yield* ensure(state);
+      const runtime = yield* ensureWatched(state);
       yield* writeConfig(next, runtime.key, runtime.management).pipe(
         Effect.andThen(
           save(next).pipe(
@@ -525,13 +985,21 @@ const make = Effect.gen(function* () {
       return {};
     }
     if (input.operation === "removeRoute") {
-      const { providerInstances } = yield* settings.getSettings;
-      if (!isInferenceConfig(providerInstances[input.instanceId]?.config))
-        return yield* failure("This provider is not an inference route.");
-      yield* settings.updateProviderInstance({
-        operation: "remove",
-        instanceId: input.instanceId,
+      const revised = yield* settings.reviseProviderInstance(input.instanceId, (current) => {
+        if (
+          !current ||
+          !isInferenceProviderConfig(current.config) ||
+          !current.config.inferenceEnabled
+        )
+          return failure("This provider is not using inference routing.");
+        return Effect.succeed({
+          instance: { ...current, config: { ...current.config, inferenceEnabled: false } },
+          result: undefined,
+        });
       });
+      yield* registry.reconcile(
+        deriveProviderInstanceConfigMap(revised.settings, providerEnvironment),
+      );
       return {};
     }
     if (input.operation === "revoke") {
@@ -541,18 +1009,27 @@ const make = Effect.gen(function* () {
       });
       return {};
     }
-    const runtime = yield* ensure(state);
+    const runtime = yield* ensureWatched(state);
     const base = runtime.baseUrl + "/v0/management/";
     const admin = runtime.management;
     switch (input.operation) {
       case "signIn": {
-        if (!isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(input.driver)))
-          return yield* failure("This driver is disabled by environment policy.");
-        const login = yield* jsonRequest(
-          base + (input.driver === "codex" ? "codex" : "anthropic") + "-auth-url",
-          admin,
-          Login,
+        // A sign-in is allowed while any permitted harness can use the account it adds.
+        const usable = INFERENCE_DRIVERS.some(
+          (driver) =>
+            INFERENCE_HARNESSES[driver].upstreams.includes(input.upstream) &&
+            isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(driver)),
         );
+        if (!usable) return yield* failure("This provider is disabled by environment policy.");
+        const prefix = LOCAL_ACCOUNT_PREFIX[input.upstream];
+        if (prefix && state.removedLocalAccounts?.some((account) => account.startsWith(prefix)))
+          yield* save({
+            ...state,
+            removedLocalAccounts: state.removedLocalAccounts.filter(
+              (account) => !account.startsWith(prefix),
+            ),
+          });
+        const login = yield* jsonRequest(base + input.upstream + "-auth-url", admin, Login);
         if (URL.parse(login.url)?.protocol !== "https:")
           return yield* failure("Invalid sign-in URL.");
         return { login };
@@ -583,6 +1060,25 @@ const make = Effect.gen(function* () {
       case "removeAccount": {
         if (input.name !== path.basename(input.name) || !input.name.endsWith(".json"))
           return yield* failure("Invalid account file name.");
+        const account = Option.getOrUndefined(
+          decodeUnknownJson(
+            yield* fs
+              .readFileString(path.join(directory, "accounts", input.name))
+              .pipe(Effect.orElseSucceed(() => "")),
+          ),
+        );
+        const identity = !isRecord(account)
+          ? undefined
+          : isProxyCodexAuth(account)
+            ? codexAccountIdentity(account.account_id, proxyCodexEmail(account))
+            : isProxyClaudeAuth(account)
+              ? `claude:${account.account_uuid}:${account.organization_uuid}`
+              : undefined;
+        if (identity !== undefined && !state.removedLocalAccounts?.includes(identity))
+          yield* save({
+            ...state,
+            removedLocalAccounts: [...(state.removedLocalAccounts ?? []), identity],
+          });
         yield* jsonRequest(
           base + "auth-files?name=" + encodeURIComponent(input.name),
           admin,
@@ -596,30 +1092,16 @@ const make = Effect.gen(function* () {
   const manage = Effect.fn("InferenceProxy.manage")(
     function* (input: InferenceProxyAction) {
       switch (input.operation) {
-        case "listModels": {
-          const driver = input.source === "claudeAgent" ? input.source : "codex";
-          if (!isManagedDriverAllowed(settings.managedPolicy, ProviderDriverKind.make(driver)))
-            return yield* failure("This provider is disabled by environment policy.");
-          const runtime = yield* mutex.withPermit(read.pipe(Effect.flatMap(ensure)));
-          const bridge = input.source === "traex";
-          const { data } = yield* jsonRequest(
-            (bridge ? traexBaseUrl : runtime.baseUrl + "/v1") + "/models",
-            bridge ? yield* readTraexKey : runtime.key,
-            Models,
-          );
-          const ids = bridge
-            ? data.map((m) => m.id)
-            : modelsForDriver(data, driver).filter(
-                (id) => !id.startsWith("codex-pool-") && !id.startsWith("claude-pool-"),
-              );
-          return { models: [...new Set(ids)].sort() };
-        }
         case "checkUpdate":
           return yield* updateRuntime("checkUpdate");
         case "update":
           return yield* updateMutex.withPermit(updateRuntime("update"));
-        default:
-          return yield* manageHost(input);
+        default: {
+          const result = yield* manageHost(input);
+          if (input.operation === "removeAccount" || ("status" in result && result.status === "ok"))
+            yield* refreshLocalProviders();
+          return result;
+        }
       }
     },
     Effect.mapError(safeFailure("Could not update the inference host.")),
@@ -628,7 +1110,7 @@ const make = Effect.gen(function* () {
   const grant = Effect.fn("InferenceProxy.grant")(
     function* (consumer: InferenceConsumer) {
       const state = yield* read;
-      const runtime = yield* ensure(state);
+      const runtime = yield* ensureWatched(state);
       const hostId = yield* environment.getEnvironmentId;
       const identity = { hostId, consumerId: consumer.environmentId };
       if (hostId === consumer.environmentId)
@@ -646,31 +1128,103 @@ const make = Effect.gen(function* () {
             { ...consumer, key },
           ],
         });
-      return { ...identity, baseUrl: baseUrl!, alternates, key };
+      return { ...identity, baseUrl: baseUrl ?? `t3-environment:${hostId}`, alternates, key };
     },
     mutex.withPermit,
     Effect.mapError(safeFailure("Could not resolve the host's inference addresses.")),
   );
 
-  const authorize = Effect.fn("InferenceProxy.authorize")(
-    function* (key: string) {
-      const state = yield* read;
-      if (
-        sharingDenial ||
-        !state.enabled ||
-        !state.sharing ||
-        !state.grants.some((g) => g.key === key)
-      )
-        return null;
-      const runtime = yield* ensure(state);
-      return { baseUrl: runtime.baseUrl, key: runtime.key };
+  const bindRoutes = Effect.fn("InferenceProxy.bindRoutes")(
+    function* (port: number) {
+      const { providerInstances } = yield* settings.getSettings;
+      for (const [id, instance] of Object.entries(providerInstances)) {
+        if (!isInferenceProviderConfig(instance.config)) continue;
+        yield* settings.reviseProviderInstance(ProviderInstanceId.make(id), (current) => {
+          if (!current || !isInferenceProviderConfig(current.config))
+            return failure("The inference route changed.");
+          const url = current.config.inferenceBaseUrl.replace(
+            /^http:\/\/127\.0\.0\.1:\d+(\/api\/inference\/linked\/)/,
+            `http://127.0.0.1:${port}$1`,
+          );
+          return Effect.succeed({
+            instance: { ...current, config: { ...current.config, inferenceBaseUrl: url } },
+            result: undefined,
+          });
+        });
+      }
+      yield* registry.reconcile(
+        deriveProviderInstanceConfigMap(yield* settings.getSettings, providerEnvironment),
+      );
     },
-    mutex.withPermit,
+    Effect.mapError(safeFailure("Could not refresh inference providers.")),
+  );
+
+  const peerAddress = Effect.fn("InferenceProxy.peerAddress")(function* (
+    hostId: EnvironmentId,
+    connection?: InferenceHostConnection,
+  ) {
+    const saved = yield* links.get(hostId).pipe(
+      Effect.catchIf(
+        (error) => error.reason === "disabled",
+        () => Effect.succeedNone,
+      ),
+    );
+    const candidates = [
+      ...(connection ? [links.resolveAddress(connection, hostId)] : []),
+      ...(Option.isSome(saved) ? [links.resolve(hostId).pipe(Effect.map((peer) => peer.url))] : []),
+    ];
+    if (!candidates.length)
+      return yield* failure("Connect to the inference host, then choose its route again.");
+    return yield* Effect.firstSuccessOf(candidates).pipe(
+      Effect.mapError((error) => failure(error.message)),
+    );
+  });
+
+  const authorize = Effect.fn("InferenceProxy.authorize")(
+    function* (key: string, hostId?: EnvironmentId) {
+      if (hostId !== undefined) {
+        const { providerInstances } = yield* settings.getSettings;
+        const allowed = INFERENCE_DRIVERS.map((driver) => {
+          const instance =
+            providerInstances[defaultInstanceIdForDriver(ProviderDriverKind.make(driver))];
+          return instance?.enabled &&
+            isInferenceProviderConfig(instance.config) &&
+            instance.config.inferenceEnabled &&
+            instance.config.inferenceHostId === hostId &&
+            instance.config.inferenceKey === key
+            ? instance.config
+            : undefined;
+        }).find((config) => config !== undefined);
+        if (!allowed) return null;
+        const address = yield* peerAddress(hostId, allowed.inferenceConnection);
+        return { baseUrl: new URL("/api/inference", address).href, key };
+      }
+      return yield* mutex.withPermit(
+        Effect.gen(function* () {
+          const state = yield* read;
+          if (
+            sharingDenial ||
+            !state.enabled ||
+            !state.sharing ||
+            !state.grants.some((g) => g.key === key)
+          )
+            return null;
+          const runtime = yield* ensureWatched(state);
+          // The watchers sync rotated tokens. This sync only covers a watcher that stopped.
+          const now = yield* Clock.currentTimeMillis;
+          if (now - lastRequestSync >= REQUEST_SYNC_INTERVAL_MS) {
+            lastRequestSync = now;
+            yield* syncLocalAuth(runtime);
+          }
+          return { baseUrl: runtime.baseUrl, key: runtime.key };
+        }),
+      );
+    },
     Effect.mapError(safeFailure("Inference host unavailable.")),
   );
 
   const connect = Effect.fn("InferenceProxy.connect")(
-    function* ({ grant, driver, hostLabel }: InferenceRouteInput) {
+    function* ({ grant, driver, hostLabel, connection }: InferenceRouteInput) {
       const id = yield* environment.getEnvironmentId;
       if (id !== grant.consumerId)
         return yield* failure("Invalid inference route for this environment.");
@@ -678,17 +1232,26 @@ const make = Effect.gen(function* () {
         return yield* failure("This driver is disabled by environment policy.");
       const local = id === grant.hostId;
       const candidates = local ? [grant.baseUrl] : [grant.baseUrl, ...(grant.alternates ?? [])];
-      if (candidates.some((url) => !validateRouteUrl(url, local)))
+      const environmentRoute = !local && grant.baseUrl === `t3-environment:${grant.hostId}`;
+      if (!environmentRoute && candidates.some((url) => !validateRouteUrl(url, local)))
         return yield* failure("Invalid inference route for this environment.");
+      const resolved = local
+        ? Result.succeed(undefined)
+        : yield* peerAddress(grant.hostId, connection).pipe(Effect.result);
+      if ((environmentRoute || connection) && Result.isFailure(resolved))
+        return yield* resolved.failure;
+      const peer = Result.isSuccess(resolved) ? resolved.success : undefined;
+      const linked = peer !== undefined;
+      const addresses = peer ? [new URL("/api/inference", peer).href] : candidates;
       if (local) {
         const runtime = yield* mutex.withPermit(read.pipe(Effect.flatMap(ensure)));
         if (runtime.baseUrl !== grant.baseUrl || runtime.key !== grant.key)
           return yield* failure("The local inference grant has changed. Request a new route.");
       }
       const { baseUrl, data } = yield* Effect.firstSuccessOf(
-        candidates.map((url) =>
+        addresses.map((url) =>
           Effect.gen(function* () {
-            if (!local) {
+            if (!local && !peer) {
               const peer = yield* jsonRequest(
                 new URL("/.well-known/t3/environment", url).href,
                 undefined,
@@ -705,26 +1268,107 @@ const make = Effect.gen(function* () {
       const models = modelsForDriver(data, driver);
       if (!models.length)
         return yield* failure("Sign in to an account for this provider on the host, then retry.");
-      const hash = yield* Effect.promise(() =>
-        crypto.subtle.digest("SHA-256", new TextEncoder().encode(grant.hostId)),
-      );
-      const instanceId = ProviderInstanceId.make(
-        `inference_${driver}_${Buffer.from(hash).toString("hex").slice(0, 16)}`,
-      );
+      const instanceId = defaultInstanceIdForDriver(ProviderDriverKind.make(driver));
+      const active = linked
+        ? yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+          )
+        : Option.none();
+      const port = Option.isSome(active) ? active.value.port : config.port;
+      const routeUrl = linked
+        ? `http://127.0.0.1:${port}/api/inference/linked/${encodeURIComponent(grant.hostId)}`
+        : baseUrl;
       const home = path.join(config.stateDir, "providers", "inference", instanceId);
       yield* fs.makeDirectory(home, { recursive: true, mode: 0o700 });
-      const instance = routeProvider(driver, baseUrl, grant.key, hostLabel, models, home);
-      yield* settings.updateProviderInstance({ operation: "upsert", instanceId, instance });
+      const revised = yield* settings.reviseProviderInstance(instanceId, (current) => {
+        const problem =
+          driver === "opencode"
+            ? openCodeRouteProblem(
+                current?.environment,
+                providerEnvironment.OPENCODE_CONFIG_CONTENT,
+              )
+            : null;
+        if (problem) return failure(problem);
+        const native = current ?? { driver: ProviderDriverKind.make(driver), config: {} };
+        const { inferenceConnection: _previousConnection, ...nativeConfig } = providerConfig(
+          native.config,
+        )
+          ? native.config
+          : {};
+        return Effect.succeed({
+          instance: {
+            ...native,
+            enabled: true,
+            config: {
+              ...nativeConfig,
+              inferenceEnabled: true,
+              inferenceHostId: grant.hostId,
+              inferenceHostLabel: local ? "" : hostLabel,
+              inferenceBaseUrl: routeUrl,
+              inferenceKey: grant.key,
+              inferenceModels: models,
+              inferenceHomePath: home,
+              ...(linked && connection ? { inferenceConnection: connection } : {}),
+            },
+          },
+          result: undefined,
+        });
+      });
+      yield* registry.reconcile(
+        deriveProviderInstanceConfigMap(revised.settings, providerEnvironment),
+      );
     },
     Effect.mapError(safeFailure("Could not configure the routed provider.")),
   );
+  const refreshLocalProviders = Effect.fn("InferenceProxy.refreshLocalProviders")(function* () {
+    const state = yield* read;
+    if (!state.enabled) return;
+    const hostId = yield* environment.getEnvironmentId;
+    const local = yield* grant({ environmentId: hostId, label: "Local" });
+    const { data } = yield* jsonRequest(local.baseUrl + "/v1/models", local.key, Models);
+    const { providerInstances } = yield* settings.getSettings;
+    for (const driver of INFERENCE_DRIVERS) {
+      const instanceId = defaultInstanceIdForDriver(ProviderDriverKind.make(driver));
+      const existing = providerInstances[instanceId];
+      if (
+        !existing ||
+        !isInferenceProviderConfig(existing.config) ||
+        !existing.config.inferenceEnabled ||
+        existing.config.inferenceHostId !== hostId
+      )
+        continue;
+      const models = modelsForDriver(data, driver);
+      const revised = yield* settings.reviseProviderInstance(instanceId, (current) => {
+        if (!current) return failure("The local inference provider was removed.");
+        return Effect.succeed({
+          instance:
+            current.driver === driver &&
+            isInferenceProviderConfig(current.config) &&
+            current.config.inferenceEnabled &&
+            current.config.inferenceHostId === hostId
+              ? { ...current, config: { ...current.config, inferenceModels: models } }
+              : current,
+          result: undefined,
+        });
+      });
+      yield* registry.reconcile(
+        deriveProviderInstanceConfigMap(revised.settings, providerEnvironment),
+      );
+    }
+  });
+  yield* watchLocalCodexAuth.pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
+  yield* watchLocalClaudeAuth.pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
   yield* read.pipe(
-    Effect.flatMap((state) => (state.enabled ? Effect.asVoid(ensure(state)) : Effect.void)),
+    Effect.flatMap((state) =>
+      state.enabled
+        ? ensureWatched(state).pipe(Effect.flatMap((runtime) => syncLocalAuth(runtime)))
+        : Effect.void,
+    ),
     mutex.withPermit,
     Effect.ignore,
     Effect.forkScoped,
   );
-  return { status, manage, authorize, grant, connect };
+  return { status, manage, authorize, grant, connect, bindRoutes };
 });
 
 export class InferenceProxy extends Context.Service<
@@ -738,8 +1382,10 @@ export class InferenceProxy extends Context.Service<
       input: InferenceConsumer,
     ) => Effect.Effect<InferenceRouteGrant, InferenceProxyError>;
     readonly connect: (input: InferenceRouteInput) => Effect.Effect<void, InferenceProxyError>;
+    readonly bindRoutes: (port: number) => Effect.Effect<void, InferenceProxyError>;
     readonly authorize: (
       key: string,
+      hostId?: EnvironmentId,
     ) => Effect.Effect<{ baseUrl: string; key: string } | null, InferenceProxyError>;
   }
 >()("t3/inference/InferenceProxy") {}

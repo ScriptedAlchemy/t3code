@@ -1,10 +1,12 @@
 import {
+  isInferenceAccountReplaced,
   repositoryGroupingKeyOf,
   type EnvironmentId,
   type ModelSelection,
   type PullRequestLinkedThreadsResult,
   type RepositoryIdentity,
   type ServerProvider,
+  type ServerSettings,
   type ThreadLinkedPullRequest,
   type ThreadId,
   type ThreadPullRequestLink,
@@ -94,25 +96,20 @@ const PROVIDER_ALIASES: Record<string, string> = { claude: "claudeagent" };
  */
 export function resolvePromptLinkModelSelection(
   providers: ReadonlyArray<
-    Pick<
-      ServerProvider,
-      "instanceId" | "driver" | "enabled" | "availability" | "status" | "pool"
-    > & {
+    Pick<ServerProvider, "instanceId" | "driver" | "enabled" | "availability" | "status"> & {
       readonly models: ReadonlyArray<
         SelectableModelOption & { readonly isDefault?: boolean | undefined }
       >;
     }
   >,
   request: { readonly provider: string; readonly model: string | null },
+  instances: ServerSettings["providerInstances"] = {},
 ): { readonly selection: ModelSelection; readonly exact: boolean } | null {
   const driver = PROVIDER_ALIASES[request.provider] ?? request.provider;
-  // The pool outranks its members, which composer pickers no longer offer.
-  const usable = [
-    ...providers.filter((provider) => provider.pool?.role === "pool"),
-    ...providers.filter((provider) => provider.pool?.role !== "pool"),
-  ].filter(
+  const usable = providers.filter(
     (provider) =>
       provider.driver.toLowerCase() === driver &&
+      !isInferenceAccountReplaced(provider.instanceId, instances) &&
       provider.enabled &&
       provider.availability !== "unavailable",
   );

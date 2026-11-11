@@ -3,6 +3,7 @@ import {
   DEFAULT_TEXT_GENERATION_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
+  isInferenceAccountReplaced,
   isProviderTextGenerationCapable,
   type ModelSelection,
   type ProjectId,
@@ -328,7 +329,7 @@ export function defaultModelSelectionsAreMixed(
     const selection =
       stored === null
         ? resolveProjectDefaultProviderModelSelection(providers, settings, projectId)
-        : resolveDefaultProviderModelSelection(providers, stored);
+        : resolveDefaultProviderModelSelection(providers, stored, settings);
     return {
       stored,
       effective: selection
@@ -382,7 +383,13 @@ export function resolveAppModelSelectionState(
   const supportedProviders = providers.filter((provider) =>
     isProviderTextGenerationCapable(provider),
   );
-  const entries = deriveProviderInstanceEntries(supportedProviders);
+  const entries = deriveProviderInstanceEntries(
+    supportedProviders.filter(
+      (provider) =>
+        provider.instanceId === selection.instanceId ||
+        !isInferenceAccountReplaced(provider.instanceId, settings.providerInstances),
+    ),
+  );
   const selectedEntry = entries.find(
     (entry) => entry.instanceId === selection.instanceId && entry.enabled && entry.isAvailable,
   );

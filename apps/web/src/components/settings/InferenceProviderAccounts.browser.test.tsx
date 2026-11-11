@@ -1,0 +1,72 @@
+import { EnvironmentId } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
+import { userEvent } from "vite-plus/test/browser";
+import { describe, expect, it, vi } from "vite-plus/test";
+
+import { render } from "../../../test/render";
+
+const state = vi.hoisted(() => ({
+  run: vi.fn(),
+  query: vi.fn(),
+}));
+vi.mock("../../state/query", () => ({ useEnvironmentQuery: state.query }));
+vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.run }));
+
+import { InferenceProviderAccounts } from "./InferenceProviderAccounts";
+import { serverEnvironment } from "../../state/server";
+
+const host = EnvironmentId.make("account-host");
+function setup() {
+  state.run.mockReset();
+  state.query.mockReset().mockReturnValue({
+    data: {
+      enabled: true,
+      accounts: [
+        { name: "work.json", provider: "codex", status: "active" },
+        { name: "personal.json", provider: "claude", status: "active" },
+      ],
+    },
+  });
+}
+
+describe("inference provider accounts", () => {
+  it("adds an account through the inference host and completes its callback without creating a profile", async () => {
+    setup();
+    using _permission = vi
+      .spyOn(serverEnvironment.inferenceProxy.manageInference, "permissionAtom")
+      .mockReturnValue(Atom.make(true));
+    state.run.mockResolvedValue({ _tag: "Success", value: { status: "ok" } });
+    state.run.mockResolvedValueOnce({
+      _tag: "Success",
+      value: { login: { url: "https://provider.example/sign-in", state: "proxy-login" } },
+    });
+    await using screen = await render(
+      <InferenceProviderAccounts environmentId={host} driver="codex" />,
+    );
+    await expect.element(screen.getByText("work.json")).toBeVisible();
+    await expect.element(screen.getByText("personal.json")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Codex", exact: true }));
+    expect(state.run).toHaveBeenLastCalledWith({
+      environmentId: host,
+      input: { operation: "signIn", upstream: "codex" },
+    });
+    await expect
+      .element(screen.getByRole("link", { name: "Open sign-in" }))
+      .toHaveAttribute("href", "https://provider.example/sign-in");
+    await userEvent.fill(
+      screen.getByLabelText("Sign-in callback URL"),
+      "http://localhost/callback?code=done",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Submit", exact: true }));
+    expect(state.run).toHaveBeenLastCalledWith({
+      environmentId: host,
+      input: {
+        operation: "callback",
+        state: "proxy-login",
+        callback: "http://localhost/callback?code=done",
+      },
+    });
+    await expect.element(screen.getByRole("button", { name: "Codex", exact: true })).toBeVisible();
+    expect(state.run).toHaveBeenCalledTimes(2);
+  });
+});

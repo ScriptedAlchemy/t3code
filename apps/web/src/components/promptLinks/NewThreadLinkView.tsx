@@ -35,6 +35,7 @@ import { useProjects, useThreadShells, waitForProject } from "~/state/entities";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { environmentPresentations } from "~/state/presentation";
+import { serverEnvironment } from "~/state/server";
 import { allReachableShellsLiveAtom, environmentShell } from "~/state/shell";
 import { sourceControlEnvironment } from "~/state/sourceControl";
 import { pullRequestEnvironment } from "~/state/pullRequests";
@@ -151,10 +152,12 @@ export function NewThreadLinkView({ link }: { readonly link: NewThreadLink }) {
         appAtomRegistry
           .get(environmentPresentations.providersByEnvironmentAtom)
           .get(project.environmentId) ?? [];
-      const resolved = resolvePromptLinkModelSelection(providers, {
-        provider: link.provider,
-        model: link.model,
-      });
+      const resolved = resolvePromptLinkModelSelection(
+        providers,
+        { provider: link.provider, model: link.model },
+        appAtomRegistry.get(serverEnvironment.configValueAtom(project.environmentId))?.settings
+          .providerInstances,
+      );
       if (resolved !== null) {
         useComposerDraftStore.getState().setModelSelection(opened.draftId, resolved.selection, {
           explicit: true,
