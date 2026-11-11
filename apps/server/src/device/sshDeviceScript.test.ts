@@ -24,9 +24,13 @@ it.effect("finds Android Studio Java for a non-interactive SSH session", () =>
           "#!/bin/sh\necho test-java\n",
           { mode: 0o755 },
         );
-        const result = await exec("/bin/sh", ["-c", `${remoteDeviceEnvironment}\njava`], {
-          env: { HOME: home, PATH: "/nonexistent", JAVA_HOME: "" },
-        });
+        const result = await exec(
+          "/bin/sh",
+          ["-c", `command() { return 1; }\n${remoteDeviceEnvironment}\nunset -f command\njava`],
+          {
+            env: { HOME: home, PATH: "/nonexistent", JAVA_HOME: "" },
+          },
+        );
         expect(result.stdout.trim()).toBe("test-java");
       } finally {
         await NodeFSP.rm(home, { recursive: true, force: true });

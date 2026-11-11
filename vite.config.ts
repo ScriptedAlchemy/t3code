@@ -5,6 +5,8 @@ import { remoteCacheUrl } from "./infra/task-cache/src/remoteCache.ts";
 import { cachedTestTasks } from "./scripts/lib/cached-tests.ts";
 
 const TEST_EXCLUDE = [
+  ".github/scripts/*.test.cjs",
+  "native/project-memory/kernel.test.mjs",
   "**/pstack/upstream/**",
   "**/.repos/**",
   "**/.t3/**",

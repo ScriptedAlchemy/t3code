@@ -675,7 +675,10 @@ it.live("a declined request links nothing and tells the agent", () =>
       const { messages } = yield* outcomeMessages(a);
       expect(messages).toHaveLength(1);
       expect(messages[0]).toMatchObject({
-        notification: { outcome: "cancelled", summary: "Declined to link Box" },
+        notification: {
+          outcome: "cancelled",
+          summary: `Declined to link ${card.label ?? card.url}`,
+        },
       });
       expect(messages[0]!.text).toContain("declined");
     }),
