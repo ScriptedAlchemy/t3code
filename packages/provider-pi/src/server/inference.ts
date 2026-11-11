@@ -54,7 +54,7 @@ const decodeConfig = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Struct({
       baseUrl: Schema.NonEmptyString,
-      models: Schema.NonEmptyArray(Schema.NonEmptyString),
+      models: Schema.Array(Schema.NonEmptyString),
     }),
   ),
 );

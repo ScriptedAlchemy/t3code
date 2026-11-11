@@ -1,4 +1,5 @@
 import {
+  inferenceHarness,
   isInferenceConfig,
   isInferenceRoutingEnabled,
   type OrchestrationV2ProviderFailure,
@@ -34,6 +35,7 @@ export class ProviderUsageLimitHook extends Context.Reference<{
   readonly onUsageLimit: (
     instanceId: ProviderInstanceId,
     failure: OrchestrationV2ProviderFailure,
+    model: string,
   ) => Effect.Effect<void>;
 }>("t3/orchestration-v2/ProviderUsageLimitHook", {
   defaultValue: () => ({ onUsageLimit: () => Effect.void }),
@@ -47,12 +49,20 @@ export const layer = Layer.effect(
     const onUsageLimit = Effect.fn("ProviderUsageLimitHook.onUsageLimit")(function* (
       instanceId: ProviderInstanceId,
       failure: OrchestrationV2ProviderFailure,
+      model: string,
     ) {
       const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
       const pooled = yield* settings.getSettings.pipe(
         Effect.map(({ providerInstances }) => {
-          const config = providerInstances[instanceId]?.config;
-          return isInferenceRoutingEnabled(config) || isInferenceConfig(config);
+          const instance = providerInstances[instanceId];
+          if (instance === undefined) return false;
+          if (isInferenceConfig(instance.config)) return true;
+          const harness = inferenceHarness(instance.driver);
+          return (
+            isInferenceRoutingEnabled(instance.config) &&
+            harness !== undefined &&
+            (harness.replacesAccounts || model.startsWith("t3proxy/"))
+          );
         }),
         Effect.orElseSucceed(() => false),
       );

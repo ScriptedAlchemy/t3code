@@ -314,6 +314,21 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         "codex_icloud",
         "codex_traex",
       ]);
+      const edited = yield* service.updateProviderInstance({
+        operation: "upsert",
+        instanceId: ProviderInstanceId.make("codex_icloud"),
+        instance: {
+          driver,
+          displayName: "Saved native account",
+          enabled: false,
+          config: { setupMode: "cli" },
+        },
+      });
+      assert.equal(
+        edited.providerInstances[ProviderInstanceId.make("codex_icloud")]?.displayName,
+        "Saved native account",
+      );
+      assert.isFalse(edited.providerInstances[ProviderInstanceId.make("codex_icloud")]?.enabled);
       assert.equal(
         (yield* service
           .updateProviderInstance({

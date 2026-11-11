@@ -154,7 +154,7 @@ export class ProjectKnowledge extends Context.Service<
       /** The turn's remaining knowledge budget, in bytes. */
       readonly knowledgeAllowance: number;
       /** The message being sent and the native conversation it targets. */
-      readonly turn?: Pick<ProjectKnowledgeDelivery, "messageId" | "nativeThreadId">;
+      readonly turn?: Omit<DeliveryStateInput, "projectId" | "threadId" | "scope">;
     }) => Effect.Effect<RecallComposer | null>;
     readonly prepareContext: (
       input: ProjectKnowledgeContext,

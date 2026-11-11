@@ -4,7 +4,6 @@ import {
   INFERENCE_HARNESSES,
   isInferenceProviderConfig,
   isInferenceRoutingEnabled,
-  isCustomInferenceBackend,
   ProviderDriverKind,
   ProviderInstanceId,
   providerInstanceConfigEnabledFlag,
@@ -68,17 +67,30 @@ export const deriveProviderInstanceConfigMap = (
     merged[instanceId] = { driver: driver.driverKind };
   }
 
+  // Project enables apply before routing validation, which must still reject incomplete routes.
+  for (const overrides of Object.values(settings.projectSettingsOverrides)) {
+    for (const [rawInstanceId, projectOverride] of Object.entries(
+      overrides?.providerInstances ?? {},
+    )) {
+      if (projectOverride.enabled !== true) continue;
+      const instanceId = rawInstanceId as ProviderInstanceId;
+      const existing = merged[instanceId];
+      if (existing === undefined || resolveProviderInstanceEnabled(existing)) continue;
+      merged[instanceId] = {
+        ...existing,
+        enabled: true,
+        ...(providerInstanceConfigEnabledFlag(existing.config) === false
+          ? { config: { ...(existing.config as Record<string, unknown>), enabled: true } }
+          : {}),
+      };
+    }
+  }
+
   for (const driver of INFERENCE_DRIVERS) {
     const id = defaultInstanceIdForDriver(ProviderDriverKind.make(driver));
     const native = merged[id];
     if (!native || !isInferenceRoutingEnabled(native.config)) continue;
     const { replacesAccounts } = INFERENCE_HARNESSES[driver];
-    if (replacesAccounts) {
-      for (const [key, entry] of Object.entries(merged)) {
-        if (key !== id && entry.driver === driver && !isCustomInferenceBackend(entry))
-          delete merged[key];
-      }
-    }
     if (!isInferenceProviderConfig(native.config)) {
       if (replacesAccounts) merged[id] = { ...native, enabled: false };
       continue;
@@ -109,25 +121,6 @@ export const deriveProviderInstanceConfigMap = (
         ...proxy.environment,
       ],
     };
-  }
-
-  // Probe project-enabled instances even if disabled machine-wide; project threads can still route to them.
-  for (const overrides of Object.values(settings.projectSettingsOverrides)) {
-    for (const [rawInstanceId, projectOverride] of Object.entries(
-      overrides?.providerInstances ?? {},
-    )) {
-      if (projectOverride.enabled !== true) continue;
-      const instanceId = rawInstanceId as ProviderInstanceId;
-      const existing = merged[instanceId];
-      if (existing === undefined || resolveProviderInstanceEnabled(existing)) continue;
-      merged[instanceId] = {
-        ...existing,
-        enabled: true,
-        ...(providerInstanceConfigEnabledFlag(existing.config) === false
-          ? { config: { ...(existing.config as Record<string, unknown>), enabled: true } }
-          : {}),
-      };
-    }
   }
 
   return merged as ProviderInstanceConfigMap;

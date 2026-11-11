@@ -1099,7 +1099,8 @@ const make = Effect.gen(function* () {
           return yield* updateMutex.withPermit(updateRuntime("update"));
         default: {
           const result = yield* manageHost(input);
-          if ("status" in result && result.status === "ok") yield* refreshLocalProviders();
+          if (input.operation === "removeAccount" || ("status" in result && result.status === "ok"))
+            yield* refreshLocalProviders();
           return result;
         }
       }
@@ -1337,8 +1338,8 @@ const make = Effect.gen(function* () {
     const { data } = yield* jsonRequest(local.baseUrl + "/v1/models", local.key, Models);
     const { providerInstances } = yield* settings.getSettings;
     for (const driver of INFERENCE_DRIVERS) {
-      const existing =
-        providerInstances[defaultInstanceIdForDriver(ProviderDriverKind.make(driver))];
+      const instanceId = defaultInstanceIdForDriver(ProviderDriverKind.make(driver));
+      const existing = providerInstances[instanceId];
       if (
         !existing ||
         !isInferenceProviderConfig(existing.config) ||
@@ -1346,8 +1347,23 @@ const make = Effect.gen(function* () {
         existing.config.inferenceHostId !== hostId
       )
         continue;
-      if (!modelsForDriver(data, driver).length) continue;
-      yield* connect({ grant: local, driver, hostLabel: "Local" });
+      const models = modelsForDriver(data, driver);
+      const revised = yield* settings.reviseProviderInstance(instanceId, (current) => {
+        if (!current) return failure("The local inference provider was removed.");
+        return Effect.succeed({
+          instance:
+            current.driver === driver &&
+            isInferenceProviderConfig(current.config) &&
+            current.config.inferenceEnabled &&
+            current.config.inferenceHostId === hostId
+              ? { ...current, config: { ...current.config, inferenceModels: models } }
+              : current,
+          result: undefined,
+        });
+      });
+      yield* registry.reconcile(
+        deriveProviderInstanceConfigMap(revised.settings, providerEnvironment),
+      );
     }
   });
   yield* watchLocalCodexAuth.pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);

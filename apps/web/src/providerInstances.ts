@@ -2,6 +2,7 @@ import { pipe } from "effect/Function";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
+  isInferenceAccountReplaced,
   resolveProjectProviderInstanceEnabled,
   type ModelSelection,
   type ProjectId,
@@ -167,9 +168,16 @@ export function providerInstanceEntriesFor(
   providers: ReadonlyArray<ServerProvider>,
   settings: ProviderInstanceSettings,
   projectId: ProjectId | null,
+  retainedInstanceIds: ReadonlyArray<ProviderInstanceId | null | undefined> = [],
 ): ReadonlyArray<ProviderInstanceEntry> {
   return pipe(
-    deriveProviderInstanceEntries(providers),
+    deriveProviderInstanceEntries(
+      providers.filter(
+        (provider) =>
+          retainedInstanceIds.includes(provider.instanceId) ||
+          !isInferenceAccountReplaced(provider.instanceId, settings.providerInstances),
+      ),
+    ),
     (entries) => applyProviderInstanceSettings(entries, settings, projectId),
     sortProviderInstanceEntries,
   );
@@ -200,10 +208,9 @@ export function deriveComposerProviderInstanceEntries(
   providers: ReadonlyArray<ServerProvider>,
   settings: ProviderInstanceSettings,
   projectId: ProjectId | null,
+  retainedInstanceIds: ReadonlyArray<ProviderInstanceId | null | undefined> = [],
 ): ReadonlyArray<ProviderInstanceEntry> {
-  return sortProviderInstanceEntries(
-    applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings, projectId),
-  );
+  return providerInstanceEntriesFor(providers, settings, projectId, retainedInstanceIds);
 }
 
 function getProviderInstanceEntry(
@@ -257,8 +264,18 @@ export function resolveSelectableProviderInstance(
 export function resolveDefaultProviderModelSelection(
   providers: ReadonlyArray<ServerProvider>,
   selection: ModelSelection | null | undefined,
+  settings?: Pick<ServerSettings, "providerInstances">,
 ): ModelSelection | null {
-  const instanceId = resolveSelectableProviderInstance(providers, selection?.instanceId);
+  const instanceId = resolveSelectableProviderInstance(
+    settings
+      ? providers.filter(
+          (provider) =>
+            provider.instanceId === selection?.instanceId ||
+            !isInferenceAccountReplaced(provider.instanceId, settings.providerInstances),
+        )
+      : providers,
+    selection?.instanceId,
+  );
   if (instanceId === undefined) return null;
   if (selection?.instanceId === instanceId) return selection;
   const model = getDefaultProviderInstanceModel(providers, instanceId);

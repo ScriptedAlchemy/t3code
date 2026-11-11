@@ -1173,7 +1173,11 @@ export const layer: Layer.Layer<
             return;
           }
           if (terminal.status === "failed" && terminal.failure.class === "usage_limit") {
-            yield* usageLimitHook.onUsageLimit(input.run.providerInstanceId, terminal.failure);
+            yield* usageLimitHook.onUsageLimit(
+              input.run.providerInstanceId,
+              terminal.failure,
+              input.modelSelection.model,
+            );
           }
           const providerThread = yield* Ref.get(latestProviderThread);
           const openSubagents = yield* Ref.get(openRunOwnedSubagents);

@@ -86,6 +86,7 @@ import {
   managedCapabilityDenial,
 } from "@t3tools/contracts";
 import { resolvePastedPath } from "@t3tools/shared/path";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { ManagedNotice } from "../ManagedPolicy";
 import { readEnvironmentScope } from "~/state/session";
@@ -1421,14 +1422,24 @@ function ScheduledTaskEditorForm({
     : task;
   const selectedProjectId = draft.projectId || projects[0]?.id || "";
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
+  const draftSelection = draft.modelKey ? splitModelKey(draft.modelKey) : null;
+  const projectDefault = resolveProjectSettings(
+    settings,
+    selectedProject?.id ?? null,
+    selectedProject,
+  ).settings.defaultModelSelection;
   const instanceEntries = providerInstanceEntriesFor(
     providers,
     settings,
     selectedProject?.id ?? null,
+    [
+      draftSelection?.instanceId,
+      projectDefault?.instanceId,
+      settings.defaultModelSelection?.instanceId,
+    ],
   );
 
   const firstInstance = instanceEntries[0];
-  const draftSelection = draft.modelKey ? splitModelKey(draft.modelKey) : null;
   const activeSelection =
     draftSelection &&
     instanceEntries.some((entry) => entry.instanceId === draftSelection.instanceId && entry.enabled)

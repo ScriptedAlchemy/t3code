@@ -65,6 +65,22 @@ it.effect("keeps native Pi files and credentials unchanged through routing on an
     assert.notInclude(source, routeEnvironment.T3_INFERENCE_KEY);
     assert.notInclude(source, "host/model-one");
 
+    const emptyInventory = yield* preparePiInferenceEnvironment({
+      config: routedSettings,
+      environment: {
+        ...environment,
+        T3_PI_INFERENCE_CONFIG: JSON.stringify({
+          baseUrl: "http://127.0.0.1:4567/inference/v1",
+          models: [],
+        }),
+      },
+      cacheDir: path.join(directory, "t3-cache"),
+      cwd: directory,
+      version: MINIMUM_PI_INFERENCE_VERSION,
+    });
+    assert.equal(emptyInventory.ANTHROPIC_API_KEY, "native-account-key");
+    assert.equal(emptyInventory.T3_PI_INFERENCE_EXTENSION, prepared.T3_PI_INFERENCE_EXTENSION);
+
     const native = yield* preparePiInferenceEnvironment({
       config: { ...routedSettings, inferenceEnabled: false },
       environment: prepared,

@@ -155,6 +155,19 @@ describe("resolvePromptLinkModelSelection", () => {
       selection: { instanceId: "work", model: "big" },
       exact: true,
     });
+    expect(
+      resolvePromptLinkModelSelection(
+        [...providers, provider("claudeAgent", "claudeAgent")],
+        { provider: "claude", model: "small" },
+        {
+          [ProviderInstanceId.make("work")]: { driver: ProviderDriverKind.make("claudeAgent") },
+          [ProviderInstanceId.make("claudeAgent")]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            config: { inferenceEnabled: true },
+          },
+        },
+      ),
+    ).toEqual({ selection: { instanceId: "claudeAgent", model: "small" }, exact: true });
   });
 
   it("uses the instance default for an unknown model, and nothing for a missing provider", () => {

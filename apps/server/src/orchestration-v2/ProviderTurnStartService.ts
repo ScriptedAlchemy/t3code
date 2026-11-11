@@ -1820,6 +1820,9 @@ export const layer: Layer.Layer<
                 knowledgeAllowance: budget.knowledgeAllowance,
                 turn: {
                   messageId: message.id,
+                  attemptId: attempt.id,
+                  providerInstanceId: run.providerInstanceId,
+                  providerThreadId: runningProviderThread.id,
                   nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? null,
                 },
               });

@@ -51,7 +51,10 @@ export function useComposerProviderModel(
   } = input;
   const draftModelState = useComposerDraftModelState(threadRef);
   const providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry> =
-    deriveComposerProviderInstanceEntries(providerStatuses, settings, activeProjectId);
+    deriveComposerProviderInstanceEntries(providerStatuses, settings, activeProjectId, [
+      ...candidateInstanceIds,
+      lockedInstanceId,
+    ]);
   const selection = resolveComposerProviderSelection({
     entries: providerInstanceEntries,
     providers: providerStatuses,

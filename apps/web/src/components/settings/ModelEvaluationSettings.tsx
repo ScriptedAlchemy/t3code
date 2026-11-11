@@ -58,7 +58,9 @@ export function ModelEvaluationSettings() {
     EMPTY_SERVER_PROVIDERS;
   const judgeProviders = providers.filter(isModelEvaluationJudge);
   const selection = settings.modelEvaluationModelSelection ?? settings.textGenerationModelSelection;
-  const entries = providerInstanceEntriesFor(judgeProviders, settings, null);
+  const entries = providerInstanceEntriesFor(judgeProviders, settings, null, [
+    selection.instanceId,
+  ]);
   const modelOptions = getCustomModelOptionsByInstance(
     settings,
     judgeProviders,

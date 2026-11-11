@@ -70,11 +70,13 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const storedSelection =
     settings.defaultModelSelection === null
       ? resolveProjectDefaultProviderModelSelection(providers, settings, target?.projectId ?? null)
-      : resolveDefaultProviderModelSelection(providers, settings.defaultModelSelection);
+      : resolveDefaultProviderModelSelection(providers, settings.defaultModelSelection, settings);
   const selection = storedSelection
     ? resolveEffectiveDefaultModelSelection(settings, providers, storedSelection)
     : null;
-  const entries = providerInstanceEntriesFor(providers, settings, target?.projectId ?? null);
+  const entries = providerInstanceEntriesFor(providers, settings, target?.projectId ?? null, [
+    selection?.instanceId,
+  ]);
   const modelOptions = getCustomModelOptionsByInstance(
     settings,
     providers,

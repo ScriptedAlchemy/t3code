@@ -36,14 +36,14 @@ interface Provider {
   };
 }
 
-async function loadProvider() {
+async function loadProvider(models = ["nested/model-id", "plain-model", "nested/model-id"]) {
   const providers: Provider[] = [];
   const requests: Array<{ readonly model: Model; readonly options: StreamOptions | undefined }> =
     [];
   const environment: Record<string, string> = {
     T3_PI_INFERENCE_CONFIG: JSON.stringify({
       baseUrl: "http://127.0.0.1:4567/inference/v1",
-      models: ["nested/model-id", "plain-model", "nested/model-id"],
+      models,
     }),
     T3_INFERENCE_KEY: "scoped-route-key",
   };
@@ -72,6 +72,13 @@ async function loadProvider() {
   assert.lengthOf(providers, 1);
   return { provider: providers[0]!, environment, requests };
 }
+
+it("keeps the extension loadable when the host has no remaining models", async () => {
+  const { provider, requests } = await loadProvider([]);
+  assert.equal(provider.id, "t3proxy");
+  assert.isEmpty(provider.models);
+  assert.isEmpty(requests);
+});
 
 it("preserves host model IDs and pins scoped auth instead of native saved or explicit keys", async () => {
   const { provider, environment, requests } = await loadProvider();

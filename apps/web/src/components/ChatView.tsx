@@ -1314,21 +1314,23 @@ export default function ChatView(props: ChatViewProps) {
     automaticEnvironment,
     autoUpdateEnvironments,
   });
+  const activeThreadModelInstanceId = activeThread?.modelSelection.instanceId;
+  const candidateInstanceIds = [
+    selectedProviderByThreadId,
+    activeRuntime?.providerInstanceId,
+    activeThreadModelInstanceId,
+    activeProjectDefaultModelSelection?.instanceId,
+  ];
   const providerInstanceEntries = deriveComposerProviderInstanceEntries(
     providerStatuses,
     settings,
     activeProject?.id ?? null,
+    candidateInstanceIds,
   );
-  const activeThreadModelInstanceId = activeThread?.modelSelection.instanceId;
   const { selectedProviderEntry, requestedDriverKind } = resolveComposerProviderSelection({
     entries: providerInstanceEntries,
     providers: providerStatuses,
-    candidateInstanceIds: [
-      selectedProviderByThreadId,
-      activeRuntime?.providerInstanceId,
-      activeThreadModelInstanceId,
-      activeProjectDefaultModelSelection?.instanceId,
-    ],
+    candidateInstanceIds,
     lockedProvider,
     lockedInstanceId: activeRuntime?.providerInstanceId ?? activeThreadModelInstanceId,
   });

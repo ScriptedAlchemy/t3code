@@ -183,6 +183,10 @@ it.effect(
                 Response.json({ state: "sign-in", url: "https://auth.example.com/start" }),
               ),
             );
+          if (request.url.includes("/get-auth-status?"))
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(request, Response.json({ status: "ok" })),
+            );
           if (registryOffline && request.url.endsWith("/releases/latest"))
             return Effect.succeed(
               HttpClientResponse.fromWeb(request, new Response(null, { status: 503 })),
@@ -773,6 +777,34 @@ it.effect(
               homePath: expect.stringContaining("/providers/inference/codex"),
             });
             yield* proxy.bindRoutes(45678);
+            expect(
+              (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")],
+            ).toEqual(configured);
+            yield* settings.updateProviderInstance({
+              operation: "upsert",
+              instanceId: ProviderInstanceId.make("codex"),
+              instance: { ...configured!, enabled: false },
+            });
+            yield* proxy.manage({ operation: "check", state: "sign-in" });
+            expect(
+              (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")]
+                ?.enabled,
+            ).toBe(false);
+            yield* settings.updateProviderInstance({
+              operation: "upsert",
+              instanceId: ProviderInstanceId.make("codex"),
+              instance: configured!,
+            });
+            const populatedCatalog = catalog;
+            catalog = [];
+            yield* proxy.manage({ operation: "removeAccount", name: "one.json" });
+            expect(
+              (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")]
+                ?.config,
+            ).toMatchObject({ inferenceEnabled: true, inferenceModels: [] });
+            expect(activeCodexConfig).toMatchObject({ customModels: [] });
+            catalog = populatedCatalog;
+            yield* proxy.manage({ operation: "check", state: "sign-in" });
             expect(
               (yield* settings.getSettings).providerInstances[ProviderInstanceId.make("codex")],
             ).toEqual(configured);

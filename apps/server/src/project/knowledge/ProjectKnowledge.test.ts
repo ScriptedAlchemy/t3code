@@ -1888,6 +1888,7 @@ it.effect(
         messageId: MessageId.make("recall-message"),
         projectId,
         providerInstanceId,
+        providerThreadId: ProviderThreadId.make("recall-provider-thread"),
         nativeThreadId: "native-a",
         items: composer.items,
         omissions: [],
@@ -1901,13 +1902,53 @@ it.effect(
       assert.isNull(yield* recall({}, "already-sent"));
       assert.isNotNull(yield* recall({ threadId: ThreadId.make("other-thread") }, "other-thread"));
       // A retry of that message on a replacement conversation never received the fact.
-      const retry = { messageId: sent.messageId, nativeThreadId: "native-b" };
+      const retry = {
+        messageId: sent.messageId,
+        attemptId: RunAttemptId.make("recall-retry"),
+        providerInstanceId,
+        providerThreadId: sent.providerThreadId,
+        nativeThreadId: "native-b",
+      };
       assert.isNotNull(yield* recall({ turn: retry }, "retry-elsewhere"));
       assert.isNull(
         yield* recall({ turn: { ...retry, nativeThreadId: "native-a" } }, "retry-same"),
       );
       const later = { ...retry, messageId: MessageId.make("later-message") };
       assert.isNull(yield* recall({ turn: later }, "later-message"));
+      assert.isNotNull(
+        yield* recall(
+          {
+            turn: {
+              ...retry,
+              nativeThreadId: "native-a",
+              providerInstanceId: ProviderInstanceId.make("other-provider"),
+            },
+          },
+          "retry-other-provider",
+        ),
+      );
+      assert.isNotNull(
+        yield* recall(
+          {
+            turn: {
+              ...retry,
+              nativeThreadId: "native-a",
+              providerThreadId: ProviderThreadId.make("other-provider-thread"),
+            },
+          },
+          "retry-other-provider-thread",
+        ),
+      );
+      yield* knowledge.recordDelivery({ ...sent, nativeThreadId: null, status: "sent" });
+      assert.isNull(
+        yield* recall(
+          { turn: { ...retry, attemptId: sent.attemptId, nativeThreadId: null } },
+          "same-attempt-without-native-id",
+        ),
+      );
+      assert.isNotNull(
+        yield* recall({ turn: { ...retry, nativeThreadId: null } }, "retry-without-native-id"),
+      );
 
       // Recall cuts a long fact short and names the tool that reads the rest.
       yield* knowledge.mutate(

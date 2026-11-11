@@ -2,7 +2,11 @@ import * as Schema from "effect/Schema";
 import { EnvironmentId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 import { DesktopSshEnvironmentTargetSchema } from "./ssh.ts";
-import { ProviderInstanceId, type ProviderInstanceConfig } from "./providerInstance.ts";
+import {
+  defaultInstanceIdForDriver,
+  ProviderInstanceId,
+  type ProviderInstanceConfig,
+} from "./providerInstance.ts";
 import { SettingsSecretValue } from "./settingsSecretValue.ts";
 import { SecretReference } from "./secretReference.ts";
 
@@ -196,6 +200,22 @@ export const isCustomInferenceBackend = (instance: ProviderInstanceConfig) =>
       instance.environment?.some(
         (entry) => entry.name === "ANTHROPIC_BASE_URL" && entry.value !== "",
       )));
+
+export function isInferenceAccountReplaced(
+  instanceId: ProviderInstanceId,
+  instances: Readonly<Record<ProviderInstanceId, ProviderInstanceConfig>>,
+): boolean {
+  const instance = Object.hasOwn(instances, instanceId) ? instances[instanceId] : undefined;
+  if (!instance || !inferenceHarness(instance.driver)?.replacesAccounts) return false;
+  const defaultId = defaultInstanceIdForDriver(instance.driver);
+  return (
+    instanceId !== defaultId &&
+    isInferenceRoutingEnabled(instances[defaultId]?.config) &&
+    !isInferenceConfig(instance.config) &&
+    !isCustomInferenceBackend(instance)
+  );
+}
+
 export const InferenceRouteInput = Schema.Struct({
   grant: InferenceRouteGrant,
   driver: InferenceDriver,

@@ -349,7 +349,12 @@ function ThreadSettingsSessionProvider(
       : props.providerGroups.flatMap((group) => group.models);
   const providerGroups = groupModelOptionsWithProviderNotices(
     modelOptions,
-    buildProviderUpdateRequiredGroups(config, props.lockedProviderInstanceId, props.projectId),
+    buildProviderUpdateRequiredGroups(
+      config,
+      props.lockedProviderInstanceId,
+      props.projectId,
+      props.selectedModel?.instanceId,
+    ),
   );
   const legacyFavorites = AsyncResult.isSuccess(preferences)
     ? (preferences.value.modelFavorites ?? EMPTY_MODEL_FAVORITES)
@@ -1369,6 +1374,7 @@ export function ExistingThreadSettingsRouteScreen({
           serverConfig,
           lockedProviderInstanceId,
           selectedThread.projectId,
+          modelSelection.instanceId,
         ),
       )}
       selectedModel={modelSelection}

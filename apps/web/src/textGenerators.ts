@@ -329,7 +329,12 @@ export function useTextGenerationTargets(input: {
     providers: [...providers, ...generatorProviders],
     // Project provider overrides do not apply to text generators, so their entries skip them.
     entries: [
-      ...providerInstanceEntriesFor(providers, settings, input.projectId),
+      ...providerInstanceEntriesFor(
+        providers,
+        settings,
+        input.projectId,
+        input.selections.map((selection) => selection?.instanceId),
+      ),
       ...deriveProviderInstanceEntries(generatorProviders),
     ],
   };

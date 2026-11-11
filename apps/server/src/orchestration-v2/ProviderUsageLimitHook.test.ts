@@ -70,24 +70,31 @@ describe("limitCooldownUntilMs", () => {
 });
 
 it.effect.each([
-  ["normal proxy", { inferenceEnabled: true }, 60_000],
-  ["saved concrete route", { setupMode: "inference" }, 60_000],
-  ["native", { setupMode: "cli", inferenceEnabled: false }, 10 * 60_000],
-] as const)("records the account cooldown for %s", ([, config, cooldown]) =>
+  ["Codex proxy", "codex", { inferenceEnabled: true }, "gpt-5", 60_000],
+  ["Claude proxy", "claudeAgent", { inferenceEnabled: true }, "claude-sonnet-4-6", 60_000],
+  ["saved concrete route", "codex", { setupMode: "inference" }, "gpt-5", 60_000],
+  ["native", "codex", { setupMode: "cli", inferenceEnabled: false }, "gpt-5", 10 * 60_000],
+  ["native Pi model", "pi", { inferenceEnabled: true }, "openai/gpt-5", 10 * 60_000],
+  ["default Pi model", "pi", { inferenceEnabled: true }, "default", 10 * 60_000],
+  ["proxy Pi model", "pi", { inferenceEnabled: true }, "t3proxy/openai/gpt-5", 60_000],
+  ["native OpenCode model", "opencode", { inferenceEnabled: true }, "openai/gpt-5", 10 * 60_000],
+  ["proxy OpenCode model", "opencode", { inferenceEnabled: true }, "t3proxy/openai/gpt-5", 60_000],
+  ["disabled Pi proxy", "pi", { inferenceEnabled: false }, "t3proxy/openai/gpt-5", 10 * 60_000],
+] as const)("records the account cooldown for %s", ([, kind, config, model, cooldown]) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(nowMs);
-    const instanceId = ProviderInstanceId.make("codex");
+    const instanceId = ProviderInstanceId.make(kind);
     const limitedUntil = yield* Ref.make<string | undefined>(undefined);
     yield* Effect.gen(function* () {
       const hook = yield* ProviderUsageLimitHook.ProviderUsageLimitHook;
-      yield* hook.onUsageLimit(instanceId, failure("usageLimitExceeded", futureResetAt));
+      yield* hook.onUsageLimit(instanceId, failure("usageLimitExceeded", futureResetAt), model);
     }).pipe(
       Effect.provide(
         ProviderUsageLimitHook.layer.pipe(
           Layer.provide(
             ServerSettings.layerTest({
               providerInstances: {
-                [instanceId]: { driver: ProviderDriverKind.make("codex"), config },
+                [instanceId]: { driver: ProviderDriverKind.make(kind), config },
               },
             }),
           ),

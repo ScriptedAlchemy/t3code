@@ -7,6 +7,7 @@ import {
   INFERENCE_DRIVERS,
   INFERENCE_HARNESSES,
   inferenceHarness,
+  isInferenceAccountReplaced,
   isInferenceProviderConfig,
   isCustomInferenceBackend,
   AuthSettingsWriteScope,
@@ -30,7 +31,7 @@ import {
   ProviderDriverKind,
   type ProjectId,
   type ProviderInstanceConfig,
-  type ProviderInstanceId,
+  ProviderInstanceId,
   type ServerProvider,
   resolveEnvironmentMachineKind,
   resolveProjectProviderInstanceEnabled,
@@ -735,10 +736,8 @@ export function EnvironmentProviderSettings({
   for (const [rawId, instance] of Object.entries(settings.providerInstances ?? {})) {
     const driver = instance.driver;
     if (
-      rawId !== defaultInstanceIdForDriver(driver) &&
-      inferenceHarness(driver)?.replacesAccounts &&
-      inferenceAccountHostId(settings.providerInstances, driver, environmentId) &&
-      !isCustomInferenceBackend(instance)
+      rawId !== targetInstanceId &&
+      isInferenceAccountReplaced(ProviderInstanceId.make(rawId), settings.providerInstances)
     ) {
       proxyHiddenNamesByDriver.set(driver, [
         ...(proxyHiddenNamesByDriver.get(driver) ?? []),

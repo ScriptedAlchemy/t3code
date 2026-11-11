@@ -34,7 +34,7 @@ function settingsWith(overrides: Partial<ServerSettings>): ServerSettings {
 }
 
 describe("deriveProviderInstanceConfigMap", () => {
-  it("overlays only T3's proxy runtime and restores native profiles when routing is off", () => {
+  it("overlays only T3's proxy runtime and preserves saved native selections", () => {
     const driver = ProviderDriverKind.make("codex");
     const id = ProviderInstanceId.make("codex");
     const native = {
@@ -61,6 +61,7 @@ describe("deriveProviderInstanceConfigMap", () => {
       providerInstances: {
         [id]: { ...native, config: { ...native.config, ...route } },
         [instanceId]: { driver, config: { setupMode: "cli" } },
+        [ProviderInstanceId.make("pool_codex")]: native,
         [ProviderInstanceId.make("codex_traex")]: {
           driver,
           config: { launchArgs: "-c 'model_provider=\"traex\"'" },
@@ -80,7 +81,8 @@ describe("deriveProviderInstanceConfigMap", () => {
     });
     const before = structuredClone(settings);
     const enabled = deriveProviderInstanceConfigMap(settings);
-    expect(enabled[instanceId]).toBeUndefined();
+    expect(enabled[instanceId]).toEqual(settings.providerInstances[instanceId]);
+    expect(enabled[ProviderInstanceId.make("pool_codex")]).toEqual(native);
     expect(enabled[ProviderInstanceId.make("codex_traex")]).toBeDefined();
     expect(enabled[ProviderInstanceId.make("inference_codex_0000000000000000")]).toEqual(
       settings.providerInstances[ProviderInstanceId.make("inference_codex_0000000000000000")],
@@ -123,7 +125,8 @@ describe("deriveProviderInstanceConfigMap", () => {
         },
       });
       expect(invalid[id]?.enabled).toBe(false);
-      expect(invalid[instanceId]).toBeUndefined();
+      expect(invalid[instanceId]).toEqual(settings.providerInstances[instanceId]);
+      expect(invalid[ProviderInstanceId.make("pool_codex")]).toEqual(native);
     }
   });
 
@@ -277,6 +280,26 @@ describe("deriveProviderInstanceConfigMap", () => {
 
     expect(merged[instanceId]).toEqual({ driver: ProviderDriverKind.make("codex"), enabled: true });
   });
+
+  it.each(["codex", "claudeAgent"] as const)(
+    "keeps incomplete %s proxy routing disabled even when a project enables the provider",
+    (kind) => {
+      const id = ProviderInstanceId.make(kind);
+      const settings = settingsWith({
+        providerInstances: {
+          [id]: {
+            driver: ProviderDriverKind.make(kind),
+            config: { setupMode: "cli", inferenceEnabled: true },
+          },
+        },
+        projectSettingsOverrides: {
+          [projectId]: { providerInstances: { [id]: { enabled: true } } },
+        },
+      });
+
+      expect(deriveProviderInstanceConfigMap(settings)[id]?.enabled).toBe(false);
+    },
+  );
 
   it("clears a nested config.enabled:false flag when a project enables the instance", () => {
     const settings = settingsWith({

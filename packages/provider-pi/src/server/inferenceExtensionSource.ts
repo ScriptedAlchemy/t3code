@@ -34,7 +34,7 @@ export default async function t3InferenceExtension(pi: ExtensionAPI) {
     if (
       typeof value !== "object" || value === null ||
       typeof value.baseUrl !== "string" ||
-      !Array.isArray(value.models) || value.models.length === 0 ||
+      !Array.isArray(value.models) ||
       !value.models.every((id: unknown) => typeof id === "string" && id.trim().length > 0)
     ) throw new Error();
     const url = new URL(value.baseUrl);

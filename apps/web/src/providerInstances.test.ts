@@ -13,6 +13,7 @@ import {
   deriveProviderInstanceEntries,
   getDefaultProviderInstanceModel,
   isProviderInstancePickerReady,
+  providerInstanceEntriesFor,
   resolveDefaultProviderModelSelection,
   resolveSelectableProviderInstance,
   shouldShowInstanceBadge,
@@ -56,6 +57,73 @@ const model = (slug: string, isCustom = false, isDefault = false) => ({
   isCustom,
   ...(isDefault ? { isDefault: true } : {}),
   capabilities: {},
+});
+
+describe("providerInstanceEntriesFor", () => {
+  it.each(["codex", "claudeAgent", "opencode", "pi"])(
+    "keeps a saved %s account usable while routing new choices through its proxy",
+    (kind) => {
+      const driver = ProviderDriverKind.make(kind);
+      const nativeId = ProviderInstanceId.make(`${kind}_work`);
+      const customId = ProviderInstanceId.make(`${kind}_custom`);
+      const routeId = ProviderInstanceId.make(`${kind}_route`);
+      const settings = {
+        providerInstances: {
+          [ProviderInstanceId.make(kind)]: {
+            driver,
+            enabled: true,
+            config: { inferenceEnabled: true },
+          },
+          [nativeId]: { driver, enabled: true, config: { homePath: "/native/work" } },
+          [routeId]: { driver, enabled: true, config: { setupMode: "inference" } },
+          [customId]: {
+            driver,
+            enabled: true,
+            config: { launchArgs: '-c model_provider="custom"' },
+            environment: [
+              { name: "ANTHROPIC_BASE_URL", value: "https://custom.example", sensitive: false },
+            ],
+          },
+        },
+        projectSettingsOverrides: {},
+      };
+      const providers = [kind, nativeId, customId, routeId].map((instanceId) =>
+        provider({ provider: driver, instanceId, models: [model("model", false, true)] }),
+      );
+      const newChoices = providerInstanceEntriesFor(providers, settings, null);
+
+      expect(newChoices.map((entry) => entry.instanceId)).toEqual(
+        kind === "codex" || kind === "claudeAgent"
+          ? [kind, customId, routeId]
+          : [kind, nativeId, customId, routeId],
+      );
+      const retainedChoices = providerInstanceEntriesFor(providers, settings, null, [nativeId]);
+      expect(retainedChoices.map((entry) => entry.instanceId)).toEqual([
+        kind,
+        nativeId,
+        customId,
+        routeId,
+      ]);
+      expect(retainedChoices.find((entry) => entry.instanceId === nativeId)?.enabled).toBe(true);
+
+      const nativeSettings = {
+        ...settings,
+        providerInstances: {
+          ...settings.providerInstances,
+          [ProviderInstanceId.make(kind)]: {
+            driver,
+            enabled: true,
+            config: { inferenceEnabled: false },
+          },
+        },
+      };
+      expect(
+        providerInstanceEntriesFor(providers, nativeSettings, null).map(
+          (entry) => entry.instanceId,
+        ),
+      ).toEqual([kind, nativeId, customId, routeId]);
+    },
+  );
 });
 
 describe("isProviderInstancePickerReady", () => {

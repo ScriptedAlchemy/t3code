@@ -64,7 +64,7 @@ describe("nativeAccountProviders", () => {
 
     expect(
       nativeAccountProviders(providers, instances).map((provider) => provider.instanceId),
-    ).toEqual(["pi", "opencode", "codex_native", "codex_disabled", "codex_incomplete", "cursor"]);
+    ).toEqual(["pi", "opencode", "cursor"]);
   });
 });
 

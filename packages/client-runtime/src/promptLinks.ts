@@ -1,10 +1,12 @@
 import {
+  isInferenceAccountReplaced,
   repositoryGroupingKeyOf,
   type EnvironmentId,
   type ModelSelection,
   type PullRequestLinkedThreadsResult,
   type RepositoryIdentity,
   type ServerProvider,
+  type ServerSettings,
   type ThreadLinkedPullRequest,
   type ThreadId,
   type ThreadPullRequestLink,
@@ -101,11 +103,13 @@ export function resolvePromptLinkModelSelection(
     }
   >,
   request: { readonly provider: string; readonly model: string | null },
+  instances: ServerSettings["providerInstances"] = {},
 ): { readonly selection: ModelSelection; readonly exact: boolean } | null {
   const driver = PROVIDER_ALIASES[request.provider] ?? request.provider;
   const usable = providers.filter(
     (provider) =>
       provider.driver.toLowerCase() === driver &&
+      !isInferenceAccountReplaced(provider.instanceId, instances) &&
       provider.enabled &&
       provider.availability !== "unavailable",
   );

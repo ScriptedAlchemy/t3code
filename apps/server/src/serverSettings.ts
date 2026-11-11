@@ -248,7 +248,9 @@ function ensureProviderInstanceMutationAllowed(
       canonical &&
       isInferenceProviderConfig(canonical.config) &&
       canonical.config.inferenceEnabled &&
-      !isCustomInferenceBackend(mutation.instance)
+      !isCustomInferenceBackend(mutation.instance) &&
+      (mutation.operation === "create" ||
+        settings.providerInstances[mutation.instanceId]?.driver !== mutation.instance.driver)
     )
       return Effect.fail(
         new ServerSettingsError({

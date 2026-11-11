@@ -14,6 +14,7 @@ import type {
 import {
   disallowedProviderMessage,
   isManagedDriverAllowed,
+  isInferenceAccountReplaced,
   isProviderDriverKind,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
@@ -163,6 +164,7 @@ function modelOptionProviderContext(
   config: T3ServerConfig | null | undefined,
   requestedInstanceId: ModelSelection["instanceId"] | undefined,
   projectId: ProjectId | null,
+  selectedInstanceId?: ModelSelection["instanceId"],
 ) {
   const providers = config?.providers ?? [];
   const providerInstanceId = requestedInstanceId;
@@ -183,6 +185,10 @@ function modelOptionProviderContext(
     selectableProviders: providers.filter(
       (provider) =>
         matchesLockedProvider(provider) &&
+        (provider.instanceId === providerInstanceId ||
+          provider.instanceId === selectedInstanceId ||
+          !config?.settings ||
+          !isInferenceAccountReplaced(provider.instanceId, config.settings.providerInstances)) &&
         isProviderEnabledForProject(config, provider, projectId) &&
         // Antigravity's catalog only exists once it is set up; other providers stay
         // listed as unavailable so a pending or failed probe cannot erase them.
@@ -323,7 +329,12 @@ export function buildModelOptions(
   includeHidden = false,
 ): ReadonlyArray<ModelOption> {
   const options = new Map<string, ModelOption>();
-  const providerContext = modelOptionProviderContext(config, requestedInstanceId, projectId);
+  const providerContext = modelOptionProviderContext(
+    config,
+    requestedInstanceId,
+    projectId,
+    requestedFallbackSelection?.instanceId,
+  );
   const { providerInstanceId } = providerContext;
   const fallbackModelSelection = requestedFallbackSelection;
   const registryAgentId = (instanceId: ModelSelection["instanceId"]) => {
@@ -488,11 +499,13 @@ export function buildProviderUpdateRequiredGroups(
   config: T3ServerConfig | null | undefined,
   requestedInstanceId: ModelSelection["instanceId"] | undefined,
   projectId: ProjectId | null,
+  selectedInstanceId?: ModelSelection["instanceId"],
 ): ReadonlyArray<ProviderGroup> {
   return modelOptionProviderContext(
     config,
     requestedInstanceId,
     projectId,
+    selectedInstanceId,
   ).selectableProviders.flatMap((provider) => {
     const updateRequiredModels = provider.updateRequiredModels;
     if (!updateRequiredModels?.length) return [];

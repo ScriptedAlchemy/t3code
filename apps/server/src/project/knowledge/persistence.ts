@@ -702,7 +702,7 @@ export const makeStore = Effect.gen(function* () {
   const seenFactIds = Effect.fn("ProjectKnowledgeStore.seenFactIds")(function* (
     projectId: ProjectId,
     threadId: ThreadId,
-    turn?: Pick<ProjectKnowledgeDelivery, "messageId" | "nativeThreadId">,
+    turn?: Omit<DeliveryStateInput, "projectId" | "threadId" | "scope">,
   ) {
     const rows = yield* sql<{ readonly factId: ProjectFactId }>`
       SELECT fact_id AS "factId" FROM project_knowledge_views
@@ -717,8 +717,13 @@ export const makeStore = Effect.gen(function* () {
         AND ${
           turn === undefined
             ? sql`TRUE`
-            : sql`NOT (d.message_id = ${turn.messageId}
-                AND d.native_thread_id IS NOT ${turn.nativeThreadId ?? null})`
+            : sql`(d.message_id != ${turn.messageId} OR ${deliveryTargetPredicate({
+                ...turn,
+                projectId,
+                threadId,
+                nativeThreadId: turn.nativeThreadId ?? null,
+                scope: "native-conversation",
+              })})`
         }
         AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs AS run
           WHERE run.run_id = d.run_id AND run.status = 'rolled_back')`;
