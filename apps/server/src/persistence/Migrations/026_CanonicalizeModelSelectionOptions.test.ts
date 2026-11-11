@@ -2,11 +2,14 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Schema from "effect/Schema";
+import { ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
 
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
+const decodeModelSelection = Schema.decodeUnknownSync(ModelSelection);
 
 layer("026_CanonicalizeModelSelectionOptions", (it) => {
   it.effect("converts legacy object-shape options into array-shape on projections and events", () =>
@@ -439,6 +442,109 @@ layer("026_CanonicalizeModelSelectionOptions", (it) => {
 
       assert.isUndefined(payloads["event-activity-append"].modelSelection);
       assert.isUndefined(payloads["event-activity-append"].defaultModelSelection);
+
+      yield* runMigrations({ toMigrationInclusive: 96 });
+      const upgradedEvents = yield* sql<{ readonly id: string; readonly value: string }>`
+        SELECT event_id AS id, payload_json AS value FROM orchestration_events ORDER BY event_id`;
+      const upgradedPayloads = Object.fromEntries(
+        upgradedEvents.map(({ id, value }) => [id, JSON.parse(value)]),
+      );
+      const serializedProject = JSON.stringify({
+        ...payloads["event-project-created"].defaultModelSelection,
+        options: JSON.stringify(payloads["event-project-created"].defaultModelSelection.options),
+      });
+      const serializedThread = JSON.stringify({
+        ...payloads["event-thread-created"].modelSelection,
+        options: JSON.stringify(payloads["event-thread-created"].modelSelection.options),
+      });
+      yield* sql`UPDATE projection_projects SET default_model_selection_json = ${serializedProject}
+        WHERE project_id = 'project-legacy'`;
+      yield* sql`UPDATE projection_threads SET model_selection_json = ${serializedThread}
+        WHERE thread_id = 'thread-legacy'`;
+      for (const [eventId, payload] of Object.entries(upgradedPayloads)) {
+        const key = "defaultModelSelection" in payload ? "defaultModelSelection" : "modelSelection";
+        if (payload[key]?.options === undefined || eventId.includes("already-array")) continue;
+        const serialized = JSON.stringify({
+          ...payload,
+          [key]: { ...payload[key], options: JSON.stringify(payload[key].options) },
+        });
+        yield* sql`UPDATE orchestration_events SET payload_json = ${serialized}
+          WHERE event_id = ${eventId}`;
+      }
+      yield* sql`UPDATE projection_threads
+        SET model_selection_json = ${JSON.stringify({ provider: "codex", model: "gpt-5.4", options: "[]" })}
+        WHERE thread_id = 'thread-empty-options'`;
+      const unchanged = ["invalid JSON", '{"reasoningEffort":"high"}', '"high"', "null"];
+      for (const [index, options] of unchanged.entries()) {
+        yield* sql`INSERT INTO projection_projects ${sql.insert({
+          project_id: `project-unchanged-${index}`,
+          title: "Unrelated invalid options",
+          workspace_root: `/tmp/unchanged-${index}`,
+          default_model_selection_json: JSON.stringify({
+            provider: "codex",
+            model: "gpt-5.4",
+            options,
+          }),
+          scripts_json: "[]",
+          created_at: "2026-01-01T00:00:00.000Z",
+          updated_at: "2026-01-01T00:00:00.000Z",
+        })}`;
+      }
+
+      yield* runMigrations();
+      yield* runMigrations();
+
+      const repairedProjects = yield* sql<{ readonly id: string; readonly value: string | null }>`
+        SELECT project_id AS id, default_model_selection_json AS value FROM projection_projects
+        ORDER BY project_id`;
+      assert.deepStrictEqual(
+        repairedProjects.map(({ id, value }) => [id, value === null ? null : JSON.parse(value)]),
+        [
+          ...projectRows.map((row) => [
+            row.projectId,
+            row.defaultModelSelection === null ? null : JSON.parse(row.defaultModelSelection),
+          ]),
+          ...unchanged.map((options, index) => [
+            `project-unchanged-${index}`,
+            { provider: "codex", model: "gpt-5.4", options },
+          ]),
+        ],
+      );
+      const repairedThreads = yield* sql<{ readonly id: string; readonly value: string }>`
+        SELECT thread_id AS id, model_selection_json AS value FROM projection_threads
+        WHERE thread_id IN ('thread-legacy', 'thread-empty-options') ORDER BY thread_id`;
+      assert.deepStrictEqual(
+        repairedThreads.map(({ id, value }) => [id, decodeModelSelection(JSON.parse(value))]),
+        [
+          [
+            "thread-empty-options",
+            { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4", options: [] },
+          ],
+          [
+            "thread-legacy",
+            {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-opus-4-6",
+              options: payloads["event-thread-created"].modelSelection.options,
+            },
+          ],
+        ],
+      );
+      const repairedEvents = yield* sql<{ readonly id: string; readonly value: string }>`
+        SELECT event_id AS id, payload_json AS value FROM orchestration_events ORDER BY event_id`;
+      assert.deepStrictEqual(
+        Object.fromEntries(repairedEvents.map(({ id, value }) => [id, JSON.parse(value)])),
+        upgradedPayloads,
+      );
+      assert.strictEqual(
+        repairedProjects.find(({ id }) => id === "project-already-array")?.value,
+        projectRows.find(({ projectId }) => projectId === "project-already-array")
+          ?.defaultModelSelection,
+      );
+      assert.strictEqual(
+        repairedEvents.find(({ id }) => id === "event-thread-already-array")?.value,
+        upgradedEvents.find(({ id }) => id === "event-thread-already-array")?.value,
+      );
     }),
   );
 });
