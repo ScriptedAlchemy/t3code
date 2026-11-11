@@ -282,6 +282,22 @@ describe("GitHubGraphQlAuth", () => {
     },
   );
 
+  it.effect("reads a 403 whose GraphQL errors name a secondary limit as a rate limit", () => {
+    const { layer } = harness(() =>
+      json(
+        { data: null, errors: [{ message: "You have exceeded a secondary rate limit." }] },
+        { status: 403, headers: { "retry-after": "60" } },
+      ),
+    );
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      expect(yield* Effect.flip(readStats("github.acme.test"))).toMatchObject({
+        _tag: "GitHubApiRateLimitError",
+        retryAt: NOW + 60_000,
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("accepts the last successful GraphQL answer with an empty errors list", () => {
     const { layer } = harness(() =>
       json(

@@ -5,7 +5,6 @@ import {
   type PullRequestReadTarget,
   type ThreadId,
   type ThreadPullRequestLink,
-  type ThreadPullRequestWatchMode,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -70,7 +69,6 @@ function entryOf(
     url: link.url,
     source: link.source,
     watching: link.watch !== undefined,
-    ...(link.watch === undefined ? {} : { watchMode: link.watch.mode ?? "review" }),
     state: link.snapshot?.state ?? null,
     title: link.snapshot?.title ?? null,
     headBranch: link.snapshot?.headBranch ?? null,
@@ -162,7 +160,7 @@ const make = Effect.gen(function* () {
         : Effect.fail(new Failure({ cause }));
 
   const setWatching = Effect.fn("PullRequestsToolkit.setWatching")(function* (
-    input: PullRequestTargetInput & { readonly mode?: ThreadPullRequestWatchMode | undefined },
+    input: PullRequestTargetInput,
     watching: boolean,
   ) {
     const thread = yield* requireThread(PullRequestWatchFailedError, input.threadId);
@@ -188,19 +186,16 @@ const make = Effect.gen(function* () {
         repository: target.repository,
         number: target.number,
         watching,
-        ...(watching ? { mode: input.mode, initialMode: "checks" as const } : {}),
         ...(watching ? { link: { url: target.url, source: "agent" as const } } : {}),
       })
       .pipe(Effect.catchCause(dispatchFailure(PullRequestWatchFailedError)));
     const after = yield* requireThread(PullRequestWatchFailedError, thread.id);
-    const activeWatch = watchedLink(after)?.watch;
     return {
       host: target.host,
       repository: target.repository,
       number: target.number,
       url: target.url,
-      watching: activeWatch !== undefined,
-      ...(activeWatch === undefined ? {} : { watchMode: activeWatch.mode ?? "review" }),
+      watching: watchedLink(after)?.watch !== undefined,
       wasWatching: before?.watch !== undefined,
     };
   });

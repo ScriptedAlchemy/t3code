@@ -47,13 +47,6 @@ describe("buildRuntimeInstructions", () => {
       "After PR work, a child's last line is the `report` line from pull_request_status.",
     );
     assert.include(instructions, "Never wait with sleep");
-    assert.include(instructions, 'New watches default to mode "checks"');
-    assert.include(instructions, "all reported checks finish, even failed or cancelled ones");
-    assert.include(
-      instructions,
-      'Use mode "review" for ongoing checks and review monitoring after CI finishes',
-    );
-    assert.include(instructions, "Omitting mode on an existing watch keeps its mode.");
     assert.include(instructions, "call unwatch_pull_request");
   });
 

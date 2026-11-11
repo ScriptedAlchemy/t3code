@@ -172,7 +172,11 @@ export function isSecondaryRateLimited(input: RateLimitResponse): boolean {
   );
 }
 
-/** HTTP 200 GraphQL rate limits use RATE_LIMITED or untyped errors with quota headers. */
+/**
+ * HTTP 200 GraphQL rate limits use RATE_LIMITED or untyped errors with quota headers. A 403 is a
+ * limit only when its quota, body or GraphQL errors name one (older hosts say "abuse detection
+ * mechanism"): a proxy in front of GitHub Enterprise can refuse with `Retry-After` alone.
+ */
 export function isRateLimited(input: RateLimitResponse & { readonly status: number }): boolean {
   const { status, headers, graphqlErrors: errors } = input;
   return (
@@ -189,9 +193,13 @@ export function isRateLimited(input: RateLimitResponse & { readonly status: numb
         ))) ||
     (status === 403 &&
       (headers["x-ratelimit-remaining"] === "0" ||
-        headers["retry-after"] !== undefined ||
-        /rate limit/i.test(input.body ?? "")))
+        namesLimit(input.body) ||
+        (errors ?? []).some((error) => namesLimit(error.message))))
   );
+}
+
+function namesLimit(text: unknown): boolean {
+  return typeof text === "string" && /rate limit|abuse detection mechanism/i.test(text);
 }
 
 export type GitHubAnswer<A> = {
