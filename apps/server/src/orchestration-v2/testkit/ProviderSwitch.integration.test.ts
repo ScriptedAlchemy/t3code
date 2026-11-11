@@ -3046,8 +3046,12 @@ describe("orchestration v2 provider switching", () => {
       { background: false, queued: false, sharedHistory: false },
     ],
     [
-      "refuses the hand-off while the previous instance still runs background work",
+      "keeps a busy previous session running when an immediate hand-off starts",
       { background: true, queued: false, sharedHistory: false },
+    ],
+    [
+      "refuses an immediate account switch while the replaced session still runs background work",
+      { background: true, queued: false, sharedHistory: true },
     ],
     [
       "keeps a busy previous session running when a queued hand-off starts",
@@ -3219,7 +3223,7 @@ describe("orchestration v2 provider switching", () => {
           );
           assert.equal(firstSession?.status, "ready");
 
-          if (background) {
+          if (background && sharedHistory) {
             // Native subagents live only in the adapter's roster, so the projection's
             // pendingBackgroundTasks stays empty while the probe still reports work.
             assert.deepEqual(afterFirst.providerThreads[0]?.pendingBackgroundTasks ?? [], []);
@@ -3249,7 +3253,22 @@ describe("orchestration v2 provider switching", () => {
               [secondSelection.instanceId, "completed"],
             ],
           );
-          assert.lengthOf(afterSecond.contextHandoffs, 1);
+          assert.lengthOf(afterSecond.contextHandoffs, sharedHistory ? 0 : 1);
+          if (background && !sharedHistory) {
+            assert.deepEqual(yield* Ref.get(closedSessions), []);
+            assert.equal(
+              projection.providerSessions.find((session) => session.id === firstSession!.id)
+                ?.status,
+              "ready",
+            );
+            assert.equal(projection.thread.providerInstanceId, secondSelection.instanceId);
+            assert.notEqual(
+              projection.runs[0]?.providerThreadId,
+              projection.runs[1]?.providerThreadId,
+            );
+            assert.include((yield* Ref.get(capturedTurns))[1]!.text, "First account complete");
+            return;
+          }
           assert.deepEqual(
             projection.providerSessions.map((session) => session.providerInstanceId),
             [secondSelection.instanceId],
