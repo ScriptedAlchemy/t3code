@@ -208,38 +208,43 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
   );
 
   it.effect.each(["target", "secret"] as const)(
-    "preserves the settings file when a saved pool %s is missing",
+    "loads settings when a saved pool %s is missing",
     (missing) =>
       Effect.gen(function* () {
         const config = yield* ServerConfig.ServerConfig;
         const fs = yield* FileSystem.FileSystem;
         const service = yield* ServerSettingsModule.ServerSettingsService;
         const route = ProviderInstanceId.make("inference_codex_0000000000000000");
-        const raw = JSON.stringify({
-          retiredPoolRoutes: { codex: route },
-          providerInstances:
-            missing === "target"
-              ? {}
-              : {
-                  [route]: {
-                    driver: "codex",
-                    config: { setupMode: "inference" },
-                    environment: [
-                      { name: "T3_INFERENCE_KEY", value: "", sensitive: true, valueRedacted: true },
-                    ],
+        const pool = ProviderInstanceId.make("pool_codex");
+        yield* fs.writeFileString(
+          config.settingsPath,
+          JSON.stringify({
+            retiredPoolRoutes: { codex: route },
+            providerInstances:
+              missing === "target"
+                ? {}
+                : {
+                    [route]: {
+                      driver: "codex",
+                      config: { setupMode: "inference" },
+                      environment: [
+                        {
+                          name: "T3_INFERENCE_KEY",
+                          value: "",
+                          sensitive: true,
+                          valueRedacted: true,
+                        },
+                      ],
+                    },
                   },
-                },
-          defaultModelSelection: { instanceId: "pool_codex", model: "gpt-fixture" },
-        });
-        yield* fs.writeFileString(config.settingsPath, raw);
-        const result = yield* service.getSettings.pipe(Effect.result);
-        assert.equal(result._tag, "Failure");
-        if (result._tag === "Failure")
-          assert.equal(
-            result.failure.operation,
-            missing === "target" ? "validate-provider-pool" : "read-secret",
-          );
-        assert.equal(yield* fs.readFileString(config.settingsPath), raw);
+            defaultModelSelection: { instanceId: pool, model: "gpt-fixture" },
+          }),
+        );
+        const loaded = yield* service.getSettings;
+        assert.equal(loaded.providerInstances[pool] !== undefined, missing === "secret");
+        assert.equal(loaded.defaultModelSelection?.instanceId, pool);
+        yield* service.start;
+        assert.notInclude(yield* fs.readFileString(config.settingsPath), "retiredPoolRoutes");
       }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 

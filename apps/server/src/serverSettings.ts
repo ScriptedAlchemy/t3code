@@ -868,13 +868,8 @@ const make = Effect.gen(function* () {
         const instanceId = ProviderInstanceId.make(`pool_${driver}`);
         if (providerInstances[instanceId] !== undefined) continue;
         const source = providerInstances[sourceId];
-        if (!source || source.driver !== driver || !isInferenceConfig(source.config))
-          return yield* new ServerSettingsError({
-            settingsPath,
-            operation: "validate-provider-pool",
-            providerInstanceId: instanceId,
-            cause: new Error("The saved pool target is not a configured inference route."),
-          });
+        // Removing a route left its pool record behind, so a record can name no route.
+        if (!source || source.driver !== driver || !isInferenceConfig(source.config)) continue;
         const pending: SettingsSecret[] = [];
         mapSettingsSecrets(
           { ...DEFAULT_SERVER_SETTINGS, providerInstances: { [sourceId]: source } },
@@ -889,13 +884,8 @@ const make = Effect.gen(function* () {
             const value = secret.redacted
               ? yield* secretStore.get(secret.secretName)
               : Option.some(textEncoder.encode(secret.value));
-            if (Option.isNone(value))
-              return yield* new ServerSettingsError({
-                settingsPath,
-                operation: "read-secret",
-                providerInstanceId: instanceId,
-                cause: new Error("A saved route credential is missing from the secret store."),
-              });
+            // Loading reads an absent secret as empty, so the copy keeps the same empty slot.
+            if (Option.isNone(value)) return;
             const prefix = secret.kind === "environment" ? "provider-env-" : "provider-config-";
             const sourceName = Buffer.from(sourceId, "utf8").toString("base64url");
             const targetName = Buffer.from(instanceId, "utf8").toString("base64url");
@@ -903,15 +893,14 @@ const make = Effect.gen(function* () {
               prefix + targetName + secret.secretName.slice(prefix.length + sourceName.length);
             yield* secretStore.set(name, value.value);
           }).pipe(
-            Effect.mapError((cause) =>
-              cause._tag === "ServerSettingsError"
-                ? cause
-                : new ServerSettingsError({
-                    settingsPath,
-                    operation: "write-secret",
-                    providerInstanceId: instanceId,
-                    cause,
-                  }),
+            Effect.mapError(
+              (cause) =>
+                new ServerSettingsError({
+                  settingsPath,
+                  operation: "write-secret",
+                  providerInstanceId: instanceId,
+                  cause,
+                }),
             ),
           ),
         );

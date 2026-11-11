@@ -1,5 +1,6 @@
 import {
   inferenceHarness,
+  isInferenceConfig,
   isInferenceProviderConfig,
   type ProviderDriverKind,
   type ServerProvider,
@@ -14,6 +15,8 @@ export function nativeAccountProviders<T extends Pick<ServerProvider, "driver" |
 ) {
   return providers.filter((provider) => {
     const config = instances[provider.instanceId]?.config;
+    // A route saved by an earlier version is a provider of its own, not a signed-in account.
+    if (isInferenceConfig(config)) return false;
     return (
       !inferenceHarness(provider.driver)?.replacesAccounts ||
       !isInferenceProviderConfig(config) ||

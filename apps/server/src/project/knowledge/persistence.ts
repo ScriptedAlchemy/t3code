@@ -697,6 +697,7 @@ export const makeStore = Effect.gen(function* () {
   });
   // Returns every fact a thread's agent has been shown, either read through its tools or
   // delivered with a message. An uncertain delivery may have arrived, so it counts.
+  // A rolled-back run's deliveries left the conversation with it, so they do not.
   const seenFactIds = Effect.fn("ProjectKnowledgeStore.seenFactIds")(function* (
     projectId: ProjectId,
     threadId: ThreadId,
@@ -710,7 +711,9 @@ export const makeStore = Effect.gen(function* () {
         json_each(item.value, '$.context.selections') selection
       WHERE d.project_id = ${projectId} AND d.thread_id = ${threadId}
         AND d.status IN ('sent', 'uncertain')
-        AND json_extract(selection.value, '$.kind') = 'fact'`;
+        AND json_extract(selection.value, '$.kind') = 'fact'
+        AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs AS run
+          WHERE run.run_id = d.run_id AND run.status = 'rolled_back')`;
     return new Set(rows.map((row) => row.factId));
   });
   const assistedRunRecorded = Effect.fn("ProjectKnowledgeStore.assistedRunRecorded")(function* (

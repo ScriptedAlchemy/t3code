@@ -2029,6 +2029,12 @@ it.effect("does not recall a fact the thread's agent has already been shown", ()
       updatedAt: DateTime.formatIso(at(1)),
     });
     assert.notInclude(yield* recalledIn("uncertain", "uncertain-second"), maybeSent);
+    // Rolling a run back removes its facts from the conversation, so recall may send them again.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+      VALUES ('uncertain-run', 'uncertain', 1, 'codex', 'rolled_back', ${DateTime.formatIso(at(1))}, '{}')`;
+    assert.include(yield* recalledIn("uncertain", "uncertain-rolled-back"), maybeSent);
 
     // A fork replays the facts its parent received, so they are in the fork's context too.
     const parent = ThreadId.make("parent");

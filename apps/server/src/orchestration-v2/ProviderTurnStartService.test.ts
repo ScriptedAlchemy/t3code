@@ -2496,6 +2496,8 @@ const knowledgeRetryHarness = (
     recoveryNativeId?: string;
     modelContextWindow?: number;
     evidenceText?: string;
+    // Recall supplies the record at turn start; the saved message carries none.
+    recalled?: boolean;
   } = {},
 ) => {
   const record = {
@@ -2512,13 +2514,25 @@ const knowledgeRetryHarness = (
   };
   const harness = makeLocalCommandHarness({
     ...options,
-    text: formatComposerContextReference(record),
+    text: options.recalled ? "A plain question" : formatComposerContextReference(record),
     previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    ...(options.recalled
+      ? {
+          recallKnowledge: (
+            input: Parameters<ProjectKnowledge.ProjectKnowledge["Service"]["recall"]>[0],
+          ) =>
+            Effect.succeed({
+              text: `${input.composer.text}\n\n${formatComposerContextReference(record)}`,
+              records: [...input.composer.records, record],
+            }),
+        }
+      : {}),
     resolveKnowledge: (context) => {
       const text = options.evidenceText ?? "Evidence";
       return Effect.succeed({ context, text, byteLength: Buffer.byteLength(text) });
     },
   });
+  if (options.recalled) return harness;
   const projection = harness.projection();
   harness.setProjection({
     ...projection,
@@ -2713,15 +2727,21 @@ effectIt.effect(
     }),
 );
 
-effectIt.effect.each(["prepared", "uncertain"] as const)(
-  "recovers a %s knowledge receipt through the native handoff fallback without resuming the ambiguous conversation",
-  (status) =>
+effectIt.effect.each([
+  ["prepared", false],
+  ["uncertain", false],
+  ["prepared", true],
+  ["uncertain", true],
+] as const)(
+  "recovers a %s knowledge receipt through the native handoff fallback without resuming the ambiguous conversation, recalled=%s",
+  ([status, recalled]) =>
     Effect.gen(function* () {
-      const old = knowledgeRetryHarness();
+      const old = knowledgeRetryHarness({ recalled });
       yield* old.start;
       yield* dispatchKnowledge(old.startRootRun.mock.calls[0]![0]);
       const receipt = old.knowledgeDeliveries.at(-1)!;
       const recovery = knowledgeRetryHarness({
+        recalled,
         initialDeliveries: [{ ...receipt, attemptId: RunAttemptId.make("old-attempt"), status }],
         recoveryNativeId: "fresh-native-conversation",
       });

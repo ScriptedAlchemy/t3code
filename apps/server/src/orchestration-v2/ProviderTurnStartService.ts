@@ -1368,21 +1368,18 @@ export const layer: Layer.Layer<
           providerThreadId: providerThread.id,
           nativeThreadId: providerThread.nativeThreadRef.nativeId,
         };
-        const uncertainKnowledge = message.context?.records.some(
-          (record) => record.kind === "project-knowledge",
-        )
-          ? yield* Effect.gen(function* () {
-              // Legacy receipts can identify the attempt without a native destination.
-              // Quarantine that old attempt before a genuinely fresh conversation starts.
-              for (const scope of ["native-conversation", "attempt"] as const) {
-                const target = { ...knowledgeTarget, scope };
-                if (!(yield* knowledge.readDeliveryState(target)).uncertain) continue;
-                yield* knowledge.markDeliveryUncertain(target);
-                return true;
-              }
-              return false;
-            })
-          : false;
+        // Recall adds facts the saved message does not list, so the receipts decide, not its records.
+        const uncertainKnowledge = yield* Effect.gen(function* () {
+          // Legacy receipts can identify the attempt without a native destination.
+          // Quarantine that old attempt before a genuinely fresh conversation starts.
+          for (const scope of ["native-conversation", "attempt"] as const) {
+            const target = { ...knowledgeTarget, scope };
+            if (!(yield* knowledge.readDeliveryState(target)).uncertain) continue;
+            yield* knowledge.markDeliveryUncertain(target);
+            return true;
+          }
+          return false;
+        });
         // A crash after dispatch leaves prepared indistinguishable from an accepted prompt.
         // Like pending handoff injection, recover onto a fresh native conversation.
         const uncertainDelivery =
