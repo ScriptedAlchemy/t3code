@@ -126,7 +126,7 @@ function EnvironmentEvaluationSettings(props: {
   return (
     <SettingsSection title={`Model evaluations · ${label}`}>
       <SettingsSwitchRow
-        icon="sparkles"
+        icon="flask"
         label="Blind model evaluations"
         subtitle={
           props.projectSelected

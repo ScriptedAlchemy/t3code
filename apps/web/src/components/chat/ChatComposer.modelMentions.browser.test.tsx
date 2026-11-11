@@ -16,6 +16,7 @@ vi.mock("../../state/primaryEnvironment", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
     primaryEnvironmentIdAtom: Atom.make(null),
+    hostEnvironmentIdAtom: Atom.make(null),
     themeEnvironmentIdAtom: Atom.make(null),
   };
 });
@@ -123,6 +124,7 @@ function setup() {
     activeThreadId: thread.id,
     activeThread: thread,
     activeThreadShell: null,
+    activeThreadRuns: [],
     promptHistoryEntries: [],
     forceExpandedOnMobile: false,
     projectSelectionRequired: false,
