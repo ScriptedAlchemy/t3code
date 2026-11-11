@@ -45,6 +45,7 @@ const harnesses = {
     replacesAccounts: true,
   },
   opencode: { label: "OpenCode", upstreams, accounts: null, replacesAccounts: false },
+  pi: { label: "Pi", upstreams, accounts: null, replacesAccounts: false },
 } satisfies Record<string, InferenceHarness>;
 /** Harnesses that can run on pooled accounts. */
 export type InferenceDriver = keyof typeof harnesses;

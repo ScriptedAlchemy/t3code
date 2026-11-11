@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -105,7 +106,7 @@ it.effect("runs Pi offline, since the process is stopped as soon as it answers",
       launches.map((args) => args.filter((arg) => arg === "--offline")),
       [["--offline"]],
     );
-  }),
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("names the model and the disabled extensions when Pi cannot load it", () =>
@@ -131,7 +132,7 @@ it.effect("names the model and the disabled extensions when Pi cannot load it", 
     assert.include(error.detail, "Model not found: demo/demo-model");
     assert.include(error.detail, "--no-extensions");
     assert.isUndefined(pi.received.find((record) => record["type"] === "prompt"));
-  }),
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect(
@@ -225,7 +226,7 @@ it.effect(
       assert.equal(error._tag, "TextGenerationError");
       assert.include(error.detail, "thinking level");
       assert.isUndefined(rejected.received.find((request) => request["type"] === "prompt"));
-    }),
+    }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("selects the provider and id Pi reported when the provider contains a slash", () =>
@@ -255,7 +256,7 @@ it.effect("selects the provider and id Pi reported when the provider contains a 
       { provider: setModel?.["provider"], modelId: setModel?.["modelId"] },
       { provider, modelId: "qwen3" },
     );
-  }),
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 const failedTurnWith = (errorMessage: string) => ({
@@ -289,7 +290,7 @@ it.effect("reports Pi's turn error when the reply is empty", () =>
 
     assert.equal(error._tag, "TextGenerationError");
     assert.equal(error.detail, "Pi could not generate text: the model provider returned HTTP 401.");
-  }),
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("keeps Pi's raw error text out of the error", () =>
@@ -300,7 +301,7 @@ it.effect("keeps Pi's raw error text out of the error", () =>
 
     assert.equal(error.detail, "Pi could not generate text: the model provider reported an error.");
     assert.notInclude(error.message, "SECRET123");
-  }),
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("keeps the reply when Pi answers after a failed attempt", () =>
@@ -311,7 +312,7 @@ it.effect("keeps the reply when Pi answers after a failed attempt", () =>
     );
 
     assert.equal(result.subject, "Update README");
-  }),
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("drops an earlier error once a later attempt succeeds", () =>
@@ -322,5 +323,5 @@ it.effect("drops an earlier error once a later attempt succeeds", () =>
     ]).pipe(Effect.flip);
 
     assert.equal(error.detail, "Pi returned empty output.");
-  }),
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

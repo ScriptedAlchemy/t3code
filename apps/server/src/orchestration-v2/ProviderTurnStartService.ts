@@ -2027,12 +2027,10 @@ export const layer: Layer.Layer<
             // Clear pending handoff markers for refused prompts so the next turn retains the native session.
             Effect.tapError((error) =>
               refusedBeforePrompt(error)
-                ? delivery.unsent.pipe(
-                    Effect.catchCause(() =>
-                      Effect.logWarning("Failed to restore unsent context handoffs", {
-                        runId: run.id,
-                      }),
-                    ),
+                ? Effect.catchCause(delivery.unsent, () =>
+                    Effect.logWarning("Failed to restore unsent context handoffs", {
+                      runId: run.id,
+                    }),
                   )
                 : Effect.void,
             ),

@@ -724,7 +724,12 @@ it.effect(
               ...native,
               config: {
                 ...native.config,
-                inferenceModels: ["codex-auto-review", "office-model", "gpt-fixture"],
+                inferenceModels: [
+                  "codex-auto-review",
+                  "office-model",
+                  "gpt-fixture",
+                  "codex-pool-work",
+                ],
                 inferenceHostLabel: "",
                 inferenceEnabled: true,
               },

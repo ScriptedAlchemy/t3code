@@ -9,6 +9,8 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -19,6 +21,13 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { buildPiRpcLaunch, resolvePiLaunchArgs } from "./mcpInjection.ts";
+import {
+  MINIMUM_PI_INFERENCE_VERSION,
+  PI_VERSION_PROBE_TIMEOUT_MS,
+  preparePiInferenceEnvironment,
+  runPiVersionCommand,
+} from "./inference.ts";
+import { T3_PI_INFERENCE_EXTENSION_ENV } from "./inferenceExtensionSource.ts";
 import {
   makePiRpcConnection,
   PiRpcError,
@@ -55,7 +64,6 @@ const PI_PRESENTATION = {
   reportsContextWindow: true,
 } as const;
 
-const VERSION_PROBE_TIMEOUT_MS = 10_000;
 const PI_RPC_DISCOVERY_TIMEOUT_MS = 30_000;
 /**
  * get_entries arrived in 0.80.3 and agent_settled landed in source at 0.80.4.
@@ -147,6 +155,8 @@ const makePiDiscoveryConnection = Effect.fnUntraced(function* (
     environment,
     mcpSession: undefined,
     extensionPath: undefined,
+    trustedProviderExtensionPath:
+      piSettings.inferenceEnabled === true ? environment[T3_PI_INFERENCE_EXTENSION_ENV] : undefined,
     ephemeral: true,
     shortLived: true,
   });
@@ -198,14 +208,20 @@ const discoverPiViaRpc = Effect.fn("PiProviderStatus.discoverPiViaRpc")(function
 }, Effect.scoped);
 
 export const discoverPiCommandsForCwd = Effect.fn("discoverPiCommandsForCwd")(
-  function* (piSettings: PiSettings, environment: NodeJS.ProcessEnv, cwd: string) {
+  function* (piSettings: PiSettings, environment: NodeJS.ProcessEnv, cwd: string, cacheDir = "") {
     const launchArgs = resolvePiLaunchArgs(piSettings.launchArgs);
     if (!launchArgs.ok) {
       return yield* new PiRpcError({ operation: "launch", detail: launchArgs.message });
     }
+    const preparedEnvironment = yield* preparePiInferenceEnvironment({
+      config: piSettings,
+      environment: providerProbeEnvironment(environment),
+      cacheDir,
+      cwd,
+    });
     const connection = yield* makePiDiscoveryConnection(
       piSettings,
-      providerProbeEnvironment(environment),
+      preparedEnvironment,
       launchArgs.args,
       cwd,
     );
@@ -223,23 +239,6 @@ export const discoverPiCommandsForCwd = Effect.fn("discoverPiCommandsForCwd")(
       ),
   }),
 );
-
-const runPiVersionCommand = Effect.fn("PiProviderStatus.runPiVersionCommand")(function* (
-  piSettings: PiSettings,
-  environment: NodeJS.ProcessEnv,
-) {
-  const command = piSettings.binaryPath || "pi";
-  const spawnCommand = yield* resolveSpawnCommand(command, ["--version"], {
-    env: environment,
-  });
-  return yield* spawnAndCollect(
-    command,
-    ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-      env: environment,
-      shell: spawnCommand.shell,
-    }),
-  );
-});
 
 /**
  * Explains why Pi's active model cannot start a turn. On Pi versions with `auth check`, asks it
@@ -330,8 +329,15 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   piSettings: PiSettings,
   environment: NodeJS.ProcessEnv = process.env,
   cwd?: string,
-): Effect.fn.Return<ServerProviderDraft, never, ChildProcessSpawner.ChildProcessSpawner> {
+  cacheDir = "",
+): Effect.fn.Return<
+  ServerProviderDraft,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
+  const minimumVersion =
+    piSettings.inferenceEnabled === true ? MINIMUM_PI_INFERENCE_VERSION : MINIMUM_PI_VERSION;
   const fallbackModels = piModelsFromSettings(piSettings.customModels);
 
   if (!piSettings.enabled) {
@@ -352,7 +358,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
 
   const probeEnvironment = providerProbeEnvironment(environment);
   const versionResult = yield* runPiVersionCommand(piSettings, probeEnvironment).pipe(
-    Effect.timeoutOption(VERSION_PROBE_TIMEOUT_MS),
+    Effect.timeoutOption(PI_VERSION_PROBE_TIMEOUT_MS),
     Effect.result,
   );
 
@@ -421,12 +427,12 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
         version: null,
         status: "error",
         auth: { status: "unknown" },
-        message: `T3 Code could not determine the Pi version. Pi ${MINIMUM_PI_VERSION} or newer is required.`,
+        message: `T3 Code could not determine the Pi version. Pi ${minimumVersion} or newer is required.`,
       },
     });
   }
 
-  if (compareSemverVersions(version, MINIMUM_PI_VERSION) < 0) {
+  if (compareSemverVersions(version, minimumVersion) < 0) {
     return buildServerProvider({
       presentation: PI_PRESENTATION,
       enabled: piSettings.enabled,
@@ -437,7 +443,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
         version,
         status: "error",
         auth: { status: "unknown" },
-        message: `Pi ${version} is unsupported. Update to Pi ${MINIMUM_PI_VERSION} or newer.`,
+        message: `Pi ${version} is unsupported. Update to Pi ${minimumVersion} or newer.`,
       },
     });
   }
@@ -459,9 +465,32 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     });
   }
 
+  const preparation = yield* preparePiInferenceEnvironment({
+    config: piSettings,
+    environment: probeEnvironment,
+    cacheDir,
+    cwd,
+    version,
+  }).pipe(Effect.result);
+  if (Result.isFailure(preparation)) {
+    return buildServerProvider({
+      presentation: PI_PRESENTATION,
+      enabled: piSettings.enabled,
+      checkedAt,
+      models: fallbackModels,
+      probe: {
+        installed: true,
+        version,
+        status: "error",
+        auth: { status: "unknown" },
+        message: preparation.failure.detail ?? "Could not prepare Pi inference routing.",
+      },
+    });
+  }
+
   const discoveryExit = yield* discoverPiViaRpc(
     piSettings,
-    probeEnvironment,
+    preparation.success,
     resolvedLaunchArgs.args,
     cwd,
   ).pipe(Effect.timeoutOption(PI_RPC_DISCOVERY_TIMEOUT_MS), Effect.exit);

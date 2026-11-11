@@ -1,6 +1,5 @@
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 
 import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
 import {
@@ -12,6 +11,8 @@ import {
   T3_PI_MCP_EXTENSION_PATH_ENV,
   T3_PI_DEVICE_TOOLS_ENV,
 } from "./mcpExtensionSource.ts";
+import { materializePiExtension } from "./extensionFile.ts";
+import { T3_PI_INFERENCE_EXTENSION_ENV } from "./inferenceExtensionSource.ts";
 
 const RESERVED_PI_LAUNCH_ARGUMENTS = new Set([
   "--continue",
@@ -221,30 +222,14 @@ function withoutToolSelectionArgs(args: ReadonlyArray<string>): ReadonlyArray<st
   return filtered;
 }
 
-function piT3McpExtensionDestPath(cacheDir: string): string {
-  return `${cacheDir.replace(/\\/g, "/")}/${PI_T3_MCP_EXTENSION_FILENAME}`;
-}
-
 export const materializePiT3McpExtension = Effect.fn("materializePiT3McpExtension")(function* (
   cacheDir: string,
 ) {
-  const fs = yield* FileSystem.FileSystem;
-  yield* fs.makeDirectory(cacheDir, { recursive: true });
-  const dest = piT3McpExtensionDestPath(cacheDir);
-  const existing = yield* fs.readFileString(dest).pipe(Effect.orElseSucceed(() => ""));
-  if (existing !== PI_T3_MCP_EXTENSION_SOURCE) {
-    // Concurrent pi launches read this file: stage it in a per-call directory
-    // and rename so readers and other writers never see a partial file.
-    yield* Effect.scoped(
-      Effect.gen(function* () {
-        const stagingDir = yield* fs.makeTempDirectoryScoped({ directory: cacheDir });
-        const staging = `${stagingDir.replace(/\\/g, "/")}/${PI_T3_MCP_EXTENSION_FILENAME}`;
-        yield* fs.writeFileString(staging, PI_T3_MCP_EXTENSION_SOURCE);
-        yield* fs.rename(staging, dest).pipe(Effect.retry({ times: 3 }));
-      }),
-    );
-  }
-  return dest;
+  return yield* materializePiExtension(
+    cacheDir,
+    PI_T3_MCP_EXTENSION_FILENAME,
+    PI_T3_MCP_EXTENSION_SOURCE,
+  );
 });
 
 export function buildPiRpcLaunch(input: {
@@ -252,6 +237,7 @@ export function buildPiRpcLaunch(input: {
   readonly environment: NodeJS.ProcessEnv;
   readonly mcpSession: McpProviderSessionConfig | undefined;
   readonly extensionPath: string | undefined;
+  readonly trustedProviderExtensionPath?: string | undefined;
   readonly sessionPath?: string | undefined;
   readonly ephemeral?: boolean;
   // T3 stops these processes as soon as they answer. They run --offline because Pi's startup
@@ -287,6 +273,13 @@ export function buildPiRpcLaunch(input: {
     ...(input.disableTools === true ? ["--no-tools"] : []),
   ];
   if (
+    input.trustedProviderExtensionPath !== undefined &&
+    !hasExplicitExtension(args, input.trustedProviderExtensionPath)
+  ) {
+    // Pi permits explicit extensions after --no-extensions; retain only this provider bridge in helpers.
+    args.push("--extension", input.trustedProviderExtensionPath);
+  }
+  if (
     hasT3Extension &&
     input.extensionPath !== undefined &&
     !hasExplicitExtension(args, input.extensionPath)
@@ -299,11 +292,15 @@ export function buildPiRpcLaunch(input: {
   delete environment[T3_MCP_BEARER_ENV];
   delete environment[T3_PI_MCP_EXTENSION_PATH_ENV];
   delete environment[T3_PI_DEVICE_TOOLS_ENV];
+  delete environment[T3_PI_INFERENCE_EXTENSION_ENV];
 
   return {
     args,
     env: {
       ...environment,
+      ...(input.trustedProviderExtensionPath === undefined
+        ? {}
+        : { [T3_PI_INFERENCE_EXTENSION_ENV]: input.trustedProviderExtensionPath }),
       ...(hasT3Extension && input.extensionPath !== undefined
         ? { [T3_PI_MCP_EXTENSION_PATH_ENV]: input.extensionPath }
         : {}),

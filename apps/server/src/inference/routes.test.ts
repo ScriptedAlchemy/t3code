@@ -64,6 +64,7 @@ describe("inference routes", () => {
     });
     const codex = routeProvider("codex", "Office", route(["gpt-fixture"]));
     const claude = routeProvider("claudeAgent", "Office", route(["claude-fixture"]));
+    const pi = routeProvider("pi", "Office", route(["grok-fixture"]));
     const openCode = routeProvider(
       "opencode",
       "Office",
@@ -91,6 +92,18 @@ describe("inference routes", () => {
       name: "T3_INFERENCE_KEY",
       value: "private",
       sensitive: true,
+    });
+    expect(pi.config).toEqual({});
+    expect(pi.environment).toContainEqual({
+      name: "T3_INFERENCE_KEY",
+      value: "private",
+      sensitive: true,
+    });
+    const piConfig = pi.environment.find((entry) => entry.name === "T3_PI_INFERENCE_CONFIG");
+    expect(piConfig?.value).not.toContain("private");
+    expect(JSON.parse(String(piConfig?.value))).toEqual({
+      baseUrl: baseUrl + "/v1",
+      models: ["grok-fixture"],
     });
     const content = openCode.environment.find((entry) => entry.name === "OPENCODE_CONFIG_CONTENT");
     expect(content?.value).not.toContain("private");
@@ -139,5 +152,6 @@ describe("inference routes", () => {
       "codex-pool-1",
       "claude-pool-1",
     ]);
+    expect(modelsForDriver(models, "pi")).toEqual(models.map((model) => model.id));
   });
 });

@@ -23,12 +23,12 @@ import {
   type InferenceRouteInput,
   type InferenceUpstream,
 } from "@t3tools/contracts";
-import * as NodeCrypto from "node:crypto";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { NetService } from "@t3tools/shared/Net";
 import { readTailscaleServeRoutesTo } from "@t3tools/tailscale";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
 import * as Schedule from "effect/Schedule";
 import * as Duration from "effect/Duration";
 import * as Clock from "effect/Clock";
@@ -201,6 +201,7 @@ const providerConfig = Schema.is(Schema.Record(Schema.String, Schema.Unknown));
 const make = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const random = yield* SecureRandom.SecureRandom;
+  const digest = yield* Digest.Digest;
   const newKey = random
     .randomBytes(32)
     .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("base64url")));
@@ -455,7 +456,7 @@ const make = Effect.gen(function* () {
         );
       const name =
         existing?.name ??
-        `codex-local-${NodeCrypto.createHash("sha256").update(identity).digest("hex")}.json`;
+        `codex-local-${yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(identity))}.json`;
       yield* jsonRequest(
         runtime.baseUrl + "/v0/management/auth-files?name=" + encodeURIComponent(name),
         runtime.management,

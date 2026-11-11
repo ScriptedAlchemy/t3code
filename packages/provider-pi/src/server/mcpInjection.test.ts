@@ -121,6 +121,7 @@ describe("pi T3 MCP injection", () => {
       environment: {},
       mcpSession,
       extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
+      trustedProviderExtensionPath: "/tmp/cache/pi-t3-inference-extension.ts",
       sessionPath: "/fake/persisted.jsonl",
       ephemeral: true,
       shortLived: true,
@@ -136,7 +137,10 @@ describe("pi T3 MCP injection", () => {
       "--offline",
       "--no-extensions",
       "--no-tools",
+      "--extension",
+      "/tmp/cache/pi-t3-inference-extension.ts",
     ]);
+    assert.equal(launch.env.T3_PI_INFERENCE_EXTENSION, "/tmp/cache/pi-t3-inference-extension.ts");
     const alreadyOffline = buildPiRpcLaunch({
       launchArgs: ["--offline"],
       environment: {},

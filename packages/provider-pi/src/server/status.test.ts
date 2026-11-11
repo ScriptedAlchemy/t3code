@@ -127,6 +127,25 @@ const settings = {
 } as const;
 
 describe("PiProvider", () => {
+  it.effect("requires the current Pi Provider API before inference RPC discovery", () =>
+    Effect.gen(function* () {
+      const snapshot = yield* checkPiProviderStatus(
+        { ...settings, inferenceEnabled: true },
+        {
+          T3_PI_INFERENCE_CONFIG: JSON.stringify({
+            baseUrl: "http://127.0.0.1:4567/v1",
+            models: ["host/model"],
+          }),
+          T3_INFERENCE_KEY: "test-route-key",
+        },
+      ).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, piProbeSpawner("1.5.1")),
+      );
+      assert.equal(snapshot.status, "error");
+      assert.include(snapshot.message ?? "", "1.5.2");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("requires the first published Pi version with entries and settlement hooks", () =>
     Effect.gen(function* () {
       const snapshot = yield* checkPiProviderStatus(settings).pipe(

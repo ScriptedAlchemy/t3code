@@ -61,8 +61,8 @@ its own logins. In **Settings > Inference accounts**, choose **OpenCode** beside
 host, or turn on **Use CLI proxy** in OpenCode's provider settings. The host's models
 then appear in the model picker under **T3 inference**.
 
-OpenCode can run every model the host has an account for, so it is the provider that
-uses accounts other than Claude and Codex. On the host, **Add an account** also offers
+OpenCode and [Pi](./providers-pi.md#shared-inference-accounts) can run every model the host has
+an account for. On the host, **Add an account** also offers
 Antigravity, xAI, Kimi, Meta AI, and Devin sign-ins. Claude and Codex each use only
 their own accounts.
 

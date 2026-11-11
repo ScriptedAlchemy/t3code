@@ -139,11 +139,22 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
           }),
       ),
     );
-    const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
+    const textGeneration = yield* makePiTextGeneration(
+      effectiveConfig,
+      processEnv,
+      host.paths.providerStatusCacheDir,
+    );
 
-    const checkProvider = checkPiProviderStatus(effectiveConfig, processEnv, cwd).pipe(
+    const checkProvider = checkPiProviderStatus(
+      effectiveConfig,
+      processEnv,
+      cwd,
+      host.paths.providerStatusCacheDir,
+    ).pipe(
       Effect.map(stampIdentity),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, pathService),
     );
 
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
@@ -193,8 +204,15 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
           ? snapshot.getSnapshot
           : Effect.all([
               snapshot.getSnapshot,
-              discoverPiCommandsForCwd(effectiveConfig, processEnv, workspaceCwd).pipe(
+              discoverPiCommandsForCwd(
+                effectiveConfig,
+                processEnv,
+                workspaceCwd,
+                host.paths.providerStatusCacheDir,
+              ).pipe(
                 Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(Path.Path, pathService),
                 Effect.mapError(
                   (cause) =>
                     new ProviderDriverError({

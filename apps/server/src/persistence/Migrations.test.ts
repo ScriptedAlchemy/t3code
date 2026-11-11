@@ -114,7 +114,7 @@ it.effect.each(["original", "unexpected"] as const)(
       assert.deepStrictEqual(
         (yield* sql<{ migration_id: number; name: string }>`
           SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
-        `).map(({ migration_id, name }) => [migration_id, name]),
+        `).map(({ migration_id, name }) => [migration_id, name] as const),
         migrationManifest,
       );
       assert.deepStrictEqual(yield* runMigrations(), []);

@@ -33,6 +33,7 @@ import {
   type TerminalWriteInput,
   ClaudeSettings,
   CodexSettings,
+  isInferenceProviderConfig,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { makeKeyedCoalescingWorker } from "@t3tools/shared/KeyedCoalescingWorker";
@@ -42,6 +43,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { mergePathEntries } from "@t3tools/shared/shell";
 
 import { acpRegistryManagedBinaryDirectories } from "@t3tools/provider-acp-registry/server";
+import { materializePiInferenceExtension } from "@t3tools/provider-pi/server";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -1501,6 +1503,22 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
         ...claudeAccountSettings(runtime.mode === "cli" ? runtime.configDir : undefined)?.env,
       };
     }
+  } else if (instance.driver === "pi") {
+    const routed = isInferenceProviderConfig(instance.config) && instance.config.inferenceEnabled;
+    const extensionPath = routed
+      ? yield* materializePiInferenceExtension(
+          input.path.join(input.stateDir, "providers", "pi"),
+        ).pipe(
+          Effect.mapError(
+            (cause) => new TerminalProviderEnvironmentError({ providerInstanceId, cause }),
+          ),
+        )
+      : "";
+    resolved = {
+      ...resolved,
+      T3_PI_INFERENCE_EXTENSION: extensionPath,
+      ...(routed ? {} : { T3_PI_INFERENCE_CONFIG: "", T3_INFERENCE_KEY: "" }),
+    };
   }
 
   return Object.fromEntries(
@@ -1517,6 +1535,7 @@ export const make = Effect.fn("TerminalManager.make")(function* () {
   const nativeTelemetry = yield* NativeTelemetryClient.NativeTelemetryClient;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const path = yield* Path.Path;
+  const fileSystem = yield* FileSystem.FileSystem;
   const resolveProviderInstanceEnvironment = Effect.fn(
     "terminal.resolveProviderInstanceEnvironment",
   )((rawProviderInstanceId: string, env: Record<string, string> | undefined) =>
@@ -1526,7 +1545,7 @@ export const make = Effect.fn("TerminalManager.make")(function* () {
       rawProviderInstanceId,
       env,
       stateDir: serverConfig.stateDir,
-    }),
+    }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem)),
   );
   return yield* makeWithOptions({
     logsDir: terminalLogsDir,

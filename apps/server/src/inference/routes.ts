@@ -179,6 +179,18 @@ const harnesses: Record<
     config: () => ({}),
     environment: openCodeEnvironment,
   },
+  pi: {
+    serves: () => true,
+    config: () => ({}),
+    environment: (route) => [
+      { name: "T3_INFERENCE_KEY", value: route.key, sensitive: true },
+      {
+        name: "T3_PI_INFERENCE_CONFIG",
+        value: JSON.stringify({ baseUrl: `${route.baseUrl}/v1`, models: route.models }),
+        sensitive: false,
+      },
+    ],
+  },
 };
 
 export function modelsForDriver(data: readonly ProxyModel[], driver: InferenceDriver) {

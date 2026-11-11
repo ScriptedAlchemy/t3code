@@ -208,6 +208,61 @@ describe("deriveProviderInstanceConfigMap", () => {
     }
   });
 
+  it("adds Pi proxy models without replacing native settings, credentials, or other instances", () => {
+    const id = ProviderInstanceId.make("pi");
+    const other = ProviderInstanceId.make("pi_work");
+    const native = {
+      driver: ProviderDriverKind.make("pi"),
+      displayName: "My Pi",
+      config: {
+        launchArgs: "--provider native --model native-model",
+        customModels: ["native/native-model"],
+        inferenceEnabled: true,
+        inferenceHostId: "host",
+        inferenceHostLabel: "Office",
+        inferenceBaseUrl: "http://127.0.0.1:9876/api/inference/linked/host",
+        inferenceKey: "proxy-key",
+        inferenceModels: ["grok-fixture"],
+        inferenceHomePath: "/proxy/home",
+      },
+      environment: [
+        { name: "PI_CODING_AGENT_DIR", value: "/native/pi", sensitive: false },
+        { name: "OPENAI_API_KEY", value: "native-key", sensitive: true },
+      ],
+    };
+    const settings = settingsWith({
+      providerInstances: { [id]: native, [other]: { driver: native.driver } },
+    });
+    const before = structuredClone(settings);
+    const active = deriveProviderInstanceConfigMap(settings);
+    expect(active[id]).toMatchObject({
+      driver: native.driver,
+      displayName: native.displayName,
+      config: native.config,
+    });
+    expect(active[other]).toEqual(settings.providerInstances[other]);
+    expect(active[id]?.environment).toEqual([
+      ...native.environment,
+      { name: "T3_INFERENCE_KEY", value: "proxy-key", sensitive: true },
+      {
+        name: "T3_PI_INFERENCE_CONFIG",
+        value: JSON.stringify({
+          baseUrl: "http://127.0.0.1:9876/api/inference/linked/host/v1",
+          models: ["grok-fixture"],
+        }),
+        sensitive: false,
+      },
+    ]);
+    expect(settings).toEqual(before);
+    const disabled = { ...native, config: { ...native.config, inferenceEnabled: false } };
+    const restored = deriveProviderInstanceConfigMap({
+      ...settings,
+      providerInstances: { ...settings.providerInstances, [id]: disabled },
+    });
+    expect(restored[id]).toEqual(disabled);
+    expect(restored[other]).toEqual(settings.providerInstances[other]);
+  });
+
   it("turns a machine-disabled instance on when a project enables it", () => {
     const settings = settingsWith({
       providerInstances: {

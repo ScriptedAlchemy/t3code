@@ -1,7 +1,14 @@
-import { ProviderDriverKind } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type InferenceProviderConfig,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerSettings,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  nativeAccountProviders,
   normalizeProviderAccentColor,
   providerAccentForegroundColor,
   providerInstanceInitials,
@@ -10,6 +17,52 @@ import {
 
 const codex = ProviderDriverKind.make("codex");
 const acpRegistry = ProviderDriverKind.make("acpRegistry");
+
+describe("nativeAccountProviders", () => {
+  it("keeps native accounts for additive routes and hides accounts replaced by an active route", () => {
+    const route = {
+      inferenceEnabled: true,
+      inferenceHostId: EnvironmentId.make("inference-host"),
+      inferenceHostLabel: "Inference host",
+      inferenceBaseUrl: "https://host.example/v1",
+      inferenceKey: "route-key",
+      inferenceModels: ["host-model"],
+      inferenceHomePath: "/state/inference",
+    } satisfies InferenceProviderConfig;
+    const instances = {
+      [ProviderInstanceId.make("codex")]: { driver: codex, config: route },
+      [ProviderInstanceId.make("claudeAgent")]: {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        config: route,
+      },
+      [ProviderInstanceId.make("pi")]: { driver: ProviderDriverKind.make("pi"), config: route },
+      [ProviderInstanceId.make("opencode")]: {
+        driver: ProviderDriverKind.make("opencode"),
+        config: route,
+      },
+      [ProviderInstanceId.make("codex_native")]: { driver: codex, config: {} },
+      [ProviderInstanceId.make("codex_disabled")]: {
+        driver: codex,
+        config: { ...route, inferenceEnabled: false },
+      },
+      [ProviderInstanceId.make("codex_incomplete")]: {
+        driver: codex,
+        config: { inferenceEnabled: true },
+      },
+    } satisfies ServerSettings["providerInstances"];
+    const providers = [
+      ...Object.entries(instances).map(([id, instance]) => ({
+        instanceId: ProviderInstanceId.make(id),
+        driver: instance.driver,
+      })),
+      { instanceId: ProviderInstanceId.make("cursor"), driver: ProviderDriverKind.make("cursor") },
+    ];
+
+    expect(
+      nativeAccountProviders(providers, instances).map((provider) => provider.instanceId),
+    ).toEqual(["pi", "opencode", "codex_native", "codex_disabled", "codex_incomplete", "cursor"]);
+  });
+});
 
 describe("providerInstanceInitials", () => {
   it("treats punctuation as a word break but keeps apostrophes between letters", () => {

@@ -2072,7 +2072,7 @@ it.effect("does not recall a fact the thread's agent has already been shown", ()
     assert.isNotEmpty(yield* recalledIn("fork", "omitted-replay"));
     const inheritedFactIds = inherited.factIdsByItem.get("item:parent") ?? [];
     assert.sameMembers(
-      inheritedFactIds,
+      [...inheritedFactIds],
       parentDelivery.items.flatMap((item) =>
         item.context.selections.flatMap((selection) =>
           selection.kind === "fact" ? [selection.factId] : [],
