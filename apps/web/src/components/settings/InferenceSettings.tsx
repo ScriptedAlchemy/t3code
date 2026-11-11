@@ -256,7 +256,7 @@ export function InferenceSettings({ environmentId }: { environmentId: Environmen
         <SettingsSection title="Route requests through an environment">
           <SettingsRow
             title={`Run agents on ${current.label}`}
-            description="Choose a host and provider below. Tools and files stay on this environment. Choosing a host changes where this provider sends inference. Accounts are managed on that host."
+            description="Choose a host and provider below. Tools and files stay on this environment. Choosing a host changes where this provider sends inference. That host manages the accounts."
           />
           {host?.routes.map((route) => (
             <SettingsRow

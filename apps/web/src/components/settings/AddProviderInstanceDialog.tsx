@@ -511,7 +511,7 @@ export function AddProviderInstanceDialog({
         <WizardPopup>
           <WizardHeader
             title={`Add ${driverOption.label} account`}
-            description="Accounts are managed by CLIProxyAPI on the inference host."
+            description="CLIProxyAPI manages accounts on the inference host."
           />
           <WizardPanel>
             <InferenceProviderAccounts

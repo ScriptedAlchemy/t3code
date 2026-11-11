@@ -275,7 +275,7 @@ function InferenceControls({ environment }: { environment: SettingsTarget }) {
       ) : null}
       <AppText className="px-4 text-foreground-muted">
         Choose a host for inference. Tools run on {environment.label}. Choosing a host changes where
-        this provider sends inference. Accounts are managed on that host.
+        this provider sends inference. That host manages the accounts.
       </AppText>
       {host?.routes.map((route) => (
         <ListActionRow
