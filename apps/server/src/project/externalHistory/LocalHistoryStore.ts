@@ -23,6 +23,8 @@ export interface LocalThread {
 export interface LocalHistoryStore {
   readonly listThreads: Effect.Effect<ReadonlyArray<LocalThreadRef>, ExternalHistoryError>;
   readonly loadThread: (ref: LocalThreadRef) => Effect.Effect<LocalThread, ExternalHistoryError>;
+  // The provider's own session id, when T3 can have recorded it for a thread it ran.
+  readonly nativeSessionId?: (ref: LocalThreadRef) => string | undefined;
   // False only when the thread provably cannot contain the query; any doubt answers true.
   readonly mightMention?: (ref: LocalThreadRef, query: string) => Effect.Effect<boolean>;
 }

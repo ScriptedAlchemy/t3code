@@ -267,7 +267,17 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
     Effect.scoped,
     Effect.orElseSucceed(() => true),
   );
-  return { listThreads, loadThread, mightMention } satisfies LocalHistoryStore;
+  // T3 records Pi's session file path, not its session id, so Pi threads are not matched by id.
+  const nativeSessionId =
+    source === "claudeAgent"
+      ? (ref: LocalThreadRef) => path.basename(ref.key, ".jsonl")
+      : undefined;
+  return {
+    listThreads,
+    loadThread,
+    mightMention,
+    ...(nativeSessionId ? { nativeSessionId } : {}),
+  } satisfies LocalHistoryStore;
 }, Effect.mapError(mapError));
 
 export const makeClaudeHistoryStore = (root: string, cache: ThreadCache) =>

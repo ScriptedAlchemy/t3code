@@ -751,7 +751,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
         ),
       ),
     ),
-    Layer.provideMerge(ExternalHistory.layer),
+    Layer.provideMerge(ExternalHistory.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
     Layer.provideMerge(
       ProjectKnowledge.layer.pipe(
         Layer.provide(ProjectionStoreV2.layer),

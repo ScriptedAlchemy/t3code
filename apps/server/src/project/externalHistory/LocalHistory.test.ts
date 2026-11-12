@@ -30,6 +30,7 @@ const makeStore = (
       const entry = threads.find(([key]) => key === ref.key)![1];
       return isHistoryError(entry) ? Effect.fail(entry) : Effect.succeed(entry);
     },
+    nativeSessionId: (ref) => ref.key,
     ...(mightMention ? { mightMention: (ref) => Effect.succeed(mightMention(ref.key)) } : {}),
   };
   return { store, loaded };
@@ -120,6 +121,30 @@ it.layer(NodeCrypto.layer)("local history search paging", (it) => {
       expect(found).toEqual(["good:hit"]);
       expect(requests).toBe(1);
       expect(loaded).toEqual(["broken", "live", "good"]);
+    }),
+  );
+
+  it.effect("skips sessions T3 owns without loading them, using one lookup per request", () =>
+    Effect.gen(function* () {
+      const { store, loaded } = makeStore([
+        ["owned-a", thread([item("hit", "needle")])],
+        ["mine", thread([item("hit", "needle")])],
+        ["owned-b", thread([item("hit", "needle")])],
+      ]);
+      const lookups: Array<ReadonlyArray<string>> = [];
+      const history = yield* makeLocalHistory;
+      const page = yield* history.search(
+        store,
+        { operation: "search", sourceId: "local", query: "needle" },
+        (ids) =>
+          Effect.sync(() => {
+            lookups.push(ids);
+            return new Set(ids.filter((id) => id.startsWith("owned")));
+          }),
+      );
+      expect(page.matches.map((match) => match.ref.threadId)).toEqual(["mine"]);
+      expect(loaded).toEqual(["mine"]);
+      expect(lookups).toEqual([["owned-a", "mine", "owned-b"]]);
     }),
   );
 });

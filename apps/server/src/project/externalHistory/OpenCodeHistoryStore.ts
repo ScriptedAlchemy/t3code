@@ -203,5 +203,10 @@ export const makeOpenCodeHistoryStore = Effect.fn("ExternalHistory.openOpenCodeS
               .get(ref.key, query.toLowerCase()) !== undefined,
         ).pipe(Effect.orElseSucceed(() => true))
       : Effect.succeed(true);
-  return { listThreads, loadThread, mightMention } satisfies LocalHistoryStore;
+  return {
+    listThreads,
+    loadThread,
+    mightMention,
+    nativeSessionId: (ref) => ref.key,
+  } satisfies LocalHistoryStore;
 }, Effect.mapError(mapError));

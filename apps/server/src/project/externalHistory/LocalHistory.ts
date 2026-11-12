@@ -56,6 +56,10 @@ const invalidCursor = () => new ExternalHistoryError({ reason: "invalid_cursor" 
 const evidence = (item: { readonly role: string; readonly text: string }) =>
   `external-history-v2\n${item.role}\n${item.text}`;
 
+export type OwnedNativeIds = (
+  nativeIds: ReadonlyArray<string>,
+) => Effect.Effect<ReadonlySet<string>, ExternalHistoryError>;
+
 export const makeLocalHistory = Effect.gen(function* () {
   const crypto = yield* Digest.Digest;
   const cache = yield* makeThreadCache;
@@ -67,6 +71,7 @@ export const makeLocalHistory = Effect.gen(function* () {
   const search = Effect.fn("ExternalHistory.searchLocal")(function* (
     store: LocalHistoryStore,
     input: Extract<ExternalHistoryRequest, { operation: "search" }>,
+    owned?: OwnedNativeIds,
   ) {
     const cursor =
       input.cursor === undefined
@@ -98,6 +103,10 @@ export const makeLocalHistory = Effect.gen(function* () {
         : null;
     };
     const pattern = new RegExp(input.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "iu");
+    const ownedIds: ReadonlySet<string> =
+      store.nativeSessionId && owned
+        ? yield* owned(refs.slice(first).flatMap((ref) => store.nativeSessionId!(ref) ?? []))
+        : new Set();
     const matches: ExternalHistoryMatch[] = [];
     let examinedItems = 0;
     let examinedChars = 0;
@@ -110,8 +119,10 @@ export const makeLocalHistory = Effect.gen(function* () {
           examinedItems,
           nextCursor: cursorAt(index, 0, null),
         } satisfies ExternalHistoryResponse;
-      visited++;
       const ref = refs[index]!;
+      const nativeId = store.nativeSessionId?.(ref);
+      if (nativeId !== undefined && ownedIds.has(nativeId)) continue;
+      visited++;
       const resumed = index === first ? cursor : undefined;
       if (
         !resumed?.itemOffset &&

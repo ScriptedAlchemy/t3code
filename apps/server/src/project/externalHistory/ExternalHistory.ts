@@ -28,7 +28,8 @@ import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import { makeChatGptExportStore } from "./ChatGptExportHistory.ts";
-import { makeLocalHistory } from "./LocalHistory.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import { makeLocalHistory, type OwnedNativeIds } from "./LocalHistory.ts";
 import { makeHistorySupport } from "./historySupport.ts";
 import { makeClaudeHistoryStore, makePiHistoryStore } from "./JsonlHistoryStore.ts";
 import { makeOpenCodeHistoryStore } from "./OpenCodeHistoryStore.ts";
@@ -110,6 +111,11 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
   const local = yield* makeLocalHistory;
+  const projection = yield* ProjectionStore.ProjectionStoreV2;
+  const ownedNativeIds: OwnedNativeIds = (nativeIds) =>
+    projection
+      .findOwnedNativeThreadIds(nativeIds)
+      .pipe(Effect.mapError((cause) => new ExternalHistoryError({ reason: "unavailable", cause })));
   const home = yield* HostProcess.HomeDirectory;
   const environment = yield* HostProcess.Environment;
   const catalogLock = yield* Semaphore.make(1);
@@ -464,7 +470,7 @@ const make = Effect.gen(function* () {
       return yield* new ExternalHistoryError({ reason: "unsupported" });
     if (source._tag === "local")
       return yield* input.operation === "search"
-        ? local.search(source.store, input)
+        ? local.search(source.store, input, ownedNativeIds)
         : local.read(source.store, input);
     if (input.operation === "search") return yield* nativeSearch(source, input);
     const result = yield* source.native

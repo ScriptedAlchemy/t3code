@@ -21,6 +21,7 @@ import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import * as ExternalHistory from "./ExternalHistory.ts";
 
@@ -124,6 +125,7 @@ const makeFixture = Effect.fn("ExternalHistory.test.fixture")(function* () {
     instances: [instance] as Array<ProviderInstance>,
     settings: { enabled: true, chatGptExportPaths: [] } as ExternalHistorySettings,
     registryReads: 0,
+    ownedNativeIds: new Set<string>(),
     providerInstances: DEFAULT_SERVER_SETTINGS.providerInstances,
   };
   const fs = yield* FileSystem.FileSystem;
@@ -150,6 +152,10 @@ const makeFixture = Effect.fn("ExternalHistory.test.fixture")(function* () {
                 externalHistory: state.settings,
                 providerInstances: state.providerInstances,
               })),
+            }),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              findOwnedNativeThreadIds: (ids) =>
+                Effect.succeed(new Set(ids.filter((id) => state.ownedNativeIds.has(id)))),
             }),
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
               listInstances: Effect.sync(() => {
@@ -245,6 +251,31 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
           ),
         ).toBe(false);
       }),
+  );
+
+  it.effect("hides Claude sessions whose id T3 already stores, with or without the marker", () =>
+    Effect.gen(function* () {
+      const { service, state, home } = yield* makeFixture();
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(`${home}/.claude/projects/p`, { recursive: true });
+      for (const session of ["owned-session", "outside-session"])
+        yield* fs.writeFileString(
+          `${home}/.claude/projects/p/${session}.jsonl`,
+          JSON.stringify({ type: "user", uuid: session, message: { content: "needle" } }) + "\n",
+        );
+      state.ownedNativeIds.add("owned-session");
+      const catalog = yield* service.query({ operation: "sources", catalogVersion: 2 });
+      if (catalog.operation !== "sources") return yield* Effect.die("wrong response");
+      const result = yield* service.query({
+        operation: "search",
+        sourceId: catalog.sources.find((source) => source.provider === "claudeAgent")!.id,
+        query: "needle",
+      });
+      if (result.operation !== "search") return yield* Effect.die("wrong response");
+      expect(result.matches.map((match) => match.ref.threadId)).toEqual([
+        "p/outside-session.jsonl",
+      ]);
+    }),
   );
 
   it.effect("checks the environment opt-in before touching providers and on every read", () =>
