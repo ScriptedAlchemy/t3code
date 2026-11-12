@@ -16,6 +16,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../../config.ts";
@@ -123,17 +124,32 @@ const makeFixture = Effect.fn("ExternalHistory.test.fixture")(function* () {
     instances: [instance] as Array<ProviderInstance>,
     settings: { enabled: true, chatGptExportPaths: [] } as ExternalHistorySettings,
     registryReads: 0,
+    providerInstances: DEFAULT_SERVER_SETTINGS.providerInstances,
   };
+  const fs = yield* FileSystem.FileSystem;
+  const enumerations: string[] = [];
+  const countingFs = FileSystem.make({
+    ...fs,
+    readDirectory: (path) => {
+      enumerations.push(path);
+      return fs.readDirectory(path);
+    },
+  });
+  const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-history-home-" });
   const service = yield* ExternalHistory.ExternalHistory.pipe(
     Effect.provide(
       ExternalHistory.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            Layer.succeed(FileSystem.FileSystem, countingFs),
+            Layer.succeed(HostProcess.HomeDirectory, home),
+            Layer.succeed(HostProcess.Environment, { HOME: home }),
             ServerConfig.layerTest("/operational-project", { prefix: "t3-external-config-" }),
             Layer.mock(ServerSettings.ServerSettingsService)({
               getSettings: Effect.sync(() => ({
                 ...DEFAULT_SERVER_SETTINGS,
                 externalHistory: state.settings,
+                providerInstances: state.providerInstances,
               })),
             }),
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
@@ -147,19 +163,99 @@ const makeFixture = Effect.fn("ExternalHistory.test.fixture")(function* () {
       ),
     ),
   );
-  return { service, state, calls, instance, native };
+  return { service, state, calls, instance, native, home, enumerations };
 });
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history service", (it) => {
+  it.effect(
+    "discovers default and disabled profiles with no paths, excludes T3 homes, and keeps page requests out of discovery",
+    () =>
+      Effect.gen(function* () {
+        const { service, state, home, enumerations } = yield* makeFixture();
+        const fs = yield* FileSystem.FileSystem;
+        const claude = `${home}/.claude`;
+        const pi = `${home}/.pi/agent/sessions`;
+        const managed = `${home}/.t3/userdata/providers/inference/claude`;
+        for (const root of [claude, managed]) {
+          yield* fs.makeDirectory(`${root}/projects/p`, { recursive: true });
+          yield* fs.writeFileString(
+            `${root}/projects/p/session.jsonl`,
+            JSON.stringify({ type: "user", uuid: "claude", message: { content: "needle" } }) + "\n",
+          );
+        }
+        yield* fs.makeDirectory(`${pi}/p`, { recursive: true });
+        yield* fs.writeFileString(
+          `${pi}/p/pi.jsonl`,
+          JSON.stringify({
+            type: "message",
+            id: "pi",
+            message: { role: "user", content: "needle" },
+          }) + "\n",
+        );
+        yield* fs.makeDirectory(`${home}/Downloads`, { recursive: true });
+        state.providerInstances = {
+          ...state.providerInstances,
+          [ProviderInstanceId.make("disabled-claude")]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            enabled: false,
+            config: { homePath: claude },
+          },
+          [ProviderInstanceId.make("opencode-downloads")]: {
+            driver: ProviderDriverKind.make("opencode"),
+            environment: [
+              { name: "OPENCODE_DATA_DIR", value: `${home}/Downloads`, sensitive: false },
+            ],
+          },
+          [ProviderInstanceId.make("opencode-inference")]: {
+            driver: ProviderDriverKind.make("opencode"),
+            environment: [{ name: "OPENCODE_DATA_DIR", value: managed, sensitive: false }],
+          },
+          [ProviderInstanceId.make("managed-claude")]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            config: { homePath: managed },
+          },
+        };
+        const catalog = yield* service.query({ operation: "sources", catalogVersion: 2 });
+        if (catalog.operation !== "sources") return yield* Effect.die("wrong response");
+        expect(catalog.sources.map((source) => source.provider).toSorted()).toEqual([
+          "claudeAgent",
+          "codex",
+          "pi",
+        ]);
+        expect(catalog.unsupported.find((source) => source.provider === "grok")?.reason).toContain(
+          "readable format",
+        );
+        const legacy = yield* service.query({ operation: "sources" });
+        expect(
+          legacy.operation === "sources" && legacy.sources.map((source) => source.kind),
+        ).toEqual(["codex"]);
+        const source = catalog.sources.find((source) => source.provider === "claudeAgent")!;
+        const page = yield* service.query({
+          operation: "search",
+          sourceId: source.id,
+          query: "needle",
+        });
+        if (page.operation !== "search") return yield* Effect.die("wrong response");
+        const count = enumerations.length;
+        yield* service.query({ operation: "search", sourceId: source.id, query: "other" });
+        yield* service.query({ operation: "read", ref: page.matches[0]!.ref });
+        expect(enumerations).toHaveLength(count);
+        expect(
+          enumerations.some(
+            (path) => path.includes("Downloads") || path.includes("providers/inference"),
+          ),
+        ).toBe(false);
+      }),
+  );
+
   it.effect("checks the environment opt-in before touching providers and on every read", () =>
     Effect.gen(function* () {
       const { service, state, calls } = yield* makeFixture();
       state.settings = { enabled: false, chatGptExportPaths: [] };
-      expect(yield* service.query({ operation: "sources" })).toEqual({
+      expect(yield* service.query({ operation: "sources" })).toMatchObject({
         operation: "sources",
         enabled: false,
         sources: [],
-        unsupported: [],
       });
       expect(state.registryReads).toBe(0);
       const error = yield* service
@@ -280,12 +376,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
         .pipe(Effect.flip);
       expect(unsupported.reason).toBe("unsupported");
       state.instances = [{ ...instance, enabled: false }];
-      expect(yield* service.query({ operation: "sources" })).toEqual({
-        operation: "sources",
-        enabled: true,
-        sources: [],
-        unsupported: [],
-      });
+      const disabledInstance = yield* service.query({ operation: "sources" });
+      expect(disabledInstance.operation === "sources" && disabledInstance.sources.length).toBe(1);
     }),
   );
 
@@ -331,6 +423,36 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
       expect(yield* fs.readFileString(file)).toBe(contents);
       expect(yield* fs.readDirectory(directory)).toEqual(["conversations.json"]);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect("excludes native Codex sessions marked as T3 conversations", () =>
+    Effect.gen(function* () {
+      const { service, state, instance, native, calls } = yield* makeFixture();
+      state.instances = [
+        {
+          ...instance,
+          nativeHistory: {
+            ...native,
+            list: () =>
+              Effect.succeed({ threads: [{ ...thread, originator: "T3 Code" }], nextCursor: null }),
+          },
+        },
+      ];
+      const catalog = yield* service.query({ operation: "sources" });
+      if (catalog.operation !== "sources") return yield* Effect.die("wrong response");
+      const result = yield* service.query({
+        operation: "search",
+        sourceId: catalog.sources[0]!.id,
+        query: "needle",
+      });
+      expect(result).toEqual({
+        operation: "search",
+        matches: [],
+        examinedItems: 0,
+        nextCursor: null,
+      });
+      expect(calls.items).toEqual([]);
+    }),
   );
 
   it.effect("rejects a native continuation that cannot fit the public cursor budget", () =>

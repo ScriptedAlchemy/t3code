@@ -299,7 +299,7 @@ export const makeChatGptExportStore = Effect.fn("ChatGptExportHistory.open")(fun
     const match = /^(0|[1-9][0-9]*):(.+)$/.exec(ref.key);
     if (!match || !Number.isSafeInteger(Number(match[1])))
       return yield* new ExternalHistoryError({ reason: "invalid_cursor" });
-    return yield* cache(
+    const thread = yield* cache(
       `${filePath}\0${ref.key}\0${version}`,
       Effect.gen(function* () {
         const result = yield* readConversation(filePath, Number(match[1]), version);
@@ -313,6 +313,9 @@ export const makeChatGptExportStore = Effect.fn("ChatGptExportHistory.open")(fun
         };
       }),
     );
+    if (fileVersion(yield* fs.stat(filePath)) !== version)
+      return yield* new ExternalHistoryError({ reason: "changed" });
+    return thread;
   }, Effect.mapError(mapError));
   return { listThreads, loadThread } satisfies LocalHistoryStore;
 });

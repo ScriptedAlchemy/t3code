@@ -4,6 +4,7 @@ import {
   type ExternalHistoryResponse,
   type ExternalHistorySource,
   ProviderDriverKind,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import type {
   ProviderNativeHistory,
@@ -17,12 +18,20 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
+import * as Semaphore from "effect/Semaphore";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import { resolveOpenCodeDataDirs } from "@t3tools/provider-opencode/server/usage";
 
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import { makeChatGptExportStore } from "./ChatGptExportHistory.ts";
 import { makeLocalHistory } from "./LocalHistory.ts";
+import { makeHistorySupport } from "./historySupport.ts";
+import { makeClaudeHistoryStore, makePiHistoryStore } from "./JsonlHistoryStore.ts";
+import { makeOpenCodeHistoryStore } from "./OpenCodeHistoryStore.ts";
 import type { LocalHistoryStore } from "./LocalHistoryStore.ts";
 
 export class ExternalHistory extends Context.Service<
@@ -67,6 +76,7 @@ const encodeIdentity = Schema.encodeSync(
 type Source = { readonly info: ExternalHistorySource } & (
   | { readonly _tag: "native"; readonly native: ProviderNativeHistory; readonly readers: number }
   | { readonly _tag: "local"; readonly store: LocalHistoryStore }
+  | { readonly _tag: "unavailable" }
 );
 
 // A signed-out or older instance must not hide a shared home that another enabled instance
@@ -100,6 +110,39 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
   const local = yield* makeLocalHistory;
+  const home = yield* HostProcess.HomeDirectory;
+  const environment = yield* HostProcess.Environment;
+  const catalogLock = yield* Semaphore.make(1);
+  const excludedRoots = Effect.forEach(
+    [config.baseDir, config.stateDir, path.join(home, ".t3"), path.join(home, "Downloads")],
+    (dir) => fs.realPath(dir).pipe(Effect.orElseSucceed(() => path.resolve(dir))),
+  );
+  const inside = (root: string, parent: string) => {
+    const relative = path.relative(parent, root);
+    return (
+      relative === "" ||
+      (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+    );
+  };
+  const supportTable = makeHistorySupport({
+    claudeAgent: makeClaudeHistoryStore,
+    pi: makePiHistoryStore,
+    opencode: makeOpenCodeHistoryStore,
+    openCodeRoots: Effect.fn("ExternalHistory.openCodeRoots")(function* (env) {
+      const roots: string[] = [];
+      const excluded = yield* excludedRoots;
+      for (const root of yield* resolveOpenCodeDataDirs(env)) {
+        const canonical = yield* fs.realPath(root).pipe(Effect.option);
+        if (Option.isNone(canonical) || excluded.some((parent) => inside(canonical.value, parent)))
+          continue;
+        const dir = canonical.value;
+        const names = yield* fs.readDirectory(dir).pipe(Effect.orElseSucceed(() => [] as string[]));
+        const databases = names.filter((name) => /^opencode(?:-[a-zA-Z0-9_-]+)?\.db$/.test(name));
+        roots.push(...(databases.length ? databases.map((name) => path.join(dir, name)) : [dir]));
+      }
+      return roots;
+    }),
+  });
   let localCatalog = new Map<string, Source>();
   let fingerprint: string | undefined;
   const digest = (text: string) =>
@@ -119,7 +162,7 @@ const make = Effect.gen(function* () {
     }
     const result = new Map<string, Source>();
     for (const instance of yield* registry.listInstances) {
-      if (!instance.enabled || instance.driverKind !== "codex" || !instance.nativeHistory) continue;
+      if (supportTable[instance.driverKind]?.kind !== "native" || !instance.nativeHistory) continue;
       const id = `codex:${yield* digest(encodeIdentity(instance.continuationIdentity))}`;
       const existing = result.get(id);
       if (existing?._tag === "native" && existing.readers < 3) {
@@ -146,6 +189,87 @@ const make = Effect.gen(function* () {
     const nextFingerprint = encodeFingerprint([value.externalHistory, value.providerInstances]);
     if (refresh || fingerprint !== nextFingerprint) {
       const next = new Map<string, Source>();
+      const excluded = yield* excludedRoots;
+      const seen = new Set<string>();
+      for (const [driver, support] of Object.entries(supportTable)) {
+        if (support.kind !== "local") continue;
+        const profiles = [
+          {
+            instanceId: ProviderInstanceId.make(driver),
+            config: undefined,
+            environment: undefined,
+          },
+          ...Object.entries(value.providerInstances)
+            .filter(([, profile]) => profile.driver === driver)
+            .map(([id, profile]) => ({
+              instanceId: ProviderInstanceId.make(id),
+              config: profile.config,
+              environment: profile.environment,
+            })),
+        ];
+        for (const profile of profiles) {
+          const env = yield* mergeProviderInstanceEnvironment(
+            profile.environment,
+            environment,
+          ).pipe(Effect.provideService(HostProcess.HomeDirectory, home));
+          const roots = yield* support
+            .roots({
+              instanceId: profile.instanceId,
+              config: profile.config,
+              environment: env,
+              stateDir: config.stateDir,
+            })
+            .pipe(
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(HostProcess.HomeDirectory, home),
+            );
+          for (const root of roots) {
+            const canonical = yield* fs.realPath(root).pipe(Effect.option);
+            if (Option.isNone(canonical) || excluded.some((dir) => inside(canonical.value, dir)))
+              continue;
+            const stat = yield* fs.stat(canonical.value).pipe(Effect.option);
+            if (Option.isNone(stat)) continue;
+            const identity = `${driver}:${stat.value.dev}:${Option.map(stat.value.ino, String).pipe(Option.getOrElse(() => canonical.value))}`;
+            if (seen.has(identity)) continue;
+            seen.add(identity);
+            const id = `local:${driver}:${yield* digest(canonical.value)}`;
+            const existing = localCatalog.get(id);
+            if (existing?._tag === "local") {
+              next.set(id, existing);
+              continue;
+            }
+            const opened = yield* support
+              .open(canonical.value, local.cache)
+              .pipe(
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.provideService(Path.Path, path),
+                Effect.result,
+              );
+            if (opened._tag === "Failure" && opened.failure.reason === "missing") continue;
+            const info: ExternalHistorySource = {
+              id,
+              label: `${support.label} · ${canonical.value}`,
+              kind: "local_transcript",
+              provider: ProviderDriverKind.make(driver),
+              capabilities: { cwdFilter: true, archived: false },
+              status:
+                opened._tag === "Success"
+                  ? "ready"
+                  : opened.failure.reason === "unsupported"
+                    ? "unsupported_format"
+                    : "unavailable",
+              ...(opened._tag === "Failure" ? { message: opened.failure.message } : {}),
+            };
+            next.set(
+              id,
+              opened._tag === "Success"
+                ? { _tag: "local", info, store: opened.success }
+                : { _tag: "unavailable", info },
+            );
+          }
+        }
+      }
       for (const configured of value.externalHistory.chatGptExportPaths) {
         const filePath = path.resolve(config.cwd, configured);
         const id = `chatgpt:${yield* digest(filePath)}`;
@@ -171,7 +295,7 @@ const make = Effect.gen(function* () {
     }
     for (const [id, source] of localCatalog) result.set(id, source);
     return { enabled: true, sources: [...result.values()] };
-  });
+  }, catalogLock.withPermit);
 
   const nativeSearch = Effect.fn("ExternalHistory.nativeSearch")(function* (
     source: Extract<Source, { _tag: "native" }>,
@@ -228,6 +352,15 @@ const make = Effect.gen(function* () {
         return yield* new ExternalHistoryError({ reason: "unsupported" });
       const thread = page.threads[0];
       if (!thread)
+        return {
+          operation: "search",
+          matches: [],
+          examinedItems: 0,
+          nextCursor: yield* page.nextCursor === null
+            ? afterPhase()
+            : encodeCursor({ ...cursor, listCursor: page.nextCursor }),
+        } satisfies ExternalHistoryResponse;
+      if (thread.originator === "T3 Code")
         return {
           operation: "search",
           matches: [],
@@ -297,7 +430,17 @@ const make = Effect.gen(function* () {
         sources: current.sources
           .map(({ info }) => info)
           .filter((info) => input.catalogVersion === 2 || info.kind !== "local_transcript"),
-        unsupported: [],
+        unsupported: Object.entries(supportTable).flatMap(([provider, support]) =>
+          support.kind === "unsupported"
+            ? [
+                {
+                  provider: ProviderDriverKind.make(provider),
+                  label: support.label,
+                  reason: support.reason,
+                },
+              ]
+            : [],
+        ),
       };
     if (!current.enabled) return yield* new ExternalHistoryError({ reason: "disabled" });
     const source = current.sources.find(
@@ -305,6 +448,10 @@ const make = Effect.gen(function* () {
         entry.info.id === (input.operation === "read" ? input.ref.sourceId : input.sourceId),
     );
     if (!source) return yield* new ExternalHistoryError({ reason: "missing" });
+    if (source._tag === "unavailable")
+      return yield* new ExternalHistoryError({
+        reason: source.info.status === "unsupported_format" ? "unsupported" : "unavailable",
+      });
     if (
       input.operation === "search" &&
       ((input.filterCwd && !source.info.capabilities.cwdFilter) ||
@@ -326,6 +473,8 @@ const make = Effect.gen(function* () {
         ...(input.maxChars === undefined ? {} : { maxChars: input.maxChars }),
       })
       .pipe(Effect.mapError((cause) => new ExternalHistoryError({ reason: cause.reason, cause })));
+    if (result.thread.originator === "T3 Code")
+      return yield* new ExternalHistoryError({ reason: "missing" });
     return {
       operation: "read",
       ref: input.ref,

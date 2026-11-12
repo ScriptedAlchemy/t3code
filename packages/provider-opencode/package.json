@@ -19,6 +19,10 @@
       "types": "./src/testing.ts",
       "import": "./src/testing.ts"
     },
+    "./server/usage": {
+      "types": "./src/server/usage.ts",
+      "import": "./src/server/usage.ts"
+    },
     "./server/OpenCodeRuntime": {
       "types": "./src/server/OpenCodeRuntime.ts",
       "import": "./src/server/OpenCodeRuntime.ts"

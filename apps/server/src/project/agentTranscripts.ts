@@ -153,8 +153,14 @@ export function transcriptItems(
   source: "claudeAgent" | "pi",
 ): ReadonlyArray<TranscriptItem> {
   if (source === "claudeAgent" && isHiddenClaudeRecord(record)) return [];
+  if (source === "pi" && record.type !== "message") return [];
+  if (source === "claudeAgent" && record.type !== "user" && record.type !== "assistant") return [];
   const nativeId = source === "pi" ? record.id : record.uuid;
   if (!nativeId) return [];
+  if (source === "pi" && record.message?.role === "toolResult") {
+    const text = extractText(record.message.content);
+    return text ? [{ id: nativeId, role: "tool", text }] : [];
+  }
   const conversation = conversationItem(record, source);
   const items: TranscriptItem[] = conversation ? [{ ...conversation, id: nativeId }] : [];
   const content = record.message?.content;
