@@ -56,8 +56,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
         const first = yield* history.search(store, request);
         expect(first.matches.map((m) => m.itemId)).toEqual(["old-evidence"]);
         expect(first.matches[0]?.threadTitle).toBe("Renamed");
+        expect(first.nextCursor).toBeNull();
         const enumerated = enumerations;
-        const second = yield* history.search(store, { ...request, cursor: first.nextCursor! });
+        const paged = { ...request, query: "Other message" };
+        const pageOne = yield* history.search(store, paged);
+        const second = yield* history.search(store, { ...paged, cursor: pageOne.nextCursor! });
         expect(second.examinedItems).toBe(20);
         const read = yield* history.read(store, { operation: "read", ref: first.matches[0]!.ref });
         expect(read.text).toBe("needle from the distant past");
@@ -86,14 +89,37 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
             .read(store, { operation: "read", ref: first.matches[0]!.ref })
             .pipe(Effect.flip)).reason,
         ).toBe("changed");
-        const restarted = yield* history.search(store, { ...request, cursor: second.nextCursor! });
-        expect(restarted.matches.map((m) => m.itemId)).toEqual(["old-evidence"]);
+        const restarted = yield* history.search(store, { ...paged, cursor: second.nextCursor! });
+        expect(restarted.matches[0]?.itemId).toBe("new-0");
         expect(
           (yield* store
             .loadThread({ key: "../../outside.jsonl", version: "", updatedAt: 0 })
             .pipe(Effect.flip)).reason,
         ).toBe("invalid_cursor");
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("finds queries split across read chunks and queries that JSON escapes", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const project = `${root}/projects/project`;
+      yield* fs.makeDirectory(project, { recursive: true });
+      const head = '{"type":"user","uuid":"split","message":{"content":"';
+      const text = "x".repeat(1024 * 1024 - head.length - 3) + 'needle then say "hi"';
+      yield* fs.writeFileString(
+        `${project}/session.jsonl`,
+        JSON.stringify({ type: "user", uuid: "split", message: { content: text } }) + "\n",
+      );
+      const history = yield* makeLocalHistory;
+      const claude = yield* makeClaudeHistoryStore(root, history.cache);
+      for (const query of ["needle", 'say "hi"']) {
+        expect(
+          (yield* history.search(claude, { operation: "search", sourceId: "claude", query }))
+            .matches,
+        ).toHaveLength(1);
+      }
+    }).pipe(Effect.scoped),
   );
 
   it.effect("excludes T3 Claude sessions and follows the active Pi branch", () =>
@@ -163,10 +189,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
         JSON.stringify({ type: "message", message: { role: "user", content: "legacy" } }) + "\n",
       );
       expect(
-        (yield* history
-          .search(pi, { operation: "search", sourceId: "pi", query: "legacy" })
-          .pipe(Effect.flip)).reason,
-      ).toBe("unsupported");
+        (yield* history.search(pi, { operation: "search", sourceId: "pi", query: "legacy" }))
+          .matches,
+      ).toEqual([]);
     }).pipe(Effect.scoped),
   );
 });

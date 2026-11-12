@@ -247,7 +247,27 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
       return yield* new ExternalHistoryError({ reason: "changed" });
     return thread;
   }, Effect.mapError(mapError));
-  return { listThreads, loadThread } satisfies LocalHistoryStore;
+  // Raw JSON text holds a plain-ASCII query verbatim; quotes, backslashes and control
+  // characters are escaped on disk and joined blocks differ, so those queries skip the check.
+  const mightMention = Effect.fn("ExternalHistory.prefilterJsonlThread")(
+    function* (ref: LocalThreadRef, query: string) {
+      if (!/^[ !#-[\]-~]+$/.test(query)) return true;
+      const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "iu");
+      const file = yield* fs.open(path.join(directory, ...ref.key.split("/")), { flag: "r" });
+      const decoder = new TextDecoder();
+      let tail = "";
+      while (true) {
+        const bytes = yield* file.readAlloc(1024 * 1024);
+        if (Option.isNone(bytes)) return false;
+        const text = tail + decoder.decode(bytes.value, { stream: true });
+        if (pattern.test(text)) return true;
+        tail = text.slice(Math.max(0, text.length - query.length + 1));
+      }
+    },
+    Effect.scoped,
+    Effect.orElseSucceed(() => true),
+  );
+  return { listThreads, loadThread, mightMention } satisfies LocalHistoryStore;
 }, Effect.mapError(mapError));
 
 export const makeClaudeHistoryStore = (root: string, cache: ThreadCache) =>

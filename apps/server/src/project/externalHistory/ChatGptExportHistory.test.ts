@@ -104,22 +104,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ChatGPT export h
       ];
       const { history, store } = yield* fixture(exportValue);
       const request = { operation: "search", sourceId: "export", query: "needle" } as const;
-      const page1 = yield* history.search(store, request);
-      expect(page1.matches).toEqual([]);
-      expect(page1.examinedItems).toBe(20);
-      expect(page1.nextCursor).not.toBeNull();
-      const page2 = yield* history.search(store, { ...request, cursor: page1.nextCursor! });
-      expect(page2.matches.map((entry) => entry.itemId)).toEqual(["message-20"]);
-      const page3 = yield* history.search(store, { ...request, cursor: page2.nextCursor! });
-      expect(page3.matches.map((entry) => entry.ref.threadId)).toEqual(["1:conversation-2"]);
-      expect(page3.nextCursor).toBeNull();
+      const page = yield* history.search(store, request);
+      expect(page.matches.map((entry) => [entry.ref.threadId, entry.itemId])).toEqual([
+        ["0:conversation-1", "message-20"],
+        ["1:conversation-2", "message-0"],
+      ]);
+      expect(page.examinedItems).toBe(22);
+      expect(page.nextCursor).toBeNull();
     }).pipe(Effect.scoped),
   );
 
   it.effect("binds search cursors and exact source reads to the current file", () =>
     Effect.gen(function* () {
       const { history, store, fs, filePath } = yield* fixture([
-        conversation(["needle", ...Array.from({ length: 20 }, () => "other")]),
+        conversation(Array.from({ length: 25 }, () => "needle")),
       ]);
       const request = { operation: "search", sourceId: "export", query: "needle" } as const;
       const page = yield* history.search(store, request);
@@ -168,12 +166,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ChatGPT export h
         filePath,
         JSON.stringify([conversation(["x".repeat(5_000_000) + "needle"])]),
       );
-      const error = yield* history.search(store, request).pipe(Effect.flip);
-      expect(error.reason).toBe("limit_exceeded");
+      expect((yield* history.search(store, request)).matches).toEqual([]);
     }).pipe(Effect.scoped),
   );
 
-  it.effect("fails explicitly for unsupported exports and ambiguous branches", () =>
+  it.effect("fails explicitly for unsupported exports and skips ambiguous conversations", () =>
     Effect.gen(function* () {
       const { history, store, fs, filePath } = yield* fixture({ conversations: [] });
       const request = { operation: "search", sourceId: "export", query: "needle" } as const;
@@ -185,11 +182,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ChatGPT export h
           { ...source, mapping: { "node-0": { ...source.mapping["node-0"], parent: "node-0" } } },
         ]),
       );
-      expect((yield* history.search(store, request).pipe(Effect.flip)).reason).toBe("unsupported");
+      expect((yield* history.search(store, request)).matches).toEqual([]);
       const duplicate = conversation(["first message", "needle second message"]);
       duplicate.mapping["node-1"]!.message.id = duplicate.mapping["node-0"]!.message.id;
       yield* fs.writeFileString(filePath, JSON.stringify([duplicate]));
-      expect((yield* history.search(store, request).pipe(Effect.flip)).reason).toBe("unsupported");
+      expect((yield* history.search(store, request)).matches).toEqual([]);
       yield* fs.writeFileString(filePath, '[{"bad":');
       expect((yield* history.search(store, request).pipe(Effect.flip)).reason).toBe("unsupported");
     }).pipe(Effect.scoped),
