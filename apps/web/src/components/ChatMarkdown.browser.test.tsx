@@ -214,18 +214,19 @@ it("loads the <picture> source for the current theme through the image route", a
     .toHaveAttribute("src", `${pixel}#/work/dark.png`);
 });
 
-it("reuses the parse of a streaming reply's finished blocks when it remounts", async () => {
-  setup();
-  const message = (
-    <ChatMarkdown cwd="/tmp/project" text={"Finished block\n\nStill growing"} isStreaming />
-  );
-  {
-    await using _first = await render(message);
-  }
-  await using screen = await render(message);
-  await expect.element(screen.getByText("Still growing")).toBeVisible();
-  expect(parsedSources.filter((source) => source.includes("Finished block"))).toHaveLength(1);
-});
+it.each(["Finished block\n\nStill growing", "Finished boundary\n\n"])(
+  "reuses finished streaming blocks on remount: %j",
+  async (text) => {
+    setup();
+    const message = <ChatMarkdown cwd="/tmp/project" text={text} isStreaming />;
+    {
+      await using _first = await render(message);
+    }
+    await using screen = await render(message);
+    await expect.element(screen.getByText(text.split("\n")[0]!)).toBeVisible();
+    expect(parsedSources.filter((source) => source.includes(text.split("\n")[0]!))).toHaveLength(1);
+  },
+);
 
 it("reuses the parse of a remounted message that has stable extra plugins", async () => {
   setup();

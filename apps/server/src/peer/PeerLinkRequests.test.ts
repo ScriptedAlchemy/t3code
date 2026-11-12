@@ -675,7 +675,10 @@ it.live("a declined request links nothing and tells the agent", () =>
       const { messages } = yield* outcomeMessages(a);
       expect(messages).toHaveLength(1);
       expect(messages[0]).toMatchObject({
-        notification: { outcome: "cancelled", summary: "Declined to link Box" },
+        notification: {
+          outcome: "cancelled",
+          summary: `Declined to link ${card.label ?? card.url}`,
+        },
       });
       expect(messages[0]!.text).toContain("declined");
     }),
@@ -954,13 +957,15 @@ it.live(
             pairingCode: pairing.credential,
           },
         });
+        const linkedCard = yield* cardOf(a);
+        expect(linkedCard?.failure).toBeUndefined();
+        expect(linkedCard).toMatchObject({
+          linkStatus: "linked",
+          linkedEnvironmentId: box.environmentId,
+        });
         expect(Option.getOrUndefined(yield* a.links.get(box.environmentId))).toMatchObject({
           urls: [b.url],
           access: "auto",
-        });
-        expect(yield* cardOf(a)).toMatchObject({
-          linkStatus: "linked",
-          linkedEnvironmentId: box.environmentId,
         });
         expect((yield* outcomeMessages(a)).messages[0]!.text).toContain("linked Box");
       }),

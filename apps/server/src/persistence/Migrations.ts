@@ -103,6 +103,7 @@ import Migration0092 from "./Migrations/092_ProjectKnowledgeSavedLifecycle.ts";
 import Migration0094 from "./Migrations/094_ConversationSummaryPosition.ts";
 import Migration0095 from "./Migrations/095_RetireInferenceRouteInstances.ts";
 import Migration0096 from "./Migrations/096_ProjectKnowledgeViews.ts";
+import Migration0097 from "./Migrations/097_RepairSerializedModelSelectionOptions.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -202,6 +203,7 @@ const migrationEntries = [
   [94, "ConversationSummaryPosition", Migration0094],
   [95, "RetireInferenceRouteInstances", Migration0095],
   [96, "ProjectKnowledgeViews", Migration0096],
+  [97, "RepairSerializedModelSelectionOptions", Migration0097],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

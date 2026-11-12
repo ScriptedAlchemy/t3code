@@ -1,6 +1,7 @@
 import * as NodePath from "node:path";
 import * as NodeModule from "node:module";
 import * as React from "react";
+import { Platform } from "react-native";
 import { act, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
@@ -11,7 +12,7 @@ const harness = vi.hoisted(() => ({
   getRoute: (): unknown => undefined,
 }));
 
-vi.mock("react-native", () => ({ Platform: { OS: "ios" } }));
+vi.mock("react-native", () => ({ Platform: { OS: process.env.T3_MOBILE_TEST_PLATFORM ?? "ios" } }));
 vi.mock("../layout/AdaptiveWorkspaceLayout", () => ({
   useWorkspacePaneState: () => ({ fileInspector: { supported: true } }),
 }));
@@ -107,7 +108,14 @@ it("opens a subagent from the Agents sheet without replacing the parent thread",
     environmentId: screen.source.environmentId,
     threadId: "child",
   } as const;
-  screen.open(inspector);
+  const originalState = screen.state;
+  const opened = screen.open(inspector);
+  if (Platform.OS === "android") {
+    expect(opened).toBe(false);
+    expect(screen.state).toEqual(originalState);
+    return;
+  }
+  expect(opened).toBe(true);
   expect(screen.state.routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
   expect(screen.state.routes.at(-1)).toMatchObject({
     key: screen.parentKey,
@@ -124,6 +132,15 @@ it("opens a subagent from the Agents sheet without replacing the parent thread",
 it("opens a completion link in the parent inspector", () => {
   using screen = setup(false);
   screen.openLinked("child");
+  if (Platform.OS === "android") {
+    expect(screen.state.routes).toHaveLength(3);
+    expect(screen.state.routes.at(-1)).toMatchObject({
+      name: "Thread",
+      params: { environmentId: screen.source.environmentId, threadId: "child" },
+    });
+    expect(screen.state.routes[1]).toMatchObject({ key: screen.parentKey, params: screen.source });
+    return;
+  }
   expect(screen.state.routes).toHaveLength(2);
   expect(screen.state.routes.at(-1)).toMatchObject({
     key: screen.parentKey,
@@ -138,7 +155,14 @@ it("switches between subagents and devices in the same parent route", () => {
   using screen = setup(false);
   screen.open({ type: "thread", environmentId: screen.source.environmentId, threadId: "child" });
   const inspector = { type: "device", ...screen.source } as const;
-  screen.open(inspector);
+  const originalState = screen.state;
+  const opened = screen.open(inspector);
+  if (Platform.OS === "android") {
+    expect(opened).toBe(false);
+    expect(screen.state).toEqual(originalState);
+    return;
+  }
+  expect(opened).toBe(true);
   expect(screen.state.routes).toHaveLength(2);
   expect(screen.state.routes.at(-1)).toMatchObject({
     key: screen.parentKey,

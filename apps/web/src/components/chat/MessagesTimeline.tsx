@@ -101,7 +101,7 @@ import { type HandoffTimelineRun } from "./V2LifecycleRow";
 import { TimelineSystemDivider } from "./TimelineSystemDivider";
 
 import { forwardWheelToTimeline } from "./timelineMinimapWheel";
-import { TimelineMinimap } from "./TimelineMinimap";
+import { TimelineMinimap, type TimelineMinimapHandle } from "./TimelineMinimap";
 import {
   type TimelineRowSharedState,
   type TimelineRowActivityState,
@@ -803,8 +803,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
           ...(alwaysRenderKeys.length === 0 ? {} : { keys: alwaysRenderKeys }),
         };
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
-  const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(null);
-  const [minimapAtEnd, setMinimapAtEnd] = useState(false);
+  const minimapRef = useRef<TimelineMinimapHandle>(null);
   const handleAnchorReady = (info: { anchorIndex: number | undefined }) => {
     if (anchorMessageId !== null && info.anchorIndex !== undefined) {
       onAnchorReady(anchorMessageId, info.anchorIndex);
@@ -872,14 +871,13 @@ const ConversationTimeline = memo(function ConversationTimeline({
       visibleEnd: visibleRange.end,
       rowIndices: minimapRowIndices,
     });
-    setMinimapCurrentIndex((current) =>
-      current === nextCurrentIndex ? current : nextCurrentIndex,
-    );
-    // The exact bottom, not the follow re-arm zone: Next can still scroll inside that zone.
-    setMinimapAtEnd(
-      viewport !== undefined &&
+    minimapRef.current?.updatePosition({
+      currentIndex: nextCurrentIndex,
+      // The exact bottom, not the follow re-arm zone: Next can still scroll inside that zone.
+      atEnd:
+        viewport !== undefined &&
         viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 1,
-    );
+    });
   });
 
   const minimapRefreshFrameRef = useRef<number | null>(null);
@@ -1366,8 +1364,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
               items={minimapItems}
               hasPersistentGutter={minimapHasPersistentGutter}
               hitStripWidth={minimapHitStripWidth}
-              currentIndex={minimapCurrentIndex}
-              atEnd={minimapAtEnd}
+              ref={minimapRef}
               stripMap={minimapStripMap}
               onWheel={forwardMinimapWheel}
               onSelect={(item) => {

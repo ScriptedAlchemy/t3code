@@ -1803,8 +1803,7 @@ function ChatMarkdown({
                 : CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS
             }
             shared={!uncachedPlugins}
-            // Every block before the last is finished, so its parse can be reused.
-            cache={!props.isStreaming || index < blocks.length - 1}
+            cache={!props.isStreaming || index < blocks.length - 1 || source.endsWith("\n\n")}
           />
         ))}
       </ChatMarkdownRendererContext>

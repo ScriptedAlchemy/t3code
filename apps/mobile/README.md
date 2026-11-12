@@ -93,7 +93,10 @@ T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID=com.example.t3code.dev \
 vp run ios:dev
 ```
 
-Build and install a self-contained Release app that does not need Metro:
+Build and install a self-contained Release app that does not need Metro. Select your device
+when prompted. Signing uses Xcode automatic signing and its Keychain certificate and cached
+provisioning profile. Set `T3CODE_IOS_TEAM_ID` in the root's Git-ignored `.env.local` to select
+your own Apple team; keep the same team and bundle ID when updating an installed app.
 
 ```bash
 vp run ios:release
