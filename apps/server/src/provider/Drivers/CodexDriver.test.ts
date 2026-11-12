@@ -899,7 +899,12 @@ it.layer(layerTest)("CodexDriver", (it) => {
         displayName: "Codex auth watch",
         enabled: true,
         environment: [],
-        config: { ...CodexDriver.defaultConfig(), homePath: codexHome },
+        // An explicit binary skips the PATH lookup, so hosts without Codex installed probe the same way.
+        config: {
+          ...CodexDriver.defaultConfig(),
+          homePath: codexHome,
+          binaryPath: NodePath.join(codexHome, "codex"),
+        },
       }).pipe(
         // OS watchers can miss events written right after they start, so the test supplies them.
         Effect.provideService(FileSystem.FileSystem, {
