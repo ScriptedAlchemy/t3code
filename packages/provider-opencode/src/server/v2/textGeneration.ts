@@ -70,7 +70,7 @@ const runOnServer = Effect.fn("Opencode2TextGeneration.runOnServer")(function* (
           event.executionType === "session.execution.succeeded"
             ? successfulOutcome()
             : {
-                _tag: "failed",
+                _tag: "failed" as const,
                 detail: "OpenCode ended the generation in a way this version cannot read.",
                 cause: event,
               },
@@ -129,12 +129,20 @@ const runOnServer = Effect.fn("Opencode2TextGeneration.runOnServer")(function* (
               decision: "reject",
               message: "Tools are not available while generating text.",
             })
-            .pipe(Effect.ignore({ log: true }));
+            .pipe(
+              Effect.ignore({ log: true }),
+              Effect.andThen(
+                blindEvaluation
+                  ? Deferred.succeed(outcome, {
+                      _tag: "failed",
+                      detail: "OpenCode requested tool permission during blind evaluation.",
+                      cause: event,
+                    })
+                  : Effect.void,
+              ),
+            );
         case "session.execution.succeeded":
-          return Deferred.succeed(outcome, {
-            _tag: "text",
-            text: [...texts.values()].join("\n").trim(),
-          });
+          return Deferred.succeed(outcome, successfulOutcome());
         case "session.execution.failed":
           return Deferred.succeed(outcome, {
             _tag: "failed",
@@ -172,7 +180,9 @@ const runOnServer = Effect.fn("Opencode2TextGeneration.runOnServer")(function* (
         id: Model.ID.make(parsed.modelID),
         ...(variant === undefined ? {} : { variant: Model.VariantID.make(variant) }),
       }),
-      permissions: GENERATION_PERMISSIONS,
+      permissions: blindEvaluation
+        ? [{ action: "*", resource: "*", effect: "deny" as const }]
+        : GENERATION_PERMISSIONS,
     });
     sessionId = session.id;
     yield* Effect.addFinalizer(() =>
@@ -230,28 +240,75 @@ const runOnServer = Effect.fn("Opencode2TextGeneration.runOnServer")(function* (
   return result.text;
 }, Effect.scoped);
 
-export const make = Effect.fn("OpenCode2TextGeneration.make")(function* () {
+export const make = Effect.fn("OpenCode2TextGeneration.make")(function* (
+  options: {
+    readonly binaryPath?: string;
+    readonly environment?: NodeJS.ProcessEnv;
+    readonly directory?: string;
+  } = {},
+) {
+  const binaryPath = options.binaryPath ?? "opencode";
+  const processEnvironment = options.environment ?? process.env;
+  const processDirectory = options.directory ?? process.cwd();
   const server = yield* OpenCode2Server.OpenCode2Server;
+  const openCodeRuntime = yield* OpenCodeRuntime.OpenCodeRuntime;
+  const openCode2Client = yield* OpenCode2Client.OpenCode2Client;
+  const secureRandom = yield* SecureRandom.SecureRandom;
   const host = yield* ProviderHost.ProviderHost;
   const fileSystem = yield* FileSystem.FileSystem;
-  const run: TextGenerationOperations.Runner = (input) =>
-    server
-      .withConnection((connection) => runOnServer(connection, input))
-      .pipe(
-        Effect.provideService(ProviderHost.ProviderHost, host),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.mapError((cause) =>
-          isTextGenerationError(cause)
-            ? cause
-            : new TextGenerationError({
-                operation: input.operation,
-                detail: "OpenCode text generation failed.",
-                cause,
-              }),
-        ),
-        Effect.flatMap((raw) => TextGenerationOperations.decodeJsonReply(input, "OpenCode", raw)),
-      );
+  const runIsolated = Effect.fn("OpenCode2TextGeneration.runIsolated")(function* <
+    S extends Schema.Top,
+  >(input: TextGenerationOperations.Request<S>) {
+    const environment = yield* BlindEvaluation.makeBlindEvaluationEnvironment({
+      operation: input.operation,
+      directory: processDirectory,
+      environment: processEnvironment,
+    });
+    const isolatedServer = yield* OpenCode2Server.make({
+      binaryPath,
+      serverUrl: "",
+      serverPassword: "",
+      directory: input.cwd,
+      environment,
+    });
+    const raw = yield* isolatedServer.withConnection((connection) =>
+      runOnServer(connection, input),
+    );
+    return yield* TextGenerationOperations.decodeJsonReply(input, "OpenCode", raw);
+  }, Effect.scoped);
+  const run: TextGenerationOperations.Runner = (input) => {
+    const blindEvaluation = input.operation === "generateModelEvaluation";
+    const generated = blindEvaluation
+      ? BlindEvaluation.validateBlindEvaluationSelection(
+          input.modelSelection,
+          input.operation,
+        ).pipe(Effect.andThen(runIsolated(input)))
+      : server
+          .withConnection((connection) => runOnServer(connection, input))
+          .pipe(
+            Effect.flatMap((raw) =>
+              TextGenerationOperations.decodeJsonReply(input, "OpenCode", raw),
+            ),
+          );
+    return generated.pipe(
+      Effect.provideService(ProviderHost.ProviderHost, host),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, openCodeRuntime),
+      Effect.provideService(OpenCode2Client.OpenCode2Client, openCode2Client),
+      Effect.provideService(SecureRandom.SecureRandom, secureRandom),
+      Effect.mapError((cause) =>
+        isTextGenerationError(cause)
+          ? cause
+          : new TextGenerationError({
+              operation: input.operation,
+              detail: "OpenCode text generation failed.",
+              cause,
+            }),
+      ),
+    );
+  };
   return TextGenerationOperations.fromRunner("OpenCode2TextGeneration", run, {
     supportsInvestigation: false,
+    supportsBlindEvaluation: true,
   });
 });

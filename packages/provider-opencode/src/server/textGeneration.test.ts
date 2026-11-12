@@ -24,12 +24,14 @@ import type { ProviderTextGenerationRuntime } from "@t3tools/provider-core/serve
 const runtimeMock = {
   state: {
     startCalls: [] as string[],
+    startEnvironments: [] as Array<NodeJS.ProcessEnv | undefined>,
     promptUrls: [] as string[],
     promptParts: [] as ReadonlyArray<unknown>[],
     promptInputs: [] as Array<Parameters<OpencodeClient["session"]["prompt"]>[0]>,
     authHeaders: [] as Array<string | null>,
     closeCalls: [] as string[],
     sessionCreateCalls: 0,
+    sessionCreateInputs: [] as Array<Parameters<OpencodeClient["session"]["create"]>[0]>,
     sessionCalls: [] as string[],
     onSessionCreate: undefined as ((signal?: AbortSignal) => Promise<never>) | undefined,
     onPrompt: undefined as
@@ -41,17 +43,30 @@ const runtimeMock = {
     sessionResult: undefined as { data?: { id: string } } | undefined,
     promptRequestError: undefined as unknown,
     promptResult: undefined as
-      | { data?: { info?: { error?: unknown }; parts?: Array<unknown> } }
+      | {
+          data?: {
+            info?: {
+              error?: unknown;
+              providerID?: string;
+              modelID?: string;
+              variant?: string;
+              agent?: string;
+            };
+            parts?: Array<unknown>;
+          };
+        }
       | undefined,
   },
   reset() {
     this.state.startCalls.length = 0;
+    this.state.startEnvironments.length = 0;
     this.state.promptUrls.length = 0;
     this.state.promptParts.length = 0;
     this.state.promptInputs.length = 0;
     this.state.authHeaders.length = 0;
     this.state.closeCalls.length = 0;
     this.state.sessionCreateCalls = 0;
+    this.state.sessionCreateInputs.length = 0;
     this.state.sessionCalls.length = 0;
     this.state.onSessionCreate = undefined;
     this.state.onPrompt = undefined;
@@ -70,6 +85,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
       const index = runtimeMock.state.startCalls.length + 1;
       const url = `http://127.0.0.1:${4_300 + index}`;
       runtimeMock.state.startCalls.push(binaryPath);
+      runtimeMock.state.startEnvironments.push(environment);
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           runtimeMock.state.closeCalls.push(url);
@@ -112,13 +128,22 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
       provider: {
         list: async () => ({
           data: {
-            all: [{ id: "openai", models: { "gpt-5": { id: "gpt-5" } } }],
+            all: [
+              {
+                id: "openai",
+                models: { "gpt-5": { id: "gpt-5", variants: { high: {} } } },
+              },
+            ],
           },
         }),
       },
       session: {
-        create: async (_input: unknown, options?: { readonly signal?: AbortSignal }) => {
+        create: async (
+          input: Parameters<OpencodeClient["session"]["create"]>[0],
+          options?: { readonly signal?: AbortSignal },
+        ) => {
           runtimeMock.state.sessionCreateCalls += 1;
+          runtimeMock.state.sessionCreateInputs.push(input);
           if (runtimeMock.state.onSessionCreate) {
             return runtimeMock.state.onSessionCreate(options?.signal);
           }
@@ -195,6 +220,30 @@ const DEFAULT_COMMIT_MESSAGE_INPUT = {
   stagedPatch: "diff --git a/README.md b/README.md",
   modelSelection: DEFAULT_TEST_MODEL_SELECTION,
 };
+const DEFAULT_EVALUATION_INPUT = {
+  cwd: "/isolated-evaluator",
+  modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+  packet: {
+    scope: "turn" as const,
+    runOutcome: "completed" as const,
+    request: { ref: "U1" as const, text: "Fix the issue." },
+    context: [],
+    evidence: [{ ref: "E1", kind: "assistant" as const, text: "Fixed." }],
+    truncated: false,
+    omittedItems: 0,
+    missingArtifacts: false,
+  },
+};
+const VALID_EVALUATION = {
+  outcome: "scored",
+  taskCategory: "coding",
+  scores: { taskCompletion: 4, correctness: 4, instructionFollowing: 4, verification: 4 },
+  confidence: "high",
+  rationale: { text: "The requested fix is complete.", citations: ["U1", "E1"] },
+  strengths: [],
+  weaknesses: [],
+  promptAdvice: [],
+};
 
 const OPENCODE_TEXT_GENERATION_IDLE_TTL_MS = 30_000;
 
@@ -243,9 +292,10 @@ function withOpenCodeTextGeneration<A, E, R>(
         : {}),
       ...(environment ? { environment } : {}),
     });
-    const textGeneration = yield* OpenCodeTextGeneration.makeOpenCodeTextGeneration(settings).pipe(
-      Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
-    );
+    const textGeneration = yield* OpenCodeTextGeneration.makeOpenCodeTextGeneration(
+      settings,
+      environment ? { environment } : {},
+    ).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }
@@ -420,32 +470,112 @@ it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
     ),
   );
 
-  it.effect(
-    "rejects blind evaluation before opening a server session with inherited configuration",
-    () =>
-      withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
+  it.effect("isolates blind evaluation from shared servers, tools, and custom instructions", () =>
+    withOpenCodeTextGeneration(
+      EXISTING_SERVER_OPENCODE_SETTINGS,
+      (textGeneration) =>
         Effect.gen(function* () {
-          const error = yield* textGeneration
-            .generateModelEvaluation({
-              cwd: "/isolated-evaluator",
-              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
-              packet: {
-                scope: "turn",
-                runOutcome: "completed",
-                request: { ref: "U1", text: "Fix the issue." },
-                context: [],
-                evidence: [{ ref: "E1", kind: "assistant", text: "Fixed." }],
-                truncated: false,
-                omittedItems: 0,
-                missingArtifacts: false,
-              },
-            })
-            .pipe(Effect.flip);
-          expect(error.detail).toContain("cannot isolate");
-          expect(textGeneration.supportedOperations).not.toContain("generateModelEvaluation");
-          expect(runtimeMock.state.sessionCreateCalls).toBe(0);
+          runtimeMock.state.promptResult = {
+            data: {
+              info: { providerID: "openai", modelID: "gpt-5", variant: "high" },
+              parts: [{ type: "text", text: JSON.stringify(VALID_EVALUATION) }],
+            },
+          };
+
+          const verdict = yield* textGeneration.generateModelEvaluation({
+            ...DEFAULT_EVALUATION_INPUT,
+            modelSelection: {
+              ...DEFAULT_TEST_MODEL_SELECTION,
+              options: [{ id: "variant", value: "high" }],
+            },
+          });
+
+          expect(verdict).toEqual(VALID_EVALUATION);
+          expect(textGeneration.supportedOperations).toContain("generateModelEvaluation");
+          expect(runtimeMock.state.promptUrls).toEqual(["http://127.0.0.1:4301"]);
+          expect(runtimeMock.state.promptInputs[0]).toMatchObject({
+            model: { providerID: "openai", modelID: "gpt-5" },
+            variant: "high",
+          });
+          expect(runtimeMock.state.sessionCreateInputs[0]?.permission).toEqual([
+            { permission: "*", pattern: "*", action: "deny" },
+          ]);
+          const environment = runtimeMock.state.startEnvironments[0];
+          expect(environment?.XDG_CONFIG_HOME).not.toBe("/user-config");
+          expect(environment?.OPENCODE_CONFIG).toBeUndefined();
+          expect(environment?.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("1");
+          expect(environment?.OPENCODE_DISABLE_CLAUDE_CODE).toBe("1");
+          expect(JSON.parse(environment?.OPENCODE_CONFIG_CONTENT ?? "null")).toEqual({
+            provider: { custom: { options: { baseURL: "http://model.internal" } } },
+            enabled_providers: ["custom"],
+          });
+          expect(runtimeMock.state.closeCalls).toEqual(["http://127.0.0.1:4301"]);
         }),
-      ),
+      {
+        XDG_CONFIG_HOME: "/user-config",
+        OPENCODE_CONFIG: "/user-config/opencode.json",
+        OPENCODE_CONFIG_CONTENT: `{
+          // Routing survives, but customization does not.
+          "provider": { "custom": { "options": { "baseURL": "http://model.internal" } } },
+          "enabled_providers": ["custom"],
+          "instructions": ["/secret/instructions.md"],
+          "plugin": ["secret-plugin"],
+          "mcp": { "private": { "type": "remote", "url": "http://private" } }
+        }`,
+      },
+    ),
+  );
+
+  it.effect("fails blind evaluation instead of dropping an unavailable or invalid variant", () =>
+    withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
+      Effect.gen(function* () {
+        const error = yield* textGeneration
+          .generateModelEvaluation({
+            ...DEFAULT_EVALUATION_INPUT,
+            modelSelection: {
+              ...DEFAULT_TEST_MODEL_SELECTION,
+              options: [{ id: "variant", value: "stale" }],
+            },
+          })
+          .pipe(Effect.flip);
+        const invalidOption = yield* textGeneration
+          .generateModelEvaluation({
+            ...DEFAULT_EVALUATION_INPUT,
+            modelSelection: {
+              ...DEFAULT_TEST_MODEL_SELECTION,
+              options: [{ id: "variant", value: true }],
+            },
+          })
+          .pipe(Effect.flip);
+
+        expect(error.detail).toContain("variant");
+        expect(invalidOption.detail).toContain("variant");
+        expect(runtimeMock.state.promptUrls).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("fails blind evaluation when OpenCode returns tool activity", () =>
+    withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
+      Effect.gen(function* () {
+        runtimeMock.state.promptResult = {
+          data: {
+            info: { providerID: "openai", modelID: "gpt-5" },
+            parts: [
+              { type: "tool", tool: "read", state: { status: "completed" } },
+              { type: "text", text: JSON.stringify(VALID_EVALUATION) },
+            ],
+          },
+        };
+
+        const error = yield* textGeneration
+          .generateModelEvaluation(DEFAULT_EVALUATION_INPUT)
+          .pipe(Effect.flip);
+
+        expect(error.detail).toContain("tool activity");
+        expect(runtimeMock.state.sessionCalls).toEqual(["delete http://127.0.0.1:4301/session"]);
+      }),
+    ),
   );
 
   it.effect("gives up and aborts the session when a prompt never settles", () =>

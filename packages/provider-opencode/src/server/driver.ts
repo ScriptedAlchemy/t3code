@@ -258,6 +258,7 @@ export type OpenCodeDriverEnv =
   | HttpClient.HttpClient
   | ProviderLatestVersions.ProviderLatestVersions
   | OpenCodeRuntime.OpenCodeRuntime
+  | OpenCode2Client.OpenCode2Client
   | Path.Path;
 
 export const OpenCodeDriver: ProviderDriver<
@@ -464,12 +465,15 @@ export const OpenCodeDriver: ProviderDriver<
     });
     const textGeneration = selectOpenCodeRuntimeTextGeneration(
       resolveRuntime,
-      yield* makeOpenCodeTextGeneration(effectiveConfig).pipe(
-        Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
-      ),
-      yield* OpenCode2TextGeneration.make().pipe(
-        Effect.provideService(OpenCode2Server.OpenCode2Server, openCode2Server),
-      ),
+      yield* makeOpenCodeTextGeneration(effectiveConfig, {
+        environment: processEnv,
+        directory: host.paths.cwd,
+      }).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner)),
+      yield* OpenCode2TextGeneration.make({
+        binaryPath: effectiveConfig.binaryPath,
+        environment: processEnv,
+        directory: host.paths.cwd,
+      }).pipe(Effect.provideService(OpenCode2Server.OpenCode2Server, openCode2Server)),
     );
 
     const checkUsageLimits = readOpenCodeGoUsageLimits({

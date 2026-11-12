@@ -39,6 +39,7 @@ import * as ProviderMaintenance from "@t3tools/provider-core/server/maintenanceR
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import { OpenCodeDriver, isLocalOpenCodeServerUrl, openCodeUpdateFor } from "./driver.ts";
 import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
+import * as OpenCode2Client from "./v2/OpenCode2Client.ts";
 import {
   OPENCODE_2_RESPONSES,
   OPENCODE_2_WORKSPACE_RESPONSES,
@@ -86,6 +87,7 @@ const layer = Layer.mergeAll(
     ProviderEventLoggers.NoOpProviderEventLoggers,
   ),
   Layer.succeed(OpenCodeRuntime.OpenCodeRuntime, openCode2Runtime),
+  OpenCode2Client.layer.pipe(Layer.provide(FetchHttpClient.layer)),
 ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 const create = (config: Partial<OpenCodeSettings>, http: HttpClient.HttpClient, enabled = true) =>
@@ -243,6 +245,7 @@ it.live("discovers models through a home-relative OpenCode wrapper", () =>
           ProviderEventLoggers.NoOpProviderEventLoggers,
         ),
         OpenCodeRuntime.layer.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
+        OpenCode2Client.layer,
       ).pipe(
         Layer.provideMerge(
           Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, FetchHttpClient.layer),
@@ -1011,6 +1014,7 @@ const layerUpdate = Layer.mergeAll(
     ProviderEventLoggers.NoOpProviderEventLoggers,
   ),
   Layer.succeed(OpenCodeRuntime.OpenCodeRuntime, changingRuntime),
+  OpenCode2Client.layer.pipe(Layer.provide(FetchHttpClient.layer)),
 ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 const openCode1Provider = (id: string, models: ReadonlyArray<string>) => ({
