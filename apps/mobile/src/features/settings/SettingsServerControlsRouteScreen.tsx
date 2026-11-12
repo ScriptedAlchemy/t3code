@@ -532,7 +532,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                           key={target.environmentId}
                           icon="magnifyingglass"
                           label={target.label}
-                          value="Search Codex and ChatGPT exports"
+                          value="Find and search local agent conversations"
                           onPress={() =>
                             navigation.navigate("SettingsExternalHistory", {
                               environmentId: target.environmentId,

@@ -1,15 +1,20 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { externalHistoryRangeLabel } from "@t3tools/client-runtime/externalHistory";
+import {
+  externalHistoryRangeLabel,
+  externalHistorySearchFilters,
+  externalHistorySourceStatusLabel,
+} from "@t3tools/client-runtime/externalHistory";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentId,
   type ExternalHistoryMatch,
   type ExternalHistoryRequest,
   type ExternalHistorySettings,
+  type ExternalHistorySource,
   type ProjectId,
 } from "@t3tools/contracts";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ScrollView, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -70,8 +75,8 @@ export function ExternalHistoryRouteScreen(
             contentContainerStyle={{ padding: 20, paddingBottom: 40, gap: 16 }}
           >
             <Text className="text-sm text-foreground-muted">
-              Search Codex conversations and configured ChatGPT exports on this environment. Open
-              the original evidence behind each match.
+              Search agent conversations found on this environment. Open the original evidence
+              behind each match.
             </Text>
             <HistorySettings
               key={
@@ -80,20 +85,23 @@ export function ExternalHistoryRouteScreen(
               }
               environmentId={environmentId}
               settings={config.settings.externalHistory}
-            />
-            {config.settings.externalHistory.enabled ? (
-              <HistorySources
-                key={"sources:" + JSON.stringify([environmentId, config.settings.externalHistory])}
-                environmentId={environmentId}
-                {...(props.route.params.currentProjectPath
-                  ? { currentProjectPath: props.route.params.currentProjectPath }
-                  : {})}
-              />
-            ) : (
-              <Text className="text-sm text-foreground-muted">
-                External history search is off for this environment.
-              </Text>
-            )}
+            >
+              {config.settings.externalHistory.enabled ? (
+                <HistorySources
+                  key={
+                    "sources:" + JSON.stringify([environmentId, config.settings.externalHistory])
+                  }
+                  environmentId={environmentId}
+                  {...(props.route.params.currentProjectPath
+                    ? { currentProjectPath: props.route.params.currentProjectPath }
+                    : {})}
+                />
+              ) : (
+                <Text className="text-sm text-foreground-muted">
+                  External history search is off for this environment.
+                </Text>
+              )}
+            </HistorySettings>
           </ScrollView>
         ) : !supported ? (
           <Text className="p-5 text-sm text-foreground-muted">
@@ -108,11 +116,13 @@ export function ExternalHistoryRouteScreen(
 function HistorySettings(props: {
   readonly environmentId: EnvironmentId;
   readonly settings: ExternalHistorySettings;
+  readonly children: ReactNode;
 }) {
   const canWrite = useAtomValue(
     serverEnvironment.updateSettings.permissionAtom(props.environmentId),
   );
   const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
+  const [exportsOpen, setExportsOpen] = useState(false);
   const [paths, setPaths] = useState(props.settings.chatGptExportPaths.join("\n"));
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -128,60 +138,74 @@ function HistorySettings(props: {
     if (result._tag === "Failure") setError(String(squashAtomCommandFailure(result)));
   };
   return (
-    <View className="gap-3 rounded-xl border border-border p-3">
-      <SettingsSwitchRow
-        label="Allow external history search"
-        value={props.settings.enabled}
-        disabled={pending || !canWrite}
-        onValueChange={(enabled) => void save({ ...props.settings, enabled })}
-      />
-      <Text className="text-xs text-foreground-muted">
-        Makes these sources available to this environment's connected clients and agents with thread
-        access. Source files stay in their existing locations.
-      </Text>
-      <Text className="text-sm text-foreground">ChatGPT export paths</Text>
-      <AppTextInput
-        accessibilityLabel="ChatGPT export paths"
-        placeholder="One export file path per line"
-        multiline
-        textAlignVertical="top"
-        numberOfLines={3}
-        value={paths}
-        editable={!pending && canWrite}
-        autoCapitalize="none"
-        autoCorrect={false}
-        onChangeText={setPaths}
-      />
-      <Text className="text-xs text-foreground-muted">
-        Paths refer to files on the T3 server. Remove a path to stop offering that export.
-      </Text>
-      <Button
-        label="Save export paths"
-        tone="text"
-        disabled={pending || !canWrite || paths === props.settings.chatGptExportPaths.join("\n")}
-        onPress={() =>
-          void save({
-            ...props.settings,
-            chatGptExportPaths: [
-              ...new Set(
-                paths
-                  .split("\n")
-                  .map((path) => path.trim())
-                  .filter(Boolean),
-              ),
-            ],
-          })
-        }
-      />
-      {!canWrite ? (
+    <View className="gap-4">
+      <View className="gap-3 rounded-xl border border-border p-3">
+        <SettingsSwitchRow
+          label="Allow external history search"
+          value={props.settings.enabled}
+          disabled={pending || !canWrite}
+          onValueChange={(enabled) => void save({ ...props.settings, enabled })}
+        />
         <Text className="text-xs text-foreground-muted">
-          This connection cannot change environment settings.
+          Makes these sources available to this environment's connected clients and agents with
+          thread access. Source files stay in their existing locations.
         </Text>
-      ) : null}
-      {error ? (
-        <Text accessibilityRole="alert" className="text-danger">
-          {error}
-        </Text>
+        {!canWrite ? (
+          <Text className="text-xs text-foreground-muted">
+            This connection cannot change environment settings.
+          </Text>
+        ) : null}
+        {error ? (
+          <Text accessibilityRole="alert" className="text-danger">
+            {error}
+          </Text>
+        ) : null}
+      </View>
+      {props.children}
+      <Button
+        label="Add a ChatGPT export"
+        tone="text"
+        onPress={() => setExportsOpen((open) => !open)}
+      />
+      {exportsOpen ? (
+        <View className="gap-3 rounded-xl border border-border p-3">
+          <Text className="text-sm text-foreground">ChatGPT export paths</Text>
+          <AppTextInput
+            accessibilityLabel="ChatGPT export paths"
+            placeholder="One export file path per line"
+            multiline
+            textAlignVertical="top"
+            numberOfLines={3}
+            value={paths}
+            editable={!pending && canWrite}
+            autoCapitalize="none"
+            autoCorrect={false}
+            onChangeText={setPaths}
+          />
+          <Text className="text-xs text-foreground-muted">
+            Paths refer to files on the T3 server. Remove a path to stop offering that export.
+          </Text>
+          <Button
+            label="Save export paths"
+            tone="text"
+            disabled={
+              pending || !canWrite || paths === props.settings.chatGptExportPaths.join("\n")
+            }
+            onPress={() =>
+              void save({
+                ...props.settings,
+                chatGptExportPaths: [
+                  ...new Set(
+                    paths
+                      .split("\n")
+                      .map((path) => path.trim())
+                      .filter(Boolean),
+                  ),
+                ],
+              })
+            }
+          />
+        </View>
       ) : null}
     </View>
   );
@@ -189,7 +213,10 @@ function HistorySettings(props: {
 
 function HistorySources(props: Scope) {
   const query = useEnvironmentQuery(
-    externalHistory.query({ environmentId: props.environmentId, input: { operation: "sources" } }),
+    externalHistory.query({
+      environmentId: props.environmentId,
+      input: { operation: "sources", catalogVersion: 2 },
+    }),
   );
   const [selected, setSelected] = useState<string | null>(null);
   if (query.error)
@@ -207,13 +234,39 @@ function HistorySources(props: Scope) {
       </Text>
     );
   const sources = query.data.sources;
-  const source = sources.find((item) => item.id === selected) ?? sources[0];
-  if (!source)
-    return (
+  const source =
+    sources.find((item) => item.id === selected && item.status === "ready") ??
+    sources.find((item) => item.status === "ready");
+  return (
+    <View className="gap-4">
       <View className="gap-2">
-        <Text className="text-foreground-muted">
-          No sources are configured. Enable a Codex provider or add a ChatGPT export path.
-        </Text>
+        <Text className="text-sm text-foreground-muted">Found on this environment</Text>
+        {sources.length === 0 ? (
+          <Text className="text-foreground-muted">
+            No local history found. Refresh after adding conversations on this server.
+          </Text>
+        ) : null}
+        {sources.map((item, index) => (
+          <View key={item.id}>
+            <SelectionRow
+              title={item.label}
+              selected={source?.id === item.id}
+              isFirst={index === 0}
+              isLast={index === sources.length - 1}
+              disabled={item.status !== "ready"}
+              onPress={() => setSelected(item.id)}
+            />
+            <Text className="text-xs text-foreground-muted">
+              {externalHistorySourceStatusLabel(item.status)}
+              {item.message ? ` · ${item.message}` : ""}
+            </Text>
+          </View>
+        ))}
+        {query.data.unsupported.map((item) => (
+          <Text key={item.provider} className="text-xs text-foreground-muted">
+            {item.label} · {item.reason}
+          </Text>
+        ))}
         <Button
           label="Refresh sources"
           tone="text"
@@ -221,33 +274,24 @@ function HistorySources(props: Scope) {
           onPress={query.refresh}
         />
       </View>
-    );
-  return (
-    <View className="gap-4">
-      <View>
-        <Text className="mb-2 text-sm text-foreground-muted">History source</Text>
-        {sources.map((item, index) => (
-          <SelectionRow
-            key={item.id}
-            title={item.label}
-            selected={source.id === item.id}
-            isFirst={index === 0}
-            isLast={index === sources.length - 1}
-            onPress={() => setSelected(item.id)}
-          />
-        ))}
-      </View>
-      <HistorySearch
-        key={source.id}
-        {...props}
-        sourceId={source.id}
-        codex={source.kind === "codex"}
-      />
+      {source ? (
+        <HistorySearch
+          key={JSON.stringify([source.id, source.capabilities])}
+          {...props}
+          sourceId={source.id}
+          capabilities={source.capabilities}
+        />
+      ) : null}
     </View>
   );
 }
 
-function HistorySearch(props: Scope & { readonly sourceId: string; readonly codex: boolean }) {
+function HistorySearch(
+  props: Scope & {
+    readonly sourceId: string;
+    readonly capabilities: ExternalHistorySource["capabilities"];
+  },
+) {
   const [text, setText] = useState("");
   const [filterCwd, setFilterCwd] = useState("");
   const [includeArchived, setIncludeArchived] = useState(false);
@@ -260,9 +304,7 @@ function HistorySearch(props: Scope & { readonly sourceId: string; readonly code
       operation: "search",
       sourceId: props.sourceId,
       query: text.trim(),
-      ...(props.codex
-        ? { includeArchived, ...(filterCwd.trim() ? { filterCwd: filterCwd.trim() } : {}) }
-        : {}),
+      ...externalHistorySearchFilters(props.capabilities, { filterCwd, includeArchived }),
     });
   };
   return (
@@ -276,13 +318,16 @@ function HistorySearch(props: Scope & { readonly sourceId: string; readonly code
         returnKeyType="search"
         onSubmitEditing={submit}
       />
-      {props.codex ? (
+      {props.capabilities.cwdFilter ? (
         <>
           <AppTextInput
             accessibilityLabel="History directory filter"
             placeholder="All project directories"
             value={filterCwd}
-            onChangeText={setFilterCwd}
+            onChangeText={(value) => {
+              setFilterCwd(value);
+              setSearch(null);
+            }}
             maxLength={4096}
             autoCapitalize="none"
             autoCorrect={false}
@@ -292,17 +337,32 @@ function HistorySearch(props: Scope & { readonly sourceId: string; readonly code
               <Button
                 label="This project"
                 tone="text"
-                onPress={() => setFilterCwd(props.currentProjectPath!)}
+                onPress={() => {
+                  setFilterCwd(props.currentProjectPath!);
+                  setSearch(null);
+                }}
               />
-              <Button label="All projects" tone="text" onPress={() => setFilterCwd("")} />
+              <Button
+                label="All projects"
+                tone="text"
+                onPress={() => {
+                  setFilterCwd("");
+                  setSearch(null);
+                }}
+              />
             </View>
           ) : null}
-          <SettingsSwitchRow
-            label="Include archived Codex threads"
-            value={includeArchived}
-            onValueChange={setIncludeArchived}
-          />
         </>
+      ) : null}
+      {props.capabilities.archived ? (
+        <SettingsSwitchRow
+          label="Include archived threads"
+          value={includeArchived}
+          onValueChange={(value) => {
+            setIncludeArchived(value);
+            setSearch(null);
+          }}
+        />
       ) : null}
       <Button label="Search" onPress={submit} disabled={!text.trim()} />
       {search ? (

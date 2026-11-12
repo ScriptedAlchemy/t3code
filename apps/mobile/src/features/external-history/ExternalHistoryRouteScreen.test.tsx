@@ -117,7 +117,16 @@ vi.mock("../../state/query", () => ({
         ? {
             operation: "sources",
             enabled: true,
-            sources: [{ id: "codex-history", label: "Native Codex", kind: "codex" }],
+            sources: [
+              {
+                id: "codex-history",
+                label: "Native Codex",
+                kind: "codex",
+                capabilities: { cwdFilter: true, archived: true },
+                status: "ready",
+              },
+            ],
+            unsupported: [],
           }
         : request.operation === "search"
           ? {
@@ -200,6 +209,8 @@ it("keeps remote history read-only without settings permission and stops reads w
     expect(container.textContent).toContain("Update this server");
     act(() => registry.set(config, configFor(true)));
     expect(button("Allow external history search").disabled).toBe(true);
+    expect(container.querySelector('[aria-label="ChatGPT export paths"]')).toBeNull();
+    await click("Add a ChatGPT export");
     expect(
       container.querySelector<HTMLInputElement>('[aria-label="ChatGPT export paths"]')?.disabled,
     ).toBe(true);

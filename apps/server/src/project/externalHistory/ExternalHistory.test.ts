@@ -141,7 +141,6 @@ const makeFixture = Effect.fn("ExternalHistory.test.fixture")(function* () {
       ExternalHistory.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
-            Layer.succeed(FileSystem.FileSystem, countingFs),
             Layer.succeed(HostProcess.HomeDirectory, home),
             Layer.succeed(HostProcess.Environment, { HOME: home }),
             ServerConfig.layerTest("/operational-project", { prefix: "t3-external-config-" }),
@@ -158,7 +157,7 @@ const makeFixture = Effect.fn("ExternalHistory.test.fixture")(function* () {
                 return state.instances;
               }),
             }),
-          ),
+          ).pipe(Layer.provideMerge(Layer.succeed(FileSystem.FileSystem, countingFs))),
         ),
       ),
     ),
@@ -378,6 +377,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
       state.instances = [{ ...instance, enabled: false }];
       const disabledInstance = yield* service.query({ operation: "sources" });
       expect(disabledInstance.operation === "sources" && disabledInstance.sources.length).toBe(1);
+      if (disabledInstance.operation !== "sources") return yield* Effect.die("wrong response");
+      expect(disabledInstance.sources[0]?.status).toBe("unavailable");
+      state.instances.push(instance);
+      const sharedEnabled = yield* service.query({ operation: "sources" });
+      expect(sharedEnabled.operation === "sources" && sharedEnabled.sources[0]?.status).toBe(
+        "ready",
+      );
     }),
   );
 

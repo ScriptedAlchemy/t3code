@@ -4,6 +4,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ExternalHistoryError,
+  ProviderDriverKind,
   type ExternalHistoryRequest,
   type ExternalHistoryResponse,
 } from "@t3tools/contracts";
@@ -82,7 +83,30 @@ it("continues an empty bounded search, opens exact source pages, and hides revok
   state.sources = success({
     operation: "sources",
     enabled: true,
-    sources: [{ id: ref.sourceId, label: "Local Codex history", kind: "codex" }],
+    sources: [
+      {
+        id: ref.sourceId,
+        label: "Local Codex history",
+        kind: "codex",
+        capabilities: { cwdFilter: true, archived: true },
+        status: "ready",
+      },
+      {
+        id: "claude",
+        label: "Claude Code history",
+        kind: "local_transcript",
+        provider: ProviderDriverKind.make("claudeAgent"),
+        capabilities: { cwdFilter: true, archived: false },
+        status: "ready",
+      },
+    ],
+    unsupported: [
+      {
+        provider: ProviderDriverKind.make("grok"),
+        label: "Grok",
+        reason: "No verified history reader.",
+      },
+    ],
   });
   state.first = success({
     operation: "search",
@@ -138,12 +162,16 @@ it("continues an empty bounded search, opens exact source pages, and hides revok
     </RegistryContext.Provider>,
   );
   await page.getByRole("button", { name: "External history", exact: true }).click();
+  expect(state.requests).toContainEqual({ operation: "sources", catalogVersion: 2 });
+  await expect.element(page.getByText("Grok · No verified history reader.")).toBeVisible();
+  await expect.element(page.getByLabelText("ChatGPT export paths")).not.toBeVisible();
+  await page.getByText("Add a ChatGPT export", { exact: true }).click();
   await expect
     .element(page.getByRole("textbox", { name: "ChatGPT export paths" }))
     .toHaveValue("/exports/conversations.json");
   await page.getByRole("textbox", { name: "Search external history" }).fill("source");
   await page.getByRole("button", { name: "This project", exact: true }).click();
-  await page.getByRole("switch", { name: "Include archived Codex threads" }).click();
+  await page.getByRole("switch", { name: "Include archived threads" }).click();
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect
     .element(page.getByText("No matches on this page. Continue to search the next page."))
@@ -192,6 +220,13 @@ it("continues an empty bounded search, opens exact source pages, and hides revok
     .element(page.getByRole("switch", { name: "Allow external history search" }))
     .toBeDisabled();
   await expect.element(page.getByRole("textbox", { name: "ChatGPT export paths" })).toBeDisabled();
+  await page.getByRole("button", { name: "Claude Code history", exact: true }).click();
+  await expect
+    .element(page.getByRole("textbox", { name: "History directory filter" }))
+    .toBeVisible();
+  await expect
+    .element(page.getByRole("switch", { name: "Include archived threads" }))
+    .not.toBeInTheDocument();
   registry.set(config, configFor(false));
   await expect
     .element(page.getByText("External history search is off for this environment."))

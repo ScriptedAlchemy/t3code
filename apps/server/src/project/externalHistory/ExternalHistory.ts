@@ -165,25 +165,29 @@ const make = Effect.gen(function* () {
       if (supportTable[instance.driverKind]?.kind !== "native" || !instance.nativeHistory) continue;
       const id = `codex:${yield* digest(encodeIdentity(instance.continuationIdentity))}`;
       const existing = result.get(id);
+      if (!instance.enabled && existing) continue;
       if (existing?._tag === "native" && existing.readers < 3) {
         result.set(id, {
           ...existing,
           native: alternateNativeReader(existing.native, instance.nativeHistory),
           readers: existing.readers + 1,
         });
-      } else if (existing === undefined)
+      } else if (existing === undefined || existing._tag === "unavailable")
         result.set(id, {
-          _tag: "native",
+          ...(instance.enabled
+            ? { _tag: "native" as const, native: instance.nativeHistory, readers: 1 }
+            : { _tag: "unavailable" as const }),
           info: {
             id,
             label: instance.displayName ?? "Codex",
             kind: "codex",
             provider: ProviderDriverKind.make("codex"),
             capabilities: { cwdFilter: true, archived: true },
-            status: "ready",
+            status: instance.enabled ? "ready" : "unavailable",
+            ...(!instance.enabled
+              ? { message: "Enable this Codex provider to read its history." }
+              : {}),
           },
-          native: instance.nativeHistory,
-          readers: 1,
         });
     }
     const nextFingerprint = encodeFingerprint([value.externalHistory, value.providerInstances]);
