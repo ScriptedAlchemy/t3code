@@ -1,6 +1,5 @@
 import { groupParticipants, isGroupActive } from "@t3tools/client-runtime/state/thread-group";
 import { orchestrationEnvironment } from "../../state/orchestration";
-import { ThreadSplitSuggestion } from "./ThreadSplitSuggestion";
 import { ProjectKnowledgeEntry } from "../../components/ProjectKnowledgeEntry";
 import { useSidebarWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
 import { Button } from "../../components/ui/Button";
@@ -460,11 +459,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const composerOwnerKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
   const composerDraftKey = props.draftKey ?? composerOwnerKey;
-  const {
-    text: draftMessage,
-    attachments: draftAttachments,
-    context: draftContext,
-  } = useComposerDraft(composerDraftKey);
+  const { text: draftMessage, attachments: draftAttachments } = useComposerDraft(composerDraftKey);
   const queuedEdit = props.queuedEdit ?? null;
   const hasContent =
     draftMessage.trim().length > 0 ||
@@ -930,28 +925,6 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
             disabled={isSubmissionLocked}
           />
         ) : null}
-
-        <ThreadSplitSuggestion
-          key={composerOwnerKey}
-          environmentId={props.environmentId}
-          threadId={props.selectedThread.id}
-          projectId={props.selectedThread.projectId}
-          draftKey={composerDraftKey}
-          message={draftMessage}
-          enabled={
-            props.serverConfig?.settings.threadSplitSuggestionsEnabled === true &&
-            Boolean(props.serverConfig.settings.threadSplitModelEndpoint) &&
-            !props.isDraft &&
-            !props.hidden &&
-            !props.activeThreadBusy &&
-            props.canOperateThread &&
-            props.connectionState === "connected" &&
-            props.queueCount === 0 &&
-            queuedEdit === null &&
-            draftAttachments.length === 0 &&
-            !draftContext
-          }
-        />
 
         <ComposerSurface
           animateLayout={false}
