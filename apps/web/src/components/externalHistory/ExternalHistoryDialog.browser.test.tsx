@@ -174,10 +174,6 @@ it("continues an empty bounded search, opens exact source pages, and hides revok
   await page.getByRole("switch", { name: "Include archived threads" }).click();
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect
-    .element(page.getByText("No matches on this page. Continue to search the next page."))
-    .toBeVisible();
-  await page.getByRole("button", { name: "Continue search", exact: true }).click();
-  await expect
     .element(page.getByText("Native compiler investigation", { exact: true }))
     .toBeVisible();
   expect(state.requests).toContainEqual({
@@ -212,7 +208,7 @@ it("continues an empty bounded search, opens exact source pages, and hides revok
     .not.toBeInTheDocument();
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect
-    .element(page.getByText("No matches on this page. Continue to search the next page."))
+    .element(page.getByText("Native compiler investigation", { exact: true }))
     .toBeVisible();
   await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
   registry.set(allowed, false);

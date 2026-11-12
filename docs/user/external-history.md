@@ -22,7 +22,7 @@ Replace an export to include newer conversations, then search again. Remove its 
 
 ## Search and verify evidence
 
-Search matches literal text without regard to case across complete visible messages and tool evidence. It can find old messages and messages earlier in long conversations. Each request examines a bounded page. A page with no matches can still have a continuation; use **Continue search** until the search ends. The examined count describes that page, not the entire archive.
+Search matches literal text without regard to case across complete visible messages and tool evidence. It can find old messages and messages earlier in long conversations. Search automatically skips pages without matches and shows the total number of items examined during the search. You can stop and resume scanning. Use **Continue search** to look for more matches.
 
 Open a match to read its original visible evidence in pages. A digest binds the result to the complete evidence. Changed or missing sources require a new search. Appending to a local transcript can invalidate an earlier result. Pages preserve Unicode boundaries. Oversized evidence produces an explicit capacity error. Very large ChatGPT exports can take longer because loading a later conversation reads the file prefix again.
 

@@ -48,3 +48,8 @@ export function externalHistorySourceStatusLabel(status: ExternalHistorySource["
     unsupported_format: "Unsupported history format",
   }[status];
 }
+
+export {
+  externalHistoryPagingReducer,
+  initialExternalHistoryPaging,
+} from "./searchPaging.logic.ts";

@@ -1,5 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  externalHistoryPagingReducer,
+  initialExternalHistoryPaging,
   externalHistoryRangeLabel,
   externalHistorySearchFilters,
   externalHistorySourceStatusLabel,
@@ -12,7 +14,7 @@ import type {
   ExternalHistorySettings,
   ExternalHistorySource,
 } from "@t3tools/contracts";
-import { useState, type ReactNode } from "react";
+import { useEffect, useReducer, useState, type ReactNode } from "react";
 
 import { externalHistory } from "../../state/externalHistory";
 import { useEnvironmentQuery } from "../../state/query";
@@ -387,8 +389,7 @@ function HistorySearch(props: {
         />
       ) : (
         <p className="text-muted-foreground text-xs">
-          Search reads bounded pages from the selected source. It may take several pages to scan a
-          large history.
+          Search messages and tool evidence from the selected source.
         </p>
       )}
     </div>
@@ -396,15 +397,27 @@ function HistorySearch(props: {
 }
 
 function HistoryResults(props: { readonly environmentId: EnvironmentId; readonly search: Search }) {
-  const [cursors, setCursors] = useState<ReadonlyArray<string>>([]);
-  const [selected, setSelected] = useState<ExternalHistoryMatch | null>(null);
-  const cursor = cursors.at(-1);
-  const query = useEnvironmentQuery(
-    externalHistory.query({
-      environmentId: props.environmentId,
-      input: { ...props.search, ...(cursor === undefined ? {} : { cursor }) },
-    }),
+  const [paging, dispatch] = useReducer(
+    externalHistoryPagingReducer,
+    undefined,
+    initialExternalHistoryPaging,
   );
+  const [selected, setSelected] = useState<ExternalHistoryMatch | null>(null);
+  const cursor = paging.cursor;
+  const query = useEnvironmentQuery(
+    paging.status === "searching"
+      ? externalHistory.query({
+          environmentId: props.environmentId,
+          input: { ...props.search, ...(cursor === undefined ? {} : { cursor }) },
+        })
+      : null,
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The query hook has no result callback to advance the shared pager.
+  useEffect(() => {
+    if (query.isSuccess && !query.isPending && query.data?.operation === "search")
+      dispatch({ type: "page", cursor, page: query.data });
+  }, [cursor, query.data, query.isPending, query.isSuccess]);
+  const data = paging.status === "ready" ? paging.page : null;
   if (selected)
     return (
       <div className="flex flex-col gap-3">
@@ -426,21 +439,28 @@ function HistoryResults(props: { readonly environmentId: EnvironmentId; readonly
         {query.error}
       </p>
     );
-  if (!query.data || query.data.operation !== "search")
-    return <p className="text-muted-foreground text-sm">Searching history…</p>;
-  const data = query.data;
   return (
     <div className="flex flex-col gap-3">
       <p className="text-muted-foreground text-xs">
-        Examined {data.examinedItems.toLocaleString()} items on this page.
+        Searched {paging.examinedItems.toLocaleString()} items
+        {paging.status === "searching" ? "…" : "."}
       </p>
-      {data.matches.length === 0 ? (
-        <p className="text-sm">
-          No matches on this page.
-          {data.nextCursor !== null ? " Continue to search the next page." : ""}
-        </p>
+      {paging.status === "searching" ? (
+        <div>
+          <Button size="sm" variant="outline" onClick={() => dispatch({ type: "stop" })}>
+            Stop search
+          </Button>
+        </div>
+      ) : paging.status === "stopped" ? (
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground text-sm">Search stopped.</span>
+          <Button size="sm" variant="outline" onClick={() => dispatch({ type: "resume" })}>
+            Resume search
+          </Button>
+        </div>
       ) : null}
-      {data.matches.map((match) => (
+      {data?.matches.length === 0 ? <p className="text-sm">No more matches found.</p> : null}
+      {data?.matches.map((match) => (
         <article
           key={match.ref.readCursor + ":" + match.ref.digest}
           className="flex flex-col gap-2 rounded-md border p-3"
@@ -459,23 +479,21 @@ function HistoryResults(props: { readonly environmentId: EnvironmentId; readonly
           </div>
         </article>
       ))}
-      {cursors.length > 0 || data.nextCursor !== null ? (
+      {paging.previous.length > 0 || data?.nextCursor != null ? (
         <div className="flex justify-between gap-2">
           <Button
             size="sm"
             variant="outline"
-            disabled={cursors.length === 0 || query.isPending}
-            onClick={() => setCursors((current) => current.slice(0, -1))}
+            disabled={paging.previous.length === 0}
+            onClick={() => dispatch({ type: "previous" })}
           >
             Previous page
           </Button>
           <Button
             size="sm"
             variant="outline"
-            disabled={data.nextCursor === null || query.isPending}
-            onClick={() => {
-              if (data.nextCursor !== null) setCursors((current) => [...current, data.nextCursor!]);
-            }}
+            disabled={data?.nextCursor == null}
+            onClick={() => dispatch({ type: "next" })}
           >
             Continue search
           </Button>

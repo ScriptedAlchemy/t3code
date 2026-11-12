@@ -1,6 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  externalHistoryPagingReducer,
+  initialExternalHistoryPaging,
   externalHistoryRangeLabel,
   externalHistorySearchFilters,
   externalHistorySourceStatusLabel,
@@ -14,7 +16,7 @@ import {
   type ExternalHistorySource,
   type ProjectId,
 } from "@t3tools/contracts";
-import { useState, type ReactNode } from "react";
+import { useEffect, useReducer, useState, type ReactNode } from "react";
 import { ScrollView, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -373,8 +375,7 @@ function HistorySearch(
         />
       ) : (
         <Text className="text-xs text-foreground-muted">
-          Search reads bounded pages from the selected source. It may take several pages to scan a
-          large history.
+          Search messages and tool evidence from the selected source.
         </Text>
       )}
     </View>
@@ -382,15 +383,27 @@ function HistorySearch(
 }
 
 function HistoryResults(props: { readonly environmentId: EnvironmentId; readonly search: Search }) {
-  const [cursors, setCursors] = useState<ReadonlyArray<string>>([]);
-  const [selected, setSelected] = useState<ExternalHistoryMatch | null>(null);
-  const cursor = cursors.at(-1);
-  const query = useEnvironmentQuery(
-    externalHistory.query({
-      environmentId: props.environmentId,
-      input: { ...props.search, ...(cursor === undefined ? {} : { cursor }) },
-    }),
+  const [paging, dispatch] = useReducer(
+    externalHistoryPagingReducer,
+    undefined,
+    initialExternalHistoryPaging,
   );
+  const [selected, setSelected] = useState<ExternalHistoryMatch | null>(null);
+  const cursor = paging.cursor;
+  const query = useEnvironmentQuery(
+    paging.status === "searching"
+      ? externalHistory.query({
+          environmentId: props.environmentId,
+          input: { ...props.search, ...(cursor === undefined ? {} : { cursor }) },
+        })
+      : null,
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The query hook has no result callback to advance the shared pager.
+  useEffect(() => {
+    if (query.isSuccess && !query.isPending && query.data?.operation === "search")
+      dispatch({ type: "page", cursor, page: query.data });
+  }, [cursor, query.data, query.isPending, query.isSuccess]);
+  const data = paging.status === "ready" ? paging.page : null;
   if (selected)
     return (
       <View className="gap-3">
@@ -408,21 +421,24 @@ function HistoryResults(props: { readonly environmentId: EnvironmentId; readonly
         {query.error}
       </Text>
     );
-  if (!query.data || query.data.operation !== "search")
-    return <Text className="text-foreground-muted">Searching history…</Text>;
-  const data = query.data;
   return (
     <View className="gap-3">
       <Text className="text-xs text-foreground-muted">
-        Examined {data.examinedItems.toLocaleString()} items on this page.
+        Searched {paging.examinedItems.toLocaleString()} items
+        {paging.status === "searching" ? "…" : "."}
       </Text>
-      {data.matches.length === 0 ? (
-        <Text className="text-sm text-foreground">
-          No matches on this page.
-          {data.nextCursor !== null ? " Continue to search the next page." : ""}
-        </Text>
+      {paging.status === "searching" ? (
+        <Button label="Stop search" onPress={() => dispatch({ type: "stop" })} />
+      ) : paging.status === "stopped" ? (
+        <View className="gap-2">
+          <Text className="text-sm text-foreground-muted">Search stopped.</Text>
+          <Button label="Resume search" onPress={() => dispatch({ type: "resume" })} />
+        </View>
       ) : null}
-      {data.matches.map((match) => (
+      {data?.matches.length === 0 ? (
+        <Text className="text-sm text-foreground">No more matches found.</Text>
+      ) : null}
+      {data?.matches.map((match) => (
         <View
           key={match.ref.readCursor + ":" + match.ref.digest}
           className="gap-2 rounded-xl border border-border p-3"
@@ -437,19 +453,17 @@ function HistoryResults(props: { readonly environmentId: EnvironmentId; readonly
           <Button label="Open source" tone="text" onPress={() => setSelected(match)} />
         </View>
       ))}
-      {cursors.length > 0 || data.nextCursor !== null ? (
+      {paging.previous.length > 0 || data?.nextCursor != null ? (
         <View className="flex-row justify-between gap-2">
           <Button
             label="Previous page"
-            disabled={cursors.length === 0 || query.isPending}
-            onPress={() => setCursors((current) => current.slice(0, -1))}
+            disabled={paging.previous.length === 0}
+            onPress={() => dispatch({ type: "previous" })}
           />
           <Button
             label="Continue search"
-            disabled={data.nextCursor === null || query.isPending}
-            onPress={() => {
-              if (data.nextCursor !== null) setCursors((current) => [...current, data.nextCursor!]);
-            }}
+            disabled={data?.nextCursor == null}
+            onPress={() => dispatch({ type: "next" })}
           />
         </View>
       ) : null}

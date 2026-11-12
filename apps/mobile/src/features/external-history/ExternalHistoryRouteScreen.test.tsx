@@ -110,7 +110,9 @@ const ref = {
   digest: "a".repeat(64),
 };
 vi.mock("../../state/query", () => ({
-  useEnvironmentQuery: (request: ExternalHistoryRequest) => {
+  useEnvironmentQuery: (request: ExternalHistoryRequest | null) => {
+    if (request === null)
+      return { data: null, error: null, isPending: false, isSuccess: false, refresh: vi.fn() };
     state.requests.push(request);
     const data: ExternalHistoryResponse =
       request.operation === "sources"
@@ -157,7 +159,7 @@ vi.mock("../../state/query", () => ({
               totalChars: 33,
               nextTextOffset: request.textOffset ? null : 16,
             };
-    return { data, error: null, isPending: false, refresh: vi.fn() };
+    return { data, error: null, isPending: false, isSuccess: true, refresh: vi.fn() };
   },
 }));
 
@@ -223,8 +225,6 @@ it("keeps remote history read-only without settings permission and stops reads w
     });
     await click("This project");
     await click("Search");
-    expect(container.textContent).toContain("No matches on this page. Continue");
-    await click("Continue search");
     expect(container.textContent).toContain("Compiler investigation");
     expect(state.requests).toContainEqual({
       operation: "search",
@@ -240,7 +240,7 @@ it("keeps remote history read-only without settings permission and stops reads w
     expect(container.textContent).toContain("Second exact page");
     expect(container.textContent).not.toContain("First exact page");
     await click("Search");
-    expect(container.textContent).toContain("No matches on this page. Continue");
+    expect(container.textContent).toContain("Compiler investigation");
     expect(container.textContent).not.toContain("Second exact page");
     expect(state.update).not.toHaveBeenCalled();
     act(() => registry.set(config, configFor(true, false)));
