@@ -436,6 +436,8 @@ its progress.
 - `/goal` alone shows the current goal. `/goal clear` removes it.
 - Codex and OpenCode also support `/goal pause` and `/goal resume`. Stopping
   their goal pauses it. Codex also pauses when its work ends without meeting the goal.
+  **Resume** on the goal line restarts a paused or blocked goal. While the agent
+  works, it waits for the current turn to end.
 - Stopping Claude ends the current turn, but the goal stays set. Claude checks it
   again at the end of your next message.
 - Sending a new goal, or `/goal resume`, while the agent works stops the current

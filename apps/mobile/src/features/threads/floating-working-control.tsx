@@ -92,7 +92,8 @@ export function FloatingWorkingControl(props: {
   const action =
     props.status?.kind === "background" ||
     props.status?.kind === "lifecycle" ||
-    props.status?.kind === "stop"
+    props.status?.kind === "stop" ||
+    props.status?.kind === "goal"
       ? props.status.action
       : null;
   const [agentsWidth, setAgentsWidth] = useState(0);

@@ -470,7 +470,11 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     onOpenThread: onOpenRelatedThreadStable,
   });
 
-  const sendStandaloneCommand = async (text: string, failureMessage: string) => {
+  const sendStandaloneCommand = async (
+    text: string,
+    failureMessage: string,
+    dispatchMode?: "queue",
+  ) => {
     if (!activeThread || !clientSettingsHydrated || sendInFlightRef.current) return;
     const context = composerRef.current?.getSendContext();
     if (!context?.providerAvailable) return;
@@ -514,6 +518,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
               runtimeMode,
               interactionMode: context.interactionMode,
               createdAt,
+              ...(dispatchMode === undefined ? {} : { dispatchMode }),
             },
           });
     if (result._tag === "Failure") {

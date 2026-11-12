@@ -707,6 +707,33 @@ function ThreadRouteContent(
     }
   };
 
+  const handleResumeGoal = async () => {
+    if (!selectedThread) return;
+    const runtimeMode = composer.runtimeMode ?? selectedThread.runtimeMode;
+    const interactionMode = composer.interactionMode ?? selectedThread.interactionMode;
+    const result = await continueThreadRun({
+      environmentId: selectedThread.environmentId,
+      input: {
+        creationSource: "mobile",
+        threadId: selectedThread.id,
+        ...(composer.modelSelection ? { modelSelection: composer.modelSelection } : {}),
+        message: {
+          messageId: MessageId.make(uuidv4()),
+          role: "user",
+          text: "/goal resume",
+          attachments: [],
+        },
+        runtimeMode,
+        interactionMode,
+        createdAt: new Date().toISOString(),
+      },
+    });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      Dialog.alert("Could not resume goal", error instanceof Error ? error.message : "Try again.");
+    }
+  };
+
   const handleOpenTerminal = (nextTerminalId?: string | null) => {
     if (
       !selectedThread ||
@@ -1090,6 +1117,7 @@ function ThreadRouteContent(
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
           onStopThread={awaitingBootstrapTurn ? handleCancelWorktreeSetup : handleStopThread}
+          onResumeGoal={handleResumeGoal}
           onResumeQueue={
             composer.queueHeld || composer.resumableRunId !== null ? handleResumeQueue : null
           }

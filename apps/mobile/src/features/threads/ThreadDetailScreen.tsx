@@ -298,6 +298,7 @@ export interface ThreadDetailScreenProps {
   readonly onNativePasteText: (paste: ComposerTextPaste) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  readonly onResumeGoal?: () => Promise<void>;
   /** Present while the thread's queue is held. */
   readonly onResumeQueue: (() => Promise<void>) | null;
   readonly offersSideChat: boolean;
@@ -898,11 +899,21 @@ function ThreadDetailBody(
       };
     }
     if (props.selectedThread.goal !== null && contentPresentationKind === "ready") {
+      const onResumeGoal = props.onResumeGoal;
       const goal = presentProviderGoal(props.selectedThread.goal, false);
       return {
         kind: "goal",
         label: goal.title,
         accessibilityLabel: `${goal.title}: ${goal.objective}`,
+        action:
+          goal.canResume && onResumeGoal !== undefined
+            ? {
+                label: "Resume",
+                accessibilityLabel: "Resume goal",
+                disabled: !props.canOperateThread,
+                onPress: () => void onResumeGoal(),
+              }
+            : null,
       };
     }
     if (extensionStatus !== null && contentPresentationKind === "ready") {

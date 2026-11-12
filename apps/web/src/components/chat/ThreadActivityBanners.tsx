@@ -90,7 +90,11 @@ export function goalNowItem(input: {
   readonly threadId: ThreadId;
   readonly goal: OrchestrationV2ProviderGoal;
   readonly isWorking: boolean;
-  readonly onSendCommand: (text: string, failureMessage: string) => Promise<void>;
+  readonly onSendCommand: (
+    text: string,
+    failureMessage: string,
+    dispatchMode?: "queue",
+  ) => Promise<void>;
 }): ThreadNowItem {
   const { isWorking, onSendCommand } = input;
   const presentation = presentProviderGoal(input.goal, isWorking);
@@ -102,15 +106,21 @@ export function goalNowItem(input: {
         ? presentation.title
         : `${presentation.title} · ${presentation.usage}`,
     description: presentation.objective,
-    // Clear stops goal work; Resume would stop unrelated work, so it waits.
+    // Clear stops goal work; Resume queues behind the current turn so it never stops unrelated work.
     actions: (
       <>
-        {presentation.canResume && !isWorking ? (
+        {presentation.canResume ? (
           <>
             <InlineButton
-              onClick={() => void onSendCommand("/goal resume", "Failed to resume goal.")}
+              onClick={() =>
+                void onSendCommand(
+                  "/goal resume",
+                  "Failed to resume goal.",
+                  isWorking ? "queue" : undefined,
+                )
+              }
             >
-              Resume
+              {isWorking ? "Resume after turn" : "Resume"}
             </InlineButton>
             <span aria-hidden>·</span>
           </>
