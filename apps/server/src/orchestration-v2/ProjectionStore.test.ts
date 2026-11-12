@@ -6,6 +6,7 @@ import {
   EventId,
   CommandId,
   CheckpointId,
+  ContextHandoffId,
   ContextTransferId,
   CheckpointRef,
   CheckpointScopeId,
@@ -546,6 +547,86 @@ it.effect("record reads restrict provider histories to delivery identities", () 
       })).providerThreads,
       1,
     );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("keeps the latest provider binding when outgoing background work updates", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = yield* addRolledBackRecoveryCandidate("background-provider-binding");
+    let projection = yield* store.getThreadProjection(threadId);
+    const at = projection.updatedAt;
+    const firstId = ProviderThreadId.make("provider-thread:background-first");
+    const secondId = ProviderThreadId.make("provider-thread:background-second");
+    const first: OrchestrationV2ProviderThread = {
+      id: firstId,
+      appThreadId: threadId,
+      driver,
+      providerInstanceId,
+      providerSessionId: ProviderSessionId.make("session:background-first"),
+      ownerNodeId: null,
+      nativeThreadRef: { driver, nativeId: "background-first", strength: "strong" },
+      nativeConversationHeadRef: null,
+      status: "idle",
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const second = {
+      ...first,
+      id: secondId,
+      providerSessionId: ProviderSessionId.make("session:background-second"),
+      nativeThreadRef: { driver, nativeId: "background-second", strength: "strong" as const },
+      firstRunOrdinal: 2,
+      lastRunOrdinal: 2,
+    };
+    const backgroundUpdate = {
+      ...first,
+      pendingBackgroundTasks: [{ taskId: "command:background-first", kind: "command" as const }],
+      updatedAt: DateTime.add(at, { seconds: 1 }),
+    };
+    for (const [name, payload, activeId] of [
+      ["first", first, firstId],
+      ["handoff", second, secondId],
+      ["background", backgroundUpdate, secondId],
+      ["rollback", { ...second, lastRunOrdinal: null }, secondId],
+      ["background-after-rollback", backgroundUpdate, secondId],
+      ["return", { ...first, lastRunOrdinal: 3 }, firstId],
+      ["late-second", second, firstId],
+      ["retry", { ...second, lastRunOrdinal: 3 }, secondId],
+      ["late-same-run", { ...first, lastRunOrdinal: 3 }, secondId],
+      [
+        "retry-return",
+        {
+          ...first,
+          lastRunOrdinal: 3,
+          handoffIds: [ContextHandoffId.make("handoff:retry-return")],
+        },
+        firstId,
+      ],
+      ["late-retry-target", { ...second, lastRunOrdinal: 3 }, firstId],
+    ] as const) {
+      const event = {
+        id: EventId.make(`event:background-provider-binding:${name}`),
+        type: "provider-thread.updated" as const,
+        threadId,
+        occurredAt: payload.updatedAt,
+        payload,
+      };
+      yield* store.apply(event);
+      projection = ProjectionStore.applyToProjection(projection, event);
+      const stored = yield* store.getThreadProjection(threadId);
+      assert.equal(stored.thread.activeProviderThreadId, activeId, name);
+      assert.equal(projection.thread.activeProviderThreadId, activeId, name);
+      assert.isTrue(DateTime.Equivalence(stored.thread.updatedAt, projection.thread.updatedAt));
+      assert.deepEqual(
+        stored.providerThreads.find((thread) => thread.id === payload.id)?.pendingBackgroundTasks,
+        payload.pendingBackgroundTasks ?? [],
+      );
+    }
   }).pipe(Effect.provide(layerTest)),
 );
 

@@ -7723,7 +7723,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       pendingForkTransfer === undefined && (!isProviderSwitch || canResumeAcrossInstances)
         ? unseenPublicationRuns(projection, activeProviderThread?.id, contextBoundary)
         : [];
-    const sessionsToDetach = uniqueSessions([
+    const releasableSessions = uniqueSessions([
       ...projection.providerSessions.filter(
         (session) =>
           providerSwitchPlan?.releaseProviderSessionIds.includes(session.id) &&
@@ -7732,8 +7732,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
       ...(freshContext ? sessionsReleasedByFreshContext(projection, activeProviderThread) : []),
     ]);
-    for (const detaching of sessionsToDetach) {
+    const busySessionIds = new Set<ProviderSessionId>();
+    for (const detaching of releasableSessions) {
       if (yield* sessionHasBackgroundWork(detaching, projection.providerThreads)) {
+        if (
+          !freshContext &&
+          !continuationChanged &&
+          providerSwitchPlan?.transition.type === "create_with_handoff"
+        ) {
+          busySessionIds.add(detaching.id);
+          continue;
+        }
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -7743,6 +7752,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
     }
+    const sessionsToDetach = releasableSessions.filter(
+      (session) => !busySessionIds.has(session.id),
+    );
 
     if (
       pendingForkTransfer === undefined &&
