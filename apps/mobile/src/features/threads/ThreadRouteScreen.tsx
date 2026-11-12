@@ -723,6 +723,7 @@ function ThreadRouteContent(
           text: "/goal resume",
           attachments: [],
         },
+        dispatchMode: composer.activeWorkStartedAt !== null ? "queue" : "auto",
         runtimeMode,
         interactionMode,
         createdAt: new Date().toISOString(),

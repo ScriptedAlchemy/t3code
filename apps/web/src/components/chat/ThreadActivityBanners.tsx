@@ -106,7 +106,6 @@ export function goalNowItem(input: {
         ? presentation.title
         : `${presentation.title} · ${presentation.usage}`,
     description: presentation.objective,
-    // Clear stops goal work; Resume queues behind the current turn so it never stops unrelated work.
     actions: (
       <>
         {presentation.canResume ? (
