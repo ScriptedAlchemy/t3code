@@ -311,13 +311,13 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         else if (arg === "--local-provider" && args[index + 1]) switches.push(arg, args[++index]!);
         else if (arg?.startsWith("--local-provider=")) switches.push(arg);
       }
+      const profileRouting =
+        profile !== undefined && isTomlTable(original.profiles)
+          ? original.profiles[profile]
+          : undefined;
       const routing = [
         routingConfig(original),
-        ...(profile !== undefined &&
-        isTomlTable(original.profiles) &&
-        isTomlTable(original.profiles[profile])
-          ? [routingConfig(original.profiles[profile])]
-          : []),
+        ...(isTomlTable(profileRouting) ? [routingConfig(profileRouting)] : []),
         ...(profile === undefined
           ? []
           : [routingConfig(yield* readConfig(`${profile}.config.toml`))]),
