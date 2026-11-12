@@ -111,7 +111,7 @@ import {
   threadRouteOpensDraft,
 } from "./thread-route-hydration";
 import { ThreadHeader } from "./ThreadHeader";
-import { resumeThread } from "./resume-thread";
+import { continueThread, resumeThread } from "./resume-thread";
 import {
   useAndroidWorkspaceBack,
   useWorkspaceBackNavigation,
@@ -707,6 +707,26 @@ function ThreadRouteContent(
     }
   };
 
+  const handleResumeGoal = async () => {
+    if (!selectedThread) return;
+    const result = await continueThread({
+      thread: selectedThread,
+      continuation: { kind: "goal" },
+      runtimeMode: composer.runtimeMode ?? selectedThread.runtimeMode,
+      interactionMode: composer.interactionMode ?? selectedThread.interactionMode,
+      modelSelection: composer.modelSelection,
+      messageId: MessageId.make(uuidv4()),
+      createdAt: new Date().toISOString(),
+      setRuntimeMode: setThreadRuntimeMode,
+      setInteractionMode: setThreadInteractionMode,
+      startTurn: continueThreadRun,
+    });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      Dialog.alert("Could not resume goal", error instanceof Error ? error.message : "Try again.");
+    }
+  };
+
   const handleOpenTerminal = (nextTerminalId?: string | null) => {
     if (
       !selectedThread ||
@@ -1090,6 +1110,7 @@ function ThreadRouteContent(
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
           onStopThread={awaitingBootstrapTurn ? handleCancelWorktreeSetup : handleStopThread}
+          onResumeGoal={handleResumeGoal}
           onResumeQueue={
             composer.queueHeld || composer.resumableRunId !== null ? handleResumeQueue : null
           }

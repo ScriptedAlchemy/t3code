@@ -298,6 +298,7 @@ export interface ThreadDetailScreenProps {
   readonly onNativePasteText: (paste: ComposerTextPaste) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  readonly onResumeGoal?: () => Promise<void>;
   /** Present while the thread's queue is held. */
   readonly onResumeQueue: (() => Promise<void>) | null;
   readonly offersSideChat: boolean;
@@ -840,8 +841,27 @@ function ThreadDetailBody(
     if (props.isCompacting && contentPresentationKind === "ready") {
       return { kind: "compacting" };
     }
+    const goal =
+      props.selectedThread.goal === null
+        ? null
+        : presentProviderGoal(props.selectedThread.goal, props.activeWorkStartedAt !== null);
+    const onResumeGoal = props.onResumeGoal;
+    const goalAction =
+      goal?.canResume && onResumeGoal !== undefined
+        ? {
+            label: props.activeWorkStartedAt !== null ? "Resume after turn" : "Resume",
+            accessibilityLabel:
+              props.activeWorkStartedAt !== null ? "Resume goal after turn" : "Resume goal",
+            disabled: !props.canOperateThread,
+            onPress: () => void onResumeGoal(),
+          }
+        : null;
     if (props.activeWorkStartedAt !== null && contentPresentationKind === "ready") {
-      return { kind: "working", startedAt: props.activeWorkStartedAt };
+      return {
+        kind: "working",
+        startedAt: props.activeWorkStartedAt,
+        action: goalAction,
+      };
     }
     if (props.selectedThread.groupDiscussionOpen && contentPresentationKind === "ready") {
       return { kind: "preparing", label: "Group discussion" };
@@ -897,12 +917,12 @@ function ThreadDetailBody(
         },
       };
     }
-    if (props.selectedThread.goal !== null && contentPresentationKind === "ready") {
-      const goal = presentProviderGoal(props.selectedThread.goal, false);
+    if (goal !== null && contentPresentationKind === "ready") {
       return {
         kind: "goal",
         label: goal.title,
         accessibilityLabel: `${goal.title}: ${goal.objective}`,
+        action: goalAction,
       };
     }
     if (extensionStatus !== null && contentPresentationKind === "ready") {

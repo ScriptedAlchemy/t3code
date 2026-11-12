@@ -90,9 +90,11 @@ export function FloatingWorkingControl(props: {
   const extensionOnly = props.status?.kind === "extension";
   const useGlass = NATIVE_LIQUID_GLASS_SUPPORTED && !extensionOnly;
   const action =
+    props.status?.kind === "working" ||
     props.status?.kind === "background" ||
     props.status?.kind === "lifecycle" ||
-    props.status?.kind === "stop"
+    props.status?.kind === "stop" ||
+    props.status?.kind === "goal"
       ? props.status.action
       : null;
   const [agentsWidth, setAgentsWidth] = useState(0);

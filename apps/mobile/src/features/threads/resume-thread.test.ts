@@ -3,7 +3,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resumeThread } from "./resume-thread";
+import { continueThread, resumeThread } from "./resume-thread";
 
 const runId = RunId.make("run-limited");
 const failure = AsyncResult.failure(Cause.fail(new Error("not connected")));
@@ -64,14 +64,13 @@ describe("resumeThread", () => {
     expect(calls.map((call) => call.command)).toEqual(["startTurn"]);
   });
 
-  it("saves changed modes to the thread before continuing", async () => {
+  it.each(["run", "goal"] as const)("saves changed modes before continuing a %s", async (kind) => {
     const { calls, base } = setup();
-    await resumeThread({
+    await continueThread({
       ...base,
       runtimeMode: "approval-required",
       interactionMode: "plan",
-      resumableRunId: runId,
-      queueHeld: false,
+      continuation: kind === "run" ? { kind, runId } : { kind },
     });
 
     expect(calls.map((call) => call.command)).toEqual([
@@ -79,6 +78,10 @@ describe("resumeThread", () => {
       "setInteractionMode",
       "startTurn",
     ]);
+    expect(calls[2]?.input).toMatchObject({
+      dispatchMode: kind === "goal" ? "queue" : "start",
+      message: { text: kind === "goal" ? "/goal resume" : "Continue where you left off." },
+    });
   });
 
   it("resumes a held queue directly when no run needs continuing", async () => {
@@ -87,4 +90,20 @@ describe("resumeThread", () => {
 
     expect(calls.map((call) => call.command)).toEqual(["resumeQueue"]);
   });
+
+  it.each(["run", "goal"] as const)(
+    "does not continue a %s when saving modes fails",
+    async (kind) => {
+      const { calls, base } = setup();
+      const result = await continueThread({
+        ...base,
+        continuation: kind === "run" ? { kind, runId } : { kind },
+        runtimeMode: "approval-required",
+        setRuntimeMode: async () => failure,
+      });
+
+      expect(result).toBe(failure);
+      expect(calls).toEqual([]);
+    },
+  );
 });
