@@ -6,9 +6,10 @@ model call. Use **Judge model** to select the provider and model that scores tas
 of the model doing the work. **Use default** returns it to the environment's text generation model.
 Only providers that can judge without tools or access to the project are available.
 The evaluator uses the same background generation system as thread titles, with its own optional
-model choice. Claude and Pi can serve as judges when available. A supported judge can
-evaluate work from any harness, including Codex; the harness that produced the work does not need
-to support judging. Choose an available judge before enabling the setting.
+model choice. Claude, Pi, and model APIs added under **Settings → Providers** can serve as judges
+when available. A supported judge can evaluate work from any harness, including Codex; the harness
+that produced the work does not need to support judging. Choose an available judge before enabling
+the setting.
 The selected judge is used for new evaluations. If it is unavailable, the evaluation fails visibly
 instead of switching to another model. Claude judges require a CLI that supports `--safe-mode`,
 which keeps account authentication while disabling custom instructions and extensions.

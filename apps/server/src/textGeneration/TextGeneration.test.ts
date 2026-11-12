@@ -12,6 +12,7 @@ import {
 } from "@t3tools/provider-core/server/textGenerationOperations";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { vi } from "vite-plus/test";
 
@@ -123,7 +124,7 @@ const evaluationInput = {
     runOutcome: "completed" as const,
     request: { ref: "U1" as const, text: "Preserve the API." },
     context: [],
-    evidence: [{ ref: "A1", kind: "assistant" as const, text: "The API was preserved." }],
+    evidence: [{ ref: "E1", kind: "assistant" as const, text: "The API was preserved." }],
     truncated: false,
     omittedItems: 0,
     missingArtifacts: true,
@@ -135,39 +136,67 @@ const evaluationVerdict: ModelEvaluationVerdict = {
   taskCategory: "coding",
   scores: { taskCompletion: 3, correctness: null, instructionFollowing: 3, verification: null },
   confidence: "low",
-  rationale: { text: "The reply addresses the request.", citations: ["U1", "A1"] },
+  rationale: { text: "The reply addresses the request.", citations: ["U1", "E1"] },
   strengths: [],
   weaknesses: [],
   promptAdvice: [],
 };
 
-it.effect("judges with the selected model API without switching to an agent provider", () =>
-  Effect.gen(function* () {
-    const modelSelection = {
-      instanceId: ProviderInstanceId.make("textgen-local"),
-      model: "chosen-api-model",
-    };
-    const test = make(
-      fromRunner("Fixture", () => Effect.die("Unexpected agent generation")),
-      providerSnapshot,
-      true,
-      (instanceId) =>
-        Effect.succeed(
-          instanceId === modelSelection.instanceId
-            ? (request) => {
-                expect(request.modelSelection).toEqual(modelSelection);
-                expect(request.prompt).toContain(evaluationInput.packet.request.text);
-                return decodeJsonReply(request, "Model API", JSON.stringify(evaluationVerdict));
-              }
-            : undefined,
-        ),
-    );
-    const service = yield* test.service;
-    expect(yield* service.generateModelEvaluation({ ...evaluationInput, modelSelection })).toEqual(
-      evaluationVerdict,
-    );
-    expect(test.getInstance).not.toHaveBeenCalled();
-  }),
+it.effect.each(["valid verdict", "extra verdict field", "turned off"] as const)(
+  "judges only with the selected model API (%s)",
+  (state) =>
+    Effect.gen(function* () {
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("textgen-local"),
+        model: "chosen-api-model",
+      };
+      const generateModelEvaluation = vi.fn(() => Effect.succeed(evaluationVerdict));
+      const test = make(
+        {
+          ...fromRunner("Fixture", () => Effect.die("Unexpected agent generation")),
+          supportedOperations: ["generateModelEvaluation"],
+          generateModelEvaluation,
+        },
+        providerSnapshot,
+        true,
+        (instanceId) =>
+          Effect.succeed(
+            instanceId === modelSelection.instanceId
+              ? (request) => {
+                  expect(request.modelSelection).toEqual(modelSelection);
+                  expect(request.prompt).toContain(evaluationInput.packet.request.text);
+                  return state === "turned off"
+                    ? Effect.fail(
+                        new TextGenerationError({
+                          operation: request.operation,
+                          detail: "Model API is off.",
+                        }),
+                      )
+                    : decodeJsonReply(
+                        request,
+                        "Model API",
+                        JSON.stringify(
+                          state === "valid verdict"
+                            ? evaluationVerdict
+                            : { ...evaluationVerdict, extra: true },
+                        ),
+                      );
+                }
+              : undefined,
+          ),
+      );
+      const service = yield* test.service;
+      const result = yield* service
+        .generateModelEvaluation({ ...evaluationInput, modelSelection })
+        .pipe(Effect.result);
+      if (state === "valid verdict") {
+        expect(result).toEqual(Result.succeed(evaluationVerdict));
+      } else {
+        expect(result._tag).toBe("Failure");
+      }
+      expect(generateModelEvaluation).not.toHaveBeenCalled();
+      expect(test.getInstance).not.toHaveBeenCalled();
+    }),
 );
 
 it.effect.each([

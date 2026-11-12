@@ -2,10 +2,13 @@ import { useAtomValue } from "@effect/atom-react";
 import type { MenuAction } from "@react-native-menu/menu";
 import {
   isManagedSettingPath,
+  textGeneratorForSelection,
   type EnvironmentId,
   type ModelEvaluationGuidance,
   type ProjectId,
+  type ProviderInstanceId,
   type ServerSettingsPatch,
+  type TextGeneratorConfig,
 } from "@t3tools/contracts";
 import {
   modelEvaluationGuidanceKey,
@@ -13,7 +16,9 @@ import {
   modelEvaluationSelectionLabel,
   isModelEvaluationJudge,
 } from "@t3tools/client-runtime/modelEvaluations";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import * as Effect from "effect/Effect";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 import { View } from "react-native";
 
@@ -22,7 +27,12 @@ import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { Menu } from "../../components/ui/Menu";
 import { RowPressable } from "../../components/ui/RowPressable";
-import { buildModelMenuActions, buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import {
+  buildModelMenuActions,
+  buildModelOptions,
+  groupByProvider,
+  type ModelOption,
+} from "../../lib/modelOptions";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
 import { modelEvaluations } from "../../state/modelEvaluations";
 import { useEnvironmentQuery } from "../../state/query";
@@ -66,6 +76,26 @@ export function ModelEvaluationSettings() {
   );
 }
 
+// Keyed on each API's connection settings so editing one asks it again.
+const apiJudgeModelsAtom = Atom.family((key: string) => {
+  const apis = JSON.parse(key) as ReadonlyArray<readonly [EnvironmentId, ProviderInstanceId]>;
+  return Atom.make((get) =>
+    Effect.forEach(
+      apis,
+      ([environmentId, id]) =>
+        Effect.promise(() =>
+          runAtomCommand(
+            get.registry,
+            serverEnvironment.listTextGeneratorModels,
+            { environmentId, input: { id } },
+            { reportFailure: false },
+          ),
+        ).pipe(Effect.map((result) => (result._tag === "Success" ? result.value.models : []))),
+      { concurrency: "unbounded" },
+    ),
+  ).pipe(Atom.setIdleTTL(5 * 60_000), Atom.withLabel(`model-evaluation-api-judges:${key}`));
+});
+
 function EnvironmentEvaluationSettings(props: {
   environmentId: EnvironmentId;
   label: string;
@@ -79,6 +109,24 @@ function EnvironmentEvaluationSettings(props: {
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const [chosenProjectId, setChosenProjectId] = useState<ProjectId | null>(null);
   const [saving, setSaving] = useState(false);
+  // Listing an API's models needs settings write access, like choosing the judge does.
+  const apiJudges = (
+    canWrite && config !== null
+      ? (Object.entries(config.settings.textGenerators) as Array<
+          [ProviderInstanceId, TextGeneratorConfig]
+        >)
+      : []
+  ).filter(([, generator]) => generator.enabled);
+  const apiModelLists = useAtomValue(
+    apiJudgeModelsAtom(
+      JSON.stringify(
+        apiJudges.map(
+          ([id, generator]) =>
+            [environmentId, id, generator.kind, generator.baseUrl, generator.apiKey] as const,
+        ),
+      ),
+    ),
+  );
   if (config === null) return null;
   const readOnly = saving || !canWrite || props.projectSelected;
   const project =
@@ -90,22 +138,42 @@ function EnvironmentEvaluationSettings(props: {
   const capable = new Set(
     config.providers.filter(isModelEvaluationJudge).map((provider) => provider.instanceId),
   );
-  const models = buildModelOptions(config, selection, undefined, null).filter(
-    (model) => capable.has(model.selection.instanceId) && !model.isUnavailable,
-  );
+  const listedApiModels = AsyncResult.getOrElse(apiModelLists, () => []);
+  const models = [
+    ...buildModelOptions(config, selection, undefined, null).filter(
+      (model) => capable.has(model.selection.instanceId) && !model.isUnavailable,
+    ),
+    ...apiJudges.flatMap(([instanceId, generator], index) =>
+      (listedApiModels[index] ?? []).map((model): ModelOption => ({
+        key: `${instanceId}:${model.id}`,
+        label: model.name,
+        subtitle: "",
+        providerKey: instanceId,
+        providerLabel: generator.label || generator.baseUrl,
+        providerDriver: generator.kind,
+        isDefault: false,
+        isLegacy: false,
+        capabilities: null,
+        selection: { instanceId, model: model.id },
+      })),
+    ),
+  ];
   const selectedProvider = config.providers.find(
     (provider) => provider.instanceId === selection.instanceId,
   );
+  const selectedApi = textGeneratorForSelection(settings, selection.instanceId);
   const judgeAvailable =
-    selectedProvider?.installed === true &&
-    selectedProvider.status !== "error" &&
-    selectedProvider.auth.status !== "unauthenticated" &&
-    selectedProvider.availability !== "unavailable" &&
-    models.some(
-      (model) =>
-        model.selection.instanceId === selection.instanceId &&
-        model.selection.model === selection.model,
-    );
+    selectedApi !== undefined
+      ? selectedApi.enabled
+      : selectedProvider?.installed === true &&
+        selectedProvider.status !== "error" &&
+        selectedProvider.auth.status !== "unauthenticated" &&
+        selectedProvider.availability !== "unavailable" &&
+        models.some(
+          (model) =>
+            model.selection.instanceId === selection.instanceId &&
+            model.selection.model === selection.model,
+        );
   const write = async (patch: ServerSettingsPatch) => {
     if (readOnly) return;
     setSaving(true);
