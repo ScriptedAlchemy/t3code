@@ -189,7 +189,6 @@ export const make = Effect.gen(function* () {
   });
   return TextGeneration.of({
     generateModelEvaluation: Effect.fn("TextGeneration.generateModelEvaluation")(function* (input) {
-      // A model API has no tools or workspace, so it is blind by construction.
       const textGenerator = yield* textGenerators.runner(input.modelSelection.instanceId);
       const judge =
         textGenerator === undefined

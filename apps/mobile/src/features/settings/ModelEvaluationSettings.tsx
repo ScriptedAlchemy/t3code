@@ -18,6 +18,7 @@ import {
 } from "@t3tools/client-runtime/modelEvaluations";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Effect from "effect/Effect";
+import * as Hash from "effect/Hash";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 import { View } from "react-native";
@@ -76,9 +77,10 @@ export function ModelEvaluationSettings() {
   );
 }
 
-// Keyed on each API's connection settings so editing one asks it again.
 const apiJudgeModelsAtom = Atom.family((key: string) => {
-  const apis = JSON.parse(key) as ReadonlyArray<readonly [EnvironmentId, ProviderInstanceId]>;
+  const apis = JSON.parse(key) as ReadonlyArray<
+    readonly [EnvironmentId, ProviderInstanceId, number]
+  >;
   return Atom.make((get) =>
     Effect.forEach(
       apis,
@@ -93,7 +95,7 @@ const apiJudgeModelsAtom = Atom.family((key: string) => {
         ).pipe(Effect.map((result) => (result._tag === "Success" ? result.value.models : []))),
       { concurrency: "unbounded" },
     ),
-  ).pipe(Atom.setIdleTTL(5 * 60_000), Atom.withLabel(`model-evaluation-api-judges:${key}`));
+  ).pipe(Atom.setIdleTTL(5 * 60_000), Atom.withLabel("model-evaluation-api-judges"));
 });
 
 function EnvironmentEvaluationSettings(props: {
@@ -109,9 +111,11 @@ function EnvironmentEvaluationSettings(props: {
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const [chosenProjectId, setChosenProjectId] = useState<ProjectId | null>(null);
   const [saving, setSaving] = useState(false);
-  // Listing an API's models needs settings write access, like choosing the judge does.
+  const canListModels = useAtomValue(
+    serverEnvironment.listTextGeneratorModels.permissionAtom(environmentId),
+  );
   const apiJudges = (
-    canWrite && config !== null
+    canListModels && config !== null
       ? (Object.entries(config.settings.textGenerators) as Array<
           [ProviderInstanceId, TextGeneratorConfig]
         >)
@@ -121,8 +125,7 @@ function EnvironmentEvaluationSettings(props: {
     apiJudgeModelsAtom(
       JSON.stringify(
         apiJudges.map(
-          ([id, generator]) =>
-            [environmentId, id, generator.kind, generator.baseUrl, generator.apiKey] as const,
+          ([id, generator]) => [environmentId, id, Hash.string(JSON.stringify(generator))] as const,
         ),
       ),
     ),

@@ -5,6 +5,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { parse, stringify, type TomlTable } from "smol-toml";
+import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
@@ -45,6 +47,58 @@ const CODEX_NO_PLUGIN_ARGS = [
   "--config",
   "features.apps=false",
 ] as const;
+const CODEX_JUDGE_FEATURES = [
+  "plugins",
+  "apps",
+  "shell_tool",
+  "unified_exec",
+  "hooks",
+  "multi_agent",
+  "multi_agent_v2",
+  "view_image",
+  "image_generation",
+  "browser_use",
+  "computer_use",
+  "skill_search",
+  "tool_suggest",
+  "sleep_tool",
+  "code_mode",
+  "code_mode_host",
+  "artifact",
+  "memories",
+  "goals",
+  "default_mode_request_user_input",
+  "in_app_browser",
+  "in_app_local_automation",
+  "workspace_dependencies",
+] as const;
+const CODEX_ROUTING_KEYS = new Set([
+  "model_provider",
+  "model_providers",
+  "openai_base_url",
+  "chatgpt_base_url",
+  "cli_auth_credentials_store",
+  "forced_login_method",
+  "forced_chatgpt_workspace_id",
+]);
+
+const routingOverrides = (table: TomlTable, prefix = ""): ReadonlyArray<string> =>
+  Object.entries(table).flatMap(([key, value]) => {
+    if (prefix === "" && !CODEX_ROUTING_KEYS.has(key)) return [];
+    const name = prefix === "" ? key : `${prefix}.${JSON.stringify(key)}`;
+    return value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      !(value instanceof Date)
+      ? routingOverrides(value as TomlTable, name)
+      : [
+          "--config",
+          `${name}=${stringify({ value })
+            .trim()
+            .replace(/^value\s*=\s*/, "")}`,
+        ];
+  });
+
 const CodexMcpServers = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ name: Schema.String, enabled: Schema.Boolean })),
 );
@@ -218,6 +272,113 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     Effect.orElseSucceed((): ReadonlyArray<string> => []),
   );
 
+  const evaluationLaunchArgs = Effect.fn("CodexTextGeneration.evaluationLaunchArgs")(function* (
+    homePath: string,
+    launchArgs: string,
+  ) {
+    const args = tokenizeCliArgs(launchArgs);
+    const overrides: string[] = [];
+    let profile: string | undefined;
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index];
+      if (arg === "--profile" || arg === "-p") profile = args[++index];
+      else if (arg?.startsWith("--profile=") || arg?.startsWith("-p="))
+        profile = arg.slice(arg.indexOf("=") + 1);
+      else if (
+        arg === "--config" ||
+        arg === "-c" ||
+        arg?.startsWith("--config=") ||
+        arg?.startsWith("-c=")
+      ) {
+        const value =
+          arg === "--config" || arg === "-c" ? args[++index] : arg.slice(arg.indexOf("=") + 1);
+        if (value && CODEX_ROUTING_KEYS.has(value.split(/[.=]/)[0] ?? ""))
+          overrides.push("--config", value);
+      } else if (arg === "--oss") overrides.push(arg);
+      else if (arg === "--local-provider" && args[index + 1]) overrides.push(arg, args[++index]!);
+    }
+    const readRouting = Effect.fn("CodexTextGeneration.readRouting")(function* (name: string) {
+      const filePath = path.join(homePath, name);
+      if (!(yield* fileSystem.exists(filePath))) return [];
+      const source = yield* fileSystem.readFileString(filePath);
+      return yield* Effect.try({
+        try: () => routingOverrides(parse(source)),
+        catch: (cause) =>
+          new TextGenerationError({
+            operation: "generateModelEvaluation",
+            detail: "Invalid Codex routing configuration.",
+            cause,
+          }),
+      });
+    });
+    return [
+      ...(yield* readRouting("config.toml")),
+      ...(profile === undefined ? [] : yield* readRouting(`${profile}.config.toml`)),
+      ...overrides,
+      "--ignore-user-config",
+      "--ignore-rules",
+      "--json",
+      "--config",
+      "project_doc_max_bytes=0",
+      "--config",
+      "tools.experimental_request_user_input.enabled=false",
+      "--config",
+      "tools.update_plan.enabled=false",
+      "--config",
+      "skills.include_instructions=false",
+      "--config",
+      "features.skip_host_skill_discovery=true",
+      "--config",
+      'web_search="disabled"',
+      ...CODEX_JUDGE_FEATURES.flatMap((feature) => ["--config", `features.${feature}=false`]),
+    ];
+  });
+
+  const isolatedEvaluatorHome = Effect.fn("CodexTextGeneration.isolatedEvaluatorHome")(function* (
+    originalHome: string,
+    operation: TextGenerationOperations.Operation,
+  ) {
+    const evaluationHome = yield* fileSystem
+      .makeTempDirectoryScoped({ prefix: "t3-codex-evaluator-" })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation,
+              detail: "Failed to create the Codex evaluator home.",
+              cause,
+            }),
+        ),
+      );
+    for (const name of ["auth.json", "models_cache.json"]) {
+      const source = path.join(originalHome, name);
+      if (
+        yield* fileSystem.exists(source).pipe(
+          Effect.mapError(
+            (cause) =>
+              new TextGenerationError({
+                operation,
+                detail: "Failed to locate the Codex evaluator login.",
+                cause,
+              }),
+          ),
+        )
+      ) {
+        yield* fileSystem.copyFile(source, path.join(evaluationHome, name)).pipe(
+          Effect.mapError(
+            (cause) =>
+              new TextGenerationError({
+                operation,
+                detail: "Failed to prepare the Codex evaluator login.",
+                cause,
+              }),
+          ),
+        );
+      }
+    }
+    return evaluationHome;
+  });
+
   const runCodexJson = Effect.fn("runCodexJson")(function* <S extends Schema.Top>({
     operation,
     cwd,
@@ -264,11 +425,13 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         )?.slug ??
         listed.find((candidate) => codexModelFamily(candidate.slug) === requestedFamily)?.slug;
       const model =
-        matchedModel ??
-        listed.find((candidate) => candidate.isDefault)?.slug ??
-        listed.find((candidate) => !candidate.isLegacy)?.slug ??
-        listed[0]?.slug ??
-        requestedModel;
+        operation === "generateModelEvaluation"
+          ? requestedModel
+          : (matchedModel ??
+            listed.find((candidate) => candidate.isDefault)?.slug ??
+            listed.find((candidate) => !candidate.isLegacy)?.slug ??
+            listed[0]?.slug ??
+            requestedModel);
       // The selection's options were chosen for the requested model and may not fit a fallback.
       const fellBack = matchedModel === undefined && model !== requestedModel;
       const launchArgs = resolveCodexLaunchArgs(effectiveConfig.launchArgs, effectiveEnvironment);
@@ -293,17 +456,34 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             }
           : {}),
       };
-      const mcpServersOff = yield* listEnabledMcpServers({
-        binary,
-        cwd,
-        env,
-        launchArgs: codexMcpListLaunchArgs(launchArgs),
-      }).pipe(Effect.map(codexMcpServersOff));
+      const originalHome = env.CODEX_HOME ?? path.join(yield* HostProcess.HomeDirectory, ".codex");
+      const judgeArgs =
+        operation === "generateModelEvaluation"
+          ? yield* evaluationLaunchArgs(originalHome, launchArgs).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new TextGenerationError({
+                    operation,
+                    detail: "Failed to isolate the Codex evaluator configuration.",
+                    cause,
+                  }),
+              ),
+            )
+          : undefined;
+      const mcpServersOff = judgeArgs
+        ? null
+        : yield* listEnabledMcpServers({
+            binary,
+            cwd,
+            env,
+            launchArgs: codexMcpListLaunchArgs(launchArgs),
+          }).pipe(Effect.map(codexMcpServersOff));
+      if (judgeArgs) env.CODEX_HOME = yield* isolatedEvaluatorHome(originalHome, operation);
       const spawnCommand = yield* resolveSpawnCommand(
         binary,
         [
           "exec",
-          ...codexExecLaunchArgs(launchArgs),
+          ...(judgeArgs ?? codexExecLaunchArgs(launchArgs)),
           // A user's MCP server could act on the text-generation prompt.
           ...CODEX_NO_PLUGIN_ARGS,
           // Memory candidates cite the supplied exchange; checkout instructions add unrelated input.
@@ -360,6 +540,38 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         { concurrency: "unbounded" },
       );
 
+      if (judgeArgs) {
+        const events = yield* Effect.try({
+          try: () =>
+            stdout
+              .split("\n")
+              .filter((line) => line.trim().length > 0)
+              .map((line) => JSON.parse(line) as unknown),
+          catch: (cause) =>
+            new TextGenerationError({
+              operation,
+              detail: "Codex returned invalid evaluation events.",
+              cause,
+            }),
+        });
+        for (const event of events) {
+          if (event !== null && typeof event === "object" && "item" in event) {
+            const item = event.item;
+            if (
+              item === null ||
+              typeof item !== "object" ||
+              !("type" in item) ||
+              !["agent_message", "reasoning", "error"].includes(String(item.type))
+            ) {
+              return yield* new TextGenerationError({
+                operation,
+                detail: "Codex evaluator attempted tool activity.",
+              });
+            }
+          }
+        }
+      }
+
       if (exitCode !== 0) {
         const stderrDetail = stderr.trim();
         const stdoutDetail = stdout.trim();
@@ -393,7 +605,10 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         ),
       );
 
-      const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(outputSchemaJson));
+      const decodeOutput = Schema.decodeEffect(
+        Schema.fromJsonString(outputSchemaJson),
+        operation === "generateModelEvaluation" ? { onExcessProperty: "error" } : undefined,
+      );
 
       return yield* fileSystem.readFileString(outputPath).pipe(
         Effect.mapError(
@@ -421,5 +636,6 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
 
   return TextGenerationOperations.fromRunner("CodexTextGeneration", runCodexJson, {
     supportsInvestigation: true,
+    supportsBlindEvaluation: true,
   });
 });

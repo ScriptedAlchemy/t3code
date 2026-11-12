@@ -5,6 +5,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as NodeURL from "node:url";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -14,6 +15,8 @@ import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as OpenCode2Server from "./OpenCode2Server.ts";
 import * as OpenCodeRuntime from "../OpenCodeRuntime.ts";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
+import * as OpenCode2Client from "./OpenCode2Client.ts";
+import * as BlindEvaluation from "../blindEvaluation.ts";
 
 const isTextGenerationError = Schema.is(TextGenerationError);
 
@@ -33,6 +36,7 @@ const runOnServer = Effect.fn("Opencode2TextGeneration.runOnServer")(function* (
 ) {
   const { resolveAttachmentPath } = yield* ProviderHost.ProviderHost;
   const fileSystem = yield* FileSystem.FileSystem;
+  const blindEvaluation = input.operation === "generateModelEvaluation";
   const { client } = connection;
   const parsed = OpenCodeRuntime.parseOpenCodeModelSlug(input.modelSelection.model);
   if (parsed === null) {
@@ -44,7 +48,15 @@ const runOnServer = Effect.fn("Opencode2TextGeneration.runOnServer")(function* (
   const variant = getModelSelectionStringOptionValue(input.modelSelection, "variant");
   const outcome = yield* Deferred.make<Outcome>();
   let sessionId: string | undefined;
+  let executionModelMatched = !blindEvaluation;
   const texts = new Map<string, string>();
+  const successfulOutcome = (): Outcome =>
+    executionModelMatched
+      ? { _tag: "text", text: [...texts.values()].join("\n").trim() }
+      : {
+          _tag: "failed",
+          detail: "OpenCode did not confirm the requested model and variant for blind evaluation.",
+        };
   // Subscribed first: the stream is volatile, and the reply arrives on it.
   const events = yield* connection.events;
   yield* events.pipe(
@@ -56,7 +68,7 @@ const runOnServer = Effect.fn("Opencode2TextGeneration.runOnServer")(function* (
         return Deferred.succeed(
           outcome,
           event.executionType === "session.execution.succeeded"
-            ? { _tag: "text", text: [...texts.values()].join("\n").trim() }
+            ? successfulOutcome()
             : {
                 _tag: "failed",
                 detail: "OpenCode ended the generation in a way this version cannot read.",
@@ -72,7 +84,40 @@ const runOnServer = Effect.fn("Opencode2TextGeneration.runOnServer")(function* (
       ) {
         return Effect.void;
       }
+      if (blindEvaluation && event.type.startsWith("session.tool.")) {
+        return Deferred.succeed(outcome, {
+          _tag: "failed",
+          detail: "OpenCode reported tool activity during blind evaluation.",
+          cause: event,
+        });
+      }
       switch (event.type) {
+        case "session.step.started": {
+          if (!blindEvaluation) return Effect.void;
+          const model = event.data.model;
+          if (
+            model.providerID !== parsed.providerID ||
+            model.id !== parsed.modelID ||
+            (variant !== undefined && model.variant !== variant)
+          ) {
+            return Deferred.succeed(outcome, {
+              _tag: "failed",
+              detail: "OpenCode executed blind evaluation with a different model or variant.",
+              cause: event,
+            });
+          }
+          executionModelMatched = true;
+          return Effect.void;
+        }
+        case "session.step.ended":
+          if (blindEvaluation && event.data.finish === "tool-calls") {
+            return Deferred.succeed(outcome, {
+              _tag: "failed",
+              detail: "OpenCode reported tool activity during blind evaluation.",
+              cause: event,
+            });
+          }
+          return Effect.void;
         case "session.text.ended":
           texts.set(`${event.data.assistantMessageID}:${event.data.ordinal}`, event.data.text);
           return Effect.void;
