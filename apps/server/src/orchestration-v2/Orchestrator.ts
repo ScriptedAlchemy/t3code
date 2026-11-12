@@ -7735,7 +7735,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const busySessionIds = new Set<ProviderSessionId>();
     for (const detaching of releasableSessions) {
       if (yield* sessionHasBackgroundWork(detaching, projection.providerThreads)) {
-        // Independent handoffs can keep the old session alive, as queued sends do.
         if (
           !freshContext &&
           !continuationChanged &&
