@@ -76,7 +76,9 @@ test(
     await expect(judge).toBeEnabled();
     await app.screenshot("judge-api-selection");
     await judge.tap();
-    await screen.getByRole("button", "Scenario API", { exact: true }).tap();
+    const apiProvider = screen.getByRole("button", "Scenario API", { exact: true });
+    await expect(apiProvider).toBeVisible();
+    await apiProvider.tap();
     await screen.getByRole("option", "judge-fixture-model", { exact: false }).tap();
     await expect(judge).toHaveText(/judge-fixture-model$/);
     const enabled = screen.getByRole("switch", "Blind model evaluations");
