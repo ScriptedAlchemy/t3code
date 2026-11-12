@@ -6,7 +6,10 @@ import {
   type ModelEvaluationVerdict,
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
-import { fromRunner } from "@t3tools/provider-core/server/textGenerationOperations";
+import {
+  decodeJsonReply,
+  fromRunner,
+} from "@t3tools/provider-core/server/textGenerationOperations";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -45,6 +48,7 @@ const make = (
   textGeneration: ProviderInstance["textGeneration"],
   snapshot: ServerProvider = providerSnapshot,
   enabled = true,
+  runner: TextGenerators.TextGenerators["Service"]["runner"] = () => Effect.undefined,
 ) => {
   const getInstance = vi.fn((instanceId: typeof selected) =>
     Effect.succeed(
@@ -69,7 +73,7 @@ const make = (
             resolveLink: () => undefined,
           }),
           ServerSettings.layerTest({}),
-          Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.undefined }),
+          Layer.mock(TextGenerators.TextGenerators)({ runner }),
           ProviderInstallationGate.layer,
         ),
       ),
@@ -136,6 +140,35 @@ const evaluationVerdict: ModelEvaluationVerdict = {
   weaknesses: [],
   promptAdvice: [],
 };
+
+it.effect("judges with the selected model API without switching to an agent provider", () =>
+  Effect.gen(function* () {
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("textgen-local"),
+      model: "chosen-api-model",
+    };
+    const test = make(
+      fromRunner("Fixture", () => Effect.die("Unexpected agent generation")),
+      providerSnapshot,
+      true,
+      (instanceId) =>
+        Effect.succeed(
+          instanceId === modelSelection.instanceId
+            ? (request) => {
+                expect(request.modelSelection).toEqual(modelSelection);
+                expect(request.prompt).toContain(evaluationInput.packet.request.text);
+                return decodeJsonReply(request, "Model API", JSON.stringify(evaluationVerdict));
+              }
+            : undefined,
+        ),
+    );
+    const service = yield* test.service;
+    expect(yield* service.generateModelEvaluation({ ...evaluationInput, modelSelection })).toEqual(
+      evaluationVerdict,
+    );
+    expect(test.getInstance).not.toHaveBeenCalled();
+  }),
+);
 
 it.effect.each([
   "disabled-instance",
