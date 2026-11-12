@@ -129,6 +129,10 @@ asks before restarting the background service; if you decline, run
 stop it and start it again afterwards with your usual options such as `--host`
 or `--tailscale-serve`.
 
+If you decline the restart for a background service installed by an older
+release, the service can stay down after a crash or reboot until you run
+`t3 service restart`.
+
 The npm update and relaunch actions apply to upstream npm installations.
 This fork does not publish `t3` to npm: use its
 [standalone installer](./install.md#command-line), or pull and rebuild a source

@@ -41,6 +41,8 @@ import {
 } from "../project/conversationSummaries/conversationSummarySchedule.ts";
 import * as ModelEvaluations from "../modelEvaluations/ModelEvaluations.ts";
 
+const isProviderTurnControlError = Schema.is(ProviderTurnControlService.ProviderTurnControlError);
+
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
   {
@@ -203,7 +205,7 @@ export const layerExecutor: Layer.Layer<
               Effect.tapError(() =>
                 willRetry
                   ? Effect.void
-                  : threads.recoverDelegatedTask(effect.threadId, sourceRunId),
+                  : threads.recoverDelegatedTask(effect.threadId, { sourceRunId }),
               ),
               Effect.mapError(
                 (cause) =>
@@ -224,6 +226,24 @@ export const layerExecutor: Layer.Layer<
                 ...(effect.request.revokeMcpCredential === undefined
                   ? {}
                   : { revokeMcpCredential: effect.request.revokeMcpCredential }),
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
+          case "provider-session.apply-model-selection":
+            return providerTurnControl
+              .applyModelSelection({
+                threadId: effect.threadId,
+                providerSessionId: effect.request.providerSessionId,
+                providerThreadId: effect.request.providerThreadId,
+                modelSelection: effect.request.modelSelection,
               })
               .pipe(
                 Effect.mapError(
@@ -336,6 +356,9 @@ export const layerExecutor: Layer.Layer<
                 providerThreadId: effect.request.providerThreadId,
                 providerTurnId: effect.request.providerTurnId,
                 messageId: effect.request.messageId,
+                ...(effect.request.modelSelection === undefined
+                  ? {}
+                  : { modelSelection: effect.request.modelSelection }),
               })
               .pipe(
                 Effect.tap(() =>
@@ -368,8 +391,8 @@ export const layerExecutor: Layer.Layer<
                 Effect.catch((error) =>
                   Effect.gen(function* () {
                     if (
-                      !("turnCompleted" in error) ||
-                      !error.turnCompleted ||
+                      !isProviderTurnControlError(error) ||
+                      (!error.turnCompleted && !error.steerDeclined) ||
                       effect.request.type !== "provider-turn.steer"
                     ) {
                       return yield* error;
@@ -386,7 +409,8 @@ export const layerExecutor: Layer.Layer<
                     // Notifications must be queued messages.
                     const queued =
                       message.delegatedCompletion !== undefined ||
-                      message.notification !== undefined;
+                      message.notification !== undefined ||
+                      error.steerDeclined === true;
                     // Reuse message ids and receipts so retries cannot duplicate messages or follow-ups.
                     yield* threads
                       .dispatch({
@@ -394,12 +418,22 @@ export const layerExecutor: Layer.Layer<
                         commandId: CommandId.make(`command:steer-follow-up:${effect.id}`),
                         threadId: effect.threadId,
                         messageId: message.id,
+                        ...(error.steerDeclined ? { steerFollowUpOfRunId: run.id } : {}),
+                        ...(error.steerDeclined &&
+                        effect.request.steerFollowUpAfterRunOrdinal !== undefined
+                          ? {
+                              steerFollowUpAfterRunOrdinal:
+                                effect.request.steerFollowUpAfterRunOrdinal,
+                            }
+                          : {}),
                         text: message.text,
                         ...(message.context ? { context: message.context } : {}),
                         attachments: message.attachments,
-                        ...(message.delegatedCompletion === undefined
-                          ? {}
-                          : { modelSelection: run.modelSelection }),
+                        ...(error.steerDeclined && effect.request.modelSelection !== undefined
+                          ? { modelSelection: effect.request.modelSelection }
+                          : message.delegatedCompletion === undefined
+                            ? {}
+                            : { modelSelection: run.modelSelection }),
                         dispatchMode: {
                           type: queued ? "queue_after_active" : "start_immediately",
                         },
@@ -417,6 +451,9 @@ export const layerExecutor: Layer.Layer<
                         ...(message.senderThreadId === undefined
                           ? {}
                           : { senderThreadId: message.senderThreadId }),
+                        ...(message.linkedSender === undefined
+                          ? {}
+                          : { linkedSender: message.linkedSender }),
                       })
                       .pipe(
                         // A disabled instance cannot retry this completed turn; its result stands.
@@ -609,6 +646,12 @@ export const layerExecutor: Layer.Layer<
                           ),
                         ),
                 ),
+                // Completion bookkeeping must survive a missed live run update, including capture retries.
+                Effect.andThen(
+                  threads.recoverDelegatedTask(effect.threadId, {
+                    completedRunId: effect.request.runId,
+                  }),
+                ),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
@@ -630,8 +673,19 @@ export const layerExecutor: Layer.Layer<
                   }),
               ),
             );
+          // Archive and delete queue this one per-thread teardown, so it also releases the
+          // thread's device claims; the devices stay booted for other threads.
           case "terminal.cleanup":
-            return resourceCleanup.cleanupTerminals(effect.threadId).pipe(
+            return Effect.partition(
+              [
+                resourceCleanup.cleanupTerminals(effect.threadId),
+                resourceCleanup.cleanupDevices(effect.threadId),
+              ],
+              (cleanup) => cleanup,
+            ).pipe(
+              Effect.flatMap(([, [failure]]) =>
+                failure === undefined ? Effect.void : Effect.fail(failure),
+              ),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationEffectExecutionError({
@@ -809,16 +863,20 @@ export class OrchestrationEffectWorkerError extends Schema.TaggedError<Orchestra
 
 const isOrchestrationEffectWorkerError = Schema.is(OrchestrationEffectWorkerError);
 
+type ClaimFilter = Omit<Parameters<EffectOutbox.EffectOutboxV2Shape["claimNext"]>[0], "workerId">;
+type ClaimLimits = Pick<ClaimFilter, "maxRunningTitleGenerations">;
+
 export interface OrchestrationEffectWorkerV2Shape {
   readonly awaitWork: (lane: "turn" | "maintenance") => Effect.Effect<void>;
-  readonly runOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
-  readonly runTurnOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
+  readonly runOnce: (input?: ClaimLimits) => Effect.Effect<boolean, OrchestrationEffectWorkerError>;
+  readonly runTurnOnce: (
+    input?: ClaimLimits,
+  ) => Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly runMaintenanceOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly runRecoveryOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
-  readonly nextClaimableAt: Effect.Effect<
-    Option.Option<DateTime.Utc>,
-    OrchestrationEffectWorkerError
-  >;
+  readonly nextClaimableAt: (input?: {
+    readonly maxRunningTitleGenerations?: number;
+  }) => Effect.Effect<Option.Option<DateTime.Utc>, OrchestrationEffectWorkerError>;
   readonly drain: (maxEffects?: number) => Effect.Effect<number, OrchestrationEffectWorkerError>;
 }
 
@@ -940,14 +998,8 @@ export const layerWithOptions = (
 
       // The worker probes for work repeatedly, including when the outbox is empty.
       const runOnce = Effect.fnUntraced(
-        function* (excludeRestartContinuations = false, lane?: "turn" | "maintenance") {
-          const claimExit = yield* Effect.exit(
-            outbox.claimNext({
-              workerId,
-              excludeRestartContinuations,
-              ...(lane === undefined ? {} : { lane }),
-            }),
-          );
+        function* (filter: ClaimFilter = {}) {
+          const claimExit = yield* Effect.exit(outbox.claimNext({ workerId, ...filter }));
           yield* increment(orchestrationEffectClaimsTotal, {
             result: Exit.isFailure(claimExit)
               ? "error"
@@ -1099,7 +1151,7 @@ export const layerWithOptions = (
           }
           return true;
         },
-        (effect, _excludeRestartContinuations?: boolean, _lane?: "turn" | "maintenance") =>
+        (effect, _filter?: ClaimFilter) =>
           effect.pipe(
             Effect.mapError((cause) =>
               isOrchestrationEffectWorkerError(cause)
@@ -1111,11 +1163,18 @@ export const layerWithOptions = (
 
       return OrchestrationEffectWorkerV2.of({
         awaitWork: outbox.awaitAvailable,
-        runOnce: runOnce(),
-        runTurnOnce: runOnce(false, "turn"),
-        runMaintenanceOnce: runOnce(false, "maintenance"),
-        runRecoveryOnce: runOnce(true),
-        nextClaimableAt: outbox.nextClaimableAt.pipe(
+        runOnce,
+        // Idle workers poll this; a span per poll would bury useful traces.
+        runTurnOnce: Effect.fnUntraced(function* (limits?: ClaimLimits) {
+          return yield* runOnce({ ...limits, lane: "turn" });
+        }),
+        runMaintenanceOnce: runOnce({ lane: "maintenance" }),
+        runRecoveryOnce: runOnce({ excludeRestartContinuations: true }),
+        // Idle workers poll this; a span per poll would bury useful traces.
+        nextClaimableAt: Effect.fnUntraced(
+          function* (input) {
+            return yield* outbox.nextClaimableAt(input);
+          },
           Effect.mapError(
             (cause) =>
               new OrchestrationEffectWorkerError({
@@ -1158,15 +1217,18 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
       const livenessPollIntervalMs = Number.isFinite(requestedLivenessPollIntervalMs)
         ? Math.max(1, Math.floor(requestedLivenessPollIntervalMs))
         : DEFAULT_EFFECT_WORKER_LIVENESS_POLL_INTERVAL_MS;
+      // Title generation runs on the turn lane and can take minutes; leave at least one turn
+      // worker free for turn work.
+      const claimLimits = concurrency > 1 ? { maxRunningTitleGenerations: concurrency - 1 } : {};
       // Post-commit notifications are the low-latency path. `availableAt` is the
       // durable retry schedule, and the long liveness poll only recovers from a
       // missed in-process notification or work inserted by another process.
       const runWorker = Effect.fn("OrchestrationEffectDaemon.runWorker")(function* (
-        runOnce: OrchestrationEffectWorkerV2Shape["runOnce"],
+        runOnce: () => Effect.Effect<boolean, OrchestrationEffectWorkerError>,
         lane: "turn" | "maintenance",
       ) {
         while (true) {
-          const outcome = yield* runOnce.pipe(
+          const outcome = yield* runOnce().pipe(
             Effect.map((worked) => (worked ? ("worked" as const) : ("idle" as const))),
             Effect.catchCause((cause) =>
               Effect.logWarning("Orchestration effect worker failed", cause).pipe(
@@ -1184,14 +1246,16 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
             continue;
           }
 
-          const nextClaimableAt = yield* worker.nextClaimableAt.pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning(
-                "Failed to read the next orchestration effect deadline",
-                cause,
-              ).pipe(Effect.as(Option.none<DateTime.Utc>())),
-            ),
-          );
+          const nextClaimableAt = yield* worker
+            .nextClaimableAt(claimLimits)
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning(
+                  "Failed to read the next orchestration effect deadline",
+                  cause,
+                ).pipe(Effect.as(Option.none<DateTime.Utc>())),
+              ),
+            );
           const now = DateTime.toEpochMillis(yield* DateTime.now);
           const sleepMs = Option.match(nextClaimableAt, {
             onNone: () => livenessPollIntervalMs,
@@ -1209,9 +1273,11 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
 
       return yield* Effect.all(
         [
-          ...Array.from({ length: concurrency }, () => runWorker(worker.runTurnOnce, "turn")),
+          ...Array.from({ length: concurrency }, () =>
+            runWorker(() => worker.runTurnOnce(claimLimits), "turn"),
+          ),
           // Model maintenance must not consume the capacity that admits provider turns.
-          runWorker(worker.runMaintenanceOnce, "maintenance"),
+          runWorker(() => worker.runMaintenanceOnce, "maintenance"),
         ],
         {
           concurrency: "unbounded",

@@ -110,3 +110,12 @@ it("rechecks management permission after the confirmation opens", () => {
   expect(mocks.consume).not.toHaveBeenCalled();
   expect(fixture.value.busy).toBe(false);
 });
+
+it("redeems the confirmed choice's credit", async () => {
+  using fixture = setup();
+  const choiceInput = { ...input, creditId: "fable" };
+  fixture.value.confirm({ input: choiceInput, confirmDescription: "Fable reset." });
+  expect(vi.mocked(Dialog.alert).mock.lastCall?.[1]).toBe("Fable reset.");
+  await act(async () => approval()());
+  expect(mocks.consume).toHaveBeenCalledWith({ environmentId, input: choiceInput });
+});

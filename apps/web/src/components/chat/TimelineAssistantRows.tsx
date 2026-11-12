@@ -6,12 +6,14 @@ import {
 } from "@t3tools/client-runtime/state/thread-group";
 import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipeline";
 import { trimThreadAutolinkPadding } from "@t3tools/shared/threadLinks";
-import { type RunId } from "@t3tools/contracts";
+import { type RunId, type TurnItemId } from "@t3tools/contracts";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import { memo, use, useState } from "react";
 import { type ChatMessage, type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
-import { GitForkIcon } from "lucide-react";
+import { GitForkIcon, ReplyIcon } from "lucide-react";
+import { captureAssistantMessageOpening } from "~/lib/assistantTextSelection";
+import { responseContextRecord } from "~/lib/composerContextRecords";
 import { Button } from "../ui/button";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
@@ -19,7 +21,12 @@ import { McpAppFrame } from "./McpAppFrame";
 import { checkpointFileTotals } from "@t3tools/client-runtime/state/thread-checkpoints";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { useFileContextMenuHandler } from "../../fileContextMenu";
-import { useAssistantMessageText, useProject, useThreadShell } from "../../state/entities";
+import {
+  readResponseSubagents,
+  useAssistantMessageText,
+  useProject,
+  useThreadShell,
+} from "../../state/entities";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { AssistantCitationSource } from "./AssistantCitationSource";
 import { RememberMessageButton } from "../projectKnowledge/RememberMessageButton";
@@ -47,7 +54,8 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
   });
   const text = speaker === null ? rawText : withoutCloseLine(rawText);
   const messageText =
-    trimThreadAutolinkPadding(text) || (row.message.streaming ? "" : "(empty response)");
+    trimThreadAutolinkPadding(text) ||
+    (row.message.streaming || row.suppressEmptyResponse ? "" : "(empty response)");
   if (speaker !== null && !row.message.streaming && isQuietPass(rawText)) {
     return (
       <div className="min-w-0 px-1 py-0.5 text-xs text-muted-foreground">
@@ -77,6 +85,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
           >
             <ChatMarkdown
               text={messageText}
+              renderInsights
               cwd={ctx.markdownCwd}
               threadRef={ctx.threadRef ?? undefined}
               isStreaming={Boolean(row.message.streaming)}
@@ -96,6 +105,11 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             resolvedTheme={ctx.resolvedTheme}
             onOpenTurnDiff={ctx.onOpenTurnDiff}
           />
+        ) : null}
+        {!row.showAssistantMeta && row.projectedItem?.item.status === "interrupted" ? (
+          <div className="mt-1.5 flex">
+            <AssistantStatusBadge status="interrupted" />
+          </div>
         ) : null}
         {row.showAssistantMeta ? (
           <AssistantMessageMeta
@@ -205,9 +219,7 @@ function AssistantMessageMeta({
       )}
     >
       {projectedItem && projectedItem.item.status !== "completed" ? (
-        <span className="rounded-full border border-border/70 px-1.5 py-0.5 font-mono text-3xs text-muted-foreground">
-          {projectedItem.item.status}
-        </span>
+        <AssistantStatusBadge status={projectedItem.item.status} />
       ) : null}
       <AssistantCopyButton
         message={ctx.group == null ? message : { ...message, text: withoutCloseLine(message.text) }}
@@ -224,6 +236,9 @@ function AssistantMessageMeta({
           messageId={message.id}
         />
       ) : null}
+      {!message.streaming && projectedItem ? (
+        <AssistantReplyButton message={message} itemId={projectedItem.sourceItemId} />
+      ) : null}
       {!message.streaming && (
         <Tooltip>
           <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
@@ -235,6 +250,60 @@ function AssistantMessageMeta({
         </Tooltip>
       )}
     </div>
+  );
+}
+
+function AssistantReplyButton({ message, itemId }: { message: ChatMessage; itemId: TurnItemId }) {
+  const ctx = use(TimelineRowCtx);
+  const { threadRef, onReplyToResponse } = ctx;
+  if (!threadRef || !onReplyToResponse || !message.text.trim()) return null;
+
+  const reply = () => {
+    // The meta row can sit below trailing tool rows, so the message may be virtualized away.
+    const source = [
+      ...document.querySelectorAll<HTMLElement>("[data-assistant-citation-source]"),
+    ].find(
+      (element) =>
+        element.dataset.assistantCitationSource === message.id &&
+        element.dataset.assistantCitationThread === threadRef.threadId &&
+        element.dataset.assistantCitationEnvironment === threadRef.environmentId,
+    );
+    const opening = captureAssistantMessageOpening(source ?? null, message.text);
+    if (!opening) return;
+    onReplyToResponse(
+      responseContextRecord({
+        citation: { version: 1, ...threadRef, messageId: message.id, ...opening },
+        itemId,
+        subagents: readResponseSubagents(threadRef, itemId),
+      }),
+    );
+  };
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost-muted"
+            onClick={reply}
+            aria-label="Reply to this response"
+          />
+        }
+      >
+        <ReplyIcon className="size-3" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">Reply to this response</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+function AssistantStatusBadge({ status }: { status: string }) {
+  return (
+    <span className="rounded-full border border-border/70 px-1.5 py-0.5 font-mono text-3xs text-muted-foreground">
+      {status}
+    </span>
   );
 }
 

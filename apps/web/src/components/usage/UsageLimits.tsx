@@ -11,12 +11,13 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
-  formatDuration,
   formatResetsIn,
   type LimitPace,
   paceOf,
   paceRemainingPercent,
   remainingPercent,
+  type ResetCreditChoice,
+  resetCreditChoices,
 } from "@t3tools/shared/usageLimits";
 import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
@@ -237,24 +238,33 @@ const OUTCOME_TEXT: Record<ProviderConsumeResetCreditOutcome, string> = {
   alreadyRedeemed: "That credit was already redeemed.",
 };
 
+/** `input` redeems the next credit when no choice was confirmed, as the recovery banner does. */
 export function useResetCredit(
   environmentId: EnvironmentId,
-  input: ProviderConsumeResetCreditInput,
+  input?: ProviderConsumeResetCreditInput,
 ) {
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const consume = useAtomCommand(serverEnvironment.consumeResetCredit, { reportFailure: false });
   const inFlight = useRef(false);
+  // Kept after close so the dialog's text survives its exit animation.
+  const [choice, setChoice] = useState<ResetCreditChoice | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
   const redeem = async () => {
     setConfirming(false);
-    if (inFlight.current || !readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
+    const creditInput = choice?.input ?? input;
+    if (
+      creditInput === undefined ||
+      inFlight.current ||
+      !readEnvironmentScope(environmentId, AuthProvidersManageScope)
+    )
+      return;
     inFlight.current = true;
     setBusy(true);
     setStatus(null);
-    const result = await consume({ environmentId, input }).catch(() => null);
+    const result = await consume({ environmentId, input: creditInput }).catch(() => null);
     inFlight.current = false;
     setBusy(false);
     const message =
@@ -267,7 +277,13 @@ export function useResetCredit(
     return { reset: result?._tag === "Success" && result.value.outcome === "reset", message };
   };
 
-  return { canManageProviders, confirming, setConfirming, busy, status, redeem };
+  const confirm = (next: ResetCreditChoice) => {
+    if (!readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
+    setChoice(next);
+    setConfirming(true);
+  };
+
+  return { canManageProviders, choice, confirming, setConfirming, confirm, busy, status, redeem };
 }
 
 /** Require confirmation because redemption spends credits. Mount outside popovers, which stack above
@@ -275,11 +291,13 @@ export function useResetCredit(
 export function ResetCreditDialog({
   open,
   onOpenChange,
+  choice,
   onConfirm,
   disabled = false,
 }: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
+  readonly choice?: ResetCreditChoice | null;
   readonly onConfirm: () => void;
   readonly disabled?: boolean;
 }) {
@@ -289,8 +307,8 @@ export function ResetCreditDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Use a reset credit?</AlertDialogTitle>
           <AlertDialogDescription>
-            This redeems one credit on your account and clears the current rate-limit windows. It
-            cannot be undone.
+            {choice?.confirmDescription ??
+              "This redeems one credit on your account and clears the current rate-limit windows. It cannot be undone."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -304,22 +322,6 @@ export function ResetCreditDialog({
   );
 }
 
-export function resetCreditsSummary(
-  credits: ServerProviderResetCredits,
-  now: number,
-  compact = false,
-): string {
-  const expiresIn = credits.nextExpiresAt
-    ? formatDuration(Date.parse(credits.nextExpiresAt) - now)
-    : null;
-  if (credits.availableCount === 0) return "No reset credits banked";
-  if (compact)
-    return `${credits.availableCount} banked${expiresIn ? ` · expires in ${expiresIn}` : ""}`;
-  return `${credits.availableCount} ${credits.availableCount === 1 ? "reset credit" : "reset credits"} banked${
-    expiresIn ? ` · next expires in ${expiresIn}` : ""
-  }`;
-}
-
 export function ResetCredits({
   environmentId,
   input,
@@ -331,30 +333,31 @@ export function ResetCredits({
   readonly credits: ServerProviderResetCredits;
   readonly now: number;
 }) {
-  const { canManageProviders, confirming, setConfirming, busy, status, redeem } = useResetCredit(
-    environmentId,
-    input,
-  );
+  const { canManageProviders, choice, confirming, setConfirming, confirm, busy, status, redeem } =
+    useResetCredit(environmentId);
   if (credits.availableCount === 0 && status === null) return null;
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-      <span className="tabular-nums">{resetCreditsSummary(credits, now)}</span>
-      {credits.availableCount > 0 ? (
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={busy || !canManageProviders}
-          onClick={() => {
-            if (readEnvironmentScope(environmentId, AuthProvidersManageScope)) setConfirming(true);
-          }}
-        >
-          {busy ? "Using…" : "Use reset"}
-        </Button>
-      ) : null}
+    <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+      {resetCreditChoices(credits, input, now).map((choice) => (
+        <div key={choice.key} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="tabular-nums">{choice.summary}</span>
+          {choice.availableCount > 0 ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={busy || !canManageProviders}
+              onClick={() => confirm(choice)}
+            >
+              {busy ? "Using…" : choice.actionLabel}
+            </Button>
+          ) : null}
+        </div>
+      ))}
       {status ? <span className="text-foreground">{status}</span> : null}
       <ResetCreditDialog
         open={confirming}
         onOpenChange={setConfirming}
+        choice={choice}
         onConfirm={() => void redeem()}
         disabled={!canManageProviders}
       />

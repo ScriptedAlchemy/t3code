@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { projectKnowledgeContextRecord } from "@t3tools/client-runtime/projectKnowledge";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { submitQueuedRunEdit } from "./useQueuedRunEdit";
 import {
@@ -127,6 +128,18 @@ describe("queued message file edits", () => {
     ).toBe("kept");
     expect(store.getComposerDraft(threadTarget)?.prompt).toBe("Original message");
     expect(store.getComposerDraft(threadTarget)?.files).toEqual([file]);
+    expect(store.getComposerDraft(editTarget)).toBeNull();
+  });
+
+  it("removes a kept edit draft that held a thread mention", () => {
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(editTarget, "Edited message");
+    store.setThreadContexts(editTarget, [
+      threadContextRecord(scopeThreadRef(environmentId, ThreadId.make("thread:other")), "Other"),
+    ]);
+    expect(
+      recoverQueuedMessageEdit({ editTarget, threadTarget, originalText: "Original message" }),
+    ).toBe("kept");
     expect(store.getComposerDraft(editTarget)).toBeNull();
   });
 

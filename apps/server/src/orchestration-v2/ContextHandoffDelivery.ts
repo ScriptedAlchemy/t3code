@@ -95,7 +95,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       .join("\n");
     if (historyCost([], coverage) > Math.min(4_000, budget / 2)) {
       const strategies = Array.from(new Set(pending.map((handoff) => handoff.strategy)));
-      coverage = `Context handoff (${strategies.join(", ")}). ${pending.length} handoff records; detailed coverage references omitted. Recover history with t3_thread_read({threadId:"${input.providerThread.appThreadId ?? pending[0]!.threadId}",view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. Follow fork/handoff source references in activity. For long items use itemId and textOffset=nextTextOffset until null.`;
+      coverage = `Context handoff (${strategies.join(", ")}). ${pending.length} handoff records; detailed coverage references omitted. Recover an omitted item only when the request needs it, with t3_thread_read({threadId:"${input.providerThread.appThreadId ?? pending[0]!.threadId}",view:"activity",itemId:"<omitted item ID>",maxCharsPerItem:4000}); continue long text with textOffset=nextTextOffset until null. Follow fork/handoff source references in activity. Items included below need no read.`;
     }
     const seen = new Set(input.alreadyDeliveredItemIds);
     const uniqueMessages = pending
@@ -131,6 +131,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       messages,
       coverage: fullCoverage,
       omittedItems: priorOmittedCount,
+      omittedItemIds: pending.flatMap((handoff) => handoff.history?.omittedItemIds ?? []),
       budget,
     });
     const summarized = new Set<TurnItemId>();
@@ -167,11 +168,13 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
           continue;
         const proposed = new Set([...summarized, ...candidate.coveredItemIds]);
         const summaryBlock = [...chosen, candidate].map((summary) => summary.text).join("\n\n");
+        const proposedIds = new Set<string>(proposed);
         const reduced = selectHistory({
           messages: messages.filter((message) => !proposed.has(message.itemId)),
           coverage: `${fullCoverage}\n${proposed.size} older items are represented by the generated conversation summaries below instead of verbatim.\n${summaryBlock}`,
           omittedItems:
             priorOmittedCount - [...proposed].filter((id) => priorOmitted.has(id)).length,
+          omittedItemIds: [...priorOmitted].filter((id) => !proposedIds.has(id)),
           budget,
           // Otherwise a newer tool result takes the room an older pinned message needs, and
           // the summary is refused for a loss it did not have to cause.

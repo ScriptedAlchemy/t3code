@@ -212,13 +212,13 @@ it.effect.each(["turn", "maintenance"] as const)(
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const delayedProbe = Deferred.await(releaseTarget).pipe(
-          Effect.andThen(lane === "turn" ? worker.runTurnOnce : worker.runMaintenanceOnce),
+          Effect.andThen(lane === "turn" ? worker.runTurnOnce() : worker.runMaintenanceOnce),
         );
         yield* EffectWorker.runDaemonWithOptions({ concurrency: 1 }).pipe(
           Effect.provideService(EffectWorker.OrchestrationEffectWorkerV2, {
             ...worker,
             ...(lane === "turn"
-              ? { runTurnOnce: delayedProbe }
+              ? { runTurnOnce: () => delayedProbe }
               : { runMaintenanceOnce: delayedProbe }),
           }),
           Effect.forkScoped,
@@ -292,7 +292,7 @@ it.effect("admits turns while delivery scrub is held and retains the next remova
         },
       ]);
       assert.isTrue(Option.isSome(yield* outbox.get(next.id)));
-      assert.isTrue(yield* worker.runTurnOnce);
+      assert.isTrue(yield* worker.runTurnOnce());
       assert.equal(yield* Ref.get(turns), 1);
       assert.isFalse(yield* Deferred.isDone(release));
       yield* Deferred.succeed(release, undefined);
@@ -359,7 +359,7 @@ it.effect(
             request: { type: "provider-turn.start", runId },
           },
         ]);
-        assert.isTrue(yield* worker.runTurnOnce);
+        assert.isTrue(yield* worker.runTurnOnce());
         assert.isFalse(yield* Deferred.isDone(release));
         yield* Deferred.succeed(release, undefined);
         yield* outbox.awaitSettled(job.id);
@@ -422,7 +422,7 @@ it.effect.each(["project-knowledge.extract", "conversation-summary.generate"] as
             request: { type: "provider-turn.start", runId: RunId.make("run:follow-up") },
           },
         ]);
-        assert.isTrue(yield* worker.runTurnOnce);
+        assert.isTrue(yield* worker.runTurnOnce());
         assert.deepEqual(yield* Ref.get(events), ["start"]);
         assert.isFalse(yield* Deferred.isDone(release));
         yield* Deferred.succeed(release, undefined);
@@ -542,6 +542,7 @@ function layerExecutorFor(input: {
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
         interrupt: input.interrupt ?? (() => Effect.void),
         steer: () => Effect.void,
+        applyModelSelection: () => Effect.void,
         interruptAndAwaitTerminal: (request) =>
           record(
             request.replacementProviderSessionId === undefined
@@ -829,7 +830,7 @@ it.effect("requeues a claim when a pre-execution worker check fails", () =>
     );
 
     const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-      Effect.flatMap((worker) => worker.runOnce),
+      Effect.flatMap((worker) => worker.runOnce()),
       Effect.provide(layerWorker),
       Effect.exit,
     );
@@ -899,7 +900,7 @@ it.effect("arms cancellation before the durable pre-execution check", () =>
     );
 
     const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-      Effect.flatMap((worker) => worker.runOnce),
+      Effect.flatMap((worker) => worker.runOnce()),
       Effect.provide(layerWorker),
       Effect.exit,
     );
@@ -965,7 +966,7 @@ it.effect("terminalizes a process-bound claim when success settlement fails", ()
     );
 
     const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-      Effect.flatMap((worker) => worker.runOnce),
+      Effect.flatMap((worker) => worker.runOnce()),
       Effect.provide(layerWorker),
       Effect.exit,
     );

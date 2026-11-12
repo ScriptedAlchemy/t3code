@@ -663,10 +663,10 @@ it.effect.each([false, true])("groups shutdown commits with rollback=%s", (fail)
         EffectWorker.OrchestrationEffectWorkerV2.of({
           awaitWork: () => Effect.void,
           runRecoveryOnce: Effect.succeed(false),
-          runOnce: Effect.succeed(false),
-          runTurnOnce: Effect.succeed(false),
+          runOnce: () => Effect.succeed(false),
+          runTurnOnce: () => Effect.succeed(false),
           runMaintenanceOnce: Effect.succeed(false),
-          nextClaimableAt: Effect.succeedNone,
+          nextClaimableAt: () => Effect.succeedNone,
           drain: () => Effect.succeed(0),
         }),
       ),
@@ -1843,7 +1843,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         // This suite shares its database; source corrections also queue independent maintenance.
         assert.isAtLeast(yield* worker.drain(), 1);
-        assert.isFalse(yield* worker.runTurnOnce);
+        assert.isFalse(yield* worker.runTurnOnce());
       }).pipe(Effect.provide(layerWorker));
 
       assert.equal(yield* Ref.get(executionCount), 1);
@@ -1984,6 +1984,107 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       assert.equal(yield* Ref.get(providerStartCount), 0);
       const projection = yield* projectionStore.getThreadProjection(threadId);
       assert.equal(projection.runs[0]?.status, "cancelled");
+    }).pipe(Effect.provide(Layer.fresh(layerTest))),
+  );
+
+  it.effect("refuses a run-current write once an unpaired interrupt request is stored", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-interrupt-guard");
+      const runId = RunId.make("run:foundation-interrupt-guard");
+      const attemptId = RunAttemptId.make("run-attempt:foundation-interrupt-guard");
+      const requestId = TurnItemId.make("turn-item:foundation-interrupt-guard:request");
+      const resultId = TurnItemId.make("turn-item:foundation-interrupt-guard:result");
+      const run: OrchestrationV2Run = {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make("message:foundation-interrupt-guard"),
+        rootNodeId: null,
+        activeAttemptId: attemptId,
+        status: "running",
+        queuePosition: null,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      yield* eventSink.write({
+        events: [
+          threadCreatedEvent({
+            id: "event:foundation-interrupt-guard:thread",
+            thread: makeThread(threadId, now),
+            now,
+          }),
+          {
+            id: EventId.make("event:foundation-interrupt-guard:run"),
+            type: "run.created",
+            threadId,
+            runId,
+            providerInstanceId,
+            occurredAt: now,
+            payload: run,
+          },
+        ],
+      });
+      const signalItem = (id: TurnItemId, type: "run_interrupt_request" | "run_interrupt_result") =>
+        ({
+          id: EventId.make(`event:${id}`),
+          type: "turn-item.updated",
+          threadId,
+          runId,
+          occurredAt: now,
+          payload: {
+            id,
+            threadId,
+            runId,
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 1,
+            status: "completed",
+            title: "Interrupt",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type,
+            message: "Stopped",
+          },
+        }) as OrchestrationV2DomainEvent;
+      const completeRun = (suffix: string) =>
+        eventSink.writeIfRunCurrent({
+          threadId,
+          runId,
+          activeAttemptId: attemptId,
+          expectedStatus: "running",
+          unlessInterruptRequested: { requestId, resultId },
+          events: [
+            {
+              id: EventId.make(`event:foundation-interrupt-guard:waiting:${suffix}`),
+              type: "run.updated",
+              threadId,
+              runId,
+              providerInstanceId,
+              occurredAt: now,
+              payload: { ...run, status: "waiting" },
+            },
+          ],
+        });
+
+      yield* eventSink.write({ events: [signalItem(requestId, "run_interrupt_request")] });
+      const refused = yield* completeRun("refused");
+      assert.isFalse(refused.committed);
+      assert.deepEqual(refused.storedEvents, []);
+
+      yield* eventSink.write({ events: [signalItem(resultId, "run_interrupt_result")] });
+      assert.isTrue((yield* completeRun("paired")).committed);
     }).pipe(Effect.provide(Layer.fresh(layerTest))),
   );
 
@@ -2252,7 +2353,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       yield* Effect.gen(function* () {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const workerFiber = yield* worker.runTurnOnce.pipe(Effect.forkChild);
+        const workerFiber = yield* worker.runTurnOnce().pipe(Effect.forkChild);
         yield* Deferred.await(started);
         const cancelledEffectIds = yield* outbox.cancelUnsettled({
           threadId,
@@ -2375,7 +2476,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       assert.isTrue(
         yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-          Effect.flatMap((worker) => worker.runTurnOnce),
+          Effect.flatMap((worker) => worker.runTurnOnce()),
           Effect.provide(layerWorker),
         ),
       );
@@ -2656,7 +2757,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       if (Option.isNone(claimed)) return;
       assert.equal(claimed.value.id, "effect:foundation-next-claimable:a1");
 
-      const whileBlocked = yield* outbox.nextClaimableAt;
+      const whileBlocked = yield* outbox.nextClaimableAt();
       assert.isTrue(Option.isSome(whileBlocked));
       if (Option.isSome(whileBlocked)) {
         assert.equal(DateTime.toEpochMillis(whileBlocked.value), DateTime.toEpochMillis(future));
@@ -2666,7 +2767,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         effectId: claimed.value.id,
         workerId: "next-claimable-worker",
       });
-      const afterCompletion = yield* outbox.nextClaimableAt;
+      const afterCompletion = yield* outbox.nextClaimableAt();
       assert.isTrue(Option.isSome(afterCompletion));
       if (Option.isSome(afterCompletion)) {
         assert.isAtMost(DateTime.toEpochMillis(afterCompletion.value), DateTime.toEpochMillis(now));
@@ -2843,7 +2944,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       assert.equal(Option.getOrUndefined(title)?.id, "effect:foundation-retry-order:b-title");
       const blocked = yield* outbox.claimNext({ workerId });
       assert.isTrue(Option.isNone(blocked));
-      const nextClaimable = yield* outbox.nextClaimableAt;
+      const nextClaimable = yield* outbox.nextClaimableAt();
       assert.isTrue(Option.isSome(nextClaimable));
       if (Option.isSome(nextClaimable)) {
         assert.equal(
@@ -2975,6 +3076,108 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }).pipe(Effect.provide(layerIsolatedOutbox)),
   );
 
+  it.effect("starts a provider turn while slow title generations are running", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const commandId = CommandId.make("command:foundation-title-starvation");
+      const titleThreads = ["a", "b", "c"].map((suffix) =>
+        ThreadId.make(`thread:foundation-title-starvation:${suffix}`),
+      );
+      const turnStarted = yield* Deferred.make<void>();
+      const releaseTitles = yield* Deferred.make<void>();
+      const layerWorker = EffectWorker.layerWithOptions({
+        workerId: "title-starvation-worker",
+      }).pipe(
+        Layer.provide(
+          Layer.merge(
+            Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+            Layer.succeed(
+              EffectWorker.OrchestrationEffectExecutorV2,
+              EffectWorker.OrchestrationEffectExecutorV2.of({
+                execute: (effect) =>
+                  effect.request.type === "thread-title.generate"
+                    ? Deferred.await(releaseTitles)
+                    : Deferred.succeed(turnStarted, undefined).pipe(Effect.asVoid),
+              }),
+            ),
+          ),
+        ),
+      );
+
+      yield* Effect.gen(function* () {
+        yield* EffectWorker.runDaemonWithOptions({ concurrency: 2 }).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        yield* outbox.enqueue([
+          ...titleThreads.map((threadId, index) => ({
+            id: `effect:foundation-title-starvation:${index}-title`,
+            commandId,
+            threadId,
+            request: {
+              type: "thread-title.generate" as const,
+              kind: { type: "regenerate" as const },
+            },
+          })),
+          {
+            id: "effect:foundation-title-starvation:turn-start",
+            commandId,
+            threadId: titleThreads[0]!,
+            request: {
+              type: "provider-turn.start",
+              runId: RunId.make("run:foundation-title-starvation"),
+            },
+          },
+        ]);
+        yield* outbox.notifyAvailable(titleThreads.length + 1);
+
+        const started = yield* Deferred.await(turnStarted).pipe(
+          Effect.timeoutOption(Duration.seconds(1)),
+          Effect.forkScoped,
+        );
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.isTrue(
+          Option.isSome(yield* Fiber.join(started)),
+          "provider-turn.start was never claimed: thread title generations occupied every effect worker",
+        );
+        assert.isFalse(yield* Deferred.isDone(releaseTitles));
+
+        yield* Deferred.succeed(releaseTitles, undefined);
+        yield* Effect.forEach(titleThreads, (_, index) =>
+          outbox.awaitSettled(`effect:foundation-title-starvation:${index}-title`),
+        );
+      }).pipe(Effect.provide(layerWorker), Effect.scoped);
+    }),
+  );
+
+  it.effect("holds pending titles at the running-title cap without waking idle workers", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const cap = { maxRunningTitleGenerations: 1 };
+      const title = (name: string) => ({
+        id: `effect:foundation-title-cap:${name}`,
+        commandId: CommandId.make(`command:foundation-title-cap:${name}`),
+        threadId: ThreadId.make(`thread:foundation-title-cap:${name}`),
+        request: { type: "thread-title.generate" as const, kind: { type: "regenerate" as const } },
+      });
+      yield* outbox.enqueue([title("first"), title("second")]);
+      const first = yield* outbox.claimNext({ workerId: "title-cap-worker", ...cap });
+      assert.strictEqual(Option.getOrUndefined(first)?.id, title("first").id);
+
+      assert.isTrue(
+        Option.isNone(yield* outbox.claimNext({ workerId: "title-cap-worker", ...cap })),
+      );
+      assert.isTrue(
+        Option.isNone(yield* outbox.nextClaimableAt(cap)),
+        "a capped title must not report a past deadline, or idle workers re-poll every 25 ms",
+      );
+      assert.isTrue(Option.isSome(yield* outbox.nextClaimableAt()));
+
+      yield* outbox.succeed({ effectId: title("first").id, workerId: "title-cap-worker" });
+      const second = yield* outbox.claimNext({ workerId: "title-cap-worker", ...cap });
+      assert.strictEqual(Option.getOrUndefined(second)?.id, title("second").id);
+      yield* outbox.succeed({ effectId: title("second").id, workerId: "title-cap-worker" });
+    }),
+  );
+
   it.effect("does not reclaim a running effect after its process-local lease expires", () =>
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -3026,7 +3229,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       yield* Effect.gen(function* () {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const firstFiber = yield* worker.runTurnOnce.pipe(Effect.forkChild);
+        const firstFiber = yield* worker.runTurnOnce().pipe(Effect.forkChild);
         yield* Deferred.await(firstStarted);
         yield* sql`
           UPDATE orchestration_v2_effect_outbox
@@ -3034,12 +3237,12 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           WHERE effect_id = ${firstEffectId}
         `;
 
-        assert.isFalse(yield* worker.runTurnOnce);
+        assert.isFalse(yield* worker.runTurnOnce());
         assert.deepEqual(yield* Ref.get(executions), [firstEffectId]);
 
         yield* Deferred.succeed(releaseFirst, undefined);
         assert.isTrue(yield* Fiber.join(firstFiber));
-        assert.isTrue(yield* worker.runTurnOnce);
+        assert.isTrue(yield* worker.runTurnOnce());
         assert.deepEqual(yield* Ref.get(executions), [firstEffectId, secondEffectId]);
       }).pipe(Effect.provide(layerWorker));
     }),
@@ -3362,10 +3565,10 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           EffectWorker.OrchestrationEffectWorkerV2.of({
             awaitWork: () => Effect.void,
             runRecoveryOnce: Effect.succeed(false),
-            runOnce: Effect.succeed(false),
-            runTurnOnce: Effect.succeed(false),
+            runOnce: () => Effect.succeed(false),
+            runTurnOnce: () => Effect.succeed(false),
             runMaintenanceOnce: Effect.succeed(false),
-            nextClaimableAt: Effect.succeedNone,
+            nextClaimableAt: () => Effect.succeedNone,
             drain: () => Effect.succeed(0),
           }),
         ),
@@ -3581,10 +3784,10 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           EffectWorker.OrchestrationEffectWorkerV2.of({
             awaitWork: () => Effect.void,
             runRecoveryOnce: Effect.succeed(false),
-            runOnce: Effect.succeed(false),
-            runTurnOnce: Effect.succeed(false),
+            runOnce: () => Effect.succeed(false),
+            runTurnOnce: () => Effect.succeed(false),
             runMaintenanceOnce: Effect.succeed(false),
-            nextClaimableAt: Effect.succeedNone,
+            nextClaimableAt: () => Effect.succeedNone,
             drain: () => Effect.succeed(0),
           }),
         ),

@@ -592,10 +592,11 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
     return undefined;
   };
 
-  const foldedAnswerMessageIds = new Set(
+  // An answer that started a later run stays a normal message at that run's position.
+  const foldedAnswerRunIdByMessageId = new Map<string, OrchestrationV2TurnItem["runId"]>(
     input.visibleTurnItems.flatMap(({ item }) =>
       item.type === "user_input_request" && item.questionAnswer
-        ? [`async-answer:${item.questionAnswer.requestId}`]
+        ? [[`async-answer:${item.questionAnswer.requestId}`, item.runId] as const]
         : [],
     ),
   );
@@ -609,7 +610,11 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
       item.status === "pending"
     )
       continue;
-    if (item.type === "user_message" && foldedAnswerMessageIds.has(item.messageId)) continue;
+    if (
+      item.type === "user_message" &&
+      foldedAnswerRunIdByMessageId.get(item.messageId) === item.runId
+    )
+      continue;
     const createdAt = projectedItemCreatedAt(row);
     const attempt = resolveAttempt(item);
     const attemptMetadata = attempt === undefined ? {} : { attempt };
@@ -655,6 +660,7 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
               createdBy: item.createdBy,
               creationSource: item.creationSource,
               ...(item.senderThreadId !== undefined ? { senderThreadId: item.senderThreadId } : {}),
+              ...(item.linkedSender !== undefined ? { linkedSender: item.linkedSender } : {}),
               ...(item.idleCompaction !== undefined ? { idleCompaction: item.idleCompaction } : {}),
               ...(item.scheduledTaskId !== undefined
                 ? { scheduledTaskId: item.scheduledTaskId }
@@ -749,7 +755,10 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
     });
   }
 
-  const retainedMessageIds = new Set([...committedMessageIds, ...foldedAnswerMessageIds]);
+  const retainedMessageIds = new Set([
+    ...committedMessageIds,
+    ...foldedAnswerRunIdByMessageId.keys(),
+  ]);
   for (const message of input.anchoredMessages ?? []) {
     if (retainedMessageIds.has(message.id)) continue;
     retainedMessageIds.add(message.id);
@@ -1059,16 +1068,16 @@ export function deriveTimelineEntriesFromVisibleTurnItemsWithState(
 export function deriveRevertTurnCountByUserMessageId(input: {
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly checkpoints: ReadonlyArray<ThreadCheckpointSummary>;
-  readonly threadStartCheckpointReady: boolean;
+  readonly threadStartCheckpointAvailable: boolean;
   readonly availableRevertTurnCounts?: ReadonlySet<number> | undefined;
   readonly unsettledRunId?: RunId | null;
   /** These never capture a checkpoint, so the next turn rewinds past them. */
   readonly publicationRunIds?: ReadonlySet<RunId> | undefined;
 }): Map<ChatMessage["id"], number> {
-  const readyTurnCountByRunId = new Map<RunId, number>();
+  const turnCountByRunId = new Map<RunId, number>();
   for (const checkpoint of input.checkpoints) {
-    if (checkpoint.status === "ready") {
-      readyTurnCountByRunId.set(checkpoint.runId, checkpoint.checkpointTurnCount);
+    if (isRewindableCheckpoint(checkpoint)) {
+      turnCountByRunId.set(checkpoint.runId, checkpoint.checkpointTurnCount);
     }
   }
   const targetByRunId = new Map<RunId, number | undefined>();
@@ -1091,10 +1100,10 @@ export function deriveRevertTurnCountByUserMessageId(input: {
       targetByRunId.set(
         runId,
         previousRunId === null
-          ? input.threadStartCheckpointReady
+          ? input.threadStartCheckpointAvailable
             ? 0
             : undefined
-          : readyTurnCountByRunId.get(previousRunId),
+          : turnCountByRunId.get(previousRunId),
       );
       if (!input.publicationRunIds?.has(runId)) previousRunId = runId;
     }
@@ -1112,13 +1121,19 @@ export function deriveRevertTurnCountByUserMessageId(input: {
   return byUserMessageId;
 }
 
+// A missing snapshot (no git, or a side chat) still pins a conversation position; only
+// restoring files needs a ready one.
+function isRewindableCheckpoint(checkpoint: Pick<OrchestrationV2Checkpoint, "status">) {
+  return checkpoint.status === "ready" || checkpoint.status === "missing";
+}
+
 export function findRevertCheckpoint(
   checkpoints: ReadonlyArray<OrchestrationV2Checkpoint>,
   turnCount: number,
 ): OrchestrationV2Checkpoint | undefined {
   return checkpoints.findLast(
     (checkpoint) =>
-      checkpoint.status === "ready" &&
+      isRewindableCheckpoint(checkpoint) &&
       (turnCount === 0
         ? checkpoint.ordinalWithinScope === 0 && checkpoint.appRunOrdinal === null
         : checkpoint.appRunOrdinal === turnCount),

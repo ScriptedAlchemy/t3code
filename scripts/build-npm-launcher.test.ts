@@ -75,11 +75,15 @@ exit 7
   const archive = yield* fs.readFile(path.join(root, "release", archiveName));
   let checksum = NodeCrypto.createHash("sha256").update(archive).digest("hex");
   const requests: Array<string> = [];
+  const failures: Array<number> = [];
   const server = NodeHttp.createServer((request, response) => {
     requests.push(request.url ?? "");
     const url = new URL(request.url ?? "", "http://localhost");
     const prefix = url.pathname.startsWith("/mirror/") ? "/mirror" : "";
-    if (prefix && url.search !== "?region=test") {
+    const failure = failures.shift();
+    if (failure !== undefined) {
+      response.writeHead(failure).end("upstream timed out");
+    } else if (prefix && url.search !== "?region=test") {
       response.writeHead(400).end();
     } else if (url.pathname === `${prefix}/v${VERSION}/SHA256SUMS`) {
       response.end(`${checksum}  ${archiveName}\n`);
@@ -105,6 +109,9 @@ exit 7
     requests,
     corruptChecksum: () => {
       checksum = "0".repeat(64);
+    },
+    failNextRequests: (...statuses: Array<number>) => {
+      failures.push(...statuses);
     },
   };
 });
@@ -192,6 +199,8 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
         }
 
         const release = yield* serveFakeRelease(root);
+        // regression: #32897
+        release.failNextRequests(504, 524);
         const home = path.join(root, "home");
         const env = {
           PATH: (yield* HostProcess.Environment).PATH,
@@ -221,7 +230,10 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
           [VERSION],
         );
 
+        // Two transient failures, then the retry that succeeds.
         assert.deepStrictEqual(release.requests, [
+          `/mirror/v${VERSION}/SHA256SUMS?region=test`,
+          `/mirror/v${VERSION}/SHA256SUMS?region=test`,
           `/mirror/v${VERSION}/SHA256SUMS?region=test`,
           `/mirror/v${VERSION}/t3-${VERSION}-${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}.tar.gz?region=test`,
         ]);

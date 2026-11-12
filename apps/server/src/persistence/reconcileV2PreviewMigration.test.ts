@@ -77,6 +77,8 @@ describe("V2 preview upgrade", () => {
         [95, "RetireInferenceRouteInstances"],
         [96, "ProjectKnowledgeViews"],
         [97, "RepairSerializedModelSelectionOptions"],
+        [98, "ProjectionMessageSearchText"],
+        [99, "TurnItemConversationIndex"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -197,6 +199,8 @@ describe("V2 preview upgrade", () => {
         [95, "RetireInferenceRouteInstances"],
         [96, "ProjectKnowledgeViews"],
         [97, "RepairSerializedModelSelectionOptions"],
+        [98, "ProjectionMessageSearchText"],
+        [99, "TurnItemConversationIndex"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

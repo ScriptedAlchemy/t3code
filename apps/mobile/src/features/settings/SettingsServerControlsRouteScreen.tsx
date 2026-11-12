@@ -48,6 +48,8 @@ import { AutoSettleSettingsRows, ThreadSplitSettingsSection } from "./ThreadSett
 import { supportsSharedSettingsSync } from "@t3tools/client-runtime/state/shared-settings";
 import { useHomeListOptions } from "../home/home-list-options";
 import { useEnvironments } from "../../state/environments";
+import { isSourceControlProviderOffered } from "@t3tools/client-runtime/operations/projects";
+import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 
 type SettingsPage = "threads" | "source-control" | "worktrees" | "maintenance" | "zack";
 
@@ -575,6 +577,31 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     environments={selectedTargets}
                     canWrite={(environmentId) => writableEnvironments.has(environmentId)}
                   />
+                )}
+                {projectSelected ? null : (
+                  <SettingsSection title="Project sources">
+                    {sourceControlClients.definitions.map((definition) => {
+                      const offered = displayTargets.map((target) =>
+                        isSourceControlProviderOffered(
+                          target.settings.offeredSourceControlProviders,
+                          definition.kind,
+                        ),
+                      );
+                      return (
+                        <SettingsSwitchRow
+                          key={definition.kind}
+                          label={definition.pickerLabel}
+                          value={
+                            offered.every((value) => value === offered[0]) ? offered[0]! : null
+                          }
+                          disabled={disabledFor("offeredSourceControlProviders")}
+                          onValueChange={(value) =>
+                            write({ offeredSourceControlProviders: { [definition.kind]: value } })
+                          }
+                        />
+                      );
+                    })}
+                  </SettingsSection>
                 )}
                 <SettingsSection title="Pull requests">
                   <SettingsSwitchRow

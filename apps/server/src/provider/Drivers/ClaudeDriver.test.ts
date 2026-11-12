@@ -25,6 +25,7 @@ import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ModelManifest from "../ModelManifest.ts";
+import * as ProviderInstallationGate from "../ProviderInstallationGate.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { claudeCliFixtureSource } from "../ClaudeCliAuth.testkit.ts";
@@ -42,6 +43,7 @@ const layerDeps = Layer.mergeAll(
   ServerSettings.layerTest(),
   ModelManifest.layerTest,
   ResetCreditCoordinator.layerTest,
+  ProviderInstallationGate.layer,
   ProviderLatestVersions.layer,
   Layer.mock(ClaudeAdapterV2.ClaudeAgentSdkQueryRunner)({}),
   Layer.mock(BackgroundPolicy.BackgroundPolicy)({

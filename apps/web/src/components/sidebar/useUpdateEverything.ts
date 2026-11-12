@@ -208,7 +208,7 @@ export function useUpdateEverything(
                 environmentId: target.environmentId,
                 input: { operation: "update" },
               });
-              if (result._tag === "Success") outcomes.push({ status: "updated" });
+              if (result._tag === "Success") outcomes.push({ status: "updated", message: null });
               else {
                 const line = `${target.label} · CLIProxyAPI: ${String(squashAtomCommandFailure(result))}`;
                 providerFailures.set(target.environmentId, line);

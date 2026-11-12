@@ -12,6 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { vi } from "vite-plus/test";
 
+import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -69,6 +70,7 @@ const make = (
           }),
           ServerSettings.layerTest({}),
           Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.undefined }),
+          ProviderInstallationGate.layer,
         ),
       ),
     ),

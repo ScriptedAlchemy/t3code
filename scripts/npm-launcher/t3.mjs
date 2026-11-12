@@ -20,6 +20,8 @@ function t3Home() {
   return path.resolve(raw);
 }
 
+const isTransient = (status) => status === 408 || status === 429 || status >= 500;
+
 async function get(url) {
   const display = new URL(url);
   display.username = "";
@@ -27,10 +29,15 @@ async function get(url) {
   display.search = "";
   display.hash = "";
   let response;
-  try {
-    response = await fetch(url);
-  } catch {
-    throw new Error(`GET ${display.href} failed to connect`);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      response = await fetch(url);
+      if (attempt === 4 || !isTransient(response.status)) break;
+      await response.body?.cancel();
+    } catch {
+      if (attempt === 4) throw new Error(`GET ${display.href} failed to connect`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** (attempt - 1)));
   }
   if (response.status === 404) {
     throw new Error(

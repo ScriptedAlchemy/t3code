@@ -135,6 +135,7 @@ function setup() {
     sendDisabledReason: null,
     isPreparingWorktree: false,
     isCompacting: false,
+    canSteer: true,
     bannerItems: [],
     resumeCompactionTokens: null,
     keepFullHistory: false,

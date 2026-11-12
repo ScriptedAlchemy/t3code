@@ -126,6 +126,7 @@ import * as NativeAppIconResolver from "./assets/NativeAppIconResolver.ts";
 import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
 import * as ProviderInstallation from "./provider/providerInstallation.ts";
 import * as CodexInstallation from "./provider/CodexInstallation.ts";
+import * as ProviderInstallationGate from "./provider/ProviderInstallationGate.ts";
 import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
 import * as ProviderAdapterRegistry from "./orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
@@ -733,50 +734,60 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ReplayMarkers.layer,
   ThreadSplitSuggestions.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
-).pipe(
-  Layer.provideMerge(layerOrchestrationApplication),
-  Layer.provideMerge(
-    PstackPack.layer.pipe(Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry)),
-  ),
-  Layer.provideMerge(SkillsLibrary.layer),
-  Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
-  Layer.provideMerge(
-    Layer.merge(ConversationSummaries.layer, ModelEvaluations.layer).pipe(
-      Layer.provide(
-        Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer, EffectOutboxV2.layer),
+)
+  .pipe(
+    Layer.provideMerge(layerOrchestrationApplication),
+    Layer.provideMerge(
+      PstackPack.layer.pipe(
+        Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
       ),
     ),
-  ),
-  Layer.provideMerge(ExternalHistory.layer),
-  Layer.provideMerge(
-    ProjectKnowledge.layer.pipe(
-      Layer.provide(ProjectionStoreV2.layer),
-      Layer.provide(HolographicMemory.layer),
+    Layer.provideMerge(SkillsLibrary.layer),
+    Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
+    Layer.provideMerge(
+      Layer.merge(ConversationSummaries.layer, ModelEvaluations.layer).pipe(
+        Layer.provide(
+          Layer.mergeAll(ProjectionStoreV2.layer, TextGeneration.layer, EffectOutboxV2.layer),
+        ),
+      ),
     ),
-  ),
-  Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
-  Layer.provideMerge(SecretResolver.layer),
-  Layer.provideMerge(layerServerSettings),
-  Layer.provideMerge(layerGit),
-  Layer.provideMerge(layerVcs),
-  Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice)),
-  Layer.provideMerge(layerPersistence),
-  Layer.provideMerge(
-    Layer.mergeAll(Keybindings.layer, EnvironmentTheme.layer, UsageLimitSources.layer),
-  ),
-  Layer.provideMerge(ProviderRegistry.layer),
-  Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
-  // Provider hydration builds the Claude runner, which reports agents to the same scanner the
-  // terminal and preview layers share.
-  Layer.provideMerge(layerPortScanner),
-  Layer.provideMerge(
-    Layer.mergeAll(
-      AntigravityInstallation.AntigravityInstallation.layer,
-      CodexInstallation.CodexInstallation.layer,
+    Layer.provideMerge(ExternalHistory.layer),
+    Layer.provideMerge(
+      ProjectKnowledge.layer.pipe(
+        Layer.provide(ProjectionStoreV2.layer),
+        Layer.provide(HolographicMemory.layer),
+      ),
     ),
-  ),
-  Layer.provideMerge(layerSourceControlProviderRegistry),
-);
+    Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
+    Layer.provideMerge(SecretResolver.layer),
+    Layer.provideMerge(layerServerSettings),
+    Layer.provideMerge(layerGit),
+    Layer.provideMerge(layerVcs),
+  )
+  .pipe(
+    Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice)),
+    Layer.provideMerge(layerPersistence),
+    Layer.provideMerge(
+      Layer.mergeAll(Keybindings.layer, EnvironmentTheme.layer, UsageLimitSources.layer),
+    ),
+    Layer.provideMerge(ProviderRegistry.layer),
+    Layer.provideMerge(
+      ProviderInstanceRegistryHydration.layer.pipe(Layer.provide(SqlitePersistence.layerConfig)),
+    ),
+    // One gate for the server, below hydration so the Claude adapter sees it: layers memoize by
+    // reference, so the runtime layer shares it.
+    Layer.provideMerge(ProviderInstallationGate.layer),
+    // Provider hydration builds the Claude runner, which reports agents to the same scanner the
+    // terminal and preview layers share.
+    Layer.provideMerge(layerPortScanner),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        AntigravityInstallation.AntigravityInstallation.layer,
+        CodexInstallation.CodexInstallation.layer,
+      ),
+    ),
+    Layer.provideMerge(layerSourceControlProviderRegistry),
+  );
 
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   Layer.provideMerge(layerPtyAdapter),

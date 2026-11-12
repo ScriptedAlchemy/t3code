@@ -51,9 +51,26 @@ export const linkRequestDefaultAccess = (
   item: Pick<LinkRequestItem, "requestedAccess">,
 ): AuthMcpClientAccess => item.requestedAccess ?? "approval-required";
 
-/** What the card calls the other environment: its own name, else the address asked for. */
-export const linkRequestTargetName = (item: Pick<LinkRequestItem, "label" | "url">): string =>
-  item.label?.trim() || item.url || "a machine";
+const parsedUrl = (url: string) => {
+  try {
+    return new URL(url);
+  } catch {
+    return undefined;
+  }
+};
+
+/** The http or https origin of an address: what the server links, and nothing else in it. */
+const originOf = (url: string) => {
+  const parsed = parsedUrl(url);
+  return parsed?.protocol === "http:" || parsed?.protocol === "https:" ? parsed.origin : undefined;
+};
+
+/** Where a link to `address` sends its pairing code, which a username or path in it can hide. */
+export const linkDestination = (address: string): string => originOf(address) ?? address.trim();
+
+/** What the card calls the other environment: where the address asked for leads, never a name it answers with. */
+export const linkRequestTargetName = (item: Pick<LinkRequestItem, "url">): string =>
+  item.url === undefined ? "a machine" : linkDestination(item.url);
 
 /** A machine the user could link a thread's environment to. */
 export interface LinkableMachine {
@@ -69,7 +86,7 @@ export interface LinkableMachine {
    * Where the client knows it answers, most preferred first: the addresses it
    * reports, then its saved routes, then its T3 Connect address. The server
    * keeps only those that answer as this machine. Empty for a machine reached
-   * only over SSH, whose forward lives in this client.
+   * only over SSH or loopback, which name this client's device.
    */
   readonly urls: ReadonlyArray<string>;
 }
@@ -146,7 +163,7 @@ export function linkableMachines(input: {
         connected: false,
         connectOnly: true,
         linked: linkedIds.has(environment.environmentId),
-        urls: [environment.endpoint.httpBaseUrl],
+        urls: linkableMachineUrls([environment.endpoint.httpBaseUrl]),
       };
     });
   return [...saved, ...connectOnly];
@@ -203,6 +220,59 @@ export function linkRequestInitialMachine(
     : null;
 }
 
+/** The machine choice for linking by an address typed in. */
+export const ANOTHER_ADDRESS = "another-address";
+
+/**
+ * What a link request links: a machine from the client's catalog, or an address.
+ * `urls` is empty when the client knows no direct address for the machine,
+ * so the user types one.
+ */
+export type LinkRequestTarget =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "machine";
+      readonly environmentId: EnvironmentId;
+      readonly label: string;
+      readonly urls: ReadonlyArray<string>;
+      readonly linked: boolean;
+    }
+  | { readonly kind: "address" };
+
+/**
+ * Anything can answer at an address as any machine, so an address the agent
+ * gave is a machine only where this client already reaches that machine. Its
+ * pairing code is minted for, and sent to, the client's own addresses alone.
+ */
+export function linkRequestTarget(
+  item: Pick<LinkRequestItem, "environmentId" | "url">,
+  machines: ReadonlyArray<LinkableMachine>,
+  choice: string | null,
+): LinkRequestTarget {
+  const asked = item.url === undefined ? undefined : originOf(item.url);
+  // Two machines on separate networks can share a private address.
+  const [reached, ...others] =
+    asked === undefined
+      ? []
+      : machines.filter((machine) => machine.urls.some((url) => originOf(url) === asked));
+  const chosen =
+    item.url === undefined
+      ? (item.environmentId ?? choice)
+      : reached !== undefined && others.length === 0
+        ? reached.environmentId
+        : ANOTHER_ADDRESS;
+  if (chosen === null) return { kind: "none" };
+  if (chosen === ANOTHER_ADDRESS) return { kind: "address" };
+  const machine = machines.find((candidate) => candidate.environmentId === chosen);
+  return {
+    kind: "machine",
+    environmentId: machine?.environmentId ?? (chosen as EnvironmentId),
+    label: machine?.label ?? linkRequestTargetName(item),
+    urls: machine?.urls ?? [],
+    linked: machine?.linked ?? false,
+  };
+}
+
 /** What a link request card shows: the actions while pending, otherwise a one-line outcome. */
 export type LinkRequestDisplay =
   | { readonly kind: "pending" }
@@ -219,10 +289,7 @@ export type LinkRequestDisplay =
  * names an access level the way the client's access picker does.
  */
 export function linkRequestDisplay(
-  item: Pick<
-    LinkRequestItem,
-    "linkStatus" | "label" | "url" | "linkedLabel" | "linkedAccess" | "failure"
-  >,
+  item: Pick<LinkRequestItem, "linkStatus" | "url" | "linkedLabel" | "linkedAccess" | "failure">,
   visibility: "local" | "inherited" | "synthetic",
   accessLabel: (access: AuthMcpClientAccess) => string,
 ): LinkRequestDisplay {

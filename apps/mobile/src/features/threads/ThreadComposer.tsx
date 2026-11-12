@@ -91,7 +91,11 @@ import {
   composerStripAttachments,
   type DraftComposerFileAttachment,
 } from "../../lib/composerImages";
-import { buildModelOptions, isModelSelectionUnavailable } from "../../lib/modelOptions";
+import {
+  buildModelOptions,
+  isModelSelectionUnavailable,
+  serverConfigForCwd,
+} from "../../lib/modelOptions";
 import { useScaledTextRole, type ScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import { MOBILE_TYPOGRAPHY } from "../../lib/typography";
@@ -552,8 +556,9 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const lockedProviderInstanceId = props.canSwitchProvider
     ? undefined
     : currentModelSelection.instanceId;
+  const projectServerConfig = serverConfigForCwd(props.serverConfig, props.projectCwd);
   const modelOptions = buildModelOptions(
-    props.serverConfig,
+    projectServerConfig,
     currentModelSelection,
     lockedProviderInstanceId,
     props.selectedThread.projectId,
@@ -563,7 +568,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     lockedProviderInstanceId === undefined
       ? modelOptions
       : buildModelOptions(
-          props.serverConfig,
+          projectServerConfig,
           currentModelSelection,
           undefined,
           props.selectedThread.projectId,

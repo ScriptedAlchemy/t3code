@@ -211,12 +211,15 @@ it.effect("reads each Claude account's usage from its own transcript directory",
         homePath: existing,
       });
       if (claudeUsageReader.kind !== "transcripts") throw new Error("Expected transcript usage");
-      const directories = yield* claudeUsageReader.directories({
-        instanceId: ProviderInstanceId.make(id),
-        config,
-        environment: { CLAUDE_CONFIG_DIR: existing },
-        configured: true,
-      });
+      const directories = yield* claudeUsageReader.directories(
+        {
+          instanceId: ProviderInstanceId.make(id),
+          config,
+          environment: { CLAUDE_CONFIG_DIR: existing },
+          configured: true,
+        },
+        { awaitRefresh: false },
+      );
       const raw = yield* fs.readFileString(path.join(directories[0]!.dir, "usage.jsonl"));
       records.push(
         claudeUsageReader.format

@@ -49,6 +49,7 @@ export function ThreadGroupInviteScreen({
       purpose="invite"
       environmentId={ref.environmentId}
       projectId={thread.projectId}
+      cwd={null}
       providerGroups={groupByProvider(options)}
       selectedModel={null}
       prompt={prompt}

@@ -18,6 +18,7 @@ import {
 } from "@t3tools/provider-core/server/handoffBudget";
 import {
   MessageId,
+  type ModelSelection,
   type NodeId,
   ProviderSessionId,
   ProviderThreadId,
@@ -33,7 +34,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 
@@ -55,6 +56,7 @@ export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnCon
     operation: Schema.Literals(["interrupt", "restart", "steer"]),
     providerTurnId: ProviderTurnId,
     turnCompleted: Schema.optional(Schema.Boolean),
+    steerDeclined: Schema.optional(Schema.Boolean),
     /** The provider never confirmed the stop; Force stop is the way out. */
     unresponsive: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
@@ -84,7 +86,20 @@ export interface ProviderTurnControlServiceV2Shape {
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
     readonly messageId: MessageId;
+    readonly modelSelection?: ModelSelection;
   }) => Effect.Effect<void, ProviderTurnControlError>;
+  /** Best effort: a turn that ended or moved sessions picks the selection up when it next starts. */
+  readonly applyModelSelection: (input: {
+    readonly threadId: ThreadId;
+    readonly providerSessionId: ProviderSessionId;
+    readonly providerThreadId: ProviderThreadId;
+    readonly modelSelection: ModelSelection;
+  }) => Effect.Effect<
+    void,
+    | ProjectionStore.ProjectionStoreV2Error
+    | ProviderSessionManager.ProviderSessionManagerV2Error
+    | ProviderAdapter.ProviderAdapterV2Error
+  >;
   readonly interruptAndAwaitTerminal: (input: {
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
@@ -209,6 +224,26 @@ export const layer: Layer.Layer<
     });
 
     return ProviderTurnControlServiceV2.of({
+      applyModelSelection: Effect.fn("ProviderTurnControlService.applyModelSelection")(
+        function* (input) {
+          const { providerThread, providerTurn } = yield* projections.getRunningTurnContext(
+            input.threadId,
+          );
+          if (
+            providerThread?.id !== input.providerThreadId ||
+            providerThread.providerSessionId !== input.providerSessionId ||
+            providerTurn === undefined
+          ) {
+            return;
+          }
+          const session = yield* sessions.get(input.providerSessionId);
+          if (Option.isNone(session) || session.value.applyModelSelection === undefined) return;
+          yield* session.value.applyModelSelection({
+            providerThread,
+            modelSelection: input.modelSelection,
+          });
+        },
+      ),
       interrupt: Effect.fn("ProviderTurnControlService.interrupt")(
         function* (input) {
           const loaded = yield* load({ ...input, operation: "interrupt" });
@@ -599,6 +634,9 @@ export const layer: Layer.Layer<
               runId: run.id,
               providerThread: loaded.providerThread,
               providerTurnId: loaded.providerTurn.id,
+              ...(input.modelSelection === undefined
+                ? {}
+                : { modelSelection: input.modelSelection }),
               message: {
                 messageId: message.id,
                 text,
@@ -614,20 +652,36 @@ export const layer: Layer.Layer<
               },
             })
             .pipe(
+              Effect.catchTags({
+                ProviderAdapterSteerDeclinedError: (cause) =>
+                  Effect.fail(
+                    new ProviderTurnControlError({
+                      threadId: input.threadId,
+                      operation: "steer",
+                      providerTurnId: input.providerTurnId,
+                      steerDeclined: true,
+                      cause,
+                    }),
+                  ),
+              }),
               Effect.catch((cause) =>
                 Effect.gen(function* () {
+                  // A declined steer never reached the provider.
+                  if (isProviderTurnControlError(cause)) {
+                    yield* knowledgeDelivery?.settle("failed") ?? Effect.void;
+                    return yield* cause;
+                  }
                   yield* knowledgeDelivery?.settle("uncertain") ?? Effect.void;
                   const current = yield* projections.getProviderControlContext(
                     input.threadId,
                     input,
                   );
+                  const status = current.providerTurn?.status;
                   return yield* new ProviderTurnControlError({
                     threadId: input.threadId,
                     operation: "steer",
                     providerTurnId: input.providerTurnId,
-                    turnCompleted:
-                      knowledgeDelivery === undefined &&
-                      current.providerTurn?.status === "completed",
+                    turnCompleted: knowledgeDelivery === undefined && status === "completed",
                     cause,
                   });
                 }),

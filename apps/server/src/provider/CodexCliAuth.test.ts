@@ -186,6 +186,8 @@ it.effect.each(["early", "after-response", "missing-id"])(
       expect(launched.args).toEqual([
         "app-server",
         "-c",
+        "thread_unload_delay_secs=0",
+        "-c",
         'model_provider="other"',
         "-c",
         'cli_auth_credentials_store="file"',

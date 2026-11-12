@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildKnowledgeCandidatesPrompt } from "./textGenerationPrompts.ts";
+import { buildKnowledgeCandidatesPrompt, buildThreadTitlePrompt } from "./textGenerationPrompts.ts";
 import { normalizeCliError } from "./textGenerationUtils.ts";
 
 describe("normalizeCliError", () => {
@@ -41,4 +41,17 @@ it("preserves each run boundary and terminal outcome in family review prompts", 
   });
   expect(prompt).toContain("[M1] user (T1/R1, interrupted):\nKeep the API stable.");
   expect(prompt).toContain("[M2] assistant (T2/R2, completed):\nChecked compatibility.");
+});
+
+describe("buildThreadTitlePrompt", () => {
+  it("names the project to leave out of initial and regenerated titles", () => {
+    for (const previousTitle of [undefined, "Hyperdrive Config Crash"]) {
+      const { prompt } = buildThreadTitlePrompt({
+        message: "hyperdrive init crashes without a config",
+        previousTitle,
+        projectTitle: "Hyperdrive",
+      });
+      expect(prompt).toContain('Never include the project name ("Hyperdrive")');
+    }
+  });
 });

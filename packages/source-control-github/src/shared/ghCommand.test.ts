@@ -99,6 +99,7 @@ describe("classifyGhCommand", () => {
     ["gh run watch 39810344331", { kind: "poll" }],
     // Writes stay with the agent.
     ["gh pr create --fill", { kind: "write" }],
+    ["gh pr new --fill", { kind: "write" }],
     ["gh pr merge 31 --auto --squash --match-head-commit abc", { kind: "write" }],
     ["gh pr edit 4472 --repo acme/app --body-file pr-body.md", { kind: "write" }],
     ["gh pr comment 4 --body hi", { kind: "write" }],

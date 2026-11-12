@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import { providerProcessEnvironment } from "./providerTelemetry.ts";
-import { expandHomePath } from "./pathExpansion.ts";
+import { expandHomeVariable } from "./pathExpansion.ts";
 import * as ProviderHost from "./ProviderHost.ts";
 
 export const mergeProviderInstanceEnvironment = Effect.fn(function* (
@@ -27,10 +27,7 @@ export const mergeProviderInstanceEnvironment = Effect.fn(function* (
         if (inherited.toUpperCase() === name) delete next[inherited];
       }
     }
-    next[name] =
-      name === "CODEX_HOME" || name === "CLAUDE_CONFIG_DIR"
-        ? expandHomePath(variable.value, home)
-        : variable.value;
+    next[name] = expandHomeVariable(name, variable.value, home);
   }
   const host = yield* Effect.serviceOption(ProviderHost.ProviderHost);
   const prepared =

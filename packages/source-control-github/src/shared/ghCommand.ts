@@ -23,6 +23,7 @@ const FEEDBACK_FIELDS = new Set(["comments", "reviews", "latestReviews"]);
 
 const PR_WRITES = new Set([
   "create",
+  "new",
   "merge",
   "close",
   "edit",
