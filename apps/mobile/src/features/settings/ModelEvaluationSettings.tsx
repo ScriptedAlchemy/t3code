@@ -144,7 +144,10 @@ function EnvironmentEvaluationSettings(props: {
   const listedApiModels = AsyncResult.getOrElse(apiModelLists, () => []);
   const models = [
     ...buildModelOptions(config, selection, undefined, null).filter(
-      (model) => capable.has(model.selection.instanceId) && !model.isUnavailable,
+      (model) =>
+        capable.has(model.selection.instanceId) &&
+        !model.isUnavailable &&
+        textGeneratorForSelection(settings, model.selection.instanceId) === undefined,
     ),
     ...apiJudges.flatMap(([instanceId, generator], index) =>
       (listedApiModels[index] ?? []).map((model): ModelOption => ({

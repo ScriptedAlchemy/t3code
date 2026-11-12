@@ -258,7 +258,6 @@ export type OpenCodeDriverEnv =
   | HttpClient.HttpClient
   | ProviderLatestVersions.ProviderLatestVersions
   | OpenCodeRuntime.OpenCodeRuntime
-  | OpenCode2Client.OpenCode2Client
   | Path.Path;
 
 export const OpenCodeDriver: ProviderDriver<
@@ -390,6 +389,9 @@ export const OpenCodeDriver: ProviderDriver<
           }),
       ),
     );
+    const openCode2Client = yield* OpenCode2Client.make.pipe(
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+    );
     const openCode2Server = yield* OpenCode2Server.make({
       binaryPath: effectiveConfig.binaryPath,
       serverUrl: effectiveConfig.serverUrl,
@@ -398,10 +400,7 @@ export const OpenCodeDriver: ProviderDriver<
       environment: processEnv,
     }).pipe(
       Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, openCodeRuntime),
-      Effect.provideService(
-        OpenCode2Client.OpenCode2Client,
-        yield* OpenCode2Client.make.pipe(Effect.provideService(HttpClient.HttpClient, httpClient)),
-      ),
+      Effect.provideService(OpenCode2Client.OpenCode2Client, openCode2Client),
     );
     const orchestrationAdapter = selectOpenCodeRuntimeAdapter({
       probe: runtimeProbe,
@@ -473,7 +472,10 @@ export const OpenCodeDriver: ProviderDriver<
         binaryPath: effectiveConfig.binaryPath,
         environment: processEnv,
         directory: host.paths.cwd,
-      }).pipe(Effect.provideService(OpenCode2Server.OpenCode2Server, openCode2Server)),
+      }).pipe(
+        Effect.provideService(OpenCode2Server.OpenCode2Server, openCode2Server),
+        Effect.provideService(OpenCode2Client.OpenCode2Client, openCode2Client),
+      ),
     );
 
     const checkUsageLimits = readOpenCodeGoUsageLimits({

@@ -63,6 +63,7 @@ interface FakeCodexInput {
   mcpServers?: ReadonlyArray<{ name: string; enabled: boolean }> | number;
   requiredCwd?: string;
   requireInstructions?: string;
+  requireIsolatedHome?: boolean;
 }
 
 function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
@@ -80,6 +81,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
     mcpServers: input.mcpServers ?? [],
     requiredCwd: input.requiredCwd ?? null,
     requireInstructions: input.requireInstructions ?? null,
+    requireIsolatedHome: input.requireIsolatedHome ?? false,
     stderr: input.stderr ?? null,
     output: input.output,
     events: input.events ?? [],
@@ -133,6 +135,16 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         "for (const name of check.disabledFeatures) {",
         '  const last = args.filter(arg => arg.startsWith("features." + name + "=")).at(-1);',
         '  if (last !== "features." + name + "=false") fail("feature not disabled: " + name, 8);',
+        "}",
+        "if (check.requireIsolatedHome) {",
+        "  const home = process.env.CODEX_HOME;",
+        '  if (NodeFS.existsSync(home + "/AGENTS.md")) fail("inherited global instructions", 12);',
+        '  const config = NodeFS.readFileSync(home + "/config.toml", "utf8");',
+        '  if (!config.includes(\'model_provider = "private"\') || !config.includes(\'base_url = "http://127.0.0.1:1/v1"\') || config.includes("developer_instructions")) fail("incorrect isolated routing", 13);',
+        '  if (!NodeFS.lstatSync(home + "/auth.json").isSymbolicLink() || !NodeFS.lstatSync(home + "/auth.lock").isSymbolicLink()) fail("credential identity was split", 14);',
+        '  const auth = NodeFS.realpathSync(home + "/auth.json");',
+        '  NodeFS.writeFileSync(auth + ".new", "rotated-login");',
+        '  NodeFS.renameSync(auth + ".new", auth);',
         "}",
         "const chunks = [];",
         "for await (const chunk of process.stdin) chunks.push(chunk);",
@@ -207,6 +219,8 @@ function withFakeCodexEnv<A, E, R>(
       setupMode: input.resolvedRuntime ?? (input.managedRuntime ? "managed" : "existing"),
       customModels: input.customModels,
     });
+    yield* fs.writeFileString(`${tempDir}/AGENTS.md`, "Unrelated user instructions.");
+    yield* fs.writeFileString(`${tempDir}/auth.json`, "original-login");
     const textGeneration = yield* makeCodexTextGeneration(
       config,
       { ...process.env, CODEX_HOME: tempDir, ...input.environment },
@@ -227,7 +241,10 @@ function withFakeCodexEnv<A, E, R>(
           })
         : undefined,
     );
-    return yield* effectFn(textGeneration);
+    const result = yield* effectFn(textGeneration);
+    if (input.requireIsolatedHome)
+      expect(yield* fs.readFileString(`${tempDir}/auth.json`)).toBe("rotated-login");
+    return result;
   }).pipe(Effect.scoped);
 }
 
@@ -337,6 +354,10 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
         models: ["other-default-model"],
         defaultModel: "other-default-model",
         requireArg: "--model selected-judge",
+        configToml:
+          'model_provider = "private"\ndeveloper_instructions = "Do not inherit"\n[model_providers.private]\nbase_url = "http://127.0.0.1:1/v1"\nwire_api = "responses"\n',
+        requireIsolatedHome: true,
+
         requireReasoningEffort: "high",
         requireServiceTier: "priority",
         disabledFeatures: [

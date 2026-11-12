@@ -82,22 +82,27 @@ const CODEX_ROUTING_KEYS = new Set([
   "forced_chatgpt_workspace_id",
 ]);
 
-const routingOverrides = (table: TomlTable, prefix = ""): ReadonlyArray<string> =>
-  Object.entries(table).flatMap(([key, value]) => {
-    if (prefix === "" && !CODEX_ROUTING_KEYS.has(key)) return [];
-    const name = prefix === "" ? key : `${prefix}.${JSON.stringify(key)}`;
-    return value !== null &&
+const routingConfig = (table: TomlTable): TomlTable =>
+  Object.fromEntries(Object.entries(table).filter(([key]) => CODEX_ROUTING_KEYS.has(key)));
+
+const mergeRoutingConfig = (base: TomlTable, override: TomlTable): TomlTable => {
+  const result = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    const previous = result[key];
+    result[key] =
+      previous !== null &&
+      typeof previous === "object" &&
+      !Array.isArray(previous) &&
+      !(previous instanceof Date) &&
+      value !== null &&
       typeof value === "object" &&
       !Array.isArray(value) &&
       !(value instanceof Date)
-      ? routingOverrides(value as TomlTable, name)
-      : [
-          "--config",
-          `${name}=${stringify({ value })
-            .trim()
-            .replace(/^value\s*=\s*/, "")}`,
-        ];
-  });
+        ? mergeRoutingConfig(previous as TomlTable, value as TomlTable)
+        : value;
+  }
+  return result;
+};
 
 const CodexMcpServers = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ name: Schema.String, enabled: Schema.Boolean })),
@@ -272,71 +277,90 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     Effect.orElseSucceed((): ReadonlyArray<string> => []),
   );
 
-  const evaluationLaunchArgs = Effect.fn("CodexTextGeneration.evaluationLaunchArgs")(function* (
-    homePath: string,
-    launchArgs: string,
-  ) {
-    const args = tokenizeCliArgs(launchArgs);
-    const overrides: string[] = [];
-    let profile: string | undefined;
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index];
-      if (arg === "--profile" || arg === "-p") profile = args[++index];
-      else if (arg?.startsWith("--profile=") || arg?.startsWith("-p="))
-        profile = arg.slice(arg.indexOf("=") + 1);
-      else if (
-        arg === "--config" ||
-        arg === "-c" ||
-        arg?.startsWith("--config=") ||
-        arg?.startsWith("-c=")
-      ) {
-        const value =
-          arg === "--config" || arg === "-c" ? args[++index] : arg.slice(arg.indexOf("=") + 1);
-        if (value && CODEX_ROUTING_KEYS.has(value.split(/[.=]/)[0] ?? ""))
-          overrides.push("--config", value);
-      } else if (arg === "--oss") overrides.push(arg);
-      else if (arg === "--local-provider" && args[index + 1]) overrides.push(arg, args[++index]!);
-    }
-    const readRouting = Effect.fn("CodexTextGeneration.readRouting")(function* (name: string) {
-      const filePath = path.join(homePath, name);
-      if (!(yield* fileSystem.exists(filePath))) return [];
-      const source = yield* fileSystem.readFileString(filePath);
-      return yield* Effect.try({
-        try: () => routingOverrides(parse(source)),
-        catch: (cause) =>
-          new TextGenerationError({
-            operation: "generateModelEvaluation",
-            detail: "Invalid Codex routing configuration.",
-            cause,
-          }),
+  const evaluationConfiguration = Effect.fn("CodexTextGeneration.evaluationConfiguration")(
+    function* (homePath: string, launchArgs: string) {
+      const invalid = (cause: unknown) =>
+        new TextGenerationError({
+          operation: "generateModelEvaluation",
+          detail: "Failed to isolate the Codex evaluator configuration.",
+          cause,
+        });
+      const parseConfig = (source: string) =>
+        Effect.try({ try: () => parse(source), catch: invalid });
+      const readConfig = Effect.fn("CodexTextGeneration.readRouting")(function* (name: string) {
+        const filePath = path.join(homePath, name);
+        if (!(yield* fileSystem.exists(filePath))) return {};
+        return yield* parseConfig(yield* fileSystem.readFileString(filePath));
       });
-    });
-    return [
-      ...(yield* readRouting("config.toml")),
-      ...(profile === undefined ? [] : yield* readRouting(`${profile}.config.toml`)),
-      ...overrides,
-      "--ignore-user-config",
-      "--ignore-rules",
-      "--json",
-      "--config",
-      "project_doc_max_bytes=0",
-      "--config",
-      "tools.experimental_request_user_input.enabled=false",
-      "--config",
-      "tools.update_plan.enabled=false",
-      "--config",
-      "skills.include_instructions=false",
-      "--config",
-      "features.skip_host_skill_discovery=true",
-      "--config",
-      'web_search="disabled"',
-      ...CODEX_JUDGE_FEATURES.flatMap((feature) => ["--config", `features.${feature}=false`]),
-    ];
-  });
+      const original = yield* readConfig("config.toml");
+      const args = tokenizeCliArgs(launchArgs);
+      const overrides: TomlTable[] = [];
+      const switches: string[] = [];
+      let profile = typeof original.profile === "string" ? original.profile : undefined;
+      for (let index = 0; index < args.length; index++) {
+        const arg = args[index];
+        if (arg === "--profile" || arg === "-p") profile = args[++index];
+        else if (arg?.startsWith("--profile=") || arg?.startsWith("-p="))
+          profile = arg.slice(arg.indexOf("=") + 1);
+        else if (
+          arg === "--config" ||
+          arg === "-c" ||
+          arg?.startsWith("--config=") ||
+          arg?.startsWith("-c=")
+        ) {
+          const value =
+            arg === "--config" || arg === "-c" ? args[++index] : arg.slice(arg.indexOf("=") + 1);
+          if (value && CODEX_ROUTING_KEYS.has(value.split(/[.=]/)[0] ?? ""))
+            overrides.push(routingConfig(yield* parseConfig(value)));
+        } else if (arg === "--oss") switches.push(arg);
+        else if (arg === "--local-provider" && args[index + 1]) switches.push(arg, args[++index]!);
+      }
+      const routing = [
+        routingConfig(original),
+        ...(profile === undefined
+          ? []
+          : [routingConfig(yield* readConfig(`${profile}.config.toml`))]),
+        ...overrides,
+      ].reduce(mergeRoutingConfig, {});
+      if (
+        routing.cli_auth_credentials_store !== undefined &&
+        routing.cli_auth_credentials_store !== "file"
+      ) {
+        return yield* new TextGenerationError({
+          operation: "generateModelEvaluation",
+          detail:
+            "Codex blind evaluation requires file-backed login or a model API. Keyring login cannot be isolated.",
+        });
+      }
+      const source = yield* Effect.try({ try: () => stringify(routing), catch: invalid });
+      return {
+        source,
+        args: [
+          ...switches,
+          "--ignore-rules",
+          "--json",
+          "--config",
+          "project_doc_max_bytes=0",
+          "--config",
+          "tools.experimental_request_user_input.enabled=false",
+          "--config",
+          "tools.update_plan.enabled=false",
+          "--config",
+          "skills.include_instructions=false",
+          "--config",
+          "features.skip_host_skill_discovery=true",
+          "--config",
+          'web_search="disabled"',
+          ...CODEX_JUDGE_FEATURES.flatMap((feature) => ["--config", `features.${feature}=false`]),
+        ],
+      };
+    },
+  );
 
   const isolatedEvaluatorHome = Effect.fn("CodexTextGeneration.isolatedEvaluatorHome")(function* (
     originalHome: string,
     operation: TextGenerationOperations.Operation,
+    configuration: string,
   ) {
     const evaluationHome = yield* fileSystem
       .makeTempDirectoryScoped({ prefix: "t3-codex-evaluator-" })
@@ -350,32 +374,39 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             }),
         ),
       );
-    for (const name of ["auth.json", "models_cache.json"]) {
-      const source = path.join(originalHome, name);
-      if (
-        yield* fileSystem.exists(source).pipe(
-          Effect.mapError(
-            (cause) =>
-              new TextGenerationError({
-                operation,
-                detail: "Failed to locate the Codex evaluator login.",
-                cause,
-              }),
-          ),
-        )
-      ) {
-        yield* fileSystem.copyFile(source, path.join(evaluationHome, name)).pipe(
-          Effect.mapError(
-            (cause) =>
-              new TextGenerationError({
-                operation,
-                detail: "Failed to prepare the Codex evaluator login.",
-                cause,
-              }),
-          ),
-        );
+    yield* fileSystem
+      .writeFileString(path.join(evaluationHome, "config.toml"), configuration, { mode: 0o600 })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation,
+              detail: "Failed to prepare the Codex evaluator configuration.",
+              cause,
+            }),
+        ),
+      );
+    const prepare = Effect.gen(function* () {
+      if (yield* fileSystem.exists(path.join(originalHome, "auth.json"))) {
+        // Codex follows credential links on atomic refresh; the lock must share the same identity.
+        for (const name of ["auth.json", "auth.lock"]) {
+          yield* fileSystem.symlink(path.join(originalHome, name), path.join(evaluationHome, name));
+        }
       }
-    }
+      const cache = path.join(originalHome, "models_cache.json");
+      if (yield* fileSystem.exists(cache))
+        yield* fileSystem.copyFile(cache, path.join(evaluationHome, "models_cache.json"));
+    });
+    yield* prepare.pipe(
+      Effect.mapError(
+        (cause) =>
+          new TextGenerationError({
+            operation,
+            detail: "Failed to prepare the Codex evaluator login.",
+            cause,
+          }),
+      ),
+    );
     return evaluationHome;
   });
 
@@ -441,7 +472,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           : getModelSelectionStringOptionValue(modelSelection, "reasoningEffort")) ??
         DEFAULT_TEXT_GENERATION_REASONING_EFFORT;
       const serviceTier =
-        effectiveConfig.setupMode === "managed" || fellBack
+        (effectiveConfig.setupMode === "managed" && operation !== "generateModelEvaluation") ||
+        fellBack
           ? undefined
           : getCodexServiceTierOptionValue(modelSelection);
       const binary = effectiveConfig.binaryPath || "codex";
@@ -457,9 +489,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           : {}),
       };
       const originalHome = env.CODEX_HOME ?? path.join(yield* HostProcess.HomeDirectory, ".codex");
-      const judgeArgs =
+      const judgeConfiguration =
         operation === "generateModelEvaluation"
-          ? yield* evaluationLaunchArgs(originalHome, launchArgs).pipe(
+          ? yield* evaluationConfiguration(originalHome, launchArgs).pipe(
               Effect.mapError(
                 (cause) =>
                   new TextGenerationError({
@@ -470,7 +502,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
               ),
             )
           : undefined;
-      const mcpServersOff = judgeArgs
+      const mcpServersOff = judgeConfiguration
         ? null
         : yield* listEnabledMcpServers({
             binary,
@@ -478,12 +510,17 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             env,
             launchArgs: codexMcpListLaunchArgs(launchArgs),
           }).pipe(Effect.map(codexMcpServersOff));
-      if (judgeArgs) env.CODEX_HOME = yield* isolatedEvaluatorHome(originalHome, operation);
+      if (judgeConfiguration)
+        env.CODEX_HOME = yield* isolatedEvaluatorHome(
+          originalHome,
+          operation,
+          judgeConfiguration.source,
+        );
       const spawnCommand = yield* resolveSpawnCommand(
         binary,
         [
           "exec",
-          ...(judgeArgs ?? codexExecLaunchArgs(launchArgs)),
+          ...(judgeConfiguration?.args ?? codexExecLaunchArgs(launchArgs)),
           // A user's MCP server could act on the text-generation prompt.
           ...CODEX_NO_PLUGIN_ARGS,
           // Memory candidates cite the supplied exchange; checkout instructions add unrelated input.
@@ -540,7 +577,19 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         { concurrency: "unbounded" },
       );
 
-      if (judgeArgs) {
+      if (exitCode !== 0) {
+        const stderrDetail = stderr.trim();
+        const stdoutDetail = stdout.trim();
+        const detail = stderrDetail.length > 0 ? stderrDetail : stdoutDetail;
+        return yield* new TextGenerationError({
+          operation,
+          detail:
+            detail.length > 0
+              ? `Codex CLI command failed: ${detail}`
+              : `Codex CLI command failed with code ${exitCode}.`,
+        });
+      }
+      if (judgeConfiguration) {
         const events = yield* Effect.try({
           try: () =>
             stdout
@@ -570,19 +619,6 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             }
           }
         }
-      }
-
-      if (exitCode !== 0) {
-        const stderrDetail = stderr.trim();
-        const stdoutDetail = stdout.trim();
-        const detail = stderrDetail.length > 0 ? stderrDetail : stdoutDetail;
-        return yield* new TextGenerationError({
-          operation,
-          detail:
-            detail.length > 0
-              ? `Codex CLI command failed: ${detail}`
-              : `Codex CLI command failed with code ${exitCode}.`,
-        });
       }
     });
 
