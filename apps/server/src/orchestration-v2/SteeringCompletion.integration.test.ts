@@ -2203,38 +2203,46 @@ it.effect("queues a goal clear without stopping work when no goal drives it", ()
   ),
 );
 
-it.effect("promotes a queued goal by stopping the running turn", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { started, steered, layer, startFirstTurn, send, read } =
-        yield* goalHarness("goal-promote");
-      yield* Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const threadId = yield* startFirstTurn;
-        yield* send("queued", "queued", "queue");
-        yield* send("goal", "/goal ship it", "queue");
-        const goalRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
-          (run) => run.userMessageId === MessageId.make("message:goal"),
-        )!;
-        yield* orchestrator.dispatch({
-          type: "queued-message.promote-to-steer",
-          commandId: CommandId.make("promote"),
-          threadId,
-          queuedRunId: goalRun.id,
-          targetRunId: started[0]!.runId,
-        });
-        yield* worker.drain();
+it.effect.each(["/goal ship it", "/goal resume"])(
+  "queues %s until promoted by stopping the running turn",
+  (text) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, layer, startFirstTurn, send, read } =
+          yield* goalHarness("goal-promote");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          yield* send("queued", "queued", "queue");
+          yield* send("goal", text, "queue");
+          yield* worker.drain();
+          assert.deepEqual(yield* read(threadId), {
+            queue: ["queued", text],
+            started: ["first"],
+            stopRequested: false,
+          });
+          const goalRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (run) => run.userMessageId === MessageId.make("message:goal"),
+          )!;
+          yield* orchestrator.dispatch({
+            type: "queued-message.promote-to-steer",
+            commandId: CommandId.make("promote"),
+            threadId,
+            queuedRunId: goalRun.id,
+            targetRunId: started[0]!.runId,
+          });
+          yield* worker.drain();
 
-        assert.deepEqual(steered, []);
-        assert.deepEqual(yield* read(threadId), {
-          queue: ["queued"],
-          started: ["first", "/goal ship it"],
-          stopRequested: true,
-        });
-      }).pipe(Effect.provide(layer));
-    }),
-  ),
+          assert.deepEqual(steered, []);
+          assert.deepEqual(yield* read(threadId), {
+            queue: ["queued"],
+            started: ["first", text],
+            stopRequested: true,
+          });
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
 );
 
 // A fresh message skips compaction as its own turn, which steering a running turn would not.
