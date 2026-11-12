@@ -1,28 +1,20 @@
-import {
-  ExternalHistoryError,
-  type ExternalHistoryMatch,
-  type ExternalHistoryRequest,
-  type ExternalHistoryResponse,
-} from "@t3tools/contracts";
-import * as Digest from "effect/crypto/Digest";
+import { ExternalHistoryError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Hex from "effect/encoding/Hex";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import { createTranscriptJsonReader, TranscriptJsonLimitError } from "../AgentSessionJson.ts";
 import {
-  boundedTextEnd,
-  isTextBoundary,
-} from "../conversationSummaries/conversationSummarySources.ts";
+  fileVersion,
+  type LocalHistoryStore,
+  type LocalThreadRef,
+  type ThreadCache,
+} from "./LocalHistoryStore.ts";
 
 const MAX_CONVERSATION_BYTES = 8 * 1024 * 1024;
 const CHUNK_BYTES = 64 * 1024;
-const PAGE_ITEMS = 20;
-const MAX_EXCERPT_CHARS = 2_000;
-const Index = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const Message = Schema.Struct({
   id: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(512)),
   author: Schema.Struct({ role: Schema.String }),
@@ -49,39 +41,15 @@ const Conversation = Schema.Struct({
     }),
   ),
 });
-const SearchCursor = Schema.Struct({
-  version: Schema.Literal(1),
-  sourceId: Schema.String,
-  file: Schema.String,
-  query: Schema.String,
-  conversation: Index,
-  message: Index,
-});
-const ReadCursor = Schema.Struct({
-  version: Schema.Literal(1),
-  sourceId: Schema.String,
-  file: Schema.String,
-  conversation: Index,
-  threadId: Schema.String,
-  itemId: Schema.String,
-});
 const decodeConversation = Schema.decodeUnknownEffect(Conversation);
-const decodeSearchCursor = Schema.decodeUnknownEffect(Schema.fromJsonString(SearchCursor));
-const encodeSearchCursor = Schema.encodeSync(Schema.fromJsonString(SearchCursor));
-const decodeReadCursor = Schema.decodeUnknownEffect(Schema.fromJsonString(ReadCursor));
-const encodeReadCursor = Schema.encodeSync(Schema.fromJsonString(ReadCursor));
 const isHistoryError = Schema.is(ExternalHistoryError);
 const isTranscriptJsonLimitError = Schema.is(TranscriptJsonLimitError);
-const encodeFileIdentity = Schema.encodeSync(
-  Schema.fromJsonString(
-    Schema.Struct({
-      size: Schema.String,
-      dev: Schema.String,
-      ino: Schema.NullOr(Schema.String),
-      mtime: Schema.NullOr(Schema.Number),
-      birthtime: Schema.NullOr(Schema.Number),
-    }),
-  ),
+const decodeMetadata = Schema.decodeUnknownSync(
+  Schema.Struct({
+    id: Schema.optionalKey(Schema.String),
+    conversation_id: Schema.optionalKey(Schema.String),
+    title: Schema.String,
+  }),
 );
 
 interface VisibleMessage {
@@ -159,27 +127,11 @@ function selectExportPath(path: ReadonlyArray<string | number | null>, index: nu
   );
 }
 
-function fileIdentity(info: FileSystem.File.Info) {
-  return encodeFileIdentity({
-    size: String(info.size),
-    dev: String(info.dev),
-    ino: Option.map(info.ino, String).pipe(Option.getOrNull),
-    mtime: Option.map(info.mtime, (date) => date.getTime()).pipe(Option.getOrNull),
-    birthtime: Option.map(info.birthtime, (date) => date.getTime()).pipe(Option.getOrNull),
-  });
-}
-
-type SearchRequest = Extract<ExternalHistoryRequest, { operation: "search" }>;
-type ReadRequest = Extract<ExternalHistoryRequest, { operation: "read" }>;
-
-export const makeChatGptExportHistory = Effect.gen(function* () {
+export const makeChatGptExportStore = Effect.fn("ChatGptExportHistory.open")(function* (
+  filePath: string,
+  cache: ThreadCache,
+) {
   const fs = yield* FileSystem.FileSystem;
-  const crypto = yield* Digest.Digest;
-  const digest = (text: string) =>
-    crypto.digest(Digest.sha256, new TextEncoder().encode(text)).pipe(
-      Effect.map(Hex.encode),
-      Effect.mapError((cause) => new ExternalHistoryError({ reason: "unavailable", cause })),
-    );
   const mapError = (cause: unknown) =>
     isHistoryError(cause)
       ? cause
@@ -202,8 +154,8 @@ export const makeChatGptExportHistory = Effect.gen(function* () {
         const file = yield* fs.open(filePath, { flag: "r" });
         const stat = yield* file.stat;
         if (stat.type !== "File") return yield* new ExternalHistoryError({ reason: "unsupported" });
-        const identity = fileIdentity(stat);
-        const version = yield* digest(identity);
+        const identity = fileVersion(stat);
+        const version = identity;
         if (expected !== undefined && expected !== version)
           return yield* new ExternalHistoryError({ reason: "changed" });
         let value: unknown;
@@ -247,8 +199,8 @@ export const makeChatGptExportHistory = Effect.gen(function* () {
             return yield* new ExternalHistoryError({ reason: "unsupported" });
         }
         if (
-          identity !== fileIdentity(yield* file.stat) ||
-          identity !== fileIdentity(yield* fs.stat(filePath))
+          identity !== fileVersion(yield* file.stat) ||
+          identity !== fileVersion(yield* fs.stat(filePath))
         )
           return yield* new ExternalHistoryError({ reason: "changed" });
         if (!found) return { file: version, conversation: null };
@@ -270,110 +222,97 @@ export const makeChatGptExportHistory = Effect.gen(function* () {
     ).pipe(Effect.mapError(mapError));
   });
 
-  const search = Effect.fn("ChatGptExportHistory.search")(function* (
-    filePath: string,
-    input: SearchRequest,
-  ) {
-    if (input.filterCwd) return yield* new ExternalHistoryError({ reason: "unsupported" });
-    const cursor =
-      input.cursor === undefined
-        ? undefined
-        : yield* decodeSearchCursor(input.cursor).pipe(
-            Effect.mapError(() => new ExternalHistoryError({ reason: "invalid_cursor" })),
-          );
-    if (cursor && (cursor.sourceId !== input.sourceId || cursor.query !== input.query))
-      return yield* new ExternalHistoryError({ reason: "invalid_cursor" });
-    const index = cursor?.conversation ?? 0;
-    const result = yield* readConversation(filePath, index, cursor?.file);
-    if (!result.conversation)
-      return {
-        operation: "search",
-        matches: [],
-        examinedItems: 0,
-        nextCursor: null,
-      } satisfies ExternalHistoryResponse;
-    const { threadId, title, messages } = result.conversation;
-    const offset = cursor?.message ?? 0;
-    if (offset > messages.length)
-      return yield* new ExternalHistoryError({ reason: "invalid_cursor" });
-    const end = Math.min(messages.length, offset + PAGE_ITEMS);
-    const pattern = new RegExp(input.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "iu");
-    const matches: Array<ExternalHistoryMatch> = [];
-    for (const message of messages.slice(offset, end)) {
-      const match = pattern.exec(message.text);
-      if (!match) continue;
-      let start = Math.max(0, match.index - 200);
-      if (!isTextBoundary(message.text, start)) start--;
-      matches.push({
-        ref: {
-          sourceId: input.sourceId,
-          threadId,
-          readCursor: encodeReadCursor({
-            version: 1,
-            sourceId: input.sourceId,
-            file: result.file,
-            conversation: index,
-            threadId,
-            itemId: message.id,
-          }),
-          digest: yield* digest(`chatgpt-visible-evidence-v1\n${message.role}\n${message.text}`),
-        },
-        threadTitle: title,
-        itemId: message.id,
-        role: message.role,
-        excerpt: message.text.slice(start, boundedTextEnd(message.text, start, MAX_EXCERPT_CHARS)),
-        textOffset: start,
-        totalChars: message.text.length,
-      });
-    }
-    return {
-      operation: "search",
-      matches,
-      examinedItems: end - offset,
-      nextCursor: encodeSearchCursor({
-        version: 1,
-        sourceId: input.sourceId,
-        file: result.file,
-        query: input.query,
-        conversation: end < messages.length ? index : index + 1,
-        message: end < messages.length ? end : 0,
+  let listing: { version: string; refs: ReadonlyArray<LocalThreadRef> } | undefined;
+  const listThreads = Effect.gen(function* () {
+    const stat = yield* fs.stat(filePath);
+    if (stat.type !== "File") return yield* new ExternalHistoryError({ reason: "unsupported" });
+    const version = fileVersion(stat);
+    if (listing?.version === version) return listing.refs;
+    const refs: LocalThreadRef[] = [];
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const file = yield* fs.open(filePath, { flag: "r" });
+        if (fileVersion(yield* file.stat) !== version)
+          return yield* new ExternalHistoryError({ reason: "changed" });
+        let allocated = 0;
+        const reader = createTranscriptJsonReader(
+          (bytes) => {
+            allocated += bytes;
+            if (allocated > MAX_CONVERSATION_BYTES)
+              throw new TranscriptJsonLimitError({ message: "Export metadata limit" });
+          },
+          (path) =>
+            path.length <= 1 ||
+            (path.length === 2 &&
+              (path[1] === "id" || path[1] === "conversation_id" || path[1] === "title")),
+          {
+            onArrayItem: (index, value) => {
+              allocated = 0;
+              const metadata = decodeMetadata(value);
+              const id = metadata.id ?? metadata.conversation_id;
+              if (!id) throw new ExternalHistoryError({ reason: "unsupported" });
+              const key = `${index}:${id}`;
+              if (key.length > 512 || refs.length >= 50_000)
+                throw new ExternalHistoryError({ reason: "limit_exceeded" });
+              refs.push({
+                key,
+                title: metadata.title,
+                updatedAt: Option.map(stat.mtime, (d) => d.getTime()).pipe(
+                  Option.getOrElse(() => 0),
+                ),
+                version,
+              });
+              return true;
+            },
+          },
+        );
+        const decoder = new TextDecoder("utf-8", { fatal: true });
+        while (true) {
+          const bytes = yield* file.readAlloc(CHUNK_BYTES);
+          if (Option.isNone(bytes)) break;
+          yield* Effect.try({
+            try: () => reader.write(decoder.decode(bytes.value, { stream: true })),
+            catch: mapError,
+          });
+        }
+        const result = yield* Effect.try({
+          try: () => {
+            reader.write(decoder.decode());
+            return reader.finish();
+          },
+          catch: mapError,
+        });
+        if (!Array.isArray(result))
+          return yield* new ExternalHistoryError({ reason: "unsupported" });
+        if (
+          fileVersion(yield* file.stat) !== version ||
+          fileVersion(yield* fs.stat(filePath)) !== version
+        )
+          return yield* new ExternalHistoryError({ reason: "changed" });
       }),
-    } satisfies ExternalHistoryResponse;
-  });
-
-  const read = Effect.fn("ChatGptExportHistory.read")(function* (
-    filePath: string,
-    input: ReadRequest,
-  ) {
-    const cursor = yield* decodeReadCursor(input.ref.readCursor).pipe(
-      Effect.mapError(() => new ExternalHistoryError({ reason: "invalid_cursor" })),
     );
-    if (cursor.sourceId !== input.ref.sourceId || cursor.threadId !== input.ref.threadId)
+    listing = { version, refs };
+    return refs;
+  }).pipe(Effect.mapError(mapError));
+  const loadThread = Effect.fn("ChatGptExportHistory.loadThread")(function* (ref: LocalThreadRef) {
+    const version = fileVersion(yield* fs.stat(filePath));
+    const match = /^(0|[1-9][0-9]*):(.+)$/.exec(ref.key);
+    if (!match || !Number.isSafeInteger(Number(match[1])))
       return yield* new ExternalHistoryError({ reason: "invalid_cursor" });
-    const result = yield* readConversation(filePath, cursor.conversation, cursor.file);
-    if (result.conversation?.threadId !== cursor.threadId)
-      return yield* new ExternalHistoryError({ reason: "changed" });
-    const message = result.conversation.messages.find((entry) => entry.id === cursor.itemId);
-    if (
-      !message ||
-      (yield* digest(`chatgpt-visible-evidence-v1\n${message.role}\n${message.text}`)) !==
-        input.ref.digest
-    )
-      return yield* new ExternalHistoryError({ reason: "changed" });
-    const start = input.textOffset ?? 0;
-    if (start > message.text.length || !isTextBoundary(message.text, start))
-      return yield* new ExternalHistoryError({ reason: "invalid_cursor" });
-    const end = boundedTextEnd(message.text, start, input.maxChars ?? 12_000);
-    return {
-      operation: "read",
-      ref: input.ref,
-      threadTitle: result.conversation.title,
-      role: message.role,
-      text: message.text.slice(start, end),
-      textOffset: start,
-      totalChars: message.text.length,
-      nextTextOffset: end < message.text.length ? end : null,
-    } satisfies ExternalHistoryResponse;
-  });
-  return { search, read };
+    return yield* cache(
+      `${filePath}\0${ref.key}\0${version}`,
+      Effect.gen(function* () {
+        const result = yield* readConversation(filePath, Number(match[1]), version);
+        if (!result.conversation || result.conversation.threadId !== match[2])
+          return yield* new ExternalHistoryError({ reason: "changed" });
+        return {
+          version,
+          title: result.conversation.title,
+          cwd: null,
+          items: result.conversation.messages,
+        };
+      }),
+    );
+  }, Effect.mapError(mapError));
+  return { listThreads, loadThread } satisfies LocalHistoryStore;
 });

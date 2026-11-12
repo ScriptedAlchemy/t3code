@@ -159,6 +159,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
         operation: "sources",
         enabled: false,
         sources: [],
+        unsupported: [],
       });
       expect(state.registryReads).toBe(0);
       const error = yield* service
@@ -283,6 +284,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
         operation: "sources",
         enabled: true,
         sources: [],
+        unsupported: [],
       });
     }),
   );

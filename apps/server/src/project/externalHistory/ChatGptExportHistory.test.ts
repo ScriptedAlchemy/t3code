@@ -5,7 +5,8 @@ import { expect, it } from "@effect/vitest";
 import type { ExternalHistoryResponse } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import { makeChatGptExportHistory } from "./ChatGptExportHistory.ts";
+import { makeChatGptExportStore } from "./ChatGptExportHistory.ts";
+import { makeLocalHistory } from "./LocalHistory.ts";
 
 const conversation = (texts: ReadonlyArray<string>, id = "conversation-1") => ({
   id,
@@ -30,15 +31,16 @@ const fixture = Effect.fn("ChatGptExportHistory.test.fixture")(function* (value:
   const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-external-export-" });
   const filePath = `${directory}/conversations.json`;
   yield* fs.writeFileString(filePath, JSON.stringify(value));
-  return { history: yield* makeChatGptExportHistory, fs, filePath };
+  const history = yield* makeLocalHistory;
+  return { history, store: yield* makeChatGptExportStore(filePath, history.cache), fs, filePath };
 });
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ChatGPT export history", (it) => {
   it.effect("finds suffix matches and pages digest-verified exact Unicode text", () =>
     Effect.gen(function* () {
       const text = "İ😀" + "a".repeat(3_000) + "NEEDLE [literal]";
-      const { history, filePath } = yield* fixture([conversation([text])]);
-      const result = yield* history.search(filePath, {
+      const { history, store } = yield* fixture([conversation([text])]);
+      const result = yield* history.search(store, {
         operation: "search",
         sourceId: "export",
         query: "needle [literal]",
@@ -51,7 +53,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ChatGPT export h
       let offset: number | null = 0;
       while (offset !== null) {
         const page: Extract<ExternalHistoryResponse, { operation: "read" }> = yield* history.read(
-          filePath,
+          store,
           { operation: "read", ref, textOffset: offset, maxChars: 101 },
         );
         actual += page.text;
@@ -59,11 +61,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ChatGPT export h
       }
       expect(actual).toBe(text);
       const split = yield* history
-        .read(filePath, { operation: "read", ref, textOffset: 2 })
+        .read(store, { operation: "read", ref, textOffset: 2 })
         .pipe(Effect.flip);
       expect(split.reason).toBe("invalid_cursor");
       const wrongDigest = yield* history
-        .read(filePath, { operation: "read", ref: { ...ref, digest: "0".repeat(64) } })
+        .read(store, { operation: "read", ref: { ...ref, digest: "0".repeat(64) } })
         .pipe(Effect.flip);
       expect(wrongDigest.reason).toBe("changed");
     }).pipe(Effect.scoped),
@@ -100,32 +102,33 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ChatGPT export h
         },
         conversation(["needle second conversation"], "conversation-2"),
       ];
-      const { history, filePath } = yield* fixture(exportValue);
+      const { history, store } = yield* fixture(exportValue);
       const request = { operation: "search", sourceId: "export", query: "needle" } as const;
-      const page1 = yield* history.search(filePath, request);
+      const page1 = yield* history.search(store, request);
       expect(page1.matches).toEqual([]);
       expect(page1.examinedItems).toBe(20);
       expect(page1.nextCursor).not.toBeNull();
-      const page2 = yield* history.search(filePath, { ...request, cursor: page1.nextCursor! });
+      const page2 = yield* history.search(store, { ...request, cursor: page1.nextCursor! });
       expect(page2.matches.map((entry) => entry.itemId)).toEqual(["message-20"]);
-      const page3 = yield* history.search(filePath, { ...request, cursor: page2.nextCursor! });
-      expect(page3.matches.map((entry) => entry.ref.threadId)).toEqual(["conversation-2"]);
-      const end = yield* history.search(filePath, { ...request, cursor: page3.nextCursor! });
-      expect(end.nextCursor).toBeNull();
+      const page3 = yield* history.search(store, { ...request, cursor: page2.nextCursor! });
+      expect(page3.matches.map((entry) => entry.ref.threadId)).toEqual(["1:conversation-2"]);
+      expect(page3.nextCursor).toBeNull();
     }).pipe(Effect.scoped),
   );
 
   it.effect("binds search cursors and exact source reads to the current file", () =>
     Effect.gen(function* () {
-      const { history, fs, filePath } = yield* fixture([conversation(["needle"])]);
+      const { history, store, fs, filePath } = yield* fixture([
+        conversation(["needle", ...Array.from({ length: 20 }, () => "other")]),
+      ]);
       const request = { operation: "search", sourceId: "export", query: "needle" } as const;
-      const page = yield* history.search(filePath, request);
+      const page = yield* history.search(store, request);
       const wrongQuery = yield* history
-        .search(filePath, { ...request, query: "other", cursor: page.nextCursor! })
+        .search(store, { ...request, query: "other", cursor: page.nextCursor! })
         .pipe(Effect.flip);
       expect(wrongQuery.reason).toBe("invalid_cursor");
       const wrongSource = yield* history
-        .read(filePath, { operation: "read", ref: { ...page.matches[0]!.ref, sourceId: "other" } })
+        .read(store, { operation: "read", ref: { ...page.matches[0]!.ref, sourceId: "other" } })
         .pipe(Effect.flip);
       expect(wrongSource.reason).toBe("invalid_cursor");
       yield* fs.writeFileString(
@@ -133,13 +136,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ChatGPT export h
         JSON.stringify([conversation(["needle changed source"])]),
       );
       const changed = yield* history
-        .read(filePath, { operation: "read", ref: page.matches[0]!.ref })
+        .read(store, { operation: "read", ref: page.matches[0]!.ref })
         .pipe(Effect.flip);
       expect(changed.reason).toBe("changed");
-      const stalePage = yield* history
-        .search(filePath, { ...request, cursor: page.nextCursor! })
-        .pipe(Effect.flip);
-      expect(stalePage.reason).toBe("changed");
+      const restartedPage = yield* history.search(store, { ...request, cursor: page.nextCursor! });
+      expect(restartedPage.matches[0]?.excerpt).toBe("needle changed source");
     }).pipe(Effect.scoped),
   );
 
@@ -160,25 +161,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ChatGPT export h
           },
         },
       };
-      const { history, fs, filePath } = yield* fixture([media]);
+      const { history, store, fs, filePath } = yield* fixture([media]);
       const request = { operation: "search", sourceId: "export", query: "needle" } as const;
-      expect((yield* history.search(filePath, request)).matches[0]?.excerpt).toBe("needle");
+      expect((yield* history.search(store, request)).matches[0]?.excerpt).toBe("needle");
       yield* fs.writeFileString(
         filePath,
         JSON.stringify([conversation(["x".repeat(5_000_000) + "needle"])]),
       );
-      const error = yield* history.search(filePath, request).pipe(Effect.flip);
+      const error = yield* history.search(store, request).pipe(Effect.flip);
       expect(error.reason).toBe("limit_exceeded");
     }).pipe(Effect.scoped),
   );
 
   it.effect("fails explicitly for unsupported exports and ambiguous branches", () =>
     Effect.gen(function* () {
-      const { history, fs, filePath } = yield* fixture({ conversations: [] });
+      const { history, store, fs, filePath } = yield* fixture({ conversations: [] });
       const request = { operation: "search", sourceId: "export", query: "needle" } as const;
-      expect((yield* history.search(filePath, request).pipe(Effect.flip)).reason).toBe(
-        "unsupported",
-      );
+      expect((yield* history.search(store, request).pipe(Effect.flip)).reason).toBe("unsupported");
       const source = conversation(["needle"]);
       yield* fs.writeFileString(
         filePath,
@@ -186,19 +185,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ChatGPT export h
           { ...source, mapping: { "node-0": { ...source.mapping["node-0"], parent: "node-0" } } },
         ]),
       );
-      expect((yield* history.search(filePath, request).pipe(Effect.flip)).reason).toBe(
-        "unsupported",
-      );
+      expect((yield* history.search(store, request).pipe(Effect.flip)).reason).toBe("unsupported");
       const duplicate = conversation(["first message", "needle second message"]);
       duplicate.mapping["node-1"]!.message.id = duplicate.mapping["node-0"]!.message.id;
       yield* fs.writeFileString(filePath, JSON.stringify([duplicate]));
-      expect((yield* history.search(filePath, request).pipe(Effect.flip)).reason).toBe(
-        "unsupported",
-      );
+      expect((yield* history.search(store, request).pipe(Effect.flip)).reason).toBe("unsupported");
       yield* fs.writeFileString(filePath, '[{"bad":');
-      expect((yield* history.search(filePath, request).pipe(Effect.flip)).reason).toBe(
-        "unsupported",
-      );
+      expect((yield* history.search(store, request).pipe(Effect.flip)).reason).toBe("unsupported");
     }).pipe(Effect.scoped),
   );
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import { activePiBranch, TranscriptRecord, transcriptItems } from "./agentTranscripts.ts";
 
@@ -48,7 +48,7 @@ describe("transcript evidence", () => {
         parentId: "first",
         message: { role: "assistant", content: "New answer" },
       },
-    ].map(decode);
+    ].map((record) => decode(record));
     expect(activePiBranch(records).flatMap((r) => transcriptItems(r, "pi"))).toEqual([
       { id: "first", role: "user", text: "Question" },
       { id: "active", role: "assistant", text: "New answer" },
