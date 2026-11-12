@@ -7,7 +7,6 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import {
   TranscriptRecord,
-  conversationItem,
   activePiBranch,
   emptyClaudeFields,
   foldClaudeFields,
@@ -27,6 +26,7 @@ import {
   type ThreadCache,
 } from "./LocalHistoryStore.ts";
 
+const MAX_THREAD_ALLOCATION = 128 * 1024 * 1024;
 const decodeRecord = Schema.decodeUnknownOption(TranscriptRecord);
 const selectRecord = createTranscriptJsonSelector(TranscriptRecord);
 const isHistoryError = Schema.is(ExternalHistoryError);
@@ -55,13 +55,7 @@ function projectThread(
   const items = new Map<string, TranscriptItem>();
   for (const record of source === "pi" ? activePiBranch(records) : records) {
     const visible = transcriptItems(record, source);
-    const conversation = conversationItem(record, source);
-    if (!origin && conversation && !conversation.id)
-      throw new ExternalHistoryError({ reason: "unsupported" });
     for (const item of visible) {
-      const previous = items.get(item.id);
-      if (previous && (previous.role !== item.role || previous.text !== item.text))
-        throw new ExternalHistoryError({ reason: "unsupported" });
       items.set(item.id, item);
     }
   }
@@ -169,28 +163,24 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
             return yield* new ExternalHistoryError({ reason: "changed" });
           const records: DecodedTranscriptRecord[] = [];
           let allocated = 0;
-          let reader = createTranscriptJsonReader(
-            (bytes) => {
-              allocated += bytes;
-              if (allocated > 32 * 1024 * 1024)
-                throw new TranscriptJsonLimitError({ message: "Transcript text limit" });
-            },
-            (path) => path[0] !== "payload" && selectRecord(path),
-          );
-          const finishRecord = () => {
-            const decoded = decodeRecord(reader.finish());
-            if (Option.isNone(decoded)) throw new ExternalHistoryError({ reason: "unsupported" });
-            if (records.length >= 100_000)
-              throw new ExternalHistoryError({ reason: "limit_exceeded" });
-            records.push(decoded.value);
-            reader = createTranscriptJsonReader(
+          const newReader = () =>
+            createTranscriptJsonReader(
               (bytes) => {
                 allocated += bytes;
-                if (allocated > 32 * 1024 * 1024)
+                if (allocated > MAX_THREAD_ALLOCATION)
                   throw new TranscriptJsonLimitError({ message: "Transcript text limit" });
               },
               (path) => path[0] !== "payload" && selectRecord(path),
             );
+          let reader = newReader();
+          const finishRecord = () => {
+            const decoded = decodeRecord(reader.finish());
+            if (Option.isSome(decoded)) {
+              if (records.length >= 100_000)
+                throw new ExternalHistoryError({ reason: "limit_exceeded" });
+              records.push(decoded.value);
+            }
+            reader = newReader();
           };
           const decoder = new TextDecoder("utf-8", { fatal: true });
           let pending = false;
@@ -236,6 +226,14 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
             fileVersion(yield* fs.stat(filePath)) !== version
           )
             return yield* new ExternalHistoryError({ reason: "changed" });
+          if (
+            !records.some((record) =>
+              source === "pi"
+                ? record.type === "session" || record.type === "message"
+                : record.type === "user" || record.type === "assistant",
+            )
+          )
+            return yield* new ExternalHistoryError({ reason: "unsupported" });
           return yield* Effect.try({
             try: () => projectThread(records, source, version),
             catch: mapError,

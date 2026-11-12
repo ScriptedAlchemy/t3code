@@ -99,6 +99,89 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
       }).pipe(Effect.scoped),
   );
 
+  it.effect("keeps valid messages around malformed and undecodable records", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const project = `${root}/projects/project`;
+      yield* fs.makeDirectory(project, { recursive: true });
+      const message = (uuid: string, content = "needle") =>
+        JSON.stringify({ type: "user", uuid, message: { content } });
+      yield* fs.writeFileString(
+        `${project}/session.jsonl`,
+        [
+          message("before"),
+          '{"type":"user",',
+          JSON.stringify({ type: "progress", timestamp: 42 }),
+          JSON.stringify({ type: "user", message: { content: "missing ID" } }),
+          message("before", "needle updated"),
+          message("after"),
+        ].join("\n"),
+      );
+      const history = yield* makeLocalHistory;
+      const store = yield* makeClaudeHistoryStore(root, history.cache);
+      const page = yield* history.search(store, {
+        operation: "search",
+        sourceId: "claude",
+        query: "needle",
+      });
+      expect(page.matches.map((match) => match.itemId)).toEqual(["before", "after"]);
+      expect(
+        (yield* history.read(store, { operation: "read", ref: page.matches[0]!.ref })).text,
+      ).toBe("needle updated");
+      yield* fs.writeFileString(`${project}/session.jsonl`, '{"unrelated":"data"}\nnot JSON');
+      const [ref] = yield* store.listThreads;
+      expect((yield* store.loadThread(ref!).pipe(Effect.flip)).reason).toBe("unsupported");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("searches sessions larger than the old allocation cap and verifies their source", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const project = `${root}/projects/project`;
+      yield* fs.makeDirectory(project, { recursive: true });
+      const file = `${project}/large.jsonl`;
+      for (let index = 0; index < 34; index++) {
+        yield* fs.writeFileString(
+          file,
+          JSON.stringify({
+            type: "assistant",
+            uuid: `large-${index}`,
+            message: { content: "x".repeat(1024 * 1024) },
+          }) + "\n",
+          { flag: index === 0 ? "w" : "a" },
+        );
+      }
+      yield* fs.writeFileString(
+        file,
+        JSON.stringify({
+          type: "user",
+          uuid: "match",
+          message: { content: "needle in a large session" },
+        }) + "\n",
+        { flag: "a" },
+      );
+      const history = yield* makeLocalHistory;
+      const store = yield* makeClaudeHistoryStore(root, history.cache);
+      const page = yield* history.search(store, {
+        operation: "search",
+        sourceId: "claude",
+        query: "needle",
+      });
+      expect(page.matches.map((match) => match.itemId)).toEqual(["match"]);
+      const ref = page.matches[0]!.ref;
+      expect((yield* history.read(store, { operation: "read", ref })).text).toBe(
+        "needle in a large session",
+      );
+      expect(
+        (yield* history
+          .read(store, { operation: "read", ref: { ...ref, digest: "0".repeat(64) } })
+          .pipe(Effect.flip)).reason,
+      ).toBe("changed");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("finds queries split across read chunks and queries that JSON escapes", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
