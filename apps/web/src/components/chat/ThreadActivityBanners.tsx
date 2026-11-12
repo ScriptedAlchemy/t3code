@@ -111,13 +111,7 @@ export function goalNowItem(input: {
         {presentation.canResume ? (
           <>
             <InlineButton
-              onClick={() =>
-                void onSendCommand(
-                  "/goal resume",
-                  "Failed to resume goal.",
-                  isWorking ? "queue" : undefined,
-                )
-              }
+              onClick={() => void onSendCommand("/goal resume", "Failed to resume goal.", "queue")}
             >
               {isWorking ? "Resume after turn" : "Resume"}
             </InlineButton>
