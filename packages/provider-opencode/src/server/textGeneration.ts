@@ -230,7 +230,6 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
             client.session.create(
               {
                 title: `T3 Code ${input.operation}`,
-                // OpenCode Zen refuses ordinary free-model requests that carry no tools.
                 permission: [
                   { permission: "*", pattern: "*", action: "deny" },
                   ...(!blindEvaluation
@@ -458,6 +457,6 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
 
   return TextGenerationOperations.fromRunner("OpenCodeTextGeneration", runOpenCodeJson, {
     supportsInvestigation: false,
-    supportsBlindEvaluation: true,
+    supportsBlindEvaluation: openCodeSettings.serverUrl.trim().length === 0,
   });
 });

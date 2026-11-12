@@ -243,6 +243,7 @@ const runOnServer = Effect.fn("Opencode2TextGeneration.runOnServer")(function* (
 export const make = Effect.fn("OpenCode2TextGeneration.make")(function* (
   options: {
     readonly binaryPath?: string;
+    readonly serverUrl?: string;
     readonly environment?: NodeJS.ProcessEnv;
     readonly directory?: string;
   } = {},
@@ -309,6 +310,6 @@ export const make = Effect.fn("OpenCode2TextGeneration.make")(function* (
   };
   return TextGenerationOperations.fromRunner("OpenCode2TextGeneration", run, {
     supportsInvestigation: false,
-    supportsBlindEvaluation: true,
+    supportsBlindEvaluation: !options.serverUrl?.trim(),
   });
 });

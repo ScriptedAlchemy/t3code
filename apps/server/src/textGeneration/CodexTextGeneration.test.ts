@@ -355,9 +355,8 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
         defaultModel: "other-default-model",
         requireArg: "--model selected-judge",
         configToml:
-          'model_provider = "private"\ndeveloper_instructions = "Do not inherit"\n[model_providers.private]\nbase_url = "http://127.0.0.1:1/v1"\nwire_api = "responses"\n',
+          'profile = "private"\nmodel_provider = "wrong"\ndeveloper_instructions = "Do not inherit"\n[profiles.private]\nmodel_provider = "private"\n[model_providers.private]\nbase_url = "http://127.0.0.1:1/v1"\nwire_api = "responses"\n',
         requireIsolatedHome: true,
-
         requireReasoningEffort: "high",
         requireServiceTier: "priority",
         disabledFeatures: [

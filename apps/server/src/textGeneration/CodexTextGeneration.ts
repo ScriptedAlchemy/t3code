@@ -74,6 +74,7 @@ const CODEX_JUDGE_FEATURES = [
 ] as const;
 const CODEX_ROUTING_KEYS = new Set([
   "model_provider",
+  "oss_provider",
   "model_providers",
   "openai_base_url",
   "chatgpt_base_url",
@@ -85,21 +86,15 @@ const CODEX_ROUTING_KEYS = new Set([
 const routingConfig = (table: TomlTable): TomlTable =>
   Object.fromEntries(Object.entries(table).filter(([key]) => CODEX_ROUTING_KEYS.has(key)));
 
+const isTomlTable = (value: unknown): value is TomlTable =>
+  value !== null && typeof value === "object" && !Array.isArray(value) && !(value instanceof Date);
+
 const mergeRoutingConfig = (base: TomlTable, override: TomlTable): TomlTable => {
   const result = { ...base };
   for (const [key, value] of Object.entries(override)) {
     const previous = result[key];
     result[key] =
-      previous !== null &&
-      typeof previous === "object" &&
-      !Array.isArray(previous) &&
-      !(previous instanceof Date) &&
-      value !== null &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      !(value instanceof Date)
-        ? mergeRoutingConfig(previous as TomlTable, value as TomlTable)
-        : value;
+      isTomlTable(previous) && isTomlTable(value) ? mergeRoutingConfig(previous, value) : value;
   }
   return result;
 };
@@ -314,9 +309,15 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             overrides.push(routingConfig(yield* parseConfig(value)));
         } else if (arg === "--oss") switches.push(arg);
         else if (arg === "--local-provider" && args[index + 1]) switches.push(arg, args[++index]!);
+        else if (arg?.startsWith("--local-provider=")) switches.push(arg);
       }
       const routing = [
         routingConfig(original),
+        ...(profile !== undefined &&
+        isTomlTable(original.profiles) &&
+        isTomlTable(original.profiles[profile])
+          ? [routingConfig(original.profiles[profile])]
+          : []),
         ...(profile === undefined
           ? []
           : [routingConfig(yield* readConfig(`${profile}.config.toml`))]),

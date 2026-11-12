@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -19,13 +20,24 @@ const isConfig = Schema.is(Config);
 const isTextGenerationError = Schema.is(TextGenerationError);
 const ROUTING_KEYS = ["provider", "providers", "enabled_providers", "disabled_providers"] as const;
 
-function readRoutingConfig(content: string): Config | undefined {
+function readRoutingConfig(
+  content: string,
+  resolveFile: (file: string) => string,
+): Config | undefined {
   const decoded = decodeConfig(content);
   if (Option.isNone(decoded)) return undefined;
+  const rewrite = (value: unknown): unknown => {
+    if (typeof value === "string")
+      return value.replace(/\{file:([^}]+)\}/g, (_, file: string) => `{file:${resolveFile(file)}}`);
+    if (Array.isArray(value)) return value.map(rewrite);
+    if (isConfig(value))
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, rewrite(item)]));
+    return value;
+  };
   return Object.fromEntries(
     ROUTING_KEYS.flatMap((key) => {
       const value = decoded.value[key];
-      return value === undefined ? [] : [[key, value]];
+      return value === undefined ? [] : [[key, rewrite(value)]];
     }),
   );
 }
@@ -47,6 +59,10 @@ export const makeBlindEvaluationEnvironment = Effect.fn("OpenCode.makeBlindEvalu
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const home =
+      input.environment.HOME ?? input.environment.USERPROFILE ?? (yield* HostProcess.HomeDirectory);
+    const resolveFile = (directory: string) => (file: string) =>
+      path.resolve(directory, expandHomePath(file, home));
     const invalid = () =>
       new TextGenerationError({
         operation: input.operation,
@@ -59,29 +75,26 @@ export const makeBlindEvaluationEnvironment = Effect.fn("OpenCode.makeBlindEvalu
           () => Effect.succeed("{}"),
         ),
         Effect.flatMap((content) => {
-          const config = readRoutingConfig(content);
+          const config = readRoutingConfig(content, resolveFile(path.dirname(filePath)));
           return config === undefined ? Effect.fail(invalid()) : Effect.succeed(config);
         }),
         Effect.mapError((cause) => (isTextGenerationError(cause) ? cause : invalid())),
       );
 
     let routing: Config = {};
-    const home = input.environment.HOME ?? input.environment.USERPROFILE;
     const configHome = input.environment.XDG_CONFIG_HOME;
     const globalDirectory =
       configHome !== undefined && configHome.trim().length > 0
         ? path.join(configHome, "opencode")
-        : home === undefined
-          ? undefined
-          : path.join(home, ".config", "opencode");
+        : path.join(home, ".config", "opencode");
     const directories = [
-      ...(globalDirectory === undefined ? [] : [globalDirectory]),
+      globalDirectory,
       ...(input.environment.OPENCODE_CONFIG_DIR === undefined
         ? []
         : [
             path.resolve(
               input.directory,
-              expandHomePath(input.environment.OPENCODE_CONFIG_DIR, home ?? ""),
+              expandHomePath(input.environment.OPENCODE_CONFIG_DIR, home),
             ),
           ]),
     ];
@@ -93,12 +106,15 @@ export const makeBlindEvaluationEnvironment = Effect.fn("OpenCode.makeBlindEvalu
     if (input.environment.OPENCODE_CONFIG !== undefined) {
       const configuredPath = path.resolve(
         input.directory,
-        expandHomePath(input.environment.OPENCODE_CONFIG, home ?? ""),
+        expandHomePath(input.environment.OPENCODE_CONFIG, home),
       );
       routing = mergeConfig(routing, yield* readConfig(configuredPath));
     }
     if (input.environment.OPENCODE_CONFIG_CONTENT !== undefined) {
-      const content = readRoutingConfig(input.environment.OPENCODE_CONFIG_CONTENT);
+      const content = readRoutingConfig(
+        input.environment.OPENCODE_CONFIG_CONTENT,
+        resolveFile(input.directory),
+      );
       if (content === undefined) return yield* invalid();
       routing = mergeConfig(routing, content);
     }
@@ -117,6 +133,11 @@ export const makeBlindEvaluationEnvironment = Effect.fn("OpenCode.makeBlindEvalu
     } = input.environment;
     return {
       ...preserved,
+      HOME: temporary,
+      ...(input.environment.USERPROFILE === undefined ? {} : { USERPROFILE: temporary }),
+      XDG_DATA_HOME: input.environment.XDG_DATA_HOME ?? path.join(home, ".local", "share"),
+      XDG_STATE_HOME: path.join(temporary, "state"),
+      XDG_CACHE_HOME: path.join(temporary, "cache"),
       XDG_CONFIG_HOME: xdgConfigHome,
       OPENCODE_CONFIG_DIR: configDirectory,
       OPENCODE_CONFIG_CONTENT: encodeConfig(routing),
@@ -163,5 +184,5 @@ export const hasBlindEvaluationPartActivity = (parts: ReadonlyArray<unknown>) =>
       part === null ||
       typeof part !== "object" ||
       !("type" in part) ||
-      (part.type !== "text" && part.type !== "reasoning"),
+      !["text", "reasoning", "step-start", "step-finish", "snapshot"].includes(String(part.type)),
   );

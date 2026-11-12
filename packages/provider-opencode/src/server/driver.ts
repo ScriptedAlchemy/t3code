@@ -470,6 +470,7 @@ export const OpenCodeDriver: ProviderDriver<
       }).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner)),
       yield* OpenCode2TextGeneration.make({
         binaryPath: effectiveConfig.binaryPath,
+        serverUrl: effectiveConfig.serverUrl,
         environment: processEnv,
         directory: host.paths.cwd,
       }).pipe(

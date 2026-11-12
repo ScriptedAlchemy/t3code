@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as FileSystem from "effect/FileSystem";
 import * as Stream from "effect/Stream";
 import { beforeEach, expect } from "vite-plus/test";
 
@@ -144,13 +145,15 @@ const validEvaluation = {
   promptAdvice: [],
 };
 
-const make = () =>
+const make = (configPath = "/user-config/opencode.json", serverUrl = "") =>
   OpenCode2TextGeneration.make({
     binaryPath: "fake-opencode",
+    serverUrl,
     directory: process.cwd(),
     environment: {
+      HOME: "/original-home",
       XDG_CONFIG_HOME: "/user-config",
-      OPENCODE_CONFIG: "/user-config/opencode.json",
+      OPENCODE_CONFIG: configPath,
       OPENCODE_CONFIG_CONTENT: JSON.stringify({
         providers: { custom: { options: { baseURL: "http://model.internal" } } },
         instructions: ["/secret/instructions.md"],
@@ -195,7 +198,14 @@ beforeEach(() => {
 it.layer(layer)("OpenCode2TextGeneration blind evaluation", (it) => {
   it.effect("uses an owned deny-all server and the exact requested model variant", () =>
     Effect.gen(function* () {
-      const textGeneration = yield* make();
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-routing-" });
+      const configPath = `${directory}/opencode.json`;
+      yield* fs.writeFileString(
+        configPath,
+        JSON.stringify({ providers: { custom: { settings: { apiKey: "{file:./key}" } } } }),
+      );
+      const textGeneration = yield* make(configPath);
       const verdict = yield* textGeneration.generateModelEvaluation(evaluationInput);
 
       expect(verdict).toEqual(validEvaluation);
@@ -206,12 +216,31 @@ it.layer(layer)("OpenCode2TextGeneration blind evaluation", (it) => {
         permissions: [{ action: "*", resource: "*", effect: "deny" }],
       });
       const environment = state.startEnvironments[0];
+      expect(environment?.HOME).not.toBe("/original-home");
+      expect(environment?.XDG_DATA_HOME).toBe("/original-home/.local/share");
       expect(environment?.XDG_CONFIG_HOME).not.toBe("/user-config");
       expect(environment?.OPENCODE_CONFIG).toBeUndefined();
       expect(JSON.parse(environment?.OPENCODE_CONFIG_CONTENT ?? "null")).toEqual({
-        providers: { custom: { options: { baseURL: "http://model.internal" } } },
+        providers: {
+          custom: {
+            options: { baseURL: "http://model.internal" },
+            settings: { apiKey: `{file:${directory}/key}` },
+          },
+        },
       });
       expect(state.closeCalls).toEqual([OWNED_SERVER_URL]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not advertise judges from an external server with separate credentials", () =>
+    Effect.gen(function* () {
+      const textGeneration = yield* make(undefined, "https://remote.example.com");
+      expect(textGeneration.supportedOperations).not.toContain("generateModelEvaluation");
+      const error = yield* textGeneration
+        .generateModelEvaluation(evaluationInput)
+        .pipe(Effect.flip);
+      expect(error.detail).toContain("cannot isolate");
+      expect(state.connectUrls).toEqual([]);
     }).pipe(Effect.scoped),
   );
 

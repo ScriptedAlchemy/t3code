@@ -472,13 +472,19 @@ it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
 
   it.effect("isolates blind evaluation from shared servers, tools, and custom instructions", () =>
     withOpenCodeTextGeneration(
-      EXISTING_SERVER_OPENCODE_SETTINGS,
+      DEFAULT_OPENCODE_SETTINGS,
       (textGeneration) =>
         Effect.gen(function* () {
           runtimeMock.state.promptResult = {
             data: {
               info: { providerID: "openai", modelID: "gpt-5", variant: "high" },
-              parts: [{ type: "text", text: JSON.stringify(VALID_EVALUATION) }],
+              parts: [
+                { type: "step-start" },
+                { type: "reasoning", text: "Check the evidence." },
+                { type: "text", text: JSON.stringify(VALID_EVALUATION) },
+                { type: "step-finish", reason: "stop" },
+                { type: "snapshot", snapshot: "unchanged" },
+              ],
             },
           };
 
@@ -794,6 +800,7 @@ it.layer(layerOpenCodeTextGenerationExistingServerTest)(
     it.effect("reuses a configured OpenCode server URL without spawning or applying idle TTL", () =>
       withOpenCodeTextGeneration(EXISTING_SERVER_OPENCODE_SETTINGS, (textGeneration) =>
         Effect.gen(function* () {
+          expect(textGeneration.supportedOperations).not.toContain("generateModelEvaluation");
           yield* textGeneration.generateCommitMessage({
             cwd: process.cwd(),
             branch: "feature/opencode-reuse",
