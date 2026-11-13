@@ -1,5 +1,4 @@
 import { InferenceProxy } from "./inference/InferenceProxy.ts";
-import * as ThreadSplitSuggestions from "./orchestration-v2/ThreadSplitSuggestions.ts";
 import * as PstackPack from "./pstack/PstackPack.ts";
 import * as SkillsLibrary from "./skills/SkillsLibrary.ts";
 import * as ProjectKnowledge from "./project/knowledge/ProjectKnowledge.ts";
@@ -1062,14 +1061,7 @@ it.effect.each([
             yield* ServerBrowser.ServerBrowser,
             () => Effect.void,
             { secretReferences: true },
-          ).pipe(
-            Layer.provide(configRpcServices),
-            Layer.provide(
-              Layer.succeed(ThreadSplitSuggestions.ThreadSplitSuggestions, {
-                suggest: () => Effect.succeed({ suggest: false }),
-              }),
-            ),
-          ),
+          ).pipe(Layer.provide(configRpcServices)),
         ),
       );
       const requestId = RpcMessage.RequestId("config");
@@ -1380,14 +1372,7 @@ it.effect(
             yield* ServerBrowser.ServerBrowser,
             () => Effect.void,
             { secretReferences: true },
-          ).pipe(
-            Layer.provide(configRpcServices),
-            Layer.provide(
-              Layer.succeed(ThreadSplitSuggestions.ThreadSplitSuggestions, {
-                suggest: () => Effect.succeed({ suggest: false }),
-              }),
-            ),
-          ),
+          ).pipe(Layer.provide(configRpcServices)),
         ),
       );
       const configRequest = RpcMessage.RequestId("config");
@@ -1663,9 +1648,6 @@ it.effect("a missing thread worktree gets its project's skills in the cwd snapsh
       Layer.mock(PstackPack.PstackPack)({ catalog: Effect.undefined }),
       Layer.mock(SkillsLibrary.SkillsLibrary)({}),
       Layer.mock(ThreadGroupService.ThreadGroupService)({}),
-      Layer.mock(ThreadSplitSuggestions.ThreadSplitSuggestions)({
-        suggest: () => Effect.succeed({ suggest: false }),
-      }),
       Layer.mock(ServerEnvironment.ServerEnvironment)({}),
       Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
     );
@@ -1742,7 +1724,6 @@ it.effect("a git action that fails partway still refreshes the repository status
       Layer.mock(PstackPack.PstackPack)({ catalog: Effect.undefined }),
       Layer.mock(SkillsLibrary.SkillsLibrary)({}),
       Layer.mock(ThreadGroupService.ThreadGroupService)({}),
-      Layer.mock(ThreadSplitSuggestions.ThreadSplitSuggestions)({}),
       Layer.mock(GitWorkflowService.GitWorkflowService)({
         runStackedAction: () => Effect.fail(failure),
       }),
@@ -1813,9 +1794,6 @@ it.effect("a publish whose push fails still refreshes the new remote", () =>
       Layer.mock(PstackPack.PstackPack)({ catalog: Effect.undefined }),
       Layer.mock(SkillsLibrary.SkillsLibrary)({}),
       Layer.mock(ThreadGroupService.ThreadGroupService)({}),
-      Layer.mock(ThreadSplitSuggestions.ThreadSplitSuggestions)({
-        suggest: () => Effect.succeed({ suggest: false }),
-      }),
       layerUnusedConfigRpcServices,
       Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
         publishRepository: (input) =>
@@ -2218,7 +2196,6 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
       Layer.mock(ThreadGroupService.ThreadGroupService)({}),
       Layer.mock(PstackPack.PstackPack)({ catalog: Effect.undefined }),
       Layer.mock(SkillsLibrary.SkillsLibrary)({}),
-      Layer.mock(ThreadSplitSuggestions.ThreadSplitSuggestions)({}),
       Layer.fresh(layerConfigSources),
       Layer.mock(ExternalLauncher.ExternalLauncher)({}),
       Layer.mock(ProviderRegistry.ProviderRegistry)({}),

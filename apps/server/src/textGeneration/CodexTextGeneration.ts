@@ -305,8 +305,25 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         ) {
           const value =
             arg === "--config" || arg === "-c" ? args[++index] : arg.slice(arg.indexOf("=") + 1);
-          if (value && CODEX_ROUTING_KEYS.has(value.split(/[.=]/)[0] ?? ""))
-            overrides.push(routingConfig(yield* parseConfig(value)));
+          const separator = value?.indexOf("=") ?? -1;
+          if (value && CODEX_ROUTING_KEYS.has(value.split(/[.=]/)[0]?.trim() ?? "")) {
+            const override = yield* parseConfig(value).pipe(
+              // Codex treats a CLI value that is not TOML as an unquoted string.
+              Effect.catch((cause) =>
+                separator < 0
+                  ? Effect.fail(cause)
+                  : parseConfig(
+                      `${value.slice(0, separator).trim()}=${JSON.stringify(
+                        value
+                          .slice(separator + 1)
+                          .trim()
+                          .replace(/^["']+|["']+$/g, ""),
+                      )}`,
+                    ),
+              ),
+            );
+            overrides.push(routingConfig(override));
+          }
         } else if (arg === "--oss") switches.push(arg);
         else if (arg === "--local-provider" && args[index + 1]) switches.push(arg, args[++index]!);
         else if (arg?.startsWith("--local-provider=")) switches.push(arg);

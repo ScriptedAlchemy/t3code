@@ -467,13 +467,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
   },
   {
-    id: "thread-split-suggestions",
-    title: "Suggest new threads",
-    to: "/settings/labs",
-    scope: "environment",
-    searchTerms: ["zack split independent topic decision model"],
-  },
-  {
     id: "boring-sidebar",
     title: "Boring sidebar (group by project)",
     to: "/settings/labs",

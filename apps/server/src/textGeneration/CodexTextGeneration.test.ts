@@ -326,10 +326,18 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
 
   it.effect.each([
     "valid verdict",
+    "unquoted CLI routing",
+    "quoted CLI routing",
+    "spaced CLI routing",
+    "missing CLI routing value",
     "tool activity",
     "MCP discovery unavailable",
     "extra field",
   ] as const)("uses an isolated exact Codex judge (%s)", (state) => {
+    const cliRouting =
+      state === "unquoted CLI routing" ||
+      state === "quoted CLI routing" ||
+      state === "spaced CLI routing";
     const verdict = {
       outcome: "insufficient_evidence",
       taskCategory: "other",
@@ -354,9 +362,20 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
         models: ["other-default-model"],
         defaultModel: "other-default-model",
         requireArg: "--model selected-judge",
-        configToml:
-          'profile = "private"\nmodel_provider = "wrong"\ndeveloper_instructions = "Do not inherit"\n[profiles.private]\nmodel_provider = "private"\n[model_providers.private]\nbase_url = "http://127.0.0.1:1/v1"\nwire_api = "responses"\n',
-        requireIsolatedHome: true,
+        configToml: `profile = "private"\nmodel_provider = "wrong"\ndeveloper_instructions = "Do not inherit"\n[profiles.private]\nmodel_provider = "private"\n[model_providers.private]\nbase_url = "http://127.0.0.1:${cliRouting ? 2 : 1}/v1"\nwire_api = "responses"\n`,
+        ...(cliRouting || state === "missing CLI routing value"
+          ? {
+              launchArgs:
+                state === "missing CLI routing value"
+                  ? "-c model_provider"
+                  : state === "unquoted CLI routing"
+                    ? "-c model_provider=private --config=model_providers.private.base_url=http://127.0.0.1:1/v1"
+                    : state === "spaced CLI routing"
+                      ? '-c " model_provider = private " --config " model_providers.private.base_url = http://127.0.0.1:1/v1 "'
+                      : `-c 'model_provider="private"' --config 'model_providers.private.base_url="http://127.0.0.1:1/v1"'`,
+            }
+          : {}),
+        requireIsolatedHome: state !== "missing CLI routing value",
         requireReasoningEffort: "high",
         requireServiceTier: "priority",
         disabledFeatures: [
@@ -415,16 +434,16 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
               },
             })
             .pipe(Effect.exit);
-          if (state === "valid verdict" || state === "MCP discovery unavailable") {
+          if (state === "valid verdict" || state === "MCP discovery unavailable" || cliRouting) {
             expect(Exit.isSuccess(exit) ? exit.value : exit).toEqual(verdict);
           } else {
             expect(Exit.isFailure(exit)).toBe(true);
             expect(Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "").toContain(
-              state === "tool activity"
-                ? "tool activity"
-                : state === "extra field"
-                  ? "invalid structured output"
-                  : "MCP",
+              state === "missing CLI routing value"
+                ? "Failed to isolate"
+                : state === "tool activity"
+                  ? "tool activity"
+                  : "invalid structured output",
             );
           }
         }),

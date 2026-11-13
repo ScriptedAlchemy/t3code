@@ -1,4 +1,4 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import type { MenuAction } from "@react-native-menu/menu";
 import {
   isManagedSettingPath,
@@ -16,10 +16,9 @@ import {
   modelEvaluationSelectionLabel,
   isModelEvaluationJudge,
 } from "@t3tools/client-runtime/modelEvaluations";
-import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import * as Effect from "effect/Effect";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Hash from "effect/Hash";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import { View } from "react-native";
 
@@ -41,6 +40,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
+import { apiJudgeModelsAtom } from "./modelEvaluationApiModels";
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
 
 export function ModelEvaluationSettings() {
@@ -77,27 +77,6 @@ export function ModelEvaluationSettings() {
   );
 }
 
-const apiJudgeModelsAtom = Atom.family((key: string) => {
-  const apis = JSON.parse(key) as ReadonlyArray<
-    readonly [EnvironmentId, ProviderInstanceId, number]
-  >;
-  return Atom.make((get) =>
-    Effect.forEach(
-      apis,
-      ([environmentId, id]) =>
-        Effect.promise(() =>
-          runAtomCommand(
-            get.registry,
-            serverEnvironment.listTextGeneratorModels,
-            { environmentId, input: { id } },
-            { reportFailure: false },
-          ),
-        ).pipe(Effect.map((result) => (result._tag === "Success" ? result.value.models : []))),
-      { concurrency: "unbounded" },
-    ),
-  ).pipe(Atom.setIdleTTL(5 * 60_000), Atom.withLabel("model-evaluation-api-judges"));
-});
-
 function EnvironmentEvaluationSettings(props: {
   environmentId: EnvironmentId;
   label: string;
@@ -121,15 +100,15 @@ function EnvironmentEvaluationSettings(props: {
         >)
       : []
   ).filter(([, generator]) => generator.enabled);
-  const apiModelLists = useAtomValue(
-    apiJudgeModelsAtom(
-      JSON.stringify(
-        apiJudges.map(
-          ([id, generator]) => [environmentId, id, Hash.string(JSON.stringify(generator))] as const,
-        ),
+  const apiModelsAtom = apiJudgeModelsAtom(
+    JSON.stringify(
+      apiJudges.map(
+        ([id, generator]) => [environmentId, id, Hash.string(JSON.stringify(generator))] as const,
       ),
     ),
   );
+  const apiModelLists = useAtomValue(apiModelsAtom);
+  const refreshApiModels = useAtomRefresh(apiModelsAtom);
   if (config === null) return null;
   const readOnly = saving || !canWrite || props.projectSelected;
   const project =
@@ -141,7 +120,11 @@ function EnvironmentEvaluationSettings(props: {
   const capable = new Set(
     config.providers.filter(isModelEvaluationJudge).map((provider) => provider.instanceId),
   );
-  const listedApiModels = AsyncResult.getOrElse(apiModelLists, () => []);
+  const listedApiModels = apiModelLists.map((result) => AsyncResult.getOrElse(result, () => []));
+  const apiModelsLoading = apiModelLists.some((result) => result.waiting);
+  const failedApis = apiJudges.flatMap(([, generator], index) =>
+    apiModelLists[index]?._tag === "Failure" ? [generator.label || generator.baseUrl] : [],
+  );
   const models = [
     ...buildModelOptions(config, selection, undefined, null).filter(
       (model) =>
@@ -230,6 +213,21 @@ function EnvironmentEvaluationSettings(props: {
           if (model) void write({ modelEvaluationModelSelection: model.selection });
         }}
       />
+      {apiJudges.length > 0 ? (
+        <View className="gap-2 px-4 py-2">
+          {failedApis.length > 0 ? (
+            <Text className="text-sm text-foreground-muted">
+              Could not load models from {failedApis.join(", ")}.
+            </Text>
+          ) : null}
+          <Button
+            label={apiModelsLoading ? "Loading API models…" : "Refresh API models"}
+            tone="text"
+            disabled={apiModelsLoading}
+            onPress={refreshApiModels}
+          />
+        </View>
+      ) : null}
       {!judgeAvailable ? (
         <Text className="px-4 py-2 text-sm text-foreground-muted">
           Choose an available judge before enabling.
