@@ -30,6 +30,7 @@ Type `$` or `/` in the composer and pick a `pstack:` skill, for example `$pstack
 cache layer`. Start rigorous work with `$pstack:poteto-mode`; it picks the other skills as it goes.
 Helper agents appear under the thread as tasks you can open, follow, or stop.
 Use `$pstack:automate-maintainer` or `$pstack:automate-team` to capture a maintainer’s or team’s engineering conventions.
+Mentioning pstack without a skill, such as “use pstack principles”, points the agent at T3 Code’s copy so it can read the skills, but runs no workflow.
 
 When a model becomes unavailable, pools use their remaining choices; if none remain, they use your
 thread’s model. Panels keep every seat, using your thread’s model for unavailable entries. The reply

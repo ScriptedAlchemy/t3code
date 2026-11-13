@@ -6,19 +6,21 @@ import {
   replaceComposerContextReferences,
 } from "@t3tools/shared/composerContextReferences";
 
-export function hasPstackComposerInvocation(
+type ComposerMessage = Pick<
+  OrchestrationV2ConversationMessage,
+  "createdBy" | "notification" | "delegatedCompletion"
+>;
+
+const isUserAuthored = (message: ComposerMessage) =>
+  message.createdBy === "user" &&
+  message.notification === undefined &&
+  message.delegatedCompletion === undefined;
+
+function hasPstackComposerInvocation(
   input: { readonly text: string; readonly records: ReadonlyArray<ComposerContextRecord> },
-  message: Pick<
-    OrchestrationV2ConversationMessage,
-    "createdBy" | "notification" | "delegatedCompletion"
-  >,
+  message: ComposerMessage,
 ): boolean {
-  if (
-    message.createdBy !== "user" ||
-    message.notification !== undefined ||
-    message.delegatedCompletion !== undefined
-  )
-    return false;
+  if (!isUserAuthored(message)) return false;
   if (
     input.records.some(
       (record) =>
@@ -38,10 +40,7 @@ export function planPstackComposer(
     readonly text: string;
     readonly records: ReadonlyArray<ComposerContextRecord>;
   },
-  message: Pick<
-    OrchestrationV2ConversationMessage,
-    "createdBy" | "notification" | "delegatedCompletion"
-  >,
+  message: ComposerMessage,
 ) {
   if (!hasPstackComposerInvocation(input, message)) return undefined;
   const mentions = [...input.text.matchAll(SKILL_MENTION_PATTERN)]
@@ -97,4 +96,15 @@ export function planPstackComposer(
       };
     },
   };
+}
+
+/** An invocation, or a user naming pstack without one, for example "use pstack principles". */
+export function referencesPstack(
+  input: { readonly text: string; readonly records: ReadonlyArray<ComposerContextRecord> },
+  message: ComposerMessage,
+): boolean {
+  return (
+    hasPstackComposerInvocation(input, message) ||
+    (isUserAuthored(message) && /\bpstack\b/i.test(input.text))
+  );
 }
