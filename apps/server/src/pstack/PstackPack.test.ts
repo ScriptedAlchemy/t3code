@@ -303,6 +303,9 @@ it.layer(NodeServices.layer)("PstackPack", (it) => {
           assert.include(located, `<pstack>: ${directory}`);
           assert.notInclude(located, "Resolved roles");
           assert.strictEqual(yield* pack.expandComposer(mention, { createdBy: "agent" }), mention);
+          // Codex stores a goal's text as its objective.
+          const goal = { ...input, text: "/goal use pstack principles" };
+          assert.strictEqual(yield* pack.expandComposer(goal, { createdBy: "user" }), goal);
           yield* settings.updateSettings({ pstackEnabled: false });
           assert.equal(yield* pack.catalog, undefined);
           assert.strictEqual(yield* pack.expandComposer(input, { createdBy: "user" }), input);

@@ -1,4 +1,8 @@
-import type { ComposerContextRecord, OrchestrationV2ConversationMessage } from "@t3tools/contracts";
+import {
+  type ComposerContextRecord,
+  type OrchestrationV2ConversationMessage,
+  parseGoalCommand,
+} from "@t3tools/contracts";
 import { PSTACK_SKILL_PREFIX } from "@t3tools/pstack";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import {
@@ -105,6 +109,9 @@ export function referencesPstack(
 ): boolean {
   return (
     hasPstackComposerInvocation(input, message) ||
-    (isUserAuthored(message) && /\bpstack\b/i.test(input.text))
+    (isUserAuthored(message) &&
+      /\bpstack\b/i.test(input.text) &&
+      // A native goal's text becomes its objective, so it carries no locator.
+      parseGoalCommand(input) === null)
   );
 }
