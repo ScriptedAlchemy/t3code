@@ -20,10 +20,11 @@ import {
 } from "./LocalHistoryStore.ts";
 
 const SearchCursor = Schema.Struct({
-  v: Schema.Literal(2),
+  v: Schema.Literal(3),
   sourceId: Schema.String,
   query: Schema.String,
   filterCwd: Schema.NullOr(Schema.String),
+  listingDigest: Schema.String,
   afterKey: Schema.NullOr(Schema.String),
   itemOffset: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   version: Schema.NullOr(Schema.String),
@@ -86,6 +87,10 @@ export const makeLocalHistory = Effect.gen(function* () {
     )
       return yield* invalidCursor();
     const refs = yield* store.listThreads;
+    // Appends can reorder sessions between pages; never silently skip or repeat them.
+    const listingDigest = yield* digest(JSON.stringify(refs.map((ref) => ref.key)));
+    if (cursor && cursor.listingDigest !== listingDigest)
+      return yield* new ExternalHistoryError({ reason: "changed" });
     const first =
       cursor?.afterKey == null ? 0 : refs.findIndex((ref) => ref.key === cursor.afterKey);
     if (first < 0) return yield* new ExternalHistoryError({ reason: "changed" });
@@ -93,10 +98,11 @@ export const makeLocalHistory = Effect.gen(function* () {
       const ref = refs[index];
       return ref
         ? encodeSearchCursor({
-            v: 2,
+            v: 3,
             sourceId: input.sourceId,
             query: input.query,
             filterCwd: input.filterCwd ?? null,
+            listingDigest,
             afterKey: ref.key,
             itemOffset,
             version,
@@ -137,6 +143,8 @@ export const makeLocalHistory = Effect.gen(function* () {
           () => Effect.undefined,
         ),
       );
+      if (resumed?.version != null && resumed.version !== thread?.version)
+        return yield* new ExternalHistoryError({ reason: "changed" });
       if (!thread) {
         examinedChars += FAILED_LOAD_CHARS;
         continue;
@@ -150,7 +158,7 @@ export const makeLocalHistory = Effect.gen(function* () {
               normalizeProjectPathForComparison(input.filterCwd)))
       )
         continue;
-      const offset = resumed?.version === thread.version ? resumed.itemOffset : 0;
+      const offset = resumed?.itemOffset ?? 0;
       if (offset > thread.items.length) return yield* invalidCursor();
       for (let position = offset; position < thread.items.length; position++) {
         const item = thread.items[position]!;

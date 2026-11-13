@@ -205,6 +205,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
             enabled: false,
             config: { homePath: claude },
           },
+          [ProviderInstanceId.make("invalid-claude")]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            enabled: false,
+            config: { homePath: 17 },
+          },
           [ProviderInstanceId.make("opencode-downloads")]: {
             driver: ProviderDriverKind.make("opencode"),
             environment: [

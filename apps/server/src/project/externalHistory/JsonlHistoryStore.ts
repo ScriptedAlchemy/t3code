@@ -89,9 +89,18 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
     | { directories: ReadonlyMap<string, string>; refs: ReadonlyArray<LocalThreadRef> }
     | undefined;
   const listThreads = Effect.gen(function* () {
-    if (listing) {
+    let complete = true;
+    const skipEntryError = (error: PlatformError.PlatformError) => {
+      if (error.reason._tag === "NotFound" || error.reason._tag === "PermissionDenied") {
+        complete = false;
+        return Effect.undefined;
+      }
+      return Effect.fail(error);
+    };
+    const cachedListing = listing;
+    if (cachedListing) {
       let unchanged = true;
-      for (const [dir, version] of listing.directories) {
+      for (const [dir, version] of cachedListing.directories) {
         const stat = yield* fs.stat(dir).pipe(Effect.option);
         if (Option.isNone(stat) || fileVersion(stat.value) !== version) {
           unchanged = false;
@@ -101,7 +110,7 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
       if (unchanged) {
         // Appending a transcript does not change its directory's mtime.
         const refreshed = yield* Effect.forEach(
-          listing.refs,
+          cachedListing.refs,
           (ref) =>
             fs.stat(path.join(directory, ...ref.key.split("/"))).pipe(
               Effect.map((info) =>
@@ -115,16 +124,13 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
                     }
                   : undefined,
               ),
-              Effect.catchTags({
-                PlatformError: (error) =>
-                  error.reason._tag === "NotFound" ? Effect.undefined : Effect.fail(error),
-              }),
+              Effect.catchTags({ PlatformError: skipEntryError }),
             ),
           { concurrency: 16 },
         );
         const refs = refreshed.filter((ref) => ref !== undefined);
         refs.sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key));
-        listing = { directories: listing.directories, refs };
+        listing = complete ? { directories: cachedListing.directories, refs } : undefined;
         return refs;
       }
     }
@@ -138,13 +144,19 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
     for (const child of children) {
       const childPath = path.join(directory, child);
       if (yield* Effect.isSuccess(fs.readLink(childPath))) continue;
-      const info = yield* fs.stat(childPath);
+      const info = yield* fs
+        .stat(childPath)
+        .pipe(Effect.catchTags({ PlatformError: skipEntryError }));
+      if (!info) continue;
       const files =
         info.type === "Directory"
-          ? yield* fs.readDirectory(childPath)
+          ? yield* fs
+              .readDirectory(childPath)
+              .pipe(Effect.catchTags({ PlatformError: skipEntryError }))
           : source === "pi" && child.endsWith(".jsonl")
             ? [child]
             : [];
+      if (!files) continue;
       if (info.type === "Directory") directories.set(childPath, fileVersion(info));
       if (directories.size > 50_000 || files.length + refs.length > 50_000)
         return yield* new ExternalHistoryError({ reason: "limit_exceeded" });
@@ -152,8 +164,10 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
         if (!name.endsWith(".jsonl")) continue;
         const filePath = info.type === "Directory" ? path.join(childPath, name) : childPath;
         if (yield* Effect.isSuccess(fs.readLink(filePath))) continue;
-        const stat = yield* fs.stat(filePath);
-        if (stat.type !== "File") continue;
+        const stat = yield* fs
+          .stat(filePath)
+          .pipe(Effect.catchTags({ PlatformError: skipEntryError }));
+        if (stat?.type !== "File") continue;
         const key = path.relative(directory, filePath).split(path.sep).join("/");
         if (key.length > 512) return yield* new ExternalHistoryError({ reason: "limit_exceeded" });
         refs.push({
@@ -164,7 +178,8 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
       }
     }
     refs.sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key));
-    listing = { directories, refs };
+    // An omitted entry may recover without changing its parent's mtime.
+    listing = complete ? { directories, refs } : undefined;
     return refs;
   }).pipe(Effect.mapError(mapError));
 

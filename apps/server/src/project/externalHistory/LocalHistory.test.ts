@@ -103,6 +103,18 @@ it.layer(NodeCrypto.layer)("local history search paging", (it) => {
         "last:hit",
       ]);
       expect(requests).toBeGreaterThan(3);
+
+      let refs = yield* store.listThreads;
+      const changingStore = { ...store, listThreads: Effect.sync(() => refs) };
+      const history = yield* makeLocalHistory;
+      const request = { operation: "search", sourceId: "local", query: "needle" } as const;
+      const first = yield* history.search(changingStore, request);
+      refs = [refs.at(-1)!, ...refs.slice(0, -1)];
+      expect(
+        (yield* history
+          .search(changingStore, { ...request, cursor: first.nextCursor! })
+          .pipe(Effect.flip)).reason,
+      ).toBe("changed");
     }),
   );
 

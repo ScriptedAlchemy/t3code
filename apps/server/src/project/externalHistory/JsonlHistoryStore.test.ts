@@ -4,6 +4,7 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
 import { makeClaudeHistoryStore, makePiHistoryStore } from "./JsonlHistoryStore.ts";
 import { makeLocalHistory } from "./LocalHistory.ts";
 
@@ -89,8 +90,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
             .read(store, { operation: "read", ref: first.matches[0]!.ref })
             .pipe(Effect.flip)).reason,
         ).toBe("changed");
-        const restarted = yield* history.search(store, { ...paged, cursor: second.nextCursor! });
-        expect(restarted.matches[0]?.itemId).toBe("new-0");
+        expect(
+          (yield* history.search(store, { ...paged, cursor: second.nextCursor! }).pipe(Effect.flip))
+            .reason,
+        ).toBe("changed");
         expect(
           (yield* store
             .loadThread({ key: "../../outside.jsonl", version: "", updatedAt: 0 })
@@ -132,6 +135,80 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
       yield* fs.writeFileString(`${project}/session.jsonl`, '{"unrelated":"data"}\nnot JSON');
       const [ref] = yield* store.listThreads;
       expect((yield* store.loadThread(ref!).pipe(Effect.flip)).reason).toBe("unsupported");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("isolates unreadable entries and retries incomplete listings after recovery", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const directory = `${root}/projects`;
+      for (const project of ["good", "blocked"]) {
+        yield* fs.makeDirectory(`${directory}/${project}`, { recursive: true });
+        yield* fs.writeFileString(
+          `${directory}/${project}/session.jsonl`,
+          JSON.stringify({ type: "user", uuid: project, message: { content: "needle" } }) + "\n",
+        );
+      }
+      const history = yield* makeLocalHistory;
+      const allKeys = ["blocked/session.jsonl", "good/session.jsonl"];
+      for (const failure of [
+        { method: "stat", path: `${directory}/blocked`, reason: "NotFound" },
+        { method: "readDirectory", path: `${directory}/blocked`, reason: "PermissionDenied" },
+        { method: "stat", path: `${directory}/blocked/session.jsonl`, reason: "NotFound" },
+        { method: "stat", path: `${directory}/blocked/session.jsonl`, reason: "PermissionDenied" },
+      ] as const) {
+        let unavailable = true;
+        const error = PlatformError.systemError({
+          _tag: failure.reason,
+          module: "FileSystem",
+          method: failure.method,
+          pathOrDescriptor: failure.path,
+        });
+        const partialFs = FileSystem.make({
+          ...fs,
+          stat: (path) =>
+            unavailable && failure.method === "stat" && path === failure.path
+              ? Effect.fail(error)
+              : fs.stat(path),
+          readDirectory: (path) =>
+            unavailable && failure.method === "readDirectory" && path === failure.path
+              ? Effect.fail(error)
+              : fs.readDirectory(path),
+        });
+        const store = yield* makeClaudeHistoryStore(root, history.cache).pipe(
+          Effect.provideService(FileSystem.FileSystem, partialFs),
+        );
+        expect((yield* store.listThreads).map((ref) => ref.key)).toEqual(["good/session.jsonl"]);
+        unavailable = false;
+        expect((yield* store.listThreads).map((ref) => ref.key).toSorted()).toEqual(allKeys);
+        if (failure.method === "stat") {
+          unavailable = true;
+          expect((yield* store.listThreads).map((ref) => ref.key)).toEqual(["good/session.jsonl"]);
+          unavailable = false;
+          expect((yield* store.listThreads).map((ref) => ref.key).toSorted()).toEqual(allKeys);
+        }
+      }
+      const inaccessibleRoot = yield* makeClaudeHistoryStore(root, history.cache).pipe(
+        Effect.provideService(
+          FileSystem.FileSystem,
+          FileSystem.make({
+            ...fs,
+            readDirectory: (path) =>
+              path === directory
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "readDirectory",
+                      pathOrDescriptor: path,
+                    }),
+                  )
+                : fs.readDirectory(path),
+          }),
+        ),
+      );
+      expect((yield* inaccessibleRoot.listThreads.pipe(Effect.flip)).reason).toBe("unavailable");
     }).pipe(Effect.scoped),
   );
 
