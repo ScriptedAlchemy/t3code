@@ -67,7 +67,7 @@ const configFor = (enabled: boolean, supported = true) => ({
   environment: { capabilities: supported ? { externalHistory: 1 as const } : {} },
   settings: {
     ...DEFAULT_SERVER_SETTINGS,
-    externalHistory: { enabled, chatGptExportPaths: ["/exports/conversations.json"] },
+    externalHistory: { enabled },
   },
 });
 const success = (data: ExternalHistoryResponse) => Atom.make(AsyncResult.success(data));
@@ -164,11 +164,6 @@ it("continues an empty bounded search, opens exact source pages, and hides revok
   await page.getByRole("button", { name: "External history", exact: true }).click();
   expect(state.requests).toContainEqual({ operation: "sources", catalogVersion: 2 });
   await expect.element(page.getByText("Grok · No verified history reader.")).toBeVisible();
-  await expect.element(page.getByLabelText("ChatGPT export paths")).not.toBeVisible();
-  await page.getByText("Add a ChatGPT export", { exact: true }).click();
-  await expect
-    .element(page.getByRole("textbox", { name: "ChatGPT export paths" }))
-    .toHaveValue("/exports/conversations.json");
   await page.getByRole("textbox", { name: "Search external history" }).fill("source");
   await page.getByRole("button", { name: "This project", exact: true }).click();
   await page.getByRole("switch", { name: "Include archived threads" }).click();
@@ -215,7 +210,6 @@ it("continues an empty bounded search, opens exact source pages, and hides revok
   await expect
     .element(page.getByRole("switch", { name: "Allow external history search" }))
     .toBeDisabled();
-  await expect.element(page.getByRole("textbox", { name: "ChatGPT export paths" })).toBeDisabled();
   await page.getByRole("button", { name: "Claude Code history", exact: true }).click();
   await expect
     .element(page.getByRole("textbox", { name: "History directory filter" }))

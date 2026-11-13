@@ -31,7 +31,6 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
-import { Textarea } from "../ui/textarea";
 
 type Search = Extract<ExternalHistoryRequest, { operation: "search" }>;
 
@@ -75,7 +74,6 @@ function ExternalHistorySettingsEditor(props: {
     serverEnvironment.updateSettings.permissionAtom(props.environmentId),
   );
   const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
-  const [paths, setPaths] = useState(props.settings.chatGptExportPaths.join("\n"));
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const save = async (settings: ExternalHistorySettings) => {
@@ -120,50 +118,6 @@ function ExternalHistorySettingsEditor(props: {
         ) : null}
       </section>
       {props.children}
-      <details className="rounded-md border p-3">
-        <summary className="cursor-pointer text-sm font-medium">Add a ChatGPT export</summary>
-        <div className="mt-3 flex flex-col gap-3">
-          <label className="flex flex-col gap-1 text-sm">
-            <span>ChatGPT export paths</span>
-            <Textarea
-              aria-label="ChatGPT export paths"
-              rows={3}
-              value={paths}
-              disabled={pending || !canWrite}
-              onChange={(event) => setPaths(event.target.value)}
-              placeholder="One export file path per line"
-            />
-          </label>
-          <p className="text-muted-foreground text-xs">
-            Paths refer to files on the T3 server, including when you connect remotely. Remove a
-            path to stop offering that export.
-          </p>
-          <div>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={
-                pending || !canWrite || paths === props.settings.chatGptExportPaths.join("\n")
-              }
-              onClick={() =>
-                void save({
-                  ...props.settings,
-                  chatGptExportPaths: [
-                    ...new Set(
-                      paths
-                        .split("\n")
-                        .map((path) => path.trim())
-                        .filter(Boolean),
-                    ),
-                  ],
-                })
-              }
-            >
-              Save export paths
-            </Button>
-          </div>
-        </div>
-      </details>
     </div>
   );
 }
@@ -182,11 +136,7 @@ function ExternalHistoryPanel(props: {
   const settings = config.settings.externalHistory;
   return (
     <div className="flex flex-col gap-4">
-      <ExternalHistorySettingsEditor
-        key={"settings:" + JSON.stringify(settings.chatGptExportPaths)}
-        environmentId={props.environmentId}
-        settings={settings}
-      >
+      <ExternalHistorySettingsEditor environmentId={props.environmentId} settings={settings}>
         {settings.enabled ? (
           <HistorySources key={"sources:" + JSON.stringify(settings)} {...props} />
         ) : (

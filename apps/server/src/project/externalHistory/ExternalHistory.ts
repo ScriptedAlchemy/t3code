@@ -27,7 +27,6 @@ import { resolveOpenCodeDataDirs } from "@t3tools/provider-opencode/server/usage
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
-import { makeChatGptExportStore } from "./ChatGptExportHistory.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import { makeLocalHistory, type OwnedNativeIds } from "./LocalHistory.ts";
 import { makeHistorySupport } from "./historySupport.ts";
@@ -279,26 +278,6 @@ const make = Effect.gen(function* () {
             );
           }
         }
-      }
-      for (const configured of value.externalHistory.chatGptExportPaths) {
-        const filePath = path.resolve(config.cwd, configured);
-        const id = `chatgpt:${yield* digest(filePath)}`;
-        next.set(
-          id,
-          localCatalog.get(id) ?? {
-            _tag: "local",
-            info: {
-              id,
-              label: `ChatGPT · ${path.basename(filePath)}`,
-              kind: "chatgpt_export",
-              capabilities: { cwdFilter: false, archived: false },
-              status: "ready",
-            },
-            store: yield* makeChatGptExportStore(filePath, local.cache).pipe(
-              Effect.provideService(FileSystem.FileSystem, fs),
-            ),
-          },
-        );
       }
       localCatalog = next;
       fingerprint = nextFingerprint;

@@ -9,9 +9,6 @@ const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
 
 export const ExternalHistorySettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  chatGptExportPaths: Schema.Array(Schema.Trim.check(Schema.isNonEmpty(), Schema.isMaxLength(4096)))
-    .check(Schema.isMaxLength(32))
-    .pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 export type ExternalHistorySettings = typeof ExternalHistorySettings.Type;
 
@@ -50,7 +47,7 @@ export type ExternalHistoryRequest = typeof ExternalHistoryRequest.Type;
 export const ExternalHistorySource = Schema.Struct({
   id: Identifier,
   label: Schema.String,
-  kind: Schema.Literals(["codex", "chatgpt_export", "local_transcript"]),
+  kind: Schema.Literals(["codex", "local_transcript"]),
   provider: Schema.optionalKey(ProviderDriverKind),
   capabilities: Schema.Struct({ cwdFilter: Schema.Boolean, archived: Schema.Boolean }).pipe(
     Schema.withDecodingDefault(Effect.succeed({ cwdFilter: false, archived: false })),

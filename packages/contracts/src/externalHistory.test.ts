@@ -1,6 +1,11 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
-import { ExternalHistoryRequest, ExternalHistoryResponse } from "./externalHistory.ts";
+import {
+  ExternalHistoryRequest,
+  ExternalHistoryResponse,
+  ExternalHistorySettings,
+} from "./externalHistory.ts";
+import { ServerSettings, ServerSettingsPatch } from "./settings.ts";
 
 const decode = Schema.decodeUnknownSync(ExternalHistoryResponse);
 const encode = Schema.encodeSync(ExternalHistoryResponse);
@@ -12,12 +17,15 @@ const legacySources = Schema.Struct({
     Schema.Struct({
       id: Schema.String,
       label: Schema.String,
-      kind: Schema.Literals(["codex", "chatgpt_export"]),
+      kind: Schema.Literals(["codex", "local_transcript"]),
     }),
   ),
 });
 
 const decodeLegacy = Schema.decodeUnknownSync(legacySources);
+const decodeSettings = Schema.decodeUnknownSync(ExternalHistorySettings);
+const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
+const decodePatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
 describe("external history catalogs", () => {
   it("defaults legacy-server capabilities without inferring them from the source kind", () => {
@@ -90,5 +98,16 @@ describe("external history catalogs", () => {
         sources: response.sources.filter((s) => s.kind !== "local_transcript"),
       }).sources,
     ).toHaveLength(1);
+  });
+
+  it("ignores the removed chatGptExportPaths key in stored settings and old-client patches", () => {
+    const old = { enabled: true, chatGptExportPaths: ["/exports/conversations.json"] };
+    expect(decodeSettings(old)).toEqual({ enabled: true });
+    expect(decodeServerSettings({ externalHistory: old }).externalHistory).toEqual({
+      enabled: true,
+    });
+    expect(decodePatch({ externalHistory: old })).toEqual({
+      externalHistory: { enabled: true },
+    });
   });
 });

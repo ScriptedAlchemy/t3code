@@ -862,7 +862,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/labs",
     scope: "environment",
     searchTerms: [
-      "zack lcm lossless context codex native cli app vscode chatgpt export conversation search history",
+      "zack lcm lossless context codex native cli app vscode conversation search history",
     ],
   },
   {

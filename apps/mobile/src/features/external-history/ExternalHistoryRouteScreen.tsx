@@ -81,10 +81,6 @@ export function ExternalHistoryRouteScreen(
               behind each match.
             </Text>
             <HistorySettings
-              key={
-                "settings:" +
-                JSON.stringify([environmentId, config.settings.externalHistory.chatGptExportPaths])
-              }
               environmentId={environmentId}
               settings={config.settings.externalHistory}
             >
@@ -124,8 +120,6 @@ function HistorySettings(props: {
     serverEnvironment.updateSettings.permissionAtom(props.environmentId),
   );
   const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
-  const [exportsOpen, setExportsOpen] = useState(false);
-  const [paths, setPaths] = useState(props.settings.chatGptExportPaths.join("\n"));
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const save = async (settings: ExternalHistorySettings) => {
@@ -164,51 +158,6 @@ function HistorySettings(props: {
         ) : null}
       </View>
       {props.children}
-      <Button
-        label="Add a ChatGPT export"
-        tone="text"
-        onPress={() => setExportsOpen((open) => !open)}
-      />
-      {exportsOpen ? (
-        <View className="gap-3 rounded-xl border border-border p-3">
-          <Text className="text-sm text-foreground">ChatGPT export paths</Text>
-          <AppTextInput
-            accessibilityLabel="ChatGPT export paths"
-            placeholder="One export file path per line"
-            multiline
-            textAlignVertical="top"
-            numberOfLines={3}
-            value={paths}
-            editable={!pending && canWrite}
-            autoCapitalize="none"
-            autoCorrect={false}
-            onChangeText={setPaths}
-          />
-          <Text className="text-xs text-foreground-muted">
-            Paths refer to files on the T3 server. Remove a path to stop offering that export.
-          </Text>
-          <Button
-            label="Save export paths"
-            tone="text"
-            disabled={
-              pending || !canWrite || paths === props.settings.chatGptExportPaths.join("\n")
-            }
-            onPress={() =>
-              void save({
-                ...props.settings,
-                chatGptExportPaths: [
-                  ...new Set(
-                    paths
-                      .split("\n")
-                      .map((path) => path.trim())
-                      .filter(Boolean),
-                  ),
-                ],
-              })
-            }
-          />
-        </View>
-      ) : null}
     </View>
   );
 }

@@ -123,7 +123,7 @@ const makeFixture = Effect.fn("ExternalHistory.test.fixture")(function* () {
   };
   const state = {
     instances: [instance] as Array<ProviderInstance>,
-    settings: { enabled: true, chatGptExportPaths: [] } as ExternalHistorySettings,
+    settings: { enabled: true } as ExternalHistorySettings,
     registryReads: 0,
     ownedNativeIds: new Set<string>(),
     providerInstances: DEFAULT_SERVER_SETTINGS.providerInstances,
@@ -281,7 +281,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
   it.effect("checks the environment opt-in before touching providers and on every read", () =>
     Effect.gen(function* () {
       const { service, state, calls } = yield* makeFixture();
-      state.settings = { enabled: false, chatGptExportPaths: [] };
+      state.settings = { enabled: false };
       expect(yield* service.query({ operation: "sources" })).toMatchObject({
         operation: "sources",
         enabled: false,
@@ -293,10 +293,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
         .pipe(Effect.flip);
       expect(error.reason).toBe("disabled");
       expect(calls.list).toEqual([]);
-      state.settings = { enabled: true, chatGptExportPaths: [] };
+      state.settings = { enabled: true };
       const sources = yield* service.query({ operation: "sources" });
       if (sources.operation !== "sources") return yield* Effect.die("wrong response");
-      state.settings = { enabled: false, chatGptExportPaths: [] };
+      state.settings = { enabled: false };
       const disabledRead = yield* service
         .query({
           operation: "read",
@@ -416,50 +416,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
         "ready",
       );
     }),
-  );
-
-  it.effect("reads only configured exports without copying or importing their transcript", () =>
-    Effect.gen(function* () {
-      const { service, state } = yield* makeFixture();
-      const fs = yield* FileSystem.FileSystem;
-      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-external-service-" });
-      const file = `${directory}/conversations.json`;
-      const contents =
-        '[{"id":"chatgpt","title":"Export","current_node":"one","mapping":{"one":{"parent":null,"message":{"id":"message","author":{"role":"user"},"content":{"parts":["needle"]}}}}}]';
-      yield* fs.writeFileString(file, contents);
-      state.instances = [];
-      state.settings = { enabled: true, chatGptExportPaths: [file, file] };
-      const sources = yield* service.query({ operation: "sources" });
-      if (sources.operation !== "sources") return yield* Effect.die("wrong response");
-      expect(sources.sources).toHaveLength(1);
-      expect(sources.sources[0]?.kind).toBe("chatgpt_export");
-      const result = yield* service.query({
-        operation: "search",
-        sourceId: sources.sources[0]!.id,
-        query: "needle",
-      });
-      if (result.operation !== "search") return yield* Effect.die("wrong response");
-      expect(result.matches[0]?.excerpt).toBe("needle");
-      for (const sourceId of [file, "../../private/conversations.json", "chatgpt:../private"]) {
-        expect(
-          (yield* service
-            .query({ operation: "search", sourceId, query: "needle" })
-            .pipe(Effect.flip)).reason,
-        ).toBe("missing");
-        expect(
-          (yield* service
-            .query({ operation: "read", ref: { ...result.matches[0]!.ref, sourceId } })
-            .pipe(Effect.flip)).reason,
-        ).toBe("missing");
-      }
-      state.settings = { enabled: true, chatGptExportPaths: [] };
-      expect(
-        (yield* service.query({ operation: "read", ref: result.matches[0]!.ref }).pipe(Effect.flip))
-          .reason,
-      ).toBe("missing");
-      expect(yield* fs.readFileString(file)).toBe(contents);
-      expect(yield* fs.readDirectory(directory)).toEqual(["conversations.json"]);
-    }).pipe(Effect.scoped),
   );
 
   it.effect("excludes native Codex sessions marked as T3 conversations", () =>
