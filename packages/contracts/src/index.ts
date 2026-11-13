@@ -86,6 +86,4 @@ export * from "./projectKnowledge.ts";
 
 export * from "./conversationSummaries.ts";
 
-export * from "./threadSplit.ts";
-
 export * from "./ssh.ts";

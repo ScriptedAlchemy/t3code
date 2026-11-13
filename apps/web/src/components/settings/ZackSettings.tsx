@@ -43,7 +43,6 @@ export function ZackSettings() {
         </SettingsSection>
         <SettingsSection title="Thread conversations">
           <GroupConversationsRow />
-          <ThreadSplitRows />
         </SettingsSection>
         <SettingsSection title="Agent tools and accounts">
           <AgentGitHubReadGateRow />
@@ -325,50 +324,6 @@ function AgentGitHubReadGateRow() {
         />
       }
     />
-  );
-}
-
-function ThreadSplitRows() {
-  const settings = useScopedSettings();
-  const updateSettings = useUpdateScopedSettings();
-  return (
-    <>
-      <SettingsRow
-        serverScoped
-        {...searchableSetting("thread-split-suggestions")}
-        settingKeys={["threadSplitSuggestionsEnabled"]}
-        description="Suggest a fresh thread when a draft appears independent of this conversation. Suggestions never send messages or split threads automatically. Requires a local decision model on the connected server."
-        control={
-          <ScopedSwitch
-            settingKeys={["threadSplitSuggestionsEnabled"]}
-            checked={settings.threadSplitSuggestionsEnabled}
-            onCheckedChange={(checked) =>
-              updateSettings({ threadSplitSuggestionsEnabled: Boolean(checked) })
-            }
-            aria-label="Suggest new threads"
-          />
-        }
-      />
-      <SettingsRow
-        serverScoped
-        title="Local decision model endpoint"
-        settingKeys={["threadSplitModelEndpoint"]}
-        description="Loopback HTTP endpoint on this server for a Jev-compatible decision model. Leave empty to disable inference."
-        control={
-          <Input
-            key={settings.threadSplitModelEndpoint}
-            defaultValue={settings.threadSplitModelEndpoint}
-            placeholder="http://127.0.0.1:8080"
-            aria-label="Local decision model endpoint"
-            onBlur={(event) => {
-              const value = event.target.value.trim();
-              if (value !== settings.threadSplitModelEndpoint)
-                updateSettings({ threadSplitModelEndpoint: value });
-            }}
-          />
-        }
-      />
-    </>
   );
 }
 

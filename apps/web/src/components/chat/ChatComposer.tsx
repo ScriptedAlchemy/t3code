@@ -1,4 +1,3 @@
-import { ThreadSplitSuggestion } from "./ThreadSplitSuggestion";
 import type { ProjectKnowledgeContextRecord } from "@t3tools/contracts";
 import { VoiceInputSetup } from "./VoiceInputSetup";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
@@ -414,7 +413,6 @@ export interface ChatComposerProps {
   isRevertingCheckpoint?: boolean;
   sendDisabledReason: string | null;
   isPreparingWorktree: boolean;
-  isCompacting: boolean;
   canSteer: boolean;
   bannerItems: readonly ComposerBannerStackItem[];
   resumeCompactionTokens: number | null;
@@ -579,7 +577,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isRevertingCheckpoint = false,
     sendDisabledReason: externalSendDisabledReason,
     isPreparingWorktree,
-    isCompacting,
     canSteer,
     environmentUnavailable,
     activePendingApproval: incomingPendingApproval,
@@ -3498,22 +3495,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       data-chat-composer-form="true"
       {...threadContextDropTargetProps()}
     >
-      {routeKind === "server" && activeThread && typeof composerDraftTarget !== "string" && (
-        <ThreadSplitSuggestion
-          key={`${environmentId}:${activeThread.id}`}
-          threadRef={composerDraftTarget}
-          projectId={activeThread.projectId}
-          idle={
-            canOperateThread &&
-            phase !== "running" &&
-            !isSendBusy &&
-            !canInterrupt &&
-            !isCompacting &&
-            pendingUserInputs.length === 0 &&
-            pendingApprovals.length === 0
-          }
-        />
-      )}
       <ComposerBanner.Dock>
         <ComposerBanner.Column>
           <ComposerBannerStack items={shelfItems} />
