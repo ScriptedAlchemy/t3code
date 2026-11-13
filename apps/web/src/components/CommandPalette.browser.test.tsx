@@ -26,6 +26,9 @@ vi.mock("../state/entities", async (original) => ({
 }));
 
 function setup(state: { projects?: ReadonlyArray<Project>; threads?: ReadonlyArray<Thread> } = {}) {
+  // Earlier browser test files share this origin's localStorage; a remembered project
+  // that is not listed here hides the default "New thread in <project>" row.
+  removeLocalStorageItem(LAST_USED_PROJECT_STORAGE_KEY);
   useCommandPaletteStore.setState(useCommandPaletteStore.getInitialState(), true);
   entities.projects = state.projects ?? [];
   entities.threads = state.threads ?? [];
