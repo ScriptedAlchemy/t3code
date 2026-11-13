@@ -404,6 +404,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
 
     const isolatedOutput = Effect.gen(function* () {
       const environment = yield* BlindEvaluation.makeBlindEvaluationEnvironment({
+        generation: "v1",
         operation: input.operation,
         directory: processDirectory,
         environment: processEnvironment,

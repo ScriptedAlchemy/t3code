@@ -9,6 +9,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
@@ -282,20 +283,21 @@ function withOpenCodeTextGeneration<A, E, R>(
   settings: OpenCodeSettings,
   effectFn: (textGeneration: ProviderTextGenerationRuntime) => Effect.Effect<A, E, R>,
   environment?: NodeJS.ProcessEnv,
+  directory = process.cwd(),
 ) {
   return Effect.gen(function* () {
     const serverOwner = yield* OpenCodeServerOwner.make({
       binaryPath: settings.binaryPath,
-      directory: process.cwd(),
+      directory,
       ...(settingsSecretLiteral(settings.serverPassword)
         ? { serverPassword: settingsSecretLiteral(settings.serverPassword) }
         : {}),
       ...(environment ? { environment } : {}),
     });
-    const textGeneration = yield* OpenCodeTextGeneration.makeOpenCodeTextGeneration(
-      settings,
-      environment ? { environment } : {},
-    ).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
+    const textGeneration = yield* OpenCodeTextGeneration.makeOpenCodeTextGeneration(settings, {
+      directory,
+      ...(environment ? { environment } : {}),
+    }).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }
@@ -470,66 +472,134 @@ it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
     ),
   );
 
-  it.effect("isolates blind evaluation from shared servers, tools, and custom instructions", () =>
-    withOpenCodeTextGeneration(
-      DEFAULT_OPENCODE_SETTINGS,
-      (textGeneration) =>
-        Effect.gen(function* () {
-          runtimeMock.state.promptResult = {
-            data: {
-              info: { providerID: "openai", modelID: "gpt-5", variant: "high" },
-              parts: [
-                { type: "step-start" },
-                { type: "reasoning", text: "Check the evidence." },
-                { type: "text", text: JSON.stringify(VALID_EVALUATION) },
-                { type: "step-finish", reason: "stop" },
-                { type: "snapshot", snapshot: "unchanged" },
-              ],
-            },
-          };
+  it.effect.each([
+    "configured overrides",
+    "empty file override",
+    "empty directory override",
+    "empty inline override",
+  ])(
+    "isolates blind evaluation from shared servers, tools, and custom instructions (%s)",
+    (overrides) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-routing-" });
+        const configHome = `${directory}/global`;
+        const configDirectory = `${directory}/override`;
+        const configFile = `${directory}/explicit.json`;
+        yield* fs.makeDirectory(`${configHome}/opencode`, { recursive: true });
+        yield* fs.makeDirectory(configDirectory);
+        yield* fs.writeFileString(
+          `${configHome}/opencode/config.json`,
+          JSON.stringify({
+            provider: { openai: { options: { apiKey: "global-key" } } },
+            enabled_providers: ["openai"],
+            disabled_providers: ["global-disabled"],
+          }),
+        );
+        yield* fs.writeFileString(
+          `${directory}/opencode.json`,
+          JSON.stringify({
+            provider: { openai: { options: { baseURL: "http://ignored-cwd.internal" } } },
+          }),
+        );
+        yield* fs.writeFileString(
+          configFile,
+          JSON.stringify({
+            provider: { openai: { options: { baseURL: "http://explicit.internal" } } },
+          }),
+        );
+        yield* fs.writeFileString(
+          `${configDirectory}/config.json`,
+          JSON.stringify({ disabled_providers: ["ignored-directory-file"] }),
+        );
+        yield* fs.writeFileString(
+          `${configDirectory}/opencode.json`,
+          JSON.stringify({
+            provider: { openai: { options: { baseURL: "http://directory-json.internal" } } },
+          }),
+        );
+        yield* fs.writeFileString(
+          `${configDirectory}/opencode.jsonc`,
+          JSON.stringify({
+            provider: { openai: { options: { baseURL: "http://directory-jsonc.internal" } } },
+          }),
+        );
+        return yield* withOpenCodeTextGeneration(
+          DEFAULT_OPENCODE_SETTINGS,
+          (textGeneration) =>
+            Effect.gen(function* () {
+              runtimeMock.state.promptResult = {
+                data: {
+                  info: { providerID: "openai", modelID: "gpt-5", variant: "high" },
+                  parts: [
+                    { type: "step-start" },
+                    { type: "reasoning", text: "Check the evidence." },
+                    { type: "text", text: JSON.stringify(VALID_EVALUATION) },
+                    { type: "step-finish", reason: "stop" },
+                    { type: "snapshot", snapshot: "unchanged" },
+                  ],
+                },
+              };
 
-          const verdict = yield* textGeneration.generateModelEvaluation({
-            ...DEFAULT_EVALUATION_INPUT,
-            modelSelection: {
-              ...DEFAULT_TEST_MODEL_SELECTION,
-              options: [{ id: "variant", value: "high" }],
-            },
-          });
+              const verdict = yield* textGeneration.generateModelEvaluation({
+                ...DEFAULT_EVALUATION_INPUT,
+                modelSelection: {
+                  ...DEFAULT_TEST_MODEL_SELECTION,
+                  options: [{ id: "variant", value: "high" }],
+                },
+              });
 
-          expect(verdict).toEqual(VALID_EVALUATION);
-          expect(textGeneration.supportedOperations).toContain("generateModelEvaluation");
-          expect(runtimeMock.state.promptUrls).toEqual(["http://127.0.0.1:4301"]);
-          expect(runtimeMock.state.promptInputs[0]).toMatchObject({
-            model: { providerID: "openai", modelID: "gpt-5" },
-            variant: "high",
-          });
-          expect(runtimeMock.state.sessionCreateInputs[0]?.permission).toEqual([
-            { permission: "*", pattern: "*", action: "deny" },
-          ]);
-          const environment = runtimeMock.state.startEnvironments[0];
-          expect(environment?.XDG_CONFIG_HOME).not.toBe("/user-config");
-          expect(environment?.OPENCODE_CONFIG).toBeUndefined();
-          expect(environment?.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("1");
-          expect(environment?.OPENCODE_DISABLE_CLAUDE_CODE).toBe("1");
-          expect(JSON.parse(environment?.OPENCODE_CONFIG_CONTENT ?? "null")).toEqual({
-            provider: { custom: { options: { baseURL: "http://model.internal" } } },
-            enabled_providers: ["custom"],
-          });
-          expect(runtimeMock.state.closeCalls).toEqual(["http://127.0.0.1:4301"]);
-        }),
-      {
-        XDG_CONFIG_HOME: "/user-config",
-        OPENCODE_CONFIG: "/user-config/opencode.json",
-        OPENCODE_CONFIG_CONTENT: `{
+              expect(verdict).toEqual(VALID_EVALUATION);
+              expect(textGeneration.supportedOperations).toContain("generateModelEvaluation");
+              expect(runtimeMock.state.promptUrls).toEqual(["http://127.0.0.1:4301"]);
+              expect(runtimeMock.state.promptInputs[0]).toMatchObject({
+                model: { providerID: "openai", modelID: "gpt-5" },
+                variant: "high",
+              });
+              expect(runtimeMock.state.sessionCreateInputs[0]?.permission).toEqual([
+                { permission: "*", pattern: "*", action: "deny" },
+              ]);
+              const environment = runtimeMock.state.startEnvironments[0];
+              expect(environment?.XDG_CONFIG_HOME).not.toBe(configHome);
+              expect(environment?.OPENCODE_CONFIG).toBeUndefined();
+              expect(environment?.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("1");
+              expect(environment?.OPENCODE_DISABLE_CLAUDE_CODE).toBe("1");
+              expect(JSON.parse(environment?.OPENCODE_CONFIG_CONTENT ?? "null")).toEqual({
+                provider: {
+                  openai: {
+                    options: {
+                      baseURL:
+                        overrides === "empty directory override"
+                          ? "http://explicit.internal"
+                          : "http://directory-jsonc.internal",
+                      apiKey: overrides === "empty inline override" ? "global-key" : "inline-key",
+                    },
+                  },
+                },
+                enabled_providers: ["openai"],
+                disabled_providers: ["global-disabled"],
+              });
+              expect(runtimeMock.state.closeCalls).toEqual(["http://127.0.0.1:4301"]);
+            }),
+          {
+            XDG_CONFIG_HOME: configHome,
+            OPENCODE_CONFIG: overrides === "empty file override" ? "" : configFile,
+            OPENCODE_CONFIG_DIR: overrides === "empty directory override" ? "" : configDirectory,
+            OPENCODE_CONFIG_CONTENT:
+              overrides === "empty inline override"
+                ? ""
+                : `{
           // Routing survives, but customization does not.
-          "provider": { "custom": { "options": { "baseURL": "http://model.internal" } } },
-          "enabled_providers": ["custom"],
+          "provider": { "openai": { "options": { "apiKey": "inline-key" } } },
+          "enabled_providers": ["openai"],
           "instructions": ["/secret/instructions.md"],
           "plugin": ["secret-plugin"],
           "mcp": { "private": { "type": "remote", "url": "http://private" } }
         }`,
-      },
-    ),
+          },
+          directory,
+        );
+      }).pipe(Effect.scoped),
   );
 
   it.effect("fails blind evaluation instead of dropping an unavailable or invalid variant", () =>

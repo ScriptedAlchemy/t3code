@@ -145,11 +145,16 @@ const validEvaluation = {
   promptAdvice: [],
 };
 
-const make = (configPath = "/user-config/opencode.json", serverUrl = "") =>
+const make = (
+  configPath = "/user-config/opencode.json",
+  serverUrl = "",
+  environment: NodeJS.ProcessEnv = {},
+  directory = process.cwd(),
+) =>
   OpenCode2TextGeneration.make({
     binaryPath: "fake-opencode",
     serverUrl,
-    directory: process.cwd(),
+    directory,
     environment: {
       HOME: "/original-home",
       XDG_CONFIG_HOME: "/user-config",
@@ -160,6 +165,7 @@ const make = (configPath = "/user-config/opencode.json", serverUrl = "") =>
         plugins: ["secret-plugin"],
         mcp: { private: { type: "remote", url: "http://private" } },
       }),
+      ...environment,
     },
   }).pipe(Effect.provideService(OpenCode2Server.OpenCode2Server, sharedServer));
 
@@ -196,16 +202,67 @@ beforeEach(() => {
 });
 
 it.layer(layer)("OpenCode2TextGeneration blind evaluation", (it) => {
-  it.effect("uses an owned deny-all server and the exact requested model variant", () =>
+  it.effect.each([
+    "configured overrides",
+    "empty file override",
+    "empty directory override",
+    "empty inline override",
+  ])("uses an owned deny-all server and the exact requested model variant (%s)", (overrides) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-routing-" });
-      const configPath = `${directory}/opencode.json`;
+      const configHome = `${directory}/global`;
+      const configDirectory = `${directory}/override`;
+      const configPath = `${directory}/explicit.json`;
+      yield* fs.makeDirectory(`${configHome}/opencode`, { recursive: true });
+      yield* fs.makeDirectory(configDirectory);
+      yield* fs.writeFileString(
+        `${configHome}/opencode/opencode.json`,
+        JSON.stringify({ providers: { ambient: { settings: { apiKey: "ignored-global-key" } } } }),
+      );
+      yield* fs.writeFileString(
+        `${configDirectory}/config.json`,
+        JSON.stringify({
+          providers: { ignored: { settings: { apiKey: "ignored-directory-key" } } },
+        }),
+      );
+      yield* fs.writeFileString(
+        `${directory}/opencode.json`,
+        JSON.stringify({ providers: { cwd: { settings: { apiKey: "ignored-cwd-key" } } } }),
+      );
+      yield* fs.writeFileString(
+        `${configDirectory}/opencode.json`,
+        JSON.stringify({
+          providers: {
+            custom: {
+              settings: {
+                baseURL: "http://directory.internal",
+                headers: { "x-config-source": "directory" },
+              },
+            },
+          },
+        }),
+      );
       yield* fs.writeFileString(
         configPath,
-        JSON.stringify({ providers: { custom: { settings: { apiKey: "{file:./key}" } } } }),
+        JSON.stringify({
+          providers: {
+            custom: {
+              settings: { apiKey: "{file:./key}", baseURL: "http://explicit.internal" },
+            },
+          },
+        }),
       );
-      const textGeneration = yield* make(configPath);
+      const textGeneration = yield* make(
+        overrides === "empty file override" ? "" : configPath,
+        "",
+        {
+          XDG_CONFIG_HOME: configHome,
+          OPENCODE_CONFIG_DIR: overrides === "empty directory override" ? "" : configDirectory,
+          ...(overrides === "empty inline override" ? { OPENCODE_CONFIG_CONTENT: "" } : {}),
+        },
+        directory,
+      );
       const verdict = yield* textGeneration.generateModelEvaluation(evaluationInput);
 
       expect(verdict).toEqual(validEvaluation);
@@ -218,13 +275,27 @@ it.layer(layer)("OpenCode2TextGeneration blind evaluation", (it) => {
       const environment = state.startEnvironments[0];
       expect(environment?.HOME).not.toBe("/original-home");
       expect(environment?.XDG_DATA_HOME).toBe("/original-home/.local/share");
-      expect(environment?.XDG_CONFIG_HOME).not.toBe("/user-config");
+      expect(environment?.XDG_CONFIG_HOME).not.toBe(configHome);
       expect(environment?.OPENCODE_CONFIG).toBeUndefined();
       expect(JSON.parse(environment?.OPENCODE_CONFIG_CONTENT ?? "null")).toEqual({
         providers: {
+          ...(overrides === "empty directory override"
+            ? { ambient: { settings: { apiKey: "ignored-global-key" } } }
+            : {}),
           custom: {
-            options: { baseURL: "http://model.internal" },
-            settings: { apiKey: `{file:${directory}/key}` },
+            ...(overrides === "empty inline override"
+              ? {}
+              : { options: { baseURL: "http://model.internal" } }),
+            settings: {
+              ...(overrides === "empty file override" ? {} : { apiKey: `{file:${directory}/key}` }),
+              baseURL:
+                overrides === "empty file override"
+                  ? "http://directory.internal"
+                  : "http://explicit.internal",
+              ...(overrides === "empty directory override"
+                ? {}
+                : { headers: { "x-config-source": "directory" } }),
+            },
           },
         },
       });

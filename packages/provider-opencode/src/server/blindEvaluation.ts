@@ -53,6 +53,7 @@ function mergeConfig(target: Config, source: Config): Config {
 
 export const makeBlindEvaluationEnvironment = Effect.fn("OpenCode.makeBlindEvaluationEnvironment")(
   function* (input: {
+    readonly generation: "v1" | "v2";
     readonly operation: TextGenerationOperation;
     readonly directory: string;
     readonly environment: NodeJS.ProcessEnv;
@@ -82,35 +83,34 @@ export const makeBlindEvaluationEnvironment = Effect.fn("OpenCode.makeBlindEvalu
       );
 
     let routing: Config = {};
+    const configuredDirectory = input.environment.OPENCODE_CONFIG_DIR
+      ? path.resolve(input.directory, expandHomePath(input.environment.OPENCODE_CONFIG_DIR, home))
+      : undefined;
     const configHome = input.environment.XDG_CONFIG_HOME;
+    // 2.x replaces the global directory; 1.x loads this directory after the explicit config file.
     const globalDirectory =
-      configHome !== undefined && configHome.trim().length > 0
-        ? path.join(configHome, "opencode")
-        : path.join(home, ".config", "opencode");
-    const directories = [
-      globalDirectory,
-      ...(input.environment.OPENCODE_CONFIG_DIR === undefined
-        ? []
-        : [
-            path.resolve(
-              input.directory,
-              expandHomePath(input.environment.OPENCODE_CONFIG_DIR, home),
-            ),
-          ]),
-    ];
-    for (const directory of directories) {
-      for (const name of ["config.json", "opencode.json", "opencode.jsonc"]) {
-        routing = mergeConfig(routing, yield* readConfig(path.join(directory, name)));
-      }
+      input.generation === "v2" && configuredDirectory !== undefined
+        ? configuredDirectory
+        : configHome !== undefined && configHome.trim().length > 0
+          ? path.join(configHome, "opencode")
+          : path.join(home, ".config", "opencode");
+    const configNames = ["opencode.json", "opencode.jsonc"];
+    for (const name of [...(input.generation === "v1" ? ["config.json"] : []), ...configNames]) {
+      routing = mergeConfig(routing, yield* readConfig(path.join(globalDirectory, name)));
     }
-    if (input.environment.OPENCODE_CONFIG !== undefined) {
+    if (input.environment.OPENCODE_CONFIG) {
       const configuredPath = path.resolve(
         input.directory,
         expandHomePath(input.environment.OPENCODE_CONFIG, home),
       );
       routing = mergeConfig(routing, yield* readConfig(configuredPath));
     }
-    if (input.environment.OPENCODE_CONFIG_CONTENT !== undefined) {
+    if (input.generation === "v1" && configuredDirectory !== undefined) {
+      for (const name of configNames) {
+        routing = mergeConfig(routing, yield* readConfig(path.join(configuredDirectory, name)));
+      }
+    }
+    if (input.environment.OPENCODE_CONFIG_CONTENT) {
       const content = readRoutingConfig(
         input.environment.OPENCODE_CONFIG_CONTENT,
         resolveFile(input.directory),

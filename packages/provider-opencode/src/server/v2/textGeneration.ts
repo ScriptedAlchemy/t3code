@@ -261,6 +261,7 @@ export const make = Effect.fn("OpenCode2TextGeneration.make")(function* (
     S extends Schema.Top,
   >(input: TextGenerationOperations.Request<S>) {
     const environment = yield* BlindEvaluation.makeBlindEvaluationEnvironment({
+      generation: "v2",
       operation: input.operation,
       directory: processDirectory,
       environment: processEnvironment,
