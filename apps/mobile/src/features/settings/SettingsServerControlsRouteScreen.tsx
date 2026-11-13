@@ -44,7 +44,7 @@ import {
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { ModelEvaluationSettings } from "./ModelEvaluationSettings";
 import { SkillsLibrarySettings } from "./SkillsLibrarySettings";
-import { AutoSettleSettingsRows, ThreadSplitSettingsSection } from "./ThreadSettingsSections";
+import { AutoSettleSettingsRows } from "./ThreadSettingsSections";
 import { supportsSharedSettingsSync } from "@t3tools/client-runtime/state/shared-settings";
 import { useHomeListOptions } from "../home/home-list-options";
 import { useEnvironments } from "../../state/environments";
@@ -565,7 +565,6 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       <SkillsLibrarySettings environment={target} />
                     </SettingsSection>
                   ))}
-                <ThreadSplitSettingsSection />
                 <ModelEvaluationSettings />
               </>
             ) : null}

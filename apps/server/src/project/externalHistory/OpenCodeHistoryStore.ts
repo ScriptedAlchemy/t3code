@@ -180,7 +180,7 @@ export const makeOpenCodeHistoryStore = Effect.fn("ExternalHistory.openOpenCodeS
             throw new ExternalHistoryError({ reason: "limit_exceeded" });
         }
         return {
-          version: current,
+          version: String(session.time_updated),
           title: session.title ?? "Conversation",
           cwd: session.directory,
           items,
@@ -190,17 +190,18 @@ export const makeOpenCodeHistoryStore = Effect.fn("ExternalHistory.openOpenCodeS
     if ((yield* version) !== current) return yield* new ExternalHistoryError({ reason: "changed" });
     return thread;
   });
-  // Message data is JSON text, so only a plain-ASCII query is stored verbatim. SQLite lower()
-  // folds ASCII only, so a hit made solely of U+212A or U+017F is missed.
+  // JSON escapes and Unicode folds that SQLite lower() cannot handle need a decoded search.
   const mightMention = (ref: LocalThreadRef, query: string) =>
     /^[ !#-[\]-~]+$/.test(query)
       ? withDatabase(
           (db) =>
             db
               .prepare(
-                "SELECT 1 FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant') AND instr(lower(data), ?) > 0 LIMIT 1",
+                `SELECT 1 FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant')
+                 AND (instr(lower(data), ?) > 0 OR instr(data, ?) > 0 OR instr(data, ?) > 0
+                   OR instr(data, ?) > 0 OR instr(data, ?) > 0) LIMIT 1`,
               )
-              .get(ref.key, query.toLowerCase()) !== undefined,
+              .get(ref.key, query.toLowerCase(), "\\u", "\\/", "K", "ſ") !== undefined,
         ).pipe(Effect.orElseSucceed(() => true))
       : Effect.succeed(true);
   return {

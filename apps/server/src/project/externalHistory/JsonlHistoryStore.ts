@@ -98,7 +98,35 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
           break;
         }
       }
-      if (unchanged) return listing.refs;
+      if (unchanged) {
+        // Appending a transcript does not change its directory's mtime.
+        const refreshed = yield* Effect.forEach(
+          listing.refs,
+          (ref) =>
+            fs.stat(path.join(directory, ...ref.key.split("/"))).pipe(
+              Effect.map((info) =>
+                info.type === "File"
+                  ? {
+                      ...ref,
+                      updatedAt: Option.map(info.mtime, (date) => date.getTime()).pipe(
+                        Option.getOrElse(() => 0),
+                      ),
+                      version: fileVersion(info),
+                    }
+                  : undefined,
+              ),
+              Effect.catchTags({
+                PlatformError: (error) =>
+                  error.reason._tag === "NotFound" ? Effect.undefined : Effect.fail(error),
+              }),
+            ),
+          { concurrency: 16 },
+        );
+        const refs = refreshed.filter((ref) => ref !== undefined);
+        refs.sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key));
+        listing = { directories: listing.directories, refs };
+        return refs;
+      }
     }
     const directories = new Map<string, string>();
     const refs: LocalThreadRef[] = [];
@@ -245,8 +273,7 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
       return yield* new ExternalHistoryError({ reason: "changed" });
     return thread;
   }, Effect.mapError(mapError));
-  // Raw JSON text holds a plain-ASCII query verbatim; quotes, backslashes and control
-  // characters are escaped on disk and joined blocks differ, so those queries skip the check.
+  // Escaped JSON strings cannot be ruled out by searching their encoded text.
   const mightMention = Effect.fn("ExternalHistory.prefilterJsonlThread")(
     function* (ref: LocalThreadRef, query: string) {
       if (!/^[ !#-[\]-~]+$/.test(query)) return true;
@@ -258,23 +285,22 @@ const makeJsonlHistoryStore = Effect.fn("ExternalHistory.openJsonlStore")(functi
         const bytes = yield* file.readAlloc(1024 * 1024);
         if (Option.isNone(bytes)) return false;
         const text = tail + decoder.decode(bytes.value, { stream: true });
-        if (pattern.test(text)) return true;
-        tail = text.slice(Math.max(0, text.length - query.length + 1));
+        if (pattern.test(text) || text.includes("\\u") || text.includes("\\/")) return true;
+        tail = text.slice(Math.max(0, text.length - Math.max(1, query.length - 1)));
       }
     },
     Effect.scoped,
     Effect.orElseSucceed(() => true),
   );
-  // T3 records Pi's session file path, not its session id, so Pi threads are not matched by id.
   const nativeSessionId =
     source === "claudeAgent"
       ? (ref: LocalThreadRef) => path.basename(ref.key, ".jsonl")
-      : undefined;
+      : (ref: LocalThreadRef) => path.join(directory, ...ref.key.split("/"));
   return {
     listThreads,
     loadThread,
     mightMention,
-    ...(nativeSessionId ? { nativeSessionId } : {}),
+    nativeSessionId,
   } satisfies LocalHistoryStore;
 }, Effect.mapError(mapError));
 

@@ -81,6 +81,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("OpenCode local h
         yield* Effect.sync(() => {
           const db = new NodeSqlite.DatabaseSync(file);
           try {
+            db.prepare("INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?)").run(
+              "unrelated",
+              "/project",
+              "Another conversation",
+              null,
+              2,
+            );
+          } finally {
+            db.close();
+          }
+        });
+        expect(
+          (yield* history.read(store, { operation: "read", ref: result.matches[2]!.ref })).text,
+        ).toBe("read\nneedle tool output");
+        yield* Effect.sync(() => {
+          const db = new NodeSqlite.DatabaseSync(file);
+          try {
             db.prepare("UPDATE session_message SET data = ? WHERE id = 'user'").run(
               JSON.stringify({ text: "Changed" }),
             );
@@ -94,6 +111,49 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("OpenCode local h
             .pipe(Effect.flip)).reason,
         ).toBe("changed");
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not let the raw JSON prefilter hide escaped or case-folded matches", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const file = `${root}/opencode.db`;
+      const samples = [
+        ["unicode-escape", String.raw`\u006e\u0065\u0065\u0064\u006c\u0065`, "needle"],
+        ["slash-escape", String.raw`left\/right`, "left/right"],
+        ["unicode-fold", "Kſ", "ks"],
+      ] as const;
+      yield* Effect.sync(() => {
+        const db = new NodeSqlite.DatabaseSync(file);
+        try {
+          db.exec(
+            "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT, title TEXT, parent_id TEXT, time_updated INTEGER); CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, data TEXT)",
+          );
+          for (const [id, encoded] of samples) {
+            db.prepare(
+              "INSERT INTO session_v2 VALUES (?, '/project', 'Conversation', NULL, 1)",
+            ).run(id);
+            db.prepare("INSERT INTO session_message VALUES (?, ?, 'user', 0, ?)").run(
+              id,
+              id,
+              `{"text":"${encoded}"}`,
+            );
+          }
+        } finally {
+          db.close();
+        }
+      });
+      const history = yield* makeLocalHistory;
+      const store = yield* makeOpenCodeHistoryStore(file, history.cache);
+      for (const [id, , query] of samples) {
+        const page = yield* history.search(store, {
+          operation: "search",
+          sourceId: "opencode",
+          query,
+        });
+        expect(page.matches.map((match) => match.itemId)).toEqual([id]);
+      }
+    }).pipe(Effect.scoped),
   );
 
   it.effect("rejects older OpenCode databases as an unsupported format", () =>

@@ -48,6 +48,7 @@ const FAILED_LOAD_CHARS = 1_000_000;
 // One unreadable or live-changing session must not end a search across everything else.
 const SKIPPED_THREAD_REASONS: ReadonlySet<string> = new Set([
   "unsupported",
+  "unavailable",
   "limit_exceeded",
   "missing",
   "changed",

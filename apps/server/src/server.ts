@@ -1,6 +1,5 @@
 import * as InferenceProxy from "./inference/InferenceProxy.ts";
 import * as InferenceHttp from "./inference/http.ts";
-import * as ThreadSplitSuggestions from "./orchestration-v2/ThreadSplitSuggestions.ts";
 import * as SkillsLibrary from "./skills/SkillsLibrary.ts";
 import * as PstackPack from "./pstack/PstackPack.ts";
 import * as HolographicMemory from "./project/knowledge/HolographicMemory.ts";
@@ -732,7 +731,6 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,
   ReplayMarkers.layer,
-  ThreadSplitSuggestions.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 )
   .pipe(

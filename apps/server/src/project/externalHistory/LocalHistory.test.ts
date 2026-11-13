@@ -111,6 +111,7 @@ it.layer(NodeCrypto.layer)("local history search paging", (it) => {
       const { store, loaded } = makeStore(
         [
           ["broken", new ExternalHistoryError({ reason: "unsupported" })],
+          ["unreadable", new ExternalHistoryError({ reason: "unavailable" })],
           ["live", new ExternalHistoryError({ reason: "changed" })],
           ["ruled-out", thread([item("hit", "needle")])],
           ["good", thread([item("hit", "needle")])],
@@ -120,7 +121,7 @@ it.layer(NodeCrypto.layer)("local history search paging", (it) => {
       const { found, requests } = yield* searchAll(store, "needle");
       expect(found).toEqual(["good:hit"]);
       expect(requests).toBe(1);
-      expect(loaded).toEqual(["broken", "live", "good"]);
+      expect(loaded).toEqual(["broken", "unreadable", "live", "good"]);
     }),
   );
 

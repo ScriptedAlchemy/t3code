@@ -10,19 +10,6 @@ import { ServerSettings, ServerSettingsPatch } from "./settings.ts";
 const decode = Schema.decodeUnknownSync(ExternalHistoryResponse);
 const encode = Schema.encodeSync(ExternalHistoryResponse);
 const decodeRequest = Schema.decodeUnknownSync(ExternalHistoryRequest);
-const legacySources = Schema.Struct({
-  operation: Schema.Literal("sources"),
-  enabled: Schema.Boolean,
-  sources: Schema.Array(
-    Schema.Struct({
-      id: Schema.String,
-      label: Schema.String,
-      kind: Schema.Literals(["codex", "local_transcript"]),
-    }),
-  ),
-});
-
-const decodeLegacy = Schema.decodeUnknownSync(legacySources);
 const decodeSettings = Schema.decodeUnknownSync(ExternalHistorySettings);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodePatch = Schema.decodeUnknownSync(ServerSettingsPatch);
@@ -58,7 +45,7 @@ describe("external history catalogs", () => {
     });
   });
 
-  it("round-trips the new catalog while a legacy catalog still decodes with the old source union", () => {
+  it("round-trips discovered native histories with source capabilities and status", () => {
     const response = decode({
       operation: "sources",
       enabled: true,
@@ -91,13 +78,6 @@ describe("external history catalogs", () => {
       unsupported: [{ provider: "grok", label: "Grok", reason: "No verified local reader." }],
     });
     expect(decode(encode(response))).toEqual(response);
-    if (response.operation !== "sources") throw new Error("Wrong response");
-    expect(
-      decodeLegacy({
-        ...response,
-        sources: response.sources.filter((s) => s.kind !== "local_transcript"),
-      }).sources,
-    ).toHaveLength(1);
   });
 
   it("ignores the removed chatGptExportPaths key in stored settings and old-client patches", () => {

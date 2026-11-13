@@ -1,4 +1,5 @@
 import {
+  TranscriptContentBlock,
   TranscriptRecord,
   conversationItem,
   activePiBranch,
@@ -136,7 +137,17 @@ const decodePiEntryLinks = Schema.decodeUnknownOption(
     parentId: TranscriptRecord.fields.parentId,
   }),
 );
-const selectTranscriptPath = createTranscriptJsonSelector(TranscriptRecord);
+const selectTranscriptRecordPath = createTranscriptJsonSelector(TranscriptRecord);
+const selectTranscriptContentPath = createTranscriptJsonSelector(
+  TranscriptContentBlock.mapFields(({ type, text }) => ({ type, text })),
+);
+// Imports retain conversation text; full tool payloads belong only to external history.
+const selectTranscriptPath: typeof selectTranscriptRecordPath = (path) =>
+  (path[0] === "message" || path[0] === "payload") &&
+  path[1] === "content" &&
+  typeof path[2] === "number"
+    ? selectTranscriptContentPath(path.slice(3))
+    : selectTranscriptRecordPath(path);
 const decodeCodexTurnMetadata = Schema.decodeUnknownOption(CodexTurnMetadata);
 export const decodeImportedTranscriptPayload = Schema.decodeUnknownOption(
   Schema.Struct({

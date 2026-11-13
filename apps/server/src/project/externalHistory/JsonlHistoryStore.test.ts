@@ -202,6 +202,51 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
             .matches,
         ).toHaveLength(1);
       }
+      for (const [encoded, query] of [
+        [String.raw`\u006e\u0065\u0065\u0064\u006c\u0065`, "needle"],
+        [String.raw`left\/right`, "left/right"],
+        ["Kſ", "ks"],
+      ] as const) {
+        yield* fs.writeFileString(`${project}/session.jsonl`, `${head}${encoded}"}}\n`);
+        const page = yield* history.search(claude, {
+          operation: "search",
+          sourceId: "claude",
+          query,
+        });
+        expect(page.matches.map((match) => match.itemId)).toEqual(["split"]);
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("refreshes newest-first order when an existing session is appended", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const project = `${root}/projects/project`;
+      yield* fs.makeDirectory(project, { recursive: true });
+      const message = (uuid: string) =>
+        JSON.stringify({ type: "user", uuid, message: { content: "needle" } }) + "\n";
+      for (const [name, modified] of [
+        ["older", 1],
+        ["newer", 2],
+      ] as const) {
+        yield* fs.writeFileString(`${project}/${name}.jsonl`, message(name));
+        yield* fs.utimes(`${project}/${name}.jsonl`, modified, modified);
+      }
+      const history = yield* makeLocalHistory;
+      const store = yield* makeClaudeHistoryStore(root, history.cache);
+      const request = { operation: "search", sourceId: "claude", query: "needle" } as const;
+      expect((yield* history.search(store, request)).matches.map((match) => match.itemId)).toEqual([
+        "newer",
+        "older",
+      ]);
+      yield* fs.writeFileString(`${project}/older.jsonl`, message("appended"), { flag: "a" });
+      yield* fs.utimes(`${project}/older.jsonl`, 3, 3);
+      expect((yield* history.search(store, request)).matches.map((match) => match.itemId)).toEqual([
+        "older",
+        "appended",
+        "newer",
+      ]);
     }).pipe(Effect.scoped),
   );
 
@@ -267,6 +312,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
       });
       expect(page.matches.map((m) => m.itemId)).toEqual(["active"]);
       expect(page.matches[0]?.threadTitle).toBe("Pi renamed");
+      expect(
+        (yield* history.search(
+          pi,
+          { operation: "search", sourceId: "pi", query: "needle" },
+          (ids) => Effect.succeed(new Set(ids.filter((id) => id === piFile))),
+        )).matches,
+      ).toEqual([]);
       yield* fs.writeFileString(
         piFile,
         JSON.stringify({ type: "message", message: { role: "user", content: "legacy" } }) + "\n",

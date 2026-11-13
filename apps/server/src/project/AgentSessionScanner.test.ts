@@ -2271,7 +2271,14 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
               message: {
                 role: "assistant",
                 model: "claude-sonnet-5-5",
-                content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: {} }],
+                content: [
+                  {
+                    type: "tool_use",
+                    id: "toolu_1",
+                    name: "Bash",
+                    input: { discarded: "x".repeat(17 * 1024 * 1024) },
+                  },
+                ],
               },
             }),
             record({ type: "custom-title", customTitle: "Renamed conversation" }),
