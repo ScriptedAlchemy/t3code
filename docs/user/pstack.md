@@ -6,10 +6,10 @@ and runs it through its orchestration tools across supported providers. Its mult
 one `$pstack:architect` can run an Opus runner and a GPT runner side by side, whichever provider
 your thread uses.
 
-## Turn it on
+## Turn it off
 
-Open **Settings → Labs → Zack** and turn on **pstack**. The setting applies to one environment, so turn it on for each
-machine you want it on. Turning it off removes the `pstack:` skills from the composer
+pstack is on by default. To turn it off, open **Settings → Labs → Zack** and turn off **pstack**. The
+setting applies to one environment. Turning it off removes the `pstack:` skills from the composer
 and keeps your model choices.
 
 ## Choose models once
@@ -40,7 +40,7 @@ the current capabilities before choosing another target.
 
 ## Good to know
 
-- pstack runs on the machine the thread runs on. A linked machine needs pstack turned on and its own
+- pstack runs on the machine the thread runs on. A linked machine needs pstack on and its own
   `$pstack:setup-pstack`, since its providers differ.
 - OpenCode sessions using an external **Server URL** do not expose T3's orchestration tools. Leave
   that setting blank to let T3 manage the server before running a pstack workflow.
