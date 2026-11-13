@@ -58,6 +58,8 @@ const invalidCursor = () => new ExternalHistoryError({ reason: "invalid_cursor" 
 const evidence = (item: { readonly role: string; readonly text: string }) =>
   `external-history-v2\n${item.role}\n${item.text}`;
 
+const encodeListingKeys = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+
 export type OwnedNativeIds = (
   nativeIds: ReadonlyArray<string>,
 ) => Effect.Effect<ReadonlySet<string>, ExternalHistoryError>;
@@ -88,7 +90,10 @@ export const makeLocalHistory = Effect.gen(function* () {
       return yield* invalidCursor();
     const refs = yield* store.listThreads;
     // Appends can reorder sessions between pages; never silently skip or repeat them.
-    const listingDigest = yield* digest(JSON.stringify(refs.map((ref) => ref.key)));
+    const listingDigest = yield* encodeListingKeys(refs.map((ref) => ref.key)).pipe(
+      Effect.mapError((cause) => new ExternalHistoryError({ reason: "unavailable", cause })),
+      Effect.flatMap(digest),
+    );
     if (cursor && cursor.listingDigest !== listingDigest)
       return yield* new ExternalHistoryError({ reason: "changed" });
     const first =
