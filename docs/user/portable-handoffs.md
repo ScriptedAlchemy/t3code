@@ -57,7 +57,7 @@ message summaries, but may report that summaries could not be read when an updat
 
 To search conversations created outside T3, open **External history** from this view or from
 **Settings → Labs → Zack**. [External history](./external-history.md) can read the selected server's
-Codex conversations and configured ChatGPT exports without importing another transcript copy.
+Claude Code, Codex, Pi, and OpenCode conversations without importing another transcript copy.
 
 ## Restart large threads from summaries
 
