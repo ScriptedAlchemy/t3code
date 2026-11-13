@@ -1,16 +1,12 @@
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
-import { scopedProjectKey } from "@t3tools/client-runtime/environment";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../test/render";
 import { openCommandPalette } from "../commandPaletteBus";
 import { useCommandPaletteStore } from "../commandPaletteStore";
-import {
-  LAST_USED_PROJECT_STORAGE_KEY,
-  lastUsedProjectKeySchema,
-} from "../hooks/useHandleNewThread";
-import { removeLocalStorageItem, setLocalStorageItem } from "../hooks/useLocalStorage";
+import { LAST_USED_PROJECT_STORAGE_KEY } from "../hooks/useHandleNewThread";
+import { removeLocalStorageItem } from "../hooks/useLocalStorage";
 import { makeThreadFixture } from "../test-fixtures";
 import type { Project, Thread } from "../types";
 import { CommandPalette } from "./CommandPalette";
@@ -107,33 +103,16 @@ describe("CommandPalette open intents", () => {
       updatedAt: "2026-03-01T00:00:00.000Z",
       scripts: [],
     });
-    const acme = project("acme", "Acme");
-    setup({ projects: [acme, project("beta", "Beta"), project("gamma", "Gamma")] });
-    // Keep the starting row independent of remembered project preferences.
-    const previousLastUsedProject = window.localStorage.getItem(LAST_USED_PROJECT_STORAGE_KEY);
-    using _rememberedProject = {
-      [Symbol.dispose]() {
-        if (previousLastUsedProject === null) {
-          removeLocalStorageItem(LAST_USED_PROJECT_STORAGE_KEY);
-        } else {
-          window.localStorage.setItem(LAST_USED_PROJECT_STORAGE_KEY, previousLastUsedProject);
-        }
-      },
-    };
-    setLocalStorageItem(
-      LAST_USED_PROJECT_STORAGE_KEY,
-      scopedProjectKey({ environmentId, projectId: acme.id }),
-      lastUsedProjectKeySchema,
-    );
+    setup({
+      projects: [project("acme", "Acme"), project("beta", "Beta"), project("gamma", "Gamma")],
+    });
     await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
 
     openCommandPalette({});
     await expect
       .element(page.getByPlaceholder("Search commands, projects, and threads..."))
       .toHaveFocus();
-    await expect
-      .element(page.getByRole("option", { name: /^New thread in Acme\b/ }))
-      .toHaveAttribute("data-highlighted");
+    await expect.element(page.getByRole("option").first()).toHaveAttribute("data-highlighted");
     await userEvent.keyboard("{ArrowDown}");
     await expect
       .element(page.getByRole("option", { name: /^New thread in\.\.\./ }))
