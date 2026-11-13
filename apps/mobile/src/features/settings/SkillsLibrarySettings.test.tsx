@@ -35,6 +35,8 @@ vi.mock("../../components/ui/EmptyState", () => ({ EmptyState: () => null }));
 vi.mock("../../components/ui/AppActivityIndicator", () => ({ AppActivityIndicator: () => null }));
 vi.mock("../../state/environments", () => ({ useEnvironments: () => ({ environments: [] }) }));
 vi.mock("../pull-requests/PullRequestSearchSheet", () => ({ PullRequestSearchSheet: () => null }));
+vi.mock("@legendapp/list/react-native", () => ({ LegendList: () => null }));
+vi.mock("../../native/NativeScrollViewMarker", () => ({ NativeScrollView: () => null }));
 vi.mock("../../components/ui/ListRow", () => ({
   ListRow: (props: { label: string; description?: string; onPress: () => void }) => (
     <button onClick={props.onPress}>
