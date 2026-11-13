@@ -1,3 +1,5 @@
+import { LegendList } from "@legendapp/list/react-native";
+import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -13,7 +15,7 @@ import {
   type SkillsLibraryIssue,
 } from "@t3tools/client-runtime/skills-library-issues";
 import { useState } from "react";
-import { FlatList, Platform, View } from "react-native";
+import { Platform, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../components/ui/AppText";
@@ -149,10 +151,12 @@ export function SkillsLibraryIssuesRouteScreen({
       onQueryChange={setQuery}
     >
       {({ paddingBottom }) => (
-        <FlatList
+        <LegendList
+          renderScrollComponent={NativeScrollView}
           data={issues}
           keyExtractor={(issue) => issue.key}
-          extraData={openKey}
+          extraData={{ openKey, count: issues.length }}
+          estimatedItemSize={72}
           className="flex-1"
           contentInsetAdjustmentBehavior="automatic"
           automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
