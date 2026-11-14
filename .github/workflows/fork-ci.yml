@@ -102,7 +102,7 @@ jobs:
   clients:
     name: Client and package tests
     needs: changes
-    if: needs.changes.outputs.test != 'false' || needs.changes.outputs.test_web != 'false'
+    if: needs.changes.outputs.test != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -121,9 +121,6 @@ jobs:
       - uses: ./.github/actions/setup-ci-deps
       - name: Ensure Electron
         run: vp run --filter @t3tools/desktop ensure:electron
-      - name: Install Chromium
-        if: needs.changes.outputs.test_web != 'false'
-        run: node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium
       - name: Test release checks
         run: |
           python3 -B .github/scripts/stage-preview-bundle.test.py
@@ -139,9 +136,35 @@ jobs:
             for package in $TEST_PACKAGES; do filters+=(--filter "$package"); done
           fi
           vp run --parallel --concurrency-limit 2 "${filters[@]}" test
+
+  # One headless Chromium running every browser test file runs out of memory on a
+  # standard runner and closes mid-run, so the files are split across machines.
+  web:
+    name: Web tests ${{ matrix.shard }}
+    needs: changes
+    if: needs.changes.outputs.test_web != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/' '!/apps/mobile/modules/t3-terminal/Vendor/**/*.a'
+          git checkout --detach FETCH_HEAD
+      - uses: ./.github/actions/setup-apt-mirrors
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Install Chromium
+        run: node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium
       - name: Test web
-        if: needs.changes.outputs.test_web != 'false'
-        run: vp run --filter @t3tools/web test
+        run: vp run --filter @t3tools/web test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
 
   server:
     name: Server tests ${{ matrix.shard }}
@@ -232,7 +255,7 @@ jobs:
   check:
     name: Fork Check
     if: ${{ !cancelled() && github.repository != 'pingdotgg/t3code' }}
-    needs: [changes, checks, clients, server, rust, mobile_native]
+    needs: [changes, checks, clients, web, server, rust, mobile_native]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -242,7 +265,7 @@ jobs:
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           echo "$RESULTS" | jq -e '.changes.outputs as $gates
-            | {clients: ["test", "test_web"], server: ["test_server"]} as $renamed
+            | {clients: ["test"], web: ["test_web"], server: ["test_server"]} as $renamed
             | all(to_entries[];
                 .value.result == "success"
                 or (.value.result == "skipped"
