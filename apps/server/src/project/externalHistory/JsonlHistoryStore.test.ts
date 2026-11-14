@@ -14,7 +14,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const root = yield* fs.makeTempDirectoryScoped();
+        const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
         const project = `${root}/projects/project`;
         yield* fs.makeDirectory(project, { recursive: true });
         const file = `${project}/session.jsonl`;
@@ -105,7 +105,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
   it.effect("keeps valid messages around malformed and undecodable records", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const root = yield* fs.makeTempDirectoryScoped();
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
       const project = `${root}/projects/project`;
       yield* fs.makeDirectory(project, { recursive: true });
       const message = (uuid: string, content = "needle") =>
@@ -141,7 +141,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
   it.effect("isolates unreadable entries and retries incomplete listings after recovery", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const root = yield* fs.makeTempDirectoryScoped();
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
       const directory = `${root}/projects`;
       for (const project of ["good", "blocked"]) {
         yield* fs.makeDirectory(`${directory}/${project}`, { recursive: true });
@@ -215,7 +215,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
   it.effect("searches sessions larger than the old allocation cap and verifies their source", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const root = yield* fs.makeTempDirectoryScoped();
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
       const project = `${root}/projects/project`;
       yield* fs.makeDirectory(project, { recursive: true });
       const file = `${project}/large.jsonl`;
@@ -262,7 +262,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
   it.effect("finds queries split across read chunks and queries that JSON escapes", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const root = yield* fs.makeTempDirectoryScoped();
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
       const project = `${root}/projects/project`;
       yield* fs.makeDirectory(project, { recursive: true });
       const head = '{"type":"user","uuid":"split","message":{"content":"';
@@ -298,7 +298,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
   it.effect("refreshes newest-first order when an existing session is appended", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const root = yield* fs.makeTempDirectoryScoped();
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
       const project = `${root}/projects/project`;
       yield* fs.makeDirectory(project, { recursive: true });
       const message = (uuid: string) =>
@@ -330,7 +330,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("local JSONL hist
   it.effect("excludes T3 Claude sessions and follows the active Pi branch", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const root = yield* fs.makeTempDirectoryScoped();
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
       const project = `${root}/projects/project`;
       yield* fs.makeDirectory(project, { recursive: true });
       yield* fs.writeFileString(
