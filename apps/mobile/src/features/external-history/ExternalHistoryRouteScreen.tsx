@@ -17,7 +17,7 @@ import {
   type ProjectId,
 } from "@t3tools/contracts";
 import { useEffect, useReducer, useState, type ReactNode } from "react";
-import { ScrollView, View } from "react-native";
+import { Platform, ScrollView, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
@@ -74,6 +74,8 @@ export function ExternalHistoryRouteScreen(
           <ScrollView
             keyboardShouldPersistTaps="handled"
             contentInsetAdjustmentBehavior="automatic"
+            automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+            keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
             contentContainerStyle={{ padding: 20, paddingBottom: 40, gap: 16 }}
           >
             <Text className="text-sm text-foreground-muted">
