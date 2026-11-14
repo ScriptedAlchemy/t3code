@@ -16,10 +16,12 @@ import {
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import * as ExternalHistory from "./ExternalHistory.ts";
 
@@ -121,20 +123,39 @@ const makeFixture = Effect.fn("ExternalHistory.test.fixture")(function* () {
   };
   const state = {
     instances: [instance] as Array<ProviderInstance>,
-    settings: { enabled: true, chatGptExportPaths: [] } as ExternalHistorySettings,
+    settings: { enabled: true } as ExternalHistorySettings,
     registryReads: 0,
+    ownedNativeIds: new Set<string>(),
+    providerInstances: DEFAULT_SERVER_SETTINGS.providerInstances,
   };
+  const fs = yield* FileSystem.FileSystem;
+  const enumerations: string[] = [];
+  const countingFs = FileSystem.make({
+    ...fs,
+    readDirectory: (path) => {
+      enumerations.push(path);
+      return fs.readDirectory(path);
+    },
+  });
+  const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-history-home-" });
   const service = yield* ExternalHistory.ExternalHistory.pipe(
     Effect.provide(
       ExternalHistory.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            Layer.succeed(HostProcess.HomeDirectory, home),
+            Layer.succeed(HostProcess.Environment, { HOME: home }),
             ServerConfig.layerTest("/operational-project", { prefix: "t3-external-config-" }),
             Layer.mock(ServerSettings.ServerSettingsService)({
               getSettings: Effect.sync(() => ({
                 ...DEFAULT_SERVER_SETTINGS,
                 externalHistory: state.settings,
+                providerInstances: state.providerInstances,
               })),
+            }),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              findOwnedNativeThreadIds: (ids) =>
+                Effect.succeed(new Set(ids.filter((id) => state.ownedNativeIds.has(id)))),
             }),
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
               listInstances: Effect.sync(() => {
@@ -142,20 +163,131 @@ const makeFixture = Effect.fn("ExternalHistory.test.fixture")(function* () {
                 return state.instances;
               }),
             }),
-          ),
+          ).pipe(Layer.provideMerge(Layer.succeed(FileSystem.FileSystem, countingFs))),
         ),
       ),
     ),
   );
-  return { service, state, calls, instance, native };
+  return { service, state, calls, instance, native, home, enumerations };
 });
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history service", (it) => {
+  it.effect(
+    "discovers default and disabled profiles with no paths, excludes T3 homes, and keeps page requests out of discovery",
+    () =>
+      Effect.gen(function* () {
+        const { service, state, home, enumerations } = yield* makeFixture();
+        const fs = yield* FileSystem.FileSystem;
+        const claude = `${home}/.claude`;
+        const pi = `${home}/.pi/agent/sessions`;
+        const managed = `${home}/.t3/userdata/providers/inference/claude`;
+        for (const root of [claude, managed]) {
+          yield* fs.makeDirectory(`${root}/projects/p`, { recursive: true });
+          yield* fs.writeFileString(
+            `${root}/projects/p/session.jsonl`,
+            JSON.stringify({ type: "user", uuid: "claude", message: { content: "needle" } }) + "\n",
+          );
+        }
+        yield* fs.makeDirectory(`${pi}/p`, { recursive: true });
+        yield* fs.writeFileString(
+          `${pi}/p/pi.jsonl`,
+          JSON.stringify({
+            type: "message",
+            id: "pi",
+            message: { role: "user", content: "needle" },
+          }) + "\n",
+        );
+        yield* fs.makeDirectory(`${home}/Downloads`, { recursive: true });
+        state.providerInstances = {
+          ...state.providerInstances,
+          [ProviderInstanceId.make("disabled-claude")]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            enabled: false,
+            config: { homePath: claude },
+          },
+          [ProviderInstanceId.make("invalid-claude")]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            enabled: false,
+            config: { homePath: 17 },
+          },
+          [ProviderInstanceId.make("opencode-downloads")]: {
+            driver: ProviderDriverKind.make("opencode"),
+            environment: [
+              { name: "OPENCODE_DATA_DIR", value: `${home}/Downloads`, sensitive: false },
+            ],
+          },
+          [ProviderInstanceId.make("opencode-inference")]: {
+            driver: ProviderDriverKind.make("opencode"),
+            environment: [{ name: "OPENCODE_DATA_DIR", value: managed, sensitive: false }],
+          },
+          [ProviderInstanceId.make("managed-claude")]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            config: { homePath: managed },
+          },
+        };
+        const catalog = yield* service.query({ operation: "sources", catalogVersion: 2 });
+        if (catalog.operation !== "sources") return yield* Effect.die("wrong response");
+        expect(catalog.sources.map((source) => source.provider).toSorted()).toEqual([
+          "claudeAgent",
+          "codex",
+          "pi",
+        ]);
+        expect(catalog.unsupported.find((source) => source.provider === "grok")?.reason).toContain(
+          "readable format",
+        );
+        const legacy = yield* service.query({ operation: "sources" });
+        expect(
+          legacy.operation === "sources" && legacy.sources.map((source) => source.kind),
+        ).toEqual(["codex"]);
+        const source = catalog.sources.find((source) => source.provider === "claudeAgent")!;
+        const page = yield* service.query({
+          operation: "search",
+          sourceId: source.id,
+          query: "needle",
+        });
+        if (page.operation !== "search") return yield* Effect.die("wrong response");
+        const count = enumerations.length;
+        yield* service.query({ operation: "search", sourceId: source.id, query: "other" });
+        yield* service.query({ operation: "read", ref: page.matches[0]!.ref });
+        expect(enumerations).toHaveLength(count);
+        expect(
+          enumerations.some(
+            (path) => path.includes("Downloads") || path.includes("providers/inference"),
+          ),
+        ).toBe(false);
+      }),
+  );
+
+  it.effect("hides Claude sessions whose id T3 already stores, with or without the marker", () =>
+    Effect.gen(function* () {
+      const { service, state, home } = yield* makeFixture();
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(`${home}/.claude/projects/p`, { recursive: true });
+      for (const session of ["owned-session", "outside-session"])
+        yield* fs.writeFileString(
+          `${home}/.claude/projects/p/${session}.jsonl`,
+          JSON.stringify({ type: "user", uuid: session, message: { content: "needle" } }) + "\n",
+        );
+      state.ownedNativeIds.add("owned-session");
+      const catalog = yield* service.query({ operation: "sources", catalogVersion: 2 });
+      if (catalog.operation !== "sources") return yield* Effect.die("wrong response");
+      const result = yield* service.query({
+        operation: "search",
+        sourceId: catalog.sources.find((source) => source.provider === "claudeAgent")!.id,
+        query: "needle",
+      });
+      if (result.operation !== "search") return yield* Effect.die("wrong response");
+      expect(result.matches.map((match) => match.ref.threadId)).toEqual([
+        "p/outside-session.jsonl",
+      ]);
+    }),
+  );
+
   it.effect("checks the environment opt-in before touching providers and on every read", () =>
     Effect.gen(function* () {
       const { service, state, calls } = yield* makeFixture();
-      state.settings = { enabled: false, chatGptExportPaths: [] };
-      expect(yield* service.query({ operation: "sources" })).toEqual({
+      state.settings = { enabled: false };
+      expect(yield* service.query({ operation: "sources" })).toMatchObject({
         operation: "sources",
         enabled: false,
         sources: [],
@@ -166,10 +298,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
         .pipe(Effect.flip);
       expect(error.reason).toBe("disabled");
       expect(calls.list).toEqual([]);
-      state.settings = { enabled: true, chatGptExportPaths: [] };
+      state.settings = { enabled: true };
       const sources = yield* service.query({ operation: "sources" });
       if (sources.operation !== "sources") return yield* Effect.die("wrong response");
-      state.settings = { enabled: false, chatGptExportPaths: [] };
+      state.settings = { enabled: false };
       const disabledRead = yield* service
         .query({
           operation: "read",
@@ -279,56 +411,46 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("external history
         .pipe(Effect.flip);
       expect(unsupported.reason).toBe("unsupported");
       state.instances = [{ ...instance, enabled: false }];
-      expect(yield* service.query({ operation: "sources" })).toEqual({
-        operation: "sources",
-        enabled: true,
-        sources: [],
-      });
+      const disabledInstance = yield* service.query({ operation: "sources" });
+      expect(disabledInstance.operation === "sources" && disabledInstance.sources.length).toBe(1);
+      if (disabledInstance.operation !== "sources") return yield* Effect.die("wrong response");
+      expect(disabledInstance.sources[0]?.status).toBe("unavailable");
+      state.instances.push(instance);
+      const sharedEnabled = yield* service.query({ operation: "sources" });
+      expect(sharedEnabled.operation === "sources" && sharedEnabled.sources[0]?.status).toBe(
+        "ready",
+      );
     }),
   );
 
-  it.effect("reads only configured exports without copying or importing their transcript", () =>
+  it.effect("excludes native Codex sessions marked as T3 conversations", () =>
     Effect.gen(function* () {
-      const { service, state } = yield* makeFixture();
-      const fs = yield* FileSystem.FileSystem;
-      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-external-service-" });
-      const file = `${directory}/conversations.json`;
-      const contents =
-        '[{"id":"chatgpt","title":"Export","current_node":"one","mapping":{"one":{"parent":null,"message":{"id":"message","author":{"role":"user"},"content":{"parts":["needle"]}}}}}]';
-      yield* fs.writeFileString(file, contents);
-      state.instances = [];
-      state.settings = { enabled: true, chatGptExportPaths: [file, file] };
-      const sources = yield* service.query({ operation: "sources" });
-      if (sources.operation !== "sources") return yield* Effect.die("wrong response");
-      expect(sources.sources).toHaveLength(1);
-      expect(sources.sources[0]?.kind).toBe("chatgpt_export");
+      const { service, state, instance, native, calls } = yield* makeFixture();
+      state.instances = [
+        {
+          ...instance,
+          nativeHistory: {
+            ...native,
+            list: () =>
+              Effect.succeed({ threads: [{ ...thread, originator: "T3 Code" }], nextCursor: null }),
+          },
+        },
+      ];
+      const catalog = yield* service.query({ operation: "sources" });
+      if (catalog.operation !== "sources") return yield* Effect.die("wrong response");
       const result = yield* service.query({
         operation: "search",
-        sourceId: sources.sources[0]!.id,
+        sourceId: catalog.sources[0]!.id,
         query: "needle",
       });
-      if (result.operation !== "search") return yield* Effect.die("wrong response");
-      expect(result.matches[0]?.excerpt).toBe("needle");
-      for (const sourceId of [file, "../../private/conversations.json", "chatgpt:../private"]) {
-        expect(
-          (yield* service
-            .query({ operation: "search", sourceId, query: "needle" })
-            .pipe(Effect.flip)).reason,
-        ).toBe("missing");
-        expect(
-          (yield* service
-            .query({ operation: "read", ref: { ...result.matches[0]!.ref, sourceId } })
-            .pipe(Effect.flip)).reason,
-        ).toBe("missing");
-      }
-      state.settings = { enabled: true, chatGptExportPaths: [] };
-      expect(
-        (yield* service.query({ operation: "read", ref: result.matches[0]!.ref }).pipe(Effect.flip))
-          .reason,
-      ).toBe("missing");
-      expect(yield* fs.readFileString(file)).toBe(contents);
-      expect(yield* fs.readDirectory(directory)).toEqual(["conversations.json"]);
-    }).pipe(Effect.scoped),
+      expect(result).toEqual({
+        operation: "search",
+        matches: [],
+        examinedItems: 0,
+        nextCursor: null,
+      });
+      expect(calls.items).toEqual([]);
+    }),
   );
 
   it.effect("rejects a native continuation that cannot fit the public cursor budget", () =>

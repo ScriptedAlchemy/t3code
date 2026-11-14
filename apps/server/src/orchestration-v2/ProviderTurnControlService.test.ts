@@ -242,6 +242,7 @@ it.effect(
           getThreadLinkMetadata: () => Effect.die("unused getThreadLinkMetadata"),
           findGuestShareThreadId: () => Effect.die("unused findGuestShareThreadId"),
           findThreadIdByNativeThreadId: () => Effect.die("unused findThreadIdByNativeThreadId"),
+          findOwnedNativeThreadIds: () => Effect.die("unused findOwnedNativeThreadIds"),
           getThread: () => Ref.get(projection).pipe(Effect.map((state) => state.thread)),
           getSettlementCandidates: () => Effect.die("unused getSettlementCandidates"),
           getThreadsWithPullRequests: () => Effect.die("unused getThreadsWithPullRequests"),

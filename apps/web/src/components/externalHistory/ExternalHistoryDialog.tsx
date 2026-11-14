@@ -1,13 +1,20 @@
 import { useAtomValue } from "@effect/atom-react";
-import { externalHistoryRangeLabel } from "@t3tools/client-runtime/externalHistory";
+import {
+  externalHistoryPagingReducer,
+  initialExternalHistoryPaging,
+  externalHistoryRangeLabel,
+  externalHistorySearchFilters,
+  externalHistorySourceStatusLabel,
+} from "@t3tools/client-runtime/externalHistory";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
   ExternalHistoryMatch,
   ExternalHistoryRequest,
   ExternalHistorySettings,
+  ExternalHistorySource,
 } from "@t3tools/contracts";
-import { useState } from "react";
+import { useEffect, useReducer, useState, type ReactNode } from "react";
 
 import { externalHistory } from "../../state/externalHistory";
 import { useEnvironmentQuery } from "../../state/query";
@@ -23,9 +30,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
-import { Textarea } from "../ui/textarea";
 
 type Search = Extract<ExternalHistoryRequest, { operation: "search" }>;
 
@@ -47,8 +52,8 @@ export function ExternalHistoryButton(props: {
           <DialogHeader>
             <DialogTitle>External history</DialogTitle>
             <DialogDescription>
-              Search Codex conversations and configured ChatGPT exports on this environment. Open
-              the original evidence behind each match.
+              Search agent conversations found on this environment. Open the original evidence
+              behind each match.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
@@ -63,12 +68,12 @@ export function ExternalHistoryButton(props: {
 function ExternalHistorySettingsEditor(props: {
   readonly environmentId: EnvironmentId;
   readonly settings: ExternalHistorySettings;
+  readonly children: ReactNode;
 }) {
   const canWrite = useAtomValue(
     serverEnvironment.updateSettings.permissionAtom(props.environmentId),
   );
   const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
-  const [paths, setPaths] = useState(props.settings.chatGptExportPaths.join("\n"));
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const save = async (settings: ExternalHistorySettings) => {
@@ -83,71 +88,37 @@ function ExternalHistorySettingsEditor(props: {
     if (result._tag === "Failure") setError(String(squashAtomCommandFailure(result)));
   };
   return (
-    <section
-      className="flex flex-col gap-3 rounded-md border p-3"
-      aria-label="External history settings"
-    >
-      <div className="flex items-center justify-between gap-3 text-sm font-medium">
-        <span>Allow external history search</span>
-        <Switch
-          aria-label="Allow external history search"
-          checked={props.settings.enabled}
-          disabled={pending || !canWrite}
-          onCheckedChange={(enabled) => void save({ ...props.settings, enabled })}
-        />
-      </div>
-      <p className="text-muted-foreground text-xs">
-        Makes these sources available to this environment's connected clients and agents with thread
-        access. Source files stay in their existing locations.
-      </p>
-      <label className="flex flex-col gap-1 text-sm">
-        <span>ChatGPT export paths</span>
-        <Textarea
-          aria-label="ChatGPT export paths"
-          rows={3}
-          value={paths}
-          disabled={pending || !canWrite}
-          onChange={(event) => setPaths(event.target.value)}
-          placeholder="One export file path per line"
-        />
-      </label>
-      <p className="text-muted-foreground text-xs">
-        Paths refer to files on the T3 server, including when you connect remotely. Remove a path to
-        stop offering that export.
-      </p>
-      <div>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={pending || !canWrite || paths === props.settings.chatGptExportPaths.join("\n")}
-          onClick={() =>
-            void save({
-              ...props.settings,
-              chatGptExportPaths: [
-                ...new Set(
-                  paths
-                    .split("\n")
-                    .map((path) => path.trim())
-                    .filter(Boolean),
-                ),
-              ],
-            })
-          }
-        >
-          Save export paths
-        </Button>
-      </div>
-      {!canWrite ? (
+    <div className="flex flex-col gap-4">
+      <section
+        className="flex flex-col gap-3 rounded-md border p-3"
+        aria-label="External history settings"
+      >
+        <div className="flex items-center justify-between gap-3 text-sm font-medium">
+          <span>Allow external history search</span>
+          <Switch
+            aria-label="Allow external history search"
+            checked={props.settings.enabled}
+            disabled={pending || !canWrite}
+            onCheckedChange={(enabled) => void save({ ...props.settings, enabled })}
+          />
+        </div>
         <p className="text-muted-foreground text-xs">
-          This connection cannot change environment settings.
+          Makes these sources available to this environment's connected clients and agents with
+          thread access. Source files stay in their existing locations.
         </p>
-      ) : null}
-      {error ? (
-        <p role="alert" className="text-destructive text-sm">
-          {error}
-        </p>
-      ) : null}
-    </section>
+        {!canWrite ? (
+          <p className="text-muted-foreground text-xs">
+            This connection cannot change environment settings.
+          </p>
+        ) : null}
+        {error ? (
+          <p role="alert" className="text-destructive text-sm">
+            {error}
+          </p>
+        ) : null}
+      </section>
+      {props.children}
+    </div>
   );
 }
 
@@ -165,18 +136,15 @@ function ExternalHistoryPanel(props: {
   const settings = config.settings.externalHistory;
   return (
     <div className="flex flex-col gap-4">
-      <ExternalHistorySettingsEditor
-        key={"settings:" + JSON.stringify(settings.chatGptExportPaths)}
-        environmentId={props.environmentId}
-        settings={settings}
-      />
-      {settings.enabled ? (
-        <HistorySources key={"sources:" + JSON.stringify(settings)} {...props} />
-      ) : (
-        <p className="text-muted-foreground text-sm">
-          External history search is off for this environment.
-        </p>
-      )}
+      <ExternalHistorySettingsEditor environmentId={props.environmentId} settings={settings}>
+        {settings.enabled ? (
+          <HistorySources key={"sources:" + JSON.stringify(settings)} {...props} />
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            External history search is off for this environment.
+          </p>
+        )}
+      </ExternalHistorySettingsEditor>
     </div>
   );
 }
@@ -186,7 +154,10 @@ function HistorySources(props: {
   readonly currentProjectPath?: string;
 }) {
   const query = useEnvironmentQuery(
-    externalHistory.query({ environmentId: props.environmentId, input: { operation: "sources" } }),
+    externalHistory.query({
+      environmentId: props.environmentId,
+      input: { operation: "sources", catalogVersion: 2 },
+    }),
   );
   const [selected, setSelected] = useState<string | null>(null);
   if (query.error)
@@ -204,40 +175,65 @@ function HistorySources(props: {
       </p>
     );
   const sources = query.data.sources;
-  const source = sources.find((item) => item.id === selected) ?? sources[0];
-  if (!source)
-    return (
-      <div className="flex flex-col gap-2">
-        <p className="text-muted-foreground text-sm">
-          No sources are configured. Enable a Codex provider or add a ChatGPT export path.
-        </p>
+  const source =
+    sources.find((item) => item.id === selected && item.status === "ready") ??
+    sources.find((item) => item.status === "ready");
+  return (
+    <div className="flex flex-col gap-3">
+      <section aria-label="Discovered history sources" className="flex flex-col gap-2">
+        <h3 className="text-sm font-medium">Found on this environment</h3>
+        {sources.length === 0 ? (
+          <p className="text-muted-foreground text-sm">
+            No local history found. Refresh after adding conversations on this server.
+          </p>
+        ) : null}
+        <ul className="flex flex-col gap-2">
+          {sources.map((item) => (
+            <li key={item.id} className="flex flex-col gap-1">
+              <div>
+                <Button
+                  variant={source?.id === item.id ? "secondary" : "outline"}
+                  size="sm-multiline"
+                  aria-pressed={source?.id === item.id}
+                  disabled={item.status !== "ready"}
+                  onClick={() => setSelected(item.id)}
+                >
+                  <span className="min-w-0 break-all text-left">{item.label}</span>
+                </Button>
+              </div>
+              <p className="text-muted-foreground text-xs">
+                {externalHistorySourceStatusLabel(item.status)}
+                {item.message ? ` · ${item.message}` : ""}
+              </p>
+            </li>
+          ))}
+        </ul>
+        {query.data.unsupported.length > 0 ? (
+          <ul
+            aria-label="Providers not supported yet"
+            className="flex flex-col gap-1 text-xs text-muted-foreground"
+          >
+            {query.data.unsupported.map((item) => (
+              <li key={item.provider}>
+                {item.label} · {item.reason}
+              </li>
+            ))}
+          </ul>
+        ) : null}
         <div>
           <Button size="sm" variant="outline" onClick={query.refresh} disabled={query.isPending}>
             Refresh sources
           </Button>
         </div>
-      </div>
-    );
-  return (
-    <div className="flex flex-col gap-3">
-      <Select value={source.id} onValueChange={setSelected}>
-        <SelectTrigger aria-label="History source">
-          <SelectValue>{source.label}</SelectValue>
-        </SelectTrigger>
-        <SelectPopup>
-          {sources.map((item) => (
-            <SelectItem key={item.id} value={item.id}>
-              {item.label}
-            </SelectItem>
-          ))}
-        </SelectPopup>
-      </Select>
-      <HistorySearch
-        key={source.id}
-        {...props}
-        sourceId={source.id}
-        codex={source.kind === "codex"}
-      />
+      </section>
+      {source ? (
+        <HistorySearch
+          key={JSON.stringify([source.id, source.capabilities])}
+          {...props}
+          sourceId={source.id}
+          capabilities={source.capabilities}
+        />
+      ) : null}
     </div>
   );
 }
@@ -245,7 +241,7 @@ function HistorySources(props: {
 function HistorySearch(props: {
   readonly environmentId: EnvironmentId;
   readonly sourceId: string;
-  readonly codex: boolean;
+  readonly capabilities: ExternalHistorySource["capabilities"];
   readonly currentProjectPath?: string;
 }) {
   const [text, setText] = useState("");
@@ -265,9 +261,7 @@ function HistorySearch(props: {
             operation: "search",
             sourceId: props.sourceId,
             query: text.trim(),
-            ...(props.codex
-              ? { includeArchived, ...(filterCwd.trim() ? { filterCwd: filterCwd.trim() } : {}) }
-              : {}),
+            ...externalHistorySearchFilters(props.capabilities, { filterCwd, includeArchived }),
           });
         }}
       >
@@ -278,13 +272,16 @@ function HistorySearch(props: {
           onChange={(event) => setText(event.target.value)}
           maxLength={256}
         />
-        {props.codex ? (
+        {props.capabilities.cwdFilter ? (
           <>
             <Input
               aria-label="History directory filter"
               placeholder="All project directories"
               value={filterCwd}
-              onChange={(event) => setFilterCwd(event.target.value)}
+              onChange={(event) => {
+                setFilterCwd(event.target.value);
+                setSearch(null);
+              }}
               maxLength={4096}
             />
             {props.currentProjectPath ? (
@@ -293,24 +290,40 @@ function HistorySearch(props: {
                   type="button"
                   variant="ghost"
                   size="sm"
-                  onClick={() => setFilterCwd(props.currentProjectPath!)}
+                  onClick={() => {
+                    setFilterCwd(props.currentProjectPath!);
+                    setSearch(null);
+                  }}
                 >
                   This project
                 </Button>
-                <Button type="button" variant="ghost" size="sm" onClick={() => setFilterCwd("")}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setFilterCwd("");
+                    setSearch(null);
+                  }}
+                >
                   All projects
                 </Button>
               </div>
             ) : null}
-            <div className="flex items-center justify-between gap-3 text-sm">
-              <span>Include archived Codex threads</span>
-              <Switch
-                aria-label="Include archived Codex threads"
-                checked={includeArchived}
-                onCheckedChange={setIncludeArchived}
-              />
-            </div>
           </>
+        ) : null}
+        {props.capabilities.archived ? (
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span>Include archived threads</span>
+            <Switch
+              aria-label="Include archived threads"
+              checked={includeArchived}
+              onCheckedChange={(value) => {
+                setIncludeArchived(value);
+                setSearch(null);
+              }}
+            />
+          </div>
         ) : null}
         <div>
           <Button type="submit" size="sm" disabled={!text.trim()}>
@@ -326,8 +339,7 @@ function HistorySearch(props: {
         />
       ) : (
         <p className="text-muted-foreground text-xs">
-          Search reads bounded pages from the selected source. It may take several pages to scan a
-          large history.
+          Search messages and tool evidence from the selected source.
         </p>
       )}
     </div>
@@ -335,15 +347,27 @@ function HistorySearch(props: {
 }
 
 function HistoryResults(props: { readonly environmentId: EnvironmentId; readonly search: Search }) {
-  const [cursors, setCursors] = useState<ReadonlyArray<string>>([]);
-  const [selected, setSelected] = useState<ExternalHistoryMatch | null>(null);
-  const cursor = cursors.at(-1);
-  const query = useEnvironmentQuery(
-    externalHistory.query({
-      environmentId: props.environmentId,
-      input: { ...props.search, ...(cursor === undefined ? {} : { cursor }) },
-    }),
+  const [paging, dispatch] = useReducer(
+    externalHistoryPagingReducer,
+    undefined,
+    initialExternalHistoryPaging,
   );
+  const [selected, setSelected] = useState<ExternalHistoryMatch | null>(null);
+  const cursor = paging.cursor;
+  const query = useEnvironmentQuery(
+    paging.status === "searching"
+      ? externalHistory.query({
+          environmentId: props.environmentId,
+          input: { ...props.search, ...(cursor === undefined ? {} : { cursor }) },
+        })
+      : null,
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The query hook has no result callback to advance the shared pager.
+  useEffect(() => {
+    if (query.isSuccess && !query.isPending && query.data?.operation === "search")
+      dispatch({ type: "page", cursor, page: query.data });
+  }, [cursor, query.data, query.isPending, query.isSuccess]);
+  const data = paging.status === "ready" ? paging.page : null;
   if (selected)
     return (
       <div className="flex flex-col gap-3">
@@ -365,21 +389,28 @@ function HistoryResults(props: { readonly environmentId: EnvironmentId; readonly
         {query.error}
       </p>
     );
-  if (!query.data || query.data.operation !== "search")
-    return <p className="text-muted-foreground text-sm">Searching history…</p>;
-  const data = query.data;
   return (
     <div className="flex flex-col gap-3">
       <p className="text-muted-foreground text-xs">
-        Examined {data.examinedItems.toLocaleString()} items on this page.
+        Searched {paging.examinedItems.toLocaleString()} items
+        {paging.status === "searching" ? "…" : "."}
       </p>
-      {data.matches.length === 0 ? (
-        <p className="text-sm">
-          No matches on this page.
-          {data.nextCursor !== null ? " Continue to search the next page." : ""}
-        </p>
+      {paging.status === "searching" ? (
+        <div>
+          <Button size="sm" variant="outline" onClick={() => dispatch({ type: "stop" })}>
+            Stop search
+          </Button>
+        </div>
+      ) : paging.status === "stopped" ? (
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground text-sm">Search stopped.</span>
+          <Button size="sm" variant="outline" onClick={() => dispatch({ type: "resume" })}>
+            Resume search
+          </Button>
+        </div>
       ) : null}
-      {data.matches.map((match) => (
+      {data?.matches.length === 0 ? <p className="text-sm">No more matches found.</p> : null}
+      {data?.matches.map((match) => (
         <article
           key={match.ref.readCursor + ":" + match.ref.digest}
           className="flex flex-col gap-2 rounded-md border p-3"
@@ -398,23 +429,21 @@ function HistoryResults(props: { readonly environmentId: EnvironmentId; readonly
           </div>
         </article>
       ))}
-      {cursors.length > 0 || data.nextCursor !== null ? (
+      {paging.previous.length > 0 || data?.nextCursor != null ? (
         <div className="flex justify-between gap-2">
           <Button
             size="sm"
             variant="outline"
-            disabled={cursors.length === 0 || query.isPending}
-            onClick={() => setCursors((current) => current.slice(0, -1))}
+            disabled={paging.previous.length === 0}
+            onClick={() => dispatch({ type: "previous" })}
           >
             Previous page
           </Button>
           <Button
             size="sm"
             variant="outline"
-            disabled={data.nextCursor === null || query.isPending}
-            onClick={() => {
-              if (data.nextCursor !== null) setCursors((current) => [...current, data.nextCursor!]);
-            }}
+            disabled={data?.nextCursor == null}
+            onClick={() => dispatch({ type: "next" })}
           >
             Continue search
           </Button>

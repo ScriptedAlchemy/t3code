@@ -660,6 +660,11 @@ it.effect("finds the thread behind a provider's native thread id", () =>
     });
     assert.equal(yield* store.findThreadIdByNativeThreadId("native-session-1"), threadId);
     assert.equal(yield* store.findThreadIdByNativeThreadId("native-session-2"), null);
+    assert.deepEqual(
+      [...(yield* store.findOwnedNativeThreadIds(["native-session-1", "native-session-2"]))],
+      ["native-session-1"],
+    );
+    assert.equal((yield* store.findOwnedNativeThreadIds([])).size, 0);
   }).pipe(Effect.provide(ProjectionStore.layer.pipe(Layer.provideMerge(layerReaderDatabase)))),
 );
 

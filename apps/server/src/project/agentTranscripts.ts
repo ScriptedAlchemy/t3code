@@ -1,0 +1,185 @@
+import * as Schema from "effect/Schema";
+
+export const TranscriptContentBlock = Schema.Struct({
+  type: Schema.optional(Schema.String),
+  text: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
+  input: Schema.optional(Schema.Unknown),
+  content: Schema.optional(
+    Schema.Union([
+      Schema.String,
+      Schema.Array(
+        Schema.Struct({
+          type: Schema.optional(Schema.String),
+          text: Schema.optional(Schema.String),
+        }),
+      ),
+    ]),
+  ),
+});
+
+export const TranscriptMessage = Schema.Struct({
+  role: Schema.optional(Schema.String),
+  content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TranscriptContentBlock)])),
+  model: Schema.optional(Schema.String),
+});
+
+export const TranscriptRecord = Schema.Struct({
+  type: Schema.optional(Schema.String),
+  uuid: Schema.optional(Schema.String),
+  entrypoint: Schema.optional(Schema.String),
+  id: Schema.optional(Schema.String),
+  parentId: Schema.optional(Schema.NullOr(Schema.String)),
+  name: Schema.optional(Schema.String),
+  timestamp: Schema.optional(Schema.String),
+  cwd: Schema.optional(Schema.String),
+  sessionId: Schema.optional(Schema.String),
+  aiTitle: Schema.optional(Schema.String),
+  customTitle: Schema.optional(Schema.String),
+  isSidechain: Schema.optional(Schema.Boolean),
+  isMeta: Schema.optional(Schema.Boolean),
+  isCompactSummary: Schema.optional(Schema.Boolean),
+  message: Schema.optional(TranscriptMessage),
+  payload: Schema.optional(
+    Schema.Struct({
+      id: Schema.optional(Schema.String),
+      session_id: Schema.optional(Schema.String),
+      type: Schema.optional(Schema.String),
+      role: Schema.optional(Schema.String),
+      message: Schema.optional(Schema.String),
+      model: Schema.optional(Schema.String),
+      cwd: Schema.optional(Schema.String),
+      history_base: Schema.optional(Schema.Unknown),
+      content: Schema.optional(Schema.Array(TranscriptContentBlock)),
+      internal_chat_message_metadata_passthrough: Schema.optional(Schema.Unknown),
+    }),
+  ),
+});
+
+export function isTextContentBlock(block: typeof TranscriptContentBlock.Type): boolean {
+  return block.type === "text" || block.type === "input_text" || block.type === "output_text";
+}
+
+export function extractText(
+  content: string | ReadonlyArray<typeof TranscriptContentBlock.Type> | undefined,
+): string {
+  if (typeof content === "string") return content.trim();
+  if (content === undefined) return "";
+  return content
+    .filter(isTextContentBlock)
+    .map((block) => block.text?.trim() ?? "")
+    .filter((text) => text.length > 0)
+    .join("\n");
+}
+
+export function isHiddenClaudeRecord(record: DecodedTranscriptRecord): boolean {
+  return record.isSidechain === true || record.isMeta === true || record.isCompactSummary === true;
+}
+
+export interface ClaudeFields {
+  readonly sessionId: string | undefined;
+  readonly title: string | undefined;
+  readonly customTitle: string | null;
+  readonly model: string | undefined;
+}
+
+export const emptyClaudeFields: ClaudeFields = {
+  sessionId: undefined,
+  title: undefined,
+  customTitle: null,
+  model: undefined,
+};
+
+export function foldClaudeFields(
+  fields: ClaudeFields,
+  record: DecodedTranscriptRecord,
+): ClaudeFields {
+  if (isHiddenClaudeRecord(record)) return fields;
+  const model = record.message?.model?.trim();
+  return {
+    sessionId: record.sessionId?.trim() || fields.sessionId,
+    title: record.aiTitle?.trim() || fields.title,
+    // Claude flushes the AI title after the user's rename; an empty rename clears it.
+    customTitle:
+      record.customTitle === undefined ? fields.customTitle : record.customTitle.trim() || null,
+    model: model && model !== "<synthetic>" ? model : fields.model,
+  };
+}
+
+// Pi keeps abandoned branches in the file; its active branch runs from the last entry to the root.
+export function activePiBranch(
+  records: ReadonlyArray<DecodedTranscriptRecord>,
+): ReadonlyArray<DecodedTranscriptRecord> {
+  const entries = records.filter((record) => record.type !== "session");
+  const leaf = entries.at(-1);
+  // Version 1 sessions predate the tree and are linear.
+  if (leaf?.id === undefined) return entries;
+  const byId = new Map(
+    entries.flatMap((entry) => (entry.id === undefined ? [] : [[entry.id, entry] as const])),
+  );
+  const branch: Array<DecodedTranscriptRecord> = [];
+  const seen = new Set<string>();
+  for (
+    let entry: DecodedTranscriptRecord | undefined = leaf;
+    entry !== undefined && branch.length < entries.length;
+    entry = entry.parentId ? byId.get(entry.parentId) : undefined
+  ) {
+    if (entry.id && seen.has(entry.id)) break;
+    if (entry.id) seen.add(entry.id);
+    branch.push(entry);
+  }
+  return branch.toReversed();
+}
+
+export type DecodedTranscriptRecord = typeof TranscriptRecord.Type;
+
+export interface TranscriptItem {
+  readonly id: string;
+  readonly role: "user" | "assistant" | "tool";
+  readonly text: string;
+}
+
+export function conversationItem(record: DecodedTranscriptRecord, source: "claudeAgent" | "pi") {
+  const role = source === "pi" ? record.message?.role : record.type;
+  if (source === "claudeAgent" && isHiddenClaudeRecord(record)) return null;
+  if (source === "pi" && record.type !== "message") return null;
+  if (role !== "user" && role !== "assistant") return null;
+  const text = extractText(record.message?.content);
+  return text ? { id: source === "pi" ? record.id : record.uuid, role, text } : null;
+}
+
+export function transcriptItems(
+  record: DecodedTranscriptRecord,
+  source: "claudeAgent" | "pi",
+): ReadonlyArray<TranscriptItem> {
+  if (source === "claudeAgent" && isHiddenClaudeRecord(record)) return [];
+  if (source === "pi" && record.type !== "message") return [];
+  if (source === "claudeAgent" && record.type !== "user" && record.type !== "assistant") return [];
+  const nativeId = source === "pi" ? record.id : record.uuid;
+  if (!nativeId) return [];
+  if (source === "pi" && record.message?.role === "toolResult") {
+    const text = extractText(record.message.content);
+    return text ? [{ id: nativeId, role: "tool", text }] : [];
+  }
+  const conversation = conversationItem(record, source);
+  const items: TranscriptItem[] = conversation ? [{ ...conversation, id: nativeId }] : [];
+  const content = record.message?.content;
+  if (typeof content === "string" || content === undefined) return items;
+  for (const [index, block] of content.entries()) {
+    const text =
+      block.type === "tool_result"
+        ? extractText(block.content)
+        : block.type === "tool_use"
+          ? [block.name, JSON.stringify(block.input)].filter(Boolean).join("\n")
+          : "";
+    if (text) items.push({ id: `${nativeId}/tool/${index}`, role: "tool", text });
+  }
+  return items;
+}
+
+export function isPiConversationRecord(record: DecodedTranscriptRecord): boolean {
+  return (
+    record.type === "message" &&
+    (record.message?.role === "user" || record.message?.role === "assistant")
+  );
+}

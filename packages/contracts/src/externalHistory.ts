@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { ProviderDriverKind } from "./providerInstance.ts";
 import { NonNegativeInt } from "./baseSchemas.ts";
 
 const Identifier = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(512));
@@ -8,9 +9,6 @@ const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
 
 export const ExternalHistorySettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  chatGptExportPaths: Schema.Array(Schema.Trim.check(Schema.isNonEmpty(), Schema.isMaxLength(4096)))
-    .check(Schema.isMaxLength(32))
-    .pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 export type ExternalHistorySettings = typeof ExternalHistorySettings.Type;
 
@@ -23,7 +21,10 @@ export const ExternalHistorySourceRef = Schema.Struct({
 export type ExternalHistorySourceRef = typeof ExternalHistorySourceRef.Type;
 
 export const ExternalHistoryRequest = Schema.Union([
-  Schema.Struct({ operation: Schema.Literal("sources") }),
+  Schema.Struct({
+    operation: Schema.Literal("sources"),
+    catalogVersion: Schema.optionalKey(Schema.Literal(2)),
+  }),
   Schema.Struct({
     operation: Schema.Literal("search"),
     sourceId: Identifier,
@@ -46,8 +47,18 @@ export type ExternalHistoryRequest = typeof ExternalHistoryRequest.Type;
 export const ExternalHistorySource = Schema.Struct({
   id: Identifier,
   label: Schema.String,
-  kind: Schema.Literals(["codex", "chatgpt_export"]),
+  kind: Schema.Literals(["codex", "local_transcript"]),
+  provider: Schema.optionalKey(ProviderDriverKind),
+  capabilities: Schema.Struct({ cwdFilter: Schema.Boolean, archived: Schema.Boolean }).pipe(
+    Schema.withDecodingDefault(Effect.succeed({ cwdFilter: false, archived: false })),
+  ),
+  status: Schema.Literals(["ready", "unavailable", "unsupported_format"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("ready" as const)),
+  ),
+  message: Schema.optionalKey(Schema.String),
 });
+export type ExternalHistorySource = typeof ExternalHistorySource.Type;
+
 export const ExternalHistoryMatch = Schema.Struct({
   ref: ExternalHistorySourceRef,
   threadTitle: Schema.String,
@@ -64,6 +75,9 @@ export const ExternalHistoryResponse = Schema.Union([
     operation: Schema.Literal("sources"),
     enabled: Schema.Boolean,
     sources: Schema.Array(ExternalHistorySource),
+    unsupported: Schema.Array(
+      Schema.Struct({ provider: ProviderDriverKind, label: Schema.String, reason: Schema.String }),
+    ).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
   Schema.Struct({
     operation: Schema.Literal("search"),

@@ -51,7 +51,16 @@ it.effect(
               ? Effect.succeed({
                   operation: "sources",
                   enabled: true,
-                  sources: [{ id: "source", label: "Codex", kind: "codex" }],
+                  sources: [
+                    {
+                      id: "source",
+                      label: "Codex",
+                      kind: "codex",
+                      capabilities: { cwdFilter: true, archived: true },
+                      status: "ready",
+                    },
+                  ],
+                  unsupported: [],
                 })
               : Effect.fail(
                   new ExternalHistoryError({

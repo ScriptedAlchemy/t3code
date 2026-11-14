@@ -211,7 +211,7 @@ function ExternalHistoryRow() {
   return (
     <SettingsRow
       {...searchableSetting("external-history")}
-      description="Search provider-native conversations and ChatGPT export files on an environment. Sources are read in place without importing them as T3 threads."
+      description="Automatically find and search agent conversations on an environment. Sources stay in place."
       control={
         <div className="flex flex-wrap gap-2">
           {connectedEnvironments.map((environment) => (

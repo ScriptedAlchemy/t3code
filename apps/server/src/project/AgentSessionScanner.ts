@@ -1,3 +1,17 @@
+import {
+  TranscriptContentBlock,
+  TranscriptRecord,
+  conversationItem,
+  activePiBranch,
+  emptyClaudeFields,
+  extractText,
+  foldClaudeFields,
+  isHiddenClaudeRecord,
+  isPiConversationRecord,
+  isTextContentBlock,
+  type ClaudeFields,
+  type DecodedTranscriptRecord,
+} from "./agentTranscripts.ts";
 import { resolveClaudeRuntime } from "../provider/Drivers/ClaudeHome.ts";
 import * as NodeOS from "node:os";
 import * as NodeSqlite from "node:sqlite";
@@ -103,50 +117,8 @@ const GIT_FILE_READ_CONCURRENCY = 16;
 const BLOCKED_GIT_FILE_RETRY_MS = 5 * 60 * 1000;
 const MAX_BLOCKED_GIT_FILE_PATHS = 1024;
 
-const TranscriptContentBlock = Schema.Struct({
-  type: Schema.optional(Schema.String),
-  text: Schema.optional(Schema.String),
-});
-
-const TranscriptMessage = Schema.Struct({
-  role: Schema.optional(Schema.String),
-  content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TranscriptContentBlock)])),
-  model: Schema.optional(Schema.String),
-});
-
 const CodexTurnMetadata = Schema.Struct({
   turn_id: Schema.optional(Schema.Union([Schema.String, Schema.Null])),
-});
-
-const TranscriptRecord = Schema.Struct({
-  type: Schema.optional(Schema.String),
-  // Pi entries form a tree through id/parentId; session_info entries carry its name.
-  id: Schema.optional(Schema.String),
-  parentId: Schema.optional(Schema.NullOr(Schema.String)),
-  name: Schema.optional(Schema.String),
-  timestamp: Schema.optional(Schema.String),
-  cwd: Schema.optional(Schema.String),
-  sessionId: Schema.optional(Schema.String),
-  aiTitle: Schema.optional(Schema.String),
-  customTitle: Schema.optional(Schema.String),
-  isSidechain: Schema.optional(Schema.Boolean),
-  isMeta: Schema.optional(Schema.Boolean),
-  isCompactSummary: Schema.optional(Schema.Boolean),
-  message: Schema.optional(TranscriptMessage),
-  payload: Schema.optional(
-    Schema.Struct({
-      id: Schema.optional(Schema.String),
-      session_id: Schema.optional(Schema.String),
-      type: Schema.optional(Schema.String),
-      role: Schema.optional(Schema.String),
-      message: Schema.optional(Schema.String),
-      model: Schema.optional(Schema.String),
-      cwd: Schema.optional(Schema.String),
-      history_base: Schema.optional(Schema.Unknown),
-      content: Schema.optional(Schema.Array(TranscriptContentBlock)),
-      internal_chat_message_metadata_passthrough: Schema.optional(Schema.Unknown),
-    }),
-  ),
 });
 
 const CodexSessionIndexEntry = Schema.Struct({
@@ -165,7 +137,17 @@ const decodePiEntryLinks = Schema.decodeUnknownOption(
     parentId: TranscriptRecord.fields.parentId,
   }),
 );
-const selectTranscriptPath = createTranscriptJsonSelector(TranscriptRecord);
+const selectTranscriptRecordPath = createTranscriptJsonSelector(TranscriptRecord);
+const selectTranscriptContentPath = createTranscriptJsonSelector(
+  TranscriptContentBlock.mapFields(({ type, text }) => ({ type, text })),
+);
+// Imports retain conversation text; full tool payloads belong only to external history.
+const selectTranscriptPath: typeof selectTranscriptRecordPath = (path) =>
+  (path[0] === "message" || path[0] === "payload") &&
+  path[1] === "content" &&
+  typeof path[2] === "number"
+    ? selectTranscriptContentPath(path.slice(3))
+    : selectTranscriptRecordPath(path);
 const decodeCodexTurnMetadata = Schema.decodeUnknownOption(CodexTurnMetadata);
 export const decodeImportedTranscriptPayload = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -184,8 +166,6 @@ const CODEX_STATE_DATABASE = "state_5.sqlite";
 const decodeCodexSessionIndexEntry = Schema.decodeUnknownOption(
   Schema.fromJsonString(CodexSessionIndexEntry),
 );
-
-type DecodedTranscriptRecord = typeof TranscriptRecord.Type;
 
 interface AgentSessionTranscriptMetadata {
   readonly source: AgentSessionSource;
@@ -290,22 +270,6 @@ function splitTranscriptRecords(contents: string, limit: number): string[] {
   return records.split("\n", limit);
 }
 
-function isTextContentBlock(block: typeof TranscriptContentBlock.Type): boolean {
-  return block.type === "text" || block.type === "input_text" || block.type === "output_text";
-}
-
-function extractText(
-  content: string | ReadonlyArray<typeof TranscriptContentBlock.Type> | undefined,
-): string {
-  if (typeof content === "string") return content.trim();
-  if (content === undefined) return "";
-  return content
-    .filter(isTextContentBlock)
-    .map((block) => block.text?.trim() ?? "")
-    .filter((text) => text.length > 0)
-    .join("\n");
-}
-
 function normalizeTimestamp(value: string | undefined, fallback: string): string {
   if (value === undefined) return fallback;
   const parsed = DateTime.make(value);
@@ -322,40 +286,6 @@ function codexTurnId(metadata: unknown): string | null {
     return null;
   }
   return decoded.value.turn_id;
-}
-
-function isHiddenClaudeRecord(record: DecodedTranscriptRecord): boolean {
-  return record.isSidechain === true || record.isMeta === true || record.isCompactSummary === true;
-}
-
-// Claude repeats session fields on records that need not be retained.
-interface ClaudeFields {
-  readonly sessionId: string | undefined;
-  readonly title: string | undefined;
-  readonly customTitle: string | null;
-  readonly model: string | undefined;
-}
-
-const emptyClaudeFields: ClaudeFields = {
-  sessionId: undefined,
-  title: undefined,
-  customTitle: null,
-  model: undefined,
-};
-
-function foldClaudeFields(fields: ClaudeFields, record: DecodedTranscriptRecord): ClaudeFields {
-  if (isHiddenClaudeRecord(record)) return fields;
-  const model = record.message?.model?.trim();
-  return {
-    sessionId: record.sessionId?.trim() || fields.sessionId,
-    title: record.aiTitle?.trim() || fields.title,
-    // Claude flushes the AI title after the user's rename; an empty rename clears it.
-    customTitle:
-      record.customTitle === undefined ? fields.customTitle : record.customTitle.trim() || null,
-    // Claude uses this sentinel for local error responses. It is not a
-    // model ID that can be selected when the imported session resumes.
-    model: model && model !== "<synthetic>" ? model : fields.model,
-  };
 }
 
 // Codex records setup context as user text ahead of the real request. Skip
@@ -392,39 +322,6 @@ function codexHistoryBase(records: ReadonlyArray<DecodedTranscriptRecord>) {
 function deriveTitle(source: AgentSessionSource, text: string): string | undefined {
   const request = source === "codex" ? text.replace(CODEX_TITLE_PREAMBLE, "") : text;
   return request.trim().split("\n")[0]?.slice(0, 100).trim() || undefined;
-}
-
-// Pi keeps abandoned branches in the file; its active branch runs from the last entry to the root.
-function activePiBranch(
-  records: ReadonlyArray<DecodedTranscriptRecord>,
-): ReadonlyArray<DecodedTranscriptRecord> {
-  const entries = records.filter((record) => record.type !== "session");
-  const leaf = entries.at(-1);
-  // Version 1 sessions predate the tree and are linear.
-  if (leaf?.id === undefined) return entries;
-  const byId = new Map(
-    entries.flatMap((entry) => (entry.id === undefined ? [] : [[entry.id, entry] as const])),
-  );
-  const branch: Array<DecodedTranscriptRecord> = [];
-  for (
-    let entry: DecodedTranscriptRecord | undefined = leaf;
-    entry !== undefined && branch.length < entries.length;
-    entry = entry.parentId ? byId.get(entry.parentId) : undefined
-  ) {
-    branch.push(entry);
-  }
-  return branch.toReversed();
-}
-
-function isPiConversationRecord(
-  record: DecodedTranscriptRecord,
-): record is DecodedTranscriptRecord & {
-  readonly message: typeof TranscriptMessage.Type & { readonly role: "user" | "assistant" };
-} {
-  return (
-    record.type === "message" &&
-    (record.message?.role === "user" || record.message?.role === "assistant")
-  );
 }
 
 export function parseAgentSessionTranscript(
@@ -556,26 +453,12 @@ function parseAgentSessionRecords(
   let recordIndex = -1;
   for (const record of input.source === "pi" ? activePiBranch(records) : records) {
     recordIndex += 1;
-    if (input.source === "pi") {
-      if (!isPiConversationRecord(record)) continue;
-      const text = extractText(record.message.content);
-      if (text.length === 0) continue;
+    if (input.source === "pi" || input.source === "claudeAgent") {
+      const item = conversationItem(record, input.source);
+      if (item === null) continue;
       retainMessage({
-        role: record.message.role,
-        text,
-        createdAt: normalizeTimestamp(record.timestamp, fallbackTimestamp),
-        codexResponseUser: false,
-      });
-      continue;
-    }
-    if (input.source === "claudeAgent") {
-      if (isHiddenClaudeRecord(record)) continue;
-      if (record.type !== "user" && record.type !== "assistant") continue;
-      const text = extractText(record.message?.content);
-      if (text.length === 0) continue;
-      retainMessage({
-        role: record.type,
-        text,
+        role: item.role,
+        text: item.text,
         createdAt: normalizeTimestamp(record.timestamp, fallbackTimestamp),
         codexResponseUser: false,
       });

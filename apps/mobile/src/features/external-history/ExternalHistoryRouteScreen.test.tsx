@@ -110,14 +110,25 @@ const ref = {
   digest: "a".repeat(64),
 };
 vi.mock("../../state/query", () => ({
-  useEnvironmentQuery: (request: ExternalHistoryRequest) => {
+  useEnvironmentQuery: (request: ExternalHistoryRequest | null) => {
+    if (request === null)
+      return { data: null, error: null, isPending: false, isSuccess: false, refresh: vi.fn() };
     state.requests.push(request);
     const data: ExternalHistoryResponse =
       request.operation === "sources"
         ? {
             operation: "sources",
             enabled: true,
-            sources: [{ id: "codex-history", label: "Native Codex", kind: "codex" }],
+            sources: [
+              {
+                id: "codex-history",
+                label: "Native Codex",
+                kind: "codex",
+                capabilities: { cwdFilter: true, archived: true },
+                status: "ready",
+              },
+            ],
+            unsupported: [],
           }
         : request.operation === "search"
           ? {
@@ -148,7 +159,7 @@ vi.mock("../../state/query", () => ({
               totalChars: 33,
               nextTextOffset: request.textOffset ? null : 16,
             };
-    return { data, error: null, isPending: false, refresh: vi.fn() };
+    return { data, error: null, isPending: false, isSuccess: true, refresh: vi.fn() };
   },
 }));
 
@@ -158,7 +169,7 @@ const configFor = (supported: boolean, enabled = true) => ({
   environment: { capabilities: supported ? { externalHistory: 1 as const } : {} },
   settings: {
     ...DEFAULT_SERVER_SETTINGS,
-    externalHistory: { enabled, chatGptExportPaths: ["/remote/export.json"] },
+    externalHistory: { enabled },
   },
 });
 
@@ -200,9 +211,6 @@ it("keeps remote history read-only without settings permission and stops reads w
     expect(container.textContent).toContain("Update this server");
     act(() => registry.set(config, configFor(true)));
     expect(button("Allow external history search").disabled).toBe(true);
-    expect(
-      container.querySelector<HTMLInputElement>('[aria-label="ChatGPT export paths"]')?.disabled,
-    ).toBe(true);
     const input = container.querySelector<HTMLInputElement>(
       '[aria-label="Search external history"]',
     )!;
@@ -212,8 +220,6 @@ it("keeps remote history read-only without settings permission and stops reads w
     });
     await click("This project");
     await click("Search");
-    expect(container.textContent).toContain("No matches on this page. Continue");
-    await click("Continue search");
     expect(container.textContent).toContain("Compiler investigation");
     expect(state.requests).toContainEqual({
       operation: "search",
@@ -229,7 +235,7 @@ it("keeps remote history read-only without settings permission and stops reads w
     expect(container.textContent).toContain("Second exact page");
     expect(container.textContent).not.toContain("First exact page");
     await click("Search");
-    expect(container.textContent).toContain("No matches on this page. Continue");
+    expect(container.textContent).toContain("Compiler investigation");
     expect(container.textContent).not.toContain("Second exact page");
     expect(state.update).not.toHaveBeenCalled();
     act(() => registry.set(config, configFor(true, false)));

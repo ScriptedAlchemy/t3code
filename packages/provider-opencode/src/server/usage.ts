@@ -314,7 +314,7 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
   return { files, missing: !found && !error, error };
 });
 
-const resolveOpenCodeDataDirs = Effect.fn("resolveOpenCodeDataDirs")(function* (
+export const resolveOpenCodeDataDirs = Effect.fn("resolveOpenCodeDataDirs")(function* (
   environment: NodeJS.ProcessEnv,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;

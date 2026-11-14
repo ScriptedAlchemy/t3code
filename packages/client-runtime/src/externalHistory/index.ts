@@ -1,4 +1,8 @@
-import { WS_METHODS } from "@t3tools/contracts";
+import {
+  type ExternalHistorySource,
+  type ExternalHistoryRequest,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import type { Atom } from "effect/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { createEnvironmentRpcQueryAtomFamily } from "../state/runtime.ts";
@@ -24,3 +28,28 @@ export function externalHistoryRangeLabel(source: {
   const start = source.text.length === 0 ? source.textOffset : source.textOffset + 1;
   return `Characters ${start.toLocaleString()}–${(source.textOffset + source.text.length).toLocaleString()} of ${source.totalChars.toLocaleString()}`;
 }
+
+export function externalHistorySearchFilters(
+  capabilities: ExternalHistorySource["capabilities"],
+  wanted: { readonly filterCwd: string; readonly includeArchived: boolean },
+): Pick<Extract<ExternalHistoryRequest, { operation: "search" }>, "filterCwd" | "includeArchived"> {
+  return {
+    ...(capabilities.cwdFilter && wanted.filterCwd.trim()
+      ? { filterCwd: wanted.filterCwd.trim() }
+      : {}),
+    ...(capabilities.archived ? { includeArchived: wanted.includeArchived } : {}),
+  };
+}
+
+export function externalHistorySourceStatusLabel(status: ExternalHistorySource["status"]): string {
+  return {
+    ready: "Ready",
+    unavailable: "Cannot read",
+    unsupported_format: "Unsupported history format",
+  }[status];
+}
+
+export {
+  externalHistoryPagingReducer,
+  initialExternalHistoryPaging,
+} from "./searchPaging.logic.ts";
