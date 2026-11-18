@@ -47,9 +47,11 @@ Group the unprofiled models by family and research them with `delegate_task`, `r
 - Every instance with a qualifying model holds at least one seat somewhere. Name any instance left out and why.
 - `unreliable` and `unknown`-tier models never hold a seat.
 
-When choosing between eligible seats, use this project's blind evaluations. Reuse matching `modelGuidance` from the inventory. If a consequential choice lacks a matching brief, call `orchestrator_capabilities` with the shortlisted model ID as `search` once and reuse the result across roles. Match `modelSelection` (instance, model and relevant options), delegated scope and task category. The evaluator scored the work. Compare observations only within the same judge and rubric, and weigh confidence and scored sample counts. Honor explicit choices.
+For a choice between eligible models, check each shortlisted candidate's `modelGuidance` from the inventory. A matching brief has the candidate as the worker (`modelSelection`), the relevant options, `scope: "subagent"`, and the seat's task category. Coding scores cannot support a review seat. Being the judge (`evaluatorSelection`) supplies no evidence about doing the work.
 
-Give one sentence explaining each consequential choice. Cite the relevant project observation and sample count, or say the choice rests on the maker profile or user preference when matching evidence is missing or provisional. Keep project observations out of the shared profiles and models file.
+For each shortlisted candidate missing that match, call `orchestrator_capabilities` with `search` set to its exact model ID before choosing. Reuse the result across roles. Weigh confidence and scored sample counts; compare scores only within the same judge and rubric. Honor explicit choices.
+
+Explain each consequential choice in one sentence with the project observation and sample count. If evidence is missing or provisional, say what maker profile or user preference supports the choice. Keep project observations out of the shared profiles and models file.
 
 On a repeat run, keep every working seat. Propose only additions, for a qualifying family or instance with no seat, and replacements for unavailable seats. Show each change beside the old value.
 

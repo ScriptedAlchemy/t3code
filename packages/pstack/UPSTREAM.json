@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/ScriptedAlchemy/pstack-t3code",
-  "commit": "62e0e73fba703dc8e1f3d8b0898740673cc32383",
-  "subtreeHash": "44857fc214f757ad44e2286738b837b0c339d92d",
+  "commit": "bd3451d5deea4128c004bd5e4ea894e79c93fe84",
+  "subtreeHash": "ba2885b3d7b132ee9fe92b5f3e430842beaa9548",
   "version": "0.15.36-t3code.1",
   "files": {
     ".gitignore": {
@@ -593,7 +593,7 @@
       "executable": false
     },
     "skills/setup-pstack/SKILL.md": {
-      "sha256": "7ac10ecaa7c54bb5d1e4326c989f6fafc57c2f6131e7bca7abc9c35c0c4820b9",
+      "sha256": "af9eb6b72fd53fca9854cf3f76e131cb97a82807e291baa745e0256c14f655f7",
       "executable": false
     },
     "skills/sharpen/SKILL.md": {
