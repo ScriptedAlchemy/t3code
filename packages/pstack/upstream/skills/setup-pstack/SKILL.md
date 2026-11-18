@@ -36,7 +36,7 @@ A budget-only request keeps every current seat, applies the effort rule in step 
 
 Group the unprofiled models by family and research them with `delegate_task`, `role: "research"`, at most 25 models per child and at most 6 children at a time, spread across the `how explorer` seats in `<t3_pstack>` (omit `target` when the role is missing). Each brief lists its model IDs and labels, asks for the fields above from maker documentation only, says "Record unknown rather than guess", and says "Do not edit files, commit, or push." Each completion wakes you. Write the returned profiles, list any model with no profile as `unknown`, and continue once every child has returned.
 
-**(b) Assign seats across providers.** Fill every role from the profiles:
+**(b) Assign seats across providers.** Shortlist candidates from the profiles:
 
 - Judgment roles (`judgment and prose`, `hardest tasks`, `how explainer`, `why synthesizer`, `reflect judgment, divergent, synthesizer`) take `frontier` models.
 - Code roles (`feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb`) take `frontier` or `strong` models with `reliable` tool use.
@@ -46,6 +46,10 @@ Group the unprofiled models by family and research them with `delegate_task`, `r
 - Every pool gets seats from at least two families when two qualify, best seat first.
 - Every instance with a qualifying model holds at least one seat somewhere. Name any instance left out and why.
 - `unreliable` and `unknown`-tier models never hold a seat.
+
+When choosing between eligible seats, use this project's blind evaluations. Reuse matching `modelGuidance` from the inventory. If a consequential choice lacks a matching brief, call `orchestrator_capabilities` with the shortlisted model ID as `search` once and reuse the result across roles. Match `modelSelection` (instance, model and relevant options), delegated scope and task category. The evaluator scored the work. Compare observations only within the same judge and rubric, and weigh confidence and scored sample counts. Honor explicit choices.
+
+Give one sentence explaining each consequential choice. Cite the relevant project observation and sample count, or say the choice rests on the maker profile or user preference when matching evidence is missing or provisional. Keep project observations out of the shared profiles and models file.
 
 On a repeat run, keep every working seat. Propose only additions, for a qualifying family or instance with no seat, and replacements for unavailable seats. Show each change beside the old value.
 
