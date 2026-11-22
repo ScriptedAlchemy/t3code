@@ -36,8 +36,11 @@ import type {
 import {
   CHECKOUT_CONFIG_ENTRIES,
   clearCheckoutSources,
+  generationDirectory,
+  indexRootFor,
   linkCheckoutSources,
 } from "./codeIndexLayout.ts";
+import { pinPublishedGeneration } from "./codeIndexLocks.ts";
 
 const CATALOG_REVISION = "@colbymchenry/codegraph@1.6.2";
 // Programming languages outside the SDK's catalog, which it reports as unknown like any asset.
@@ -316,6 +319,53 @@ function headCommit(checkoutPath: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** The repository's main checkout when `checkoutPath` is a linked worktree of one. */
+function mainCheckoutOf(checkoutPath: string): string | null {
+  try {
+    const [gitDir, commonDir] = NodeChildProcess.execFileSync(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+      { cwd: checkoutPath, encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] },
+    )
+      .trim()
+      .split("\n");
+    // A bare repository's worktrees have no main checkout to share an index with.
+    if (!gitDir || !commonDir || gitDir === commonDir || NodePath.basename(commonDir) !== ".git")
+      return null;
+    return NodePath.dirname(commonDir);
+  } catch {
+    return null;
+  }
+}
+
+interface SeedGeneration {
+  readonly indexRoot: string;
+  readonly directory: string;
+  readonly release: () => void;
+}
+
+/**
+ * The main checkout's published generation, pinned against retirement, for a linked worktree
+ * that has none yet. Its paths are checkout-relative, so the worktree only re-parses what differs.
+ */
+function pinMainCheckoutGeneration(input: CodeIndexBuildInput): SeedGeneration | null {
+  const main = mainCheckoutOf(input.checkoutPath);
+  if (main === null) return null;
+  const indexRoot = indexRootFor(NodePath.dirname(input.indexRoot), main);
+  if (indexRoot === input.indexRoot) return null;
+  let pin: ReturnType<typeof pinPublishedGeneration>;
+  try {
+    pin = pinPublishedGeneration(indexRoot);
+  } catch {
+    return null;
+  }
+  if (pin.generation === null) {
+    pin.release();
+    return null;
+  }
+  return { indexRoot, directory: generationDirectory(pin.generation), release: pin.release };
 }
 
 // Mirrors the SDK's file limit: it never parses a larger file and stores a hash of a size
@@ -671,9 +721,10 @@ function hasUnauthorizedFiles(checkoutPath: string, graph: CodeGraphInstance): b
 }
 
 /**
- * Builds the generation `input.to` from a copy of the published one, or from scratch, and reports
- * whether it differs from the published one. An unchanged checkout is detected before anything is
- * copied, and then `input.to` is never created.
+ * Builds the generation `input.to` from a copy of the published one, from a copy of the main
+ * checkout's when a linked worktree has none, or from scratch, and reports whether it differs from
+ * the published one. An unchanged checkout is detected before anything is copied, and then
+ * `input.to` is never created.
  */
 export async function buildIndexInWorker(
   input: CodeIndexBuildInput,
@@ -721,9 +772,10 @@ export async function buildIndexInWorker(
   const target = NodePath.join(input.indexRoot, input.to);
   // Exclusive: a leftover entry, link or not, fails the build instead of being written through.
   NodeFS.mkdirSync(target);
-  if (from !== null) {
+  let copied = false;
+  const copyDatabase = (sourceRoot: string, sourceDirectory: string) => {
     for (const name of INDEX_DATABASE_FILES) {
-      const source = NodePath.join(input.indexRoot, from, name);
+      const source = NodePath.join(sourceRoot, sourceDirectory, name);
       if (NodeFS.existsSync(source)) {
         NodeFS.copyFileSync(
           source,
@@ -731,14 +783,32 @@ export async function buildIndexInWorker(
           // FICLONE falls back to a normal copy where reflinks are unavailable.
           NodeFS.constants.COPYFILE_EXCL | NodeFS.constants.COPYFILE_FICLONE,
         );
+        copied = true;
+      }
+    }
+  };
+  if (from !== null) {
+    copyDatabase(input.indexRoot, from);
+  } else {
+    const seed = pinMainCheckoutGeneration(input);
+    if (seed !== null) {
+      try {
+        const meta = readIndexMeta(seed.indexRoot, seed.directory);
+        // The same rules that let a successor inherit its predecessor's files.
+        if (
+          meta.configurationDigest === configurationDigest &&
+          (!isListingTruncated(input) || meta.ranked)
+        )
+          copyDatabase(seed.indexRoot, seed.directory);
+      } finally {
+        seed.release();
       }
     }
   }
   useIndexDirectory(input.to);
-  let graph =
-    from !== null
-      ? await CodeGraph.open(input.indexRoot, { sync: false })
-      : await CodeGraph.init(input.indexRoot, { index: false });
+  let graph = copied
+    ? await CodeGraph.open(input.indexRoot, { sync: false })
+    : await CodeGraph.init(input.indexRoot, { index: false });
   try {
     if (hasUnauthorizedFiles(input.checkoutPath, graph)) {
       graph.close();

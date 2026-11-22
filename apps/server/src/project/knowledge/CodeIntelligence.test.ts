@@ -1283,6 +1283,49 @@ it.effect("indexes a worktree for its active agent and never merely because it i
   ),
 );
 
+it.effect("starts a linked worktree's first index from its main checkout's", () =>
+  withFixture((fixture) =>
+    Effect.gen(function* () {
+      // Git reports physical paths, and the main checkout's index is keyed by its path.
+      const root = NodeFS.realpathSync(fixture.root);
+      const linked = NodePath.join(NodeFS.realpathSync(fixture.worktree), "linked");
+      const git = (...args: ReadonlyArray<string>) =>
+        NodeChildProcess.execFileSync(
+          "git",
+          ["-c", "user.email=t3@example.com", "-c", "user.name=T3", ...args],
+          { cwd: root, encoding: "utf8" },
+        );
+      git("init", "--quiet");
+      git("add", "--all");
+      git("commit", "--quiet", "-m", "fixture");
+      git("worktree", "add", "--quiet", "--detach", linked);
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          NodePath.join(linked, "src/work.ts"),
+          "export function workOnly() { return 2; }\n",
+        ),
+      );
+      const worktree = { threadId: worktreeThreadId, path: linked };
+      // The worktree lists only its new file, so `greet` can only come from the main checkout's.
+      const { run, refresh, indexRoot } = yield* checkoutService(
+        root,
+        (cwd) => (cwd === linked ? ["src/work.ts"] : ["src/defs.ts"]),
+        { worktree, repository: true },
+      );
+      assert.deepEqual(yield* refresh(), { _tag: "Published", generation: 1 });
+
+      assert.deepEqual(yield* refresh(worktreeThreadId), { _tag: "Published", generation: 1 });
+      assert.equal(yield* indexedSymbolCount(indexRoot(linked), "greet"), 1);
+      const own = yield* run({ operation: "symbols", name: "workOnly" }, worktreeThreadId);
+      assert.ok(own.nodes.some((node) => node.path === "src/work.ts"));
+      // The main checkout's own index is untouched and still serves.
+      const main = yield* run({ operation: "freshness" });
+      assert.equal(main.index?.generation, 1);
+      assert.equal(main.index?.state, "ready");
+    }),
+  ),
+);
+
 it.effect("leaves a worktree index stale until its agent acts again", () =>
   withFixture((fixture) =>
     Effect.gen(function* () {
