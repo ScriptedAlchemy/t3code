@@ -11,8 +11,10 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
+import { stringify } from "smol-toml";
 
 import { resolveCodexComputerUse } from "./CodexComputerUse.ts";
+import { configureProviderComputerUse, prepareComputerUseEdits } from "./CodexComputerUseSetup.ts";
 
 const resources = "/custom/Acme.app/Contents/Resources";
 const command = `${resources}/cua_node/bin/node_repl`;
@@ -41,6 +43,56 @@ const rpcError = new CodexErrors.CodexAppServerTransportError({
   cause: "fixture",
 });
 
+it("prepares only the native Mac tool for a separate Codex home without replacing its settings", () => {
+  const source = configured();
+  const node = source.mcp_servers.node_repl;
+  const config = {
+    ...source,
+    mcp_servers: {
+      node_repl: {
+        ...node,
+        args: [],
+        environment_id: "local",
+        tool_timeout_sec: null,
+        env: {
+          ...node.env,
+          CODEX_HOME: "/personal",
+          TOKEN: "private",
+          NODE_REPL_TRUSTED_SERVICES: JSON.stringify({ sky: "@oai/sky/service", browser: "other" }),
+        },
+      },
+    },
+  };
+  const target = { model_provider: "custom", mcp_servers: { unrelated: {} } };
+  const edits = prepareComputerUseEdits(config, target);
+  assert.deepEqual(
+    edits.map((edit) => edit.keyPath),
+    ["plugins.computer-use@openai-bundled.enabled", "mcp_servers.node_repl"],
+  );
+  assert.deepEqual(edits[1]?.value, {
+    command,
+    enabled_tools: ["js"],
+    env: {
+      ...node.env,
+      NODE_REPL_NODE_PATH: `${resources}/cua_node/bin/node`,
+      NODE_REPL_TRUSTED_CODE_PATHS: modules,
+    },
+  });
+  for (const conflict of [
+    { features: { plugins: false } },
+    { plugins: { "computer-use@openai-bundled": { enabled: false } } },
+    { mcp_servers: { node_repl: {} } },
+  ]) {
+    assert.throws(() => prepareComputerUseEdits(config, conflict));
+  }
+  assert.throws(() =>
+    prepareComputerUseEdits(
+      { ...config, mcp_servers: { node_repl: { ...node, disabled_tools: ["js"] } } },
+      target,
+    ),
+  );
+});
+
 const fixture = (
   options: {
     config?: unknown;
@@ -51,6 +103,8 @@ const fixture = (
     missing?: string;
     fail?: string;
     platform?: NodeJS.Platform;
+    homePath?: string;
+    nativeConfig?: string;
     request?: CodexClient.CodexAppServerClient["Service"]["raw"]["request"];
   } = {},
 ) => {
@@ -63,6 +117,7 @@ const fixture = (
     calls.push({ method, params });
     if (options.request) return options.request(method, params);
     if (options.fail === method) return Effect.fail(rpcError);
+    if (method === "config/batchWrite") return Effect.succeed({ status: "ok" });
     if (method === "config/read")
       return Effect.succeed({
         config: options.config ?? configured(),
@@ -76,7 +131,11 @@ const fixture = (
     if (method === "skills/list")
       return Effect.succeed({
         data: [
-          { cwd: "/project", skills: options.skills ?? [], errors: options.skillErrors ?? [] },
+          {
+            cwd: options.homePath ? "/" : "/project",
+            skills: options.skills ?? [],
+            errors: options.skillErrors ?? [],
+          },
         ],
       });
     return Effect.die(`Unexpected RPC ${method}`);
@@ -100,6 +159,7 @@ const fixture = (
   });
   const absent = FileSystem.makeNoop({});
   const fileSystem = FileSystem.makeNoop({
+    realPath: (path) => Effect.succeed(path),
     access: (path) =>
       Effect.sync(() => {
         reads.push(path);
@@ -107,6 +167,7 @@ const fixture = (
     readFileString: (path) => {
       reads.push(path);
       if (path === options.missing) return absent.readFileString(path);
+      if (path === "/mac/.codex/config.toml") return Effect.succeed(options.nativeConfig ?? "");
       if (path.endsWith("package.json"))
         return Effect.succeed(
           JSON.stringify({ name: "@oai/sky", exports: { "./service": "./service.js" } }),
@@ -116,14 +177,75 @@ const fixture = (
       );
     },
   });
-  const resolve = resolveCodexComputerUse({ cwd: "/project" }).pipe(
-    Effect.provideService(CodexClient.CodexAppServerClient, client),
-    Effect.provideService(FileSystem.FileSystem, fileSystem),
-    Effect.provide(Path.layer),
-    Effect.provideService(HostProcess.Platform, options.platform ?? "darwin"),
-  );
-  return { resolve, calls, reads };
+  const provide = <A, E>(
+    effect: Effect.Effect<
+      A,
+      E,
+      CodexClient.CodexAppServerClient | FileSystem.FileSystem | Path.Path
+    >,
+  ) =>
+    effect.pipe(
+      Effect.provideService(CodexClient.CodexAppServerClient, client),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provide(Path.layer),
+      Effect.provideService(HostProcess.HomeDirectory, "/mac"),
+      Effect.provideService(HostProcess.Platform, options.platform ?? "darwin"),
+    );
+  return {
+    resolve: provide(resolveCodexComputerUse({ cwd: "/project" })),
+    configure: provide(configureProviderComputerUse(options.homePath)),
+    calls,
+    reads,
+  };
 };
+
+it.effect(
+  "provisions an isolated provider home globally without replacing overrides or writing from a project layer",
+  () =>
+    Effect.gen(function* () {
+      const file = "/providers/custom/config.toml";
+      const user = { name: { type: "user", file }, config: {}, version: "original" };
+      const custom = {
+        homePath: "/providers/custom",
+        config: {},
+        layers: [user],
+        nativeConfig: stringify(configured()),
+      };
+      const fresh = fixture(custom);
+      yield* fresh.configure;
+      assert.deepEqual(
+        fresh.calls
+          .filter((call) => call.method === "config/batchWrite")
+          .map((call) => call.params),
+        [
+          {
+            filePath: file,
+            expectedVersion: "original",
+            reloadUserConfig: true,
+            edits: prepareComputerUseEdits(configured(), {}),
+          },
+        ],
+      );
+      for (const overrides of [
+        { config: configured() },
+        { config: { features: { plugins: false } } },
+        { config: { mcp_servers: { node_repl: { enabled: false } } } },
+        { requirements: { allowBrowserAndComputerUse: false } },
+        {
+          layers: [
+            user,
+            { name: { type: "project", dotCodexFolder: "/.codex" }, config: {}, version: "other" },
+          ],
+        },
+        { nativeConfig: "invalid TOML" },
+        { platform: "linux" as const },
+      ]) {
+        const blocked = fixture({ ...custom, ...overrides });
+        yield* blocked.configure;
+        assert.isFalse(blocked.calls.some((call) => call.method === "config/batchWrite"));
+      }
+    }),
+);
 
 it.effect("locates configured native files from the selected effective home and cwd", () =>
   Effect.gen(function* () {

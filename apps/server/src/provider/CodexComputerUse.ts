@@ -47,8 +47,17 @@ const relevantSkill = (value: { name?: unknown; path?: unknown }) =>
   (typeof value.name === "string" && skillNames.has(value.name)) ||
   (typeof value.path === "string" && /(?:^|[/\\])computer-use[/\\]SKILL\.md$/.test(value.path));
 
+export function computerUseSkillDisabled(config: Record<string, unknown>) {
+  const rules = record(config.skills).config;
+  return (
+    Array.isArray(rules) &&
+    rules.some((rule) => record(rule).enabled === false && relevantSkill(record(rule)))
+  );
+}
+
 export const resolveCodexComputerUse = Effect.fn("CodexComputerUse.resolve")(function* (input: {
   readonly cwd: string | null;
+  readonly candidateConfig?: Readonly<Record<string, unknown>>;
 }): Effect.fn.Return<
   CodexComputerUseAvailability,
   never,
@@ -61,9 +70,11 @@ export const resolveCodexComputerUse = Effect.fn("CodexComputerUse.resolve")(fun
   const cwd = input.cwd ?? (yield* HostProcess.WorkingDirectory);
 
   return yield* Effect.gen(function* () {
-    const { config } = yield* client.raw
-      .request("config/read", { cwd, includeLayers: false })
-      .pipe(Effect.flatMap(decodeConfig));
+    const config =
+      input.candidateConfig ??
+      (yield* client.raw
+        .request("config/read", { cwd, includeLayers: false })
+        .pipe(Effect.flatMap(decodeConfig))).config;
     if (
       record(config.features).plugins === false ||
       record(record(config.plugins)[pluginId]).enabled !== true
@@ -109,12 +120,7 @@ export const resolveCodexComputerUse = Effect.fn("CodexComputerUse.resolve")(fun
       !env.SKY_CUA_SERVICE_PATH.endsWith(".app")
     )
       return unavailable;
-    const rules = record(config.skills).config;
-    if (
-      Array.isArray(rules) &&
-      rules.some((rule) => record(rule).enabled === false && relevantSkill(record(rule)))
-    )
-      return unavailable;
+    if (computerUseSkillDisabled(config)) return unavailable;
 
     const catalog = yield* client.raw
       .request("skills/list", { cwds: [cwd] })
