@@ -9361,15 +9361,21 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     close: (sdkMessages) => Queue.shutdown(sdkMessages),
   });
 
-  it.effect("reports a missing source when forking in a different Claude home", () =>
+  it.live("reports a missing source when forking in a different Claude home", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const configDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-claude-fork-missing-",
       });
+      const warningScript = (yield* Path.Path).join(configDir, "worker-warning.cjs");
+      yield* fileSystem.writeFileString(warningScript, 'console.error("worker startup warning");');
       const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
       const harness = yield* makeWakeHarnessWithOptions({
-        environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+        environment: {
+          ...process.env,
+          CLAUDE_CONFIG_DIR: configDir,
+          NODE_OPTIONS: `--require "${warningScript}"`,
+        },
         nativeSessionId: "10000000-0000-4000-8000-000000000000",
         forkSession: runner.forkSession,
       });

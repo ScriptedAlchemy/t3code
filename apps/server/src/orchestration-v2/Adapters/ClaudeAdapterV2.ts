@@ -15282,7 +15282,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   const sdkCause = isClaudeAgentSdkQueryRunnerError(cause)
                     ? cause.cause
                     : undefined;
-                  const detail = sdkCause instanceof Error ? sdkCause.message : sdkCause;
+                  const detail =
+                    sdkCause instanceof Error
+                      ? sdkCause.message
+                      : typeof sdkCause === "string"
+                        ? sdkCause.split(/\r?\n/u).at(-1)
+                        : undefined;
                   const sessionId = forkInput.sourceProviderThread.nativeThreadRef?.nativeId;
                   return new ProviderAdapter.ProviderAdapterForkThreadError({
                     driver: CLAUDE_PROVIDER,
