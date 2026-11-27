@@ -13853,5 +13853,16 @@
   "a3d345599ca3b8fc": "Leverantören stöder inte åtgärden ”{operation}” i {environment}. Välj en annan leverantör för den här inställningen.",
   "b57c43eff93face6": "Det här löser in en kredit på ditt konto och nollställer de aktuella fönstren för hastighetsbegränsning. Det går inte att ångra.",
   "fd47a5d1359f3fbc": "Inloggad på",
-  "2a756276fa9be701": "En inloggning, en kvot: de här instanserna delar på gränsen."
+  "2a756276fa9be701": "En inloggning, en kvot: de här instanserna delar på gränsen.",
+  "7f89241452db99ff": "Standard",
+  "03e528e05610bf10": "Titel",
+  "6a3582ca05bf6bdf": "Kodförråd",
+  "9c21f82727cb22c4": "Sök bland länkade objekt",
+  "701964090d7b3438": "Rensa sökning",
+  "d52809ee78cd1286": "Sortera och filtrera länkade objekt",
+  "0b642f39515464c2": "{count, plural, one {{count} länkat objekt} other {{count} länkade objekt}}. Sortering: {sort}.",
+  "70150163b483a6b7": "{visible} av {total} länkade objekt",
+  "c56c65b1fcdab1d1": "Dölj pull requests",
+  "b0ff57835d51b91a": "Inga matchande länkade objekt",
+  "3fe9728594a7340c": "Rensa filter"
 }

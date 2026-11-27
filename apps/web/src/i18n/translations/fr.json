@@ -13846,5 +13846,16 @@
   "a3d345599ca3b8fc": "Ce fournisseur ne peut pas générer de contenu pour l’opération « {operation} » sur {environment}. Choisissez un autre fournisseur pour ce réglage.",
   "b57c43eff93face6": "Cela utilise un crédit de votre compte et efface les fenêtres de limite de débit actuelles. Cette action est irréversible.",
   "fd47a5d1359f3fbc": "Connecté sur",
-  "2a756276fa9be701": "Une connexion, un quota : ces instances partagent cette limite."
+  "2a756276fa9be701": "Une connexion, un quota : ces instances partagent cette limite.",
+  "7f89241452db99ff": "Par défaut",
+  "03e528e05610bf10": "Titre",
+  "6a3582ca05bf6bdf": "Dépôt",
+  "9c21f82727cb22c4": "Rechercher dans les éléments liés",
+  "701964090d7b3438": "Effacer la recherche",
+  "d52809ee78cd1286": "Trier et filtrer les éléments liés",
+  "0b642f39515464c2": "{count, plural, one {{count} élément lié} other {{count} éléments liés}}. Ordre de tri : {sort}.",
+  "70150163b483a6b7": "{visible} éléments liés sur {total}",
+  "c56c65b1fcdab1d1": "Masquer les demandes de fusion",
+  "b0ff57835d51b91a": "Aucun élément lié correspondant",
+  "3fe9728594a7340c": "Effacer les filtres"
 }
