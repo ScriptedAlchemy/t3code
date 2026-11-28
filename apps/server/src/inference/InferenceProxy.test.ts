@@ -50,19 +50,14 @@ const keychainState = vi.hoisted(() => ({
   onRead: undefined as (() => void) | undefined,
 }));
 vi.mock("./claudeKeychain.ts", () => ({
-  claudeKeychainEntry: () =>
-    new (class {
-      async getPassword() {
-        if (keychainState.hang) {
-          keychainState.onRead?.();
-          return await new Promise<string | undefined>(() => {});
-        }
-        return keychainState.password || undefined;
-      }
-      async setPassword(password: string) {
-        keychainState.password = password;
-      }
-    })(),
+  readClaudeKeychain: () =>
+    keychainState.hang
+      ? Effect.sync(() => keychainState.onRead?.()).pipe(Effect.andThen(Effect.never))
+      : Effect.succeed(keychainState.password || undefined),
+  writeClaudeKeychain: (_username: string, password: string) =>
+    Effect.sync(() => {
+      keychainState.password = password;
+    }),
 }));
 
 it.effect(
