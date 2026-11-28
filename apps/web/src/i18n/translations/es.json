@@ -13841,5 +13841,16 @@
   "a3d345599ca3b8fc": "Este proveedor no puede generar contenido para la operación «{operation}» en {environment}. Elige otro proveedor para este ajuste.",
   "b57c43eff93face6": "Esto canjea un crédito de tu cuenta y borra las ventanas de límite de uso actuales. No se puede deshacer.",
   "fd47a5d1359f3fbc": "Sesión iniciada en",
-  "2a756276fa9be701": "Un inicio de sesión, una cuota: estas instancias comparten este límite."
+  "2a756276fa9be701": "Un inicio de sesión, una cuota: estas instancias comparten este límite.",
+  "7f89241452db99ff": "Predeterminado",
+  "03e528e05610bf10": "Título",
+  "6a3582ca05bf6bdf": "Repositorio",
+  "9c21f82727cb22c4": "Buscar elementos vinculados",
+  "701964090d7b3438": "Borrar búsqueda",
+  "d52809ee78cd1286": "Ordenar y filtrar elementos vinculados",
+  "0b642f39515464c2": "{count, plural, one {{count} elemento vinculado} other {{count} elementos vinculados}}. Orden: {sort}.",
+  "70150163b483a6b7": "{visible} de {total} elementos vinculados",
+  "c56c65b1fcdab1d1": "Ocultar solicitudes de cambio",
+  "b0ff57835d51b91a": "No hay elementos vinculados que coincidan",
+  "3fe9728594a7340c": "Borrar filtros"
 }

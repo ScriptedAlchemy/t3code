@@ -13846,5 +13846,16 @@
   "a3d345599ca3b8fc": "Dieser Anbieter kann auf {environment} Folgendes nicht generieren: {operation}. Wähle für diese Einstellung einen anderen Anbieter.",
   "b57c43eff93face6": "Dadurch wird ein Guthaben auf deinem Konto eingelöst und die aktuellen Rate-Limit-Zeitfenster werden zurückgesetzt. Dies kann nicht rückgängig gemacht werden.",
   "fd47a5d1359f3fbc": "Angemeldet auf",
-  "2a756276fa9be701": "Eine Anmeldung, ein Kontingent: Diese Instanzen teilen sich dieses Limit."
+  "2a756276fa9be701": "Eine Anmeldung, ein Kontingent: Diese Instanzen teilen sich dieses Limit.",
+  "7f89241452db99ff": "Standard",
+  "03e528e05610bf10": "Titel",
+  "6a3582ca05bf6bdf": "Repository",
+  "9c21f82727cb22c4": "Verknüpfte Elemente suchen",
+  "701964090d7b3438": "Suche löschen",
+  "d52809ee78cd1286": "Verknüpfte Elemente sortieren und filtern",
+  "0b642f39515464c2": "{count, plural, one {{count} verknüpftes Element} other {{count} verknüpfte Elemente}}. Sortierung: {sort}.",
+  "70150163b483a6b7": "{visible} von {total} verknüpften Elementen",
+  "c56c65b1fcdab1d1": "Pull Requests ausblenden",
+  "b0ff57835d51b91a": "Keine passenden verknüpften Elemente",
+  "3fe9728594a7340c": "Filter zurücksetzen"
 }

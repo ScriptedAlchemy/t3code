@@ -13846,5 +13846,16 @@
   "a3d345599ca3b8fc": "Este provedor não pode gerar {operation} em {environment}. Escolha outro provedor para esta configuração.",
   "b57c43eff93face6": "Isso usa um crédito da sua conta e limpa as janelas de limite de taxa atuais. Não pode ser desfeito.",
   "fd47a5d1359f3fbc": "Login em",
-  "2a756276fa9be701": "Um login, uma cota: estas instâncias compartilham este limite."
+  "2a756276fa9be701": "Um login, uma cota: estas instâncias compartilham este limite.",
+  "7f89241452db99ff": "Padrão",
+  "03e528e05610bf10": "Título",
+  "6a3582ca05bf6bdf": "Repositório",
+  "9c21f82727cb22c4": "Buscar itens vinculados",
+  "701964090d7b3438": "Limpar busca",
+  "d52809ee78cd1286": "Ordenar e filtrar itens vinculados",
+  "0b642f39515464c2": "{count, plural, one {{count} item vinculado} other {{count} itens vinculados}}. Ordem: {sort}.",
+  "70150163b483a6b7": "{visible} de {total} itens vinculados",
+  "c56c65b1fcdab1d1": "Ocultar pull requests",
+  "b0ff57835d51b91a": "Nenhum item vinculado correspondente",
+  "3fe9728594a7340c": "Limpar filtros"
 }

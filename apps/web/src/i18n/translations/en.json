@@ -13855,5 +13855,16 @@
   "a3d345599ca3b8fc": "This provider cannot generate {operation} on {environment}. Choose another provider for this setting.",
   "b57c43eff93face6": "This redeems one credit on your account and clears the current rate-limit windows. It cannot be undone.",
   "fd47a5d1359f3fbc": "Signed in on",
-  "2a756276fa9be701": "One login, one quota: these instances share this limit."
+  "2a756276fa9be701": "One login, one quota: these instances share this limit.",
+  "7f89241452db99ff": "Default",
+  "03e528e05610bf10": "Title",
+  "6a3582ca05bf6bdf": "Repository",
+  "9c21f82727cb22c4": "Search linked items",
+  "701964090d7b3438": "Clear search",
+  "d52809ee78cd1286": "Sort and filter linked items",
+  "0b642f39515464c2": "{count, plural, one {{count} linked item} other {{count} linked items}}. Sort order: {sort}.",
+  "70150163b483a6b7": "{visible} of {total} linked",
+  "c56c65b1fcdab1d1": "Hide pull requests",
+  "b0ff57835d51b91a": "No matching linked items",
+  "3fe9728594a7340c": "Clear filters"
 }
