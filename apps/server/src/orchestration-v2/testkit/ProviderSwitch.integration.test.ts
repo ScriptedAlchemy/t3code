@@ -6210,7 +6210,8 @@ describe("orchestration v2 provider switching", () => {
           turnFor("user-first")!.nativeThreadId,
         );
         // The task belongs to the user's session; the scheduled side session never saw it.
-        const wake = turns.find((turn) => turn.text.startsWith(`Delegated task ${taskId}`));
+        // Agent-sent wakes start with T3's message-source note.
+        const wake = turns.find((turn) => turn.text.includes(`\n\nDelegated task ${taskId}`));
         assert.equal(wake?.nativeThreadId, turnFor("user-first")!.nativeThreadId);
       }).pipe(
         Effect.provide(
@@ -6384,7 +6385,7 @@ describe("orchestration v2 provider switching", () => {
           turns.find((turn) => turn.text.endsWith("user-first"))!.nativeThreadId,
         );
         const wakeFor = (taskId: string) =>
-          turns.find((turn) => turn.text.startsWith(`Delegated task ${taskId}`));
+          turns.find((turn) => turn.text.includes(`\n\nDelegated task ${taskId}`));
         assert.equal(wakeFor(firstTask)?.nativeThreadId, scheduledThread);
         assert.equal(wakeFor(followUpTask)?.nativeThreadId, scheduledThread);
       }).pipe(
