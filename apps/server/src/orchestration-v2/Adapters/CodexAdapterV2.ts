@@ -131,6 +131,7 @@ import {
   resolveCodexComputerUse,
   type CodexComputerUseAvailability,
 } from "../../provider/CodexComputerUse.ts";
+import { configureProviderComputerUse } from "../../provider/CodexComputerUseSetup.ts";
 import {
   buildCodexAdditionalContext,
   buildCodexComputerUseInstructions,
@@ -2441,6 +2442,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               });
             if (refused) return yield* refused;
             yield* client.notify("initialized", undefined);
+            if (adapterOptions.enableComputerUse) {
+              yield* configureProviderComputerUse(
+                (resolvedRuntime?.config ?? adapterOptions.settings).homePath ||
+                  environment.CODEX_HOME,
+              ).pipe(
+                Effect.provideService(CodexClient.CodexAppServerClient, client),
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(Path.Path, pathService),
+              );
+            }
             yield* Ref.set(initialized, true);
           }),
         );

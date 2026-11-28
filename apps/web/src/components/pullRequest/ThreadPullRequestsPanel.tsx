@@ -5,22 +5,24 @@ import {
 } from "@t3tools/client-runtime/source-control-clients";
 import {
   type PullRequestListLine,
-  pullRequestListLines,
-  resolveThreadPullRequestChains,
   visibleThreadPullRequests,
 } from "@t3tools/client-runtime/thread-pull-requests";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { canStartThreadPullRequestWatch } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import {
   ArrowUpRightIcon,
+  ListFilterIcon,
   EyeIcon,
   EyeOffIcon,
   LinkIcon,
   MoreHorizontalIcon,
   PlusIcon,
+  SearchIcon,
+  XIcon,
 } from "lucide-react";
-import { LegendList } from "@legendapp/list/react";
+import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
-import { memo, useState } from "react";
+import { memo, useRef, useState } from "react";
 
 import {
   COMPOSER_PULL_REQUEST_DRAG_TYPE,
@@ -42,7 +44,19 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { RelativeTime } from "~/components/RelativeTime";
 import { ThreadDetailsIssueRows } from "../chat/ThreadDetailsIssueRows";
 import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
+import {
+  Menu,
+  MenuCheckboxItem,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { openLinkPullRequestDialog } from "./LinkPullRequestDialog";
 import {
@@ -63,6 +77,11 @@ import { pullRequestQuickActions } from "./pullRequestList.logic";
 import { PullRequestSpeedActions, PullRequestSpeedModeContext } from "./PullRequestSpeedActions";
 
 import { changeRequestTermKind } from "./changeRequestTerm";
+import {
+  linkedItemsView,
+  type LinkedItemsSort,
+  type LinkedPullRequestStatus,
+} from "./linkedItemsView.logic";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const SOURCE_LABELS: Record<ThreadPullRequestLink["source"], string> = {
@@ -405,6 +424,128 @@ function latestSyncedAt(links: ReadonlyArray<ThreadPullRequestLink>): string | n
 const lineKey = (line: PullRequestListLine) =>
   `${line.link.host}/${line.link.repository}#${line.link.number}`;
 
+const SORT_LABELS: Record<LinkedItemsSort, string> = {
+  default: msg("Default", { $context: "sort order" }),
+  title: msg("Title", { $context: "sort by item title" }),
+  repository: msg("Repository", { $context: "sort by repository" }),
+};
+
+const STATUS_LABELS: Record<LinkedPullRequestStatus, string> = {
+  draft: msg("Draft", { $context: "pull request state" }),
+  open: msg("Open", { $context: "pull request state" }),
+  merged: msg("Merged", { $context: "pull request state" }),
+  closed: msg("Closed", { $context: "pull request state" }),
+};
+
+const SORT_OPTIONS: ReadonlyArray<LinkedItemsSort> = ["default", "title", "repository"];
+const PR_STATUSES: ReadonlyArray<LinkedPullRequestStatus> = ["draft", "open", "merged", "closed"];
+
+function LinkedItemsControls({
+  query,
+  sort,
+  hiddenStatuses,
+  showStatusFilter,
+  onSearch,
+  onSort,
+  onToggleStatus,
+}: {
+  query: string;
+  sort: LinkedItemsSort;
+  hiddenStatuses: ReadonlySet<LinkedPullRequestStatus>;
+  showStatusFilter: boolean;
+  onSearch: (query: string) => void;
+  onSort: (sort: LinkedItemsSort) => void;
+  onToggleStatus: (status: LinkedPullRequestStatus) => void;
+}) {
+  const gt = useGT();
+  const resolve = useMessages();
+  const input = useRef<HTMLInputElement>(null);
+  const searchLabel = gt("Search linked items");
+  const viewLabel = gt("Sort and filter linked items");
+  return (
+    <div className="flex shrink-0 items-center gap-1.5 border-b border-border/60 px-2 py-1.5">
+      <InputGroup>
+        <InputGroupAddon aria-hidden="true">
+          <SearchIcon className="size-3.5" />
+        </InputGroupAddon>
+        <InputGroupInput
+          ref={input}
+          aria-label={searchLabel}
+          placeholder={searchLabel}
+          type="search"
+          size="compact"
+          value={query}
+          onValueChange={onSearch}
+        />
+        {query !== "" ? (
+          <InputGroupAddon align="inline-end">
+            <Button
+              variant="ghost-muted"
+              size="icon-xs"
+              aria-label={gt("Clear search")}
+              onClick={() => {
+                onSearch("");
+                input.current?.focus();
+              }}
+            >
+              <XIcon aria-hidden />
+            </Button>
+          </InputGroupAddon>
+        ) : null}
+      </InputGroup>
+      <Menu>
+        <MenuTrigger
+          aria-label={viewLabel}
+          title={viewLabel}
+          render={
+            <Button variant={hiddenStatuses.size > 0 ? "secondary" : "outline"} size="icon-sm" />
+          }
+        >
+          <ListFilterIcon aria-hidden className="size-4" />
+        </MenuTrigger>
+        <MenuPopup align="end" side="bottom">
+          <MenuRadioGroup
+            value={sort}
+            onValueChange={(value) => {
+              const option = SORT_OPTIONS.find((entry) => entry === value);
+              if (option) onSort(option);
+            }}
+          >
+            <MenuGroupLabel>
+              <T>Sort by</T>
+            </MenuGroupLabel>
+            {SORT_OPTIONS.map((option) => (
+              <MenuRadioItem key={option} value={option} closeOnClick={false}>
+                {resolve(SORT_LABELS[option])}
+              </MenuRadioItem>
+            ))}
+          </MenuRadioGroup>
+          {showStatusFilter ? (
+            <>
+              <MenuSeparator />
+              <MenuGroup>
+                <MenuGroupLabel>
+                  <T>Hide pull requests</T>
+                </MenuGroupLabel>
+                {PR_STATUSES.map((status) => (
+                  <MenuCheckboxItem
+                    key={status}
+                    checked={hiddenStatuses.has(status)}
+                    closeOnClick={false}
+                    onCheckedChange={() => onToggleStatus(status)}
+                  >
+                    {resolve(STATUS_LABELS[status])}
+                  </MenuCheckboxItem>
+                ))}
+              </MenuGroup>
+            </>
+          ) : null}
+        </MenuPopup>
+      </Menu>
+    </div>
+  );
+}
+
 export function ThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThreadRef }) {
   const gt = useGT();
   const configs = useServerConfigs();
@@ -416,13 +557,20 @@ export function ThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
       />
     );
   }
-  return <EnabledThreadPullRequestsPanel threadRef={threadRef} />;
+  return <EnabledThreadPullRequestsPanel key={scopedThreadKey(threadRef)} threadRef={threadRef} />;
 }
 
 function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThreadRef }) {
   const gt = useGT();
+  const resolve = useMessages();
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<LinkedItemsSort>("default");
+  const [hiddenStatuses, setHiddenStatuses] = useState<ReadonlySet<LinkedPullRequestStatus>>(
+    new Set(),
+  );
+  const listRef = useRef<LegendListRef>(null);
   const thread = useThreadShell(threadRef);
-  const issues = thread?.issues ?? [];
+  const allIssues = thread?.issues ?? [];
   const projects = useProjects();
   const environmentProjects = projects
     .filter((project) => project.environmentId === threadRef.environmentId)
@@ -431,7 +579,34 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
     );
   // Derive lines before later hooks to preserve compiler caching and avoid LegendList renders.
   const links = visibleThreadPullRequests(thread?.pullRequests ?? []);
-  const lines = pullRequestListLines(resolveThreadPullRequestChains(links));
+  const { lines, issues } = linkedItemsView(links, allIssues, { query, sort, hiddenStatuses });
+  const visibleCount = lines.length + issues.length;
+  const filtered = query.trim() !== "" || hiddenStatuses.size > 0;
+
+  const scrollToStart = () => {
+    void listRef.current?.scrollToOffset({ offset: 0, animated: false });
+  };
+  const search = (value: string) => {
+    setQuery(value);
+    scrollToStart();
+  };
+  const sortItems = (value: LinkedItemsSort) => {
+    setSort(value);
+    scrollToStart();
+  };
+  const toggleStatus = (status: LinkedPullRequestStatus) => {
+    setHiddenStatuses((current) => {
+      const next = new Set(current);
+      if (!next.delete(status)) next.add(status);
+      return next;
+    });
+    scrollToStart();
+  };
+  const clearFilters = () => {
+    setQuery("");
+    setHiddenStatuses(new Set());
+    scrollToStart();
+  };
   const openCount = links.filter(
     (link) => link.snapshot === null || link.snapshot.state === "open",
   ).length;
@@ -512,7 +687,7 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
     primaryEnvironmentId,
   };
 
-  if (linkCount === 0 && issues.length === 0) {
+  if (linkCount === 0 && allIssues.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <PullRequestGlyph.link aria-hidden className="size-6 text-muted-foreground/60" />
@@ -536,9 +711,28 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
   return (
     <PullRequestSpeedModeContext value={speedMode}>
       <div className="flex h-full min-h-0 flex-col">
+        <LinkedItemsControls
+          query={query}
+          sort={sort}
+          hiddenStatuses={hiddenStatuses}
+          showStatusFilter={linkCount > 0}
+          onSearch={search}
+          onSort={sortItems}
+          onToggleStatus={toggleStatus}
+        />
+        <p className="sr-only" role="status">
+          {gt(
+            "{count, plural, one {{count} linked item} other {{count} linked items}}. Sort order: {sort}.",
+            {
+              count: visibleCount,
+              sort: resolve(SORT_LABELS[sort]),
+            },
+          )}
+        </p>
         {/* Threads that run a stack or a sweep link hundreds of pull requests; only the rows in
           view are mounted. */}
         <LegendList<PullRequestListLine>
+          ref={listRef}
           data={lines}
           keyExtractor={lineKey}
           extraData={rowInputs}
@@ -556,12 +750,19 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
                     mountScope="linked-items"
                   />
                 </section>
-                {linkCount > 0 ? (
+                {lines.length > 0 ? (
                   <h2 className="mt-2 border-t border-border/60 px-3 pt-2 pb-1 text-xs font-medium text-muted-foreground">
                     <T>Pull requests</T>
                   </h2>
                 ) : null}
               </>
+            ) : null
+          }
+          ListEmptyComponent={
+            visibleCount === 0 ? (
+              <div className="px-2 py-6 text-center text-sm text-muted-foreground">
+                <T>No matching linked items</T>
+              </div>
             ) : null
           }
           renderItem={({ item: line }) => (
@@ -586,26 +787,40 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
           drawDistance={440}
           className="min-h-0 flex-1 overscroll-contain p-1.5"
         />
-        <footer className="flex items-center justify-between border-t border-border/60 px-2 py-1.5 text-2xs text-muted-foreground">
-          <span>
-            {linkCount > 0
-              ? gt(
-                  "{openCount, plural, one {{openCount} open} other {{openCount} open}} · {linkCount, plural, one {{linkCount} linked} other {{linkCount} linked}}",
-                  { openCount, linkCount },
-                )
-              : null}
-            {lastSynced ? (
-              <>
-                {" · "}
-                <T context="followed by a relative time such as 5m ago or just now">
-                  synced{" "}
-                  <Var>
-                    <RelativeTime timestamp={lastSynced} />
-                  </Var>
-                </T>
-              </>
-            ) : null}
-          </span>
+        <footer className="flex items-center justify-between gap-1 border-t border-border/60 px-2 py-1.5 text-2xs text-muted-foreground">
+          {filtered ? (
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
+              <span>
+                {gt("{visible} of {total} linked", {
+                  visible: visibleCount,
+                  total: linkCount + allIssues.length,
+                })}
+              </span>
+              <Button size="xs" variant="ghost" onClick={clearFilters}>
+                <T>Clear filters</T>
+              </Button>
+            </div>
+          ) : (
+            <span>
+              {linkCount > 0
+                ? gt(
+                    "{openCount, plural, one {{openCount} open} other {{openCount} open}} · {linkCount, plural, one {{linkCount} linked} other {{linkCount} linked}}",
+                    { openCount, linkCount },
+                  )
+                : null}
+              {lastSynced ? (
+                <>
+                  {" · "}
+                  <T context="followed by a relative time such as 5m ago or just now">
+                    synced{" "}
+                    <Var>
+                      <RelativeTime timestamp={lastSynced} />
+                    </Var>
+                  </T>
+                </>
+              ) : null}
+            </span>
+          )}
           <Button size="xs" variant="ghost" onClick={openLinkDialog}>
             <PlusIcon className="size-3.5" />
             <T context="verb, button">Link pull request</T>
