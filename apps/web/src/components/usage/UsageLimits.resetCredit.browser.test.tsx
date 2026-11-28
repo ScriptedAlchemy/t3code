@@ -1,5 +1,6 @@
 import { createRef, useImperativeHandle } from "react";
 import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import { expect, it, vi } from "vite-plus/test";
 
 import { act, render } from "../../../test/render.tsx";
@@ -20,7 +21,7 @@ import { useResetCredit } from "./UsageLimits";
 const environmentId = EnvironmentId.make("reset-environment");
 const input = { instanceId: ProviderInstanceId.make("codex") };
 const success = { _tag: "Success", value: { outcome: "reset" } } as const;
-type Result = typeof success | { readonly _tag: "Failure"; readonly cause: { error: Error } };
+type Result = typeof success | { readonly _tag: "Failure"; readonly cause: Cause.Cause<Error> };
 
 function setup() {
   mocks.consume.mockReset().mockResolvedValue(success);
@@ -71,7 +72,7 @@ it.each(["success", "failure", "rejection"] as const)(
     await act(async () => {
       if (outcome === "rejection") pending.reject(new Error("Disconnected"));
       else if (outcome === "failure") {
-        pending.resolve({ _tag: "Failure", cause: { error: new Error("Denied") } });
+        pending.resolve({ _tag: "Failure", cause: Cause.fail(new Error("Denied")) });
       } else pending.resolve(success);
       expect(await attempts[0]).toEqual({ reset: outcome === "success", message });
     });
