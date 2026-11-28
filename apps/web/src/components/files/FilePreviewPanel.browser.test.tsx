@@ -1467,13 +1467,17 @@ it("highlights Jupyter kernel languages while keeping labels and raw cells plain
     await using screen = await render(<NotebookPreview notebook={notebook} />);
     expect(screen.getByRole("status").first().element().textContent).toContain(`· ${language}`);
     expect(screen.container.querySelector("section > div")?.textContent).toBe(`${language} · 1`);
-    await vi.waitFor(() => {
-      const [code, raw] = [...screen.container.querySelectorAll("diffs-container")].map((el) => {
-        const spans = el.shadowRoot?.querySelectorAll("[data-line] span") ?? [];
-        return new Set(Array.from(spans, (span) => getComputedStyle(span).color)).size;
-      });
-      expect(code, language).toBeGreaterThan(1);
-      expect(raw, `raw:${language}`).toBe(1);
-    });
+    // Grammars load lazily, and C++'s takes over a second on a busy sharded CI runner.
+    await vi.waitFor(
+      () => {
+        const [code, raw] = [...screen.container.querySelectorAll("diffs-container")].map((el) => {
+          const spans = el.shadowRoot?.querySelectorAll("[data-line] span") ?? [];
+          return new Set(Array.from(spans, (span) => getComputedStyle(span).color)).size;
+        });
+        expect(code, language).toBeGreaterThan(1);
+        expect(raw, `raw:${language}`).toBe(1);
+      },
+      { timeout: 10_000 },
+    );
   }
 });
