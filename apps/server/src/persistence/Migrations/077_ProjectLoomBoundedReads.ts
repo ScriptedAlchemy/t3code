@@ -17,10 +17,13 @@ export default Effect.gen(function* () {
     WHERE type = 'command_execution'
   `;
   // Linking a pull request does not advance a thread's updated_at, so threads quiet since before
-  // the window are found through their links.
+  // the window are found through their links. A payload that is not JSON is skipped, not fatal.
   yield* sql`
     CREATE INDEX IF NOT EXISTS orchestration_v2_projection_threads_project_linked_idx
     ON orchestration_v2_projection_threads(project_id, updated_at)
-    WHERE json_array_length(payload_json, '$.pullRequests') > 0
+    WHERE CASE
+      WHEN json_valid(payload_json) THEN json_array_length(payload_json, '$.pullRequests') > 0
+      ELSE 0
+    END
   `;
 });
