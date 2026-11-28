@@ -76,10 +76,9 @@ supports async questions.
 
 ## Use Mac apps
 
-If your Codex instance already has native Computer Use configured and enabled,
-ask it to work in a Mac app, such as Calculator. Computer Use controls the server
-environment's Mac, even when you connect from another computer or your phone.
-Native permissions and confirmation requests still apply.
+If native Computer Use is configured in `~/.codex` on the server Mac, ask Codex to work in a Mac app such as Calculator. When a provider starts with its own Codex home, T3 adds the native tool to that home’s `config.toml` if it is not already configured. No setup command is needed. T3 leaves existing plugin and `node_repl` settings alone and does not copy account credentials.
+
+Computer Use controls the server Mac, even from a remote client. macOS permissions, project restrictions and confirmations still apply. To opt a provider out, set `enabled = false` in its `[plugins."computer-use@openai-bundled"]` and `[mcp_servers.node_repl]` tables.
 
 ## Approve app access
 
