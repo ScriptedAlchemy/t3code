@@ -70,7 +70,8 @@ import * as ManagedProviders from "../policy/managedProviders.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as ProviderInstanceRegistryMutator from "../provider/ProviderInstanceRegistryMutator.ts";
 import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
-import { claudeKeychainEntry } from "./claudeKeychain.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import { readClaudeKeychain, writeClaudeKeychain } from "./claudeKeychain.ts";
 import { install, proxyVersion, resolveRelease, Release } from "./install.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import {
@@ -436,6 +437,7 @@ const make = Effect.gen(function* () {
   });
   const sharingDenial = managedCapabilityDenial(settings.managedPolicy, "remoteClients");
   const installContext = yield* Effect.context<Effect.Services<ReturnType<typeof install>>>();
+  const processRunner = yield* ProcessRunner.ProcessRunner;
   const latest = yield* Effect.cachedWithTTL(
     resolveRelease(undefined).pipe(Effect.provide(installContext)),
     (exit) => (Exit.isSuccess(exit) ? "15 minutes" : 0),
@@ -777,33 +779,19 @@ const make = Effect.gen(function* () {
     function* (runtime: NonNullable<typeof running>) {
       if (!(yield* fs.exists(localClaudeAccountPath))) return false;
       const fileCredentials = yield* fs.exists(localClaudeAuthPath);
-      let keychainEntry: import("@napi-rs/keyring").AsyncEntry | undefined;
+      let keychainUser: string | undefined;
       let nativeRaw: string | undefined;
       if (platform === "darwin" && !env.CLAUDE_CONFIG_DIR?.trim()) {
         if (!username) return false;
-        const entry = yield* Effect.try({
-          try: () => claudeKeychainEntry(username),
-          catch: safeFailure("Could not access Claude credentials in macOS Keychain."),
-        });
-        const secret = yield* Effect.tryPromise({
-          try: async (signal) => {
-            try {
-              return await entry.getPassword(signal);
-            } catch (cause) {
-              const message = String((cause as { message?: unknown } | undefined)?.message ?? "");
-              if (/no (matching )?entry|not found/i.test(message)) return undefined;
-              throw cause;
-            }
-          },
-          catch: safeFailure("Allow T3 Code to access Claude credentials in macOS Keychain."),
-        }).pipe(
+        const secret = yield* readClaudeKeychain(username).pipe(
+          Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
           Effect.timeout("5 seconds"),
           Effect.mapError(
             safeFailure("Allow T3 Code to access Claude credentials in macOS Keychain."),
           ),
         );
         if (secret !== undefined) {
-          keychainEntry = entry;
+          keychainUser = username;
           nativeRaw = secret;
         }
       }
@@ -870,19 +858,15 @@ const make = Effect.gen(function* () {
             expiresAt: existing.expiresAt,
           },
         });
-        if (keychainEntry) {
-          const current = yield* Effect.tryPromise({
-            try: (signal) => keychainEntry!.getPassword(signal),
-            catch: safeFailure("Could not read Claude credentials in macOS Keychain."),
-          }).pipe(
+        if (keychainUser) {
+          const current = yield* readClaudeKeychain(keychainUser).pipe(
+            Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
             Effect.timeout("5 seconds"),
             Effect.mapError(safeFailure("Could not read Claude credentials in macOS Keychain.")),
           );
           if (current !== nativeRaw) return false;
-          yield* Effect.tryPromise({
-            try: (signal) => keychainEntry!.setPassword(contents, signal),
-            catch: safeFailure("Could not update Claude credentials in macOS Keychain."),
-          }).pipe(
+          yield* writeClaudeKeychain(keychainUser, contents).pipe(
+            Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
             Effect.timeout("5 seconds"),
             Effect.mapError(safeFailure("Could not update Claude credentials in macOS Keychain.")),
           );
